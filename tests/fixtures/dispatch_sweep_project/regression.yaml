@@ -1,0 +1,6 @@
+rtl-buddy-filetype: reg_config
+# Two suites -> two separate build jobs (multiple model builds); the first
+# carries a sweep that fans out to an array > 1.
+test-configs:
+  - "verif/swept/tests.yaml"
+  - "verif/plain/tests.yaml"

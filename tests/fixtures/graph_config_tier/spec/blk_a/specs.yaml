@@ -1,0 +1,16 @@
+# Fixture for tests/test_graph_config_tier.py — do not add unrelated entries.
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "blk_a"
+    desc: "Block A — the fully wired block (model, docs, coverage, golden model)"
+    docs:
+      - "README.md"
+      - "missing.md"
+    coverage-items:
+      - id: "A-COV-1"
+        desc: "First coverage item, claimed by both tests"
+      - id: "A-COV-2"
+        desc: "Second coverage item, claimed by the cocotb test only"
+      - id: "SHARED-COV"
+        desc: "Id also declared by blk_b — covers edges must fan out to both"

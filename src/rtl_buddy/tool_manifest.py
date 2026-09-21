@@ -40,6 +40,38 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Viewer distribution names
+
+#: Distribution names the viewer has been published under, newest first.
+#:
+#: The PyPI distribution was renamed ``rtl-buddy-view`` ->
+#: ``rtl-buddy-sch`` at 0.7.0 (rtl-buddy-sch#157); ``rtl-buddy-view`` is
+#: frozen at 0.5.0. Everything else is an unchanged contract: the
+#: ``rtl-buddy-view`` **executable** (0.7.0+ also installs an
+#: ``rtl-buddy-sch`` console script), its ``rtl-buddy-view <X.Y.Z>``
+#: ``--version`` literal, the import package ``rtl_buddy_view``, and the
+#: ``tool.name`` stamp in exported JSON. Only lookups of *distribution
+#: metadata* have to know both names, and they all go through here.
+VIEWER_DIST_NAMES: tuple[str, ...] = ("rtl-buddy-sch", "rtl-buddy-view")
+
+
+def viewer_dist_version() -> tuple[str, str] | None:
+    """``(dist name, version)`` of the installed viewer distribution.
+
+    Probes :data:`VIEWER_DIST_NAMES` in order — the renamed
+    ``rtl-buddy-sch`` first, then the pre-rename ``rtl-buddy-view`` —
+    and returns ``None`` when neither is installed (a PATH-only or
+    source install, where the executable probe is the answer).
+    """
+    for name in VIEWER_DIST_NAMES:
+        try:
+            return name, importlib_metadata.version(name)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Detectors
 
 
@@ -155,21 +187,43 @@ class PythonPackageDetector(Detector):
 class PythonSiblingDetector(Detector):
     """Detect a python-sibling tool by *both* PyPI metadata and PATH.
 
-    Python siblings (``rtl-buddy-view``, ``rtl-buddy-cdc``,
+    Python siblings (``rtl-buddy-sch``, ``rtl-buddy-cdc``,
     ``rtl-buddy-axi-profiler``) ship a wheel plus a script entry-point.
     Reporting "kind=python" alone hides where the binary actually lives;
     reporting PATH alone hides the version. This detector returns both
     when both are present, so the table shows ``version + path`` for the
     common "fully installed" case.
+
+    ``legacy_packages`` names distributions the same tool was published
+    under before a rename (the viewer's ``rtl-buddy-view``, frozen at
+    0.5.0). They are probed only when ``package`` yields no metadata, so
+    a machine with both installed reports the current dist's version.
+    One detector rather than two per name: a second detector would find
+    the binary on PATH and short-circuit with ``version=None`` before
+    the older dist's metadata was ever read.
+
+    A version read from a *legacy* name is dropped when the binary is
+    also on PATH, so :func:`check_tool` falls through to the executable
+    probe. Otherwise the documented upgrade path — ``uv tool install
+    rtl-buddy-sch`` into an isolated env, leaving an old in-venv wheel
+    behind — would report the abandoned dist's frozen version for a
+    binary that is demonstrably newer. In-env metadata still wins for
+    the current name, where the two cannot disagree.
     """
 
     package: str
+    legacy_packages: tuple[str, ...] = ()
 
     def detect(self, spec: "ToolSpec", project_root: Path | None) -> DetectionResult:
-        try:
-            version = importlib_metadata.version(self.package)
-        except importlib_metadata.PackageNotFoundError:
-            version = None
+        version = None
+        from_legacy = False
+        for candidate in (self.package, *self.legacy_packages):
+            try:
+                version = importlib_metadata.version(candidate)
+                from_legacy = candidate != self.package
+                break
+            except importlib_metadata.PackageNotFoundError:
+                continue
         binary_path: str | None = None
         for binary in spec.binaries:
             resolved = shutil.which(binary)
@@ -178,6 +232,8 @@ class PythonSiblingDetector(Detector):
                 break
         if version is None and binary_path is None:
             return DetectionResult(found=False, kind="python")
+        if from_legacy and binary_path is not None:
+            version = None
         # Prefer "path" kind when the binary is on PATH so the table shows
         # the absolute path; fall back to "python" when only the wheel is
         # installed (uncommon, but possible with `pip install --no-scripts`).
@@ -196,21 +252,46 @@ class ToolSpec:
     Attributes:
       name: Canonical key (used for ``--explain``, JSON output, and
         ``require()``).
+      aliases: Extra spellings accepted by name lookups
+        (:func:`resolve_spec`, and therefore ``--explain`` and
+        :func:`require`). Input courtesy only — ``name`` stays the one
+        identity in every output, so ``--machine`` consumers keyed on it
+        never see it drift by spelling. Must not collide with any other
+        spec's name or alias; :func:`get_manifest` asserts that.
       binaries: Binary names to look for. The first one found wins. For
         Python packages this is typically a single human-readable name
-        (e.g. ``("pyslang",)``) used only for display.
+        (e.g. ``("pyslang",)``) used only for display. This is the tool's
+        REQUIRED core: detection and the version probe both read it, so a
+        binary listed here must be one whose presence means the tool is
+        usable.
+      optional_binaries: ``{binary: what it buys}`` for auxiliary
+        executables that ENRICH the tool without being required — Slurm's
+        ``scontrol``, which supplies ``MaxArraySize``. Deliberately NOT
+        part of ``binaries``: detection is any-of and the version probe
+        substitutes the found path into ``version_cmd``, so a host with
+        only the auxiliary binary would otherwise be reported ``ok`` for a
+        tool it cannot actually use (#509 review). ``--explain`` lists
+        these with their role; nothing else reads them.
       version_cmd: Argv prefix that, when run, prints a version. ``None``
         skips probing for this tool.
       version_regex: Pattern applied to combined stdout+stderr of
         ``version_cmd``. The first match wins.
       minimum_version: Lower-bound version string. ``None`` means "any
         version is acceptable as long as the tool is present."
+      maximum_version_exclusive: First version that is NOT supported.
+        A detected version at or above it reports ``unsupported``.
+        ``None`` means no upper bound.
       detection: Ordered detectors. First ``found=True`` wins.
       install_hint: Per-platform install instructions for ``--explain``.
       used_by: Subcommands that this tool participates in. Drives the
         "Subcommand readiness" section of the report.
       optional: ``True`` means missing this tool does not gate
         subcommand readiness.
+      required_by: Subcommands for which an otherwise optional tool is required.
+      subcommand_minimum_versions: Extra per-subcommand floors layered on
+        ``minimum_version``, keyed by a ``used_by`` name. A tool that
+        clears ``minimum_version`` stays ``ok``; only the named
+        subcommand's readiness turns ``outdated`` (rtl_buddy#550).
       description: Short one-liner shown by ``--explain``.
       notes: Free-form additional context for ``--explain``.
     """
@@ -221,11 +302,16 @@ class ToolSpec:
     version_regex: str | None
     minimum_version: str | None
     detection: tuple[Detector, ...]
+    optional_binaries: dict[str, str] = field(default_factory=dict)
     install_hint: dict[str, str] = field(default_factory=dict)
     used_by: tuple[str, ...] = ()
     optional: bool = False
     description: str = ""
     notes: str = ""
+    aliases: tuple[str, ...] = ()
+    required_by: tuple[str, ...] = ()
+    maximum_version_exclusive: str | None = None
+    subcommand_minimum_versions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -233,13 +319,22 @@ class ToolStatus:
     """Result of evaluating a single :class:`ToolSpec` against the env."""
 
     name: str
-    status: str  # "ok" | "missing" | "outdated"
+    status: str  # "ok" | "missing" | "outdated" | "unsupported"
     version: str | None
     path: str | None
     optional: bool
     minimum_version: str | None
     kind: str | None  # "path" | "vendor" | "python" | None
     used_by: tuple[str, ...]
+    maximum_version_exclusive: str | None = None
+    subcommand_minimum_versions: dict[str, str] = field(default_factory=dict)
+
+
+#: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand
+#: (rtl-buddy-view#126). ``rb graph build`` refuses the design tier below
+#: it, and ``rb tool-check`` reports ``rb graph`` as outdated below it —
+#: one constant so the two cannot disagree again (rtl_buddy#550).
+VIEW_GRAPH_MIN_VERSION = "0.4.0"
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +418,48 @@ def _builtin_manifest() -> list[ToolSpec]:
             "cfg-rtl-builder entry with simulator-family: icarus (or builder: "
             "icarus in tests.yaml). Compile uses iverilog; the simv wrapper "
             "execs vvp, so both binaries must be present.",
+        ),
+        ToolSpec(
+            name="slurm",
+            binaries=("sbatch", "squeue", "sacct", "scancel"),
+            version_cmd=("sbatch", "--version"),
+            version_regex=r"slurm[- ]?(?:wlm\s+)?([\d.]+)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            optional_binaries={
+                "scontrol": "`scontrol show config` supplies the cluster's "
+                "MaxArraySize and SchedulerParameters=max_array_tasks, which let "
+                "dispatch split a resource group too large for one job array; "
+                "without it set cfg-dispatch.max-array-size, and "
+                "cfg-dispatch.max-array-tasks too where the cluster caps tasks "
+                "per array below it, or sbatch refuses the group with "
+                "`Invalid job array specification`. A dispatch build job also "
+                "uses `scontrol update JobId=<id> Dependency=` to start a "
+                "compile key's simulation jobs as soon as that key is built "
+                "instead of when the whole build job ends; that call is made "
+                "from the compute node running the build job, so scontrol has "
+                "to be on ITS PATH and not only the submit host's, and without "
+                "it those jobs wait for the build job, as they did before",
+            },
+            install_hint={
+                "macos": "no native macOS build; use a Linux submit host, or a "
+                "single-node Slurm-in-Docker container for local testing",
+                "linux": "apt install slurm-client (or slurm-wlm); a working "
+                "cluster/submit host is provided by your site",
+                "source": "https://slurm.schedmd.com/quickstart_admin.html",
+            },
+            used_by=("regression", "randtest", "test", "elab", "elab-regression"),
+            optional=True,
+            description="Slurm workload manager client "
+            "(sbatch/squeue/sacct/scancel; scontrol optional)",
+            notes="Only needed for `regression --dispatch slurm` (and randtest, "
+            "`rb test --dispatch slurm`, `rb elab --dispatch slurm`, and "
+            "`rb elab-regression --dispatch slurm`). "
+            "Requires a shared filesystem between the submit host and compute "
+            "nodes; sacct (slurmdbd accounting) drives reservation right-sizing "
+            "telemetry and degrades gracefully when absent. scontrol is an "
+            "optional probe, not part of the required client — see the "
+            "optional binaries above.",
         ),
         ToolSpec(
             name="surfer",
@@ -596,13 +733,65 @@ def _builtin_manifest() -> list[ToolSpec]:
             # 0.2.3 coverage overlay + Coverview deep links and the SPA
             # bundle that earlier floors guarded.
             minimum_version="0.3.0",
-            detection=(PythonSiblingDetector("rtl-buddy-view"),),
+            # `rb graph build` needs the viewer's `graph` subcommand, which
+            # is newer than the shared floor above. Declared per subcommand
+            # so a 0.3.x viewer still reads as ok for hier / hier-query /
+            # hub (rtl_buddy#550).
+            subcommand_minimum_versions={"graph": VIEW_GRAPH_MIN_VERSION},
+            # The dist was renamed to `rtl-buddy-sch` at 0.7.0
+            # (rtl-buddy-sch#157); `rtl-buddy-view` is frozen at 0.5.0
+            # and stays a fallback for anyone still on it. `name`,
+            # `binaries`, `version_cmd` and `version_regex` above are the
+            # unchanged EXECUTABLE contracts — only dist metadata moved.
+            detection=(
+                PythonSiblingDetector(
+                    VIEWER_DIST_NAMES[0], legacy_packages=VIEWER_DIST_NAMES[1:]
+                ),
+            ),
             install_hint={
-                "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
+                "any": "uv tool install rtl-buddy-sch  (or pip install rtl-buddy-sch)",
             },
-            used_by=("hier", "hier-query", "hub"),
+            used_by=("hier", "hier-query", "graph", "hub"),
             optional=False,
             description="Hierarchy viewer + JSON exporter for rtl_buddy",
+            # The dist a user installs today is `rtl-buddy-sch` — it is
+            # what our own install hint above says, so it is the string
+            # they type at `rb tool-check --explain`. Accept it as input;
+            # the canonical name stays `rtl-buddy-view` in all output
+            # (rtl_buddy#445).
+            aliases=("rtl-buddy-sch",),
+        ),
+        ToolSpec(
+            name="rtl-buddy-graph-extract",
+            binaries=("rb-graph-extract",),
+            version_cmd=("rb-graph-extract", "--version"),
+            # Anchored on the tool name; a surprising format yields NO
+            # version rather than a wrong one (unknown is recoverable, a
+            # wrong number in the fingerprint is not). The tail accepts
+            # PEP 440 dev/local segments ("0.1.dev1+gcc59b55") so
+            # editable installs keep a full fingerprint.
+            version_regex=r"rb-graph-extract\s+v?(\d[\w.+]*)",
+            # Mirrors the graph-extract extra's `>= 0.1.0` floor for the
+            # installs that bypass pip's resolver (uv tool install,
+            # editable). Dev builds of 0.1 ("0.1.dev1+g…") still satisfy
+            # it: _version_satisfies compares digit tuples, and the dev
+            # segment's digits only extend the tuple past the floor.
+            minimum_version="0.1.0",
+            detection=(
+                PathDetector(),
+                PythonPackageDetector("rtl-buddy-graph-extract"),
+            ),
+            install_hint={
+                "any": 'uv add "rtl_buddy[graph-extract]"  (or pip install '
+                '"rtl_buddy[graph-extract]"; optional — the bundled '
+                "binding-tier extractor; rb graph build writes the design "
+                "+ config tiers without it)",
+            },
+            used_by=("graph",),
+            optional=True,
+            description="rtl-buddy-graph-extract — bundled clean-room "
+            "implementation of the binding-tier extract contract "
+            "(verif Python + spec markdown) for rb graph build",
         ),
         ToolSpec(
             name="rtl-buddy-cdc",
@@ -638,14 +827,34 @@ def _builtin_manifest() -> list[ToolSpec]:
             binaries=("pyslang",),
             version_cmd=None,
             version_regex=None,
-            minimum_version=None,
+            minimum_version="10.0.0",
+            maximum_version_exclusive="12",
             detection=(PythonPackageDetector("pyslang"),),
             install_hint={
-                "any": "uv pip install pyslang  (only needed for --frontend slang)",
+                "any": "uv add 'rtl_buddy[elab]'  (or uv pip install 'pyslang>=10,<12')",
             },
-            used_by=("hier", "synth", "cdc"),
+            used_by=("hier", "synth", "cdc", "elab", "elab-regression"),
             optional=True,
-            description="Python slang frontend — alternative parser for rb hier / synth / cdc",
+            description="Python slang frontend for model elaboration and optional parsing flows",
+            required_by=("elab", "elab-regression"),
+        ),
+        ToolSpec(
+            name="mcp",
+            # No PathDetector and no binary contract: the SDK is a
+            # library; an empty tuple keeps any future "not found on
+            # PATH" formatting from naming a binary nobody installs.
+            binaries=(),
+            version_cmd=None,
+            version_regex=None,
+            minimum_version="1.2.0",
+            detection=(PythonPackageDetector("mcp"),),
+            install_hint={
+                "any": 'pip install "rtl_buddy[mcp]"  (only needed to serve '
+                "rb mcp; every tool it exposes is also reachable with --machine)",
+            },
+            used_by=("mcp",),
+            optional=True,
+            description="Model Context Protocol SDK — the stdio server behind rb mcp",
         ),
         ToolSpec(
             name="cocotb",
@@ -753,8 +962,9 @@ def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
     * ``cfg-verible`` — the active platform's verible directory is added
       to the verible spec's detector chain as the *preferred* lookup,
       with PATH retained as the fallback.
-    * ``cfg-surfer`` — the ``surfer-default`` entry's resolved path is
-      added to the surfer spec's detector chain in the same way.
+    * ``cfg-surfer`` — the active platform's routed entry (falling back
+      to ``surfer-default``) has its resolved path added to the surfer
+      spec's detector chain in the same way.
     * ``cfg-tools`` — overrides ``minimum_version`` for any matching
       tool. Project pins always win over manifest defaults.
     * ``cfg-fpv-tools[*].opts.solver-versions`` — pins a project-wide
@@ -791,8 +1001,12 @@ def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
             surfer_path = surfer_cfg.get_surfer_exe()
         except Exception:
             surfer_path = None
-        if surfer_path and surfer_path != surfer_cfg.path:
-            # An absolute path was resolved — prepend an AbsolutePathDetector
+        if surfer_path and os.sep in surfer_path:
+            # A real path was resolved — either `which` found the bare name,
+            # or the entry pinned a path outright (in which case
+            # `get_surfer_exe` returns it unchanged, so comparing against
+            # `surfer_cfg.path` would wrongly skip the pin). Prepend an
+            # AbsolutePathDetector; PATH stays behind it.
             spec = by_name["surfer"]
             by_name["surfer"] = _replace(
                 spec,
@@ -845,7 +1059,38 @@ def _replace(spec: ToolSpec, **changes) -> ToolSpec:
 
 def get_manifest(root_cfg=None) -> list[ToolSpec]:
     """Return the full tool manifest, optionally reconciled with ``root_cfg``."""
-    return _reconcile_with_root_cfg(_builtin_manifest(), root_cfg)
+    # Checked on the built-in manifest, before reconciliation: the
+    # invariant is a property of the manifest, and reconcile rebuilds the
+    # list through a ``{s.name: s}`` dict — which would collapse a
+    # duplicate *name* out of existence before it could be caught, so with
+    # a root_config.yaml present only the alias shapes survived. Reconcile
+    # never adds a lookup key, so checking first enforces all three
+    # unconditionally (#445 review).
+    builtin = _builtin_manifest()
+    _assert_unique_lookup_keys(builtin)
+    return _reconcile_with_root_cfg(builtin, root_cfg)
+
+
+def _assert_unique_lookup_keys(specs: Iterable[ToolSpec]) -> None:
+    """Fail loudly if two specs answer to the same lookup key.
+
+    Names and aliases share one namespace: whichever spec
+    :func:`resolve_spec` happened to reach first would silently shadow
+    the other, so a collision is a manifest bug, not a user error.
+    Raised as :class:`AssertionError` (not the ``assert`` statement,
+    which ``python -O`` strips) — no user input can trigger it.
+    """
+    owner_of: dict[str, str] = {}
+    for spec in specs:
+        for key, kind in ((spec.name, "name"), *((a, "alias") for a in spec.aliases)):
+            previous = owner_of.get(key)
+            if previous is not None:
+                raise AssertionError(
+                    f"tool_manifest: duplicate lookup key '{key}' "
+                    f"({kind} of '{spec.name}', already claimed by "
+                    f"'{previous}')"
+                )
+            owner_of[key] = spec.name
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +1128,38 @@ def _version_satisfies(actual: str | None, minimum: str | None) -> bool:
     if not a or not m:
         return True
     return a >= m
+
+
+def _subcommand_floor_unmet(actual: str | None, minimum: str) -> bool:
+    """True iff ``actual`` is provably older than a per-subcommand floor.
+
+    Deliberately more lenient than :func:`_version_satisfies`: an unknown
+    version is the shared floor's business, and the tuples are zero-padded
+    so a probe that captured ``0.4`` from a ``0.4.devN`` build is not read
+    as older than ``0.4.0``. The subcommand's own runtime gate stays the
+    authority; this only keeps the report from promising too much.
+    """
+    if actual is None:
+        return False
+    a, m = _version_tuple(actual), _version_tuple(minimum)
+    if not a or not m:
+        return False
+    width = max(len(a), len(m))
+    return a + (0,) * (width - len(a)) < m + (0,) * (width - len(m))
+
+
+def _version_below(actual: str | None, maximum_exclusive: str | None) -> bool:
+    """Tolerant ``actual < maximum_exclusive`` check.
+
+    An unknown version or incomparable strings count as below the bound;
+    only a provably too-new version is reported unsupported.
+    """
+    if maximum_exclusive is None or actual is None:
+        return True
+    a, m = _version_tuple(actual), _version_tuple(maximum_exclusive)
+    if not a or not m:
+        return True
+    return a[: len(m)] < m
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1284,7 @@ def check_tool(
             minimum_version=spec.minimum_version,
             kind=None,
             used_by=spec.used_by,
+            subcommand_minimum_versions=dict(spec.subcommand_minimum_versions),
         )
 
     version = det.version
@@ -1016,6 +1294,8 @@ def check_tool(
     status = "ok"
     if not _version_satisfies(version, spec.minimum_version):
         status = "outdated"
+    elif not _version_below(version, spec.maximum_version_exclusive):
+        status = "unsupported"
 
     return ToolStatus(
         name=spec.name,
@@ -1026,6 +1306,8 @@ def check_tool(
         minimum_version=spec.minimum_version,
         kind=det.kind,
         used_by=spec.used_by,
+        maximum_version_exclusive=spec.maximum_version_exclusive,
+        subcommand_minimum_versions=dict(spec.subcommand_minimum_versions),
     )
 
 
@@ -1061,9 +1343,12 @@ def subcommand_readiness(
     """Group tool statuses by the subcommands they gate.
 
     Each subcommand entry has:
-        ``status`` — overall ``ok`` / ``outdated`` / ``missing``
+        ``status`` — overall ``ok`` / ``unsupported`` / ``outdated`` / ``missing``
         ``missing`` — list of required tools that are absent
         ``outdated`` — list of required tools that are too old
+        ``unsupported`` — list of required tools that are too new
+        ``minimum_versions`` — ``{tool: floor}`` for tools that are ``ok``
+            overall but older than this subcommand's own floor
         ``optional_feature`` — True iff *all* gating tools are optional
             (i.e. the subcommand only runs when the user opts in)
     """
@@ -1077,20 +1362,30 @@ def subcommand_readiness(
                 {
                     "missing": [],
                     "outdated": [],
+                    "unsupported": [],
                     "tools": [],
+                    "floors": {},
                     "optional_only": True,
                 },
             )
             slot["tools"].append(spec.name)
-            if not spec.optional:
+            required = not spec.optional or sub in spec.required_by
+            if required:
                 slot["optional_only"] = False
             st = by_name.get(spec.name)
             if st is None:
                 continue
-            if st.status == "missing" and not spec.optional:
+            if st.status == "missing" and required:
                 slot["missing"].append(spec.name)
-            elif st.status == "outdated" and not spec.optional:
+            elif st.status == "outdated" and required:
                 slot["outdated"].append(spec.name)
+            elif st.status == "unsupported" and required:
+                slot["unsupported"].append(spec.name)
+            elif st.status == "ok" and required:
+                floor = spec.subcommand_minimum_versions.get(sub)
+                if floor and _subcommand_floor_unmet(st.version, floor):
+                    slot["outdated"].append(spec.name)
+                    slot["floors"][spec.name] = floor
 
     out: dict[str, dict] = {}
     for sub, slot in sorted(subcommands.items()):
@@ -1099,12 +1394,18 @@ def subcommand_readiness(
             status = "missing"
         elif slot["outdated"]:
             status = "outdated"
+        elif slot["unsupported"]:
+            status = "unsupported"
         out[sub] = {
             "status": status,
             "missing": slot["missing"],
             "outdated": slot["outdated"],
+            "unsupported": slot["unsupported"],
             "tools": slot["tools"],
             "optional_feature": slot["optional_only"],
+            # tool -> the per-subcommand floor it missed. Empty unless a
+            # tool is ``ok`` overall but too old for this subcommand.
+            "minimum_versions": slot["floors"],
         }
     return out
 
@@ -1113,26 +1414,70 @@ def subcommand_readiness(
 # Public helpers used by subcommand wrappers
 
 
+def resolve_spec(specs: Iterable[ToolSpec], name: str) -> ToolSpec | None:
+    """Look a spec up by canonical name, then by alias.
+
+    The single lookup used by every name-taking entry point (``rb
+    tool-check --explain`` and :func:`require`), so a third one added
+    later cannot regress to a name-only match. Canonical names win over
+    aliases; :func:`get_manifest` guarantees the two cannot collide
+    anyway.
+    """
+    specs = list(specs)
+    for spec in specs:
+        if spec.name == name:
+            return spec
+    for spec in specs:
+        if name in spec.aliases:
+            return spec
+    return None
+
+
+def known_tool_names(specs: Iterable[ToolSpec]) -> list[str]:
+    """Canonical names for a human "Known:" hint, annotated with aliases.
+
+    ``rtl-buddy-view (alias: rtl-buddy-sch)`` — so the mapping is
+    discoverable from the error the user just hit rather than magic.
+    Machine-readable output keeps the bare canonical names.
+    """
+    out: list[str] = []
+    for spec in specs:
+        if spec.aliases:
+            label = "alias" if len(spec.aliases) == 1 else "aliases"
+            out.append(f"{spec.name} ({label}: {', '.join(spec.aliases)})")
+        else:
+            out.append(spec.name)
+    return out
+
+
 def require(name: str, root_cfg=None) -> ToolStatus:
     """Assert that ``name`` is installed (and not outdated), else raise.
 
     Subcommand entry points may call this to surface a uniform
     "missing tool" error pointing the user at ``rb tool-check --explain``.
+    ``name`` may be an alias; the messages always name the canonical tool.
     """
-    spec = next((s for s in get_manifest(root_cfg) if s.name == name), None)
+    spec = resolve_spec(get_manifest(root_cfg), name)
     if spec is None:
         raise FatalRtlBuddyError(f"tool_manifest: unknown tool '{name}'")
+    canonical = spec.name
     status = check_tool(spec)
     if status.status == "missing":
         raise FatalRtlBuddyError(
-            f"{name} not found — run `rb tool-check --explain {name}` "
+            f"{canonical} not found — run `rb tool-check --explain {canonical}` "
             "for install instructions"
         )
     if status.status == "outdated":
         raise FatalRtlBuddyError(
-            f"{name} {status.version} is older than the required minimum "
-            f"{spec.minimum_version} — run `rb tool-check --explain {name}` "
+            f"{canonical} {status.version} is older than the required minimum "
+            f"{spec.minimum_version} — run `rb tool-check --explain {canonical}` "
             "for upgrade instructions"
+        )
+    if status.status == "unsupported":
+        raise FatalRtlBuddyError(
+            f"{canonical} {status.version} is not supported (requires "
+            f"< {spec.maximum_version_exclusive}) — run `rb tool-check --explain "
+            f"{canonical}` for install instructions"
         )
     return status
 
@@ -1152,12 +1497,27 @@ def explain(spec: ToolSpec, status: ToolStatus | None = None) -> str:
             lines.append(f"  Path:    {status.path}")
     if spec.used_by:
         lines.append(f"  Used by: {', '.join(f'rb {s}' for s in spec.used_by)}")
+    if spec.optional_binaries:
+        # Listed apart from Install/Status on purpose: these are not part of
+        # what "ok" above means, so a reader must not read their absence into
+        # the status or their presence as satisfying it.
+        lines.append("  Optional binaries (not required; not detected as this tool):")
+        for binary, role in spec.optional_binaries.items():
+            lines.append(f"    {binary}: {role}")
     if spec.install_hint:
         lines.append("  Install:")
         for platform, hint in spec.install_hint.items():
             lines.append(f"    {platform:8s} {hint}")
     if spec.minimum_version:
         lines.append(f"  Minimum version: {spec.minimum_version}")
+    for sub, floor in spec.subcommand_minimum_versions.items():
+        unmet = status is not None and _subcommand_floor_unmet(status.version, floor)
+        lines.append(
+            f"  Minimum version for rb {sub}: {floor}"
+            + ("  (installed version is too old)" if unmet else "")
+        )
+    if spec.maximum_version_exclusive:
+        lines.append(f"  Supported below: {spec.maximum_version_exclusive}")
     if spec.optional:
         lines.append("  Optional: yes (subcommands using it are opt-in)")
     if spec.notes:
@@ -1183,7 +1543,13 @@ def render_text(
     ok = sum(1 for s in statuses if s.status == "ok")
     missing = sum(1 for s in statuses if s.status == "missing" and not s.optional)
     outdated = sum(1 for s in statuses if s.status == "outdated" and not s.optional)
-    header = f"Tools ({ok} ok, {missing} missing, {outdated} outdated)\n" + ("-" * 70)
+    unsupported = sum(
+        1 for s in statuses if s.status == "unsupported" and not s.optional
+    )
+    header = (
+        f"Tools ({ok} ok, {missing} missing, {outdated} outdated, "
+        f"{unsupported} unsupported)\n" + ("-" * 70)
+    )
 
     name_w = max(20, max((len(s.name) for s in statuses), default=0) + 2)
     rows: list[str] = []
@@ -1196,6 +1562,8 @@ def render_text(
         suffix = "  (optional)" if st.optional else ""
         if st.status == "outdated" and st.minimum_version:
             suffix = f"  (need ≥ {st.minimum_version})" + suffix
+        elif st.status == "unsupported" and st.maximum_version_exclusive:
+            suffix = f"  (need < {st.maximum_version_exclusive})" + suffix
         rows.append(
             f"{st.name:<{name_w}}{_status_glyph(st.status):12}{version:14}"
             f"{path_display}{suffix}"
@@ -1209,7 +1577,14 @@ def render_text(
         if info["missing"]:
             gloss_parts.append(f"needs: {', '.join(info['missing'])}")
         if info["outdated"]:
-            gloss_parts.append(f"outdated: {', '.join(info['outdated'])}")
+            floors = info.get("minimum_versions", {})
+            names = [
+                f"{n} (need ≥ {floors[n]})" if n in floors else n
+                for n in info["outdated"]
+            ]
+            gloss_parts.append(f"outdated: {', '.join(names)}")
+        if info["unsupported"]:
+            gloss_parts.append(f"unsupported: {', '.join(info['unsupported'])}")
         if not gloss_parts:
             gloss_parts.append(", ".join(info["tools"]) or "no external deps")
         opt = "  (optional feature)" if info["optional_feature"] else ""
@@ -1244,6 +1619,10 @@ def build_json_payload(
         }
         if st.minimum_version:
             entry["minimum_version"] = st.minimum_version
+        if st.maximum_version_exclusive:
+            entry["maximum_version_exclusive"] = st.maximum_version_exclusive
+        if st.subcommand_minimum_versions:
+            entry["subcommand_minimum_versions"] = dict(st.subcommand_minimum_versions)
         tools_out[st.name] = entry
 
     subs_out: dict[str, dict] = {}
@@ -1252,7 +1631,10 @@ def build_json_payload(
             "status": info["status"],
             "missing": info["missing"],
             "outdated": info["outdated"],
+            "unsupported": info["unsupported"],
         }
+        if info.get("minimum_versions"):
+            entry["minimum_versions"] = dict(info["minimum_versions"])
         if info["optional_feature"]:
             entry["optional_feature"] = True
         subs_out[sub] = entry

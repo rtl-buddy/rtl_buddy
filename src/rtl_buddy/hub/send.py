@@ -75,6 +75,25 @@ def _print_response(env: Envelope) -> None:
     sys.stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
+_COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
+"""``cov_focus.metric`` enum, mirroring the wire schema.
+
+Spelled here rather than imported from :data:`rtl_buddy.cov.raw.METRICS`
+so ``rb hub send`` keeps working against a hub whose model vocabulary has
+moved on — the wire contract is the schema, not the local model."""
+
+
+_PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
+"""``phys_focus.metric`` enum, mirroring the wire schema.
+
+Spelled here rather than derived from the physical model for the reason
+:data:`_COV_METRICS` is: the wire contract is the schema, and ``rb hub
+send`` has to keep working against a hub whose model vocabulary has
+moved on. ``dynamic`` is in the list although no model column carries
+it — it is internal + switching, summed by the pane.
+"""
+
+
 _FILE_LINE_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
 """Parses ``path/to/file.sv:42`` and ``path/to/file.sv:42:5``.
 
@@ -194,6 +213,147 @@ def cmd_open(
     file, line, col = _parse_file_line(spec)
     with _open_or_exit() as h:
         h.emit("source_focused", {"file": file, "line": line, "col": col})
+
+
+@send_app.command(
+    "graph-focus",
+    help=(
+        "Broadcast graph_focus{node} — point the hub's design knowledge "
+        "graph pane (http://127.0.0.1:<http_port>/gph) at one node of "
+        "artefacts/graph/graph.json. NODE is a graph node id: "
+        "'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke', "
+        "'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` "
+        "returns and docs/concepts/graph.md lists. The hub caches the "
+        "focus and replays it to the pane on connect, so sending this "
+        "before the browser tab is open works."
+    ),
+)
+def cmd_graph_focus(
+    node: Annotated[
+        str,
+        typer.Argument(help="graph node id, e.g. test:verif/dma#smoke"),
+    ],
+) -> None:
+    if not node.strip():
+        raise typer.BadParameter("node id must be non-empty")
+    with _open_or_exit() as h:
+        h.emit("graph_focus", {"node": node})
+
+
+@send_app.command(
+    "cov-focus",
+    help=(
+        "Broadcast cov_focus{target} — point the hub's coverage pane "
+        "(http://127.0.0.1:<http_port>/cov) at one target of the run's "
+        "coverage model. TARGET is prefixed: 'file:design/blk.sv', "
+        "'module:blk', or 'test:verif/blk#basic'; an unprefixed string "
+        "is read as a file path. --metric foregrounds one coverage kind, "
+        "--line scrolls a file target to a line, and --item names a "
+        "branch/toggle/expression bin or an SVA cover point. The hub "
+        "caches the focus and replays it to the pane on connect, so "
+        "sending this before the browser tab is open works."
+    ),
+)
+def cmd_cov_focus(
+    target: Annotated[
+        str,
+        typer.Argument(help="coverage target, e.g. module:blk or design/blk.sv"),
+    ],
+    metric: Annotated[
+        Optional[str],
+        typer.Option(
+            "--metric",
+            help="line|branch|toggle|expression|cover — which kind to foreground.",
+        ),
+    ] = None,
+    line: Annotated[
+        Optional[int],
+        typer.Option("--line", help="1-based source line to scroll to.", min=1),
+    ] = None,
+    item: Annotated[
+        Optional[str],
+        typer.Option(
+            "--item",
+            help="Point within the target: a branch/toggle/expression bin name "
+            "as /cov.json spells it, or an SVA cover point name.",
+        ),
+    ] = None,
+) -> None:
+    # Emit what was validated, not the raw argument: the pane matches
+    # these strings, so a trailing space is a miss rather than a near
+    # miss, and the MCP ``cov_focus`` tool must put the same bytes on the
+    # wire for the same input.
+    target = target.strip()
+    if not target:
+        raise typer.BadParameter("target must be non-empty")
+    if metric is not None and metric not in _COV_METRICS:
+        raise typer.BadParameter(
+            f"metric must be one of {'/'.join(_COV_METRICS)}, got {metric!r}",
+            param_hint="--metric",
+        )
+    if item is not None:
+        item = item.strip()
+        if not item:
+            raise typer.BadParameter("--item must be non-empty")
+    # Optional keys are omitted rather than sent as null: the wire schema
+    # is additionalProperties:false with no nullable hints.
+    payload: dict[str, object] = {"target": target}
+    if metric is not None:
+        payload["metric"] = metric
+    if line is not None:
+        payload["line"] = line
+    if item is not None:
+        payload["item"] = item
+    with _open_or_exit() as h:
+        h.emit("cov_focus", payload)
+
+
+@send_app.command(
+    "phys-focus",
+    help=(
+        "Broadcast phys_focus{target} — point the hub's synth+power pane "
+        "(http://127.0.0.1:<http_port>/phy) at one target of the run's "
+        "physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or "
+        "'module:alu'; an unprefixed string is read as an instance path. "
+        "--metric foregrounds one physical metric. The graph pane "
+        "(/gph) follows the same message: it turns its heat overlay on "
+        "and highlights the module the target belongs to. The hub caches "
+        "the focus and replays it to both on connect, so sending this "
+        "before the browser tabs are open works."
+    ),
+)
+def cmd_phys_focus(
+    target: Annotated[
+        str,
+        typer.Argument(help="physical target, e.g. module:alu or u_cpu/u_alu"),
+    ],
+    metric: Annotated[
+        Optional[str],
+        typer.Option(
+            "--metric",
+            help="cells|area|leakage|dynamic|total — which metric to foreground.",
+        ),
+    ] = None,
+) -> None:
+    # Emit what was validated, not the raw argument — same rule as
+    # `cov-focus`: the pane matches these strings, so a trailing space is
+    # a miss rather than a near miss, and a later MCP `phys_focus` tool
+    # has to put the same bytes on the wire for the same input.
+    target = target.strip()
+    if not target:
+        raise typer.BadParameter("target must be non-empty")
+    if metric is not None and metric not in _PHYS_METRICS:
+        raise typer.BadParameter(
+            f"metric must be one of {'/'.join(_PHYS_METRICS)}, got {metric!r}",
+            param_hint="--metric",
+        )
+    # Optional keys are omitted rather than sent as null: the wire schema
+    # is additionalProperties:false with no nullable hints.
+    payload: dict[str, object] = {"target": target}
+    if metric is not None:
+        payload["metric"] = metric
+    with _open_or_exit() as h:
+        h.emit("phys_focus", payload)
 
 
 @send_app.command(
@@ -523,7 +683,7 @@ def cmd_wave_comment(
 
 @send_app.command(
     "view-pan",
-    help="Ask the view peer (SPA) to pan/center on INSTANCE_PATH.",
+    help="Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.",
 )
 def cmd_view_pan(
     instance_path: Annotated[str, typer.Argument(help="view.json instance_path")],
@@ -559,7 +719,7 @@ def cmd_view_overlay(
 @send_app.command(
     "capture",
     help=(
-        "Ask the view peer (SPA) to snapshot the current graph and "
+        "Ask the schematic (rtl-buddy-sch) to snapshot the current graph and "
         "write it to --out. Graph-only — surrounding panels are not "
         "captured. Useful for agents that want to look at what the "
         "user is seeing without a browser screenshot tool."

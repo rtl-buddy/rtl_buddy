@@ -18,13 +18,22 @@ class DummyTestCfg:
 
 
 class DummySim:
-    def pre(self):
+    def __init__(self):
+        self.cleared_retry_runs = None
+
+    def pre(self, **_kwargs):
         return "Setup failed in preproc: boom"
+
+    def clear_retry_transcripts(self, run_ids):
+        self.cleared_retry_runs = list(run_ids)
 
 
 class DummyPassingSim:
-    def pre(self):
+    def pre(self, **_kwargs):
         return None
+
+    def clear_retry_transcripts(self, run_ids):
+        pass
 
     def compile(self):
         return 0
@@ -39,8 +48,11 @@ class DummyPassingSim:
 class DummyFilelistFailSim:
     """Simulates a VlogSim whose compile() raises FilelistError due to a bad path."""
 
-    def pre(self):
+    def pre(self, **_kwargs):
         return None
+
+    def clear_retry_transcripts(self, run_ids):
+        pass
 
     def compile(self):
         raise FilelistError("missing file: src/foo.sv")
@@ -74,6 +86,13 @@ class DummySweepTest:
 
     def get_xfail_strict(self):
         return False
+
+    def with_plusarg_overrides(self, overrides):
+        # `_iter_suite_runnables` merges a `--plusarg` override into every
+        # config it yields (#552); this double carries no plusargs, and the
+        # tests using it pass no override, so it is its own merged view.
+        assert not overrides
+        return self
 
 
 class _ResolvingBuilderCfg:
@@ -133,12 +152,17 @@ def test_test_runner_returns_setup_fail_for_all_runs_on_preproc_error(
         run_id=1,
         run_depth=RunDepth.POST,
     )
-    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: DummySim())
+    sim = DummySim()
+    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: sim)
 
     results = runner.run_multiple([1, 2, 3])
 
     assert len(results) == 3
     assert all(isinstance(result, SetupFailResults) for result in results)
+    # Every run this invocation reports on sheds its stale retry
+    # transcript, even when PRE failed — the sim's own cleanup reaches
+    # only run_ids[0] (#498 review).
+    assert sim.cleared_retry_runs == [1, 2, 3]
 
 
 def test_sweep_failure_becomes_setup_fail_result(tmp_path):
@@ -258,6 +282,9 @@ class DummyRootCfg:
 
     def resolve_rtl_builder_cfg(self, _test_builder_name=None):
         return DummyBuilderCfg()
+
+    def resolve_extra_sim_timeout(self, _rtl_builder_cfg):
+        return 0  # this test asserts on the hier-seed warning, not the timeout
 
 
 class DummyTestbench:
@@ -433,6 +460,10 @@ def test_suite_dir_for_test_runner_comes_from_suite_cfg_path(tmp_path, monkeypat
     captured = {}
 
     class CapturingRunner:
+        # A runner whose PRE never reached a sim has no compile to report
+        # (#495); None is the shape TestRunner.last_compile returns there.
+        last_compile = None
+
         def __init__(self, **kwargs):
             captured["suite_dir"] = kwargs["suite_dir"]
 

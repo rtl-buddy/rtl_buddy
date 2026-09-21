@@ -3,21 +3,44 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
+import hashlib
 import logging
 import os
+import re
+import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 import json
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 import typer
 from importlib.metadata import version
 from typing_extensions import Annotated
 import click
 
-from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
+from .config import (
+    RegConfig,
+    RootConfig,
+    SuiteConfig,
+    TestConfig,
+    parse_plusarg_overrides,
+)
 from .config.env_file import apply_env_file
-from .config.root import _discover_root_cfg, discover_project_root
+from .config.root import (
+    REG_CFG_PATH_KEYS,
+    _discover_root_cfg,
+    discover_project_root,
+    load_reg_cfg_paths,
+    resolve_reg_cfg_path,
+)
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
+from .config.lint import LintRegConfig, LintSuiteConfig
+from .config.elab import ElabConfig, ElabRegConfig
 from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
@@ -25,7 +48,18 @@ from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
+from .cov import query as cov_query_mod
+from .cov.raw import METRICS as cov_metrics
 from .docs_access import get_page, get_section, list_pages
+from .graph import build as graph_build_mod
+from .graph import coverage as graph_coverage_mod
+from .graph import extract as extract_mod
+from .graph import query as graph_query_mod
+from .graph import results as graph_results_mod
+from .mcp import server as mcp_server_mod
+from .phys import manifest as phys_manifest_mod
+from .phys import query as phys_query_mod
+from .mcp import toolset as mcp_toolset_mod
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
@@ -34,19 +68,121 @@ from .logging_utils import (
     attach_file_log,
     emit_console_text,
     is_machine_mode,
+    log_console_event,
     log_event,
     render_summary,
+    set_print_failures_only,
     setup_logging,
 )
+from .process_utils import cancellation_has_started, terminate_live_managed_processes
 from .runner.cdc_runner import CdcRunner
+from .runner.lint_runner import LintRunner
 from .runner.cdc_results import CdcSkipResults
+from .runner.lint_results import LintSkipResults
+from .runner.elab_runner import ElabRunner
+from .runner.elab_results import (
+    ElabResults,
+    elab_failure,
+    load_elab_result_json,
+    write_elab_result_json_best_effort,
+)
 from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
-from .runner.test_results import SetupFailResults, SkipResults
+from .config.dispatch import (
+    ORPHANS_POLICIES,
+    JobResources,
+    aggregate_verilate_resources,
+    combine_for_in_job_compile,
+    compile_parallel,
+    compile_parallel_origin,
+    compile_resource_origins,
+    compile_split_verilate,
+    aggregate_compile_resources,
+    resolve_compile_resources,
+    resolve_verilate_resources,
+    resolve_resources,
+    cpu_request_overrides,
+)
+from .dispatch import (
+    LocalProcessBackend,
+    create_dispatch_backend,
+    validate_backend_name,
+)
+from .dispatch.argv import job_log_path
+from .dispatch.base import (
+    BUILD_PHASE_BUILD,
+    BUILD_PHASE_FULL,
+    BUILD_PHASE_VERILATE,
+    BUILD_PHASES,
+    BuildJobSpec,
+    ElabJobSpec,
+    TestJobSpec,
+    telemetry_key,
+)
+from .dispatch.gates import release_batches, wait_for_gates, write_gates
+from .dispatch.plan import (
+    PLAN_SCHEMA_VERSION,
+    read_plan_config,
+    read_plan_configs,
+    read_plan_master_seed,
+    read_plan_token,
+    run_scoped_path,
+    write_plan,
+)
+from .dispatch.progress import group_job_ids
+from .dispatch.run_manifest import (
+    STATUS_CANCELLED,
+    STATUS_COLLECTED,
+    STATUS_STALE,
+    STATUS_SUBMITTING,
+    build_from,
+    finish_submission,
+    discover_run_manifests,
+    handles_from,
+    pending_from,
+    row_identities,
+    record_build_handle,
+    record_pending_handles,
+    record_verilate_handle,
+    run_manifest_path,
+    set_run_status,
+    update_pending_job_ids,
+    verilate_from,
+    write_run_manifest,
+)
+from .dispatch.retry import backoff_delay, classify_missing_result
+from .dispatch.rightsize import (
+    analyze_build_reservation,
+    analyze_suite_reservations,
+)
+from .dispatch.slurm import RELEASE_BUDGET_S, release_dependency
+from .runner.result_io import (
+    BUILD_COMPILE_FAIL_PREFIX,
+    COMPILE_ERROR_TAIL_LINES,
+    attach_result_key,
+    attach_telemetry_json,
+    build_compile_fail_desc,
+    compile_error_tail,
+    load_build_result_json,
+    load_result_json,
+    refresh_result_json,
+    write_build_result_json,
+    write_result_json,
+)
+from .runner.test_results import (
+    COMPILE_FAIL_DESC,
+    CompileFailResults,
+    DispatchFailResults,
+    EarlyStopResults,
+    SetupFailResults,
+    EARLY_STOP_KEY,
+    SkipResults,
+    is_run_failure,
+)
 from .runner.test_runner import RunDepth, TestRunner
-from .runner.xfail import apply_xfail
+from .runner.xfail import apply_xfail, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrRunner
@@ -56,6 +192,15 @@ from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
+from .seeding import (
+    SEED_DERIVATION_VERSION,
+    SeedResolution,
+    expanded_test_seed_identity,
+    suite_seed_identity,
+    validate_master_seed,
+    validate_resolved_seed,
+    resolve_test_seed,
+)
 from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
 from .tools.axi_profile_rtl_buddy import (
@@ -65,18 +210,34 @@ from .tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileRun,
 )
 from .tools.coverage import CoverageReporter
-from .tools.artifact_paths import test_artifact_dir
-from .tools.hier_rtl_buddy_view import RtlBuddyView, RtlBuddyViewQuery
+from .tools.artifact_paths import (
+    RESULT_JSON_NAME,
+    run_artifact_root,
+    test_artifact_dir,
+    validate_run_tag,
+)
+from .tools.hier_rtl_buddy_view import (
+    VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+    RtlBuddyView,
+    RtlBuddyViewQuery,
+    probe_view_version,
+)
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
     build_spec_to_models_map,
+    discover_fpv_verifications,
     discover_model_configs,
     discover_spec_configs,
     discover_suite_tests,
 )
 from .tools.verible import Verible
-from .tools.vlog_filelist import VlogFilelist
+from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
+from .tools.vlog_sim import (
+    SHARED_BUILD_ROOT_ENV,
+    resolve_shared_build_root,
+    share_build_unsupported_reason,
+)
 from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
@@ -86,6 +247,166 @@ from .xplr import ledger as xplr_ledger
 from .xplr import mockflow as xplr_mockflow
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_suite_identity(config_path: str | Path) -> str:
+    """Stable filesystem component identifying one resolved suite config."""
+    resolved = Path(config_path).resolve()
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "_", resolved.stem).strip("._-")
+    stem = (stem or "suite")[:48]
+    digest = hashlib.sha256(os.fsencode(str(resolved))).hexdigest()[:12]
+    return f"{stem}-{digest}"
+
+
+def _raise_first(findings: list) -> list:
+    """Stable sort with every ``raise`` finding ahead of every ``reduce``."""
+    return sorted(findings, key=lambda f: f.direction != "raise")
+
+
+def _log_reservation_advice(findings: list) -> None:
+    for finding in findings:
+        fields = {k: v for k, v in finding.as_event().items() if k != "event"}
+        log_event(logger, logging.INFO, "rightsize.advice", **fields)
+
+
+def _replace_environ(snapshot: dict) -> None:
+    """Make ``os.environ`` equal to ``snapshot`` (keys removed and restored)."""
+    for key in list(os.environ):
+        if key not in snapshot:
+            del os.environ[key]
+    os.environ.update(snapshot)
+
+
+def _graph_where(node: dict) -> str:
+    """``file:line`` for a graph node summary, or ``-`` (#380)."""
+    file_path = node.get("file")
+    if not file_path:
+        return "-"
+    line = node.get("line")
+    return f"{file_path}:{line}" if line is not None else str(file_path)
+
+
+def _line_ratio_text(coverage: dict | None) -> str:
+    """One test's line coverage as a percentage, or ``-`` (#402)."""
+    ratio = ((coverage or {}).get("totals") or {}).get("line", {}).get("ratio")
+    return "-" if ratio is None else f"{ratio * 100:.1f}%"
+
+
+def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
+    """`rb graph explain`'s coverage lines, or none at all (#402).
+
+    Machine mode returns the whole entry; the console gets the verdict
+    and the manifest behind it, because an answer that does not name the
+    run it came from can be mistaken for a fresher one than it is.
+    """
+    if not entry:
+        return []
+    if entry.get("kind") == "design":
+        head = f"  cov:    {_line_ratio_text(entry)} line ({entry.get('module')})"
+    else:
+        observed = entry.get("observed") or []
+        detail = ", ".join(
+            f"{record.get('name')} ×{record.get('hits', 0)} [{record.get('match')}]"
+            for record in observed
+        )
+        head = (
+            f"  cov:    {entry.get('status')} "
+            f"({entry.get('hits', 0)} hit(s)"
+            f"{'; ' + detail if detail else '; no cover point in the model'})"
+        )
+    lines = [head]
+    manifest = (run or {}).get("manifest")
+    if manifest:
+        lines.append(f"  from:   {manifest}")
+    return lines
+
+
+def _summarize_compile_work(build_entries) -> dict:
+    """How much real compiling a build envelope's ``builds`` list describes.
+
+    ``{"records": n, "compiled": n, "compiled_sec": float}`` (#495). A
+    record counts as *compiled* on ``reused is False`` and nothing else:
+    the three states of that field are the whole answer — ``True`` is a
+    stamp short-circuit, ``None`` is a config that never reached a builder,
+    and only ``False`` is a builder that actually ran. Duration is a
+    measurement, not the predicate: a fast compile is still a compile.
+    This is the one thing that separates a build job with nothing to do
+    from one that compiled quickly, which sacct alone cannot see. Tolerant
+    of a foreign or hand-edited envelope: a non-numeric duration simply
+    contributes nothing to the total.
+    """
+    records = 0
+    compiled = 0
+    compiled_sec = 0.0
+    for entry in build_entries:
+        records += 1
+        if entry.get("reused") is not False:
+            continue
+        compiled += 1
+        duration = entry.get("duration_sec")
+        # bool is an int in Python; a flag is not a time.
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            compiled_sec += float(duration)
+    return {
+        "records": records,
+        "compiled": compiled,
+        "compiled_sec": round(compiled_sec, 2),
+    }
+
+
+def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
+    """Add the failure keys to one ``builds`` record, in place (#498).
+
+    ``returncode``/``fingerprint_sha``/``transcript``/``error_tail``: the
+    builder's exit status, the identity of the inputs it failed on, the
+    file that holds its output, and enough of that output to read the
+    error without opening the file. Written only for a build that failed,
+    and only for the fields this failure actually has — a config that never
+    reached a builder has no returncode to report, and its worker's
+    exception is the whole story instead.
+
+    ``transcript`` is suite-relative for the reason ``group`` is: an
+    absolute path here would pin the compute node's mount into an artifact
+    the head reads. ``error_tail`` is read from the *absolute* path, on the
+    node that just wrote it, because the head may not be able to.
+    """
+    failure = failure or {}
+    returncode = failure.get("returncode")
+    if returncode is not None:
+        entry["returncode"] = returncode
+    fingerprint_sha = failure.get("fingerprint_sha")
+    if fingerprint_sha is not None:
+        # Identity of the inputs the builder failed on (#498 review):
+        # additive like the rest, and what lets a gated sim job tell "the
+        # same compile" from "a compile whose inputs moved since" before
+        # honouring the no-retry verdict. schema_version stays 1.
+        entry["fingerprint_sha"] = fingerprint_sha
+    transcript = failure.get("transcript")
+    if transcript:
+        entry["transcript"] = os.path.relpath(transcript, suite_dir)
+        tail = compile_error_tail(transcript)
+        if tail:
+            entry["error_tail"] = tail
+    elif failure.get("error_tail"):
+        # A failure with no builder and no transcript, but with its own
+        # account of itself: the group-adopt drift verdict (#535), which
+        # never ran a compiler and so has nothing to read a tail out of.
+        entry["error_tail"] = list(failure["error_tail"])[-COMPILE_ERROR_TAIL_LINES:]
+    elif worker_error:
+        # No builder ran, so there is no transcript — but the exception that
+        # replaced it is exactly the "why" this field exists to carry.
+        # Physical non-blank lines, not one string: str() of an exception
+        # can embed newlines (a serde validation error, a wrapped
+        # subprocess error), and every consumer treats an `error_tail`
+        # element as one line of a summary cell (#498 review). Tail-capped
+        # like the transcript path, so a long traceback cannot turn the
+        # envelope into a log file.
+        lines = [
+            line.strip() for line in str(worker_error).splitlines() if line.strip()
+        ]
+        if lines:
+            entry["error_tail"] = lines[-COMPILE_ERROR_TAIL_LINES:]
+    return entry
 
 
 class RtlBuddy:
@@ -114,6 +435,8 @@ class RtlBuddy:
         "fpv-regression",
         "hier",
         "hier-query",
+        "elab",
+        "elab-regression",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -177,6 +500,31 @@ class RtlBuddy:
         self.app.command("regression", help="run rtl regression")(
             self.do_rtl_regression
         )
+        self.app.command("elab", help="elaborate a model with pyslang")(
+            self.do_cmd_elab
+        )
+        self.app.command(
+            "elab-regression", help="run named model elaboration profiles"
+        )(self.do_elab_regression)
+        self.app.command(
+            "_elab-job",
+            hidden=True,
+            help="internal: elaborate one model/profile and write its result JSON",
+        )(self.do_cmd_elab_job)
+        # Remote-dispatch re-entry point (#351): one (test, run_id) run
+        # whose result is serialized for a collecting head process.
+        self.app.command(
+            "_test-job",
+            hidden=True,
+            help="internal: run one (test, run_id) and write its result JSON",
+        )(self.do_cmd_test_job)
+        # Remote-dispatch build job (#351): compile a suite's shared simv on
+        # a compute node, so nothing heavy runs on the submit host.
+        self.app.command(
+            "_build-job",
+            hidden=True,
+            help="internal: compile a suite's runnable tests (share-build)",
+        )(self.do_cmd_build_job)
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
         )
@@ -189,6 +537,105 @@ class RtlBuddy:
             "(find-module, subtree, instances-of, port-connections, "
             "source-snippet); JSON on stdout",
         )(self.do_cmd_hier_query)
+        self.app.command(
+            "mcp",
+            help=(
+                "serve the design knowledge graph, test status, coverage, "
+                "physical metrics, hierarchy queries and — with a hub "
+                "running — the live session over the Model Context "
+                "Protocol (stdio); needs the 'mcp' extra"
+            ),
+        )(self.do_cmd_mcp)
+        self.graph_app = typer.Typer(
+            help=(
+                "design knowledge graph: one queryable graph.json stitching "
+                "the design tier (rtl-buddy-view), the config tier "
+                "(tests/models/specs) and, when installed, the extractor's "
+                "binding tier (rtl-buddy-graph-extract)"
+            ),
+            no_args_is_help=True,
+        )
+        self.graph_app.command(
+            "build",
+            help="extract every tier and merge them into artefacts/graph/graph.json",
+        )(self.do_graph_build)
+        self.graph_app.command(
+            "results",
+            help=(
+                "refresh artefacts/graph/results-overlay.json — last status, "
+                "seed and artefact paths per test node; graph.json is not touched"
+            ),
+        )(self.do_graph_results)
+        self.graph_app.command(
+            "query",
+            help=(
+                "keyword search over graph.json with neighbourhood expansion "
+                "and the results overlay joined in"
+            ),
+        )(self.do_graph_query)
+        self.graph_app.command(
+            "path",
+            help="shortest chain of edges between two graph nodes",
+        )(self.do_graph_path)
+        self.graph_app.command(
+            "explain",
+            help="one node's attributes, every edge on it, and its last result",
+        )(self.do_graph_explain)
+        self.app.add_typer(
+            self.graph_app,
+            name="graph",
+            help="build the design knowledge graph",
+        )
+        self.cov_app = typer.Typer(
+            help=(
+                "read the coverage a run already produced: per-file, per-point "
+                "line/branch/toggle/expression coverage with per-test "
+                "attribution, from cov_dir/manifest.json — no simulator runs"
+            ),
+            no_args_is_help=True,
+        )
+        self.cov_app.command(
+            "summary",
+            help="run-level and per-test scalars, coldest files first",
+        )(self.do_cov_summary)
+        self.cov_app.command(
+            "module",
+            help="per-file, per-point coverage for one module's sources",
+        )(self.do_cov_module)
+        self.app.add_typer(
+            self.cov_app,
+            name="cov",
+            help="query coverage artefacts already on disk",
+        )
+        self.phys_app = typer.Typer(
+            help=(
+                "read the physical metrics a run already produced: per-module "
+                "cells and area, per-instance power, from the artefact "
+                "directory's phys-manifest.json — no tools are run"
+            ),
+            no_args_is_help=True,
+        )
+        self.phys_app.command(
+            "runs",
+            help="every run with physical artefacts under the project, newest first",
+        )(self.do_phys_runs)
+        self.phys_app.command(
+            "summary",
+            help="the run's totals, its heaviest modules and its hottest instances",
+        )(self.do_phys_summary)
+        self.phys_app.command(
+            "module",
+            help="one module's cells and area, and the instances of it with power",
+        )(self.do_phys_module)
+        self.phys_app.command(
+            "instance",
+            help="one instance's power, or the rolled-up subtree under its path",
+        )(self.do_phys_instance)
+        self.app.add_typer(
+            self.phys_app,
+            name="phys",
+            help="query physical artefacts already on disk",
+        )
         self.axi_profile_app.command(
             "run",
             help="ingest a test's FST and emit per-test axi-perf.json",
@@ -213,17 +660,32 @@ class RtlBuddy:
         self.verible_app = typer.Typer(
             help="verible tooling and filelist generation", no_args_is_help=True
         )
-        self.verible_app.command("lint", help="run verible-verilog-lint")(
-            self.do_verible_lint
-        )
-        self.verible_app.command("syntax", help="run verible-verilog-syntax")(
-            self.do_verible_syntax
-        )
-        self.verible_app.command("format", help="run verible-verilog-format")(
-            self.do_verible_format
-        )
+        # The passthrough subcommands hand every argument they do not
+        # recognise straight to the verible binary, so `rb verible lint
+        # --rules_config=x f.sv` works without a `--` separator.
+        _verible_passthrough_ctx = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        }
         self.verible_app.command(
-            "preprocessor", help="run verible-verilog-preprocessor"
+            "lint",
+            help="run verible-verilog-lint",
+            context_settings=_verible_passthrough_ctx,
+        )(self.do_verible_lint)
+        self.verible_app.command(
+            "syntax",
+            help="run verible-verilog-syntax",
+            context_settings=_verible_passthrough_ctx,
+        )(self.do_verible_syntax)
+        self.verible_app.command(
+            "format",
+            help="run verible-verilog-format",
+            context_settings=_verible_passthrough_ctx,
+        )(self.do_verible_format)
+        self.verible_app.command(
+            "preprocessor",
+            help="run verible-verilog-preprocessor",
+            context_settings=_verible_passthrough_ctx,
         )(self.do_verible_preprocessor)
         self.verible_app.command(
             "filelist",
@@ -268,6 +730,10 @@ class RtlBuddy:
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
+        )
+        self.app.command("lint", help="run style lint (verible)")(self.do_cmd_lint)
+        self.app.command("lint-regression", help="run style lint regression")(
+            self.do_lint_regression
         )
         self.app.command("fpv", help="run formal property verification")(
             self.do_cmd_fpv
@@ -428,16 +894,60 @@ class RtlBuddy:
         self.builder = None
         self.root_cfg = None
         self.coverage = None
+        self._git_banner_shown = False
+        self._git_root = None
+        self._git_root_resolved = False
         self.run_depth = RunDepth.POST
         self.share_build = False
+        # `--shared-build-root` as typed, before precedence and anchoring
+        # (#542). The resolved value is the `shared_build_root` property,
+        # which needs `root_cfg` and so cannot be settled at parse time.
+        self._shared_build_root_flag = None
+        self.expect_prebuilt = False
+        # `--rebuild`: distrust the build stamps and compile anyway (#494).
+        self.rebuild = False
+        # `--plusarg KEY=VALUE`: this invocation's one-off runtime plusargs,
+        # merged over each selected test's `plusargs:` as the suite is
+        # expanded (#552). Empty for every command that does not offer the
+        # flag, so `_iter_suite_runnables` is unchanged for them.
+        self._plusarg_overrides: dict = {}
+        # `--orphans`: what this invocation does about a previous run's jobs
+        # that outlived their head (#521). `None` defers to
+        # `cfg-dispatch.orphans`, which defaults to `warn`; `_orphans_policy`
+        # is the resolved answer, fixed once the backend is known.
+        self._orphans: str | None = None
+        self._orphans_policy: str = "warn"
+        self.build_result_json = None
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
         self._builder_override: str | None = None
         self._artifact_locks = ArtifactLocks()
         self._xplr_root_override: Path | None = None
+        # Per-invocation nonce stamped into every result envelope this
+        # process writes (#379). Under dispatch the head's plan token
+        # replaces it, so an envelope's identity is the same whether the
+        # run happened in-process or on a compute node.
+        self._run_token: str | None = None
+        # The validated `--run-tag` artefact namespace (#541), or None for
+        # the flat tree. Set by the handlers that accept the flag, BEFORE
+        # they enter their execution context — the context derives the
+        # artefact root from it, and the artefact root is what the tree lock
+        # is taken on. Read by everything that builds a per-run path, so
+        # there is exactly one answer per process.
+        self._run_tag: str | None = None
 
     def run(self):
+        """The process entry point: run the CLI, always giving the tree back.
+
+        Every exit path from here — a clean return, a tool failure
+        surfaced as :class:`FatalRtlBuddyError`, a click abort, or a
+        ``KeyboardInterrupt`` raised out of the subprocess signal handler
+        while OpenROAD was running — leaves through the ``finally``, which
+        releases the artefact-tree lock (#609). The kernel would release
+        it at process exit anyway; doing it here is what makes the release
+        deterministic and independent of how the process ends.
+        """
         try:
             rv = self.app(standalone_mode=False)
         except click.exceptions.Exit as exc:
@@ -459,23 +969,23 @@ class RtlBuddy:
                 )
                 self._emit_machine_result(command, 2, error=str(exc))
             return 2
+        except KeyboardInterrupt:
+            # Ctrl-C during a long flow: `process_utils` has already
+            # terminated the tool's process group and re-raised here, so
+            # the only thing left is to say so and exit on the
+            # conventional 128+SIGINT. Handled rather than propagated
+            # precisely so the `finally` below is the release path for an
+            # interrupt too, and so the user gets a line instead of a
+            # traceback.
+            emit_console_text("interrupted", style="red", markup=False)
+            return 130
+        finally:
+            self._artifact_locks.release_all()
         # standalone_mode=False makes click *return* the exit code from
         # `typer.Exit(code=N)` rather than re-raise it, so we have to
         # surface it here. Existing commands that return None continue
         # to exit cleanly with code 0.
         return rv if isinstance(rv, int) else 0
-
-    # Subcommands that expose a `--list` flag whose only job is to emit
-    # configured names from the primary config file. The `--list` paths
-    # do not need RootConfig, the selected builder, or CoverageReporter,
-    # so list-only invocations short-circuit those setup steps.
-    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "fpga", "cdc", "fpv"}
-
-    def _is_list_invocation(self, ctx: typer.Context) -> bool:
-        return (
-            ctx.invoked_subcommand in self._LIST_FLAG_COMMANDS
-            and "--list" in sys.argv[1:]
-        )
 
     def root_options(
         self,
@@ -496,6 +1006,13 @@ class RtlBuddy:
                 "--machine", help="Emit machine-oriented logs and plain console output"
             ),
         ] = False,
+        print_failures_only: Annotated[
+            bool,
+            typer.Option(
+                "--print-failures-only",
+                help="Hide PASS, SKIP, and XFAIL rows from console summaries",
+            ),
+        ] = False,
         color: Annotated[
             bool, typer.Option(help="Logs without ANSI color codes")
         ] = True,
@@ -510,6 +1027,15 @@ class RtlBuddy:
                 "--builder",
                 callback=cb_builder,
                 help="Override platform default builder",
+            ),
+        ] = None,
+        extra_sim_timeout: Annotated[
+            int | None,
+            typer.Option(
+                "--extra-sim-timeout",
+                min=0,
+                help="Seconds to add to every test's sim_timeout, "
+                "overriding the builder's extra-sim-timeout",
             ),
         ] = None,
         run_depth: Annotated[
@@ -539,6 +1065,7 @@ class RtlBuddy:
             return
 
         self.machine = machine
+        set_print_failures_only(print_failures_only)
         self.invocation_cwd = Path.cwd().resolve()
 
         if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
@@ -552,17 +1079,12 @@ class RtlBuddy:
 
         log_event(logger, logging.INFO, "cli.start", version=version("rtl-buddy"))
 
-        if (
-            ctx.invoked_subcommand in self._GIT_COMMANDS
-            and not self._is_list_invocation(ctx)
-        ):
-            self.show_git_rev()
-
         # RootConfig + CoverageReporter construction is deferred to
         # _enter_command_context() so root_config.yaml is discovered by
         # walking up from the command root, not the invocation cwd.
         self.rtl_builder_mode = rtl_builder_mode
         self._builder_override = builder_override
+        self._extra_sim_timeout_override = extra_sim_timeout
         self.run_depth = run_depth
         self._pending_invoked_subcommand = ctx.invoked_subcommand
 
@@ -572,6 +1094,7 @@ class RtlBuddy:
         primary_config: str | Path | None = None,
         command_root: str | Path | None = None,
         list_only: bool = False,
+        log_path: str | Path | None = None,
     ) -> ExecutionContext:
         """Build the command's ExecutionContext and attach the file log.
 
@@ -580,6 +1103,17 @@ class RtlBuddy:
           ``tests.yaml``); the command root is its parent directory.
         - ``command_root``: an explicit directory anchor for commands that
           don't have a single primary config file.
+
+        ``log_path`` overrides where the file log is attached (its parent
+        is created); the returned context is otherwise unchanged. The
+        dispatched jobs use it: ``rb _test-job`` / ``rb _build-job`` are
+        rooted at the same ``tests.yaml`` as the head that submitted them,
+        so without an override they would attach to the head's
+        ``<suite>/rtl_buddy.log`` — and a process's first open of a path
+        truncates it, so head and jobs would overwrite each other's
+        records. Each job instead logs beside its own result envelope
+        (:func:`~rtl_buddy.dispatch.argv.job_log_path`), so no two
+        processes ever share a log file (#437).
 
         Constructs :attr:`root_cfg` and :attr:`coverage` once the command
         root is known so ``root_config.yaml`` is discovered relative to
@@ -593,6 +1127,24 @@ class RtlBuddy:
         only need to read the suite config; skipping the root-config
         load keeps them usable when the surrounding project config is
         invalid or unrelated to the listed suite.
+
+        **It also leaves the project's log file alone** (#561). A file
+        log is opened for *writing*, and a process's first open of a
+        path truncates it
+        (:func:`~rtl_buddy.logging_utils.attach_file_log`) — which is
+        right for a flow, whose ``rtl_buddy.log`` is that run's log, and
+        wrong for every read. The paths that pass ``list_only`` write
+        nothing else: `rb phys`, `rb cov` and the `rb graph` read verbs
+        answer from artefacts already on disk, `rb xplr` writes only its
+        own ledger, and `--list` prints a config. Opening the log would
+        therefore be the only thing they wrote, and it costs twice — it
+        fails outright in a read-only checkout, and after a flow it
+        destroys the log of the very run being asked about. Append mode
+        fixes neither (an unwritable file is unwritable either way, and
+        a read verb's events are not part of the run's record), so these
+        paths keep the console handler and nothing else. An explicit
+        ``log_path`` still attaches: that is a caller stating where this
+        process's log goes, which is a different question.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -604,15 +1156,27 @@ class RtlBuddy:
             ctx = ExecutionContext.for_command(
                 invocation_cwd=self.invocation_cwd,
                 primary_config=primary_config,
+                run_tag=self._run_tag,
             )
         else:
             ctx = ExecutionContext.for_dir(
                 invocation_cwd=self.invocation_cwd,
                 command_root=command_root,
+                run_tag=self._run_tag,
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
-        attach_file_log(ctx.log_path)
+        if log_path is not None:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            attach_file_log(log_path)
+        elif not list_only:
+            # Under a `--run-tag` the log lives in the tagged artefact root,
+            # which nothing has created yet — the tree lock below is what
+            # mkdirs it, and that is after this (#541). Untagged this is
+            # `command_root`, created two lines up, so the call is a no-op.
+            ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
+            attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
 
         if list_only:
@@ -620,11 +1184,27 @@ class RtlBuddy:
 
         # Fail loud if another rtl-buddy process is already using this
         # artefact tree (#73). Held until process exit; metadata-only
-        # --list paths above stay lock-free.
-        self._artifact_locks.acquire(
-            ctx.artifact_root,
-            command=getattr(self, "_pending_invoked_subcommand", None),
-        )
+        # --list paths above stay lock-free. Dispatched `_test-job`
+        # processes are cooperative delegates of a lock-holding head
+        # (#351): they share the suite artefact tree deliberately,
+        # write disjoint run dirs, and reuse the shared build read-only,
+        # so they must not contend for the exclusive lock.
+        #
+        # `ctx.artifact_root` carries the `--run-tag` namespace (#541), so
+        # the lock is per-tag by construction: two tagged runs of one suite
+        # lock different directories, an untagged run locks exactly the
+        # directory it always did, and two runs naming the SAME tag still
+        # contend — which is the answer a caller that named one tag twice
+        # wants.
+        if getattr(self, "_pending_invoked_subcommand", None) not in (
+            "_test-job",
+            "_build-job",
+            "_elab-job",
+        ):
+            self._artifact_locks.acquire(
+                ctx.artifact_root,
+                command=getattr(self, "_pending_invoked_subcommand", None),
+            )
 
         # Build root_cfg on first entry; on later entries, only rebuild if
         # the new command root walks up to a different root_config.yaml —
@@ -645,6 +1225,7 @@ class RtlBuddy:
                 name=self.name + "/root_config",
                 builder_override=self._builder_override,
                 start_dir=ctx.command_root,
+                extra_sim_timeout_override=self._extra_sim_timeout_override,
             )
             # Project-local env defaults (.rtl-buddy/.env): applied as
             # soon as the project root is known, before any tool config
@@ -665,18 +1246,101 @@ class RtlBuddy:
                 run_depth=self.run_depth.value,
             )
 
+        # After root_cfg, so the banner and the machine envelope agree on
+        # which repo they describe.
+        if (
+            not self._git_banner_shown
+            and getattr(self, "_pending_invoked_subcommand", None) in self._GIT_COMMANDS
+        ):
+            self._git_banner_shown = True
+            self.show_git_rev()
+
         return ctx
+
+    @property
+    def shared_build_root(self) -> str | None:
+        """The persistent shared-build cache root in force, or None (#542).
+
+        ``--shared-build-root`` beats :data:`SHARED_BUILD_ROOT_ENV`, which
+        beats ``cfg-rtl-reg.shared-build-root``: the flag is this run's
+        explicit intent, the variable is the job/CI environment's, and the
+        config is the project's default. An *empty* flag or variable is an
+        override too — it turns the cache off for this run without editing
+        the project's config.
+
+        Derived on each read rather than cached, because a regression whose
+        suites span project roots rebuilds ``root_cfg`` per suite and a
+        relative root anchors to whichever project owns the suite.
+        """
+        return self._resolve_shared_build_root()[0]
+
+    def _resolve_shared_build_root(self) -> tuple[str | None, bool]:
+        """``(root or None, was it explicitly disabled)`` — see the property.
+
+        The second element is what a dispatched job cannot work out for
+        itself (#542 review round 5). ``None`` alone is ambiguous: it is
+        both "nobody asked for a cache" and "somebody asked for no cache",
+        and a job told only the former re-reads the environment and the
+        project config and turns the cache back on — so `--shared-build-root
+        ''` would disable the head and nothing else.
+        """
+        if self.root_cfg is None:
+            return None, False
+        # `getattr`, because `root_cfg` is duck-typed on this path: a
+        # command handler under test hands in a stand-in with only the
+        # accessors it needs, and a cache root is never what may break one.
+        project_root = getattr(self.root_cfg, "get_project_rootdir", None)
+        if project_root is None:
+            return None, False
+        raw, source = self._shared_build_root_flag, "cli"
+        if raw is None:
+            raw, source = os.environ.get(SHARED_BUILD_ROOT_ENV), "env"
+        if raw is None:
+            configured = getattr(self.root_cfg, "get_shared_build_root", None)
+            raw, source = (configured() if configured is not None else None), "config"
+        root = resolve_shared_build_root(raw, project_root())
+        if root is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cli.shared_build_root",
+                root=root,
+                source=source,
+            )
+        # A value was GIVEN and resolved to nothing: that is a disable, not
+        # an absence.
+        return root, root is None and raw is not None
+
+    @property
+    def shared_build_root_for_jobs(self) -> str | None:
+        """What to forward to a dispatched job, as the tri-state argv wants.
+
+        A path enables the cache there; ``""`` disables it (the job parses
+        an empty ``--shared-build-root`` exactly as the head parsed an empty
+        flag); ``None`` says nothing and lets the job resolve its own, which
+        is what every project without a cache root gets and what keeps their
+        job scripts byte-identical.
+        """
+        root, disabled = self._resolve_shared_build_root()
+        if root is not None:
+            return root
+        return "" if disabled else None
 
     def _exit_code_from_results(self, suite_results):
         # The exit code reflects whether rtl_buddy and the tools ran, not the
         # verdict of the design under test per se. A real FAIL (sim failure,
         # compile/setup/filelist failure, timeout) or a strict XPASS fails the
-        # run; a NA result — an intentional early stop that only needs hand
-        # checking — does not, nor do PASS/SKIP/XFAIL.
+        # run; an *intentional* early stop — NA carrying `early_stop`, which
+        # only needs hand checking — does not, nor do PASS/SKIP/XFAIL.
+        #
+        # An NA that merely means "no verdict was produced" (an aborted
+        # simulator, a transcript with no PASS/FAIL banner) is an unknown
+        # outcome, not a successful stop, and fails the run (#546): the
+        # blanket NA exemption this used to apply was how a dispatched run
+        # whose sim job exited 1 still reported exit 0.
         exit_code = 0
         for suite_result in suite_results:
-            results = suite_result["results"]
-            if not results.is_pass() and results.results.get("result") != "NA":
+            if is_run_failure(suite_result["results"]):
                 exit_code |= 1
         return exit_code
 
@@ -723,9 +1387,17 @@ class RtlBuddy:
         Shared by every command whose per-item config exposes
         ``is_xfail()`` / ``get_xfail_strict()`` (test, fpv, synth, cdc,
         pnr, power). Call only when ``cfg.is_xfail()`` is true.
+
+        A FAIL that happened instead of a verdict — a setup or compile
+        failure, a sim killed at the timeout, a lost dispatch job — keeps
+        its FAIL, and the event says so with ``excused=false`` plus the
+        reason, so a CI reader does not have to open every marked row to
+        find the one the marker never covered (#553, #594).
         """
         observed = res.results.get("result")
         strict = cfg.get_xfail_strict()
+        # Read before apply_xfail, which rewrites the desc either way.
+        refusal = xfail_refusal(res.results) if observed == "FAIL" else None
         apply_xfail(res, strict=strict)
         log_event(
             logger,
@@ -735,6 +1407,10 @@ class RtlBuddy:
             observed=observed,
             reported=res.results.get("result"),
             strict=strict,
+            # log_event drops None fields, so `excused` is reported only
+            # where it means something: an observed failure.
+            excused=(refusal is None) if observed == "FAIL" else None,
+            reason=refusal,
         )
         return res
 
@@ -880,6 +1556,33 @@ class RtlBuddy:
 
         return relpath if len(relpath) < len(path) else path
 
+    @staticmethod
+    def _checked_master_seed(master_seed: int | None) -> int | None:
+        if master_seed is None:
+            return None
+        try:
+            return validate_master_seed(master_seed)
+        except ValueError as e:
+            raise FatalRtlBuddyError(str(e)) from e
+
+    def _resolve_test_seed(
+        self,
+        test_cfg,
+        *,
+        master_seed: int | None,
+        suite_config_path: str,
+        run_id: int | None,
+        seed_mode: SeedMode,
+    ):
+        return resolve_test_seed(
+            test_cfg,
+            self.root_cfg,
+            master_seed=master_seed,
+            suite_config_path=suite_config_path,
+            run_id=run_id,
+            seed_mode=seed_mode,
+        )
+
     def _resolve_coverage_dir_summary_paths(
         self, coverage_dir_summary=None, coverage_dir_summary_file=None
     ):
@@ -898,7 +1601,8 @@ class RtlBuddy:
             str, typer.Option("-c", "--test-config", help="test_config.yaml to use")
         ] = "tests.yaml",
         test_name: Annotated[
-            str, typer.Argument(help="name of test", show_default="run all tests")
+            list[str] | None,
+            typer.Argument(help="names of tests", show_default="run all tests"),
         ] = None,
         list_tests: Annotated[
             bool,
@@ -906,6 +1610,13 @@ class RtlBuddy:
                 "--list", help="list tests in the selected test-config and exit"
             ),
         ] = False,
+        test_filter: Annotated[
+            str | None,
+            typer.Option(
+                "--filter",
+                help="case-sensitive Python regex matched against configured test names",
+            ),
+        ] = None,
         coverage_merge: Annotated[
             bool,
             typer.Option(
@@ -970,11 +1681,35 @@ class RtlBuddy:
                 "-l", "--rnd-last", help="reuse last generated seed", show_default=False
             ),
         ] = None,
+        master_seed: Annotated[
+            int | None,
+            typer.Option(
+                "--master-seed",
+                help="derive an exact, stable runtime seed for each selected test",
+            ),
+        ] = None,
         share_build: Annotated[
             bool,
             typer.Option(
                 "--share-build",
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
             ),
         ] = False,
         reg_level: Annotated[
@@ -985,10 +1720,109 @@ class RtlBuddy:
             int | None,
             typer.Option("--start-level", help="regression level to start at"),
         ] = None,
+        dispatch: Annotated[
+            str,
+            typer.Option(
+                "--dispatch",
+                help="execution backend for the test run "
+                "(local, local-parallel, slurm); opt-in per run — "
+                "cfg-dispatch.backend does not redirect rb test",
+                show_default="local",
+            ),
+        ] = None,
+        jobs: Annotated[
+            int,
+            typer.Option(
+                "-j",
+                "--jobs",
+                help="concurrent jobs for --dispatch local-parallel",
+                show_default="cfg-dispatch jobs, else min(4, cpu count)",
+            ),
+        ] = None,
+        orphans: Annotated[
+            str,
+            typer.Option(
+                "--orphans",
+                help="what to do about an interrupted run's jobs that are "
+                "still queued or running (warn, cancel, adopt)",
+                show_default="cfg-dispatch orphans, else warn",
+            ),
+        ] = None,
+        plusarg: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--plusarg",
+                help="add or override one runtime plusarg for this run "
+                "(KEY=VALUE, or bare KEY for a valueless +KEY); repeatable, "
+                "wins over the test's plusargs: and, among repeats, the last "
+                "one wins",
+                show_default=False,
+            ),
+        ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this run's artefact tree under "
+                "artefacts/.runs/<tag>/ so a concurrent run of the same "
+                "suite gets its own tree, its own tree lock and its own "
+                "log; shared builds stay shared",
+            ),
+        ] = None,
     ):
         """
         run a simple test
         """
+        # Recorded before anything resolves a backend: the policy is
+        # validated against the selected backend there (#521).
+        self._orphans = orphans
+        # Parsed before anything runs, so a malformed value is a usage error
+        # rather than a plusarg the bench silently never sees (#552).
+        self._plusarg_overrides = parse_plusarg_overrides(plusarg)
+        # Validated and recorded before the execution context is entered:
+        # the context derives the artefact root — and therefore the tree
+        # lock — from it (#541).
+        self._run_tag = validate_run_tag(run_tag)
+        master_seed = self._checked_master_seed(master_seed)
+        if master_seed is not None and (rnd_new or rnd_last):
+            raise FatalRtlBuddyError(
+                "--master-seed cannot be combined with --rnd-new or --rnd-last"
+            )
+
+        # Keep direct callers that used the old scalar keyword working while
+        # Typer supplies a list for the variadic CLI argument.
+        test_names = [test_name] if isinstance(test_name, str) else test_name
+
+        # Validated before anything else runs — including the `--list` short
+        # circuit below, which exits without running a test: a flag that
+        # cannot mean anything is rejected, never silently dropped (#360).
+        # The name first, so no later message quotes an unknown backend
+        # back at the user as though it existed (#440 review).
+        validate_backend_name(dispatch)
+        # The raw --dispatch, not a resolved backend name: `rb test` is the
+        # one dispatch-capable command that ignores `cfg-dispatch.backend`
+        # (see the rationale at the `dispatch_backend =` site below), so
+        # what the flag says is what this run does.
+        self._validate_jobs_flag(dispatch, jobs)
+        if list_tests and dispatch not in (None, "local"):
+            raise FatalRtlBuddyError(
+                f"--list cannot be combined with --dispatch {dispatch}: it "
+                "prints the suite's test names and runs nothing, so there is "
+                "nothing to dispatch."
+            )
+        if list_tests and test_filter is not None:
+            raise FatalRtlBuddyError(
+                "--list cannot be combined with --filter: --list prints every "
+                "configured test name and runs nothing."
+            )
+        if list_tests and self._plusarg_overrides:
+            raise FatalRtlBuddyError(
+                "--list cannot be combined with --plusarg: --list prints the "
+                "suite's test names and runs no simulation, so the override "
+                "would have nothing to apply to."
+            )
+        if test_names and test_filter is not None:
+            raise FatalRtlBuddyError("test names and --filter are mutually exclusive")
         merge_mode_count = sum(
             1
             for enabled in [
@@ -1014,16 +1848,16 @@ class RtlBuddy:
             primary_config=test_config, list_only=list_tests
         )
         self.suite_cfg = SuiteConfig(path=str(ctx.primary_config))
-        log_event(
-            logger,
-            logging.INFO,
-            "command.test",
-            command="test",
-            test=test_name or "all",
-            test_config=test_config,
-        )
 
         if list_tests:
+            log_event(
+                logger,
+                logging.INFO,
+                "command.test",
+                command="test",
+                test="all" if not test_names else ", ".join(test_names),
+                test_config=test_config,
+            )
             if self.machine:
                 self._emit_machine_result(
                     "test --list", 0, names=list(self.suite_cfg.get_test_names())
@@ -1034,23 +1868,128 @@ class RtlBuddy:
                 )
             raise typer.Exit(0)
 
+        test_selection = test_names or None
+        if test_filter is not None:
+            try:
+                pattern = re.compile(test_filter)
+            except re.error as e:
+                raise FatalRtlBuddyError(
+                    f"invalid --filter regex {test_filter!r}: {e}"
+                ) from e
+            test_selection = [
+                name for name in self.suite_cfg.get_test_names() if pattern.search(name)
+            ]
+            if not test_selection:
+                raise FatalRtlBuddyError(
+                    f"--filter regex {test_filter!r} matched no tests in suite "
+                    f"{self.suite_cfg.get_path()}"
+                )
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.test",
+            command="test",
+            test="all" if test_selection is None else ", ".join(test_selection),
+            test_config=test_config,
+            master_seed=master_seed,
+            # What this invocation is running that tests.yaml does not say
+            # (#552); None rather than an empty dict, so the field reads the
+            # same way `master_seed` does when it was never asked for.
+            plusarg_overrides=self._plusarg_overrides or None,
+            # Which artefact tree this run wrote into (#541). Omitted by
+            # log_event when unset, so an untagged run's log is unchanged.
+            run_tag=self._run_tag,
+        )
+
         seed_mode: SeedMode = SeedMode.DEFAULT
         replay_run_id = None
         if rnd_new:
             seed_mode = SeedMode.NEW
         elif rnd_last:
             seed_mode = SeedMode.REPLAY
+        elif master_seed is not None:
+            seed_mode = SeedMode.MASTER
         self.share_build = share_build
+        self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
 
-        suite_results = self._do_test_suite(
-            self.suite_cfg,
-            test_name=test_name,
-            run_ids=[None],
-            seed_mode=seed_mode,
-            replay_run_id=replay_run_id,
-            reg_level=reg_level,
-            start_level=start_level,
+        # `rb test` enters the same planning path `rb regression --dispatch`
+        # already uses (#440): one plan, one build job, and one gated sim job
+        # per selected test. With no selection it covers the whole suite,
+        # exactly as the in-process path does.
+        #
+        # Dispatch here is **opt-in per invocation**: unlike its two
+        # neighbours, `rb test` deliberately does not read
+        # `cfg-dispatch.backend`. It is the local iteration command, and a
+        # project that set a cluster backend for its regressions must not
+        # find single-test runs queueing after an upgrade — with no
+        # `--dispatch` on the command line this is exactly the pre-#440
+        # command. The rest of `cfg-dispatch` (resources, retry, jobs, …)
+        # still configures the run once `--dispatch` selects a backend.
+        dispatch_backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs)
+            if dispatch is not None
+            else None
         )
+        reservation_findings = []
+        if dispatch_backend is None:
+            suite_results = self._do_test_suite(
+                self.suite_cfg,
+                test_name=test_selection,
+                run_ids=[None],
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                reg_level=reg_level,
+                start_level=start_level,
+                master_seed=master_seed,
+            )
+        else:
+            # Same two preconditions the dispatched regression states: no
+            # stop point earlier than POST is expressible per job (the build
+            # job compiles, the sim job runs sim+post), and the build job is
+            # what lets the sim job skip compilation, so share_build is
+            # implied rather than silently ignored.
+            self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
+            if not share_build:
+                self.share_build = True
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.share_build_implied",
+                    backend=dispatch_backend.name,
+                )
+            suite_display = self._display_path(
+                str(ctx.primary_config), base_dir=str(self.invocation_cwd)
+            )
+            state = self._dispatch_suite_submit(
+                self.suite_cfg,
+                dispatch_backend,
+                run_token=uuid.uuid4().hex,
+                test_name=test_selection,
+                run_ids=[None],
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                reg_level=reg_level,
+                start_level=start_level,
+                master_seed=master_seed,
+            )
+            self._announce_dispatched_suite(
+                state,
+                backend=dispatch_backend,
+                suite=suite_display,
+            )
+            self._wait_or_cancel(dispatch_backend, state)
+            suite_results = self._dispatch_collect(dispatch_backend, state)
+            reservation_findings = self._analyze_reservations(
+                suite_results,
+                suite_display=suite_display,
+                suite_config_path=str(Path(ctx.primary_config).resolve()),
+                reg_level=reg_level,
+                backend=dispatch_backend,
+                state=state,
+            )
+            _log_reservation_advice(reservation_findings)
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
@@ -1067,38 +2006,59 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
-        metadata.extend(
-            self.coverage.build_metadata(
-                suite_results,
-                outdir=str(ctx.command_root),
-                suite_name=self.suite_cfg.get_path(),
-                coverage_merge=coverage_merge,
-                coverage_merge_raw=coverage_merge_raw,
-                coverage_html=coverage_html,
-                coverage_coverview=coverage_coverview,
-                coverage_merge_info_process=coverage_merge_info_process,
-                source_roots=[str(ctx.command_root)],
-                dir_summary_paths=dir_summary_paths,
+        metadata = [self._builder_metadata_line(self.suite_cfg, test_selection)]
+        if master_seed is not None:
+            metadata.append(f"Master Seed: {master_seed}")
+        if self._plusarg_overrides:
+            # Named in the footer for the same reason the master seed is: the
+            # table is otherwise indistinguishable from a run of the
+            # configured entry (#552). Spelled as the simulator receives it.
+            metadata.append(
+                "Plusarg Overrides: "
+                + " ".join(
+                    f"+{key}" if value is None else f"+{key}={value}"
+                    for key, value in self._plusarg_overrides.items()
+                )
             )
+        cov_metadata, coverage_payload = self.coverage.build_metadata(
+            suite_results,
+            outdir=str(ctx.command_root),
+            suite_name=self.suite_cfg.get_path(),
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_merge_info_process=coverage_merge_info_process,
+            source_roots=[str(ctx.command_root)],
+            dir_summary_paths=dir_summary_paths,
+            command="test",
         )
+        metadata.extend(cov_metadata)
+        self._refresh_result_side_cars(suite_results)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_test_summary(
+            "Test Results Summary", suite_results, metadata=metadata
+        )
+        if reservation_findings and not self.machine:
+            self._render_reservation_advice(reservation_findings)
         if self.machine:
-            self._emit_machine_result(
-                "test",
-                exit_code,
-                results=[
-                    {
-                        "name": r["test_name"],
-                        "result": r["results"].results["result"],
-                        "desc": r["results"].results["desc"],
-                    }
+            payload = {
+                "results": [
+                    self._machine_test_row(r["test_name"], r["results"])
                     for r in suite_results
-                ],
-            )
-        else:
-            self._render_test_summary(
-                "Test Results Summary", suite_results, metadata=metadata
-            )
+                ]
+            }
+            coverage = self._machine_coverage_payload(coverage_payload)
+            if coverage is not None:
+                payload["coverage"] = coverage
+            if dispatch_backend is not None:
+                payload["reservation_advice"] = [
+                    finding.as_event() for finding in reservation_findings
+                ]
+            if master_seed is not None:
+                payload["master_seed"] = master_seed
+            self._emit_machine_result("test", exit_code, **payload)
         raise typer.Exit(exit_code)
 
     def do_rand_test(
@@ -1124,10 +2084,68 @@ class RtlBuddy:
                 show_default=False,
             ),
         ] = None,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
+        dispatch: Annotated[
+            str,
+            typer.Option(
+                "--dispatch",
+                help="execution backend for the seed fan-out "
+                "(local, local-parallel, slurm)",
+                show_default="cfg-dispatch backend, else local",
+            ),
+        ] = None,
+        jobs: Annotated[
+            int,
+            typer.Option(
+                "-j",
+                "--jobs",
+                help="concurrent jobs for --dispatch local-parallel",
+                show_default="cfg-dispatch jobs, else min(4, cpu count)",
+            ),
+        ] = None,
+        orphans: Annotated[
+            str,
+            typer.Option(
+                "--orphans",
+                help="what to do about an interrupted run's jobs that are "
+                "still queued or running (warn, cancel, adopt)",
+                show_default="cfg-dispatch orphans, else warn",
+            ),
+        ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this run's artefact tree under "
+                "artefacts/.runs/<tag>/ so a concurrent run of the same "
+                "suite gets its own tree, its own tree lock and its own "
+                "log; shared builds stay shared",
+            ),
+        ] = None,
     ):
         """
         repeat a test with multiple random seeds
         """
+        self._orphans = orphans
+        self._run_tag = validate_run_tag(run_tag)
+        self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
         self.rtl_builder_mode = (
             "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
@@ -1142,9 +2160,74 @@ class RtlBuddy:
             test=test_name,
             iterations=rnd_cnt,
             replay_run_id=rpt_i,
+            run_tag=self._run_tag,
         )
 
-        if rpt_i is not None:
+        # Seed fan-out is the dispatch sweet spot: one shared build, N
+        # independent sims. Replay (-r) stays local — a single re-run
+        # gains nothing from the queue.
+        backend_name = self._dispatch_backend_name(dispatch)
+        # Validate --jobs even on the replay path, which never builds a
+        # backend: an unusable flag must be rejected, not dropped (#360).
+        self._validate_jobs_flag(backend_name, jobs)
+        if rpt_i is not None and (
+            jobs is not None or (dispatch is not None and dispatch != "local")
+        ):
+            # A single-seed replay gains nothing from the queue, so it stays
+            # local — but make that audible when a dispatch flag was explicit.
+            log_event(
+                logger,
+                logging.WARNING,
+                "randtest.dispatch_ignored_for_replay",
+                backend=backend_name or "local",
+                replay_run_id=rpt_i,
+                jobs=jobs,
+            )
+        dispatch_backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs)
+            if rpt_i is None
+            else None
+        )
+        reservation_findings = []
+        if dispatch_backend is not None:
+            self.share_build = True
+            state = self._dispatch_suite_submit(
+                self.suite_cfg,
+                dispatch_backend,
+                run_token=uuid.uuid4().hex,
+                test_name=test_name,
+                run_ids=list(range(1, rnd_cnt + 1)),
+                seed_mode=SeedMode.NEW,
+            )
+            self._announce_dispatched_suite(
+                state,
+                backend=dispatch_backend,
+                suite=self._display_path(
+                    str(ctx.primary_config), base_dir=str(self.invocation_cwd)
+                ),
+            )
+            self._wait_or_cancel(dispatch_backend, state)
+            suite_results = self._dispatch_collect(dispatch_backend, state)
+            reservation_findings = self._analyze_reservations(
+                suite_results,
+                suite_display=self._display_path(
+                    str(ctx.primary_config), base_dir=str(self.invocation_cwd)
+                ),
+                suite_config_path=str(Path(ctx.primary_config).resolve()),
+                backend=dispatch_backend,
+                state=state,
+            )
+            _log_reservation_advice(reservation_findings)
+            if not self.machine:
+                self._render_test_summary(
+                    "RandTest Results Summary",
+                    suite_results,
+                    include_run_id=True,
+                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
+                )
+                if reservation_findings:
+                    self._render_reservation_advice(reservation_findings)
+        elif rpt_i is not None:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
                 test_name=test_name,
@@ -1177,20 +2260,1569 @@ class RtlBuddy:
 
         exit_code = self._exit_code_from_results(suite_results)
         if self.machine:
-            self._emit_machine_result(
-                "randtest",
-                exit_code,
-                results=[
-                    {
-                        "name": r["test_name"],
-                        "run_id": r["randmode_i"],
-                        "result": r["results"].results["result"],
-                        "desc": r["results"].results["desc"],
-                    }
+            payload = {
+                "results": [
+                    self._machine_test_row(
+                        r["test_name"], r["results"], run_id=r["randmode_i"]
+                    )
                     for r in suite_results
+                ]
+            }
+            if dispatch_backend is not None:
+                payload["reservation_advice"] = [
+                    finding.as_event() for finding in reservation_findings
+                ]
+            self._emit_machine_result("randtest", exit_code, **payload)
+        raise typer.Exit(exit_code)
+
+    def _abs_invocation_path(self, path: str) -> Path:
+        """Resolve ``path`` against the invocation cwd if it is relative.
+
+        A dispatched job's ``--result-json`` / ``--plan`` are given relative
+        to where the head submitted from, not the (re-anchored) suite dir.
+        """
+        p = Path(path)
+        return p if p.is_absolute() else self.invocation_cwd / p
+
+    def _resolve_job_test_cfg(self, suite_cfg, test_name, suite_dir, plan_path=None):
+        """Resolve a job's test config by name, honoring sweep expansion.
+
+        Accepts either a base test name from the suite or the name of a
+        sweep-expanded config (jobs are dispatched per expanded config,
+        so both must be addressable). Returns ``(test_cfg, None)`` on
+        success or ``(None, setup_error)`` when a sweep hook failed —
+        the caller turns that into a written ``SetupFailResults`` so the
+        job still produces a result artifact. An unknown name raises
+        ``FatalRtlBuddyError`` (nothing ran; the collector maps the
+        missing result file to an infrastructure failure).
+
+        When ``plan_path`` is given, the config is read from the head's
+        dispatch plan first — the suite's sweep hook does not run in this
+        job at all. A name absent from the plan falls through to hook
+        expansion (the plan is an optimization, not a hard dependency).
+        """
+        if plan_path is not None:
+            cfg = read_plan_config(self._abs_invocation_path(plan_path), test_name)
+            if cfg is not None:
+                return cfg, None
+        sweep_error_seen = None
+        if test_name in suite_cfg.get_test_names():
+            base = suite_cfg.get_tests(test_name)[0]
+            expanded, sweep_error = self._expand_tests_with_sweep(
+                base, suite_dir=suite_dir
+            )
+            if sweep_error is not None:
+                return None, sweep_error
+            for cfg in expanded:
+                if cfg.name == test_name:
+                    return cfg, None
+            if len(expanded) == 1:
+                return expanded[0], None
+            raise FatalRtlBuddyError(
+                f"test {test_name} sweep-expands to multiple configs "
+                f"[{', '.join(c.name for c in expanded)}]; "
+                "address one by its expanded name"
+            )
+
+        for base in suite_cfg.get_tests():
+            expanded, sweep_error = self._expand_tests_with_sweep(
+                base, suite_dir=suite_dir
+            )
+            if sweep_error is not None:
+                # A broken sweep elsewhere must not mask resolution of
+                # other names, but remember it: the requested name may
+                # have come from this expansion.
+                if sweep_error_seen is None:
+                    sweep_error_seen = sweep_error
+                continue
+            for cfg in expanded:
+                if cfg.name == test_name:
+                    return cfg, None
+
+        if sweep_error_seen is not None:
+            return None, sweep_error_seen
+        raise FatalRtlBuddyError(
+            f"test_name {test_name} not found in suite {suite_cfg.get_path()} "
+            "(after sweep expansion)"
+        )
+
+    def do_cmd_test_job(
+        self,
+        test_name: Annotated[
+            str,
+            typer.Argument(help="test to run (sweep-expanded names accepted)"),
+        ],
+        result_json: Annotated[
+            str,
+            typer.Option(
+                "--result-json",
+                help="path to write the run's result JSON envelope "
+                "(relative to the invocation cwd)",
+            ),
+        ],
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="test_config.yaml to use")
+        ] = "tests.yaml",
+        run_id: Annotated[
+            int,
+            typer.Option(
+                "--run-id",
+                help="run id for output naming and seed replay",
+                show_default="single unnumbered run",
+            ),
+        ] = None,
+        seed_mode: Annotated[
+            SeedMode,
+            typer.Option("--seed-mode", case_sensitive=False),
+        ] = SeedMode.DEFAULT,
+        replay_run_id: Annotated[
+            int,
+            typer.Option(
+                "--replay-run-id",
+                help="seed run id to replay",
+                show_default="--run-id when --seed-mode replay",
+            ),
+        ] = None,
+        master_seed: Annotated[
+            int,
+            typer.Option(
+                "--master-seed",
+                help="exact master seed selected by the dispatching command",
+            ),
+        ] = None,
+        resolved_seed: Annotated[
+            int,
+            typer.Option(
+                "--resolved-seed",
+                help="resolved simulator seed selected by the dispatching command",
+            ),
+        ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
+        plan: Annotated[
+            str,
+            typer.Option(
+                "--plan",
+                help="dispatch plan manifest; resolve this test's config from "
+                "it instead of re-running the suite's sweep hook",
+            ),
+        ] = None,
+        expect_prebuilt: Annotated[
+            bool,
+            typer.Option(
+                "--expect-prebuilt",
+                help="this job was gated on a build job, so compiling here "
+                "means that build's stamp did not validate (warns)",
+            ),
+        ] = False,
+        build_result_json: Annotated[
+            str,
+            typer.Option(
+                "--build-result-json",
+                help="the gating build job's result envelope; a test it "
+                "records as failed is reported without recompiling here",
+            ),
+        ] = None,
+        plusarg: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--plusarg",
+                help="one-off runtime plusarg override the dispatching "
+                "command applied (KEY=VALUE or bare KEY); repeatable",
+            ),
+        ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="the head's artefact namespace; write into "
+                "artefacts/.runs/<tag>/ so this job's outputs land in the "
+                "tree the head planned",
+            ),
+        ] = None,
+    ):
+        """
+        internal: run one (test, run_id) and write its result JSON (#351)
+        """
+        master_seed = self._checked_master_seed(master_seed)
+        self._plusarg_overrides = parse_plusarg_overrides(plusarg)
+        # Re-validated here rather than trusted: this is a CLI boundary like
+        # any other, and a job whose tag was mangled in transport must fail
+        # loud rather than write a second tree beside the head's (#541).
+        self._run_tag = validate_run_tag(run_tag)
+        self.rtl_builder_mode = (
+            "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
+        )
+        self.share_build = share_build
+        self.expect_prebuilt = expect_prebuilt
+        self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
+        # Resolved against the invocation cwd for the reason --result-json is:
+        # the head writes the path it sees, and this job's cwd is the suite
+        # dir. Absent for an ungated job, and for a head too old to pass it —
+        # both then behave exactly as before #498 (compile, and report).
+        self.build_result_json = (
+            self._abs_invocation_path(build_result_json)
+            if build_result_json is not None
+            else None
+        )
+        # Resolve the output path before entering the command context so
+        # a relative --result-json lands where the dispatching process
+        # expects it, not under the suite dir.
+        result_json_path = self._abs_invocation_path(result_json)
+        # Mirror run_multiple's fan-out semantics: a replayed job replays
+        # its own run_id unless told otherwise.
+        if seed_mode == SeedMode.REPLAY and replay_run_id is None:
+            replay_run_id = run_id
+
+        # Log beside the envelope, never into the head's
+        # <suite>/rtl_buddy.log — the first open of that path in this
+        # process would truncate the head's own records (#437).
+        ctx = self._enter_command_context(
+            primary_config=test_config,
+            log_path=job_log_path(result_json_path),
+        )
+        suite_cfg = SuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.test_job",
+            command="_test-job",
+            test=test_name,
+            run_id=run_id,
+            seed_mode=seed_mode.value,
+            master_seed=master_seed,
+            resolved_seed=resolved_seed,
+            result_json=str(result_json_path),
+            plan=plan,
+            run_tag=self._run_tag,
+        )
+
+        plan_config = (
+            read_plan_config(self._abs_invocation_path(plan), test_name)
+            if plan is not None
+            else None
+        )
+        test_cfg, setup_error = self._resolve_job_test_cfg(
+            suite_cfg, test_name, suite_dir, plan_path=plan
+        )
+        if test_cfg is not None:
+            # The head already merged its `--plusarg` overrides into the plan
+            # it wrote, so this is a no-op for the config that came from
+            # there — and the whole of the override for the one that did not
+            # (a name absent from the plan falls back to hook expansion,
+            # which re-reads tests.yaml and knows nothing about them). Also
+            # what puts the overrides into this job's result envelope, since
+            # the head never sees a dispatched run's results (#552).
+            test_cfg = test_cfg.with_plusarg_overrides(self._plusarg_overrides)
+        if plan is not None:
+            plan_master_seed = self._checked_master_seed(
+                read_plan_master_seed(self._abs_invocation_path(plan))
+            )
+            if master_seed is None:
+                master_seed = plan_master_seed
+            elif plan_master_seed is not None and master_seed != plan_master_seed:
+                raise FatalRtlBuddyError(
+                    f"--master-seed {master_seed} does not match dispatch plan "
+                    f"master seed {plan_master_seed}"
+                )
+        if test_cfg is not None:
+            planned_seed = test_cfg.get_resolved_seed()
+            if plan_config is not None:
+                if planned_seed is not None:
+                    try:
+                        validate_resolved_seed(planned_seed, test_cfg.seed_source)
+                    except ValueError as e:
+                        raise FatalRtlBuddyError(
+                            f"dispatch plan seed for {test_name!r} is invalid: {e}"
+                        ) from e
+                    test_cfg.set_resolved_seed(
+                        SeedResolution(
+                            seed=planned_seed,
+                            source=test_cfg.seed_source,
+                            identity=test_cfg.seed_identity,
+                        )
+                    )
+                elif (
+                    master_seed is not None
+                    or test_cfg.sim_rand_seed is not None
+                    or test_cfg.sim_rand_seed_plusarg is not None
+                ):
+                    raise FatalRtlBuddyError(
+                        f"dispatch plan has no resolved seed for seeded test "
+                        f"{test_name!r}"
+                    )
+                if resolved_seed != planned_seed:
+                    raise FatalRtlBuddyError(
+                        f"--resolved-seed {resolved_seed!r} does not match dispatch "
+                        f"plan seed {planned_seed!r} for {test_name!r}"
+                    )
+            else:
+                resolution = self._resolve_test_seed(
+                    test_cfg,
+                    master_seed=master_seed,
+                    suite_config_path=suite_cfg.get_path(),
+                    run_id=run_id,
+                    seed_mode=seed_mode,
+                )
+                if resolved_seed is not None:
+                    try:
+                        validate_resolved_seed(
+                            resolved_seed, resolution.source if resolution else None
+                        )
+                    except ValueError as e:
+                        raise FatalRtlBuddyError(str(e)) from e
+                    if resolution is not None and resolution.seed != resolved_seed:
+                        raise FatalRtlBuddyError(
+                            f"--resolved-seed {resolved_seed} does not match derived "
+                            f"seed {resolution.seed} for {test_name!r}"
+                        )
+                    if resolution is None:
+                        suite_identity = suite_seed_identity(
+                            suite_cfg.get_path(), self.root_cfg.get_project_rootdir()
+                        )
+                        resolution = SeedResolution(
+                            seed=resolved_seed,
+                            source=test_cfg.seed_source or "dispatch",
+                            identity=test_cfg.seed_identity
+                            or expanded_test_seed_identity(
+                                suite_identity, test_cfg.get_name(), run_id
+                            ),
+                        )
+                        test_cfg.set_resolved_seed(resolution)
+            current_seed = test_cfg.get_resolved_seed()
+            if plan_config is not None and current_seed != planned_seed:
+                raise FatalRtlBuddyError(
+                    f"dispatch plan seed {planned_seed!r} changed to "
+                    f"{current_seed!r} for {test_name!r}"
+                )
+        # Resolve the head's run token BEFORE running the sim, and never let a
+        # token-read failure abort: the plan was just read for the config, so
+        # it is readable now; reading it again after the sim would risk the job
+        # doing all the work and then dying before write_result_json if the
+        # plan went unreadable meanwhile — the exact "produced no result" this
+        # fixes, through another door. A None here just means the head rejects
+        # the envelope as stale, which still surfaces after it is written
+        # (#362).
+        run_token = None
+        if plan is not None:
+            try:
+                run_token = read_plan_token(self._abs_invocation_path(plan))
+            except FatalRtlBuddyError:
+                run_token = None
+        # The artifact-dir envelope this job also writes (#379) carries the
+        # head's token too, so the two records of one run agree on identity.
+        if run_token is not None:
+            self._run_token = run_token
+
+        if setup_error is not None:
+            res = SetupFailResults(name=test_name + "/results", desc=setup_error)
+            reported_name = test_name
+        else:
+            run_results = self._run_test_cfg_for_run_ids(
+                test_cfg=test_cfg,
+                run_ids=[run_id],
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                test_runner_mode={"sim_to_stdout": False},
+                suite_dir=suite_dir,
+                master_seed=master_seed,
+            )
+            res = run_results[0]
+            reported_name = test_cfg.get_name()
+
+        # Stamp the head's per-invocation run token (carried in the plan) into
+        # the envelope so collection can reject a stale envelope by identity
+        # rather than the head pre-unlinking it (#362).
+        write_result_json(
+            result_json_path,
+            test_name=reported_name,
+            run_id=run_id,
+            results=res,
+            run_token=run_token,
+            run_tag=self._run_tag,
+        )
+        # The head's grading rule, applied here too, so one run cannot be
+        # scored differently by the job and by the collector (#546): an
+        # unknown NA is a failure, an intentional early stop is not.
+        exit_code = 1 if is_run_failure(res) else 0
+        if self.machine:
+            self._emit_machine_result(
+                "_test-job",
+                exit_code,
+                result={
+                    "name": reported_name,
+                    "run_id": run_id,
+                    "result": res.results["result"],
+                    "desc": res.results["desc"],
+                    **({"seed": res.results["seed"]} if "seed" in res.results else {}),
+                },
+                result_json=str(result_json_path),
+            )
+        else:
+            self._render_test_summary(
+                "Test Job Result",
+                [
+                    {
+                        "test_name": reported_name,
+                        "randmode_i": run_id,
+                        "results": res,
+                    }
                 ],
+                include_run_id=run_id is not None,
+                metadata=[f"Builder: {self.builder}"],
             )
         raise typer.Exit(exit_code)
+
+    def do_cmd_build_job(
+        self,
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="test_config.yaml to use")
+        ] = "tests.yaml",
+        reg_level: Annotated[
+            int, typer.Option("-l", "--reg-level", help="regression level to stop at")
+        ] = None,
+        start_level: Annotated[
+            int,
+            typer.Option("-s", "--start-level", help="regression level to start at"),
+        ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs",
+            ),
+        ] = True,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
+        plan: Annotated[
+            str,
+            typer.Option(
+                "--plan",
+                help="dispatch plan manifest; compile its configs instead of "
+                "re-running the suite's sweep hook",
+            ),
+        ] = None,
+        result_json: Annotated[
+            str,
+            typer.Option(
+                "--result-json",
+                help="path to write the build outcome (built/failed test names)",
+            ),
+        ] = None,
+        parallel: Annotated[
+            int,
+            typer.Option(
+                "--parallel",
+                help="compile up to N distinct builds concurrently "
+                "(grouped by compile key)",
+            ),
+        ] = 1,
+        parallel_configured: Annotated[
+            int,
+            typer.Option(
+                "--parallel-configured",
+                help="what compile.parallel says, when --parallel is the "
+                "head's plan-capped value (diagnostics only)",
+            ),
+        ] = None,
+        gates: Annotated[
+            str,
+            typer.Option(
+                "--gates",
+                help="dispatch gates manifest; release each compile key's "
+                "simulation jobs as soon as that key is built",
+            ),
+        ] = None,
+        phase: Annotated[
+            str,
+            typer.Option(
+                "--phase",
+                hidden=True,
+                help="which half of the compile to run: full (verilate and "
+                "build), verilate (front end only), or build (make only)",
+            ),
+        ] = BUILD_PHASE_FULL,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="the head's artefact namespace; write into "
+                "artefacts/.runs/<tag>/ so this job's outputs land in the "
+                "tree the head planned",
+            ),
+        ] = None,
+    ):
+        """
+        internal: compile a suite's runnable tests on a compute node (#351)
+
+        Runs PRE+COMPILE (share-build) for every runnable test in the
+        suite so each unique compile key Verilates once. With ``--plan`` the
+        configs come from the head's single sweep expansion (the hook does
+        not run again here). Best-effort: a test whose compile fails is
+        reported but does not fail the job, so the dependent sim jobs still
+        run (a test with no shared build just recompiles in its own sim
+        job). Exit code is always 0 unless the setup itself is fatal.
+
+        Two loop shapes, one program. A job that can only run one build at
+        a time (``--parallel 1``, or a plan with one config) streams
+        PRE → COMPILE per config, which is what a preproc hook that
+        regenerates a suite-level input has always been able to rely on.
+        Above that, every PRE runs first and the distinct builds compile
+        concurrently — which asks of preproc hooks exactly what the sim
+        fan-out already asks, that one config's hook not mutate another
+        config's inputs.
+
+        With ``--result-json`` (how dispatch always invokes it) the job
+        logs beside that envelope instead of the head's
+        ``<suite>/rtl_buddy.log``; run by hand without it there is no head
+        to collide with, so it falls back to the suite log (#437).
+
+        With ``--gates`` (Slurm only) it also releases each compile key's
+        simulation jobs as that key finishes, instead of leaving all of
+        them gated on this whole job: see ``dispatch.gates`` and #548. The
+        gate itself is untouched — every one of those jobs keeps its
+        ``afterok`` on this job, which is what still cancels the fan-out if
+        this job dies.
+        """
+        if phase not in BUILD_PHASES:
+            # Rejected before anything is entered or written, like
+            # `--parallel` below: a phase nobody implements would compile
+            # the wrong half of the suite, and this flag only ever comes
+            # from the head (#593).
+            raise FatalRtlBuddyError(
+                f"--phase must be one of {', '.join(BUILD_PHASES)} (got {phase!r})."
+            )
+        # Re-validated like the phase above, and before anything is written
+        # (#541): a mangled tag must fail loud, not write a second tree.
+        self._run_tag = validate_run_tag(run_tag)
+        if parallel < 1:
+            # Rejected before anything is entered or written: a job allowed
+            # zero concurrent builds would compile nothing, and a fatal here
+            # costs the fan-out nothing (no compile has succeeded yet).
+            raise FatalRtlBuddyError(
+                f"--parallel must be >= 1 (got {parallel}); a build job "
+                "allowed zero concurrent builds would compile nothing."
+            )
+        # Diagnostics only, so a nonsensical value is dropped rather than
+        # raised (#547 review): the head's cap only ever lowers, so a
+        # configured value below `--parallel` describes no run this job
+        # could be in, and failing the job over a log line would cancel the
+        # whole afterok fan-out behind it. Absent means "the config value IS
+        # --parallel", which is what every uncapped submission means.
+        if parallel_configured is None or parallel_configured < parallel:
+            parallel_configured = parallel
+        self.rtl_builder_mode = (
+            "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
+        )
+        self.share_build = share_build
+        self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
+        # Resolve before entering the context: a relative --result-json is
+        # the dispatching process's path, not the suite dir's, and the log
+        # that pairs with it is derived from the resolved envelope.
+        result_json_path = (
+            self._abs_invocation_path(result_json) if result_json is not None else None
+        )
+        # Same treatment for the gates manifest, and for the same reason as
+        # the plan: it is a head path, and this job's cwd is a compute
+        # node's (#458).
+        gates_path = self._abs_invocation_path(gates) if gates is not None else None
+        ctx = self._enter_command_context(
+            primary_config=test_config,
+            log_path=(
+                job_log_path(result_json_path) if result_json_path is not None else None
+            ),
+        )
+        suite_cfg = SuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        # Which config layer owns `compile.parallel` for THIS suite — the
+        # key a reader would edit, not where this invocation's `--parallel`
+        # number came from (the head caps the resolved value by the planned
+        # configs, and that cap is reported separately as
+        # `parallel_requested`). Read from the same suite block the head
+        # resolved against, so the two provably agree, rather than plumbed
+        # through argv to restate a fact already on disk beside the job
+        # (#547).
+        parallel_origin = compile_parallel_origin(
+            getattr(suite_cfg.get_compile(), "parallel", None) is not None,
+            suite_cfg.get_path(),
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "command.build_job",
+            command="_build-job",
+            test_config=test_config,
+            reg_level=reg_level,
+            start_level=start_level,
+            plan=plan,
+            parallel=parallel,
+            parallel_configured=parallel_configured,
+            parallel_origin=parallel_origin,
+            gates=gates,
+            phase=phase,
+            run_tag=self._run_tag,
+        )
+
+        if plan is not None:
+            # Head-expanded plan: the sweep hook already ran once on the
+            # head, so just rebuild each config — no skip/level logic here
+            # (the head already applied it when writing the plan).
+            configs = read_plan_configs(self._abs_invocation_path(plan))
+        else:
+            # Standalone invocation: expand here. _iter_suite_runnables
+            # applies level filtering + sweep expansion (config-only, no
+            # compile); its skip/setup rows are irrelevant to a build job.
+            discard = []
+            configs = list(
+                self._iter_suite_runnables(
+                    suite_cfg,
+                    test_name=None,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    run_ids=[None],
+                    suite_results=discard,
+                )
+            )
+
+        def _prepare_config(index, cfg):
+            """Construct, PRE and probe one config.
+
+            Returns ``(outcome row, group dir, member)``: either a terminal
+            outcome row (and no member), or a member for the group its
+            compile will write into. Shared by both loop shapes below, so
+            the streaming path and the batched one cannot disagree about
+            what PRE did or how a failure is reported.
+            """
+            runner = TestRunner(
+                name=self.name + "/build-job",
+                root_cfg=self.root_cfg,
+                test_cfg=cfg,
+                test_runner_mode={"sim_to_stdout": False},
+                run_id=None,
+                rtl_builder_mode=self.rtl_builder_mode,
+                run_depth=RunDepth.COMP,
+                suite_dir=suite_dir,
+                share_build=share_build,
+                shared_build_root=self.shared_build_root,
+                # The build job is where `--rebuild` belongs under dispatch:
+                # it is the single writer of the shared directory, and its
+                # per-process memo makes the whole suite's shared build
+                # rebuild exactly once (#494/#369).
+                rebuild=rebuild,
+                # Which half of the compile this job runs (#593).
+                build_phase=phase,
+                # The head's artefact namespace (#541).
+                run_tag=self._run_tag,
+            )
+            try:
+                res = runner.prepare()
+                group_dir = None
+                if res is None:
+                    group_dir, res = runner.compile_group_dir()
+            except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                # The exit-0 contract covers this phase too, and the probe
+                # made that matter: pulling the compile-flag assembly ahead
+                # of the builder moved fatals like SystemCSim's missing
+                # `cfg-systemc` out of a protected worker and onto the main
+                # thread. One config's broken setup must not cancel the
+                # afterok fan-out for the seven that were fine — the config
+                # is reported failed and its own sim job says why.
+                return (
+                    (index, cfg.get_name(), False, str(exc), runner, None),
+                    None,
+                    None,
+                )
+            if res is not None:
+                # A setup or filelist failure never reaches a builder, so it
+                # is reported exactly as the serial loop reported it: failed,
+                # and the job still exits 0.
+                return (
+                    (index, cfg.get_name(), False, None, runner, group_dir),
+                    None,
+                    None,
+                )
+            return None, group_dir, (index, cfg.get_name(), runner)
+
+        # Which config compiled each group's build, once one has (#535).
+        # Keyed by group dir, and a group is one worker's whole unit of
+        # work, so no two threads ever touch one key.
+        group_leaders = {}
+        # Told apart from a runner reporting no stamp: a runner class that
+        # does not report one at all keeps the pre-#534 leader rule, the
+        # same convention `adopt_group_build` is looked up under.
+        unreported = object()
+
+        # ---- per-key release (#548).
+        #
+        # Every sim job of this suite was submitted `--dependency=afterok`
+        # on THIS job, so without help the fastest compile key's tests wait
+        # for the slowest key in the plan — 56 minutes of it, in the report
+        # that opened the issue. The head cannot gate them per key: the keys
+        # only exist once `run.f` has been written, which happens here, on a
+        # compute node (#458). So the release is this job's to make.
+        #
+        # What is released, and when: a group whose compile has RETURNED
+        # (so the build directory's lock is long gone) with a build and a
+        # stamp on disk. Not a failed key — its sims stay on `afterok`,
+        # start after this job, read the build envelope and decline the
+        # recompile (#498), which is exactly the behaviour they had before
+        # this existed. The `afterok` itself is never cleared as a gate: it
+        # is left on every job and stays the orphan safety net, because
+        # `--kill-on-invalid-dep=yes` is what reaps the fan-out if this job
+        # dies mid-compile.
+        #
+        # Resolved once, lazily, at the first release: `shutil.which` is a
+        # filesystem walk and the manifest may not be written yet, and
+        # neither is worth paying for in a job with `--gates` pointing at a
+        # head that never got there.
+        release_lock = threading.Lock()
+        release_state = {"resolved": False, "gates": None, "disabled": None}
+
+        def _resolve_gates_locked():
+            """The manifest, or ``None`` with the reason logged. Once."""
+            if release_state["resolved"]:
+                return release_state["gates"]
+            release_state["resolved"] = True
+            if shutil.which("scontrol") is None:
+                # `scontrol` is an optional binary in the tool manifest, so
+                # a site can run the whole Slurm backend without it. Say so
+                # once and keep every job on `afterok`.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_unavailable",
+                    reason=(
+                        "no `scontrol` on PATH; simulation jobs stay gated on "
+                        "this build job"
+                    ),
+                )
+                return None
+            try:
+                token = (
+                    read_plan_token(self._abs_invocation_path(plan))
+                    if plan is not None
+                    else None
+                )
+            except FatalRtlBuddyError:
+                # The plan already parsed once above, so this is unreachable
+                # short of the file changing underneath; an unreadable token
+                # only costs the staleness check.
+                token = None
+            payload, reason = wait_for_gates(gates_path, run_token=token)
+            if payload is None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.gates_unavailable",
+                    path=str(gates_path),
+                    reason=reason,
+                )
+                return None
+            release_state["gates"] = payload
+            return payload
+
+        def _release_group(group_dir, members, *, verdict_error=None):
+            """Clear the `afterok` of this key's sims. Never raises.
+
+            ``members`` is ``[(plan index, test name), …]`` for the rows
+            this group actually built. Called from the worker that compiled
+            the group, right after its last member returned, so two keys
+            finishing at different times release at different times — which
+            is the entire point.
+
+            ``verdict_error`` is why this key's build record did not reach
+            disk, when it did not. Releasing then would start jobs that
+            cannot read the one file that tells them the build exists, so
+            the key keeps its gate instead.
+            """
+            if gates_path is None or not members or cancellation_has_started():
+                return
+            if phase == BUILD_PHASE_VERILATE:
+                # There is no build to release these jobs onto: this half
+                # emitted sources and a Makefile, and the build half still
+                # has to run (#593). The head passes no `--gates` to a
+                # verilate job, so this is the second guard, not the first.
+                return
+            if verdict_error is not None:
+                # The envelope these jobs would consult is not on disk, so
+                # releasing them starts jobs that cannot learn this build
+                # exists. They keep their `afterok` and run after this job,
+                # which is where they were before any of this — slower, and
+                # the one outcome that is never wrong.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_skipped",
+                    group=group_dir,
+                    tests=[name for _, name in members],
+                    error=verdict_error,
+                )
+                return
+            with release_lock:
+                # Held across the wait on purpose: the manifest is resolved
+                # exactly once for the job, and a second worker arriving
+                # mid-poll should join that wait rather than start its own.
+                # It costs that worker the remainder of a bounded wait, and
+                # only in the run where the head never wrote the file.
+                payload = _resolve_gates_locked()
+                # A systemic failure — a wedged controller, an scontrol
+                # that will not run — is a property of this node and this
+                # run, not of the ids it was asked about. Paying its
+                # timeout once per remaining compile key would put the
+                # whole build job behind an optimization it has already
+                # been told it cannot have.
+                disabled = release_state["disabled"]
+            if payload is None or disabled is not None:
+                return
+            batches = release_batches(payload, [index for index, _ in members])
+            if not batches:
+                # The manifest knows nothing about these configs: a hand-run
+                # build job over a head's manifest, or a plan whose indices
+                # moved. Nothing to release and nothing wrong.
+                return
+            # One call per cluster: these ids were issued by whichever
+            # controller accepted their array, and an id is unique only
+            # there (#509).
+            released, failures, skipped, systemic = [], [], [], None
+            # ONE deadline for the whole key, shared by its clusters: a
+            # per-batch budget would give a key spread over three
+            # controllers three times the wait it is allowed (#548 review).
+            deadline = time.monotonic() + RELEASE_BUDGET_S
+            for position, (cluster, job_ids) in enumerate(batches):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    systemic = "release budget exhausted"
+                    skipped.extend(
+                        job_id for _, ids in batches[position:] for job_id in ids
+                    )
+                    break
+                outcome = release_dependency(
+                    job_ids, cluster=cluster, cwd=suite_dir, budget_s=remaining
+                )
+                released.extend(outcome.released)
+                failures.extend(outcome.failures)
+                skipped.extend(outcome.skipped)
+                if outcome.systemic is not None:
+                    systemic = outcome.systemic
+                    # Whatever stopped this cluster's batch stops the rest
+                    # of them too, and every later key in this job.
+                    skipped.extend(
+                        job_id for _, ids in batches[position + 1 :] for job_id in ids
+                    )
+                    break
+            if systemic is not None:
+                with release_lock:
+                    release_state["disabled"] = systemic
+            if released:
+                # On the console, not just in the job log: this is the line
+                # that says a 40-minute key stopped holding its tests, and
+                # INFO is invisible on a CI console without it. Emitted from
+                # a pool worker in the batched shape, which is safe on both
+                # halves: logging handlers take the logging lock, and the
+                # console half is a Rich `print` to stderr, never stdout —
+                # so the machine path's JSON stream is untouched.
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.key_released",
+                    group=group_dir,
+                    tests=[name for _, name in members],
+                    job_ids=released,
+                )
+            for position, (job_id, error) in enumerate(failures):
+                # A release that did not happen is a job that starts when
+                # this one ends — slower, never wrong — so it is a warning
+                # and the build continues. The one that ended the batch
+                # carries what it cost: the ids never attempted, and the
+                # fact that no later key will try either. It is the last
+                # one recorded by construction — the loop above breaks
+                # straight after appending it.
+                is_systemic = systemic is not None and position == len(failures) - 1
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_failed",
+                    group=group_dir,
+                    job_id=job_id,
+                    error=error,
+                    skipped=len(skipped) if is_systemic else None,
+                )
+            if systemic is not None and not failures:
+                # The budget ran out between calls, so no single id failed:
+                # say it against the key rather than losing it.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.release_failed",
+                    group=group_dir,
+                    error=systemic,
+                    skipped=len(skipped),
+                )
+
+        def _build_entry(name, ok, worker_error, runner, group_dir):
+            """One config's envelope record. Pure but for the stamp refresh.
+
+            Called once per config: from ``_record_group`` as each group
+            finishes (for the partial envelope a released key's sims read),
+            and from the tail below for a config no group ever ran — a PRE
+            failure, a cancelled worker. The tail reuses what is already
+            recorded rather than rebuilding it, so ``refresh_build_stamp``
+            runs exactly once per config whichever path produced it.
+            """
+            record = runner.last_compile or {}
+            build_entry = {
+                "test": name,
+                # The runner's own resolved builder when no compile plan
+                # was ever derived (a config whose PRE failed): the
+                # builder is settled once the sim exists, and naming it
+                # is the difference between "never compiled" and "no idea
+                # what would have compiled it".
+                "builder": record.get("builder")
+                or getattr(runner, "builder_name", None),
+                "duration_sec": record.get("duration_sec"),
+                "reused": record.get("reused"),
+                # Suite-relative, not absolute and not a basename: the
+                # suite prefix would pin the compute node's mount into
+                # an artifact the head reads, and a basename collides —
+                # every unshared build's output is literally `simv`, so
+                # unrelated concurrent builds would record one `group`
+                # and a consumer would merge their timings (#496
+                # review). Relative to the suite the value is bijective
+                # with the output path: equal means one single-writer
+                # output (a shared dir, or one pinned executable),
+                # distinct means two.
+                "group": (os.path.relpath(group_dir, suite_dir) if group_dir else None),
+            }
+            for half in ("verilate_sec", "build_sec"):
+                # Where the compile was split, `duration_sec` above is the
+                # whole of it and these say where the time went (#593).
+                # Additive: absent for every unsplit compile, which is what
+                # keeps an existing envelope's shape.
+                if record.get(half) is not None:
+                    build_entry[half] = record[half]
+            # The stamp as it stands now that every member is done: a
+            # sibling's adoption rewrote its listing after the leader
+            # recorded, and the gated jobs validate — and compare their
+            # digest against — the final one.
+            refresh_stamp = getattr(runner, "refresh_build_stamp", None)
+            if callable(refresh_stamp):
+                refresh_stamp()
+            stamp = getattr(runner, "last_build_stamp", None) or {}
+            if ok and stamp.get("fingerprint_sha") is not None:
+                # WHICH inputs this build was made from (#535). A gated sim
+                # job that cannot validate the stamp compares its own
+                # fingerprint against this to say whether the disagreement
+                # is over the same inputs or different ones — and either
+                # way it declines to recompile, because the build exists.
+                # Additive; schema_version stays 1.
+                build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
+            if ok and getattr(runner, "stamp_write_failed", False):
+                # Built, but with nothing on disk to say so (#534). The
+                # gated sim jobs must read this as "built" — the binary is
+                # there and a recompile under the simulation reservation is
+                # the one answer that cannot help — while getting a reason
+                # that names the write rather than sending them looking for
+                # a build that never happened. Absent means "stamped", which
+                # is what every older envelope means too.
+                build_entry["stamp_written"] = False
+            if not ok:
+                # Why it failed, carried in the envelope rather than left in
+                # this job's log for someone to find (#498). Everything here
+                # is additive and best-effort under the same exit-0 contract
+                # the rest of the loop runs under: a failure to describe a
+                # failure must not cost the fan-out its `afterok`, and a
+                # record without these keys still means what it always did.
+                try:
+                    _annotate_build_failure(
+                        build_entry,
+                        failure=getattr(runner, "last_compile_failure", None),
+                        worker_error=worker_error,
+                        suite_dir=suite_dir,
+                    )
+                except Exception as exc:  # noqa: BLE001 - never fatal here
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.failure_detail_failed",
+                        test=name,
+                        error=str(exc),
+                    )
+            return build_entry
+
+        # ---- the envelope, written as the job goes (#548).
+        #
+        # A released key's simulation jobs start while later keys are still
+        # compiling, and the first thing one does when its stamp fails to
+        # validate is ask this envelope whether the build exists. Written
+        # once at the end, it would not be there yet — and `no envelope` is
+        # `inconclusive`, which is the verdict that RECOMPILES, under the
+        # simulation reservation, into the shared directory every sibling
+        # element is pointed at. So the verdict is persisted before the
+        # dependency that holds those jobs is cleared: each group rewrites
+        # the envelope with everything decided so far, marked `partial`,
+        # and the write at the end drops the mark.
+        recorded_lock = threading.Lock()
+        recorded_entries = {}  # plan index -> envelope record
+        recorded_ok = {}  # plan index -> did it build?
+
+        def _record_group(rows):
+            """Persist this group's outcomes; ``None`` or why it did not.
+
+            Called before the group's release, and its answer decides
+            whether that release happens at all. A released simulation
+            whose stamp fails to validate reads this file to learn that
+            the build exists; if the write failed there is nothing for it
+            to read, and clearing its dependency would start it into the
+            one verdict this whole mechanism exists to avoid — a recompile
+            under the simulation reservation, into the shared directory
+            its siblings are pointed at (#548 review). So a failed write
+            costs the key its early start, never the job's exit status.
+
+            ``result_json_path is None`` is not that case: it is a build
+            job run by hand, with no head, and so no gated simulation that
+            could consult an envelope — the head passes ``--result-json``
+            on every submission that passes ``--gates``.
+            """
+            entries = {
+                index: (
+                    _build_entry(name, ok, worker_error, runner, group_dir),
+                    ok,
+                )
+                for index, name, ok, worker_error, runner, group_dir in rows
+            }
+            with recorded_lock:
+                for index, (entry, ok) in entries.items():
+                    recorded_entries[index] = entry
+                    recorded_ok[index] = ok
+                if result_json_path is None:
+                    return None
+                ordered = sorted(recorded_entries)
+                snapshot = [recorded_entries[index] for index in ordered]
+                names = {
+                    index: recorded_entries[index].get("test") for index in ordered
+                }
+                try:
+                    # Under the lock, so two workers finishing together
+                    # cannot interleave a stale snapshot over a fresher one.
+                    # The write is a tmp + os.replace, so a reader sees one
+                    # or the other whole.
+                    write_build_result_json(
+                        result_json_path,
+                        built=[names[index] for index in ordered if recorded_ok[index]],
+                        failed=[
+                            names[index] for index in ordered if not recorded_ok[index]
+                        ],
+                        builds=snapshot,
+                        partial=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - never fatal here
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.partial_result_failed",
+                        path=str(result_json_path),
+                        error=str(exc),
+                    )
+                    return str(exc)
+                return None
+
+        def _compile_group(group):
+            """Compile one group's configs serially; rows for the caller.
+
+            The first member compiles; the rest ADOPT what it built. A
+            group's members share a compile key by construction — one
+            ``run.f``, one command line, one builder — so the only thing
+            that can separate a sibling's fingerprint from the leader's
+            stamp is a file that moved during this job, and the serial PRE
+            phase guarantees one on a cold tree: this member's own preproc
+            output, created after the leader was fingerprinted, under an
+            ``+incdir+`` the stamp lists. Re-deriving the stamp for that
+            bought a full second Verilation of an identical design (#535).
+            What the sibling does check is the leader's ``deps``: an input
+            the build actually consumed, differing here, is not a stale
+            build but two tests compiling different bytes under one key —
+            reported, not recompiled, because a recompile makes the last
+            writer decide what both of them simulate.
+
+            Re-checks the cancellation latch before every member, which is
+            also the check a worker makes when the pool hands it the next
+            group. ``Executor.map``'s result generator cancels the futures
+            still *pending* when the main thread unwinds, but a worker that
+            has already taken the next group is past that point, and
+            ``ThreadPoolExecutor.__exit__`` then waits for it
+            (``shutdown(wait=True)``, no ``cancel_futures``) — long enough
+            to start a compiler the sweep below can no longer see, in its
+            own session, after the job has begun exiting (#496 review). The
+            latch is what turns that worker into a no-op instead;
+            cancelling from the handler is not an option, since it runs
+            between bytecodes on the main thread with the pool's internals
+            mid-flight.
+            """
+            group_dir, members = group
+            rows = []
+            for index, name, runner in members:
+                if cancellation_has_started():
+                    # Reported failed, like anything else that never reached
+                    # a builder: the envelope has one row per planned config
+                    # and `failed` is the only thing it can honestly say
+                    # about a compile that did not happen. In practice the
+                    # envelope is never written — the handler re-raises out
+                    # of the pool — and the head then reports these tests as
+                    # "produced no result", which is the pre-existing
+                    # cancellation story.
+                    rows.append((index, name, False, None, runner, group_dir))
+                    continue
+                leader = group_leaders.get(group_dir)
+                # getattr, like every other optional runner capability
+                # here: a runner class that offers no adopt keeps the
+                # pre-#535 path rather than failing the config.
+                adopt = getattr(runner, "adopt_group_build", None)
+                if leader is not None and adopt is not None:
+                    try:
+                        verdict, detail = adopt()
+                    except Exception as exc:  # noqa: BLE001 - exit-0 contract
+                        rows.append((index, name, False, str(exc), runner, group_dir))
+                        continue
+                    if verdict == "adopted":
+                        rows.append((index, name, True, None, runner, group_dir))
+                        continue
+                    if verdict == "drift":
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "build_job.group_input_drift",
+                            test=name,
+                            leader=leader,
+                            dependency=detail,
+                        )
+                        rows.append((index, name, False, None, runner, group_dir))
+                        continue
+                    # Undecidable — no dependency file (VCS, Icarus), no
+                    # stamp, a compile line that moved. The leader's own
+                    # full comparison decides it instead, which is the
+                    # pre-#535 path and still short-circuits a valid stamp.
+                    #
+                    # Said out loud, at INFO: the whole point of adoption is
+                    # that a same-key sibling does not pay a second full
+                    # elaboration, and a decline is the difference between
+                    # "this job compiled one key once" and "it compiled it
+                    # N times". Without this the only visible trace was the
+                    # extra `compile.start` (#534/#535).
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "build_job.group_adoption_declined",
+                        test=name,
+                        leader=leader,
+                        reason=detail,
+                    )
+                try:
+                    res = runner.compile_prepared()
+                except Exception as exc:  # noqa: BLE001 - see exit-0 contract
+                    # A worker exception must never escape: an unhandled one
+                    # takes the job's exit status with it, and a build job
+                    # that exits non-zero makes Slurm cancel every afterok
+                    # sim job behind it. The group's remaining members still
+                    # get their attempt — a crashed config says nothing
+                    # about its siblings.
+                    rows.append((index, name, False, str(exc), runner, group_dir))
+                    continue
+                built = isinstance(res, EarlyStopResults)
+                if built:
+                    # This member's build is what the rest of the group
+                    # adopts, whichever loop shape ran it: streaming calls
+                    # this once per member, so the leader has to outlive
+                    # the call.
+                    #
+                    # Only if it left a stamp, though. Adoption reads the
+                    # leader's stamp for the dependency list it decides on,
+                    # so a leader whose stamp never landed — the write
+                    # failed, the directory went read-only — makes every
+                    # sibling call adopt(), get "no stamp", and compile
+                    # anyway. Saying so once is worth more than N silent
+                    # declines (#534). `last_build_stamp` is set wherever a
+                    # build is stamped, reused or adopted, and names the
+                    # directory the stamp actually went in — which for an
+                    # unshared build is not `group_dir`.
+                    #
+                    # The verilate half writes no stamp by design (#593) —
+                    # there is nothing runnable to vouch for yet — and its
+                    # siblings short-circuit on its marker instead, so the
+                    # absence is not a fault to report there.
+                    if getattr(runner, "last_build_stamp", unreported) is None:
+                        if phase != BUILD_PHASE_VERILATE:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "build_job.group_leader_unstamped",
+                                test=name,
+                                group=group_dir,
+                            )
+                    else:
+                        group_leaders.setdefault(group_dir, name)
+                rows.append((index, name, built, None, runner, group_dir))
+            # Outside the loop, and therefore outside every build-directory
+            # lock `compile_prepared` took: by here this key is built and
+            # stamped, and its sims can start without racing a writer.
+            #
+            # The envelope first, the release second, and never the other
+            # way round: a job released before its verdict was on disk asks
+            # a file that does not name it yet, is told nothing decisive,
+            # and recompiles into the directory it was gated on (#548
+            # review).
+            verdict_error = _record_group(rows)
+            # Per ROW, not per group: a member that failed, or one whose
+            # build left no stamp for the sim to validate, keeps its gate
+            # and the pre-#548 recovery path.
+            _release_group(
+                group_dir,
+                [
+                    (index, name)
+                    for index, name, built, _error, runner, _dir in rows
+                    if built
+                    and getattr(runner, "last_build_stamp", unreported) is not None
+                ],
+                verdict_error=verdict_error,
+            )
+            return rows
+
+        # ---- serial phase: construct, PRE, and probe the compile key.
+        #
+        # PRE stays on the main thread whatever --parallel says. Hook
+        # execution is process-global-serial by declared contract (one
+        # sys.modules registration slot and a process-wide redirect_stdout,
+        # see hooks.py), and arbitrary preproc code may write suite-level
+        # files that two configs would then race on. It is also the phase
+        # that makes the key knowable at all: a preproc script may mutate
+        # test_cfg, so the compile key exists only after pre() ran, on the
+        # sim instance that saw the mutation.
+        #
+        # Outcome rows are (plan index, test name, built?, worker error,
+        # runner, group dir) so both the envelope and the WARNINGs can be
+        # replayed in plan order below — a pool that reported in completion
+        # order would make two identical runs produce different logs. The
+        # runner rides along because the compile record it observed
+        # (duration/builder/reused) is only readable off the instance that
+        # ran the compile (#495).
+        #
+        # `streaming` is the default job, and it is the pre-#495 program
+        # exactly: PRE → COMPILE per config, one config at a time. Batching
+        # every PRE ahead of every compile is a semantic change for the
+        # documented generator pattern — a preproc hook that rewrites a
+        # suite-level generated input would, batched, clobber an earlier
+        # config's input before that config compiled, and the earlier
+        # config's probed fingerprint would no longer describe what its
+        # builder consumed. A job that can only ever run one build at a time
+        # buys nothing from batching, so it does not pay that (#496 review).
+        # `parallel > 1` opts into the same assumption the sim fan-out
+        # already makes — every `rb _test-job` re-runs its own pre()
+        # concurrently across nodes — and docs/known-issues.md says so.
+        streaming = min(parallel, len(configs)) <= 1
+        outcomes = []
+        groups = {}
+        for index, cfg in enumerate(configs):
+            row, group_dir, member = _prepare_config(index, cfg)
+            if row is not None:
+                outcomes.append(row)
+                continue
+            # Group by the directory the compile will WRITE, not by the
+            # config: two configs with the same compile key share one build
+            # dir, and two builders in one directory is #369. Members of a
+            # group run serially, and the second short-circuits on the
+            # first's stamp. First-seen group order preserves plan order.
+            #
+            # This assumes what a plan already promises: test names in it are
+            # unique. Two configs answering to one name share a per-test
+            # `run.f` whatever the grouping does, because the serial phase
+            # writes every filelist before any compile reads one — grouping
+            # cannot repair that, only the sweep hook that emitted the
+            # duplicate can.
+            groups.setdefault(group_dir, []).append(member)
+            if streaming:
+                # Compile it now, before the next config's hook runs. The
+                # group still records the membership so the telemetry
+                # (`groups`, the envelope's per-build `group`) reads the
+                # same in both shapes; a same-key sibling later in the plan
+                # simply short-circuits on the stamp this compile leaves,
+                # which is what the serial loop always did.
+                outcomes.extend(_compile_group((group_dir, [member])))
+
+        # ---- parallel phase: one worker per distinct build.
+        pool_size = max(1, min(parallel, len(groups)))
+        prepared = sum(len(members) for members in groups.values())
+        if pool_size > 1 or parallel > pool_size:
+            # Liveness on a CI console, which shows INFO only under -v: a
+            # build job that sits silent for 20 minutes is indistinguishable
+            # from a hung one, and this line is what says how many compiles
+            # that silence is covering.
+            #
+            # The second half of the condition is the over-reservation case
+            # (#495): the head scaled the job's cpus by `parallel`, but the
+            # plan collapsed to fewer distinct compile keys than that, so
+            # part of the reservation can never be used. It is not an error
+            # — `parallel` is a per-suite budget and a suite that reuses one
+            # build is the normal shape of a re-run — so it stays INFO on
+            # the same event rather than becoming a warning; without it the
+            # only record of the mismatch is `build_job.done` in the job
+            # log, which nothing prints at default verbosity.
+            log_console_event(
+                logger,
+                logging.INFO,
+                "build_job.pool_configured",
+                groups=len(groups),
+                # Why the group count can be below `parallel` without
+                # anything being misconfigured: configs sharing a compile
+                # key are one group, and the siblings adopt the leader's
+                # build rather than compiling it again (#535). Reading
+                # "3 distinct builds" against a 20-test suite otherwise
+                # looks like 17 tests went missing.
+                #
+                # The configs that reached the pool, not every config in the
+                # plan: one whose PRE or filelist probe failed never joined a
+                # group, and counting it here would report sharing that did
+                # not happen — "4 configs share 3 keys" after one setup
+                # failure over three distinct keys, or "share 0 keys" when
+                # every config failed to prepare (#576 review).
+                configs=prepared,
+                # ...and the ones that did not, so the difference is stated
+                # rather than left to be inferred from a count that shrank.
+                # Derived from the plan rather than counted as the loop went,
+                # because `outcomes` also holds the streaming shape's
+                # already-compiled rows.
+                unprepared=len(configs) - prepared,
+                parallel=pool_size,
+                parallel_requested=parallel,
+                # What the config says, which is `parallel_requested` unless
+                # the head's plan cap lowered it — the line must quote the
+                # number the named key actually holds (#547 review).
+                parallel_configured=parallel_configured,
+                # So the line names the key a reader would edit: a suite
+                # that set `compile.parallel` is not moved by cfg-dispatch
+                # (#547).
+                parallel_origin=parallel_origin,
+            )
+
+        # Nothing left to do in the streaming shape: every group was compiled
+        # as it was prepared.
+        if not streaming:
+            if pool_size > 1:
+                # Threads, not processes: the work is a subprocess wait, and
+                # the prepared TestRunners (with their hook-mutated configs)
+                # would not survive a fork/spawn boundary.
+                #
+                # Cancelling this shape needs a handler the streaming one
+                # does not (#496 review). A worker thread's
+                # run_managed_process installs no signal handler —
+                # signal.signal only works on the main thread — and each
+                # compiler runs in its own session (start_new_session), so a
+                # SIGTERM aimed at this job's process group reaches the job
+                # and nothing it spawned. Left alone, `local-parallel`'s
+                # cancel_all (Ctrl-C, or --max-wait) would kill the job and
+                # orphan every in-flight Verilation on the node. So while the
+                # pool runs, the main thread owns SIGINT/SIGTERM and sweeps
+                # the live compilers by hand; the workers' communicate()
+                # calls then return promptly and the pool's exit does not
+                # hang. Slurm still kills the whole job-tree cgroup on its
+                # own — this makes the build job clean up after itself, which
+                # is what a backend with no cgroup requires. The streaming
+                # shape needs none of it: there run_managed_process is on the
+                # main thread and installs its own forwarding handlers.
+                #
+                # The handler convention is run_managed_process's, exactly:
+                # chain to the previous handler, then KeyboardInterrupt for
+                # SIGINT and SystemExit(128+signum) otherwise. It does no
+                # logging — a handler runs between bytecodes and the logging
+                # lock may already be held by a worker.
+                previous_handlers = {}
+
+                def _sweep_compilers_and_reraise(signum, frame):
+                    terminate_live_managed_processes()
+                    previous = previous_handlers.get(signum)
+                    if callable(previous):
+                        previous(signum, frame)
+                    if signum == signal.SIGINT:
+                        raise KeyboardInterrupt
+                    raise SystemExit(128 + signum)
+
+                for signum in (signal.SIGINT, signal.SIGTERM):
+                    try:
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, _sweep_compilers_and_reraise)
+                    except ValueError:
+                        # Only reachable if this command is ever driven off
+                        # the main thread, and the exit-0 contract outranks
+                        # the cleanup: an escaping ValueError here would fail
+                        # the build job and cancel the afterok fan-out for
+                        # compiles that had not even started.
+                        previous_handlers.pop(signum, None)
+                try:
+                    with ThreadPoolExecutor(max_workers=pool_size) as pool:
+                        for rows in pool.map(_compile_group, list(groups.items())):
+                            outcomes.extend(rows)
+                finally:
+                    # Restored on every exit, including the re-raise above:
+                    # the envelope-writing tail below runs on the main thread
+                    # with no pool to protect, and leaving the handler armed
+                    # would have it sweep processes it does not own.
+                    for signum, handler in previous_handlers.items():
+                        signal.signal(signum, handler)
+            else:
+                # `parallel` exceeded the group count: one group, but the
+                # plan held more than one config, so the batched shape was
+                # already chosen above.
+                for group in groups.items():
+                    outcomes.extend(_compile_group(group))
+
+        built, failed, builds = [], [], []
+        for index, name, ok, worker_error, runner, group_dir in sorted(
+            outcomes, key=lambda row: row[0]
+        ):
+            # Plan order, and one row per planned config whatever happened to
+            # it — a config that never reached a builder still names the
+            # builder it would have used, so a gap in the envelope means "the
+            # build job never saw this test", not "it compiled instantly".
+            build_entry = recorded_entries.get(index)
+            if build_entry is None:
+                build_entry = _build_entry(name, ok, worker_error, runner, group_dir)
+            builds.append(build_entry)
+            if ok:
+                built.append(name)
+                continue
+            failed.append(name)
+            if worker_error is not None:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.compile_worker_error",
+                    test=name,
+                    error=worker_error,
+                )
+            log_event(
+                logger,
+                logging.WARNING,
+                "build_job.compile_failed",
+                test=name,
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "build_job.done",
+            built=len(built),
+            failed=len(failed),
+            # Both numbers, because they answer different questions. The
+            # budget the head reserved CPUs for is `parallel_requested`;
+            # what the job could actually use, once the plan collapsed to
+            # its distinct builds, is `parallel`. A reservation that looks
+            # over-provisioned in the right-sizing report is explained by
+            # the gap between them, so neither can stand in for the other.
+            parallel=pool_size,
+            parallel_requested=parallel,
+            parallel_configured=parallel_configured,
+            parallel_origin=parallel_origin,
+            groups=len(groups),
+            phase=phase,
+        )
+        if result_json_path is not None:
+            # Persist the outcome so the head can map a compile failure to a
+            # CompileFail row (parity with the in-process path).
+            try:
+                write_build_result_json(
+                    result_json_path, built=built, failed=failed, builds=builds
+                )
+            except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
+                # The compile records are additive telemetry; built/failed is
+                # the load-bearing half (it is what maps a compile failure to
+                # a CompileFail row). Rather than let an unserialisable record
+                # cost the head that mapping — and the fan-out its exit
+                # status — drop the telemetry and write the envelope that
+                # always existed.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.build_records_failed",
+                    error=str(exc),
+                )
+                try:
+                    write_build_result_json(
+                        result_json_path, built=built, failed=failed
+                    )
+                except Exception as exc2:  # noqa: BLE001 - never fatal here
+                    # The retry can fail for the reason the first write did
+                    # (ENOSPC, EROFS, a permission change) and nothing above
+                    # catches a bare exception: run() handles only click
+                    # exits, FatalRtlBuddyError and FilelistError, so an
+                    # escape here exits the build job non-zero and afterok
+                    # cancels the whole sim fan-out — the 2026-08-19 ECP CI
+                    # failure the guard above exists to prevent. Losing the
+                    # envelope costs the head its compile-failure mapping;
+                    # each affected sim job then recompiles and reports the
+                    # failure itself, which is a worse report, not a lost run.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "build_job.result_json_failed",
+                        path=str(result_json_path),
+                        error=str(exc2),
+                    )
+        if self.machine:
+            # Reporting only, so it is not allowed to change the exit status
+            # below. A build job that exits non-zero makes the scheduler cancel
+            # every afterok dependent, which would throw away a whole regression
+            # fan-out *after* the compiles had already succeeded -- exactly what
+            # an unreadable machine-result envelope did to ECP CI on 2026-08-19.
+            try:
+                self._emit_machine_result("_build-job", 0, built=built, failed=failed)
+            except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.machine_result_failed",
+                    error=str(exc),
+                )
+        # Always exit 0: a per-test compile failure is not a build-job
+        # failure (afterok dependents must still run). Only a fatal setup
+        # error (raised above) fails the job and cancels the fan-out.
+        raise typer.Exit(0)
 
     def _append_skip_results(
         self, test_name, desc, run_ids, suite_results, builder=None
@@ -1232,12 +3864,17 @@ class RtlBuddy:
             ns = exec_hook_script(
                 script_path,
                 code,
+                stage="sweep",
                 logger=logger,
                 TestConfig=TestConfig,
                 test_cfg=test_cfg,
                 root_cfg=self.root_cfg,
                 suite_dir=suite_dir,
-                artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
+                artifact_dir=str(
+                    test_artifact_dir(
+                        suite_dir, test_cfg.get_name(), run_tag=self._run_tag
+                    )
+                ),
                 out_test_cfgs=[],
             )
         except Exception as e:
@@ -1270,6 +3907,7 @@ class RtlBuddy:
         replay_run_id,
         test_runner_mode,
         suite_dir,
+        master_seed: int | None = None,
     ):
         test_runner = TestRunner(
             name=self.name + "/testrunner",
@@ -1283,6 +3921,11 @@ class RtlBuddy:
             run_depth=self.run_depth,
             suite_dir=suite_dir,
             share_build=self.share_build,
+            shared_build_root=self.shared_build_root,
+            expect_prebuilt=self.expect_prebuilt,
+            rebuild=self.rebuild,
+            build_result_json=self.build_result_json,
+            run_tag=self._run_tag,
         )
 
         if len(run_ids) == 1:
@@ -1291,10 +3934,143 @@ class RtlBuddy:
             results = test_runner.run_multiple(run_ids)
         if test_cfg.is_xfail():
             # FAIL->XFAIL (pass) / PASS->XPASS (a failure only when strict)
-            # so a known-failing test can live in a suite/regression.
+            # so a known-failing test can live in a suite/regression. A
+            # failure that happened instead of a verdict (setup, compile,
+            # timeout) keeps its FAIL — see _apply_xfail_logged.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
+        get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
+        resolved_seed = get_resolved_seed() if callable(get_resolved_seed) else None
+        if resolved_seed is not None:
+            seed_record = {
+                "master_seed": master_seed,
+                "resolved_seed": resolved_seed,
+                "source": getattr(test_cfg, "seed_source", None),
+                "identity": getattr(test_cfg, "seed_identity", None),
+            }
+            for res in results:
+                res.results["seed"] = dict(seed_record)
+        compile_record = test_runner.last_compile
+        if compile_record is not None:
+            # Same key the dispatch path folds in from the build envelope
+            # (#495), so `rb graph results` reads one shape whether the
+            # compile happened in a build job or right here. Recorded before
+            # the envelope is written — this is the only chance; the sim
+            # instance goes out of scope with the runner.
+            for res in results:
+                res.results["compile"] = dict(compile_record)
+        build_stamp = getattr(test_runner, "last_build_stamp", None)
+        if build_stamp is not None:
+            # Which build this run actually simulated (#535): the compile
+            # key its stamp was written for, and the executable it launched.
+            # The head cross-checks the runs of one key at collect — they
+            # all validated one stamp, so a run naming another binary reused
+            # something nobody else did. A multi-run runner already stamped
+            # each result with its own launch; that is kept.
+            for res in results:
+                res.results.setdefault("build_stamp", dict(build_stamp))
+        if self._plusarg_overrides:
+            # What THIS invocation added on the command line (#552). Recorded
+            # so a durable result tells a one-off `--plusarg` run apart from
+            # the tests.yaml entry it is otherwise indistinguishable from —
+            # the effective plusargs are that entry's plus this key, so only
+            # the overrides need carrying. Absent entirely without the flag,
+            # leaving every existing envelope's keys unchanged.
+            for res in results:
+                res.results["plusarg_overrides"] = dict(self._plusarg_overrides)
+        self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
+
+    def _invocation_run_token(self) -> str:
+        """This process's result-envelope nonce, minted on first use.
+
+        Same role as the dispatch plan's token: it identifies the run that
+        produced an envelope, so a reader can tell one run's results from a
+        leftover without comparing timestamps. `_test-job` overwrites it
+        with the head's token so a dispatched run and its collected
+        envelope agree.
+        """
+        if self._run_token is None:
+            self._run_token = uuid.uuid4().hex
+        return self._run_token
+
+    def _record_run_results(self, test_cfg, suite_dir, run_ids, results):
+        """Write each run's result envelope into its artifact directory (#379).
+
+        The durable, machine-readable record of what a test did, written
+        wherever a test runs — the dispatch path's `dispatch/result-*.json`
+        only exists when a head asked for one, so without this a plain
+        `rb test` / `rb regression` would leave nothing behind but logs and
+        `rb graph results` would have nothing but mtimes to report.
+        Best-effort by design: a run that passed must never be reported as
+        failed because its side-car could not be written.
+        """
+        token = self._invocation_run_token()
+        for run_id, res in zip(run_ids, results):
+            path = (
+                Path(
+                    test_artifact_dir(
+                        suite_dir,
+                        test_cfg.get_name(),
+                        run_id=run_id,
+                        run_tag=self._run_tag,
+                    )
+                )
+                / RESULT_JSON_NAME
+            )
+            try:
+                write_result_json(
+                    path,
+                    test_name=test_cfg.get_name(),
+                    run_id=run_id,
+                    results=res,
+                    run_token=token,
+                    run_tag=self._run_tag,
+                )
+                # Remember where the envelope landed so coverage
+                # post-processing can re-persist it once the artefact
+                # paths exist (#399) — see _refresh_result_side_cars.
+                res.result_json_path = str(path)
+            except Exception as exc:  # noqa: BLE001 - best-effort side-car:
+                # a run that passed must never be reported failed because
+                # its envelope could not be written (serialization and
+                # metadata errors included, not just OSError — the
+                # dispatch-path write is the strict one, this is not it).
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "test.result_json_write_failed",
+                    test=test_cfg.get_name(),
+                    run_id=run_id,
+                    path=str(path),
+                    error=str(exc),
+                )
+
+    def _refresh_result_side_cars(self, suite_results):
+        """Re-persist result envelopes after coverage post-processing (#399).
+
+        `_record_run_results` writes the envelope as soon as the run ends,
+        which is before the LCOV export, the HTML tree and the Coverview
+        archive exist. The coverage dict is mutated in place afterwards, so
+        without this second write the durable record of a run names none of
+        its own coverage artefacts. Best-effort, like the first write.
+        """
+        for suite_result in suite_results:
+            res = suite_result.get("results")
+            path = getattr(res, "result_json_path", None)
+            if path is None:
+                continue
+            try:
+                refresh_result_json(path, res)
+            except Exception as exc:  # noqa: BLE001 - best-effort side-car
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "test.result_json_refresh_failed",
+                    test=suite_result.get("test_name"),
+                    path=path,
+                    error=str(exc),
+                )
 
     def _append_results(self, test_name, run_ids, results, suite_results, builder=None):
         for run_id, test_results in zip(run_ids, results):
@@ -1309,6 +4085,70 @@ class RtlBuddy:
 
     def _format_coverage_summary(self, test_results):
         return self.coverage.format_summary(test_results)
+
+    @staticmethod
+    def _machine_coverage(test_results):
+        """Structured per-test coverage for the machine payload, or None.
+
+        Returns the `{line, branch, toggle, functional}` percentages a machine
+        consumer would gate on, plus `covers` (per-cover-point names and hit
+        counts) when the test recorded user coverage — the display string and
+        artifact paths carried by the full coverage dict are dropped. None when
+        the test produced no coverage data at all.
+        """
+        cov = test_results.results.get("coverage")
+        if not cov:
+            return None
+        metrics = {k: cov.get(k) for k in ("line", "branch", "toggle", "functional")}
+        covers = cov.get("covers")
+        if all(v is None for v in metrics.values()) and not covers:
+            return None
+        if covers:
+            metrics["covers"] = covers
+        return metrics
+
+    def _machine_test_row(self, test_name, test_results, *, suite=None, run_id=None):
+        """Build one machine-mode result row, attaching structured coverage."""
+        res = test_results.results
+        row = {"name": test_name, "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        if run_id is not None:
+            row["run_id"] = run_id
+        if "seed" in res:
+            row["seed"] = res["seed"]
+        # An NA that stopped on purpose (-E pre|comp|sim) is the one NA
+        # that keeps the exit code at 0; automation reading --machine needs
+        # that discriminator, not the human `desc` (#546).
+        if res.get(EARLY_STOP_KEY):
+            row["early_stop"] = True
+        # The `rb test --plusarg` overrides this run applied (#552). Present
+        # only when there were any, so an ordinary row is the row it was.
+        if res.get("plusarg_overrides"):
+            row["plusarg_overrides"] = res["plusarg_overrides"]
+        cov = self._machine_coverage(test_results)
+        if cov is not None:
+            row["coverage"] = cov
+        return row
+
+    @staticmethod
+    def _machine_coverage_payload(coverage):
+        """Return the run-level coverage payload if it carries data, else None.
+
+        `covers` counts as data on its own: user cover points are recorded
+        without any `--coverage-merge*` flag, so gating only on `merged` would
+        drop them. So does `artefacts` (#399): a run with no merge flag still
+        writes a model and a manifest, and the paths to them are the whole
+        point of the block.
+        """
+        if coverage and (
+            coverage.get("merged")
+            or coverage.get("dir_summary")
+            or coverage.get("covers")
+            or coverage.get("artefacts")
+        ):
+            return coverage
+        return None
 
     @staticmethod
     def _format_assertions_summary(test_results):
@@ -1333,14 +4173,77 @@ class RtlBuddy:
         run_ids=None,
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
+        master_seed: int | None = None,
     ):
-
         if run_ids is None:
             run_ids = [None]
+        if master_seed is not None and len(run_ids) != 1:
+            raise FatalRtlBuddyError(
+                "--master-seed requires one run id per expanded test"
+            )
+        seed_run_id = run_ids[0] if len(run_ids) == 1 else None
 
-        tests = suite_cfg.get_tests(test_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_results = []
+        for expanded_test_cfg in self._iter_suite_runnables(
+            suite_cfg,
+            test_name=test_name,
+            reg_level=reg_level,
+            start_level=start_level,
+            run_ids=run_ids,
+            suite_results=suite_results,
+        ):
+            self._resolve_test_seed(
+                expanded_test_cfg,
+                master_seed=master_seed,
+                suite_config_path=suite_cfg.get_path(),
+                run_id=seed_run_id,
+                seed_mode=seed_mode,
+            )
+            # A sweep-expanded test may carry its own `builder:`; resolve
+            # per expansion so the stamped builder matches what runs.
+            exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
+                expanded_test_cfg.get_builder_name()
+            ).get_name()
+            run_results = self._run_test_cfg_for_run_ids(
+                test_cfg=expanded_test_cfg,
+                run_ids=run_ids,
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                test_runner_mode=test_runner_mode,
+                suite_dir=suite_dir,
+                master_seed=master_seed,
+            )
+            self._append_results(
+                expanded_test_cfg.name,
+                run_ids,
+                run_results,
+                suite_results,
+                builder=exp_builder,
+            )
+        return suite_results
+
+    def _iter_suite_runnables(
+        self, suite_cfg, *, test_name, reg_level, start_level, run_ids, suite_results
+    ):
+        """Yield the suite's sweep-expanded runnable test configs.
+
+        Level-filtered tests and failed sweeps are not yielded; their
+        SKIP / SetupFail rows are appended to ``suite_results`` in test
+        order, so callers only decide how to *execute* runnable configs
+        (in-process or dispatched).
+
+        This is also where a ``--plusarg`` override is merged in (#552).
+        Both execution paths funnel through here — the in-process runner and
+        the dispatch planner, whose plan the build job and every sim job
+        rebuild their configs from — so one merge covers them all. It
+        happens AFTER sweep expansion on purpose: a sweep hook that rewrites
+        ``plusargs`` wholesale would otherwise silently drop the override
+        the user typed, and the flag's contract is that it wins over
+        whatever the configuration produced.
+        """
+        tests = suite_cfg.get_tests(test_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         for t in tests:
             # The builder this test will actually run on (per-test/suite
             # `builder:`, a `--builder` override, or the platform default).
@@ -1400,28 +4303,3306 @@ class RtlBuddy:
                 )
                 continue
 
-            for expanded_test_cfg in expanded_tests:
-                # A sweep-expanded test may carry its own `builder:`; resolve
-                # per expansion so the stamped builder matches what runs.
-                exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
-                    expanded_test_cfg.get_builder_name()
-                ).get_name()
-                run_results = self._run_test_cfg_for_run_ids(
-                    test_cfg=expanded_test_cfg,
-                    run_ids=run_ids,
-                    seed_mode=seed_mode,
-                    replay_run_id=replay_run_id,
-                    test_runner_mode=test_runner_mode,
+            for expanded in expanded_tests:
+                yield expanded.with_plusarg_overrides(self._plusarg_overrides)
+
+    def _dispatch_backend_name(self, dispatch):
+        """The selected backend name: CLI ``--dispatch`` over ``cfg-dispatch``."""
+        if dispatch is not None:
+            return dispatch
+        return self.root_cfg.get_dispatch_cfg().backend
+
+    def _validate_jobs_flag(self, backend_name, jobs):
+        """Reject ``--jobs`` where it cannot mean anything (#360).
+
+        Called on every path that accepts the flag — including ones that then
+        skip dispatch entirely (a randtest replay) — so the flag is never
+        silently dropped.
+        """
+        if jobs is None:
+            return
+        if backend_name != LocalProcessBackend.name:
+            raise FatalRtlBuddyError(
+                f"--jobs sizes the --dispatch {LocalProcessBackend.name} pool, "
+                f"but the backend is {backend_name or 'local'}: 'local' runs "
+                "one job at a time in-process, and Slurm concurrency is "
+                "cfg-dispatch.max-jobs-per-array."
+            )
+        if jobs < 1:
+            raise FatalRtlBuddyError(
+                f"--jobs must be >= 1 (got {jobs}); a pool of zero would "
+                "never start a job."
+            )
+
+    def _resolve_dispatch_backend(self, dispatch, *, jobs=None):
+        """Instantiate the dispatch backend named by ``--dispatch`` (or config).
+
+        CLI ``--dispatch`` wins over ``cfg-dispatch.backend``; both default
+        to ``local`` (in-process, the unchanged pre-#351 path, returned as
+        ``None``). ``--jobs`` overrides ``cfg-dispatch.jobs`` for this run.
+        """
+        backend_name = self._dispatch_backend_name(dispatch)
+        self._validate_jobs_flag(backend_name, jobs)
+        dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+        if jobs is not None:
+            dispatch_cfg = replace(dispatch_cfg, jobs=jobs)
+        backend = create_dispatch_backend(
+            backend_name,
+            dispatch_cfg,
+            # Which root_config.yaml this `cfg-dispatch` came from, snapshotted
+            # with it: this runs ONCE, before the suite loop, so it is the
+            # orchestration config even after `root_cfg` is rebuilt for a suite
+            # under a different root — and that is the file an `sbatch-args`
+            # edit hint has to name (#527).
+            config_path=getattr(self.root_cfg, "root_cfg_path", None),
+        )
+        # Validate `--orphans` / `cfg-dispatch.orphans` against the backend
+        # that was actually selected, before the run plans anything (#521).
+        self._orphans_policy = self._resolve_orphans_policy(backend)
+        return backend
+
+    def _resolve_orphans_policy(self, backend):
+        """``warn`` / ``cancel`` / ``adopt`` for this run (#521).
+
+        CLI ``--orphans`` over ``cfg-dispatch.orphans`` over ``warn``,
+        validated here rather than by Typer so the flag and the config key
+        are rejected by one message before anything is submitted.
+
+        Resolved ONCE, beside the backend, and for the same reason: a
+        multi-root regression rebuilds ``root_cfg`` per suite, and a policy
+        re-read there would let one suite's root_config.yaml decide what
+        happens to another suite's orphans.
+
+        Only a scheduler-backed backend can leave anything behind — the
+        local path runs tests in this process and ``local-parallel`` in its
+        children, both of which die with the head. ``adopt`` asked for
+        explicitly is therefore FATAL there: it names jobs that provably do
+        not exist, and quietly running the suite instead is not what was
+        asked for. The same policy *inherited from config* degrades to
+        ``warn`` with a notice, because a project that sets it for its
+        Slurm regressions must still be able to run ``rb test`` locally.
+        """
+        value = self._orphans
+        if value is None:
+            value = self.root_cfg.get_dispatch_cfg().orphans
+        else:
+            value = value.strip().lower()
+            if value not in ORPHANS_POLICIES:
+                raise FatalRtlBuddyError(
+                    f"--orphans must be one of {', '.join(ORPHANS_POLICIES)} "
+                    f"(got {self._orphans!r})."
+                )
+        if backend is not None and backend.scheduled:
+            return value
+        name = backend.name if backend is not None else "local"
+        if value == "adopt" and self._orphans is not None:
+            raise FatalRtlBuddyError(
+                f"--orphans adopt needs a scheduler-backed dispatch backend, "
+                f"but this run uses {name}: its jobs are this process's own "
+                "children and die with the head, so there is nothing to "
+                "adopt. Re-run the tests, or use --dispatch slurm."
+            )
+        if value != "warn":
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.orphans_ignored",
+                orphans=value,
+                backend=name,
+                reason=(
+                    "only a scheduler-backed backend can leave jobs running "
+                    "after the head exits"
+                ),
+            )
+        return "warn"
+
+    def _reject_early_stop_under_dispatch(self, dispatch, backend):
+        """Reject ``--early-stop`` under dispatch, naming what selected it.
+
+        No stop point earlier than POST is expressible per job: the build
+        job compiles and the sim jobs exist to run SIM+POST. Rejecting
+        beats silently ignoring the flag, which the local path honours.
+
+        The message names *where the backend came from*. When it came from
+        ``cfg-dispatch.backend`` rather than the command line, "run without
+        --dispatch" would be advice about a flag the user never passed, and
+        the remedy they need is a different one.
+        """
+        if self.run_depth == RunDepth.POST:
+            return
+        if dispatch is not None:
+            source = f"--dispatch {dispatch}"
+            remedy = "run without --dispatch to stop earlier"
+        else:
+            source = f"cfg-dispatch.backend: {backend.name}"
+            remedy = (
+                "pass --dispatch local (or clear cfg-dispatch.backend) to stop earlier"
+            )
+        raise FatalRtlBuddyError(
+            f"--early-stop {self.run_depth.value} cannot be combined with "
+            f"dispatch ({source}): a build job compiles and the sim jobs run "
+            f"sim+post; {remedy}."
+        )
+
+    def _open_run_manifest(
+        self,
+        backend,
+        dispatch_root,
+        *,
+        suite_cfg,
+        suite_dir,
+        run_token,
+        started_at,
+        plan_path,
+        rows,
+    ):
+        """Create this suite's empty run record; ``None`` if it cannot be.
+
+        Only for a backend the scheduler keeps alive: a local-parallel
+        pool's jobs are this process's children and die with it, so there
+        would never be anything to find.
+
+        Never fatal. A record that cannot be opened costs the next run its
+        ability to find this fleet, and nothing else — the console ids from
+        `dispatch.suite_submitted` remain the manual route they always were
+        (#435).
+        """
+        if not backend.scheduled:
+            return None
+        path = run_manifest_path(dispatch_root, run_token)
+        try:
+            return write_run_manifest(
+                path,
+                run_token=run_token,
+                backend=backend.name,
+                started_at=started_at,
+                suite_config=Path(suite_cfg.get_path()).resolve(),
+                plan=plan_path,
+                rows=rows,
+                status=STATUS_SUBMITTING,
+            )
+        except (OSError, TypeError, ValueError) as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.run_manifest_write_failed",
+                suite_dir=suite_dir,
+                path=str(path),
+                error=str(e),
+            )
+            return None
+
+    @staticmethod
+    def _grow_run_manifest(path, amend, value, *, suite_dir):
+        """Apply one incremental update to the run record, best effort.
+
+        The submissions this records have already been accepted by the
+        scheduler, so nothing here may raise into the fan-out: a failed
+        write would otherwise cancel a fleet that is correctly launched.
+        """
+        if path is None:
+            return
+        reason = amend(path, value)
+        if reason is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.run_manifest_write_failed",
+                suite_dir=suite_dir,
+                path=str(path),
+                error=reason,
+            )
+
+    @staticmethod
+    def _close_run_manifest(state, status):
+        """Record how one suite's fleet ended, for the next run (#521).
+
+        The manifest exists to tell a later invocation whether an earlier
+        one's jobs are still out there. A run that reaches collection or
+        teardown answers that itself, so it says so and the next run never
+        has to ask the scheduler about it. Best effort in both directions:
+        a status that cannot be written costs one wasted ``squeue`` and a
+        `dispatch.orphans_found` about a fleet that has in fact ended,
+        which the probe then retires as stale.
+        """
+        path = (state or {}).get("run_manifest")
+        if path is None:
+            return
+        reason = set_run_status(path, status)
+        if reason is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.run_manifest_status_failed",
+                path=str(path),
+                status=status,
+                error=reason,
+            )
+
+    @staticmethod
+    def _state_handles(state):
+        """Every job one collect state holds, compile jobs first.
+
+        One expression, because several places need it and a list that
+        forgot the verilate job (#593) would leave it running after an
+        interrupt, or out of the wait that makes the fleet this run's
+        responsibility. ``None`` entries — a suite that submitted no build
+        job — are dropped: they crash both ``wait_all`` and ``cancel_all``
+        (#361).
+        """
+        return [
+            handle
+            for handle in [
+                (state or {}).get("verilate_handle"),
+                (state or {}).get("build_handle"),
+                *(handle for _, handle in (state or {}).get("pending") or []),
+            ]
+            if handle is not None
+        ]
+
+    def _wait_or_cancel(self, backend, state):
+        """Await one submitted suite's fleet; cancel it if the head dies.
+
+        An interrupt (or a fatal error) on the head must not leave jobs
+        running after it exits and releases its tree lock. The build job is
+        awaited alongside the sim jobs, and a ``None`` build handle — a
+        suite that selected nothing submits no build — is dropped, since a
+        ``None`` crashes both ``wait_all`` and the ``cancel_all`` cleanup
+        path (#361).
+
+        The multi-suite regression does not use this: its cancel scope
+        spans submission of every suite, not just the wait.
+        """
+        handles = self._state_handles(state)
+        try:
+            backend.wait_all(handles)
+        except BaseException:
+            backend.cancel_all(handles)
+            # ...and the record follows the fleet, not the request: it says
+            # `cancelled` only once the jobs are really gone, and otherwise
+            # stays `running` so the next invocation still finds them (#521).
+            self._close_cancelled_run_manifest(backend, state)
+            raise
+
+    @staticmethod
+    def _dispatch_regression_namespaces(suite_configs):
+        """Namespace only suites whose resolved command root is shared."""
+        roots = [str(Path(cfg.get_path()).resolve().parent) for cfg in suite_configs]
+        counts = {}
+        for root in roots:
+            counts[root] = counts.get(root, 0) + 1
+        return {
+            str(Path(cfg.get_path()).resolve()): (
+                _dispatch_suite_identity(cfg.get_path())
+                if counts[str(Path(cfg.get_path()).resolve().parent)] > 1
+                else None
+            )
+            for cfg in suite_configs
+        }
+
+    def _validate_dispatch_test_artifacts(self, prepared_suites):
+        """Reject cross-suite test artefact collisions before submission."""
+        owners = {}
+        for prepared in prepared_suites:
+            if prepared["dispatch_namespace"] is None:
+                continue
+            suite_cfg = prepared["suite_cfg"]
+            suite_path = str(Path(suite_cfg.get_path()).resolve())
+            suite_dir = str(Path(suite_path).parent)
+            for entry in prepared["entries"]:
+                test_name = entry["cfg"].get_name()
+                artifact_dir = test_artifact_dir(
+                    suite_dir, test_name, run_tag=self._run_tag
+                )
+                key = str(artifact_dir)
+                previous = owners.get(key)
+                if previous is None:
+                    owners[key] = (suite_path, test_name)
+                    continue
+                previous_path, previous_name = previous
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dispatch.test_artifact_collision",
+                    suite_dir=suite_dir,
+                    artifact_dir=artifact_dir,
+                    first_suite=previous_path,
+                    first_test=previous_name,
+                    second_suite=suite_path,
+                    second_test=test_name,
+                )
+                raise FatalRtlBuddyError(
+                    "cannot dispatch regression: expanded tests "
+                    f"{previous_name!r} from {previous_path} and {test_name!r} "
+                    f"from {suite_path} share artifact directory {artifact_dir}; "
+                    "rename one test or place the suite configs in separate "
+                    "directories"
+                )
+
+    # How long `--orphans cancel` waits for a cancelled fleet to leave the
+    # queue before it refuses to run. `scancel` is asynchronous and
+    # COMPLETING counts as live, so the first re-probe can still see a job
+    # that is on its way out; this bounds that grace, and nothing else.
+    ORPHAN_CANCEL_WAIT_S = 30.0
+    ORPHAN_CANCEL_POLL_S = 2.0
+
+    def _discover_orphan_runs(
+        self, backend, dispatch_root, *, run_token, suite_config=None
+    ):
+        """Interrupted runs of this suite whose jobs are still on the cluster.
+
+        The scan is over run manifests, never over scheduler job names: two
+        invocations of one suite submit the same build-job name — that is
+        exactly what the shared-build dedup serialises on (#515) — so a
+        name-keyed search would happily adopt or cancel a colleague's fleet.
+        A manifest is one head's record of one fan-out, and the ``run_token``
+        in it is what the envelopes its jobs write are stamped with.
+
+        Every manifest still marked ``running`` is put to the backend: a
+        manifest with nothing live left behind it is a head that died after
+        its fleet finished, so it is retired as ``stale`` and never probed
+        again. Returns one record per manifest that still has live jobs.
+
+        ``run_token`` is this invocation's own nonce, and the only thing
+        that excludes a manifest from the scan — see
+        :func:`discover_run_manifests` for why the pid cannot do it.
+        ``dispatch_root`` is the suite's whole ``.dispatch/`` tree rather
+        than the directory this run writes to, and ``suite_config`` is what
+        keeps the widened scan to this suite's own records.
+        """
+        if not backend.scheduled:
+            # local-parallel runs its jobs as this process's children; an
+            # interrupted run of it leaves nothing behind to discover, and
+            # probing would be a query about jobs that cannot exist.
+            return []
+        orphans = []
+        for path, payload in discover_run_manifests(
+            dispatch_root, run_token=run_token, suite_config=suite_config
+        ):
+            try:
+                handles = handles_from(payload)
+            except (KeyError, TypeError, ValueError) as e:
+                # A manifest from a neighbouring rtl_buddy whose job specs
+                # this one cannot rebuild. Skipped rather than fatal: this
+                # run has submitted nothing yet, and refusing to start
+                # because of a file another version wrote would make an
+                # upgrade unrunnable.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "dispatch.orphan_run_unreadable",
+                    path=str(path),
+                    error=str(e)[:200],
+                )
+                continue
+            live = sorted(backend.live_job_ids(handles)) if handles else []
+            if live:
+                orphans.append(
+                    {
+                        "path": path,
+                        "payload": payload,
+                        "handles": handles,
+                        "live": live,
+                    }
+                )
+                continue
+            reason = set_run_status(path, STATUS_STALE)
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.orphan_run_stale",
+                path=str(path),
+                run_token=payload.get("run_token"),
+                jobs=len(handles),
+                error=reason,
+            )
+        return orphans
+
+    @staticmethod
+    def _warn_about_orphan_runs(orphans, *, suite_dir):
+        """Name an interrupted run's surviving jobs, and change nothing.
+
+        The default, and deliberately inert: this run proceeds with a fresh
+        fleet exactly as every release before #521 did. Acting by default
+        would mean either destroying a fleet that may be one minute from
+        finishing or binding this run's verdict to results it did not
+        submit, and neither is a decision to take on a user's behalf.
+
+        WARNING and console-visible, because the cost of not seeing it is a
+        doubled cluster footprint, and a long dispatched run's CI log is
+        often the only artefact anybody reads (#435).
+        """
+        for orphan in orphans:
+            payload = orphan["payload"]
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.orphans_found",
+                suite_dir=suite_dir,
+                manifest=str(orphan["path"]),
+                run_token=payload.get("run_token"),
+                pid=payload.get("pid"),
+                job_ids=group_job_ids(orphan["live"]),
+                jobs=len(orphan["live"]),
+                remedy=(
+                    "re-run with --orphans adopt to collect these jobs "
+                    "instead of submitting new ones, or --orphans cancel to "
+                    "scancel them first"
+                ),
+            )
+
+    def _cancel_orphan_runs(self, backend, orphans, *, suite_dir):
+        """``scancel`` an interrupted run's fleet, then proceed normally.
+
+        The handles are rebuilt from the manifest, so the cancellation goes
+        through the same per-cluster ``scancel`` any live run's teardown
+        uses — an id means nothing on a cluster that did not issue it
+        (#509). The manifest is marked ``cancelled`` whether or not the
+        scheduler agreed: what it records is this head's decision about the
+        run, and a job that had already ended is cancelled in the only
+        sense that matters here.
+        """
+        for orphan in orphans:
+            payload = orphan["payload"]
+            backend.cancel_all(orphan["handles"])
+            # `cancel_all` is best effort by contract — it does not read
+            # `scancel`'s exit status, and it could not act on a cluster it
+            # cannot reach. Confirm before believing it: retiring the
+            # manifest and submitting a second fleet beside one we failed
+            # to take down is the exact outcome this policy exists to
+            # prevent (#521 review).
+            self._confirm_orphan_cancelled(backend, orphan, suite_dir=suite_dir)
+            set_run_status(orphan["path"], STATUS_CANCELLED)
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.orphans_cancelled",
+                backend=backend.name,
+                suite_dir=suite_dir,
+                manifest=str(orphan["path"]),
+                run_token=payload.get("run_token"),
+                pid=payload.get("pid"),
+                job_ids=group_job_ids(orphan["live"]),
+                jobs=len(orphan["live"]),
+            )
+
+    def _await_fleet_gone(self, backend, handles):
+        """Re-probe until these jobs have left the queue; the ones still live.
+
+        ``[]`` means the cancellation took. ``scancel`` is asynchronous and
+        ``COMPLETING`` is a live state, so a job on its way out can still
+        answer the first probe — hence the bounded grace rather than a
+        single question.
+
+        What it must never do is conclude "gone" from silence. A failed
+        ``squeue`` reports the recorded ids LIVE
+        (:meth:`SlurmDispatchBackend.live_job_ids`), so an unreachable
+        controller comes back non-empty too, and every caller then errs
+        towards "that fleet may still be out there".
+        """
+        deadline = time.monotonic() + self.ORPHAN_CANCEL_WAIT_S
+        while True:
+            # Each probe is bounded by what is left of the grace period, so
+            # a wedged controller cannot hold this loop open past it: the
+            # timeout expires, the probe says "no answer", and that reads as
+            # "still live" like every other failed query (#580 review).
+            remaining = max(0.0, deadline - time.monotonic())
+            live = sorted(
+                backend.live_job_ids(
+                    handles, timeout_s=max(remaining, self.ORPHAN_CANCEL_POLL_S)
+                )
+            )
+            if not live:
+                return []
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return live
+            time.sleep(min(self.ORPHAN_CANCEL_POLL_S, remaining))
+
+    def _report_cancel_failed(self, backend, *, manifest, payload, suite_dir, live):
+        """The one WARNING every surviving-after-scancel fleet produces."""
+        log_console_event(
+            logger,
+            logging.WARNING,
+            "dispatch.orphans_cancel_failed",
+            backend=backend.name,
+            suite_dir=suite_dir,
+            manifest=str(manifest),
+            run_token=payload.get("run_token"),
+            pid=payload.get("pid"),
+            job_ids=group_job_ids(live),
+            jobs=len(live),
+            waited_sec=round(self.ORPHAN_CANCEL_WAIT_S, 1),
+        )
+
+    def _confirm_orphan_cancelled(self, backend, orphan, *, suite_dir):
+        """Fatal unless the orphan's fleet really has left the queue."""
+        live = self._await_fleet_gone(backend, orphan["handles"])
+        if not live:
+            return
+        self._report_cancel_failed(
+            backend,
+            manifest=orphan["path"],
+            payload=orphan["payload"],
+            suite_dir=suite_dir,
+            live=live,
+        )
+        raise FatalRtlBuddyError(
+            f"--orphans cancel could not take down the interrupted run "
+            f"recorded in {orphan['path']}: {' '.join(live)} "
+            f"{'is' if len(live) == 1 else 'are'} still queued or running "
+            f"after {round(self.ORPHAN_CANCEL_WAIT_S)}s (or the scheduler "
+            "could not be asked). Nothing was submitted — a second fleet "
+            "beside that one would write the same artefact directories. "
+            "Cancel them by hand (scancel " + " ".join(live) + ") and "
+            "re-run, or use --orphans adopt to collect them instead."
+        )
+
+    def _close_cancelled_run_manifest(self, backend, state):
+        """Mark this run's own record `cancelled` — but only if it is true.
+
+        The head cancels its fleet on the way out of an interrupt or a
+        ``max-wait``, and ``cancel_all`` is best effort: it never reads
+        ``scancel``'s exit status. Writing `cancelled` on the strength of
+        having *asked* is how a fleet that survived the request becomes
+        invisible — settled in the record, running on the cluster, and
+        skipped by the next run's probe (#521 review). So the record is
+        retired only once the jobs are gone, and otherwise left at
+        `running` for the next invocation to find.
+
+        Never raises: this runs while the head is already unwinding from
+        the failure that cancelled the fleet, and that exception is the one
+        the user needs to see.
+        """
+        path = (state or {}).get("run_manifest")
+        if path is None:
+            return
+        handles = self._state_handles(state)
+        live = self._await_fleet_gone(backend, handles) if handles else []
+        if live:
+            self._report_cancel_failed(
+                backend,
+                manifest=path,
+                payload={"run_token": state.get("run_token")},
+                suite_dir=self._cwd_of_state(state),
+                live=live,
+            )
+            return
+        self._close_run_manifest(state, STATUS_CANCELLED)
+
+    def _cwd_of_state(self, state):
+        """The suite directory one collect state's jobs were submitted from."""
+        for handle in self._state_handles(state):
+            return getattr(handle.spec, "suite_dir", None)
+        return None
+
+    def _adopt_orphan_run(
+        self,
+        orphans,
+        *,
+        backend,
+        suite_cfg,
+        suite_dir,
+        dispatch_cfg,
+        entries,
+        suite_results,
+        master_seed,
+    ):
+        """Collect an interrupted run's fleet instead of submitting one (#521).
+
+        Returns the same collect state a submission would have, rebuilt
+        from the manifest: the orphan's handles, its ``run_token`` (which
+        is what makes its jobs' envelopes acceptable to *this* head, #362),
+        and its submission time (which is what retry classification dates
+        artefacts against, #405). Nothing is submitted and no new plan is
+        written — the adopted jobs are already reading the plan their own
+        head wrote, and a second plan at this pid's path would name a run
+        that does not exist.
+
+        Every way this could collect the wrong thing is a hard error rather
+        than a fallback to submitting, because the fallback is the failure:
+        it would run the suite twice over one set of artefact directories.
+        """
+        if not orphans:
+            raise FatalRtlBuddyError(
+                f"--orphans adopt found no interrupted run of {suite_dir} with "
+                "jobs still queued or running. Nothing was submitted. Drop "
+                "--orphans (or pass --orphans warn) to run the suite normally."
+            )
+        if len(orphans) > 1:
+            listed = ", ".join(
+                f"{orphan['path']} (run_token "
+                f"{orphan['payload'].get('run_token')}, "
+                f"{len(orphan['live'])} live jobs)"
+                for orphan in orphans
+            )
+            raise FatalRtlBuddyError(
+                f"--orphans adopt found {len(orphans)} interrupted runs of "
+                f"{suite_dir} with live jobs and cannot choose between them: "
+                f"{listed}. Cancel the ones you do not want (scancel their "
+                "ids, or re-run with --orphans cancel to take all of them "
+                "down) and try again."
+            )
+        orphan = orphans[0]
+        payload = orphan["payload"]
+        manifest_path = orphan["path"]
+        if payload.get("status") == STATUS_SUBMITTING:
+            # The head died mid-fan-out, so this record names the jobs it
+            # got as far as submitting and no more. Those are live and must
+            # be dealt with, but a partial fleet cannot be collected into a
+            # complete result — the rows it never submitted would score as
+            # "produced no result" for jobs that were never launched.
+            raise FatalRtlBuddyError(
+                f"--orphans adopt cannot adopt {manifest_path} (run_token "
+                f"{payload.get('run_token')}, submitted by pid "
+                f"{payload.get('pid')}): that head was killed while it was "
+                "still submitting, so the record names only part of its "
+                f"fleet ({len(payload.get('pending') or [])} job(s) and no "
+                "guarantee there were not more). Re-run with --orphans "
+                "cancel to take down what it did launch and start over."
+            )
+        this_config = str(Path(suite_cfg.get_path()).resolve())
+        if payload.get("suite_config") != this_config:
+            raise self._adopt_mismatch(
+                manifest_path,
+                payload,
+                "it was submitted for test config "
+                f"{payload.get('suite_config')!r}, not {this_config!r}",
+            )
+        if payload.get("backend") != backend.name:
+            raise self._adopt_mismatch(
+                manifest_path,
+                payload,
+                f"it was submitted with the {payload.get('backend')!r} backend, "
+                f"not {backend.name!r}",
+            )
+        planned = [(row["test_name"], row["randmode_i"]) for row in suite_results]
+        recorded = row_identities(payload)
+        if recorded != planned:
+            only_recorded = [row for row in recorded if row not in planned]
+            only_planned = [row for row in planned if row not in recorded]
+            difference = []
+            if only_recorded:
+                difference.append(
+                    "it ran "
+                    + ", ".join(self._row_label(row) for row in only_recorded[:10])
+                )
+            if only_planned:
+                difference.append(
+                    "this run plans "
+                    + ", ".join(self._row_label(row) for row in only_planned[:10])
+                )
+            if not difference:
+                # Same rows, different order: the plan expanded differently,
+                # which is as much a mismatch as a different set — the row
+                # index is what binds a job to a result.
+                difference.append("its tests are in a different order")
+            raise self._adopt_mismatch(manifest_path, payload, "; ".join(difference))
+        # ...and then the plan itself. The rows above are only names and run
+        # ids: two invocations can agree on every one of them and still be
+        # different runs — a changed plusdefine, a different `--master-seed`,
+        # an edited `resources:` or builder, an edited tests.yaml. Those
+        # produce a different simulation, and adopting across them would
+        # report the orphan's results under this run's configuration
+        # (#521 review). The orphan's own plan manifest is the record of what
+        # its jobs are executing, so it is what this invocation's fresh
+        # expansion is held against, field by field.
+        plan_difference = self._adopt_plan_difference(payload, entries, master_seed)
+        if plan_difference is not None:
+            raise self._adopt_mismatch(manifest_path, payload, plan_difference)
+        (
+            suite_compile,
+            build_compile_resources,
+            build_compile_origins,
+            build_parallel,
+            verilate_resources,
+            verilate_origins,
+        ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
+        # ...and finally what the plan does not carry. `--builder-mode`,
+        # `--builder`, `--extra-sim-timeout`, the forwarded shared-build root
+        # and `--rebuild` are invocation-level, and the resolved reservation
+        # is per-run configuration: they reach the jobs on their specs, never
+        # through the plan, so two runs can plan identically and still
+        # compile, reserve and simulate differently (#521/#580 review).
+        spec_difference = self._adopt_spec_difference(
+            payload,
+            sim_resources=self._planned_sim_resources(
+                entries, dispatch_cfg=dispatch_cfg, suite_compile=suite_compile
+            ),
+            build_resources=self._scaled_build_resources(
+                build_compile_resources, build_parallel
+            ),
+            # ...and the verilate job's, on the same footing (#593): a suite
+            # that has raised `compile.verilate.mem` since the orphan went
+            # out would otherwise adopt a fleet whose verilation was killed
+            # under the old figure and report that as this run's verdict.
+            verilate_resources=self._scaled_build_resources(
+                verilate_resources, build_parallel
+            ),
+        )
+        if spec_difference is not None:
+            raise self._adopt_mismatch(manifest_path, payload, spec_difference)
+        try:
+            build_handle = build_from(payload)
+            verilate_handle = verilate_from(payload)
+            pending = pending_from(payload)
+        except (KeyError, TypeError, ValueError) as e:
+            raise self._adopt_mismatch(
+                manifest_path, payload, f"its job records cannot be read ({e})"
+            ) from e
+
+        # Put the submit-time reservation metadata back on the rows this
+        # head just planned. Right-sizing reads it per row (which cpus were
+        # requested, which compile floor bounds the advice) and only the
+        # head that submitted these jobs ever knew it; without this an
+        # adopted run would produce sacct telemetry with nothing to judge it
+        # against. `results` is deliberately not in the manifest — the fresh
+        # expansion owns the skip/setup verdicts, and every runnable row's
+        # result comes from the envelope at collect.
+        for row, recorded_row in zip(suite_results, payload.get("rows") or []):
+            for key, value in recorded_row.items():
+                if key != "results":
+                    row[key] = value
+
+        log_console_event(
+            logger,
+            logging.INFO,
+            "dispatch.orphans_adopted",
+            backend=backend.name,
+            suite_dir=suite_dir,
+            manifest=str(manifest_path),
+            run_token=payload.get("run_token"),
+            pid=payload.get("pid"),
+            job_ids=group_job_ids(orphan["live"]),
+            jobs=len(orphan["live"]),
+            build_job=build_handle.job_id if build_handle is not None else None,
+            verilate_job=(
+                verilate_handle.job_id if verilate_handle is not None else None
+            ),
+        )
+        return {
+            "suite_results": suite_results,
+            "pending": pending,
+            "build_handle": build_handle,
+            "verilate_handle": verilate_handle,
+            # The ORPHAN's token, not this invocation's: its jobs stamp
+            # their envelopes with the token their own head planned them
+            # with, and collection accepts an envelope by that identity.
+            "run_token": payload.get("run_token"),
+            "submitted_at": payload.get("submitted_at"),
+            "suite_compile": suite_compile,
+            "build_compile_resources": build_compile_resources,
+            "build_compile_origins": build_compile_origins,
+            "verilate_resources": verilate_resources,
+            "verilate_origins": verilate_origins,
+            # Re-read from THIS invocation's backend rather than recorded:
+            # an `sbatch-args` cpu override is a property of the config an
+            # edit hint would tell the user to change, and that is the one
+            # in front of them now.
+            "cpus_override": cpu_request_overrides(backend.effective_sbatch_args),
+            "run_manifest": manifest_path,
+            # This suite launched nothing: its jobs predate the invocation,
+            # so a failure elsewhere in the run must not cancel them before
+            # the fleet-wide wait has made them this run's responsibility.
+            "adopted": True,
+        }
+
+    @staticmethod
+    def _resources_dict(resources):
+        """One resolved reservation as the manifest records it."""
+        if resources is None:
+            return None
+        return {
+            "cpus": resources.cpus,
+            "mem": resources.mem,
+            "time": resources.time,
+        }
+
+    def _adopt_spec_difference(
+        self, payload, *, sim_resources, build_resources, verilate_resources=None
+    ):
+        """First recorded job option that differs from this run's, else ``None``.
+
+        The plan describes the tests; these describe the invocation. A
+        ``--builder-mode debug`` re-run adopting a ``reg`` fleet would
+        report results from binaries it did not ask for, and a
+        ``--rebuild`` that adopts is a rebuild that never happened — so
+        every option the head puts on a job spec rather than in the plan is
+        compared here.
+
+        The **resolved reservation** is compared for the same reason and is
+        the one that bites hardest (#580 review): a test that inherits
+        ``cfg-dispatch.resources`` carries no reservation of its own in the
+        plan, so raising ``time`` after an orphan hit its old limit changes
+        nothing the plan comparison can see — and adopting would return the
+        scheduler TIMEOUT from the *old* limit as this run's verdict, which
+        is exactly the failure the edit was meant to fix.
+
+        ``expect_prebuilt`` and a simulation job's ``rebuild`` are derived
+        rather than chosen (they follow from whether the suite submitted a
+        build job), so they are checked against the record's own build
+        entry: a manifest whose specs disagree with it is not one to
+        collect from.
+        """
+        shared = {
+            "builder_mode": self.rtl_builder_mode,
+            "builder_override": self._builder_override,
+            "extra_sim_timeout": self._extra_sim_timeout_override,
+            # What the head FORWARDS to a job, not what it resolved for
+            # itself: an explicit disable travels as `""` and an absent
+            # setting as `None`, and comparing against the resolved root
+            # would read those two as the same thing — refusing a re-run
+            # that repeats the disable, and accepting one that introduces
+            # it (#580 review).
+            "shared_build_root": self.shared_build_root_for_jobs,
+        }
+
+        def compare(spec, what, expected):
+            for field, want in expected.items():
+                got = spec.get(field)
+                if isinstance(want, dict) and isinstance(got, dict):
+                    for key in sorted(set(want) | set(got)):
+                        if got.get(key) != want.get(key):
+                            return (
+                                f"its {what} was submitted with "
+                                f"{field}.{key}={got.get(key)!r}, this run "
+                                f"would submit {want.get(key)!r}"
+                            )
+                    continue
+                if got != want:
+                    return (
+                        f"its {what} was submitted with {field}="
+                        f"{got!r}, this run would submit {want!r}"
+                    )
+            return None
+
+        build = payload.get("build")
+        # Read out here as well as compared below: a simulation job's
+        # derived `expect_prebuilt` and `rebuild` follow from whether the
+        # suite submitted a build job at all.
+        build_spec = build.get("spec") if isinstance(build, dict) else None
+        for key, what, resources in (
+            ("verilate", "verilate job", verilate_resources),
+            ("build", "build job", build_resources),
+        ):
+            entry = payload.get(key)
+            spec = entry.get("spec") if isinstance(entry, dict) else None
+            if spec is None:
+                continue
+            difference = compare(
+                spec,
+                what,
+                {
+                    **shared,
+                    "rebuild": self.rebuild,
+                    "resources": self._resources_dict(resources),
+                },
+            )
+            if difference is not None:
+                return difference
+        for entry in payload.get("pending") or []:
+            spec = entry.get("spec")
+            if not isinstance(spec, dict):
+                return "one of its job records has no spec"
+            test_name = spec.get("test_name")
+            if test_name not in sim_resources:
+                return f"it ran a test this run does not plan: {test_name!r}"
+            difference = compare(
+                spec,
+                f"job for {test_name!r}",
+                {
+                    **shared,
+                    # A gated job never carries --rebuild: the build job has
+                    # already rebuilt and its stamp is what stops the array
+                    # from compiling (#494/#369).
+                    "rebuild": self.rebuild and build_spec is None,
+                    "expect_prebuilt": build_spec is not None,
+                    "resources": self._resources_dict(sim_resources[test_name]),
+                },
+            )
+            if difference is not None:
+                return difference
+        return None
+
+    @staticmethod
+    def _scaled_build_resources(resources, parallel):
+        """The build job's reservation once ``compile.parallel`` is applied.
+
+        Scaling happens ONLY here: the very same resolved compile resources
+        size an in-job compile's sim reservation and the right-sizing
+        compile floor, where one compile is still one serial build. A fresh
+        :class:`JobResources`, so the scaling cannot reach those callers
+        through a shared object.
+
+        Deliberately unbounded above: the only ceiling that matters is the
+        widest node in the target partition, and the head is a login node
+        whose own cpu_count says nothing about it. A guessed threshold
+        would fire on correct configs on a fat-node cluster and stay silent
+        on a thin one, so an oversized ``parallel`` is caught where it is
+        real — sbatch rejects the submission and
+        ``SlurmDispatchBackend.submit_build`` raises. Sizing ``parallel``
+        against the partition is a docs obligation instead; see
+        docs/concepts/dispatch.md and docs/known-issues.md.
+
+        Shared with the adoption check (#580 review), which has to know
+        what this invocation *would* have reserved without submitting it.
+        """
+        if parallel <= 1:
+            return resources
+        return JobResources(
+            cpus=resources.cpus * parallel,
+            # mem/time are NOT scaled: N concurrent Verilations need roughly
+            # N times the memory but the same wall clock as the longest one,
+            # and guessing either for a project is worse than making it size
+            # cfg-dispatch.compile deliberately.
+            mem=resources.mem,
+            time=resources.time,
+        )
+
+    def _planned_sim_resources(self, entries, *, dispatch_cfg, suite_compile):
+        """``{test name: JobResources}`` this invocation would submit with.
+
+        The same resolution the fan-out performs, run again here because an
+        adoption never reaches the fan-out and still has to know what it
+        *would* have asked the scheduler for. Names are unique after sweep
+        expansion, so they key it.
+        """
+        resolved = {}
+        for entry in entries:
+            cfg = entry["cfg"]
+            resources = resolve_resources(dispatch_cfg, cfg)
+            if entry["compile_in_job"]:
+                entry_tb_compile = getattr(cfg.get_testbench(), "compile", None)
+                resources, _governed_by = combine_for_in_job_compile(
+                    resources,
+                    resolve_compile_resources(
+                        dispatch_cfg, suite_compile, entry_tb_compile
+                    ),
+                )
+            resolved[cfg.get_name()] = resources
+        return resolved
+
+    @staticmethod
+    def _adopt_plan_difference(payload, entries, master_seed):
+        """First way the orphan's plan differs from this one; else ``None``.
+
+        Compares the orphan's ``plan-<pid>.json`` — the JSON-safe
+        ``TestConfig.to_plan_dict()`` its build and simulation jobs are
+        actually executing — against this invocation's freshly expanded
+        entries, element-wise and in plan order, plus the master seed the
+        plan was written with.
+
+        That dict is deliberately the whole config: plusargs, plusdefines,
+        the resolved testbench, hook paths, per-test ``resources:``, the
+        builder, xfail, and the resolved seed with its provenance. So a
+        different ``--master-seed`` shows up as a different
+        ``resolved_seed``, an edited tests.yaml as a different field, and
+        an unreadable or older-schema plan as a refusal rather than a
+        guess.
+
+        One consequence is worth stating: a run whose seeds are drawn
+        fresh every time (``rb randtest`` with new seeds) plans different
+        `resolved_seed` values on every invocation and can therefore never
+        be adopted. That is the honest answer — those jobs are simulating
+        seeds this invocation did not ask for.
+        """
+
+        def short(value):
+            text = repr(value)
+            return text if len(text) <= 120 else text[:117] + "..."
+
+        plan_path = payload.get("plan")
+        try:
+            recorded = json.loads(Path(plan_path).read_text())
+        except (OSError, TypeError, ValueError) as e:
+            return f"its plan {plan_path} cannot be read ({str(e)[:200]})"
+        if not isinstance(recorded, dict):
+            return f"its plan {plan_path} is not a JSON object"
+        if recorded.get("schema_version") != PLAN_SCHEMA_VERSION:
+            return (
+                f"its plan has schema_version "
+                f"{recorded.get('schema_version')!r}, not {PLAN_SCHEMA_VERSION} "
+                "(it was written by a different rtl_buddy)"
+            )
+        if recorded.get("master_seed") != master_seed:
+            return (
+                f"it was planned with master seed "
+                f"{recorded.get('master_seed')!r}, this run with "
+                f"{master_seed!r}"
+            )
+        was_tests = recorded.get("tests")
+        if not isinstance(was_tests, list):
+            return f"its plan {plan_path} has no `tests` list"
+        now_tests = [entry["cfg"].to_plan_dict() for entry in entries]
+        if len(was_tests) != len(now_tests):
+            return (
+                f"it planned {len(was_tests)} test(s), this run plans {len(now_tests)}"
+            )
+        for index, (was, now) in enumerate(zip(was_tests, now_tests)):
+            if not isinstance(was, dict):
+                return f"its plan entry {index} is not a JSON object"
+            for key in sorted(set(was) | set(now)):
+                if was.get(key) == now.get(key):
+                    continue
+                name = now.get("name") or was.get("name")
+                return (
+                    f"test {name!r} (plan index {index}) differs in {key!r}: "
+                    f"it ran {short(was.get(key))}, this run plans "
+                    f"{short(now.get(key))}"
+                )
+        return None
+
+    @staticmethod
+    def _row_label(row):
+        """``test`` or ``test:run_id`` for one ``(name, run id)`` row."""
+        name, run_id = row
+        return name if run_id is None else f"{name}:{run_id}"
+
+    @staticmethod
+    def _adopt_mismatch(manifest_path, payload, difference):
+        """The one error shape every failed adoption takes."""
+        return FatalRtlBuddyError(
+            f"--orphans adopt cannot adopt {manifest_path} (run_token "
+            f"{payload.get('run_token')}, submitted by pid "
+            f"{payload.get('pid')}): {difference}. Adopting it would score "
+            "this run against a fleet that is not the one it planned. Re-run "
+            "with --orphans cancel to take those jobs down and start over, or "
+            "with the same arguments the interrupted run used."
+        )
+
+    def _resolve_build_compile(self, suite_cfg, dispatch_cfg, entries):
+        """The compile's reservations, as this invocation would submit them.
+
+        ``(suite compile block, build reservation, its origins, parallel,
+        verilate reservation, its origins)``.
+
+        The suite's own ``compile:`` block (#497) is the most specific
+        suite-wide layer of the compile reservation and is per suite
+        exactly like the build job it sizes, so it is read once and
+        threaded to every consumer — the build job, the in-job compile
+        combination, and the post-run advice, which has no ``suite_cfg``
+        of its own — rather than re-read where each of them needs it. An
+        adopted run (#521) rebuilds its state through the same helper.
+
+        The reservation is aggregated over the builds this plan produces
+        (#551); see the comments below for the key and the ``parallel``
+        the aggregation is scheduled against.
+        """
+        suite_compile = suite_cfg.get_compile()
+        # The suite's own `compile:` block, if any (#497) — the most
+        # specific layer of the compile reservation, and per suite exactly
+        # like the build job it sizes. Read once here and threaded to both
+        # consumers (the build job below, the in-job compile combination
+        # further down) so the two can never resolve differently, and
+        # stashed in the returned state for the post-run advice, which has
+        # no suite_cfg of its own.
+        # The BUILDS this plan will produce, in plan order, each paired with
+        # the `compile:` block that sizes it. The one build job compiles all
+        # of them, so its reservation is aggregated over these (#551) — and
+        # a testbench nobody selected contributes no build, so it must not
+        # inflate that reservation.
+        #
+        # One entry per distinct compile, not per distinct testbench: the
+        # build job groups on the post-preproc `compile_group_dir`, so two
+        # selected tests sharing a testbench but differing in plusdefines,
+        # builder or model compile SEPARATELY and each hold their own peak.
+        # Collapsing them would give two 40-minute builds 40 minutes, and
+        # two 96G builds 96G (#551 review round 2).
+        #
+        # The key is the head-visible half of that grouping. The head cannot
+        # see the real key without writing filelists on the submit host
+        # (#458), so this is one reservation per distinct (testbench,
+        # plusdefines, builder, model, assertions) among the planned tests.
+        # Exact where those ingredients differ, and wrong in one direction
+        # only where they do not: two configs that happen to resolve to the
+        # same group_dir are counted twice, and the job is reserved for a
+        # build it does not run.
+        #
+        # Two shapes are keyed per test instead, both of them the opposite
+        # direction — an under-count is what they prevent.
+        #
+        # The first is a `preproc:` hook. The build job runs PRE before it
+        # probes `compile_group_dir()`, and a hook is free to set
+        # plusdefines on the config it is handed — so the ingredients this
+        # key snapshots are the ones BEFORE the hook, and two configs that
+        # look identical here can leave PRE wanting different builds. A
+        # test with a preprocessing hook is therefore assumed to produce
+        # its own compile (#551 review round 5). The alternative is running
+        # every project's hooks on the submit host to find out, which is
+        # the build job's work and #458's whole point.
+        #
+        # The second is a builder that cannot share. A config
+        # whose builder cannot share a build compiles to its OWN output path
+        # (`group_dir` is the resolved simv, per test), so the build job —
+        # which runs PRE+COMPILE for the WHOLE plan, self-compiling configs
+        # included, see the build-job skip decision below — puts each of
+        # them in a group of its own however identical their ingredients
+        # are. The test name goes into the key for those, so two of them
+        # count as the two concurrent builds they are rather than one
+        # (#551 review round 3). Not the run id: a fan-out over run_ids
+        # shares `artefacts/<test>/`, which is one build.
+        #
+        # `parallel` is resolved here rather than inside the submit helper
+        # because the aggregation needs it: memory adds up across the builds
+        # that can be in flight together, and the wall clock is their
+        # schedule. The same expression the build job is submitted with,
+        # computed once and passed to both.
+        planned_builds = []
+        seen_builds = set()
+        for entry in entries:
+            cfg = entry["cfg"]
+            tb = cfg.get_testbench()
+            tb_name = getattr(tb, "name", None)
+            tb_compile = getattr(tb, "compile", None)
+            model = cfg.get_model()
+            key = (
+                tb_name,
+                getattr(tb_compile, "cpus", None),
+                getattr(tb_compile, "mem", None),
+                getattr(tb_compile, "time", None),
+                # repr, not the value: a plusdefine is whatever the YAML or
+                # a sweep hook put there, and the key only has to separate
+                # configs, not survive a round trip.
+                tuple(
+                    sorted(
+                        (str(k), repr(v))
+                        for k, v in (cfg.get_plusdefines() or {}).items()
+                    )
+                ),
+                cfg.get_builder_name(),
+                getattr(model, "name", None),
+                getattr(model, "path", None),
+                # `assertions: true` puts Verilator's SVA flags into the
+                # compile command, and `_build_compile_plan` folds those
+                # into `key_cmd` — so two otherwise-identical tests that
+                # disagree about it are two builds (#551 review round 4).
+                getattr(cfg, "assertions", False),
+                # Per-test output dir, so per-test build — see above; and
+                # per-test again for a config with a `preproc:` hook, whose
+                # plusdefines this key snapshots BEFORE the hook has run.
+                cfg.get_name()
+                if entry["compile_in_job"] or cfg.get_preproc_path()
+                else None,
+            )
+            if key in seen_builds:
+                continue
+            seen_builds.add(key)
+            planned_builds.append((tb_name, tb_compile))
+        build_parallel = max(
+            1, min(compile_parallel(dispatch_cfg, suite_compile), len(entries))
+        )
+        build_compile_resources, build_compile_origins = aggregate_compile_resources(
+            dispatch_cfg,
+            suite_compile,
+            planned_builds,
+            parallel=build_parallel,
+        )
+        # ...and the same aggregation over the verilate keys, for the job in
+        # front of it (#593). Resolved unconditionally, even where the
+        # compile is not split: an adoption compares what THIS invocation
+        # would have reserved, and a suite that has since turned the split
+        # off must still be able to say what the orphan's verilate job was
+        # sized from.
+        verilate_resources, verilate_origins = aggregate_verilate_resources(
+            dispatch_cfg,
+            suite_compile,
+            planned_builds,
+            parallel=build_parallel,
+        )
+
+        return (
+            suite_compile,
+            build_compile_resources,
+            build_compile_origins,
+            build_parallel,
+            verilate_resources,
+            verilate_origins,
+        )
+
+    def _suite_splits_verilate(self, backend, dispatch_cfg, suite_compile, entries):
+        """Should this suite's compile go out as two chained jobs (#593)?
+
+        Four conditions, and the answer is no unless all of them hold:
+
+        * the backend can chain jobs. Only Slurm can: the split's whole
+          mechanism is a second submission with ``--dependency=afterok``
+          on the first, and a pool that runs jobs itself has nothing to
+          express that with.
+        * ``compile.split-verilate`` resolves true (default), so a project
+          whose Verilator predates ``--no-verilate``, or whose compiles are
+          too short to be worth two queue waits, can turn it off.
+        * every planned build compiles with the plain ``verilator
+          --binary`` line. cocotb and SystemC drive their own sim classes
+          and replace ``--binary`` with an ``--exe --build`` of their own,
+          and a mixed suite would have to verilate the odd build under the
+          build job's reservation anyway — so one entry that is not makes
+          the whole suite unsplit.
+        * the builder is resolvable at all. An unresolvable one is a
+          failure the build job reports per test; it must not decide how
+          the suite is submitted.
+        """
+        if backend.name != "slurm":
+            return False
+        if not compile_split_verilate(dispatch_cfg, suite_compile):
+            return False
+        for entry in entries:
+            cfg = entry["cfg"]
+            tb = cfg.get_testbench()
+            if tb.is_cocotb() or tb.is_systemc():
+                return False
+            try:
+                builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(
+                    cfg.get_builder_name()
+                )
+            except FatalRtlBuddyError:
+                return False
+            if builder_cfg.get_simulator_family() != "verilator":
+                return False
+        return bool(entries)
+
+    def _dispatch_suite_submit(
+        self,
+        suite_cfg,
+        backend,
+        *,
+        run_token,
+        prepared=None,
+        dispatch_namespace=None,
+        test_name=None,
+        reg_level=None,
+        start_level=None,
+        run_ids=None,
+        seed_mode: SeedMode = SeedMode.DEFAULT,
+        replay_run_id=None,
+        master_seed: int | None = None,
+    ):
+        """Plan + build job + array fan-out for one suite; no waiting (#351).
+
+        Nothing heavy runs on the submit host (usually an interactive login
+        node). Phases: (1) **plan** — expand the suite's sweep hooks *once*
+        on the head and write the resulting configs to a plan manifest.
+        (2) submit a **build job** that compiles the shared executable on a
+        compute node (``rb _build-job --plan``, share-build) — skipped when
+        no planned test's builder can share a build, since its output would
+        be unreadable to every sim job (#358). (3) Fan-out — group the sim
+        jobs by resolved resources into ``sbatch`` arrays (``rb _test-job
+        --plan``), each gated on the build via ``--dependency=afterok`` (a
+        sim only starts once its shared build succeeded; its own
+        ``compile()`` then short-circuits on the stamp and it runs SIM+POST).
+        A group whose builder compiles inside the job instead is left
+        ungated and carries a reservation covering both phases. Neither the
+        build job nor the sim jobs re-run the sweep hook — they read the
+        plan. Returns collect state for
+        :meth:`_dispatch_collect` including the build handle; the caller
+        owns the (cross-suite) wait. Partial submissions are cancelled here
+        on a mid-fan-out failure; the caller additionally cancels the whole
+        fleet on a later failure or interrupt.
+        """
+        if run_ids is None:
+            run_ids = [None]
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        suite_config_path = str(Path(suite_cfg.get_path()).resolve())
+        dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+        # The suite's whole `.dispatch/` tree, and the directory THIS
+        # invocation writes to. They differ whenever a regression namespaces
+        # co-located suite configs: discovery has to search the tree (a plain
+        # `rb test` on either config writes to the root, a regression to a
+        # namespace below it) while every file this run writes still goes
+        # where this invocation computed (#580 review).
+        dispatch_base = run_artifact_root(suite_dir, self._run_tag) / ".dispatch"
+        dispatch_root = dispatch_base
+        if dispatch_namespace is not None:
+            dispatch_root /= dispatch_namespace
+        # When this head started work on this suite, for the run manifest
+        # below — the reader of an interrupted run's manifest has no other
+        # way to tell a fleet submitted minutes ago from one from yesterday.
+        started_at = time.time()
+        # (0) An earlier run of this suite whose head died with its fleet
+        # still on the cluster (#521). Probed BEFORE anything is planned, so
+        # `--orphans cancel` takes the old fleet down before this one
+        # competes with it for the same nodes, and `--orphans adopt` can
+        # decline to submit at all.
+        orphans = self._discover_orphan_runs(
+            backend,
+            dispatch_base,
+            run_token=run_token,
+            suite_config=suite_config_path,
+        )
+        if orphans and self._orphans_policy == "cancel":
+            self._cancel_orphan_runs(backend, orphans, suite_dir=suite_dir)
+            orphans = []
+        elif orphans and self._orphans_policy == "warn":
+            self._warn_about_orphan_runs(orphans, suite_dir=suite_dir)
+        if prepared is None:
+            suite_results = []
+            # (1) Plan: one sweep expansion for the whole suite, on the head.
+            entries = self._plan_dispatch_suite(
+                suite_cfg,
+                test_name=test_name,
+                reg_level=reg_level,
+                start_level=start_level,
+                run_ids=run_ids,
+                suite_results=suite_results,
+                seed_mode=seed_mode,
+                master_seed=master_seed,
+            )
+        else:
+            entries = prepared["entries"]
+            suite_results = prepared["suite_results"]
+        if self._orphans_policy == "adopt":
+            # Collect the orphan instead of launching anything. Checked
+            # before the zero-test early return below, so "you asked to adopt
+            # and this invocation plans nothing" is a diagnosed mismatch
+            # rather than a silent no-op that leaves the fleet running.
+            return self._adopt_orphan_run(
+                orphans,
+                backend=backend,
+                suite_cfg=suite_cfg,
+                suite_dir=suite_dir,
+                dispatch_cfg=dispatch_cfg,
+                entries=entries,
+                suite_results=suite_results,
+                master_seed=master_seed,
+            )
+        if not entries:
+            # Every test filtered out by -l/-s: nothing to compile or run.
+            # Submitting a build job here would queue an rb _build-job that
+            # iterates nothing and make wait_all block on it for zero work.
+            return {
+                "suite_results": suite_results,
+                "pending": [],
+                "build_handle": None,
+                "verilate_handle": None,
+            }
+
+        (
+            suite_compile,
+            build_compile_resources,
+            build_compile_origins,
+            build_parallel,
+            verilate_resources,
+            verilate_origins,
+        ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
+
+        # ``run_token`` is the head's per-invocation nonce (one per regression
+        # run, shared across suites). Threaded to every sim job through the
+        # plan; each job stamps it into its result envelope so collection
+        # tells this run's result from a stale one by identity, not absence
+        # (#362).
+        plan_path = write_plan(
+            run_scoped_path(dispatch_root, "plan", run_token),
+            str(suite_cfg.get_path()),
+            [e["cfg"] for e in entries],
+            run_token,
+            master_seed=master_seed,
+        )
+
+        # The run record is opened HERE, before anything is submitted, and
+        # grown as each handle is accepted (#521 review). The window it
+        # exists to cover opens at the first `sbatch`: a head killed
+        # between its build job and its last array leaves those jobs
+        # running, and writing the record only after the whole fan-out
+        # would leave nothing on disk to find them by.
+        run_manifest = self._open_run_manifest(
+            backend,
+            dispatch_root,
+            suite_cfg=suite_cfg,
+            suite_dir=suite_dir,
+            run_token=run_token,
+            started_at=started_at,
+            plan_path=plan_path,
+            rows=suite_results,
+        )
+
+        # (2) Build job — unless nothing in this suite could use its output.
+        # `sbatch-args` is appended after the generated flags and therefore
+        # wins, and the `SBATCH_*` environment reaches sbatch through the
+        # inherited environment, so either can mean the reservation this
+        # suite resolved is NOT what its jobs are submitted with.
+        # Right-sizing must not take it for the request; recording nothing
+        # sends it back to the scheduler's own `ReqCPUS` (#505 review). NOT
+        # sanitized: a site that exports these means them.
+        #
+        # Read once, HERE, before this suite submits anything, and carried
+        # in the returned state to analysis. A regression submits every
+        # suite before collecting any, and a later suite's sweep hook is
+        # `exec()`d in this same process (see hooks.py) — so it can set or
+        # unset `SBATCH_*` between this submit and this suite's analysis.
+        # Re-reading the environment there would judge these jobs by a
+        # later suite's environment: the wrong cpu denominator, and an edit
+        # hint naming an override that was never active for them.
+        #
+        # From the BACKEND's arguments, not this suite's `cfg-dispatch`.
+        # The backend is built once from the orchestration config before the
+        # suite loop, while `root_cfg` is rebuilt for any suite that walks
+        # up to a different root_config.yaml — so the two lists diverge in a
+        # multi-root regression, and only the backend's is what `sbatch`
+        # receives. The generated reservation flags stay suite-derived (they
+        # come from this suite's resolved `resources:`); it is the verbatim
+        # passthrough that belongs to the backend (#505 review).
+        cpus_request_args = cpu_request_overrides(backend.effective_sbatch_args)
+        if cpus_request_args:
+            # DEBUG, once per suite submit: the override is deliberate
+            # configuration, and the only thing worth saying is why the
+            # advice is derived from sacct rather than from the YAML.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "rightsize.request_from_scheduler",
+                suite_dir=suite_dir,
+                overrides=cpus_request_args,
+            )
+        # For a builder with no shared-build support the build pass compiles
+        # on a compute node and produces no stamp any sim job can reuse, so
+        # submitting it burns a compile and adds queue latency for nothing
+        # (#358). A mixed-builder suite still gets one: the sharable configs
+        # benefit.
+        #
+        # One exception, and it is a correctness one rather than an
+        # optimization (#369): a test that compiles inside its own job
+        # compiles into `artefacts/<test>/`, which is keyed on the test and
+        # NOT on the run. Fan that test out over several run_ids and every
+        # element runs the full compile into that one directory at once,
+        # overwriting each other's outputs — spurious `Compile failed`
+        # results with no design fault behind them. The build job is the
+        # single writer that fixes it: it compiles once, and the elements
+        # short-circuit on the stamp it leaves.
+        fans_out_in_job = any(
+            entry["compile_in_job"] and len(entry["rows"]) > 1 for entry in entries
+        )
+        if any(not entry["compile_in_job"] for entry in entries) or fans_out_in_job:
+            # Two chained jobs where the compile can be split (#593): the
+            # verilation is single-threaded at peak memory and the C++ build
+            # is `compile.cpus` cores at a fraction of it, so one allocation
+            # covering both idles most of its cores through the first half.
+            # Submitted first, because the build job takes an `afterok` on
+            # its id.
+            splits = self._suite_splits_verilate(
+                backend, dispatch_cfg, suite_compile, entries
+            )
+            verilate_handle = (
+                self._submit_dispatch_build(
+                    suite_cfg,
+                    backend,
+                    suite_dir=suite_dir,
+                    dispatch_cfg=dispatch_cfg,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    dispatch_root=dispatch_root,
+                    plan_path=plan_path,
+                    run_token=run_token,
+                    planned=len(entries),
+                    suite_compile=suite_compile,
+                    compile_resources=verilate_resources,
+                    parallel=build_parallel,
+                    phase=BUILD_PHASE_VERILATE,
+                )
+                if splits
+                else None
+            )
+            if verilate_handle is not None:
+                self._grow_run_manifest(
+                    run_manifest,
+                    record_verilate_handle,
+                    verilate_handle,
                     suite_dir=suite_dir,
                 )
-                self._append_results(
-                    expanded_test_cfg.name,
-                    run_ids,
-                    run_results,
-                    suite_results,
-                    builder=exp_builder,
+            try:
+                build_handle = self._submit_dispatch_build(
+                    suite_cfg,
+                    backend,
+                    suite_dir=suite_dir,
+                    dispatch_cfg=dispatch_cfg,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    dispatch_root=dispatch_root,
+                    plan_path=plan_path,
+                    run_token=run_token,
+                    planned=len(entries),
+                    suite_compile=suite_compile,
+                    compile_resources=build_compile_resources,
+                    parallel=build_parallel,
+                    phase=BUILD_PHASE_BUILD if splits else BUILD_PHASE_FULL,
+                    dependency=(
+                        verilate_handle.job_id if verilate_handle is not None else None
+                    ),
                 )
-        return suite_results
+            except BaseException:
+                # A verilate job with no build job behind it would hold its
+                # allocation, verilate the suite and never be collected.
+                backend.cancel_all([verilate_handle])
+                raise
+            self._grow_run_manifest(
+                run_manifest, record_build_handle, build_handle, suite_dir=suite_dir
+            )
+        else:
+            build_handle = None
+            verilate_handle = None
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.build_job_skipped",
+                suite_dir=suite_dir,
+                reason=(
+                    "no planned test can share a build, and none is fanned out "
+                    "over several runs; each sim job compiles into its own "
+                    "per-test directory"
+                ),
+                tests=len(entries),
+            )
+
+        # (3) Group by resolved resources: elements of one sbatch array must
+        # share a reservation shape. Consumes the single expansion; no hook.
+        groups = {}  # (cpus, mem, time) -> list[(row index, plan index, spec)]
+        # `plan_index` is the config's position in the plan manifest written
+        # above — the build job's own index for it, and therefore the only
+        # name the two processes share for "this compile key's tests" (#548).
+        for plan_index, entry in enumerate(entries):
+            cfg = entry["cfg"]
+            resources = resolve_resources(dispatch_cfg, cfg)
+            if entry["compile_in_job"]:
+                # This test's OWN compile reservation, resolved per entry
+                # rather than once per suite: the job about to be sized
+                # compiles this testbench and no other, so the aggregate the
+                # build job takes would be the wrong number here — it would
+                # hand every sim job in the suite the sum of every planned
+                # testbench's memory (#551).
+                entry_tb = cfg.get_testbench()
+                entry_tb_compile = getattr(entry_tb, "compile", None)
+                compile_resources = resolve_compile_resources(
+                    dispatch_cfg, suite_compile, entry_tb_compile
+                )
+                # One allocation has to cover compile AND sim, so it is sized
+                # for the larger of the two per field; record which layer won
+                # so reservation advice names the governing field.
+                resources, governed_by = combine_for_in_job_compile(
+                    resources, compile_resources
+                )
+                # ...and which tests.yaml layer supplied each compile field,
+                # so a field the testbench block won is hinted at that entry
+                # rather than at a suite key it overrides (#551). Per row,
+                # because with a testbench layer the attribution is no longer
+                # one fact per suite.
+                entry_origins = compile_resource_origins(
+                    suite_compile, entry_tb_compile
+                )
+                for idx, _ in entry["rows"]:
+                    suite_results[idx]["governed_by"] = governed_by
+                    suite_results[idx]["compile_origins"] = entry_origins
+                    suite_results[idx]["compile_testbench"] = getattr(
+                        entry_tb, "name", None
+                    )
+                    # The floor no `reduce` advice can take this allocation
+                    # below, whatever the test's own resources: are trimmed to.
+                    suite_results[idx]["compile_floor"] = {
+                        "cpus": compile_resources.cpus,
+                        "mem": compile_resources.mem,
+                        "time": compile_resources.time,
+                    }
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.compile_in_job",
+                    test=cfg.get_name(),
+                    cpus=resources.cpus,
+                    mem=resources.mem,
+                    time=resources.time,
+                    governed_by=governed_by,
+                )
+            for idx, _ in entry["rows"]:
+                # The cpus this test's jobs are submitted with, recorded for
+                # right-sizing: it is `--cpus-per-task` verbatim, so it is
+                # the REQUEST by construction. A site that allocates whole
+                # cores reports more back, and judging efficiency against
+                # that surplus advises a reduction to the value the
+                # tests.yaml already holds (#505). Recorded after the in-job
+                # compile max, so it is the number that actually governed
+                # the allocation.
+                self._record_cpu_request_metadata(
+                    suite_results[idx],
+                    per_task_cpus=resources.cpus,
+                    overrides=cpus_request_args,
+                )
+            dispatch_dir = (
+                Path(
+                    test_artifact_dir(suite_dir, cfg.get_name(), run_tag=self._run_tag)
+                )
+                / "dispatch"
+            )
+            # Create the log dir on the head before submit: slurmstepd opens
+            # the --output path before rb _test-job (which would otherwise
+            # mkdir it) runs.
+            dispatch_dir.mkdir(parents=True, exist_ok=True)
+            for idx, run_id in entry["rows"]:
+                # This job's envelope tag, not the artefact tree's
+                # `--run-tag` (#541) — a whole fleet shares the latter.
+                job_tag = "single" if run_id is None else f"{run_id:04d}"
+                result_json = dispatch_dir / f"result-{job_tag}.json"
+                # Deliberately do NOT pre-unlink a stale envelope here: on
+                # NFS the head's negative lookup caches a dentry that hides
+                # the job's later write for ~acdirmin, so fast jobs get
+                # falsely reported as producing no result (#362). Staleness
+                # is instead rejected by run_token at collection time.
+                spec = TestJobSpec(
+                    test_name=cfg.get_name(),
+                    suite_dir=suite_dir,
+                    test_config_path=str(suite_cfg.get_path()),
+                    result_json=result_json,
+                    resources=resources,
+                    run_id=run_id,
+                    seed_mode=seed_mode,
+                    replay_run_id=replay_run_id,
+                    master_seed=master_seed,
+                    resolved_seed=cfg.get_resolved_seed(),
+                    builder_mode=self.rtl_builder_mode,
+                    builder_override=self._builder_override,
+                    extra_sim_timeout=self._extra_sim_timeout_override,
+                    share_build=True,
+                    # Gated jobs are told so: reaching their own compile then
+                    # means the build job's stamp did not validate, which is
+                    # the one thing that puts every sibling element back into
+                    # one build directory at once (#369).
+                    expect_prebuilt=build_handle is not None,
+                    # `--rebuild` reaches a SIM job only when this suite
+                    # submitted no build job — then every job compiles into
+                    # its own per-test directory and rebuilding there races
+                    # nothing (#494). With a build job it has already
+                    # rebuilt, and its fresh stamp is exactly what stops the
+                    # array from compiling; handing the elements --rebuild
+                    # would defeat that and re-run #369.
+                    rebuild=self.rebuild and build_handle is None,
+                    # Resolved once, by the head, and handed to the build job
+                    # and every sim job alike: both derive the shared build
+                    # directory from it and must agree (#542). An explicit
+                    # disable travels as `""`, since `None` would let the job
+                    # turn the cache back on from its own environment.
+                    shared_build_root=self.shared_build_root_for_jobs,
+                    # ...and told where that build job records its verdict,
+                    # so "the stamp did not validate" can be split into "the
+                    # compile FAILED, deterministically" (report it, do not
+                    # recompile under the sim reservation) and "the stamp is
+                    # stale" (recompile, into compile.retry.log) — #498.
+                    build_result_json=(
+                        build_handle.spec.result_json
+                        if build_handle is not None
+                        else None
+                    ),
+                    # Named after the backend that will write it: `slurm-*`
+                    # from sbatch --output, `local-parallel-*` from the pool's
+                    # redirected stdout.
+                    log_path=dispatch_dir / f"{backend.name}-{job_tag}.log",
+                    plan_path=plan_path,
+                    # Already merged into the plan above; carried so the job
+                    # records them as this run's overrides and so a plan miss
+                    # still applies them (#552).
+                    plusarg_overrides=dict(self._plusarg_overrides),
+                    # Which artefact tree this fleet belongs to (#541); the
+                    # job recomputes its own paths from it.
+                    run_tag=self._run_tag,
+                )
+                # Resources alone: every group now takes the same dependency,
+                # so a self-compiling test that happens to resolve to the
+                # same reservation can ride along in the same array.
+                groups.setdefault(
+                    (resources.cpus, resources.mem, resources.time), []
+                ).append((idx, plan_index, spec))
+
+        pending = []  # (row index, JobHandle)
+        # When this attempt went out. Retry classification only accepts
+        # artefacts at least this recent: `artefacts/<test>/test.log` is
+        # keyed on the test, not on the run, and nothing cleans it between
+        # runs, so a banner from days ago would otherwise satisfy the rule
+        # forever (#405 review). Taken before the first submit, so it can
+        # never be later than a job's own output.
+        submitted_at = time.time()
+        # (plan index, test name, job id) per submitted row, for the gates
+        # manifest below. Only the FIRST round of submissions belongs in it:
+        # `_resubmit_retryable` runs after collection, by which time the build
+        # job it would be talking to has long exited, and a retry's jobs are
+        # submitted ungated anyway.
+        gate_entries = []
+        # Only read once, and only where there is a build job at all: a
+        # suite whose tests each compile in their own job has none, and the
+        # manifest it would key on does not exist either.
+        build_cluster = None if build_handle is None else build_handle.cluster
+        try:
+            # Per-invocation array dir (head pid) so a resubmit or an
+            # overlapping run in the same suite tree never rewrites a
+            # manifest under another run's still-queued array elements, which
+            # sed the manifest at exec time. Sibling of .shared-builds.
+            for array_seq, group_entries in enumerate(groups.values(), start=1):
+                specs = [spec for _, _, spec in group_entries]
+                array_dir = run_scoped_path(
+                    dispatch_root, "array", run_token, suffix=f"-{array_seq:03d}"
+                )
+                handles = backend.submit_array(
+                    specs,
+                    array_dir=array_dir,
+                    max_parallel=dispatch_cfg.max_jobs_per_array,
+                    # Every group waits for the build job, including the
+                    # groups that compile for themselves. The build job runs
+                    # PRE+COMPILE for the whole plan, so it writes into a
+                    # self-compiling test's `artefacts/<test>/` too — letting
+                    # such an element start alongside it is the same
+                    # two-writers-one-directory race that made this build job
+                    # necessary (#369). Gated, it finds the stamp and skips
+                    # its own compile. A suite with no build job at all still
+                    # runs unblocked: there, one element per directory is the
+                    # only writer.
+                    dependency=(
+                        build_handle.job_id if build_handle is not None else None
+                    ),
+                )
+                for (idx, plan_index, spec), handle in zip(group_entries, handles):
+                    pending.append((idx, handle))
+                    gate_entries.append(
+                        (
+                            plan_index,
+                            spec.test_name,
+                            handle.job_id,
+                            # Where THIS job was accepted. `--clusters=a,b`
+                            # places each array wherever it can start
+                            # first, so the fan-out can span clusters and
+                            # an id only means anything against the one
+                            # that issued it (#509). A backend that does
+                            # not record a cluster gets the build job's,
+                            # which is the same submission path.
+                            handle.cluster
+                            if handle.cluster is not None
+                            else build_cluster,
+                        )
+                    )
+                # This array is accepted, so it is running whether or not
+                # the head lives to submit the next one: record it now
+                # rather than after the loop (#521 review).
+                self._grow_run_manifest(
+                    run_manifest,
+                    record_pending_handles,
+                    [
+                        (idx, handle)
+                        for (idx, _pi, _s), handle in zip(group_entries, handles)
+                    ],
+                    suite_dir=suite_dir,
+                )
+        except BaseException:
+            # A mid-fan-out submit failure must not leak this suite's build
+            # job or already-submitted arrays.
+            backend.cancel_all(
+                [verilate_handle, build_handle] + [handle for _, handle in pending]
+            )
+            raise
+        # The whole suite is out, so every id the build job could release is
+        # known: hand it the map (#548). Written here and not inside the try
+        # above because a manifest naming only half an array would release
+        # only half a compile key, and because failing to write it must not
+        # cancel a fleet that is already correctly gated on `afterok` — the
+        # run simply keeps the pre-#548 behaviour.
+        gates_json = getattr(getattr(build_handle, "spec", None), "gates_json", None)
+        if gates_json is not None:
+            try:
+                write_gates(gates_json, run_token=run_token, entries=gate_entries)
+            except OSError as e:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.gates_write_failed",
+                    suite_dir=suite_dir,
+                    path=str(gates_json),
+                    error=str(e),
+                )
+        # The fan-out is complete, so the record stops saying `submitting`:
+        # everything this run launched is now named in it, and only from
+        # here may it be adopted (#521 review).
+        self._grow_run_manifest(
+            run_manifest, finish_submission, submitted_at, suite_dir=suite_dir
+        )
+        return {
+            "suite_results": suite_results,
+            "pending": pending,
+            "build_handle": build_handle,
+            # The verilate half of a split compile (#593), or None. A
+            # separate key rather than a list, because the two jobs are not
+            # interchangeable: only the build job's envelope decides a
+            # test's compile verdict, and only it gates the fan-out.
+            "verilate_handle": verilate_handle,
+            "run_token": run_token,
+            "submitted_at": submitted_at,
+            # Where this suite's fleet is recorded, so collection can retire
+            # it (`collected`) and a teardown can mark it `cancelled`.
+            "run_manifest": run_manifest,
+            # For _analyze_reservations, which re-resolves the compile
+            # reservation from the root config alone and has no suite_cfg
+            # (#497) — same route as build_telemetry/build_compile_work.
+            "suite_compile": suite_compile,
+            # The build job's own reservation and its per-field provenance as
+            # submit resolved them — the maximum over the planned testbenches
+            # (#551), which analysis cannot recompute: it has neither the plan
+            # nor the suite_cfg the testbench blocks live in.
+            "build_compile_resources": build_compile_resources,
+            "build_compile_origins": build_compile_origins,
+            # ...and the verilate job's own pair, for the same reason
+            # (#593).
+            "verilate_resources": verilate_resources,
+            "verilate_origins": verilate_origins,
+            # What superseded this suite's resolved cpus, as it stood when
+            # these jobs were submitted. Snapshotted rather than recomputed
+            # at analysis, because the environment half of it can move under
+            # a later suite's in-process sweep hook (#505 review).
+            "cpus_override": cpus_request_args,
+        }
+
+    @staticmethod
+    def _record_cpu_request_metadata(row, *, per_task_cpus, overrides):
+        """What right-sizing needs to know about ONE submission's cpus.
+
+        Written at submit and rewritten on every resubmission, because a
+        retry is a fresh `sbatch` with a fresh inherited environment and it
+        is the retry's telemetry the analysis ends up reading (#505 review).
+
+        - ``submitted_cpus_per_task`` is the generated ``--cpus-per-task``
+          verbatim. Recorded unconditionally: a task-count override
+          multiplies it rather than replacing it, so it stays the value the
+          compile floor bounds and the value the request decomposes into.
+        - ``requested_cpus`` is that same number *as the whole-job request*,
+          which it only is when nothing overrode it — hence ``None`` under
+          any override, sending the denominator to the scheduler's
+          ``ReqCPUS``.
+        - ``cpus_override`` is what did the overriding, for the edit hint.
+        """
+        row["submitted_cpus_per_task"] = per_task_cpus
+        row["requested_cpus"] = None if overrides else per_task_cpus
+        row["cpus_override"] = overrides
+
+    def _announce_dispatched_suite(self, state, *, backend, suite):
+        """Put a suite's job ids on the console, before the wait begins (#435).
+
+        Ordering is the whole point: if the head then dies — the way this
+        surfaced — those ids are the only route to `squeue`/`sacct` and the
+        only way to tell whether the fleet outlived the process that
+        submitted it. Reconstructing them from `dispatch.*_submitted` is
+        possible but those are INFO, and a default-verbosity console shows
+        none of them.
+        """
+        handles = [handle for _, handle in state["pending"]]
+        if not handles:
+            # Nothing queued (every test filtered out): there are no ids to
+            # report and no wait to explain.
+            return
+        build_handle = state["build_handle"]
+        verilate_handle = state.get("verilate_handle")
+        log_console_event(
+            logger,
+            logging.INFO,
+            "dispatch.suite_submitted",
+            backend=backend.name,
+            suite=suite,
+            build_job=build_handle.job_id if build_handle is not None else None,
+            # The verilate half of a split compile (#593). Additive, and
+            # absent where the compile went out as one job — which is what
+            # keeps an unsplit suite's line unchanged.
+            verilate_job=(
+                verilate_handle.job_id if verilate_handle is not None else None
+            ),
+            job_ids=group_job_ids(handle.job_id for handle in handles),
+            # Compile jobs included: this is the same scale
+            # `dispatch.progress` (remaining/total) and
+            # `dispatch.suite_drained` count on, so the per-suite counts
+            # announced here sum to the fleet's `total`.
+            jobs=len(handles)
+            + (1 if build_handle is not None else 0)
+            + (1 if verilate_handle is not None else 0),
+        )
+
+    def _plan_dispatch_suite(
+        self,
+        suite_cfg,
+        *,
+        test_name=None,
+        reg_level,
+        start_level,
+        run_ids,
+        suite_results,
+        seed_mode: SeedMode = SeedMode.DEFAULT,
+        master_seed: int | None = None,
+    ):
+        """Expand the suite ONCE for dispatch; return the runnable entries.
+
+        Appends the same skip/setup rows the in-process path emits — and a
+        placeholder row per (runnable test, run_id) — to ``suite_results``
+        in test order, and returns one entry ``{cfg, rows}`` per runnable
+        config (``rows`` = the placeholder indices it owns). Consuming the
+        generator while interleaving the run rows preserves summary order;
+        materializing the runnables lets the build job and sim jobs read the
+        plan instead of re-running the sweep hook. ``test_name`` narrows the
+        expansion to one base test (randtest dispatch).
+        """
+        if master_seed is not None and len(run_ids) != 1:
+            raise FatalRtlBuddyError(
+                "--master-seed requires one run id per expanded test"
+            )
+        seed_run_id = run_ids[0] if len(run_ids) == 1 else None
+        entries = []
+        for cfg in self._iter_suite_runnables(
+            suite_cfg,
+            test_name=test_name,
+            reg_level=reg_level,
+            start_level=start_level,
+            run_ids=run_ids,
+            suite_results=suite_results,
+        ):
+            self._resolve_test_seed(
+                cfg,
+                master_seed=master_seed,
+                suite_config_path=suite_cfg.get_path(),
+                run_id=seed_run_id,
+                seed_mode=seed_mode,
+            )
+            builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(cfg.get_builder_name())
+            exp_builder = builder_cfg.get_name()
+            # A builder that cannot share a build recompiles inside every sim
+            # job, so that job's reservation has to cover the compile too
+            # (#358). Decided here, once, from the same predicate the job
+            # itself will consult — family *and* an absolute `builder-simv:`,
+            # not family alone, or a VCS builder pinned that way would be
+            # planned as shareable and take the unshared path at runtime.
+            compile_in_job = share_build_unsupported_reason(builder_cfg) is not None
+            rows = []
+            for run_id in run_ids:
+                suite_results.append(
+                    {
+                        "test_name": cfg.get_name(),
+                        "randmode_i": run_id,
+                        "results": None,
+                        "builder": exp_builder,
+                        "compile_in_job": compile_in_job,
+                    }
+                )
+                rows.append((len(suite_results) - 1, run_id))
+            entries.append({"cfg": cfg, "rows": rows, "compile_in_job": compile_in_job})
+        return entries
+
+    def _submit_dispatch_build(
+        self,
+        suite_cfg,
+        backend,
+        *,
+        suite_dir,
+        dispatch_cfg,
+        reg_level,
+        start_level,
+        dispatch_root,
+        plan_path,
+        run_token,
+        planned,
+        suite_compile=None,
+        compile_resources=None,
+        parallel=None,
+        phase=BUILD_PHASE_FULL,
+        dependency=None,
+    ):
+        """Submit the suite's compile as a Slurm build job (compute node).
+
+        ``phase`` is which half of that compile this job runs (#593), and
+        ``dependency`` the job id it must not start before — the verilate
+        job's, for the ``build`` half. Every file this job owns is named
+        after the phase, so a split suite's two jobs never write over each
+        other's envelope or log.
+
+        ``suite_compile`` is the suite's own ``compile:`` block (#497),
+        layered over ``cfg-dispatch.compile`` field by field — ``parallel``
+        included (#547). Passed in rather than re-read from ``suite_cfg`` so
+        this job's reservation and the in-job-compile combination in the
+        caller are provably the same resolution.
+
+        ``compile_resources`` is the reservation this job is sized from: the
+        planned testbenches' own ``compile:`` blocks aggregated and floored
+        at the suite-level whole-job value (#551), resolved by the caller
+        because only the caller holds the plan. ``parallel`` is the
+        concurrency that aggregation was computed against, passed in for the
+        same reason — the two must be the same number, since memory adds up
+        across the builds in flight together and wall clock divides by them.
+        Both ``None`` fall back to resolving here, which is the same answer
+        for every suite whose testbenches declare no block of their own.
+
+        ``planned`` is how many configs the plan holds. It caps the
+        resolved ``compile.parallel``: a suite with two planned configs
+        cannot keep four build slots busy, and reserving cpus for slots
+        that will idle is the failure mode the scaling below would
+        otherwise introduce. Planned configs, not distinct compile
+        keys — the head cannot know the keys without writing filelists on
+        the submit host, which is the build job's job (#458), so the cap is
+        an upper bound on the concurrency, never a promise of it. The
+        pre-cap value travels beside it as ``parallel_configured``, because
+        it is the only one of the two a reader can find in a config file —
+        the job's own console line quotes that and reports the cap
+        separately (#547 review).
+        """
+        dispatch_root = Path(dispatch_root)
+        dispatch_root.mkdir(parents=True, exist_ok=True)
+        # The prefix every file this job owns is named with. The build half
+        # of a split compile keeps the build job's names, so a suite that
+        # stops splitting produces the same paths it always did.
+        tag = "verilate" if phase == BUILD_PHASE_VERILATE else "build"
+        configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
+        # Asked only for the job that could release anything: the verilate
+        # half never gets a gates manifest, and probing here twice would
+        # say `dispatch.gates_skipped` twice for one suite (#593).
+        configured_dependency = (
+            self._release_blocking_dependency(backend, suite_dir=suite_dir)
+            if phase != BUILD_PHASE_VERILATE
+            else None
+        )
+        if parallel is None:
+            parallel = max(1, min(configured_parallel, planned))
+        # `parallel` layers exactly like the reservation fields beside it
+        # (#547): this job belongs to this suite alone, so a suite with one
+        # compile key says `parallel: 1` and reserves `cpus` rather than
+        # `cpus x` a cluster-wide value sized for the repo's widest suite.
+        # Sizing against the partition's widest node remains the writer's
+        # obligation at either level — see the scaling note below.
+        resources = (
+            compile_resources
+            if compile_resources is not None
+            else resolve_compile_resources(dispatch_cfg, suite_compile)
+        )
+        resources = self._scaled_build_resources(resources, parallel)
+        spec = BuildJobSpec(
+            suite_dir=suite_dir,
+            test_config_path=str(suite_cfg.get_path()),
+            resources=resources,
+            parallel=parallel,
+            # ...and what the config asked for before the cap, so the job's
+            # console line can name the value a reader will find in the file
+            # rather than the capped one it was handed (#547 review).
+            parallel_configured=configured_parallel,
+            # Always, when the run asked for it: the build job is the single
+            # writer of the shared directory, so this is the one place a
+            # forced recompile costs one compile instead of one per element
+            # (#494).
+            rebuild=self.rebuild,
+            shared_build_root=self.shared_build_root_for_jobs,
+            reg_level=reg_level,
+            start_level=start_level,
+            builder_mode=self.rtl_builder_mode,
+            builder_override=self._builder_override,
+            extra_sim_timeout=self._extra_sim_timeout_override,
+            log_path=run_scoped_path(dispatch_root, tag, run_token, suffix=".log"),
+            plan_path=plan_path,
+            phase=phase,
+            # Where the build job records which configs compiled; the head
+            # reads it at collect for compile-fail parity.
+            result_json=run_scoped_path(dispatch_root, f"{tag}-result", run_token),
+            # ...and where the head will record which sim job is waiting on
+            # which planned config, so the build job can release a compile
+            # key's sims as soon as that key is built (#548). Keyed on the
+            # same head pid as the envelope beside it, and only for a
+            # backend whose jobs can be released at all: `local-parallel`
+            # has no pending queue to clear, so it gets no flag and its
+            # build job's argv is byte-identical to before.
+            gates_json=(
+                run_scoped_path(dispatch_root, "gates", run_token)
+                # ...and never for the verilate half: it leaves sources and
+                # a Makefile, so there is no build for a released
+                # simulation to find (#593).
+                if backend.name == "slurm"
+                and configured_dependency is None
+                and phase != BUILD_PHASE_VERILATE
+                else None
+            ),
+            # The head's artefact namespace (#541). The SHARED build it
+            # populates is keyed on the compile fingerprint and stays shared
+            # across tags — the tag only moves this job's own per-test
+            # outputs and its transcripts into this run's tree.
+            run_tag=self._run_tag,
+        )
+        # A stale build-result must not annotate this run's collection.
+        Path(spec.result_json).unlink(missing_ok=True)
+        # Same for the gates manifest: this pid has been a head before, and
+        # the build job starts polling for this path before the fan-out has
+        # written it. It also carries a run token the build job checks, so
+        # this is belt and braces — but a file that is never read beats one
+        # that is read and rejected.
+        if spec.gates_json is not None:
+            Path(spec.gates_json).unlink(missing_ok=True)
+        return backend.submit_build(spec, dependency=dependency)
+
+    @staticmethod
+    def _release_blocking_dependency(backend, *, suite_dir):
+        """A user-configured dependency that per-key release must not clear.
+
+        `sbatch-args` can carry a dependency of the site's own —
+        `--dependency=singleton` serialising a licensed simulator is the
+        motivating case — and it is appended AFTER the generated
+        `afterok`, so Slurm resolves the repeated option to it and it is
+        the sim job's *effective* gate. `scontrol update JobId=<id>
+        Dependency=` clears the whole expression, not this run's clause of
+        it, so releasing a key would drop the site's serialisation and let
+        the fan-out run in parallel against whatever that gate protects
+        (#548 review).
+
+        There is no partial answer available — Slurm takes a dependency
+        expression whole — so such a suite simply does not get early
+        release: no gates manifest, no `--gates`, every job waiting for
+        the build job exactly as before. Said once per suite at INFO,
+        because it is deliberate configuration rather than a fault, and
+        silence here would read as the release being broken.
+
+        An exported ``$SBATCH_DEPENDENCY`` is NOT that case, even though
+        composing treats the two alike (#507). sbatch documents the
+        environment value as the default for `-d`, which a command-line
+        option overrides — and this backend puts a generated
+        `--dependency=afterok:<build>` on every gated submission, so the
+        export never reaches the job as its gate. Clearing is therefore
+        safe, and the suite keeps its early release; the INFO line exists
+        so a reader who set the export and expected it to hold is not left
+        guessing why it did not (#548 review).
+
+        ``getattr``, like every other optional backend capability: a
+        backend with no notion of a configured dependency has none.
+        """
+        probe = getattr(backend, "_sbatch_args_dependency", None)
+        configured = probe() if callable(probe) else None
+        if configured is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.gates_skipped",
+                suite_dir=suite_dir,
+                dependency=configured,
+                reason=(
+                    "early release disabled: sbatch-args configures a "
+                    f"dependency ({configured}) that a release would clear"
+                ),
+            )
+            return configured
+        env_probe = getattr(backend, "_configured_dependency", None)
+        exported = env_probe() if callable(env_probe) else None
+        if exported is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.env_dependency_overridden",
+                suite_dir=suite_dir,
+                dependency=exported,
+            )
+        return None
+
+    @staticmethod
+    def _audit_shared_binaries(suite_results):
+        """Warn when one compile key produced more than one binary (#535).
+
+        Every run gated on a build job validates the same stamp and records
+        what it validated — the shared directory the stamp lives in, its
+        inputs' digest, and the ``simv`` that stamp vouched for. Runs of one
+        directory that name different binaries mean somebody rebuilt it
+        instead of reusing it, and its neighbours may have simulated an
+        executable that was replaced under them mid-run. That is not
+        something a result can be rescored from, so it is a warning and not
+        a verdict: the runs are already scored against whatever they ran,
+        and the point is that the substitution is *visible* rather than
+        only inferable from a `compile.prebuilt_stamp_invalid` somewhere in
+        the fleet.
+
+        Grouped by ``build_dir`` — the ``obj_dir_<key>`` directory, which
+        is the compile key — and not by the fingerprint digest: the digest
+        covers the inputs' *contents*, so the very rebuild this is looking
+        for (an input edited mid-run, then recompiled into the same
+        directory) would split the runs into two digests and hide from a
+        digest-keyed audit. A stamp written before ``build_dir`` was
+        recorded falls back to its digest, which is at least a key.
+
+        Reporting only, and never raising: a missing or oddly shaped
+        ``build_stamp`` is simply a run that had nothing to say.
+        """
+        by_key = {}
+        for row in suite_results:
+            results = getattr(row.get("results"), "results", None)
+            stamp = results.get("build_stamp") if isinstance(results, dict) else None
+            if not isinstance(stamp, dict):
+                continue
+            sha, simv = stamp.get("fingerprint_sha"), stamp.get("simv")
+            build_dir = stamp.get("build_dir")
+            if (
+                not isinstance(sha, str)
+                or simv is None
+                or not isinstance(build_dir, (str, type(None)))
+            ):
+                continue
+            key = build_dir or sha
+            group = by_key.setdefault(key, {"binaries": {}, "fingerprints": set()})
+            group["binaries"].setdefault(repr(simv), []).append(row.get("test_name"))
+            group["fingerprints"].add(sha)
+        for key, group in by_key.items():
+            binaries = group["binaries"]
+            if len(binaries) < 2:
+                continue
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.binary_mismatch",
+                build_dir=key,
+                fingerprints=len(group["fingerprints"]),
+                binaries=len(binaries),
+                tests=sorted({name for names in binaries.values() for name in names}),
+            )
+
+    def _dispatch_collect(self, backend, state):
+        """Collect a submitted suite, retrying what deserves it (#405).
+
+        One pass over the fleet loads every envelope (see
+        :meth:`_dispatch_collect_pass`); jobs it classifies as retryable —
+        killed by the scheduler while queueing for a license seat, and only
+        those — are resubmitted after a jittered backoff, waited on, and
+        collected again, up to ``cfg-dispatch.retry.attempts`` extra
+        attempts. With no ``retry:`` block (the default) the first pass
+        finds nothing retryable and this is exactly the single-pass collect
+        it has always been.
+
+        Every pass writes a result for every row before any retry is
+        considered, so an interrupted or exhausted retry leaves the fleet
+        scored — a job that vanished never scores green, whatever the
+        budget says.
+
+        Retries are per suite: this runs after the fleet-wide ``wait_all``,
+        so a suite's second round is submitted and drained before the next
+        suite is collected rather than folded into one cross-suite round.
+        That costs wall clock proportional to the number of suites that had
+        a retryable job, and it is deliberate for now — collection is where
+        the classification evidence lives, and every later suite's
+        envelopes are already on disk, so only the retries serialise.
+        """
+        suite_results = state["suite_results"]
+        pending = state["pending"]
+        if not pending:
+            self._close_run_manifest(state, STATUS_COLLECTED)
+            return suite_results
+        retry_cfg = self.root_cfg.get_dispatch_cfg().effective_retry()
+        attempt = 0
+        # Each round has its own submission time: classification only reads
+        # artefacts at least that recent, and a retried job rewrites its
+        # capture, so the previous attempt's evidence must not be re-read as
+        # this one's (#405 review).
+        submitted_at = state.get("submitted_at")
+        while True:
+            retryable = self._dispatch_collect_pass(
+                backend,
+                state,
+                pending,
+                attempt=attempt,
+                retry_cfg=retry_cfg,
+                submitted_at=submitted_at,
+            )
+            if not retryable:
+                self._audit_shared_binaries(suite_results)
+                self._close_run_manifest(state, STATUS_COLLECTED)
+                return suite_results
+            attempt += 1
+            resubmitted_at = time.time()
+            try:
+                pending = self._resubmit_retryable(
+                    backend,
+                    retryable,
+                    attempt=attempt,
+                    retry_cfg=retry_cfg,
+                    suite_results=suite_results,
+                    # A retry is a fresh submission with fresh job ids, and
+                    # the manifest has to name them BEFORE the round is
+                    # waited on: `_resubmit_retryable` blocks until the
+                    # round drains, so recording afterwards would leave a
+                    # head killed mid-retry pointing at the previous
+                    # attempt's jobs — ids the scheduler has forgotten,
+                    # while the ones it is running are in no record at all
+                    # (#521 review).
+                    on_submitted=lambda accepted: self._record_retry_handles(
+                        state, accepted
+                    ),
+                )
+                submitted_at = resubmitted_at
+            except (FatalRtlBuddyError, OSError, subprocess.SubprocessError) as e:
+                # A retry is a best-effort second chance, never a way to
+                # lose a scored regression. Every row of this pass — this
+                # suite's and every suite collected before it — is already
+                # written, and the retryable ones already say they produced
+                # no result, so degrade to that instead of propagating out
+                # of the command and discarding the whole run's summary,
+                # exit code and machine payload. Narrow on purpose: the
+                # failure modes worth degrading over are exactly the
+                # flaky-cluster ones retry exists to survive — a refusing
+                # ``sbatch`` (FatalRtlBuddyError / a subprocess error) or
+                # ``max-wait`` elapsing on the second round, plus the
+                # filesystem giving out under the resubmission. A
+                # TypeError/KeyError/AttributeError from this head-side
+                # code is a bug in rtl-buddy, not cluster weather, and must
+                # surface loudly instead of being logged as an abandoned
+                # retry. ``_resubmit_retryable`` has already taken this
+                # attempt's jobs down; BaseException (a Ctrl-C) is
+                # deliberately not caught and still tears the run down.
+                log_console_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.retry_abandoned",
+                    backend=backend.name,
+                    attempt=attempt,
+                    jobs=len(retryable),
+                    error=str(e),
+                )
+                self._audit_shared_binaries(suite_results)
+                self._close_run_manifest(state, STATUS_COLLECTED)
+                return suite_results
+
+    def _record_retry_handles(self, state, resubmitted):
+        """Re-point this suite's run manifest at a retry round's job ids.
+
+        Called from inside the resubmission, before the wait, so the record
+        describes the fleet that is outstanding right now. Never raises:
+        the round is already accepted by the scheduler, and a manifest that
+        cannot be rewritten must not cancel it.
+        """
+        path = (state or {}).get("run_manifest")
+        if path is None:
+            return
+        reason = update_pending_job_ids(path, resubmitted)
+        if reason is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "dispatch.run_manifest_retry_failed",
+                path=str(path),
+                error=reason,
+            )
+
+    def _resubmit_retryable(
+        self,
+        backend,
+        retryable,
+        *,
+        attempt,
+        retry_cfg,
+        suite_results=None,
+        on_submitted=None,
+    ):
+        """Re-launch the retryable jobs after their backoff; wait; return them.
+
+        The delay is served by the **backend** (Slurm holds the job on
+        ``--begin``, the local pool holds it in its queue), never slept in
+        the head: the head is a planner and a poller, and a delayed job
+        must not hold an allocation the license pool needs to drain.
+
+        Each attempt gets its own scheduler log (``…-retry<N>.log``) so the
+        first attempt's evidence — the queue banner that justified the
+        retry — is still there afterwards. The result envelope path is
+        deliberately unchanged: it is the one path the job and the head
+        must agree on, and it is still guarded by this run's token.
+
+        ``on_submitted`` is called with the accepted ``[(row, handle)]`` once
+        the whole round is out and before the wait begins — the only moment
+        at which anything can record a round this method then blocks on.
+
+        The longest delay imposed is handed to ``wait_all`` as
+        ``extra_wait``: a held job is outstanding for its whole backoff, so
+        a ``cfg-dispatch.max-wait`` shorter than the backoff would
+        otherwise trip the deadline on every retry round before the job had
+        been allowed to start. ``max-wait`` still bounds each wait, not
+        their sum.
+        """
+        resubmitted = []
+        staged = []
+        longest_delay = 0.0
+        try:
+            for idx, handle, classifier in retryable:
+                delay = backoff_delay(attempt, retry_cfg)
+                longest_delay = max(longest_delay, delay)
+                spec = self._retry_spec(handle.spec, attempt=attempt)
+                # Console-visible: a green run that needed three attempts
+                # must not read like one that needed none, and INFO alone
+                # never reaches a CI console (#435).
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.retry",
+                    backend=backend.name,
+                    job_id=handle.job_id,
+                    test=spec.test_name,
+                    run_id=spec.run_id,
+                    attempt=attempt,
+                    attempts=retry_cfg.attempts,
+                    delay_sec=round(delay, 1),
+                    classifier=classifier,
+                )
+                # No `dependency`, and that is safe only because nothing
+                # gets here until the gate has already opened: a job is
+                # classified retryable only when its suite's build job
+                # reported success (see `build_gate_open`), so the shared
+                # build's stamp is on disk and this element short-circuits
+                # its own compile exactly as the gated first attempt did —
+                # the #369 invariant (never two writers in one artefact
+                # directory) is kept by the stamp, not by the edge.
+                # Re-arming the edge is not an option: an afterok on a job
+                # the scheduler has forgotten never becomes satisfiable.
+                # A retry is a fresh `sbatch` from THIS moment's environment,
+                # not a replay of the first submission's. Between the two, a
+                # later suite's sweep hook has run in this process and may
+                # have set or unset `SBATCH_NTASKS`/`_NODES`/`_NTASKS_PER_NODE`
+                # — and it is this attempt's telemetry the analysis reads, so
+                # the row has to describe this attempt. Stale metadata here
+                # picks the wrong cpu denominator and names an override that
+                # was not in force (#505 review).
+                #
+                # Read now, beside the submit it describes, but applied only
+                # once the whole round has landed: an `sbatch` that refuses,
+                # or a wait that fails, leaves the caller holding the
+                # PREVIOUS attempt's results and telemetry, and those must
+                # not be paired with this attempt's reservation.
+                if suite_results is not None:
+                    staged.append(
+                        self._stage_cpu_request_metadata(
+                            suite_results[idx], spec, backend=backend
+                        )
+                    )
+                resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
+            if on_submitted is not None:
+                # The whole round is accepted and none of it has been waited
+                # on yet: this is the only moment at which a record of it can
+                # be written before the head blocks (#521).
+                on_submitted(resubmitted)
+            backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
+            # The round landed: every job of it was accepted and waited on,
+            # so the rows may now describe it. Anything short of that leaves
+            # them describing the attempt whose results the caller keeps.
+            self._commit_cpu_request_metadata(staged, backend=backend, attempt=attempt)
+        except BaseException:
+            # Same contract as the submit fan-out: a failure mid-retry must
+            # not leave this attempt's jobs running behind the head.
+            backend.cancel_all([h for _, h in resubmitted])
+            raise
+        return resubmitted
+
+    def _stage_cpu_request_metadata(self, row, spec, *, backend):
+        """Read this resubmission's cpu overrides; do NOT write them yet.
+
+        Returned staged, not applied, because a row's metadata must always
+        describe the attempt whose telemetry sits beside it. If this round's
+        `sbatch` is refused or its wait fails, the caller keeps the previous
+        attempt's results and telemetry — and a row already rewritten here
+        would pair those with the reservation of an attempt that never ran
+        (#505 review).
+        """
+        # The backend's own arguments, for the same reason the first
+        # submission uses them: it is the backend that appends them, and by
+        # now `root_cfg` may belong to a different suite entirely.
+        return (row, spec, cpu_request_overrides(backend.effective_sbatch_args))
+
+    def _commit_cpu_request_metadata(self, staged, *, backend, attempt):
+        """Apply a round's staged metadata, once that round has landed."""
+        for row, spec, overrides in staged:
+            was = row.get("cpus_override") or []
+            self._record_cpu_request_metadata(
+                row,
+                per_task_cpus=spec.resources.cpus,
+                overrides=overrides,
+            )
+            if overrides != was:
+                # Worth a line: the advice for this test is now derived from
+                # a different set of overrides than its first attempt was,
+                # and nothing else in the run would say so.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "rightsize.request_overrides_changed",
+                    backend=backend.name,
+                    test=spec.test_name,
+                    run_id=spec.run_id,
+                    attempt=attempt,
+                    was=was,
+                    now=overrides,
+                )
+
+    @staticmethod
+    def _retry_spec(spec, *, attempt):
+        """The spec for one more attempt at ``spec``'s job.
+
+        The scheduler log is tagged with the attempt number, stripping any
+        tag the previous attempt added — attempt 3 is ``…-retry3.log``, not
+        ``…-retry1-retry2-retry3.log``.
+
+        Everything else is carried, ``rebuild`` included — carried, never
+        *added*: a gated element that was denied ``--rebuild`` on its first
+        attempt must not acquire it on its second, which would put the
+        array back into one build directory at once (#494/#369). A spec
+        that legitimately holds it owns its own per-test directory, and an
+        attempt killed before it compiled still needs the rebuild it asked
+        for.
+        """
+        log_path = spec.log_path
+        if log_path is not None:
+            log_path = Path(log_path)
+            stem = re.sub(r"-retry\d+$", "", log_path.stem)
+            log_path = log_path.with_name(f"{stem}-retry{attempt}{log_path.suffix}")
+        return replace(spec, log_path=log_path)
+
+    @staticmethod
+    def _build_compile_fail_desc(build_handle, build_failure):
+        """One summary line for a row the suite's build job failed to compile.
+
+        The head's spelling of the desc the gated sim job writes for itself
+        (#498) — same formatter, plus the two things only the head knows:
+        the scheduler's job id, and where that job's logs are. The error
+        line comes from the build envelope's ``error_tail``, so the row
+        shows the design error rather than whatever a recompile hit.
+        """
+        # BuildJobSpec.result_json is optional on the type (a build job can
+        # be launched without one, and then has no rtl_buddy log of its own
+        # to name); dispatch always sets it, but an error branch must not be
+        # where that assumption turns into a TypeError.
+        build_logs = str(build_handle.spec.log_path)
+        if build_handle.spec.result_json is not None:
+            build_logs += f" and {job_log_path(build_handle.spec.result_json)}"
+        entry = build_failure or {}
+        return build_compile_fail_desc(
+            job_id=build_handle.job_id,
+            returncode=entry.get("returncode"),
+            error_tail=entry.get("error_tail"),
+            logs=build_logs,
+        )
+
+    def _enrich_compile_fail_desc(self, results, build_handle, build_failure):
+        """Point a collected compile-fail row at the build job that broke.
+
+        Only a row that *is* a compile failure, recognised by the two descs
+        rtl_buddy itself writes: the generic ``Compile failed``, and the
+        gated sim job's own build-failure line. A row saying anything else
+        failed in simulation, not in compilation, and rewriting its desc
+        would replace a real diagnosis with a guess — the build envelope
+        listing the test under ``failed`` says a *compile* failed, not that
+        this run's failure was that compile.
+
+        Returns whether the desc changed, so the caller can persist the
+        rewrite into the durable envelope — this mutation is otherwise
+        in-memory only, and ``rb graph results`` re-reads the file.
+        """
+        if build_handle is None:
+            return False
+        desc = results.results.get("desc") or ""
+        if desc != COMPILE_FAIL_DESC and not desc.startswith(BUILD_COMPILE_FAIL_PREFIX):
+            return False
+        # The generic desc needs the same compiler evidence the sim job's
+        # retry gate demands: bare `failed` membership can record a setup or
+        # worker error, and a sim job that saw no evidence retried — so its
+        # generic "Compile failed" may be the retry's own, genuine compile
+        # failure, which must not be re-attributed to a build job whose
+        # compiler never ran. A desc already carrying the build prefix was
+        # written by a sim job that read a recorded returncode itself.
+        returncode = (build_failure or {}).get("returncode")
+        if desc == COMPILE_FAIL_DESC and not (
+            isinstance(returncode, int) and returncode
+        ):
+            return False
+        # A record that carries a fingerprint digest was written by a build
+        # job whose sim-side twin suppresses the retry on matching inputs
+        # and stamps the build prefix into its own desc. A still-generic
+        # desc therefore means that sim job *did* retry — its inputs had
+        # drifted from the failed build — and this failure is the retry's
+        # own, not the build's stale verdict.
+        if desc == COMPILE_FAIL_DESC and (build_failure or {}).get("fingerprint_sha"):
+            return False
+        results.results["desc"] = self._build_compile_fail_desc(
+            build_handle, build_failure
+        )
+        return results.results["desc"] != desc
+
+    def _dispatch_collect_pass(
+        self, backend, state, pending, *, attempt, retry_cfg, submitted_at=None
+    ):
+        """Load result envelopes for one attempt; return what may be retried.
+
+        Joins per-job scheduler telemetry (``sacct`` reserved-vs-used, when
+        accounting exists) into both the in-memory results and the on-disk
+        envelopes. A missing/unreadable envelope becomes a
+        ``DispatchFailResults`` naming the scheduler state when known
+        (TIMEOUT/OOM pairs the failure with its cause) — unless the build
+        job recorded that test's compile as failed, in which case it becomes
+        a ``CompileFailResults`` (parity with the in-process path, where a
+        design error is a clean compile fail rather than an infra fail).
+
+        Returns ``[(row index, handle, classifier)]`` for the missing
+        results that a remaining retry budget covers. ``submitted_at`` is
+        when this attempt was submitted: classification ignores artefacts
+        older than that, so a previous run's log cannot be read as this
+        attempt's evidence (#405 review).
+        """
+        suite_results = state["suite_results"]
+        retryable = []
+        build_handle = state.get("build_handle")
+        # Build-job compile outcome (advisory): map a compile failure to a
+        # CompileFail rather than the sim job's downstream DispatchFail.
+        build_result = (
+            load_build_result_json(build_handle.spec.result_json)
+            if build_handle is not None
+            else None
+        )
+        compile_failed = set(build_result["failed"]) if build_result else set()
+        # Why each of those failed (#498), keyed by test. The record the sim
+        # job read for itself, read again here — the head has the one thing
+        # the sim job lacked, the scheduler's build job id, and it is what
+        # takes a reader from a summary row to `build-<id>.log`.
+        build_failures = {
+            entry["test"]: entry
+            for entry in (build_result["builds"] if build_result else [])
+            if entry.get("test") in compile_failed
+        }
+        # What the build job observed each config's compile to cost (#495),
+        # keyed by test so a sim row can carry its own compile back to the
+        # summary and the results overlay. Empty for an envelope written by
+        # a build job that predates the records.
+        build_entries = build_result["builds"] if build_result else []
+        compile_records = {
+            entry["test"]: {
+                "duration_sec": entry.get("duration_sec"),
+                "builder": entry.get("builder"),
+                "reused": entry.get("reused"),
+            }
+            for entry in build_entries
+            if entry.get("test")
+        }
+        # Did this suite's build gate open? A build job that left no result
+        # did not finish: every sim it gated was cancelled by `afterok` (or
+        # skipped by the pool) and never started, so nothing in its
+        # artefacts is this attempt's evidence and resubmitting it would
+        # launch — with no gate at all — a job the head deliberately
+        # skipped (#405 review). A suite with no build job has no gate to
+        # open: there, one sim job per artefact directory is the only
+        # writer, which is the invariant the gate exists to keep (#369),
+        # and it holds for the retry too.
+        # A build job that released a compile key early rewrites its
+        # envelope as it goes (#548), so an envelope can now exist for a
+        # job that then died: `partial` says so. The tests it lists are
+        # decided and their jobs really ran — their gate opened, one key at
+        # a time — but a test it does not list is exactly the "no result"
+        # case above, so the flag is per test rather than per suite.
+        build_partial = bool(build_result and build_result.get("partial"))
+        build_decided = (
+            set(build_result["built"]) | set(build_result["failed"])
+            if build_result
+            else set()
+        )
+
+        # ...unless the job FINISHED and only its final write was lost.
+        # Decided below, once the scheduler has been asked how the build
+        # job ended; until then the conservative reading stands.
+        build_finished_partial = []
+
+        def _build_gate_open(test_name):
+            if build_handle is None:
+                return True
+            if build_result is None:
+                return False
+            if not build_partial or build_finished_partial:
+                return True
+            return test_name in build_decided
+
+        # Keyed, not .get(): a state carrying pending jobs always set run_token
+        # in _dispatch_suite_submit, so a missing key is a bug that must fail
+        # loud — .get() would silently disable the staleness check and let a
+        # stale PASS through (a wrong-green, worse than the #362 false-red).
+        # The guard asks about *this* pass's jobs, the same list the loop
+        # below walks; the first attempt's full fleet lives in
+        # ``state["pending"]`` and is not what this pass collects (#405 review).
+        run_token = state["run_token"] if pending else None
+        # The build handle joins the query on the first pass only. It costs
+        # nothing (Slurm's collect_telemetry is one `sacct --jobs a,b,c`) and
+        # the build job is guaranteed finished by then — the fleet-wide
+        # wait_all includes it. Later passes collect a resubmitted sim
+        # subset; the build job is never resubmitted, so re-querying it would
+        # buy a second identical row and a second identical write (#495).
+        verilate_handle = state.get("verilate_handle")
+        query_handles = [h for _, h in pending]
+        if attempt == 0:
+            # The compile jobs, in the order they ran, on the first pass
+            # only — same reasoning as the build handle's: one `sacct` call
+            # covers them, and neither is ever resubmitted (#495, #593).
+            query_handles = [
+                handle
+                for handle in (verilate_handle, build_handle)
+                if handle is not None
+            ] + query_handles
+        telemetry = backend.collect_telemetry(query_handles)
+        if attempt == 0 and verilate_handle is not None:
+            # The verilate job's own numbers, on its own envelope and in
+            # `state` for its own right-sizing row (#593). The build job's
+            # block below says why both halves of this are best-effort.
+            verilate_tele = telemetry.get(telemetry_key(verilate_handle))
+            if verilate_tele:
+                if verilate_handle.spec.result_json is not None:
+                    attach_telemetry_json(
+                        verilate_handle.spec.result_json, verilate_tele
+                    )
+                state["verilate_telemetry"] = verilate_tele
+            verilate_result = (
+                load_build_result_json(verilate_handle.spec.result_json)
+                if verilate_handle.spec.result_json is not None
+                else None
+            )
+            state["verilate_compile_work"] = (
+                _summarize_compile_work(verilate_result["builds"])
+                if verilate_result is not None and not verilate_result.get("partial")
+                else None
+            )
+        if attempt == 0 and build_handle is not None:
+            build_tele = telemetry.get(telemetry_key(build_handle))
+            if build_tele:
+                # (a) travels with the artifact, the way a sim job's does —
+                # attach_telemetry_json validates no filetype, so the build
+                # envelope takes the same top-level block; (b) stays in
+                # `state` for the compile-reservation advice, which is the
+                # only consumer that needs the build job's own numbers.
+                # Best-effort: a build job that died left no envelope, and
+                # that is already reported as a missing build result.
+                if build_handle.spec.result_json is not None:
+                    attach_telemetry_json(build_handle.spec.result_json, build_tele)
+                state["build_telemetry"] = build_tele
+            # What the job's wall clock actually covered. sacct cannot tell
+            # "nothing to compile" from "compiled fast", and a re-run of an
+            # unchanged suite is the first of those: every build
+            # short-circuits on its stamp, so a 2 h reservation shows
+            # seconds of elapsed and near-zero cpu time. Right-sizing needs
+            # to know that before it advises shrinking anything (#495).
+            # None (not a zeroed dict) when the build job left no envelope
+            # or wrote one predating the records — "unknown", not "nothing".
+            # `None` for a partial envelope too, and for the same reason
+            # it is None for a missing one: the records are a fraction of
+            # the compiles the reservation actually paid for, and advising
+            # a smaller one from them would shrink it towards a build job
+            # that died (#548).
+            state["build_compile_work"] = (
+                _summarize_compile_work(build_entries)
+                if build_result is not None and not build_partial
+                else None
+            )
+            if build_partial:
+                # Two very different things leave a partial envelope, and
+                # only the scheduler can tell them apart. A build job that
+                # DIED mid-compile never reached the tests its envelope
+                # does not name — their jobs were cancelled behind it, and
+                # closing their gate is what stops the retry round
+                # resubmitting them ungated (#405). A build job that ran to
+                # COMPLETED reached all of them; what it lost was the final
+                # write that would have dropped the `partial` mark (a full
+                # or read-only filesystem at the very end), and treating
+                # its unnamed tests as never-compiled would refuse a retry
+                # to a fleet that has nothing wrong with it. Anything else
+                # — no accounting, a kill, an unknown state — keeps the
+                # conservative reading. The reservation advice stays
+                # suppressed either way: the records are still a fraction
+                # of the compiles the job actually ran.
+                #
+                # Distinct TEST NAMES on both counts, because that is the
+                # unit the build job compiles: `suite_results` holds one
+                # row per (test, run_id) plus the skipped ones, so counting
+                # it would report "1 of 100 planned" for a single config
+                # fanned out over a hundred runs (#548 review). The first
+                # attempt's full fleet is one row per submitted job, and
+                # every planned config has at least one — the skipped rows
+                # reached neither a job nor the build job. Said once per
+                # suite, on the first pass: a retry pass re-reads the same
+                # envelope and would repeat it.
+                planned_names = {
+                    handle.spec.test_name for _, handle in state.get("pending") or ()
+                }
+                # The scheduler's word where there is one, and the
+                # backend's own otherwise: `local-parallel` has no
+                # accounting at all (`collect_telemetry` returns {} by
+                # design), so without asking it directly a partial envelope
+                # there could never be recognised as a finished build and
+                # every unnamed gate would stay shut on a run that was
+                # fine (#548 review).
+                outcome = (build_tele or {}).get("state") or backend.build_outcome(
+                    build_handle
+                )
+                if outcome == "COMPLETED":
+                    build_finished_partial.append(True)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dispatch.build_result_final_write_lost",
+                        suite_dir=build_handle.spec.suite_dir,
+                        job_id=build_handle.job_id,
+                        decided=len(build_decided),
+                        planned=len(planned_names) or None,
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dispatch.build_result_partial",
+                        suite_dir=build_handle.spec.suite_dir,
+                        job_id=build_handle.job_id,
+                        decided=len(build_decided),
+                        planned=len(planned_names) or None,
+                        scheduler_state=outcome,
+                    )
+        for idx, handle in pending:
+            # Keyed by handle, not by job id: two jobs on different clusters
+            # can carry the same id, and telemetry keeps them apart (#509).
+            tele = telemetry.get(telemetry_key(handle))
+            try:
+                envelope = load_result_json(
+                    handle.spec.result_json, expected_run_token=run_token
+                )
+                results = envelope["result"]
+                if handle.spec.test_name in compile_failed:
+                    # The complementary case to the branch below: the sim job
+                    # DID leave an envelope, and it says the compile failed —
+                    # either because it declined the retry and reported the
+                    # build's verdict (#498), or, from an older job, because
+                    # its own retry failed too. Either way the summary row
+                    # should name the build job that actually broke, so the
+                    # reader goes to `build-<id>.log` instead of re-reading a
+                    # `compile.log` the retry may have written over.
+                    if self._enrich_compile_fail_desc(
+                        results,
+                        build_handle,
+                        build_failures.get(handle.spec.test_name),
+                    ):
+                        # The rewrite must outlive this pass: the summary
+                        # and machine payload render from memory, but the
+                        # durable ``dispatch/result-*.json`` still says the
+                        # generic desc and `rb graph results` re-reads it
+                        # (#498 review). Best-effort, like every collect
+                        # annotation.
+                        attach_result_key(
+                            handle.spec.result_json,
+                            "desc",
+                            results.results.get("desc"),
+                        )
+            except FatalRtlBuddyError as e:
+                if handle.spec.test_name in compile_failed:
+                    # The build job already knows this is a compile failure;
+                    # don't mislabel the (killed) recompile as infra failure.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dispatch.compile_failed_in_build",
+                        job_id=handle.job_id,
+                        test=handle.spec.test_name,
+                        run_id=handle.spec.run_id,
+                        build_job=build_handle.job_id,
+                    )
+                    results = CompileFailResults(
+                        name=handle.spec.test_name + "/results",
+                        desc=self._build_compile_fail_desc(
+                            build_handle, build_failures.get(handle.spec.test_name)
+                        ),
+                    )
+                else:
+                    sched_state = tele.get("state") if tele else None
+                    state_note = (
+                        f" (scheduler state {sched_state})" if sched_state else ""
+                    )
+                    attempt_note = f" after {attempt + 1} attempts" if attempt else ""
+                    # Both compile jobs, where the compile was split
+                    # (#593): a fan-out killed by `kill-on-invalid-dep`
+                    # never had a build job run at all, so the log that
+                    # says why is the verilate job's.
+                    build_note = "".join(
+                        f" and {label} log {handle.spec.log_path}"
+                        for label, handle in (
+                            ("verilate", verilate_handle),
+                            ("build", build_handle),
+                        )
+                        if handle is not None
+                    )
+                    # The scheduler log holds the job's stdout; its own
+                    # rtl_buddy log holds the events, and after #437 that
+                    # is a separate file per job, so name both.
+                    job_note = f" and {job_log_path(handle.spec.result_json)}"
+                    # A job the scheduler reports COMPLETED (exit 0) that left
+                    # no envelope is a contradiction — it ran but its result is
+                    # not visible here. On a shared filesystem that usually
+                    # means client attribute-cache staleness rather than a job
+                    # failure; point at that first so it isn't misread as a
+                    # scheduler kill (#362).
+                    if sched_state == "COMPLETED":
+                        cause = (
+                            "job COMPLETED (exit 0) but its result is not "
+                            "visible on the shared filesystem — likely a "
+                            "client attribute-cache delay; check the mount's "
+                            "ac* / lookupcache settings"
+                        )
+                    elif backend.scheduled:
+                        cause = (
+                            "scheduler kill, crash, or its build job failed so "
+                            "afterok cancelled it"
+                        )
+                    else:
+                        # No scheduler in the picture (local-parallel): the job
+                        # crashed, was cancelled with the fleet, or never
+                        # started because its build job failed (#360).
+                        cause = (
+                            "the job crashed or was cancelled, or its build job "
+                            "failed so the job never ran"
+                        )
+                    # Only a resource-condition kill whose own fresh output
+                    # ends *inside* the license queue is retryable: a hung
+                    # test reaches the same TIMEOUT having printed real
+                    # simulator output (with or without an earlier banner)
+                    # and must keep failing (#405). Classifying when the
+                    # budget is spent is pointless work, so the budget is
+                    # checked first. `scheduled` decides whether a
+                    # scheduler state is required at all — a backend that
+                    # runs jobs itself reports none, and demanding one
+                    # would make retry dead code there.
+                    classifier = (
+                        classify_missing_result(
+                            handle.spec,
+                            sched_state,
+                            classifiers=retry_cfg.classifiers,
+                            scheduled=backend.scheduled,
+                            build_succeeded=_build_gate_open(handle.spec.test_name),
+                            submitted_at=submitted_at,
+                        )
+                        if retry_cfg.enabled and attempt < retry_cfg.attempts
+                        else None
+                    )
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "dispatch.result_missing",
+                        job_id=handle.job_id,
+                        test=handle.spec.test_name,
+                        run_id=handle.spec.run_id,
+                        scheduler_state=sched_state,
+                        attempt=attempt + 1,
+                        retry_classifier=classifier,
+                        error=str(e),
+                    )
+                    results = DispatchFailResults(
+                        name=handle.spec.test_name + "/results",
+                        desc=f"dispatch job {handle.job_id} produced no "
+                        f"result{state_note}{attempt_note} ({cause}); see "
+                        f"{handle.spec.log_path}{job_note}{build_note}: {e}",
+                    )
+                    if classifier is not None:
+                        retryable.append((idx, handle, classifier))
+            if tele is not None:
+                # In-memory for aggregation (P3 right-sizing) and folded
+                # into the envelope so telemetry travels with the artifact.
+                results.results["telemetry"] = tele
+                attach_telemetry_json(handle.spec.result_json, tele)
+            compile_record = compile_records.get(handle.spec.test_name)
+            if compile_record is not None:
+                # The build job's own observation of this test's compile.
+                # The row already carries a head-side `builder` (what the
+                # head resolved before submitting); where the two disagree —
+                # a preproc hook that overrode the builder — the envelope
+                # wins, because it is what actually ran.
+                #
+                # Folded into `result.results`, not onto the envelope's top
+                # level: that nested dict is what `rb graph results` reads a
+                # run's payload from, so a top-level key would travel with
+                # the artifact and still be invisible to the overlay.
+                #
+                # A copy per row: one record backs every run_id of a test and
+                # every envelope written for it, and a shared dict is an
+                # aliasing invariant nothing here needs to hold.
+                results.results["compile"] = dict(compile_record)
+                attach_result_key(handle.spec.result_json, "compile", compile_record)
+            suite_results[idx]["results"] = results
+        return retryable
+
+    def _simulator_family_of(self, builder_name):
+        """Simulator family for a resolved builder name (advice gating).
+
+        Reservation analysis is advisory and runs *after* every job has
+        completed; a row whose builder name no longer resolves must not
+        turn a finished run into an abort. Return ``None`` (family unknown)
+        instead of raising.
+        """
+        try:
+            return self.root_cfg.resolve_rtl_builder_cfg(
+                builder_name
+            ).get_simulator_family()
+        except FatalRtlBuddyError:
+            return None
+
+    def _analyze_reservations(
+        self,
+        suite_results,
+        *,
+        suite_display,
+        suite_config_path=None,
+        reg_level=None,
+        backend=None,
+        state=None,
+    ):
+        """Right-size one dispatched suite's rows into advice findings.
+
+        ``state`` is the suite's dispatch state, carrying the build job's
+        own telemetry when collect saw any (#495) — the build job has no
+        ``suite_results`` row, so its reservation can only be judged from
+        there.
+        """
+        rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
+        if not rightsize_cfg.report:
+            return []
+        # Where the `sbatch-args` the jobs were submitted with actually live.
+        # The overrides themselves are read off the backend (#505 review), so
+        # the file named in an `edit_hint` about them has to come from there
+        # too: the backend was built once from the orchestration
+        # root_config.yaml, while `self.root_cfg` below is whichever root THIS
+        # suite walked up to, and applying a hint that named the suite's root
+        # would edit a `cfg-dispatch` the instantiated backend never reads
+        # (#527). getattr, for the same reason the others use it — analysis is
+        # advisory and must never turn a finished run into an abort.
+        sbatch_args_config_path = getattr(backend, "effective_sbatch_args_path", None)
+        # The suite's own `compile:` block as submit resolved it, and which
+        # compile fields it won (#497). .get(), unlike `build_handle` below:
+        # an old state dict — or a caller that assembled one by hand — must
+        # degrade to root-config-only attribution rather than abort a
+        # finished run. Resolved once: both analyses attribute the same
+        # reservation, and computing it twice invites them to disagree.
+        suite_compile = (state or {}).get("suite_compile")
+        compile_origins = compile_resource_origins(suite_compile)
+        findings = analyze_suite_reservations(
+            suite_results,
+            suite_display=suite_display,
+            # Absolute tests.yaml path in the machine edit_hint so an agent
+            # whose cwd differs from the invocation cwd can still apply it;
+            # the human table uses the short suite_display.
+            suite_config_path=suite_config_path or suite_display,
+            rightsize_cfg=rightsize_cfg,
+            reg_level=reg_level,
+            simulator_family_of=self._simulator_family_of,
+            # cfg-dispatch lives in root_config.yaml, so advice about a
+            # reservation the compile block governs has to point there
+            # rather than at the suite's tests.yaml (#358). getattr, not the
+            # attribute: analysis is advisory and runs after every job has
+            # finished — it must never turn a completed run into an abort.
+            root_config_path=getattr(self.root_cfg, "root_cfg_path", None),
+            # ...except for a cpu override in `sbatch-args`, which belongs to
+            # the backend and so names the backend's own config (#527).
+            sbatch_args_config_path=sbatch_args_config_path,
+            # ...unless the suite's own compile block is what governs that
+            # field, in which case cfg-dispatch is the layer it overrides
+            # and the hint has to name the suite instead (#497). This
+            # reaches an in-job compile's rows — the case with no build job
+            # at all, where the compile reservation only ever shows up
+            # inside the field-wise maximum.
+            compile_origins=compile_origins,
+            # How often the scheduler sampled usage, so a peak that was
+            # never actually measured cannot become a mem suggestion (#365).
+            accounting_interval_s=(
+                backend.accounting_interval_s() if backend is not None else None
+            ),
+        )
+        build_telemetry = (state or {}).get("build_telemetry")
+        if build_telemetry:
+            # Keyed, not .get(): collect only stashes build telemetry when it
+            # had a build handle to query, so the two travel together and a
+            # missing handle here is a bug that must fail loud.
+            build_spec = state["build_handle"].spec
+            findings.extend(
+                analyze_build_reservation(
+                    build_telemetry,
+                    # The per-build reservation, NOT the scaled one the build
+                    # spec carries: the advice names
+                    # cfg-dispatch.compile.cpus, which is per-build.
+                    #
+                    # Submit's own resolution where there is one: with
+                    # per-testbench `compile:` blocks the build job is sized
+                    # by the maximum over the PLANNED testbenches (#551), and
+                    # analysis holds neither the plan nor the suite_cfg those
+                    # blocks live in. The suite-wide fallback is the same
+                    # number for every suite that declares none.
+                    (state or {}).get("build_compile_resources")
+                    or resolve_compile_resources(
+                        self.root_cfg.get_dispatch_cfg(), suite_compile
+                    ),
+                    build_spec.parallel,
+                    rightsize_cfg,
+                    suite_display,
+                    # cfg-dispatch lives in root_config.yaml; getattr, not the
+                    # attribute, for the same reason the per-test analysis
+                    # uses it — advice runs after every job finished and must
+                    # never turn a completed run into an abort.
+                    getattr(self.root_cfg, "root_cfg_path", None),
+                    # Whether anything actually compiled: without it a re-run
+                    # whose builds all short-circuited on their stamps reads
+                    # as a fast compile and advises a limit the next real RTL
+                    # change times out against (#495).
+                    compile_work=state.get("build_compile_work"),
+                    # TotalCPU is accumulated from usage samples, so a build
+                    # job shorter than one interval was measured at most once
+                    # — the same reason memory advice is gated (#365).
+                    accounting_interval_s=(
+                        backend.accounting_interval_s() if backend is not None else None
+                    ),
+                    # Per-field provenance, so a value the suite block won
+                    # is pointed back at the suite's tests.yaml instead of
+                    # at a cfg-dispatch key editing which would move
+                    # nothing (#497). The build job's own map, which also
+                    # names the testbench whose block won each field where
+                    # the maximum took it from one (#551); the suite-wide
+                    # map is the fallback for a state dict from before that.
+                    compile_origins=(
+                        (state or {}).get("build_compile_origins") or compile_origins
+                    ),
+                    suite_config_hint=suite_config_path or suite_display,
+                    # ...and whether the resolved reservation is what the
+                    # build job was actually submitted with: a `sbatch-args`
+                    # argument or an `SBATCH_*` variable that sets the cpu
+                    # request beats the generated flags, so neither the
+                    # ratio nor the decomposition may be stated from it
+                    # (#505 review).
+                    #
+                    # The submit-time snapshot, NOT a fresh read: a
+                    # regression submits every suite before collecting any,
+                    # and a later suite's sweep hook is `exec()`d in this
+                    # process, so `os.environ` here can be a different
+                    # environment from the one this build job inherited.
+                    # Recomputing would pick the wrong denominator and name
+                    # an override that was never active for it. This is also
+                    # what the per-test rows carry, so both halves of a
+                    # suite's advice describe one submission.
+                    cpus_override=(state or {}).get("cpus_override") or [],
+                    # ...and the config those `sbatch-args` came from, so the
+                    # hint's `file` is the one the backend reads rather than
+                    # this suite's root (#527). Same value the per-test rows
+                    # above got: one submission, one file to edit.
+                    sbatch_args_config_path=sbatch_args_config_path,
+                )
+            )
+        verilate_telemetry = (state or {}).get("verilate_telemetry")
+        if verilate_telemetry:
+            # Its own row, from its own reservation and its own provenance
+            # (#593). Everything the build job's call reads from the suite
+            # is the same; what differs is which keys an edit hint names,
+            # and the verilate provenance map spells those itself.
+            findings.extend(
+                analyze_build_reservation(
+                    verilate_telemetry,
+                    (state or {}).get("verilate_resources")
+                    or resolve_verilate_resources(
+                        self.root_cfg.get_dispatch_cfg(), suite_compile
+                    ),
+                    state["verilate_handle"].spec.parallel,
+                    rightsize_cfg,
+                    suite_display,
+                    getattr(self.root_cfg, "root_cfg_path", None),
+                    compile_work=(state or {}).get("verilate_compile_work"),
+                    accounting_interval_s=(
+                        backend.accounting_interval_s() if backend is not None else None
+                    ),
+                    compile_origins=(state or {}).get("verilate_origins") or {},
+                    suite_config_hint=suite_config_path or suite_display,
+                    cpus_override=(state or {}).get("cpus_override") or [],
+                    sbatch_args_config_path=sbatch_args_config_path,
+                    phase="verilate",
+                )
+            )
+        return _raise_first(findings)
+
+    def _render_reservation_advice(self, findings):
+        rows = [
+            {
+                "suite": f.suite,
+                "test": f.test,
+                "resource": f.resource,
+                "phase": f.phase,
+                # The requested reservation, with what the scheduler handed
+                # out beside it when the two differ — whole-core rounding is
+                # not something an edit to the named Field can move (#505).
+                "reserved": (
+                    f"{f.reserved} ({f.allocated} allocated)"
+                    if f.allocated
+                    else f.reserved
+                ),
+                "peak": f.peak,
+                "utilization": f"{f.utilization:.0%}",
+                "advice": f"{f.direction} → {f.suggested}",
+                "field": f.edit_hint.get("path", ""),
+            }
+            for f in findings
+        ]
+        metadata = [
+            "rtl-buddy suggests; apply by editing the named Field",
+        ]
+        if any(f.phase == "compile+sim" for f in findings):
+            # Without this the numbers read as sim-only and a compile-sized
+            # reservation looks wildly over-reserved. Gated on the phase it
+            # describes: a table whose only non-sim row is the build job
+            # would otherwise explain a row it does not contain.
+            metadata.append(
+                "compile+sim rows measure a job that also compiled (its "
+                "builder cannot share a build), so the peak spans both phases"
+            )
+        if any(f.allocated for f in findings):
+            # Without this the parenthesised number reads as a second
+            # reservation to edit, when it is the scheduler's rounding.
+            metadata.append(
+                "Reserved is what the reservation asked for; the "
+                "parenthesised figure is what the scheduler allocated — a "
+                "site that hands out whole cores gives more than was "
+                "requested, and no edit to Field changes that"
+            )
+        if any(f.suggested_total for f in findings):
+            # Without this the number reads as the reservation to end up
+            # with, and a reader who writes it into the named Field
+            # overshoots by whatever the other builds contribute (#551).
+            metadata.append(
+                "an aggregated row's suggestion is the named Field's OWN new "
+                "value, not the whole-job figure: the build job reserves the "
+                "sum of its builds, so writing the total into one of them "
+                "would overshoot"
+            )
+        compile_rows = [f for f in findings if f.phase == "compile"]
+        if compile_rows:
+            # Name the key that governs these rows, not the root one by
+            # default: a suite whose own `compile:` block sets `parallel` is
+            # not moved by editing cfg-dispatch (#547 review). One regression
+            # can table several suites, and they need not agree — where they
+            # differ the footnote states the rule instead of picking a side,
+            # since each row's own file is already in the Field column.
+            parallel_keys = {
+                f.parallel_origin for f in compile_rows if f.parallel_origin
+            }
+            if len(parallel_keys) == 1:
+                parallel_key = parallel_keys.pop()
+            elif parallel_keys:
+                parallel_key = (
+                    "the resolved compile.parallel (suite block or cfg-dispatch)"
+                )
+            else:
+                # Nothing said: findings from a caller that does not carry
+                # the origin keep the wording they always had.
+                parallel_key = "cfg-dispatch.compile.parallel"
+            note = (
+                "the compile row is the suite's build job: one allocation "
+                f"running up to {parallel_key} builds at once"
+            )
+            # The cpus row is gated independently (efficiency threshold, and
+            # a reduce needs evidence a compile ran), so a table whose only
+            # build-job row is `time` would otherwise carry a footnote
+            # explaining a column that is not there.
+            if any(f.resource == "cpus" for f in compile_rows):
+                note += ", so its cpus suggestion is per-build"
+            metadata.append(note)
+        render_summary(
+            title="Reservation Advice (reserved vs used)",
+            columns=[
+                ("suite", "Suite"),
+                ("test", "Test"),
+                ("resource", "Resource"),
+                ("phase", "Phase"),
+                ("reserved", "Reserved"),
+                ("peak", "Peak used"),
+                ("utilization", "Util"),
+                ("advice", "Advice"),
+                ("field", "Field"),
+            ],
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
 
     def do_rtl_regression(
         self,
@@ -1441,6 +7622,13 @@ class RtlBuddy:
             int,
             typer.Option("-s", "--start-level", help="regression level to start at"),
         ] = 0,
+        master_seed: Annotated[
+            int | None,
+            typer.Option(
+                "--master-seed",
+                help="derive an exact, stable runtime seed for every selected test",
+            ),
+        ] = None,
         coverage_merge: Annotated[
             bool,
             typer.Option(
@@ -1504,10 +7692,68 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        shared_build_root: Annotated[
+            str,
+            typer.Option(
+                "--shared-build-root",
+                help="persistent directory the shared builds are cached under, "
+                "so the cache survives a workspace wipe",
+                show_default="cfg-rtl-reg shared-build-root, else in-tree",
+            ),
+        ] = None,
+        rebuild: Annotated[
+            bool,
+            typer.Option(
+                "--rebuild",
+                help="recompile even when a valid build already exists "
+                "(implies nothing about --share-build)",
+            ),
+        ] = False,
+        dispatch: Annotated[
+            str,
+            typer.Option(
+                "--dispatch",
+                help="execution backend for test runs (local, local-parallel, slurm)",
+                show_default="cfg-dispatch backend, else local",
+            ),
+        ] = None,
+        jobs: Annotated[
+            int,
+            typer.Option(
+                "-j",
+                "--jobs",
+                help="concurrent jobs for --dispatch local-parallel",
+                show_default="cfg-dispatch jobs, else min(4, cpu count)",
+            ),
+        ] = None,
+        orphans: Annotated[
+            str,
+            typer.Option(
+                "--orphans",
+                help="what to do about an interrupted run's jobs that are "
+                "still queued or running (warn, cancel, adopt)",
+                show_default="cfg-dispatch orphans, else warn",
+            ),
+        ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="namespace this run's artefact tree under "
+                "artefacts/.runs/<tag>/ so a concurrent run of the same "
+                "suites gets its own trees, its own tree locks and its own "
+                "logs; shared builds stay shared",
+            ),
+        ] = None,
     ):
         """
         run rtl regression
         """
+        self._orphans = orphans
+        # Before the first `_enter_command_context` — the manifest root's and
+        # every suite's artefact root (and tree lock) derive from it (#541).
+        self._run_tag = validate_run_tag(run_tag)
+        master_seed = self._checked_master_seed(master_seed)
         merge_mode_count = sum(
             1
             for enabled in [
@@ -1530,6 +7776,8 @@ class RtlBuddy:
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
         self.share_build = share_build
+        self.rebuild = rebuild
+        self._shared_build_root_flag = shared_build_root
         log_event(
             logger,
             logging.INFO,
@@ -1538,6 +7786,8 @@ class RtlBuddy:
             reg_level=reg_level,
             start_level=start_level,
             share_build=share_build,
+            master_seed=master_seed,
+            run_tag=self._run_tag,
         )
 
         start_dir = str(self.invocation_cwd)
@@ -1582,57 +7832,256 @@ class RtlBuddy:
                     logging.INFO,
                     "regression.config_root_default",
                     path=self.reg_cfg.get_path(),
+                    # `flow` is on every emission of this event, not only the
+                    # per-flow commands' — one event name, one field set.
+                    flow="sim",
                 )
 
         reg_dir = os.path.dirname(self.reg_cfg.get_path())
         emit_console_text(f"Running regression from {reg_dir}", style="cyan")
+        seed_mode = SeedMode.MASTER if master_seed is not None else SeedMode.DEFAULT
+        if master_seed is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "regression.seed_plan",
+                master_seed=master_seed,
+                derivation_version=SEED_DERIVATION_VERSION,
+            )
+
+        # Dispatch implies share_build — the dispatched build job is what lets
+        # the sim jobs skip compilation.
+        dispatch_backend = self._resolve_dispatch_backend(dispatch, jobs=jobs)
+        if dispatch_backend is not None:
+            # An early-stop before POST can't be honoured per-job (the
+            # message names whether --dispatch or cfg-dispatch.backend put
+            # this run on a backend, so the remedy it offers exists).
+            self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
+            if not share_build:
+                self.share_build = True
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.share_build_implied",
+                    backend=dispatch_backend.name,
+                )
 
         exit_code = 0
         reg_results = []
+        reservation_findings = []
         # Per-suite ExecutionContext re-anchors the file log under each
         # tests.yaml directory. The process CWD is intentionally not
         # changed; the test runner already passes suite_dir explicitly to
         # every consumer.
         orchestration_ctx = ctx
-        for suite_cfg in self.reg_cfg.get_suite_configs():
-            suite_cfg_dir = os.path.dirname(suite_cfg.get_path())
-            log_event(
-                logger,
-                logging.INFO,
-                "regression.suite_start",
-                suite=suite_cfg.get_path(),
-                cwd=suite_cfg_dir,
-            )
-            self._enter_command_context(primary_config=suite_cfg.get_path())
-            suite_results = self._do_test_suite(
-                suite_cfg=suite_cfg,
-                test_name=None,
-                test_runner_mode={"sim_to_stdout": False},
-                reg_level=reg_level,
-                start_level=start_level,
-                run_ids=[None],
-                seed_mode=SeedMode.DEFAULT,
-                replay_run_id=None,
-            )
-            reg_results.append(
-                {
-                    "test_suite": self._display_path(
-                        suite_cfg.get_path(), base_dir=start_dir
-                    ),
-                    # Absolute suite dir — used as the coverage source_root.
-                    # Avoid recombining the display path with command_root,
-                    # which breaks when invocation cwd differs from
-                    # command_root.
-                    "test_suite_path": str(Path(suite_cfg.get_path()).resolve().parent),
-                    "results": suite_results,
-                }
-            )
-            exit_code |= self._exit_code_from_results(suite_results)
+        if dispatch_backend is not None:
+            # Expand every suite before the first submission. Besides keeping
+            # sweep hooks head-only, this lets the regression reject two
+            # co-located configs whose expanded tests would write the same
+            # per-test artefact directory before either job can touch it.
+            suite_configs = list(self.reg_cfg.get_suite_configs())
+            namespaces = self._dispatch_regression_namespaces(suite_configs)
+            prepared_suites = []
+            for suite_cfg in suite_configs:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                    cwd=os.path.dirname(suite_cfg.get_path()),
+                )
+                self._enter_command_context(primary_config=suite_cfg.get_path())
+                suite_results = []
+                entries = self._plan_dispatch_suite(
+                    suite_cfg,
+                    test_name=None,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    run_ids=[None],
+                    suite_results=suite_results,
+                    seed_mode=seed_mode,
+                    master_seed=master_seed,
+                )
+                prepared_suites.append(
+                    {
+                        "suite_cfg": suite_cfg,
+                        "entries": entries,
+                        "suite_results": suite_results,
+                        "dispatch_namespace": namespaces[
+                            str(Path(suite_cfg.get_path()).resolve())
+                        ],
+                        # A sweep hook is `exec()`d in this process and may
+                        # set or unset `SBATCH_*`, and entering a suite loads
+                        # its `.rtl-buddy/.env`. Snapshot the environment as
+                        # it stood right after this suite's own planning so
+                        # its submission sees exactly that, not what a later
+                        # suite's hook left behind (docs/concepts/dispatch.md).
+                        "environ": dict(os.environ),
+                    }
+                )
+            self._validate_dispatch_test_artifacts(prepared_suites)
+            # Retries, collection, and analysis run from whatever the process
+            # holds after every hook has run, as before pre-expansion.
+            final_environ = dict(os.environ)
+
+            # Submit every suite before waiting: the job fleet spans all
+            # suites, so slow suites overlap instead of serializing (#351 P2).
+            submitted = []
+            all_handles = []
+            # Jobs this run INHERITED rather than launched (`--orphans
+            # adopt`), by identity. Until the fleet-wide wait begins they are
+            # not this run's to destroy: a later suite that finds no orphan,
+            # or one whose orphan does not match, is a failure of THIS
+            # invocation and must leave an earlier suite's live fleet exactly
+            # where it found it — still queued, still recorded `running`, and
+            # still adoptable once the mismatch is fixed (#521 review). From
+            # the wait onwards they are the fleet, and an interrupt takes
+            # them down with everything else.
+            adopted_handles = set()
+            waiting = False
+            # One nonce for the whole regression run, shared across suites, so
+            # a collector rejects any envelope not from this run (#362).
+            run_token = uuid.uuid4().hex
+            try:
+                for prepared in prepared_suites:
+                    suite_cfg = prepared["suite_cfg"]
+                    _replace_environ(prepared["environ"])
+                    self._enter_command_context(primary_config=suite_cfg.get_path())
+                    state = self._dispatch_suite_submit(
+                        suite_cfg,
+                        dispatch_backend,
+                        run_token=run_token,
+                        prepared=prepared,
+                        dispatch_namespace=prepared["dispatch_namespace"],
+                        reg_level=reg_level,
+                        start_level=start_level,
+                        seed_mode=seed_mode,
+                        master_seed=master_seed,
+                    )
+                    self._announce_dispatched_suite(
+                        state,
+                        backend=dispatch_backend,
+                        suite=self._display_path(
+                            suite_cfg.get_path(), base_dir=start_dir
+                        ),
+                    )
+                    submitted.append((suite_cfg, state))
+                    # A suite that selected zero tests submits nothing and
+                    # returns build_handle=None; a None in all_handles crashes
+                    # both wait_all and the cancel_all cleanup path (#361).
+                    suite_handles = self._state_handles(state)
+                    all_handles.extend(suite_handles)
+                    if state.get("adopted"):
+                        adopted_handles.update(id(handle) for handle in suite_handles)
+                    # A backend that runs jobs itself may have freed a slot
+                    # during the next suite's submission, so give it a chance
+                    # to refill; a scheduler-backed backend no-ops here.
+                    dispatch_backend.advance()
+                _replace_environ(final_environ)
+                if all_handles:
+                    waiting = True
+                    dispatch_backend.wait_all(all_handles)
+            except BaseException:
+                # Interrupt or fatal error on the head: don't leave the
+                # fleet running — but "the fleet" is what this run launched.
+                # Before the wait, an adopted suite's jobs belong to the run
+                # that submitted them and are left alone.
+                _replace_environ(final_environ)
+                doomed_states = [
+                    state
+                    for _suite_cfg, state in submitted
+                    if waiting or not state.get("adopted")
+                ]
+                doomed = [
+                    handle
+                    for handle in all_handles
+                    if waiting or id(handle) not in adopted_handles
+                ]
+                dispatch_backend.cancel_all(doomed)
+                # ...and don't leave a cancelled suite's manifest claiming a
+                # live fleet: the next invocation reads those to decide what
+                # is still out there (#521). Only the suites whose jobs were
+                # actually taken down, and only once they really are gone.
+                for submitted_state in doomed_states:
+                    self._close_cancelled_run_manifest(
+                        dispatch_backend, submitted_state
+                    )
+                raise
+            for suite_cfg, state in submitted:
+                # Re-anchor the file log under this suite before collecting,
+                # so a collect-time dispatch.result_missing lands in the
+                # suite's own rtl_buddy.log rather than the last-entered
+                # suite's — matching the in-process per-suite fidelity.
+                self._enter_command_context(primary_config=suite_cfg.get_path())
+                suite_results = self._dispatch_collect(dispatch_backend, state)
+                suite_display = self._display_path(
+                    suite_cfg.get_path(), base_dir=start_dir
+                )
+                reservation_findings.extend(
+                    self._analyze_reservations(
+                        suite_results,
+                        suite_display=suite_display,
+                        suite_config_path=str(Path(suite_cfg.get_path()).resolve()),
+                        reg_level=reg_level,
+                        backend=dispatch_backend,
+                        state=state,
+                    )
+                )
+                reg_results.append(
+                    {
+                        "test_suite": suite_display,
+                        "test_suite_path": str(
+                            Path(suite_cfg.get_path()).resolve().parent
+                        ),
+                        "results": suite_results,
+                    }
+                )
+                exit_code |= self._exit_code_from_results(suite_results)
+            reservation_findings = _raise_first(reservation_findings)
+        else:
+            for suite_cfg in self.reg_cfg.get_suite_configs():
+                suite_cfg_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                    cwd=suite_cfg_dir,
+                )
+                self._enter_command_context(primary_config=suite_cfg.get_path())
+                suite_results = self._do_test_suite(
+                    suite_cfg=suite_cfg,
+                    test_name=None,
+                    test_runner_mode={"sim_to_stdout": False},
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    run_ids=[None],
+                    seed_mode=seed_mode,
+                    replay_run_id=None,
+                    master_seed=master_seed,
+                )
+                reg_results.append(
+                    {
+                        "test_suite": self._display_path(
+                            suite_cfg.get_path(), base_dir=start_dir
+                        ),
+                        # Absolute suite dir — used as the coverage source_root.
+                        # Avoid recombining the display path with command_root,
+                        # which breaks when invocation cwd differs from
+                        # command_root.
+                        "test_suite_path": str(
+                            Path(suite_cfg.get_path()).resolve().parent
+                        ),
+                        "results": suite_results,
+                    }
+                )
+                exit_code |= self._exit_code_from_results(suite_results)
         # Re-anchor the orchestration log to the regression root for the
         # summary phase so coverage merge artifacts and final summary land
         # next to regression.yaml.
         self._enter_command_context(command_root=orchestration_ctx.command_root)
         ctx = orchestration_ctx
+        _log_reservation_advice(reservation_findings)
 
         all_suite_results = []
         for reg_result in reg_results:
@@ -1642,6 +8091,8 @@ class RtlBuddy:
             self._builder_metadata_line(list(self.reg_cfg.get_suite_configs())),
             f"Builder Mode: {self.rtl_builder_mode}",
         ]
+        if master_seed is not None:
+            metadata.append(f"Master Seed: {master_seed}")
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
@@ -1657,6 +8108,14 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
+        # The per-suite HTML branch below builds metadata per suite and drops
+        # each payload, so seed the run-level cover points here to keep them in
+        # the envelope either way. Key omitted when there are none, so "absent"
+        # keeps meaning "not collected" on every surface.
+        coverage_payload = {"merged": None, "dir_summary": []}
+        seed_covers = self.coverage.collect_cover_records(all_suite_results)
+        if seed_covers:
+            coverage_payload["covers"] = seed_covers
         if (
             coverage_html
             and not coverage_merge
@@ -1665,61 +8124,73 @@ class RtlBuddy:
         ):
             reg_outdir = str(ctx.command_root)
             for reg_result in reg_results:
-                metadata.extend(
-                    self.coverage.build_metadata(
-                        reg_result["results"],
-                        outdir=reg_outdir,
-                        suite_name=reg_result["test_suite"],
-                        coverage_merge=False,
-                        coverage_merge_raw=False,
-                        coverage_html=True,
-                        coverage_coverview=coverage_coverview,
-                        coverage_per_test=coverage_per_test,
-                        reg_results=reg_results,
-                        coverage_merge_info_process=coverage_merge_info_process,
-                        source_roots=[reg_result["test_suite_path"]],
-                        dir_summary_paths=dir_summary_paths,
-                    )
+                # Per-suite HTML only — no merge, so no structured merged payload.
+                cov_metadata, _ = self.coverage.build_metadata(
+                    reg_result["results"],
+                    outdir=reg_outdir,
+                    suite_name=reg_result["test_suite"],
+                    coverage_merge=False,
+                    coverage_merge_raw=False,
+                    coverage_html=True,
+                    coverage_coverview=coverage_coverview,
+                    coverage_per_test=coverage_per_test,
+                    reg_results=reg_results,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[reg_result["test_suite_path"]],
+                    dir_summary_paths=dir_summary_paths,
+                    command="regression",
                 )
+                metadata.extend(cov_metadata)
         else:
             reg_outdir = str(ctx.command_root)
             regression_source_roots = [
                 reg_result["test_suite_path"] for reg_result in reg_results
             ]
-            metadata.extend(
-                self.coverage.build_metadata(
-                    all_suite_results,
-                    outdir=reg_outdir,
-                    suite_name=self.reg_cfg.get_path(),
-                    coverage_merge=coverage_merge,
-                    coverage_merge_raw=coverage_merge_raw,
-                    coverage_html=coverage_html,
-                    coverage_coverview=coverage_coverview,
-                    coverage_per_test=coverage_per_test,
-                    reg_results=reg_results,
-                    coverage_merge_info_process=coverage_merge_info_process,
-                    source_roots=regression_source_roots,
-                    dir_summary_paths=dir_summary_paths,
-                )
+            cov_metadata, coverage_payload = self.coverage.build_metadata(
+                all_suite_results,
+                outdir=reg_outdir,
+                suite_name=self.reg_cfg.get_path(),
+                coverage_merge=coverage_merge,
+                coverage_merge_raw=coverage_merge_raw,
+                coverage_html=coverage_html,
+                coverage_coverview=coverage_coverview,
+                coverage_per_test=coverage_per_test,
+                reg_results=reg_results,
+                coverage_merge_info_process=coverage_merge_info_process,
+                source_roots=regression_source_roots,
+                dir_summary_paths=dir_summary_paths,
+                command="regression",
             )
+            metadata.extend(cov_metadata)
 
+        self._refresh_result_side_cars(all_suite_results)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_regression_summary(reg_results, metadata=metadata)
+        if reservation_findings and not self.machine:
+            self._render_reservation_advice(reservation_findings)
         if self.machine:
-            self._emit_machine_result(
-                "regression",
-                exit_code,
-                results=[
-                    {
-                        "suite": reg_result["test_suite"],
-                        "name": suite_result["test_name"],
-                        "result": suite_result["results"].results["result"],
-                        "desc": suite_result["results"].results["desc"],
-                    }
+            payload = {
+                "results": [
+                    self._machine_test_row(
+                        suite_result["test_name"],
+                        suite_result["results"],
+                        suite=reg_result["test_suite"],
+                    )
                     for reg_result in reg_results
                     for suite_result in reg_result["results"]
-                ],
-            )
-        else:
-            self._render_regression_summary(reg_results, metadata=metadata)
+                ]
+            }
+            coverage = self._machine_coverage_payload(coverage_payload)
+            if coverage is not None:
+                payload["coverage"] = coverage
+            if dispatch_backend is not None:
+                payload["reservation_advice"] = [
+                    finding.as_event() for finding in reservation_findings
+                ]
+            if master_seed is not None:
+                payload["master_seed"] = master_seed
+            self._emit_machine_result("regression", exit_code, **payload)
         raise typer.Exit(exit_code)
 
     def do_gen_model_filelist(
@@ -1846,6 +8317,18 @@ class RtlBuddy:
                 help="dot format only: emit a side legend of clock colors",
             ),
         ] = False,
+        block_diagram: Annotated[
+            bool,
+            typer.Option(
+                "--block-diagram",
+                help=(
+                    "dot format only: render sibling dataflow as a block "
+                    "diagram (cluster nesting + net-labeled edges) instead "
+                    "of the hierarchy dump; requires rtl-buddy-sch >= "
+                    f"{VIEW_BLOCK_DIAGRAM_MIN_VERSION}"
+                ),
+            ),
+        ] = False,
         tool: Annotated[
             str,
             typer.Option("--tool", help="path to the rtl-buddy-view binary"),
@@ -1892,6 +8375,7 @@ class RtlBuddy:
                 cdc_annotations=cdc_annotations,
                 rdc_annotations=rdc_annotations,
                 clock_legend=clock_legend,
+                block_diagram=block_diagram,
                 executable=tool,
                 test_cfg=test_cfg,
             )
@@ -1920,6 +8404,7 @@ class RtlBuddy:
             cdc_annotations=cdc_annotations,
             rdc_annotations=rdc_annotations,
             clock_legend=clock_legend,
+            block_diagram=block_diagram,
             executable=tool,
         )
         raise typer.Exit(runner.run())
@@ -2011,6 +8496,1926 @@ class RtlBuddy:
             executable=tool,
         )
         raise typer.Exit(runner.run())
+
+    def _graph_models(
+        self,
+        ctx: ExecutionContext,
+        *,
+        model: list[str] | None,
+        regression: str | None,
+        design_dir: str,
+    ) -> list[ModelConfig] | None:
+        """Resolve ``rb graph build``'s model selection.
+
+        ``None`` means "whatever is under ``design_dir``" and is left for
+        :func:`~rtl_buddy.graph.build.build_graph` to expand, so the
+        default path has exactly one implementation.
+        """
+        if model and regression:
+            raise FatalRtlBuddyError(
+                "graph build: --model and --regression are mutually exclusive; "
+                "--regression already pins the models its suites run"
+            )
+        if regression:
+            return graph_build_mod.models_from_regression(ctx.resolve_input(regression))
+        if not model:
+            return None
+
+        available = graph_build_mod.models_from_design_tree(design_dir)
+        by_name: dict[str, list[ModelConfig]] = {}
+        for cfg in available:
+            by_name.setdefault(cfg.name, []).append(cfg)
+        missing = [name for name in model if name not in by_name]
+        if missing:
+            known = ", ".join(sorted(by_name)) or "(none)"
+            raise FatalRtlBuddyError(
+                f"graph build: unknown model(s): {', '.join(missing)}; "
+                f"models found under {design_dir}: {known}"
+            )
+        # Preserve the user's order but drop repeats. Every entry
+        # claiming a requested name is returned, not the first: two
+        # models.yaml files may declare one name, and keeping whichever
+        # was discovered first would silently pick for the user — an
+        # opted-out entry shadowing the graphable one, invisibly, because
+        # the survivor then looks like the only one. `build_graph`
+        # refuses the collision, where the message can name both files.
+        selected: list[ModelConfig] = []
+        for name in model:
+            for cfg in by_name[name]:
+                if cfg not in selected:
+                    selected.append(cfg)
+        return selected
+
+    def do_graph_build(
+        self,
+        model: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--model",
+                help=(
+                    "model name to export in the design tier; repeatable. "
+                    "Default: every model declared under --design-dir"
+                ),
+            ),
+        ] = None,
+        regression: Annotated[
+            str | None,
+            typer.Option(
+                "-c",
+                "--regression",
+                help=(
+                    "regression.yaml whose suites pin the models to export "
+                    "(mutually exclusive with --model)"
+                ),
+            ),
+        ] = None,
+        spec_dir: Annotated[
+            str | None,
+            typer.Option("--spec-dir", help="directory searched for specs.yaml"),
+        ] = None,
+        verif_dir: Annotated[
+            str | None,
+            typer.Option("--verif-dir", help="directory searched for tests.yaml"),
+        ] = None,
+        design_dir: Annotated[
+            str | None,
+            typer.Option("--design-dir", help="directory searched for models.yaml"),
+        ] = None,
+        out_dir: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--out-dir",
+                help="output directory (default: <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="viewer parser frontend (verible|slang)"),
+        ] = None,
+        design: Annotated[
+            bool,
+            typer.Option(
+                "--design/--no-design",
+                help="run the rtl-buddy-view design tier (default on)",
+            ),
+        ] = True,
+        tb: Annotated[
+            bool,
+            typer.Option(
+                "--tb/--no-tb",
+                help=(
+                    "also export each testbench's own hierarchy, rooted at "
+                    "its toplevel: (default on; --no-tb is DUT-only)"
+                ),
+            ),
+        ] = True,
+        flow_tops: Annotated[
+            bool,
+            typer.Option(
+                "--flow-tops/--no-flow-tops",
+                help=(
+                    "also export each formal/synth/cdc run's top over "
+                    "the flow's own filelist when it is not the model "
+                    "top (default on)"
+                ),
+            ),
+        ] = True,
+        bind: Annotated[
+            bool,
+            typer.Option(
+                "--bind/--no-bind",
+                help=(
+                    "run the post-merge binding stage that ties cocotb "
+                    "tests to the DUT hierarchy (default on)"
+                ),
+            ),
+        ] = True,
+        extract: Annotated[
+            bool,
+            typer.Option(
+                "--extract/--no-extract",
+                help=(
+                    "run the binding tier when the extractor "
+                    "(rtl-buddy-graph-extract) is installed"
+                ),
+            ),
+        ] = True,
+        extract_cross_check: Annotated[
+            bool,
+            typer.Option(
+                "--extract-cross-check/--no-extract-cross-check",
+                help=(
+                    "cross-check the internal merge against the extractor's "
+                    "`merge-graphs` when it is installed"
+                ),
+            ),
+        ] = True,
+        force: Annotated[
+            bool,
+            typer.Option("--force", help="rebuild even when no input changed"),
+        ] = False,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help="exit non-zero on any per-item failure, not just a dead tier",
+            ),
+        ] = False,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        extract the design, config and (optional) binding tiers and merge
+        them into artefacts/graph/graph.json
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root)
+        search_design = (
+            str(ctx.resolve_input(design_dir))
+            if design_dir is not None
+            else os.path.join(root, "design")
+        )
+        models = self._graph_models(
+            ctx, model=model, regression=regression, design_dir=search_design
+        )
+
+        # Version-gate the viewer the way `rb hier-query` gates on
+        # rtl-buddy-view >= 0.3.0: probe once here, hand the answer to
+        # build_graph so the same string lands in the fingerprint (a
+        # viewer upgrade must invalidate the cached design tier).
+        view_version = probe_view_version(tool) if design else None
+        # A found-but-unprobeable extractor still runs — its "unknown"
+        # version stays in the fingerprint so a later probe-able upgrade
+        # invalidates the cache instead of silently reusing it.
+        extractor = extract_mod.resolve_extractor(self.root_cfg) if extract else None
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_build",
+            command="graph build",
+            models=len(models) if models is not None else None,
+            design=design,
+            tb=tb,
+            extractor=extractor is not None,
+            force=force,
+        )
+
+        build = graph_build_mod.build_graph(
+            root,
+            models=models,
+            spec_dir=str(ctx.resolve_input(spec_dir)) if spec_dir else None,
+            verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
+            design_dir=search_design,
+            out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
+            view_executable=tool,
+            view_version=view_version,
+            frontend=frontend,
+            design=design,
+            tb=tb,
+            flow_tops=flow_tops,
+            bind=bind,
+            extract_enabled=extract,
+            extract_cross_check=extract_cross_check,
+            extract_version=extractor.version if extractor else None,
+            extract_executable=(
+                extractor.executable if extractor else extract_mod.GRAPH_EXTRACT_BINARY
+            ),
+            force=force,
+        )
+
+        exit_code = 0
+        if build.failed_tiers() or (strict and build.has_failures()):
+            exit_code = 1
+
+        if self.machine:
+            self._emit_machine_result(
+                "graph build", exit_code, **build.payload(Path(root))
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title="Design Knowledge Graph",
+            columns=[
+                ("tier", "Tier"),
+                ("status", "Status"),
+                ("nodes", "Nodes"),
+                ("links", "Links"),
+                ("detail", "Detail"),
+            ],
+            rows=[
+                {
+                    "tier": t.tier,
+                    "status": t.status,
+                    "nodes": str(t.nodes),
+                    "links": str(t.links),
+                    "detail": t.row_detail(),
+                }
+                for t in build.tiers
+            ],
+            logger=logger,
+        )
+        verb = "unchanged" if build.unchanged else "wrote"
+        emit_console_text(
+            f"{verb} {os.path.relpath(build.graph_path, root)}: "
+            f"{build.nodes} nodes, {build.links} links "
+            f"({build.merge.get('stitch_points', 0)} stitch points)",
+            stream="stdout",
+        )
+        binding = build.binding or {}
+        if binding.get("status") == "built":
+            emit_console_text(
+                f"binding: {binding.get('tests', 0)} cocotb test(s) bound to "
+                f"{binding.get('python_modules', 0)} Python module(s), "
+                f"{binding.get('drives', 0)} drives edges "
+                f"({binding.get('drives_inferred', 0)} inferred), "
+                f"{binding.get('checks_against', 0)} golden-model checks",
+                stream="stdout",
+            )
+        dangling = build.merge.get("dangling") or []
+        if dangling:
+            emit_console_text(
+                f"dangling link targets ({len(dangling)}): "
+                f"{', '.join(dangling[:5])}"
+                f"{' ...' if len(dangling) > 5 else ''}",
+                style="yellow",
+            )
+        raise typer.Exit(exit_code)
+
+    def do_graph_results(
+        self,
+        verif_dir: Annotated[
+            str | None,
+            typer.Option("--verif-dir", help="directory searched for tests.yaml"),
+        ] = None,
+        out_dir: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--out-dir",
+                help="output directory (default: <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help=(
+                    "graph.json to cross-check ids against "
+                    "(default: <out-dir>/graph.json); read, never written"
+                ),
+            ),
+        ] = None,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help=(
+                    "exit non-zero when an envelope could not be read, a test "
+                    "node has no result, or a result matches no node"
+                ),
+            ),
+        ] = False,
+        coverage: Annotated[
+            str,
+            typer.Option(
+                "--coverage",
+                # This NAMES A SOURCE and so takes a value, where in
+                # v6.30.x it was the boolean `--coverage/--no-coverage`.
+                # A bare `--coverage` therefore no longer parses. Click's
+                # optional-value form (`is_flag=False, flag_value=...`)
+                # is the obvious rescue, but Typer does not forward
+                # either kwarg and deprecates both, so the compatibility
+                # kept here is `--no-coverage` (unchanged) plus the
+                # `none` keyword; the break is loud, and it is recorded
+                # in docs/known-issues.md.
+                help=(
+                    "coverage source to join onto the graph's ids: 'auto' "
+                    "(cov_dir/manifest.json, then the per-test coverage.dat "
+                    "databases this scan finds), 'model' (the manifest "
+                    "only), 'none', or a path to a merged LCOV .info file; "
+                    "nothing is re-run"
+                ),
+            ),
+        ] = "auto",
+        no_coverage: Annotated[
+            bool,
+            typer.Option(
+                "--no-coverage",
+                help="skip the coverage join (same as --coverage none)",
+            ),
+        ] = False,
+        cov_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-dir",
+                help=(
+                    "coverage artefact directory to join from "
+                    "(default: the newest cov_dir/ under the project)"
+                ),
+            ),
+        ] = None,
+        cov_manifest: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-manifest",
+                help="coverage manifest.json to join from, instead of discovery",
+            ),
+        ] = None,
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="convert one --run-tag run's results: scan "
+                "artefacts/.runs/<tag>/ in every suite and write that "
+                "run's overlay under artefacts/.runs/<tag>/graph/ "
+                "(graph.json is still read from artefacts/graph/)",
+            ),
+        ] = None,
+    ):
+        """
+        refresh the results overlay beside graph.json: last status, run token,
+        seed, artefact paths and coverage per test node
+        """
+        # Before the context is entered: a tagged refresh reads and writes
+        # inside that run's tree, so it must lock that tree and not the
+        # project-wide one two concurrent regressions would contend for
+        # (#541).
+        self._run_tag = validate_run_tag(run_tag)
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root)
+
+        # `--coverage` names a source (#390): the two keywords pass
+        # through, 'none' (and `--no-coverage`) disables the join, and
+        # anything else is a merged LCOV .info path, resolved against the
+        # invoking directory like every other path option. The accepted
+        # keywords are exactly the three the help and docs list — an
+        # undocumented synonym is a contract nobody knows they own.
+        cov_source: bool | str = coverage.strip()
+        if no_coverage or cov_source == "none":
+            cov_source = False
+        elif cov_source not in (
+            graph_coverage_mod.COVERAGE_SOURCE_AUTO,
+            graph_coverage_mod.COVERAGE_SOURCE_MODEL,
+        ):
+            cov_source = str(ctx.resolve_input(cov_source))
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_results",
+            command="graph results",
+            verif_dir=verif_dir,
+            strict=strict,
+            coverage=cov_source,
+            run_tag=self._run_tag,
+        )
+
+        overlay = graph_results_mod.refresh_results_overlay(
+            root,
+            verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
+            out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
+            graph_path=str(ctx.resolve_input(graph)) if graph else None,
+            coverage=cov_source,
+            cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
+            cov_manifest=str(ctx.resolve_input(cov_manifest)) if cov_manifest else None,
+            run_tag=self._run_tag,
+        )
+
+        exit_code = 0
+        if strict and (overlay.problems or overlay.missing or overlay.unmatched):
+            exit_code = 1
+
+        if self.machine:
+            self._emit_machine_result(
+                "graph results",
+                exit_code,
+                overlay=os.path.relpath(overlay.path, root),
+                graph=overlay.overlay.get("graph"),
+                tests=len(overlay.entries),
+                with_results=overlay.with_results(),
+                statuses=overlay.status_counts(),
+                missing=overlay.missing,
+                unmatched=overlay.unmatched,
+                problems=overlay.problems,
+                coverage=overlay.coverage_summary(),
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title="Regression Results Overlay",
+            columns=[
+                ("test", "Test"),
+                ("status", "Status"),
+                ("run", "Run"),
+                ("when", "When"),
+                ("line", "Line%"),
+                ("artefacts", "Artefacts"),
+            ],
+            rows=[
+                {
+                    "test": entry["id"],
+                    "status": entry["status"],
+                    "run": str(entry.get("run_id"))
+                    if entry.get("run_id") is not None
+                    else "-",
+                    "when": entry.get("timestamp") or "-",
+                    "line": _line_ratio_text(entry.get("coverage")),
+                    "artefacts": ", ".join(
+                        k for k in sorted(entry.get("artefacts", {})) if k != "dir"
+                    )
+                    or "-",
+                }
+                for entry in overlay.entries.values()
+            ],
+            logger=logger,
+        )
+        counts = ", ".join(f"{k} {v}" for k, v in overlay.status_counts().items())
+        emit_console_text(
+            f"wrote {os.path.relpath(overlay.path, root)}: "
+            f"{len(overlay.entries)} test(s), "
+            f"{overlay.with_results()} with a result envelope"
+            f"{' (' + counts + ')' if counts else ''}",
+            stream="stdout",
+        )
+        cov_summary = overlay.coverage_summary()
+        if cov_summary is not None:
+            # Only a non-manifest source is worth a word: `model` is the
+            # ordinary case and the line is budgeted for one console row.
+            source = cov_summary.get("source")
+            note = f" (from {source})" if source and source != "model" else ""
+            emit_console_text(
+                f"coverage{note}: "
+                f"{cov_summary['tests']} test(s) scored, "
+                f"{cov_summary['modules']} module(s), "
+                f"{cov_summary[graph_coverage_mod.STATUS_EXERCISED]}/"
+                f"{cov_summary['items']} spec item(s) exercised, "
+                f"{cov_summary[graph_coverage_mod.STATUS_OBSERVED_UNDECLARED]} "
+                "observed but undeclared",
+                stream="stdout",
+            )
+        if overlay.missing:
+            emit_console_text(
+                f"no results for {len(overlay.missing)} test node(s): "
+                f"{', '.join(overlay.missing[:5])}"
+                f"{' ...' if len(overlay.missing) > 5 else ''}",
+                style="yellow",
+            )
+        if overlay.problems:
+            emit_console_text(
+                f"unreadable result envelope(s) ({len(overlay.problems)}): "
+                f"{overlay.problems[0]['error']}",
+                style="yellow",
+            )
+        raise typer.Exit(exit_code)
+
+    # ------------------------------------------------------------------
+    # graph query verbs (#380)
+    # ------------------------------------------------------------------
+
+    def _graph_query_context(
+        self,
+        ctx: ExecutionContext,
+        root: str,
+        *,
+        graph: str | None,
+        overlay: str | None,
+        results: bool,
+    ):
+        return graph_query_mod.load_context(
+            root,
+            graph_path=str(ctx.resolve_input(graph)) if graph else None,
+            overlay_path=str(ctx.resolve_input(overlay)) if overlay else None,
+            with_results=results,
+        )
+
+    def _graph_query_candidates(self, exc: graph_query_mod.GraphQueryError) -> None:
+        """Print a failed node reference's near misses before exiting.
+
+        A miss with no candidates is a dead end; a miss with candidates
+        is one retry away, which is worth two lines of console output.
+        """
+        if not exc.candidates:
+            return
+        emit_console_text(
+            "did you mean: " + ", ".join(exc.candidates[:10]),
+            style="yellow",
+        )
+
+    def do_graph_query(
+        self,
+        question: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "what to look for — an identifier or a plain question, "
+                    'e.g. "A-COV-1" or "which tests exercise blk_a"'
+                )
+            ),
+        ],
+        node_type: Annotated[
+            str | None,
+            typer.Option(
+                "--type",
+                help="restrict to one node type (module, test, coverage_item, ...)",
+            ),
+        ] = None,
+        tier: Annotated[
+            str | None,
+            typer.Option("--tier", help="restrict to one tier (design|config|binding)"),
+        ] = None,
+        limit: Annotated[
+            int,
+            typer.Option("--limit", help="maximum matches to report"),
+        ] = graph_query_mod.DEFAULT_LIMIT,
+        depth: Annotated[
+            int,
+            typer.Option(
+                "--depth",
+                help=(
+                    "hops of neighbourhood expansion around each match "
+                    f"(0 disables; maximum {graph_query_mod.MAX_DEPTH})"
+                ),
+            ),
+        ] = graph_query_mod.DEFAULT_DEPTH,
+        max_neighbors: Annotated[
+            int,
+            typer.Option(
+                "--max-neighbors",
+                help=(
+                    "neighbours reported per match; anything beyond is "
+                    "counted in neighbors_truncated rather than dropped silently"
+                ),
+            ),
+        ] = graph_query_mod.DEFAULT_MAX_NEIGHBORS,
+        results: Annotated[
+            bool,
+            typer.Option(
+                "--results/--no-results",
+                help="join the regression-results overlay onto every node",
+            ),
+        ] = True,
+        expand: Annotated[
+            bool,
+            typer.Option(
+                "--expand",
+                help=(
+                    "full node summaries for every neighbour instead of the "
+                    "lean id/label/type references"
+                ),
+            ),
+        ] = False,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help="graph.json to query (default <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option(
+                "--overlay",
+                help="results-overlay.json to join (default: beside graph.json)",
+            ),
+        ] = None,
+    ):
+        """
+        search the design knowledge graph by keyword and expand the
+        neighbourhood around every match, with the results overlay joined in
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        # `list_only=True` keeps the read verbs **lock-free**. The
+        # artefact lock is exclusive and held to process exit, so taking
+        # it here would make `rb graph query` fail while a regression is
+        # running in the same tree — which is precisely when an agent
+        # asks the graph what it is looking at. Nothing under it is
+        # written, and no RootConfig is needed to read a JSON file.
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_query",
+            command="graph query",
+            question=question,
+        )
+        gctx = self._graph_query_context(
+            ctx, root, graph=graph, overlay=overlay, results=results
+        )
+        payload = graph_query_mod.query(
+            gctx,
+            question,
+            node_type=node_type,
+            tier=tier,
+            limit=limit,
+            depth=depth,
+            max_neighbors=max_neighbors,
+            results=results,
+            expand=expand,
+        )
+        # A question nobody can answer is not a crash: exit 1 (the
+        # "graceful no" code) so a shell loop can branch on it, and 0
+        # whenever at least one node matched.
+        exit_code = 0 if payload["matches"] else 1
+
+        if self.machine:
+            self._emit_machine_result("graph query", exit_code, **payload)
+            raise typer.Exit(exit_code)
+
+        if not payload["matches"]:
+            emit_console_text(
+                f"no node matches {question!r} in "
+                f"{payload['graph']} ({payload['counts']['nodes']} nodes)",
+                style="yellow",
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title=f"Graph Query — {question}",
+            columns=[
+                ("id", "Node"),
+                ("type", "Type"),
+                ("score", "Score"),
+                ("status", "Status"),
+                ("where", "Where"),
+            ],
+            rows=[
+                {
+                    "id": match["id"],
+                    "type": match.get("type", "-"),
+                    "score": str(match.get("score", 0)),
+                    "status": (match.get("results") or {}).get("status", "-"),
+                    "where": _graph_where(match),
+                }
+                for match in payload["matches"]
+            ],
+            logger=logger,
+        )
+        for match in payload["matches"]:
+            neighbors = match.get("neighbors") or []
+            if not neighbors:
+                continue
+            emit_console_text(
+                f"\n{match['id']}", style="bold", stream="stdout", markup=False
+            )
+            for neighbor in neighbors:
+                via = neighbor.get("via", {})
+                arrow = "->" if via.get("direction") == "out" else "<-"
+                status = (neighbor.get("results") or {}).get("status")
+                emit_console_text(
+                    f"  {arrow} {via.get('type', '?')} {neighbor['id']}"
+                    f"{f' ({status})' if status else ''}",
+                    stream="stdout",
+                    markup=False,
+                )
+            truncated = match.get("neighbors_truncated")
+            if truncated:
+                kinds = ", ".join(
+                    f"{count} {kind}" for kind, count in truncated["kinds"].items()
+                )
+                emit_console_text(
+                    f"  ... {truncated['dropped']} more neighbour(s) beyond "
+                    f"--max-neighbors: {kinds}",
+                    style="yellow",
+                    markup=False,
+                )
+        raise typer.Exit(exit_code)
+
+    def do_graph_path(
+        self,
+        source: Annotated[
+            str, typer.Argument(help="start node id, or a bare unambiguous name")
+        ],
+        target: Annotated[
+            str, typer.Argument(help="end node id, or a bare unambiguous name")
+        ],
+        directed: Annotated[
+            bool,
+            typer.Option(
+                "--directed/--undirected",
+                help=(
+                    "follow edge direction; undirected by default because "
+                    "edge direction encodes role, not reachability"
+                ),
+            ),
+        ] = False,
+        max_paths: Annotated[
+            int,
+            typer.Option("--max-paths", help="shortest paths to report"),
+        ] = graph_query_mod.DEFAULT_MAX_PATHS,
+        results: Annotated[
+            bool,
+            typer.Option(
+                "--results/--no-results",
+                help="join the regression-results overlay onto every node",
+            ),
+        ] = True,
+        graph: Annotated[
+            str | None,
+            typer.Option("--graph", help="graph.json to query"),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option("--overlay", help="results-overlay.json to join"),
+        ] = None,
+    ):
+        """
+        report the shortest chain of edges connecting two graph nodes
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        # Lock-free, as `graph query` is — see there.
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_path",
+            command="graph path",
+            source=source,
+            target=target,
+        )
+        gctx = self._graph_query_context(
+            ctx, root, graph=graph, overlay=overlay, results=results
+        )
+        try:
+            payload = graph_query_mod.path(
+                gctx,
+                source,
+                target,
+                directed=directed,
+                max_paths=max_paths,
+                results=results,
+            )
+        except graph_query_mod.GraphQueryError as exc:
+            if self.machine:
+                self._emit_machine_result(
+                    "graph path", 2, error=str(exc), candidates=exc.candidates
+                )
+                raise typer.Exit(2)
+            self._graph_query_candidates(exc)
+            raise
+
+        exit_code = 0 if payload["found"] else 1
+        if self.machine:
+            self._emit_machine_result("graph path", exit_code, **payload)
+            raise typer.Exit(exit_code)
+
+        if not payload["found"]:
+            emit_console_text(
+                f"no path between {payload['source']['id']} and "
+                f"{payload['target']['id']}"
+                f"{' (try --undirected)' if directed else ''}",
+                style="yellow",
+            )
+            raise typer.Exit(exit_code)
+
+        for walk in payload["paths"]:
+            emit_console_text(
+                f"{walk['length']} hop(s):", style="bold", stream="stdout"
+            )
+            nodes = walk["nodes"]
+            emit_console_text(f"  {nodes[0]['id']}", stream="stdout", markup=False)
+            for step, node in zip(walk["edges"], nodes[1:]):
+                types = ", ".join(
+                    sorted({str(link.get("type")) for link in step["links"]})
+                )
+                emit_console_text(
+                    f"    --{types}--> {node['id']}", stream="stdout", markup=False
+                )
+        raise typer.Exit(exit_code)
+
+    def do_graph_explain(
+        self,
+        node: Annotated[
+            str, typer.Argument(help="node id, or a bare unambiguous name")
+        ],
+        results: Annotated[
+            bool,
+            typer.Option(
+                "--results/--no-results",
+                help="join the regression-results overlay onto every node",
+            ),
+        ] = True,
+        expand: Annotated[
+            bool,
+            typer.Option(
+                "--expand",
+                help=(
+                    "full node summaries for every edge peer instead of the "
+                    "lean id/label/type references"
+                ),
+            ),
+        ] = False,
+        graph: Annotated[
+            str | None,
+            typer.Option("--graph", help="graph.json to query"),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option("--overlay", help="results-overlay.json to join"),
+        ] = None,
+    ):
+        """
+        report one node's attributes, every edge on it with the far endpoint
+        named (--expand for full peer summaries), its last regression result
+        and its coverage
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        # Lock-free, as `graph query` is — see there.
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_explain",
+            command="graph explain",
+            node=node,
+        )
+        gctx = self._graph_query_context(
+            ctx, root, graph=graph, overlay=overlay, results=results
+        )
+        try:
+            payload = graph_query_mod.explain(
+                gctx, node, results=results, expand=expand
+            )
+        except graph_query_mod.GraphQueryError as exc:
+            if self.machine:
+                self._emit_machine_result(
+                    "graph explain", 2, error=str(exc), candidates=exc.candidates
+                )
+                raise typer.Exit(2)
+            self._graph_query_candidates(exc)
+            raise
+
+        if self.machine:
+            self._emit_machine_result("graph explain", 0, **payload)
+            raise typer.Exit(0)
+
+        summary = payload["node"]
+        emit_console_text(
+            f"{summary['id']}  ({summary.get('type', '?')}, "
+            f"tier {summary.get('tier', '?')})",
+            style="bold",
+            stream="stdout",
+        )
+        where = _graph_where(summary)
+        if where != "-":
+            emit_console_text(f"  source: {where}", stream="stdout")
+        cite = summary.get("cite") or {}
+        if cite.get("command"):
+            emit_console_text(f"  cite:   {cite['command']}", stream="stdout")
+        entry = payload.get("results")
+        if entry:
+            emit_console_text(
+                f"  result: {entry.get('status')} "
+                f"({entry.get('timestamp', 'unknown time')})",
+                stream="stdout",
+            )
+        for line in _explain_coverage_lines(
+            payload.get("coverage"), payload.get("coverage_run")
+        ):
+            # The match rung is printed as `[affix]`, and an SVA label can
+            # itself carry brackets (`gen[0].cov_x`) — Rich would eat both
+            # as style tags, so this line is never markup.
+            emit_console_text(line, stream="stdout", markup=False)
+        rows = [
+            {
+                "dir": direction,
+                "type": str(edge.get("type")),
+                "peer": edge["peer"],
+                "peer_type": edge.get("peer_type", "-"),
+                "confidence": str(edge.get("confidence", "-")),
+            }
+            for direction, bucket in (
+                ("out", payload["outgoing"]),
+                ("in", payload["incoming"]),
+            )
+            for edge in bucket
+        ]
+        if rows:
+            render_summary(
+                title=f"Edges — {summary['id']}",
+                columns=[
+                    ("dir", "Dir"),
+                    ("type", "Edge"),
+                    ("peer", "Peer"),
+                    ("peer_type", "Peer Type"),
+                    ("confidence", "Confidence"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+        else:
+            emit_console_text("  (no edges)", stream="stdout")
+        truncated = payload.get("truncated")
+        if truncated:
+            # A cut answer that does not say what it lost is how you get a
+            # confident wrong answer cheaply — so the human surface says it
+            # too, not just the machine payload.
+            kinds = ", ".join(
+                f"{count} {kind}" for kind, count in truncated["kinds"].items()
+            )
+            buckets = truncated.get("buckets") or {}
+            where = (
+                " (" + ", ".join(f"{name} {n}" for name, n in buckets.items()) + ")"
+                if buckets
+                else ""
+            )
+            emit_console_text(
+                f"  ... {truncated['dropped']} more edge(s) not shown{where}: {kinds}",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb cov — read verbs over coverage artefacts already on disk (#399)
+    # ------------------------------------------------------------------
+
+    def _cov_context(self, verb, *, cov_dir=None, manifest=None):
+        """Load the coverage manifest and model for a `rb cov` verb.
+
+        Lock-free like the `rb graph` read verbs: nothing is written, and
+        taking the exclusive artefact lock would make `rb cov summary`
+        fail while a regression is running in the same tree — which is
+        exactly when someone asks what the coverage looks like.
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            f"command.{verb.replace(' ', '_')}",
+            command=verb,
+        )
+        try:
+            return cov_query_mod.load_context(
+                root,
+                cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
+                manifest=str(ctx.resolve_input(manifest)) if manifest else None,
+            )
+        except cov_query_mod.CovQueryError as exc:
+            self._read_query_failed(verb, exc)
+
+    def _read_query_failed(self, command: str, exc):
+        """Report a read verb's unanswerable question, then exit 2.
+
+        Shared by `rb cov` and `rb phys`: both raise an error carrying
+        ``candidates``, and a near-miss list rendered two different ways
+        would be two different contracts for the same failure.
+        """
+        if self.machine:
+            self._emit_machine_result(
+                command, 2, error=str(exc), candidates=exc.candidates
+            )
+            raise typer.Exit(2)
+        if exc.candidates:
+            emit_console_text(str(exc), style="red", markup=False)
+            emit_console_text(
+                "did you mean: " + ", ".join(exc.candidates[:10]), style="yellow"
+            )
+            raise typer.Exit(2)
+        raise exc
+
+    @staticmethod
+    def _cov_pct(entry):
+        """Format one `{found, hit, ratio}` total as `hit/found (NN%)`."""
+        if not entry or not entry.get("found"):
+            return "-"
+        return f"{entry['hit']}/{entry['found']} ({entry['ratio'] * 100:.0f}%)"
+
+    def _cov_totals_columns(self):
+        return [("scope", "Scope")] + [
+            (metric, metric.capitalize()) for metric in cov_metrics
+        ]
+
+    def _cov_totals_row(self, scope, totals):
+        row = {"scope": scope}
+        for metric in cov_metrics:
+            row[metric] = self._cov_pct((totals or {}).get(metric))
+        return row
+
+    def do_cov_summary(
+        self,
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                help="files to report, coldest first (0 for all)",
+            ),
+        ] = cov_query_mod.DEFAULT_FILE_LIMIT,
+        cov_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-dir",
+                help="coverage artefact directory to read",
+                show_default="newest cov_dir under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report a run's coverage from its artefacts: run-level and per-test
+        scalars, the coldest files, and where every artefact landed
+        """
+        ctx = self._cov_context("cov summary", cov_dir=cov_dir, manifest=manifest)
+        payload = cov_query_mod.summary_payload(ctx, limit=limit)
+
+        if self.machine:
+            self._emit_machine_result("cov summary", 0, **payload)
+            raise typer.Exit(0)
+
+        emit_console_text(
+            f"{payload['run_command']} {payload.get('suite') or ''} — "
+            f"{payload['counts']['tests']} test(s), "
+            f"{payload['counts']['files']} file(s), "
+            f"generated {payload.get('generated_at') or 'unknown'}",
+            style="bold",
+            stream="stdout",
+            markup=False,
+        )
+        render_summary(
+            title="Coverage — Totals",
+            columns=self._cov_totals_columns(),
+            rows=[self._cov_totals_row("run", payload["totals"])]
+            + [
+                self._cov_totals_row(row["name"], row["totals"])
+                for row in payload["tests"]
+            ],
+            logger=logger,
+        )
+        if payload["files"]:
+            render_summary(
+                title="Coverage — Coldest Files",
+                columns=self._cov_totals_columns(),
+                rows=[
+                    self._cov_totals_row(row["path"], row["totals"])
+                    for row in payload["files"]
+                ],
+                logger=logger,
+            )
+        artefacts = payload["artefacts"]
+        emit_console_text(f"\nmanifest: {artefacts['manifest']}", stream="stdout")
+        emit_console_text(f"model:    {artefacts['model']}", stream="stdout")
+        for label, key in (
+            ("merged:  ", "merged_info"),
+            ("html:    ", "html_dir"),
+            ("coverview", "coverview_zip"),
+        ):
+            if artefacts.get(key):
+                emit_console_text(f"{label} {artefacts[key]}", stream="stdout")
+        raise typer.Exit(0)
+
+    def do_cov_module(
+        self,
+        module: Annotated[
+            str, typer.Argument(help="module name as the coverage model records it")
+        ],
+        cold: Annotated[
+            bool,
+            typer.Option(
+                "--cold/--all",
+                help="list only the points with no hits",
+            ),
+        ] = True,
+        limit: Annotated[
+            int,
+            typer.Option("--limit", help="points to list per metric (0 for all)"),
+        ] = 20,
+        cov_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-dir",
+                help="coverage artefact directory to read",
+                show_default="newest cov_dir under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report per-file, per-point coverage for one module's sources, with the
+        tests behind every point
+        """
+        ctx = self._cov_context("cov module", cov_dir=cov_dir, manifest=manifest)
+        try:
+            payload = cov_query_mod.module_payload(ctx, module)
+        except cov_query_mod.CovQueryError as exc:
+            self._read_query_failed("cov module", exc)
+
+        if self.machine:
+            self._emit_machine_result("cov module", 0, **payload)
+            raise typer.Exit(0)
+
+        render_summary(
+            title=f"Coverage — {payload['module']}",
+            columns=self._cov_totals_columns(),
+            rows=[self._cov_totals_row("module", payload["totals"])]
+            + [
+                self._cov_totals_row(row["path"], row["totals"])
+                for row in payload["files"]
+            ],
+            logger=logger,
+        )
+        for file_row in payload["files"]:
+            for metric in cov_metrics:
+                points = [
+                    point
+                    for point in file_row[metric]
+                    if not cold or point.get("hits", 0) == 0
+                ]
+                if not points:
+                    continue
+                shown = points if limit <= 0 else points[:limit]
+                emit_console_text(
+                    f"\n{file_row['path']} — {metric}"
+                    f"{' (uncovered)' if cold else ''}"
+                    f" {len(shown)}/{len(points)}",
+                    style="bold",
+                    stream="stdout",
+                    markup=False,
+                )
+                for point in shown:
+                    name = point.get("name")
+                    emit_console_text(
+                        f"  line {point.get('line')}"
+                        f"{f' {name}' if name else ''}"
+                        f"  hits={point.get('hits', 0)}",
+                        stream="stdout",
+                        markup=False,
+                    )
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb phys — read verbs over physical artefacts already on disk (#558)
+    # ------------------------------------------------------------------
+
+    def _phys_root(self, verb):
+        """The project root a `rb phys` verb reads under, event logged.
+
+        Lock-free like the `rb cov` and `rb graph` read verbs: nothing is
+        written, and taking the exclusive artefact lock would make `rb
+        phys summary` fail while a synthesis is running in the same tree
+        — which is exactly when someone asks what the last one measured.
+
+        Split out from `_phys_context` for `rb phys runs`, whose subject
+        is the set of runs rather than one of them: it resolves no
+        manifest and loads no model, so it needs the root and the
+        command event and nothing else.
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            f"command.{verb.replace(' ', '_')}",
+            command=verb,
+        )
+        return root, ctx
+
+    def _phys_context(self, verb, *, phys_dir=None, manifest=None):
+        """Load the physical manifest and model for a `rb phys` verb."""
+        root, ctx = self._phys_root(verb)
+        try:
+            return phys_query_mod.load_context(
+                root,
+                phys_dir=str(ctx.resolve_input(phys_dir)) if phys_dir else None,
+                manifest=str(ctx.resolve_input(manifest)) if manifest else None,
+            )
+        except phys_query_mod.PhysQueryError as exc:
+            self._read_query_failed(verb, exc)
+
+    @staticmethod
+    def _phys_rank_limit(flag: str, value: str | None):
+        """A `--modules-limit`/`--instances-limit` value, or a usage error.
+
+        `--limit 0` has always meant *all*, so "none" needs a spelling
+        of its own; `phys.query.parse_rank_limit` owns it and this only
+        names the flag that carried the bad one.
+        """
+        try:
+            return phys_query_mod.parse_rank_limit(value)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint=flag) from None
+
+    @staticmethod
+    def _phys_num(value, digits: int = 3):
+        """Format one model number, or `-` for a value nobody measured.
+
+        `null` prints as `-` rather than `0`, because every column here
+        has a run that legitimately leaves it unmeasured — area without a
+        Liberty, power without a `rb power` — and a zero would read as a
+        measurement.
+        """
+        if value is None:
+            return "-"
+        if isinstance(value, int) and not isinstance(value, bool):
+            return f"{value:,}"
+        try:
+            return f"{float(value):,.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _phys_missing_half_notes(payload) -> None:
+        """Say which half is absent and what would actually produce it.
+
+        The obvious advice — run the other command into this directory —
+        is only true when the two halves can pair. The merge is gated on
+        the netlist hash both producers record, so a half whose producer
+        recorded none (a `netlist-source: pnr` power run reads a routed
+        database and has no netlist to hash) cannot be merged onto: the
+        run that would complete the model *replaces* it instead, and the
+        note would be sending the user to destroy the very rows they
+        still have. The payload's `halves` block echoes that per half
+        (`netlist_hash`), so the note names what does work — synthesise,
+        then measure the netlist it wrote, so the pair shares one.
+        """
+        halves = payload.get("halves") or {}
+        for half in payload.get("missing_halves") or []:
+            entry = halves.get(half) or {}
+            produced_by = entry.get("produced_by")
+            noun = "module" if half == "modules" else "instance"
+            other = "instances" if half == "modules" else "modules"
+            present = halves.get(other) or {}
+            if present.get("present") and not present.get("netlist_hash"):
+                note = (
+                    f"no per-{noun} rows in this model - `{produced_by}` here "
+                    f"would replace it rather than complete it: the "
+                    f"{'power' if other == 'instances' else 'synthesis'} half "
+                    f"records no netlist hash to pair on. Run `rb synth`, then "
+                    f"re-run `rb power` on the netlist it writes, so both "
+                    f"halves measure the same one"
+                )
+            else:
+                note = (
+                    f"no per-{noun} rows in this model - run `{produced_by}` "
+                    f"into the same artefact directory to add them"
+                )
+            emit_console_text(
+                note,
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+
+    @staticmethod
+    def _phys_instance_join_note(payload) -> None:
+        """Say when an empty instance list is a namespace miss, not a fact.
+
+        The model's two halves spell `module` differently — RTL module
+        names on the synthesis rows, Liberty cell names on the leaves —
+        so an RTL module on a mapped hierarchical design matches nothing,
+        and a bare empty table would read as "this block burns no power".
+        The payload carries the sentence; printing it here keeps every
+        surface saying the same thing.
+        """
+        note = payload.get("instance_join")
+        if note:
+            emit_console_text(
+                f"\n{note}",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+
+    def _phys_instance_rows(self, rows):
+        """Instance rows as summary-table rows, powers already formatted."""
+        return [
+            {
+                "instance": row.get("instance_path"),
+                "module": row.get("module") or "-",
+                **{
+                    column: self._phys_num(row.get(column))
+                    for column in phys_query_mod.POWER_COLUMNS
+                },
+            }
+            for row in rows
+        ]
+
+    #: Columns of every per-instance table the phys verbs render.
+    _PHYS_INSTANCE_COLUMNS = [
+        ("instance", "Instance"),
+        ("module", "Module"),
+        ("total_uw", "Total uW"),
+        ("internal_uw", "Internal uW"),
+        ("switching_uw", "Switching uW"),
+        ("leakage_uw", "Leakage uW"),
+    ]
+
+    def _phys_artefact_lines(self, artefacts) -> None:
+        """Print the artefact paths, skipping the ones this run lacks."""
+        emit_console_text(f"\nmanifest: {artefacts['manifest']}", stream="stdout")
+        emit_console_text(f"model:    {artefacts['model']}", stream="stdout")
+        for label, key in (
+            ("netlist: ", "synth_netlist"),
+            ("stats:   ", "synth_stats"),
+            ("power:   ", "power_report"),
+            ("insts:   ", "power_instances"),
+        ):
+            if artefacts.get(key):
+                emit_console_text(f"{label} {artefacts[key]}", stream="stdout")
+
+    @staticmethod
+    def _phys_backends(backends) -> str:
+        """The two backend names as one cell: `yosys+openroad`.
+
+        A half that did not run here is left out rather than written as
+        `none`: the column is about what produced this run's numbers, and
+        two words of padding per row on a table that is already wide buys
+        nothing a reader could not see from the absence.
+        """
+        names = [
+            backends.get(half) for half in ("synth", "power") if backends.get(half)
+        ]
+        return "+".join(names) if names else "-"
+
+    @staticmethod
+    def _phys_power_cell(entry) -> str:
+        """The mode and what drove it: `dynamic (saif csr_smoke)`.
+
+        The label is the payload's, not this table's, so the CLI, the MCP
+        payload and the pane's dropdown all say the same words about the
+        same run. A run with no power half prints `-`, and one from
+        before the mode was recorded prints what it does know rather than
+        inventing a mode it never wrote down.
+        """
+        mode = entry.get("mode")
+        label = (entry.get("activity") or {}).get("label")
+        if mode and label:
+            return f"{mode} ({label})"
+        return mode or label or "-"
+
+    def do_phys_runs(
+        self,
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "runs to list, newest first (0 for all); "
+                    "truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RUNS_LIMIT,
+    ):
+        """
+        list every run with physical artefacts under the project, newest first,
+        with the top, backends, power mode and configuration each one recorded
+        """
+        root, _ctx = self._phys_root("phys runs")
+        payload = phys_query_mod.runs_payload(root, limit=limit)
+
+        if self.machine:
+            self._emit_machine_result("phys runs", 0, **payload)
+            raise typer.Exit(0)
+
+        runs = payload["runs"]
+        if not runs:
+            # Not an error, unlike the other three verbs: they were asked
+            # about a run, and this one is asking what runs there are.
+            emit_console_text(
+                f"no {phys_manifest_mod.MANIFEST_FILENAME} under {root} - "
+                "run `rb synth` or `rb power` first",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
+            raise typer.Exit(0)
+
+        metadata = [
+            "* the newest run - what `rb phys summary` reads without --phys-dir"
+        ]
+        if len(runs) < payload["count"]:
+            metadata.append(
+                f"{len(runs)}/{payload['count']} runs shown; --limit 0 for all"
+            )
+        render_summary(
+            title="Physical - Runs",
+            columns=[
+                ("run", "Run"),
+                ("top", "Top"),
+                ("backends", "Backends"),
+                ("power", "Power"),
+                ("config", "Config"),
+                ("xplr", "Experiment"),
+                ("generated", "Generated"),
+            ],
+            rows=[
+                {
+                    "run": ("* " if entry["newest"] else "") + (entry["run"] or "-"),
+                    "top": entry["top"] or "-",
+                    "backends": self._phys_backends(entry["backends"]),
+                    "power": self._phys_power_cell(entry),
+                    "config": entry["fingerprint"] or "-",
+                    "xplr": (entry["xplr"] or {}).get("id") or "-",
+                    "generated": entry["generated_at"] or "-",
+                }
+                for entry in runs
+            ],
+            metadata=metadata,
+            logger=logger,
+        )
+        # The directories go under the table rather than in it. They are
+        # the one cell a reader COPIES -- into `--phys-dir`, or into the
+        # pane's run selector -- and a table column wraps a long path
+        # across two lines, which turns the one column that has to
+        # survive a copy-paste into the one that does not.
+        emit_console_text("\nphys dirs:", stream="stdout", markup=False)
+        width = max(len(entry["run"] or "-") for entry in runs)
+        for entry in runs:
+            marker = "*" if entry["newest"] else " "
+            emit_console_text(
+                f" {marker} {(entry['run'] or '-'):<{width}}  {entry['phys_dir']}",
+                stream="stdout",
+                markup=False,
+            )
+            # A row whose document could not be read still names a
+            # directory worth reporting; the reason would not fit in a
+            # cell, and dropping the row would under-report the project.
+            if entry["error"]:
+                emit_console_text(
+                    f"    {entry['error']}",
+                    style="yellow",
+                    stream="stdout",
+                    markup=False,
+                )
+        emit_console_text(
+            "\nread one with `rb phys summary --phys-dir <phys dir>`",
+            stream="stdout",
+            markup=False,
+        )
+        raise typer.Exit(0)
+
+    def do_phys_summary(
+        self,
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "rows per ranking, heaviest/hottest first "
+                    "(0 for all); truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        modules_limit: Annotated[
+            str | None,
+            typer.Option(
+                "--modules-limit",
+                metavar="N|none",
+                help=(
+                    "rows in the modules ranking, overriding --limit "
+                    "(0 for all, 'none' for no rows)"
+                ),
+                show_default="--limit",
+            ),
+        ] = None,
+        instances_limit: Annotated[
+            str | None,
+            typer.Option(
+                "--instances-limit",
+                metavar="N|none",
+                help=(
+                    "rows in the instances ranking, overriding --limit "
+                    "(0 for all, 'none' for no rows)"
+                ),
+                show_default="--limit",
+            ),
+        ] = None,
+        phys_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--phys-dir",
+                help="artefact directory holding phys-manifest.json",
+                show_default="newest phys-manifest.json under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="phys-manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report a run's physical metrics from its artefacts: the design totals,
+        the heaviest modules, the hottest instances, and where everything landed
+        """
+        # Parsed before the model is read: a misspelled flag is a usage
+        # error, and a usage error that first walks the project for a
+        # manifest is a usage error the reader waits for.
+        modules_rows = self._phys_rank_limit("--modules-limit", modules_limit)
+        instances_rows = self._phys_rank_limit("--instances-limit", instances_limit)
+        ctx = self._phys_context("phys summary", phys_dir=phys_dir, manifest=manifest)
+        payload = phys_query_mod.summary_payload(
+            ctx,
+            limit=limit,
+            modules_limit=modules_rows,
+            instances_limit=instances_rows,
+        )
+
+        if self.machine:
+            self._emit_machine_result("phys summary", 0, **payload)
+            raise typer.Exit(0)
+
+        backends = payload["backends"]
+        emit_console_text(
+            f"{payload['run_command']} {payload.get('run') or ''} - "
+            f"top {payload.get('top') or 'unknown'}, "
+            f"synth {backends.get('synth') or 'none'}, "
+            f"power {backends.get('power') or 'none'}, "
+            f"generated {payload.get('generated_at') or 'unknown'}",
+            style="bold",
+            stream="stdout",
+            markup=False,
+        )
+        render_summary(
+            title="Physical - Totals",
+            columns=[("metric", "Metric"), ("value", "Value")],
+            rows=[
+                {"metric": key, "value": self._phys_num(value)}
+                for key, value in (payload["totals"] or {}).items()
+            ],
+            logger=logger,
+        )
+        self._phys_missing_half_notes(payload)
+        if payload["modules"]:
+            render_summary(
+                title="Physical - Heaviest Modules",
+                columns=[
+                    ("module", "Module"),
+                    ("cell_count", "Cells"),
+                    ("area_um2", "Area um2"),
+                ],
+                rows=[
+                    {
+                        "module": row.get("module"),
+                        "cell_count": self._phys_num(row.get("cell_count")),
+                        "area_um2": self._phys_num(row.get("area_um2")),
+                    }
+                    for row in payload["modules"]
+                ],
+                logger=logger,
+            )
+        if payload["instances"]:
+            render_summary(
+                title="Physical - Hottest Instances",
+                columns=self._PHYS_INSTANCE_COLUMNS,
+                rows=self._phys_instance_rows(payload["instances"]),
+                logger=logger,
+            )
+        self._phys_artefact_lines(payload["artefacts"])
+        raise typer.Exit(0)
+
+    def do_phys_module(
+        self,
+        module: Annotated[
+            str,
+            typer.Argument(help="module or liberty cell as the model records it"),
+        ],
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "instances to list, hottest first "
+                    "(0 for all); truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        phys_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--phys-dir",
+                help="artefact directory holding phys-manifest.json",
+                show_default="newest phys-manifest.json under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="phys-manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report one module's cells and area, and the instances of it with the
+        power each one burns
+        """
+        ctx = self._phys_context("phys module", phys_dir=phys_dir, manifest=manifest)
+        try:
+            payload = phys_query_mod.module_payload(ctx, module, limit=limit)
+        except phys_query_mod.PhysQueryError as exc:
+            self._read_query_failed("phys module", exc)
+
+        if self.machine:
+            self._emit_machine_result("phys module", 0, **payload)
+            raise typer.Exit(0)
+
+        row = payload["row"] or {}
+        render_summary(
+            title=f"Physical - {payload['module']}",
+            columns=[
+                ("module", "Module"),
+                ("cell_count", "Cells"),
+                ("area_um2", "Area um2"),
+                ("instances", "Instances"),
+            ],
+            rows=[
+                {
+                    "module": payload["module"],
+                    "cell_count": self._phys_num(row.get("cell_count")),
+                    "area_um2": self._phys_num(row.get("area_um2")),
+                    "instances": self._phys_num(payload["instance_count"]),
+                }
+            ],
+            logger=logger,
+        )
+        self._phys_missing_half_notes(payload)
+        self._phys_instance_join_note(payload)
+        # The payload is already headed to `--limit`, so the table renders
+        # what it holds rather than truncating a second time: one flag,
+        # one truncation, and the console and the machine payload cannot
+        # disagree about how many rows the user asked for.
+        shown = payload["instances"] or []
+        if shown:
+            emit_console_text(
+                f"\ninstances of {payload['module']}: "
+                f"{len(shown)}/{payload['instance_count']}",
+                style="bold",
+                stream="stdout",
+                markup=False,
+            )
+            render_summary(
+                title=f"Physical - Instances of {payload['module']}",
+                columns=self._PHYS_INSTANCE_COLUMNS,
+                rows=self._phys_instance_rows(shown)
+                + [
+                    {
+                        "instance": "total",
+                        "module": payload["module"],
+                        **{
+                            column: self._phys_num(payload["power"][column])
+                            for column in phys_query_mod.POWER_COLUMNS
+                        },
+                    }
+                ],
+                logger=logger,
+            )
+        self._phys_artefact_lines(payload["artefacts"])
+        raise typer.Exit(0)
+
+    def do_phys_instance(
+        self,
+        path: Annotated[
+            str,
+            typer.Argument(help="instance path, exact or the root of a subtree"),
+        ],
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                min=0,
+                help=(
+                    "hottest children to list (0 for all); "
+                    "truncates the --machine payload too"
+                ),
+            ),
+        ] = phys_query_mod.DEFAULT_RANK_LIMIT,
+        phys_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--phys-dir",
+                help="artefact directory holding phys-manifest.json",
+                show_default="newest phys-manifest.json under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="phys-manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report one instance's power, or - when the path names a subtree rather
+        than a leaf - the leaves under it and their rolled-up total
+        """
+        ctx = self._phys_context("phys instance", phys_dir=phys_dir, manifest=manifest)
+        try:
+            payload = phys_query_mod.instance_payload(ctx, path, limit=limit)
+        except phys_query_mod.PhysQueryError as exc:
+            self._read_query_failed("phys instance", exc)
+
+        if self.machine:
+            self._emit_machine_result("phys instance", 0, **payload)
+            raise typer.Exit(0)
+
+        rollup = payload["rollup"]
+        emit_console_text(
+            f"{payload['instance_path']} - {payload['match']} match, "
+            f"{rollup['instances']} leaf instance(s)",
+            style="bold",
+            stream="stdout",
+            markup=False,
+        )
+        rows = []
+        if payload["instance"] is not None:
+            rows += self._phys_instance_rows([payload["instance"]])
+        # Headed by the builder, as `phys module`'s list is.
+        children = payload["children"]
+        if children:
+            rows += self._phys_instance_rows(children)
+        rows.append(
+            {
+                "instance": f"rollup ({rollup['instances']})",
+                "module": "-",
+                **{
+                    column: self._phys_num(rollup[column])
+                    for column in phys_query_mod.POWER_COLUMNS
+                },
+            }
+        )
+        render_summary(
+            title=f"Physical - {payload['instance_path']}",
+            columns=self._PHYS_INSTANCE_COLUMNS,
+            rows=rows,
+            logger=logger,
+        )
+        if children and len(children) < payload["child_count"]:
+            emit_console_text(
+                f"{len(children)}/{payload['child_count']} children shown; "
+                "--limit 0 for all",
+                stream="stdout",
+                markup=False,
+            )
+        if payload["match"] == "exact" and payload["child_count"]:
+            # The path is both a leaf and a prefix. The rollup answers the
+            # question `match` names — the named row — so the rows below it
+            # are on the table without being in the total, and that has to
+            # be said or the two readings of the same table disagree.
+            emit_console_text(
+                f"{payload['child_count']} row(s) below this path are listed "
+                "for navigation; the rollup is the named row alone",
+                stream="stdout",
+                markup=False,
+            )
+        self._phys_missing_half_notes(payload)
+        self._phys_artefact_lines(payload["artefacts"])
+        raise typer.Exit(0)
+
+    def do_cmd_mcp(
+        self,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help="graph.json to serve (default <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option("--overlay", help="results-overlay.json to join"),
+        ] = None,
+        root_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--root",
+                help=(
+                    "project root to serve; default is discovered from cwd, "
+                    "which is what an agent host's spawn gives you"
+                ),
+            ),
+        ] = None,
+        design_dir: Annotated[
+            str | None,
+            typer.Option("--design-dir", help="directory searched for models.yaml"),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="viewer parser frontend (verible|slang)"),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+        list_tools: Annotated[
+            bool,
+            typer.Option(
+                "--list-tools",
+                help="print the tool schemas and exit instead of serving",
+            ),
+        ] = False,
+    ):
+        """
+        serve the design knowledge graph, test status, coverage, physical
+        metrics and the hierarchy query verbs — and, when a hub is running,
+        the live session — over the Model Context Protocol
+        """
+        root = str(
+            Path(root_dir).resolve()
+            if root_dir
+            else discover_project_root(fallback_cwd=True)
+        )
+        toolset = mcp_toolset_mod.build_toolset(
+            root,
+            graph_path=graph,
+            overlay_path=overlay,
+            view_executable=tool,
+            design_dir=design_dir,
+            frontend=frontend,
+        )
+
+        if list_tools:
+            payload = {
+                "project_root": root,
+                "hub": toolset.hub.payload(),
+                "sdk": {
+                    "available": mcp_server_mod.sdk_available(),
+                    "version": mcp_server_mod.sdk_version(),
+                },
+                "tools": [spec.to_mcp_dict() for spec in toolset.specs()],
+            }
+            if self.machine:
+                self._emit_machine_result("mcp --list-tools", 0, **payload)
+                raise typer.Exit(0)
+            render_summary(
+                title="MCP Tools",
+                columns=[("name", "Tool"), ("title", "Title"), ("cmd", "CLI Mirror")],
+                rows=[
+                    {
+                        "name": spec.name,
+                        "title": spec.title,
+                        "cmd": spec.command or "-",
+                    }
+                    for spec in toolset.specs()
+                ],
+                logger=logger,
+            )
+            emit_console_text(
+                f"hub: {'connected' if toolset.hub.present else 'not running'}"
+                f"{' (' + toolset.hub.reason + ')' if toolset.hub.reason else ''}",
+                stream="stdout",
+            )
+            raise typer.Exit(0)
+
+        # Everything below writes to stderr or to the log: stdout belongs
+        # to the JSON-RPC stream for as long as the server runs.
+        log_event(
+            logger,
+            logging.INFO,
+            "command.mcp",
+            command="mcp",
+            project_root=root,
+            tools=len(toolset.specs()),
+            hub=toolset.hub.present,
+        )
+        raise typer.Exit(mcp_server_mod.serve_stdio(toolset))
 
     def do_cmd_axi_profile_discover(
         self,
@@ -2262,8 +10667,7 @@ class RtlBuddy:
                 "--foreground/--daemon",
                 help=(
                     "Run marimo in the foreground (default). --daemon is "
-                    "accepted but currently falls back to foreground; "
-                    "background detach is a follow-up."
+                    "accepted for compatibility and also runs in the foreground."
                 ),
             ),
         ] = True,
@@ -2272,11 +10676,8 @@ class RtlBuddy:
             typer.Option(
                 "--headless",
                 help=(
-                    "Forward `--headless --no-token` to marimo. Used by the "
-                    "hub-initiated 'Open in marimo' flow (Phase 2 of the "
-                    "marimo umbrella) — the SPA opens the URL itself, so "
-                    "marimo shouldn't auto-pop a browser and the auth "
-                    "token is disabled for the loopback-only handoff."
+                    "Forward `--headless --no-token` to marimo for hub launches. "
+                    "The hub opens the URL, and the handoff is loopback-only."
                 ),
             ),
         ] = False,
@@ -2584,6 +10985,12 @@ class RtlBuddy:
             suite_tests, suite_load_failures = discover_suite_tests(search_verif)
         else:
             suite_tests, suite_load_failures = [], []
+        # Formal runs may declare `covers:` too (rtl-buddy/rtl_buddy#385);
+        # they live under fpv/, which the verif walk never reaches, so they
+        # are discovered through the root-level fpv_regression.yaml.
+        fpv_entries, fpv_load_failures = discover_fpv_verifications(root)
+        suite_tests = suite_tests + fpv_entries
+        suite_load_failures = suite_load_failures + fpv_load_failures
         blocks = all_spec_blocks(specs)
 
         if block:
@@ -2674,7 +11081,17 @@ class RtlBuddy:
         row = {"name": r["synth_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("gate_count", "area_um2", "wns_ps", "tns_ps"):
+        for k in (
+            "gate_count",
+            "area_um2",
+            "wns_ps",
+            "tns_ps",
+            "static_function_findings",
+            # Where the per-module breakdown behind these scalars was
+            # published (#560). Omitted, like every other optional field
+            # here, when the run published no model.
+            "phys_model",
+        ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row
@@ -2694,7 +11111,17 @@ class RtlBuddy:
         row = {"name": r["power_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("mode", "total_w", "internal_w", "switching_w", "leakage_w"):
+        for k in (
+            "mode",
+            "total_w",
+            "internal_w",
+            "switching_w",
+            "leakage_w",
+            # Where the per-instance breakdown behind these scalars was
+            # published (#560). Omitted, like every other optional field
+            # here, when the run published no model.
+            "phys_model",
+        ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row
@@ -2748,6 +11175,12 @@ class RtlBuddy:
             row["suite"] = suite
         for k in ("mode", "depth", "engines", "runtime_s"):
             if k in res and res[k] is not None:
+                row[k] = res[k]
+        # Guardrail results the run already computed: vacuity witnesses, COI
+        # coverage, and dead-assume counts (COI carries an `assumes` block).
+        # A machine consumer gates on these (a vacuous PASS is a false green).
+        for k in ("vacuity", "coi"):
+            if res.get(k):
                 row[k] = res[k]
         return row
 
@@ -3527,6 +11960,62 @@ class RtlBuddy:
             metadata=metadata,
         )
 
+    def _resolve_flow_reg_cfg_path(
+        self, reg_config: str | None, default_filename: str, flow: str
+    ) -> str:
+        """Resolve a flow's regression manifest path.
+
+        Precedence, mirroring what ``rb regression`` applies to
+        ``regression.yaml``: an explicit ``-c`` wins; then
+        ``./<flow>_regression.yaml`` in the invocation cwd; then the
+        flow's ``cfg-rtl-reg`` path from ``root_config.yaml`` (#389).
+        The graph's config tier discovers manifests through the same
+        cfg-rtl-reg machinery, so a manifest this finds is one
+        ``rb graph build`` flow-stamps too.
+        """
+        if reg_config is not None:
+            return (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
+        local = str(self.invocation_cwd / default_filename)
+        if os.path.isfile(local):
+            return local
+        # RootConfig is not built yet at this point (the command context —
+        # and with it root_cfg — anchors on the manifest we are still
+        # looking for), so read just the cfg-rtl-reg block leniently.
+        root_cfg_path = _discover_root_cfg(start_dir=self.invocation_cwd)
+        key, _ = REG_CFG_PATH_KEYS[flow]
+        if root_cfg_path is not None:
+            configured = resolve_reg_cfg_path(
+                load_reg_cfg_paths(root_cfg_path), root_cfg_path, flow
+            )
+            if configured is not None:
+                # Existence-check before returning, so a configured path that
+                # is wrong is reported as such rather than handed to the
+                # RegConfig loader as a load failure for a path the user never
+                # typed. `graph/config_tier.py` applies the same isfile guard,
+                # so the two surfaces agree on when a configured path counts.
+                if os.path.isfile(configured):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "regression.config_root_default",
+                        path=configured,
+                        flow=flow,
+                    )
+                    return configured
+                raise FatalRtlBuddyError(
+                    f"cfg-rtl-reg.{key} in root_config.yaml points at "
+                    f"{configured}, which does not exist; correct the path, "
+                    f"pass -c, or add ./{default_filename}"
+                )
+        raise FatalRtlBuddyError(
+            f"{default_filename} not found; pass -c to specify a path or set "
+            f"cfg-rtl-reg.{key} in root_config.yaml"
+        )
+
     def do_fpga_regression(
         self,
         reg_config: Annotated[
@@ -3535,7 +12024,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to fpga_regression.yaml",
-                show_default="Use ./fpga_regression.yaml if present",
+                show_default="Use ./fpga_regression.yaml if present, "
+                "otherwise root_config.yaml fpga-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -3563,19 +12053,9 @@ class RtlBuddy:
             bitstream=emit_bitstream,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "fpga_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "fpga_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "fpga_regression.yaml", "fpga"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         fpga_reg = FpgaRegConfig(name=self.name + "/fpga_reg_config", path=reg_cfg_path)
@@ -3629,7 +12109,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to power_regression.yaml",
-                show_default="Use ./power_regression.yaml if present",
+                show_default="Use ./power_regression.yaml if present, "
+                "otherwise root_config.yaml power-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -3648,19 +12129,9 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "power_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "power_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "power_regression.yaml", "power"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         power_reg = PowerRegConfig(
@@ -3713,7 +12184,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to synth_regression.yaml",
-                show_default="Use ./synth_regression.yaml if present",
+                show_default="Use ./synth_regression.yaml if present, "
+                "otherwise root_config.yaml synth-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -3742,19 +12214,9 @@ class RtlBuddy:
             effort=effort,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "synth_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "synth_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "synth_regression.yaml", "synth"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         synth_reg = SynthRegConfig(
@@ -3876,6 +12338,633 @@ class RtlBuddy:
                 self._apply_xfail_logged(res, a, "cdc_suite.xfail")
             results.append({"cdc_name": a.get_name(), "results": res})
         return results
+
+    # --- model elaboration --------------------------------------------------
+
+    def _resolve_elab_resources(
+        self, cfg: ElabConfig, *, cpus: int | None = None
+    ) -> JobResources:
+        resolved = JobResources()
+        dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+        for layer in (dispatch_cfg.resources, cfg.resources):
+            if layer is None:
+                continue
+            if layer.cpus is not None:
+                if (
+                    not isinstance(layer.cpus, int)
+                    or isinstance(layer.cpus, bool)
+                    or layer.cpus < 1
+                ):
+                    raise FatalRtlBuddyError(
+                        "elaboration resources.cpus must be a positive integer"
+                    )
+                resolved.cpus = layer.cpus
+            if layer.mem is not None:
+                resolved.mem = str(layer.mem)
+            if layer.time is not None:
+                resolved.time = str(layer.time)
+        if cpus is not None:
+            if cpus < 1:
+                raise FatalRtlBuddyError(f"--cpus must be >= 1 (got {cpus})")
+            resolved.cpus = cpus
+        return resolved
+
+    @staticmethod
+    def _elab_skip(cfg: ElabConfig, reg_level: int) -> ElabResults:
+        results = {
+            "result": "SKIP",
+            "desc": f"lvl {cfg.reglvl} > cmd reg_level {reg_level}",
+            "stage": "filtered",
+            "top": cfg.top,
+            "source_count": 0,
+            "input_source_count": 0,
+            "diagnostics": {"errors": 0, "warnings": 0},
+            "elapsed_sec": 0.0,
+            "peak_memory_bytes": 0,
+        }
+        result_path = cfg.artifact_dir / "result.json"
+        write_elab_result_json_best_effort(
+            result_path,
+            model=cfg.model.name,
+            profile=cfg.profile_name,
+            results=results,
+        )
+        return ElabResults(cfg.name, results, result_json=result_path)
+
+    def _run_elab_local(
+        self, cfg: ElabConfig, *, resources: JobResources | None = None
+    ) -> ElabResults:
+        if resources is None:
+            resources = self._resolve_elab_resources(cfg)
+        return ElabRunner(
+            root_cfg=self.root_cfg, elab_cfg=cfg, resources=resources
+        ).run()
+
+    def _dispatch_elaborations(
+        self,
+        configs,
+        backend,
+        *,
+        resources: list[JobResources] | None = None,
+    ) -> list[ElabResults]:
+        if not configs:
+            return []
+        if resources is None:
+            resources = [self._resolve_elab_resources(cfg) for cfg in configs]
+        run_token = uuid.uuid4().hex
+        array_root = self.exec_ctx.artifact_root / ".dispatch" / "elab" / run_token
+        groups = {}
+        for index, (cfg, job_resources) in enumerate(
+            zip(configs, resources, strict=True)
+        ):
+            dispatch_dir = cfg.artifact_dir / "dispatch"
+            dispatch_dir.mkdir(parents=True, exist_ok=True)
+            result_json = dispatch_dir / f"result-{run_token}.json"
+            spec = ElabJobSpec(
+                model_name=cfg.model.name,
+                profile_name=cfg.profile_name,
+                suite_dir=str(cfg.config_dir),
+                model_config_path=str(Path(cfg.model.path).resolve()),
+                result_json=result_json,
+                resources=job_resources,
+                log_path=dispatch_dir / f"{backend.name}-{run_token}.log",
+            )
+            key = (job_resources.cpus, job_resources.mem, job_resources.time)
+            groups.setdefault(key, []).append((index, cfg, spec))
+
+        pending = []
+        submitted = []
+        try:
+            dispatch_cfg = self.root_cfg.get_dispatch_cfg()
+            for group_index, entries in enumerate(groups.values(), start=1):
+                specs = [entry[2] for entry in entries]
+                handles = backend.submit_array(
+                    specs,
+                    array_dir=array_root / f"group-{group_index}",
+                    max_parallel=dispatch_cfg.max_jobs_per_array,
+                )
+                submitted.extend(handles)
+                pending.extend(
+                    (index, cfg, handle)
+                    for (index, cfg, _), handle in zip(entries, handles, strict=True)
+                )
+            backend.wait_all(submitted)
+        except BaseException:
+            backend.cancel_all(submitted)
+            raise
+
+        telemetry = backend.collect_telemetry(submitted)
+        collected: list[ElabResults | None] = [None] * len(configs)
+        for index, cfg, handle in pending:
+            try:
+                remote = load_elab_result_json(
+                    handle.spec.result_json,
+                    model=cfg.model.name,
+                    profile=cfg.profile_name,
+                )
+                payload = dict(remote.results)
+            except FatalRtlBuddyError as exc:
+                payload = elab_failure(
+                    f"dispatch job {handle.job_id} produced no valid result: {exc}"
+                )
+                payload["top"] = cfg.top
+            job_telemetry = telemetry.get(telemetry_key(handle))
+            if job_telemetry:
+                payload["telemetry"] = job_telemetry
+            durable = cfg.artifact_dir / "result.json"
+            write_elab_result_json_best_effort(
+                durable,
+                model=cfg.model.name,
+                profile=cfg.profile_name,
+                results=payload,
+            )
+            collected[index] = ElabResults(cfg.name, payload, result_json=durable)
+        return [item for item in collected if item is not None]
+
+    @staticmethod
+    def _exit_code_from_elab_results(results) -> int:
+        return 0 if all(result.is_pass() for result in results) else 1
+
+    def _render_elab_summary(self, title: str, results, *, metadata=None) -> None:
+        rows = []
+        for result in results:
+            payload = result.results
+            diagnostics = payload.get("diagnostics", {})
+            rows.append(
+                {
+                    "name": result.name,
+                    "result": payload.get("result", "NA"),
+                    "desc": payload.get("desc", ""),
+                    "top": payload.get("top", ""),
+                    "sources": payload.get("source_count", 0),
+                    "errors": diagnostics.get("errors", 0),
+                    "warnings": diagnostics.get("warnings", 0),
+                    "elapsed": payload.get("elapsed_sec", 0),
+                }
+            )
+        render_summary(
+            title=title,
+            columns=[
+                ("name", "Model/Profile"),
+                ("result", "Result"),
+                ("desc", "Description"),
+                ("top", "Top"),
+                ("sources", "Sources"),
+                ("errors", "Errors"),
+                ("warnings", "Warnings"),
+                ("elapsed", "Seconds"),
+            ],
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _finish_elab_command(self, command: str, title: str, results) -> None:
+        exit_code = self._exit_code_from_elab_results(results)
+        counts = {
+            verdict: sum(result.results.get("result") == verdict for result in results)
+            for verdict in ("PASS", "FAIL", "SKIP")
+        }
+        log_event(
+            logger,
+            logging.INFO,
+            "elab.verdict",
+            command=command,
+            result="PASS" if exit_code == 0 else "FAIL",
+            passed=counts["PASS"],
+            failed=counts["FAIL"],
+            skipped=counts["SKIP"],
+        )
+        if self.machine:
+            self._emit_machine_result(
+                command, exit_code, results=[result.to_row() for result in results]
+            )
+        else:
+            self._render_elab_summary(title, results)
+        raise typer.Exit(exit_code)
+
+    def do_cmd_elab(
+        self,
+        model_name: Annotated[
+            str | None,
+            typer.Argument(help="model to elaborate; required unless --list is used"),
+        ] = None,
+        models_config: Annotated[
+            str,
+            typer.Option("-c", "--models-config", help="models.yaml to use"),
+        ] = "models.yaml",
+        profile_name: Annotated[
+            str | None,
+            typer.Option("--profile", help="named elaboration profile"),
+        ] = None,
+        list_elaborations: Annotated[
+            bool,
+            typer.Option("--list", help="list models and named profiles, then exit"),
+        ] = False,
+        dispatch: Annotated[
+            str | None,
+            typer.Option(
+                "--dispatch", help="execution backend (local, local-parallel, slurm)"
+            ),
+        ] = None,
+        jobs: Annotated[
+            int | None,
+            typer.Option("-j", "--jobs", help="local-parallel process count"),
+        ] = None,
+    ):
+        """Elaborate one model using its existing ``models.yaml`` entry."""
+        if dispatch is not None:
+            validate_backend_name(dispatch)
+        ctx = self._enter_command_context(
+            primary_config=models_config, list_only=list_elaborations
+        )
+        loader = ModelConfigLoader(str(ctx.primary_config))
+        if list_elaborations:
+            names = []
+            for model in loader.get_models():
+                names.append(model.name)
+                names.extend(f"{model.name}:{p.name}" for p in model.elaborations)
+            if self.machine:
+                self._emit_machine_result("elab --list", 0, names=names)
+            else:
+                emit_console_text("  ".join(names), stream="stdout")
+            raise typer.Exit(0)
+        if model_name is None:
+            raise FatalRtlBuddyError(
+                "elab requires a MODEL argument unless --list is used"
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "command.elab",
+            model=model_name,
+            profile=profile_name,
+            models_config=str(ctx.primary_config),
+            dispatch=dispatch or "local",
+        )
+        model = loader.get_model(model_name)
+        profile = (
+            model.get_elaboration(profile_name) if profile_name is not None else None
+        )
+        cfg = ElabConfig(model=model, profile=profile)
+        if dispatch is None and jobs is not None:
+            raise FatalRtlBuddyError("--jobs requires --dispatch local-parallel")
+        backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs)
+            if dispatch is not None
+            else None
+        )
+        results = (
+            [self._run_elab_local(cfg)]
+            if backend is None
+            else self._dispatch_elaborations([cfg], backend)
+        )
+        self._finish_elab_command("elab", "Elaboration Results", results)
+
+    def do_elab_regression(
+        self,
+        reg_config: Annotated[
+            str | None,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="elab_regression.yaml to use",
+                show_default="Use ./elab_regression.yaml if present, otherwise root_config.yaml elab-reg-cfg-path",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l", "--reg-level", min=0, help="regression level to stop at"
+            ),
+        ] = 0,
+        dispatch: Annotated[
+            str | None,
+            typer.Option(
+                "--dispatch", help="execution backend (local, local-parallel, slurm)"
+            ),
+        ] = None,
+        jobs: Annotated[
+            int | None,
+            typer.Option("-j", "--jobs", help="local-parallel process count"),
+        ] = None,
+    ):
+        """Run every explicitly declared profile at or below ``reg-level``."""
+        reg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "elab_regression.yaml", "elab"
+        )
+        orchestration_ctx = self._enter_command_context(primary_config=reg_path)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.elab_regression",
+            reg_config=str(reg_path),
+            reg_level=reg_level,
+            dispatch=dispatch,
+        )
+        reg = ElabRegConfig(self.name + "/elab_regression", str(reg_path))
+        configs = reg.get_elaborations()
+        resources_by_index: dict[int, JobResources] = {}
+        for model_path in dict.fromkeys(cfg.model.path for cfg in configs):
+            self._enter_command_context(primary_config=model_path)
+            for index, cfg in enumerate(configs):
+                if cfg.model.path == model_path:
+                    resources_by_index[index] = self._resolve_elab_resources(cfg)
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+        skipped = [
+            self._elab_skip(cfg, reg_level) for cfg in configs if cfg.reglvl > reg_level
+        ]
+        runnable = [
+            (cfg, resources_by_index[index])
+            for index, cfg in enumerate(configs)
+            if cfg.reglvl <= reg_level
+        ]
+        backend_name = self._dispatch_backend_name(dispatch)
+        validate_backend_name(backend_name)
+        self._validate_jobs_flag(backend_name, jobs)
+        backend = (
+            self._resolve_dispatch_backend(dispatch, jobs=jobs) if runnable else None
+        )
+        if backend is None:
+            executed = []
+            for cfg, resources in runnable:
+                self._enter_command_context(primary_config=cfg.model.path)
+                executed.append(self._run_elab_local(cfg, resources=resources))
+            self._enter_command_context(command_root=orchestration_ctx.command_root)
+        else:
+            executed = self._dispatch_elaborations(
+                [cfg for cfg, _ in runnable],
+                backend,
+                resources=[resources for _, resources in runnable],
+            )
+        skipped_iter = iter(skipped)
+        executed_iter = iter(executed)
+        results = [
+            next(skipped_iter) if cfg.reglvl > reg_level else next(executed_iter)
+            for cfg in configs
+        ]
+        self._finish_elab_command(
+            "elab-regression", "Elaboration Regression Results", results
+        )
+
+    def do_cmd_elab_job(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model to elaborate")],
+        result_json: Annotated[
+            str, typer.Option("--result-json", help="result JSON envelope path")
+        ],
+        models_config: Annotated[
+            str,
+            typer.Option("-c", "--models-config", help="models.yaml to use"),
+        ] = "models.yaml",
+        profile_name: Annotated[
+            str | None, typer.Option("--profile", help="named elaboration profile")
+        ] = None,
+        cpus: Annotated[
+            int | None, typer.Option("--cpus", help="pyslang worker threads")
+        ] = None,
+    ):
+        """Internal dispatch re-entry for one elaboration."""
+        result_path = self._abs_invocation_path(result_json)
+        ctx = self._enter_command_context(
+            primary_config=models_config,
+            log_path=job_log_path(result_path),
+        )
+        model = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
+        profile = (
+            model.get_elaboration(profile_name) if profile_name is not None else None
+        )
+        cfg = ElabConfig(model=model, profile=profile)
+        resources = self._resolve_elab_resources(cfg, cpus=cpus)
+        result = ElabRunner(
+            root_cfg=self.root_cfg,
+            elab_cfg=cfg,
+            resources=resources,
+            result_json=result_path,
+        ).run()
+        exit_code = 0 if result.is_pass() else 1
+        if self.machine:
+            self._emit_machine_result(
+                "_elab-job",
+                exit_code,
+                result=result.to_row(),
+                result_json=str(result_path),
+            )
+        else:
+            self._render_elab_summary("Elaboration Job Result", [result])
+        raise typer.Exit(exit_code)
+
+    # --- style-lint subcommands ---------------------------------------------
+
+    def _render_lint_summary(self, title, lint_results, *, metadata=None):
+        rows = []
+        for r in lint_results:
+            res = r["results"].results
+            row = {
+                "lint_name": r["lint_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+                "violations": str(res.get("violations", "-")),
+                "files": str(res.get("files", "-")),
+                "excluded": str(res.get("excluded", "-")),
+            }
+            rows.append(row)
+
+        columns = [
+            ("lint_name", "Lint Check"),
+            ("result", "Result"),
+            ("desc", "Description"),
+            ("violations", "Violations"),
+            ("files", "Files"),
+            ("excluded", "Excluded"),
+        ]
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _exit_code_from_lint_results(self, lint_results):
+        return 0 if all(r["results"].is_pass() for r in lint_results) else 1
+
+    def _lint_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["lint_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("violations", "files", "excluded"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _do_lint_suite(self, suite_cfg, lint_name=None, reg_level=None):
+        checks = suite_cfg.get_checks(lint_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for c in checks:
+            c_lvl = c.get_reglvl()
+            if reg_level is not None and c_lvl > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "lint_suite.skip",
+                    check=c.get_name(),
+                    reason="above_regression_level",
+                    check_level=c_lvl,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "lint_name": c.get_name(),
+                        "results": LintSkipResults(
+                            name=c.get_name() + "/results",
+                            desc=f"lvl {c_lvl} > cmd reg_level {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = LintRunner(
+                name=self.name + "/lint_runner",
+                root_cfg=self.root_cfg,
+                lint_cfg=c,
+                suite_dir=suite_dir,
+            )
+            res = runner.run()
+            if c.is_xfail():
+                self._apply_xfail_logged(res, c, "lint_suite.xfail")
+            results.append({"lint_name": c.get_name(), "results": res})
+        return results
+
+    def do_cmd_lint(
+        self,
+        lint_config: Annotated[
+            str,
+            typer.Option("-c", "--lint-config", help="lint.yaml to use"),
+        ] = "lint.yaml",
+        lint_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of lint check to run", show_default="run all checks"
+            ),
+        ] = None,
+        list_lints: Annotated[
+            bool,
+            typer.Option("--list", help="list checks in the selected config and exit"),
+        ] = False,
+    ):
+        """
+        run style lint (verible)
+        """
+        ctx = self._enter_command_context(
+            primary_config=lint_config, list_only=list_lints
+        )
+        suite_cfg = LintSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.lint",
+            command="lint",
+            lint=lint_name or "all",
+            lint_config=lint_config,
+        )
+
+        if list_lints:
+            if self.machine:
+                self._emit_machine_result(
+                    "lint --list", 0, names=list(suite_cfg.get_check_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_check_names()), stream="stdout"
+                )
+            raise typer.Exit(0)
+
+        lint_results = self._do_lint_suite(suite_cfg, lint_name=lint_name)
+        exit_code = self._exit_code_from_lint_results(lint_results)
+        if self.machine:
+            self._emit_machine_result(
+                "lint",
+                exit_code,
+                results=[self._lint_result_row(r) for r in lint_results],
+            )
+        else:
+            self._render_lint_summary("Style Lint Results Summary", lint_results)
+        raise typer.Exit(exit_code)
+
+    def do_lint_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to lint_regression.yaml",
+                show_default="Use ./lint_regression.yaml if present, "
+                "otherwise root_config.yaml lint-reg-cfg-path",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="lint regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run style lint regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.lint_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "lint_regression.yaml", "lint"
+        )
+
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
+        lint_reg = LintRegConfig(name=self.name + "/lint_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running style lint regression from {orchestration_ctx.command_root}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        for suite_cfg in lint_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "lint_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_lint_suite(
+                suite_cfg, lint_name=None, reg_level=reg_level
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._lint_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
+                )
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+
+        exit_code = self._exit_code_from_lint_results(all_results)
+        if self.machine:
+            self._emit_machine_result(
+                "lint-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_lint_summary(
+                "Style Lint Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     def do_cmd_saif(
         self,
@@ -4269,7 +13358,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to cdc_regression.yaml",
-                show_default="Use ./cdc_regression.yaml if present",
+                show_default="Use ./cdc_regression.yaml if present, "
+                "otherwise root_config.yaml cdc-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -4288,19 +13378,9 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "cdc_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "cdc_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "cdc_regression.yaml", "cdc"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         cdc_reg = CdcRegConfig(name=self.name + "/cdc_reg_config", path=reg_cfg_path)
@@ -4562,14 +13642,15 @@ class RtlBuddy:
 
         fpv_results = self._do_fpv_suite(suite_cfg, fpv_name=fpv_name)
         exit_code = self._exit_code_from_fpv_results(fpv_results)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_fpv_summary("FPV Results Summary", fpv_results)
         if self.machine:
             self._emit_machine_result(
                 "fpv",
                 exit_code,
                 results=[self._fpv_result_row(r) for r in fpv_results],
             )
-        else:
-            self._render_fpv_summary("FPV Results Summary", fpv_results)
         raise typer.Exit(exit_code)
 
     def do_fpv_regression(
@@ -4580,7 +13661,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to fpv_regression.yaml",
-                show_default="Use ./fpv_regression.yaml if present",
+                show_default="Use ./fpv_regression.yaml if present, "
+                "otherwise root_config.yaml fpv-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -4599,19 +13681,9 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "fpv_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "fpv_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "fpv_regression.yaml", "fpv"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         fpv_reg = FpvRegConfig(name=self.name + "/fpv_reg_config", path=reg_cfg_path)
@@ -4642,14 +13714,15 @@ class RtlBuddy:
         self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_fpv_results(all_results)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_fpv_summary(
+            "FPV Regression Summary",
+            all_results,
+            metadata=[f"Reg Level: {reg_level}"],
+        )
         if self.machine:
             self._emit_machine_result("fpv-regression", exit_code, results=machine_rows)
-        else:
-            self._render_fpv_summary(
-                "FPV Regression Summary",
-                all_results,
-                metadata=[f"Reg Level: {reg_level}"],
-            )
         raise typer.Exit(exit_code)
 
     # --- mutation testing (rb mut) -----------------------------------------
@@ -5668,8 +14741,14 @@ class RtlBuddy:
             str, typer.Option("-c", "--test-config", help="tests.yaml to use")
         ] = "tests.yaml",
         surfer_name: Annotated[
-            str, typer.Option("--surfer", help="cfg-surfer entry name")
-        ] = "surfer-default",
+            str | None,
+            typer.Option(
+                "--surfer",
+                help="cfg-surfer entry name "
+                "(default: the active platform's cfg-platforms surfer routing, "
+                "else surfer-default)",
+            ),
+        ] = None,
         resim: Annotated[
             bool,
             typer.Option(
@@ -5696,8 +14775,11 @@ class RtlBuddy:
 
         surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
         if surfer_cfg is None:
+            effective = surfer_name or (
+                self.root_cfg.get_platform_tool_name("surfer") or "surfer-default"
+            )
             raise FatalRtlBuddyError(
-                f'No cfg-surfer entry named "{surfer_name}" in root_config.yaml. '
+                f'No cfg-surfer entry named "{effective}" in root_config.yaml. '
                 f"Add a cfg-surfer section to enable waveform viewing."
             )
         if not surfer_cfg.available:
@@ -5784,8 +14866,14 @@ class RtlBuddy:
             typer.Option("-c", "--fpv-config", help="fpv.yaml to use"),
         ] = "fpv.yaml",
         surfer_name: Annotated[
-            str, typer.Option("--surfer", help="cfg-surfer entry name")
-        ] = "surfer-default",
+            str | None,
+            typer.Option(
+                "--surfer",
+                help="cfg-surfer entry name "
+                "(default: the active platform's cfg-platforms surfer routing, "
+                "else surfer-default)",
+            ),
+        ] = None,
     ):
         """
         open SymbiYosys counterexample VCD for a failed FPV verification
@@ -5802,8 +14890,11 @@ class RtlBuddy:
 
         surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
         if surfer_cfg is None:
+            effective = surfer_name or (
+                self.root_cfg.get_platform_tool_name("surfer") or "surfer-default"
+            )
             raise FatalRtlBuddyError(
-                f'No cfg-surfer entry named "{surfer_name}" in root_config.yaml. '
+                f'No cfg-surfer entry named "{effective}" in root_config.yaml. '
                 f"Add a cfg-surfer section to enable waveform viewing."
             )
         if not surfer_cfg.available:
@@ -5900,27 +14991,146 @@ class RtlBuddy:
 
         install(force=force, update=update, ref=ref, source=source, lsp=not no_lsp)
 
-    def do_lint(self):
-        assert False, "not yet impl"
-
     def do_export(self):
         assert False, "not yet impl"
 
     def do_gen_vlog_run_script(self):
         assert False, "not yet impl"
 
-    def _run_verible_passthrough(self, cmd: str, verible_args: list[str]):
+    def _select_model_configs(
+        self, models: list[str], project_root: str, command: str = "filelist"
+    ):
+        """Resolve ``--model`` names against every models.yaml under the root.
+
+        An empty ``models`` selects every discovered model (the
+        ``rb verible filelist`` default). Unknown names are fatal.
+        ``command`` stamps the error events with the verible subcommand
+        that asked, so a lint/format failure is distinguishable from a
+        filelist one without renaming the events existing machine-mode
+        consumers may already filter on.
+        """
+        all_entries = discover_model_configs(project_root)
+        if not all_entries:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible_filelist.no_models_discovered",
+                project_root=project_root,
+                command=command,
+            )
+            raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
+
+        by_name: dict[str, ModelConfig] = {}
+        for _, model in all_entries:
+            # First-found wins on duplicate names across files. Within a
+            # single models.yaml, ModelConfigLoader already rejects dupes.
+            by_name.setdefault(model.name, model)
+        missing = [name for name in models if name not in by_name]
+        if missing:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible_filelist.unknown_models",
+                models=missing,
+                available=sorted(by_name),
+                command=command,
+            )
+            raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
+        if models:
+            return [by_name[name] for name in models]
+        return [model for _, model in all_entries]
+
+    def _verible_model_files(
+        self,
+        model_names: list[str],
+        excludes: list[str],
+        project_root: str,
+        command: str,
+    ) -> list[str]:
+        """Expand ``--model`` names into the source files verible should visit.
+
+        Bare source entries only (``VlogFilelist.extract_source_files``):
+        ``-v``/``-y`` library files and ``+incdir+``/``+define+``/
+        ``+libext+`` directives are dropped, then ``excludes`` (fnmatch
+        globs against the project-root-relative path with ``/``
+        separators; ``*`` crosses directory boundaries) filter what is
+        left. Returned relative to the process cwd, so verible's
+        diagnostics stay short and clickable from where the user ran rb.
+        """
+        selected = self._select_model_configs(
+            model_names, project_root, command=command
+        )
+        vlog_fl = VlogFilelist(
+            name=self.name + "/verible_model_files",
+            model_cfg=None,
+            output_path=None,
+        )
+        cwd = os.getcwd()
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for model_cfg in selected:
+            for path in vlog_fl.extract_source_files(model_cfg):
+                if path not in seen:
+                    seen.add(path)
+                    expanded.append(path)
+        kept, excluded = apply_exclude_globs(expanded, excludes, project_root)
+        files = [os.path.relpath(path, cwd) for path in kept]
+        log_event(
+            logger,
+            logging.INFO,
+            "verible.model_files",
+            models=model_names,
+            files=len(files),
+            excluded=excluded,
+        )
+        if not files:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible.model_files_empty",
+                models=model_names,
+                excluded=excluded,
+            )
+            raise FatalRtlBuddyError(
+                "--model expansion left no source files (every entry was a "
+                "-v/-y library file, a +directive, or matched an exclude glob)"
+            )
+        return files
+
+    def _run_verible_passthrough(
+        self,
+        cmd: str,
+        verible_args: list[str],
+        models: list[str] | None = None,
+        excludes: list[str] | None = None,
+    ):
         """Shared dispatch for the verible passthrough subcommands.
 
         Resolves the configured verible executable via root_config and
-        invokes it with the trailing ``verible_args``. Always exits via
-        ``typer.Exit`` so the binary's return code propagates.
+        invokes it with the trailing ``verible_args``. ``models`` appends
+        the ``--model`` expansion (filtered by the cfg-verible ``exclude``
+        globs plus ``excludes``) after the user's own arguments. Always
+        exits via ``typer.Exit`` so the binary's return code propagates.
         """
         self._enter_command_context(command_root=self.invocation_cwd)
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
             log_event(logger, logging.ERROR, "verible.unavailable")
             raise typer.Exit(2)
+
+        verible_args = list(verible_args)
+        if models:
+            patterns = list(verible_cfg.exclude) + list(excludes or [])
+            verible_args += self._verible_model_files(
+                list(models), patterns, self.root_cfg.get_project_rootdir(), cmd
+            )
+        elif excludes:
+            log_event(
+                logger,
+                logging.WARNING,
+                "verible.exclude_without_model",
+                patterns=list(excludes),
+            )
 
         ver = Verible(self.name + "/verible", cfg=verible_cfg)
         log_event(
@@ -5932,12 +15142,34 @@ class RtlBuddy:
         )
         raise typer.Exit(ver.do_cmd(cmd=cmd, verible_args=verible_args))
 
+    _VERIBLE_MODEL_HELP = (
+        "Model name from models.yaml whose filelist supplies the files to "
+        "visit (repeatable). Bare source entries only: -v/-y library files "
+        "and +incdir+/+define+/+libext+ directives are dropped, then the "
+        "cfg-verible `exclude` globs and --exclude filter the rest."
+    )
+    _VERIBLE_EXCLUDE_HELP = (
+        "Glob of project-root-relative paths dropped from --model expansion "
+        "(repeatable, fnmatch semantics: * also crosses directory "
+        "separators). Adds to the cfg-verible `exclude` list."
+    )
+
     def do_verible_lint(
         self,
         verible_args: Annotated[list[str], typer.Argument(...)] = [],
+        models: Annotated[
+            list[str],
+            typer.Option("--model", help=_VERIBLE_MODEL_HELP),
+        ] = [],
+        excludes: Annotated[
+            list[str],
+            typer.Option("--exclude", help=_VERIBLE_EXCLUDE_HELP),
+        ] = [],
     ):
         """run verible-verilog-lint"""
-        self._run_verible_passthrough("lint", verible_args)
+        self._run_verible_passthrough(
+            "lint", verible_args, models=models, excludes=excludes
+        )
 
     def do_verible_syntax(
         self,
@@ -5949,9 +15181,19 @@ class RtlBuddy:
     def do_verible_format(
         self,
         verible_args: Annotated[list[str], typer.Argument(...)] = [],
+        models: Annotated[
+            list[str],
+            typer.Option("--model", help=_VERIBLE_MODEL_HELP),
+        ] = [],
+        excludes: Annotated[
+            list[str],
+            typer.Option("--exclude", help=_VERIBLE_EXCLUDE_HELP),
+        ] = [],
     ):
         """run verible-verilog-format"""
-        self._run_verible_passthrough("format", verible_args)
+        self._run_verible_passthrough(
+            "format", verible_args, models=models, excludes=excludes
+        )
 
     def do_verible_preprocessor(
         self,
@@ -5994,35 +15236,7 @@ class RtlBuddy:
         if output is None:
             output = os.path.join(project_root, "verible.filelist")
 
-        all_entries = discover_model_configs(project_root)
-        if not all_entries:
-            log_event(
-                logger,
-                logging.ERROR,
-                "verible_filelist.no_models_discovered",
-                project_root=project_root,
-            )
-            raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
-
-        if models:
-            by_name: dict[str, ModelConfig] = {}
-            for _, model in all_entries:
-                # First-found wins on duplicate names across files. Within a
-                # single models.yaml, ModelConfigLoader already rejects dupes.
-                by_name.setdefault(model.name, model)
-            missing = [name for name in models if name not in by_name]
-            if missing:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "verible_filelist.unknown_models",
-                    models=missing,
-                    available=sorted(by_name),
-                )
-                raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
-            selected = [by_name[name] for name in models]
-        else:
-            selected = [model for _, model in all_entries]
+        selected = self._select_model_configs(models, project_root)
 
         log_event(
             logger,
@@ -6113,19 +15327,30 @@ class RtlBuddy:
         )
 
         if explain_tool is not None:
-            spec = next((s for s in specs if s.name == explain_tool), None)
+            # Alias-aware: the viewer's dist renamed to `rtl-buddy-sch`,
+            # so that is the name a user is most likely to type for a
+            # spec still canonically called `rtl-buddy-view`
+            # (rtl_buddy#445). Output below stays on the canonical name.
+            spec = tm.resolve_spec(specs, explain_tool)
             if spec is None:
                 if self.machine:
+                    # `known` stays bare canonical names — consumers are
+                    # keyed on it. `aliases` is an additive sibling so an
+                    # agent that guessed `rtl-buddy-sch` can discover the
+                    # mapping from the error it hit, the same
+                    # discoverability the console hint below gives
+                    # (rtl_buddy#445 review).
                     self._emit_machine_result(
                         "tool-check",
                         1,
                         error=f"unknown tool '{explain_tool}'",
                         known=[s.name for s in specs],
+                        aliases={s.name: list(s.aliases) for s in specs if s.aliases},
                     )
                     raise typer.Exit(1)
                 emit_console_text(
                     f"tool-check: unknown tool '{explain_tool}'. "
-                    f"Known: {', '.join(s.name for s in specs)}",
+                    f"Known: {', '.join(tm.known_tool_names(specs))}",
                     style="red",
                     stream="stderr",
                 )
@@ -6152,7 +15377,7 @@ class RtlBuddy:
             specs,
             project_root=project_root,
             probe_versions=probe_versions,
-            include_optional=include_optional,
+            include_optional=include_optional or required_for is not None,
         )
         subcommands = tm.subcommand_readiness(statuses, specs)
 
@@ -6218,21 +15443,56 @@ class RtlBuddy:
             raise typer.Exit(reported_exit_code)
         raise typer.Exit(0)
 
+    def _project_root_for_git(self) -> str | None:
+        """Where git metadata queries run, resolved once; None = inherited cwd.
+
+        The command root stands in for list-only invocations, which skip
+        root_cfg but still anchor on the command's own config. With
+        neither, git walks up from the cwd as it would anyway.
+        """
+        if not self._git_root_resolved:
+            self._git_root_resolved = True
+            exec_ctx = getattr(self, "exec_ctx", None)
+            root_cfg = getattr(self, "root_cfg", None)
+            for candidate in (
+                root_cfg.get_project_rootdir() if root_cfg is not None else None,
+                str(exec_ctx.command_root) if exec_ctx is not None else None,
+            ):
+                if candidate and os.path.isdir(candidate):
+                    self._git_root = candidate
+                    break
+        return self._git_root
+
     def _collect_git_status(self) -> dict | None:
-        status_result = subprocess.run(
-            ["git", "status", "-sb"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
-        commit_result = subprocess.run(
-            ["git", "log", "-1", "--pretty=%h"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
+        # Optional metadata: every caller already treats None as "no git info".
+        # `check=False` covers a git that runs and refuses (no repo, no commits);
+        # it does not cover a git that is not there at all, because subprocess
+        # raises before there is a returncode to inspect. That case is real on a
+        # dispatch cluster -- jobs inherit the submitter's PATH and can land on a
+        # node without the binary -- so catch OSError (FileNotFoundError is a
+        # subclass) and degrade to None rather than taking the caller down.
+        cwd = self._project_root_for_git()
+        # --no-optional-locks: an orphaned .git/index.lock breaks the
+        # checkout, and status does not need one to be read (#581).
+        try:
+            status_result = subprocess.run(
+                ["git", "--no-optional-locks", "status", "-sb"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                cwd=cwd,
+            )
+            commit_result = subprocess.run(
+                ["git", "log", "-1", "--pretty=%h"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                cwd=cwd,
+            )
+        except OSError:
+            return None
         if status_result.returncode != 0 or commit_result.returncode != 0:
             return None
         status_lines = status_result.stdout.splitlines()
@@ -6259,6 +15519,12 @@ class RtlBuddy:
                         "argv": sys.argv[:],
                         "cwd": os.getcwd(),
                         "git": git,
+                        # Which artefact tree this run wrote into (#541).
+                        # Always present, unlike the result envelope's key:
+                        # `meta` is a fixed block a consumer reads whole,
+                        # and `null` there says "the flat tree" rather than
+                        # leaving the question unanswerable.
+                        "run_tag": self._run_tag,
                     },
                     "payload": payload,
                 },

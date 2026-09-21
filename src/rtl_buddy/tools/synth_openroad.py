@@ -6,16 +6,41 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from .vlog_filelist import VlogFilelist
-from .synth_yosys import emit_frontend_read_cmds, slang_handles_params
+from .artifact_paths import clear_stale_artefacts
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
+from .synth_yosys import (
+    MAX_EVENT_FINDINGS,
+    elaboration_defines,
+    library_fingerprint,
+    elaboration_fingerprint,
+    emit_frontend_read_cmds,
+    find_conflicting_driver_warnings,
+    lifetime_scan_inputs,
+    parse_area_um2,
+    parse_gate_count,
+    slang_handles_params,
+    validate_frontend,
+)
+from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
+    SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
+    resolve_conflicting_drivers_mode,
+    resolve_static_functions_mode,
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
+from ..phys.provenance import text_sha256
+from ..phys.publish import (
+    confirm_digest,
+    invalidate_half,
+    publish_synth,
+    sha256_of,
+    withdrawal_failure_desc,
+)
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
 # ABC script used by the Yosys stage — area-focused, no timing window
@@ -54,6 +79,16 @@ class OpenRoadSynth:
         artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+        self._yosys_opts: SynthToolOpts | None = None
+        self._or_opts: SynthToolOpts | None = None
+        # The `-D` table `_write_yosys_script` actually fed the frontend;
+        # see the Yosys backend's field of the same name (#570).
+        self._script_defines: dict[str, str | None] | None = None
+        # The SDC's identity, taken as stage 1's script is generated and
+        # confirmed when the run ends; see the Yosys backend's twin of
+        # `_hash_constraints`. `None` before the run and with no SDC.
+        self._constraints_sha256: str | None = None
+        self.static_function_findings = 0
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -71,6 +106,10 @@ class OpenRoadSynth:
     def _yosys_netlist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth_netlist.v")
 
+    def _stats_path(self) -> str:
+        """Yosys' machine-readable per-module `stat -json` dump (#558)."""
+        return os.path.join(self.artefact_dir, "synth_stat.json")
+
     def _or_script_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.tcl")
 
@@ -83,7 +122,7 @@ class OpenRoadSynth:
 
     def _source_files_from_filelist(self, fl_path: str) -> list[str]:
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
-        _SKIP = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+        _SKIP = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
         _SOURCE_PREFIX = "-v "
         paths = []
         with open(fl_path) as f:
@@ -117,32 +156,84 @@ class OpenRoadSynth:
     # Stage 1: Yosys — RTL to technology-mapped gate-level netlist
     # ------------------------------------------------------------------
 
-    def _write_yosys_script(self, fl_path: str) -> str:
-        top = self.synth_cfg.get_top()
-        lib_paths = self._resolve_lib_paths()
-        params = self.synth_cfg.get_params()
-        defines = self.synth_cfg.get_defines()
-        # The elaboration stage uses Yosys regardless of `tool:`, so its opts
-        # (frontend, plugin_path, etc.) come from the yosys tool config plus
-        # any `tool_overrides.yosys` block — not from this backend's openroad
-        # tool config. Fall back to the openroad opts only when no yosys tool
-        # config exists.
+    def _resolve_yosys_opts(self) -> SynthToolOpts:
+        """Options for the Yosys elaboration stage.
+
+        The elaboration stage uses Yosys regardless of `tool:`, so its opts
+        (frontend, plugin_path, the correctness gates) come from the yosys tool
+        config plus any `tool_overrides.yosys` block — not from this backend's
+        openroad tool config. Fall back to the openroad opts only when no yosys
+        tool config exists. Memoised because resolving the overrides emits
+        validation warnings.
+        """
+        if self._yosys_opts is not None:
+            return self._yosys_opts
         opts = self.tool_cfg.get_opts(
             self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
         if self.root_cfg is not None:
             try:
                 yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
+            except FatalRtlBuddyError:
+                # No `yosys` entry under cfg-synth-tools — fall back to
+                # the active tool_cfg's opts. Only the *lookup* is guarded:
+                # a config error raised while resolving the opts themselves
+                # (a wrongly-typed tool_overrides value, say) must surface
+                # rather than being swallowed into a silent downgrade of
+                # the frontend selection to "verilog".
+                yosys_tool_cfg = None
+            if yosys_tool_cfg is not None:
                 opts = yosys_tool_cfg.get_opts(
                     self.synth_cfg.get_tool_overrides_for("yosys")
                 )
-            except FatalRtlBuddyError:
-                # No `yosys` entry under cfg-synth-tools — fall back to
-                # the active tool_cfg's opts. Any other config error
-                # (typo'd opts dict, malformed cfg-synth-tools entry,
-                # etc.) is surfaced rather than silently degrading the
-                # frontend selection to "verilog".
-                pass
+        self._yosys_opts = opts
+        return opts
+
+    def _scan_static_lifetimes(
+        self, fl_path: str, opts: SynthToolOpts
+    ) -> list[LifetimeFinding]:
+        """Same pre-elaboration gate as the Yosys backend; see YosysSynth."""
+        incdirs, defines = lifetime_scan_inputs(
+            fl_path,
+            self.synth_cfg.get_name(),
+            self.synth_cfg.get_defines(),
+            opts.frontend,
+        )
+        if resolve_static_functions_mode(opts) == "allow":
+            return []
+        return scan_files(
+            self._source_files_from_filelist(fl_path),
+            incdirs=incdirs,
+            defines=defines,
+            # Only slang honours --single-unit; with the verilog frontend the
+            # flag is ignored (with a warning), so each file is its own
+            # compilation unit either way.
+            single_unit=opts.single_unit and opts.frontend == "slang",
+            # slang's `undefineall` re-applies the -D macros; Yosys's own
+            # read_verilog drops them along with everything else.
+            undefineall_keeps_predefines=opts.frontend == "slang",
+        )
+
+    def _stat_json_cmd(self, liberty: str | None) -> str:
+        """The `stat -json` line that feeds the phys model's module rows (#558).
+
+        Identical to the Yosys backend's, and for the same reasons: `-json`
+        prints to the console so it needs `tee -o`, and `-q` keeps the
+        document out of `synth_yosys.log`, which stage 1 scrapes for its
+        cell count and for `ERROR:` lines.
+        """
+        liberty_arg = f" -liberty {liberty}" if liberty else ""
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+
+    def _write_yosys_script(self, fl_path: str) -> str:
+        top = self.synth_cfg.get_top()
+        lib_paths = self._resolve_lib_paths()
+        params = self.synth_cfg.get_params()
+        defines = elaboration_defines(fl_path, self.synth_cfg.get_defines())
+        self._script_defines = defines
+        self._hash_constraints()
+        incdirs = incdirs_from_filelist(fl_path)
+        opts = self._resolve_yosys_opts()
 
         lines = []
         for lib in lib_paths:
@@ -157,6 +248,7 @@ class OpenRoadSynth:
                 defines=defines,
                 params=params,
                 root_cfg=self.root_cfg,
+                incdirs=incdirs,
             )
         )
 
@@ -183,10 +275,12 @@ class OpenRoadSynth:
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
             lines.append(f"stat -liberty {lib_paths[0]}")
+            lines.append(self._stat_json_cmd(lib_paths[0]))
         else:
             lines.append(
                 f"write_rtlil {os.path.join(self.artefact_dir, 'synth.rtlil')}"
             )
+            lines.append(self._stat_json_cmd(None))
 
         script = "\n".join(lines) + "\n"
         script_path = self._yosys_script_path()
@@ -194,18 +288,20 @@ class OpenRoadSynth:
             f.write(script)
         return script_path
 
-    def _parse_area_um2(self, log_text: str) -> float | None:
-        m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
-        return float(m.group(1)) if m else None
+    def _parse_area_um2(self, log_text: str, top: str | None = None) -> float | None:
+        return parse_area_um2(log_text, top)
 
-    def _parse_gate_count(self, log_text: str) -> int | None:
-        matches = re.findall(
-            r"^\s+(\d+)\s+(?:[\d.]+(?:[Ee][+-]?\d+)?\s+)?cells$", log_text, re.MULTILINE
-        )
-        return int(matches[-1]) if matches else None
+    def _parse_gate_count(self, log_text: str, top: str | None = None) -> int | None:
+        return parse_gate_count(log_text, top)
 
-    def _run_yosys_stage(self, fl_path: str) -> tuple[int | None, bool]:
-        """Run Yosys stage. Returns (gate_count, success)."""
+    def _run_yosys_stage(self, fl_path: str) -> tuple[int | None, bool, str | None]:
+        """Run Yosys stage. Returns (gate_count, success, failure description).
+
+        The description is None when the failure has no detail beyond the log;
+        the correctness gates supply one, since their finding is not in the
+        Yosys log at all (the lifetime scan) or is a warning the log buries
+        (the conflicting-driver gate).
+        """
         lib_paths = self._resolve_lib_paths()
         if not lib_paths:
             log_event(
@@ -214,7 +310,47 @@ class OpenRoadSynth:
                 "synth.openroad.no_library",
                 synth=self.synth_cfg.get_name(),
             )
-            return None, False
+            return None, False, None
+
+        # Same two gates as the Yosys backend: stage 1 elaborates with the same
+        # frontend, so it carries the same hazard.
+        opts = self._resolve_yosys_opts()
+        static_mode = resolve_static_functions_mode(opts)
+        conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        findings = self._scan_static_lifetimes(fl_path, opts)
+        self.static_function_findings = len(findings)
+        if findings:
+            if static_mode == "error":
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth.static_functions",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    count=len(findings),
+                    findings=[f.describe() for f in findings[:MAX_EVENT_FINDINGS]],
+                    truncated=max(0, len(findings) - MAX_EVENT_FINDINGS),
+                )
+                return (
+                    None,
+                    False,
+                    (
+                        f"{len(findings)} subroutine(s) declared without an "
+                        f"explicit automatic lifetime: {describe_findings(findings)}"
+                    ),
+                )
+            for finding in findings:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.static_function",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    path=finding.path,
+                    line=finding.line,
+                    kind=finding.kind,
+                    subroutine=finding.name,
+                )
 
         script_path = self._write_yosys_script(fl_path)
         log_path = self._yosys_log_path()
@@ -238,25 +374,101 @@ class OpenRoadSynth:
                 )
 
         if result.returncode != 0:
-            return None, False
+            return None, False, None
 
         try:
             with open(log_path) as f:
                 log_text = f.read()
         except OSError:
-            return None, False
+            return None, False, None
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("ERROR:")]
         if error_lines:
-            return None, False
+            return None, False, None
 
-        return self._parse_gate_count(log_text), True
+        conflicting = find_conflicting_driver_warnings(log_text)
+        if conflicting and conflicting_mode == "error":
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.conflicting_drivers",
+                synth=self.synth_cfg.get_name(),
+                count=len(conflicting),
+                log=log_path,
+            )
+            # Stage 1 already wrote its netlist; the start-of-run cleanup only
+            # removed the previous run's. Drop this one too, so stage 2 and
+            # `rb pnr` / `rb power` cannot read a design that folded to x.
+            # `_fail_after_yosys` clears again on the way out and is what
+            # reports a withdrawal this could not make (#560).
+            self._clear_stale_netlists()
+            return (
+                None,
+                False,
+                (
+                    f"{len(conflicting)} 'multiple conflicting drivers' "
+                    f"warning(s) in {log_path}"
+                ),
+            )
+
+        return self._parse_gate_count(log_text, self.synth_cfg.get_top()), True, None
 
     # ------------------------------------------------------------------
     # Stage 2: OpenROAD — timing analysis with native multi-clock SDC
     # ------------------------------------------------------------------
 
-    def _write_or_blackbox_stubs(self) -> list[str]:
+    def _masters_from_lef_and_liberty(
+        self, lef_paths: list[str], lib_paths: list[str]
+    ) -> set[str]:
+        """Names OpenROAD already has a master for, from the LEFs and Liberties.
+
+        A `MACRO` in a LEF or a `cell` in a Liberty is a complete master as far
+        as link_design is concerned: physical extent from the former, timing
+        from the latter. Modules in this set must not also be declared in
+        Verilog — see _write_or_blackbox_stubs.
+
+        Scanned line by line rather than parsed: these files run to tens of MB
+        (a standard-cell Liberty is ~13 MB) and only the declaration lines
+        matter. A `cell` whose name is on the following line is handled, since
+        both spellings occur in generated Liberty. The LEF is the load-bearing
+        half in practice — the OpenROAD backend refuses a platform with no LEF,
+        so a macro always has a `MACRO` line even if its Liberty is spelled in a
+        way this misses.
+        """
+        names: set[str] = set()
+        macro_re = re.compile(r"^\s*MACRO\s+(\S+)")
+        cell_re = re.compile(r'^\s*cell\s*\(\s*"?([^"\s()]+)"?\s*\)')
+        # `cell` and its parenthesised name split across two lines
+        cell_open_re = re.compile(r"^\s*cell\s*$")
+        name_only_re = re.compile(r'^\s*\(\s*"?([^"\s()]+)"?\s*\)')
+        for path, is_lef in [(p, True) for p in lef_paths] + [
+            (p, False) for p in lib_paths
+        ]:
+            try:
+                with open(path) as f:
+                    pending_cell = False
+                    for line in f:
+                        if is_lef:
+                            m = macro_re.match(line)
+                            if m:
+                                names.add(m.group(1))
+                            continue
+                        if pending_cell:
+                            pending_cell = False
+                            m = name_only_re.match(line)
+                            if m:
+                                names.add(m.group(1))
+                                continue
+                        m = cell_re.match(line)
+                        if m:
+                            names.add(m.group(1))
+                        elif cell_open_re.match(line):
+                            pending_cell = True
+            except OSError:
+                pass
+        return names
+
+    def _write_or_blackbox_stubs(self, known_masters: set[str]) -> list[str]:
         """Write OpenROAD-compatible copies of Yosys blackbox stub files.
 
         Yosys omits blackbox module definitions from write_verilog output.
@@ -269,6 +481,21 @@ class OpenRoadSynth:
         than `keep` etc. all break parsing, and the body has no semantic role
         for STA (cell timing comes from the Liberty). Returns the list of
         cleaned stub paths.
+
+        A blackbox named in `known_masters` is dropped rather than stubbed. That
+        is a macro whose LEF and Liberty this same script reads, which is what
+        `lef-paths` / `lib-paths` on a synth.yaml exist to supply. Declaring it
+        in Verilog as well can displace that master, and link_design then binds
+        every instance to the zero-area Verilog module: the macros are absent
+        from the OpenROAD database, `report_design_area` omits their area, their
+        arcs are missing from the timing graph, and the run still exits 0. The
+        WNS that comes back is optimistic rather than merely wrong, because the
+        paths those arcs dominate are not reported.
+
+        Whether the master is displaced turns on the port shapes -- an
+        all-scalar macro survives, one with a bus does not -- so in practice
+        every real macro is exposed. Measured on the project template's
+        demo_synth_macro: 54 um^2 against a real 8054, both runs PASS (#470).
         """
         try:
             candidates = self._source_files_from_filelist(self._filelist_path())
@@ -279,11 +506,21 @@ class OpenRoadSynth:
         # of the port list, then everything up to endmodule is dropped.
         bb_re = re.compile(
             r"\(\*\s*blackbox\s*\*\)\s*"
-            r"(module\s+\w+\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
+            r"(module\s+(\w+)\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
             r".*?"
             r"endmodule",
             re.DOTALL,
         )
+        module_re = re.compile(r"^\s*module\s+\w+", re.MULTILINE)
+        shadowed: list[str] = []
+
+        def _stub_or_drop(m: re.Match) -> str:
+            name = m.group(2)
+            if name in known_masters:
+                shadowed.append(name)
+                return ""
+            return f"{m.group(1)}\nendmodule"
+
         result = []
         for src in candidates:
             try:
@@ -291,7 +528,11 @@ class OpenRoadSynth:
                     content = f.read()
                 if "(* blackbox *)" not in content:
                     continue
-                cleaned = bb_re.sub(r"\1\nendmodule", content)
+                cleaned = bb_re.sub(_stub_or_drop, content)
+                if not module_re.search(cleaned):
+                    # Every blackbox in this file has a LEF/Liberty master, so
+                    # there is nothing left worth reading.
+                    continue
                 # OpenROAD's gate-level reader does not accept SV `logic`;
                 # replace with `wire` for port declarations.
                 cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
@@ -303,14 +544,55 @@ class OpenRoadSynth:
                 result.append(stub_path)
             except OSError:
                 pass
+        if shadowed:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.openroad.blackbox_master_from_lib",
+                synth=self.synth_cfg.get_name(),
+                modules=" ".join(sorted(set(shadowed))),
+            )
         return result
+
+    def _resolve_or_opts(self) -> SynthToolOpts:
+        """Options for the mapping stage -- this backend's own tool config.
+
+        Separate from `_resolve_yosys_opts`, which answers for the
+        elaboration stage: `strategy` (AREA, TIMING, TIMING_GENETIC ...)
+        is read here and is the knob an optimisation experiment turns.
+        Memoised for the reason its sibling is -- resolving the overrides
+        emits validation warnings, and the script writer and the phys
+        model's config fingerprint (#568) must not each pay for a second
+        copy of them.
+        """
+        if self._or_opts is None:
+            self._or_opts = self.tool_cfg.get_opts(
+                self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+            )
+        return self._or_opts
+
+    def _resynth_cmd(self) -> str | None:
+        """The stage-2 command `strategy` selects, or None for no resynthesis.
+
+        The *mapping*, named once, because two callers need the same answer:
+        `_write_or_script`, which emits the line, and the phys model's config
+        fingerprint (#568), which records what the script consumed. Strategy
+        reaches the script only through this table -- three spellings collapse
+        to two commands and everything else to nothing at all -- so the
+        fingerprint records the command and not the string. `TIMING` and
+        `TIMING_ANNEAL` are one run and digest as one; `AREA` and a typo are
+        both "no resynthesis", which is what the netlist will show.
+        """
+        strategy = self._resolve_or_opts().strategy.upper()
+        if strategy in ("TIMING", "TIMING_ANNEAL"):
+            return "resynth_annealing"
+        if strategy == "TIMING_GENETIC":
+            return "resynth_genetic"
+        return None
 
     def _write_or_script(self, lef_paths: list[str], lib_paths: list[str]) -> str:
         top = self.synth_cfg.get_top()
         constraints = self.synth_cfg.get_constraints()
-        opts = self.tool_cfg.get_opts(
-            self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        )
 
         lines = []
         for lef in lef_paths:
@@ -319,7 +601,8 @@ class OpenRoadSynth:
             lines.append(f"read_liberty {lib}")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
         # Read cleaned blackbox stubs so OpenROAD link_design can resolve them
-        for bb_stub in self._write_or_blackbox_stubs():
+        known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
+        for bb_stub in self._write_or_blackbox_stubs(known_masters):
             lines.append(f"read_verilog {bb_stub}")
         lines.append(f"link_design {top}")
 
@@ -332,10 +615,9 @@ class OpenRoadSynth:
         if pre_sta_tcl:
             lines.append(pre_sta_tcl.rstrip())
 
-        if opts.strategy.upper() in ("TIMING", "TIMING_ANNEAL"):
-            lines.append("resynth_annealing")
-        elif opts.strategy.upper() == "TIMING_GENETIC":
-            lines.append("resynth_genetic")
+        resynth = self._resynth_cmd()
+        if resynth:
+            lines.append(resynth)
 
         lines.append("report_design_area")
         if constraints:
@@ -458,19 +740,304 @@ class OpenRoadSynth:
             tns_ps=tns_ps,
             log=log_path,
         )
+        phys_model = self._publish_phys_model(area_um2=area_um2, gate_count=gate_count)
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
             gate_count=gate_count,
             wns_ps=wns_ps,
             tns_ps=tns_ps,
+            static_function_findings=self.static_function_findings or None,
+            phys_model=phys_model,
         )
+
+    def _phys_options(self) -> dict:
+        """The effective options the config fingerprint is digested over.
+
+        What the two generated scripts actually consume, not the two
+        resolved `SynthToolOpts` dataclasses. A digest over those told two
+        runs apart by fields no script line reads, which reports a
+        difference the netlist cannot have, and at the same time missed
+        the two inputs that do shape this backend's netlist and live
+        nowhere in them (#568).
+
+        Stage by stage, read off the script writers:
+
+        - `elaborate`: the shared frontend subset
+          (:func:`elaboration_fingerprint`), plus `synth_args` taken from
+          `effort_cfg.get_yosys_synth_args()` -- **not** from the resolved
+          opts. `_write_yosys_script` appends the effort's value to
+          `synth -top` and never looks at `opts.synth_args`, so a
+          `tool_overrides.<tool>.synth_args` on an openroad run changes
+          nothing and must not change the digest. `abc_args` is fed by
+          neither source: the ABC line is `_ABC_SCRIPT_AREA`, hard-coded,
+          and the effort's `yosys.abc-args` is ignored on this backend too.
+        - `map`: `resynth`, the command `strategy` maps to
+          (`_resynth_cmd`), the sha256 of the pre-STA Tcl the effort
+          supplies, and `lefs`, the resolved LEF set `_write_or_script`
+          reads. The rest of the stage-2 opts is inert on this path, so
+          the dataclass is not digested.
+        - `params` and `defines`: the elaboration values, which shape the
+          netlist as surely as an ABC script does. `defines` is the
+          **merged** table `_write_yosys_script` hands the frontend --
+          the filelist's `+define+` entries with the run's `defines:` on
+          top (:func:`elaboration_defines`) -- and not `synth.yaml`'s
+          field alone, which digested a `+define+WIDTH=8` change in the
+          generated filelist as no change at all (#570).
+        - `libs`: the resolved Liberty set (:func:`library_fingerprint`),
+          at the top because both stages read it -- stage 1 for
+          `read_liberty`, `abc -liberty` and `stat -liberty`, stage 2 for
+          the timing it maps and reports against.
+
+        The libraries are not determined by `platform` alone, so recording
+        the platform name is not enough (#570): `_resolve_lib_paths` and
+        `_resolve_lef_paths` append the config's own `lib-paths` /
+        `lef-paths` to the platform's, and with no platform at all those
+        lists are the whole of it. Two corners named that way digested
+        identically while producing two netlists with two areas.
+
+        The Tcl is hashed rather than embedded because it is content and
+        not a path: an effort carries the snippet inline, so there is no
+        file to record, and a floorplan sequence is pages long. It is
+        `rstrip`ped exactly as the script writer strips it, so trailing
+        whitespace that never reaches OpenROAD does not read as a
+        different experiment.
+
+        Both opts accessors are memoised, so asking them here costs
+        nothing and re-emits no override warning.
+        """
+        return {
+            "tool": self.tool_cfg.get_name(),
+            "elaborate": dict(
+                elaboration_fingerprint(self._resolve_yosys_opts(), self.root_cfg),
+                synth_args=self.effort_cfg.get_yosys_synth_args(),
+            ),
+            "map": {
+                "resynth": self._resynth_cmd(),
+                "pre_sta_tcl_sha256": text_sha256(
+                    self.effort_cfg.get_openroad_pre_sta_tcl().rstrip()
+                ),
+                "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
+            },
+            "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
+            "params": self.synth_cfg.get_params(),
+            "defines": self._digested_defines(),
+        }
+
+    def _digested_defines(self) -> dict:
+        """The macro table the generated script fed the frontend (#570).
+
+        Recorded by `_write_yosys_script` rather than re-derived, for the
+        reason the Yosys backend's twin gives: it is the table that was
+        passed, and `synth.f` may have been rewritten since.
+        """
+        if self._script_defines is not None:
+            return dict(self._script_defines)
+        return self.synth_cfg.get_defines()
+
+    def _publish_phys_model(
+        self, *, area_um2: float | None, gate_count: int | None
+    ) -> str | None:
+        """Write `phys-model.json` + its manifest for a run that passed (#558).
+
+        Stage 1 owns the per-module breakdown -- the cell counts and areas are
+        Yosys' -- while the design totals recorded alongside them are stage
+        2's, which is the pairing this backend already reports. Never fails
+        the synthesis: see the Yosys backend's copy for why a by-product does
+        not get to veto a product.
+
+        The identity fields (#568) name BOTH stages, because both shape the
+        netlist: the elaboration frontend and its gates on one side, the
+        mapping strategy and the pre-STA Tcl on the other, and an
+        experiment may vary either. See `_phys_options` for what each
+        stage contributes and why. The SDC's hash is `_hash_constraints`',
+        taken as stage 1's script was written and confirmed here rather
+        than computed here (#570).
+        """
+        self._confirm_constraints_unchanged()
+        published = publish_synth(
+            artefact_dir=self.artefact_dir,
+            top=self.synth_cfg.get_top(),
+            backend="openroad",
+            run=self.synth_cfg.get_name(),
+            stats_path=self._stats_path(),
+            netlist_path=self._yosys_netlist_path(),
+            log_path=self._or_log_path(),
+            area_um2=area_um2,
+            gate_count=gate_count,
+            platform=self.synth_cfg.get_platform(),
+            effort=self.effort_cfg.get_name(),
+            constraints=self.synth_cfg.get_constraints(),
+            constraints_sha256=self._constraints_sha256,
+            options=self._phys_options(),
+        )
+        if published["error"] is not None or published["rows"] is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_model_incomplete",
+                synth=self.synth_cfg.get_name(),
+                stats=self._stats_path(),
+                error=published["error"],
+            )
+        return published["model"]
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
+    def _hash_constraints(self) -> None:
+        """Identify the SDC by its bytes, as the script is written (#570).
+
+        See the Yosys backend's twin for why the publish is the wrong
+        place: it runs minutes after stage 2's `read_sdc`, so a file
+        edited or replaced in between would be hashed as the constraints
+        this netlist was timed against. Taken at stage 1's script
+        generation — the earliest point in a run that has one — and
+        confirmed by `_confirm_constraints_unchanged` when the run ends.
+        """
+        self._constraints_sha256 = sha256_of(self.synth_cfg.get_constraints())
+
+    def _confirm_constraints_unchanged(self) -> None:
+        """Withdraw the SDC hash if the file moved under the run (#570).
+
+        The other end of `_hash_constraints`. A digest computed here,
+        after a synthesis that runs for minutes, identifies whatever is
+        at the path now — an SDC a person edited while the run worked, or
+        one a `rb pnr` rewrote — and records it as the constraints this
+        netlist was built under, which is the substitution the digest
+        exists to catch.
+        :func:`~rtl_buddy.phys.publish.confirm_digest` says whether the
+        bytes hashed at script generation are still there; a mismatch
+        records ``null`` rather than a digest nothing can vouch for, and
+        the warning keeps that null from reading as "this run had no
+        constraints".
+        """
+        self._constraints_sha256, changed = confirm_digest(
+            self.synth_cfg.get_constraints(), self._constraints_sha256
+        )
+        if changed:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.constraints_changed_during_run",
+                synth=self.synth_cfg.get_name(),
+                constraints=self.synth_cfg.get_constraints(),
+            )
+
+    def _clear_stale_netlists(self) -> str | None:
+        """Remove the previous run's stage-1 netlists, before anything returns.
+
+        Stage 2 reads stage 1's netlist back off a fixed path, having judged
+        stage 1 by exit code and ERROR lines alone — and the same netlist is
+        the input `rb pnr` / `rb power` resolve. A failed rerun would leave the
+        previous successful run's netlist for all three to consume (#469).
+
+        This is the first action of `run()` so that every early return — a
+        missing Liberty or LEF, a filelist error, and the static-lifetime and
+        conflicting-driver gates, which fail before or without reading the
+        netlist — leaves no stale product behind.
+
+        `synth_stat.json` goes with them: it is read back inside this same
+        `run()` to build the phys model, so a stage 1 that exits 0 without
+        reaching its trailing `tee ... stat -json` must not have the previous
+        run's per-module areas published as this one's (#558). The model and
+        its manifest survive -- the other flow's half may be in them -- but
+        this flow's half is nulled out, since publication happens only on a
+        pass and a failed rerun would otherwise leave module rows standing
+        over a `synth_stat.json` that has just been deleted (#558).
+
+        :returns: ``None``, or the reason the withdrawal did not happen —
+            which every caller turns into a failed run, because the
+            `synth_stat.json` behind the still-published half has just been
+            deleted here. See
+            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
+        """
+        stale = clear_stale_artefacts(
+            [
+                self._yosys_netlist_path(),
+                os.path.join(self.artefact_dir, "synth.rtlil"),
+                self._stats_path(),
+            ],
+            owner=self.synth_cfg.get_name(),
+        )
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.stale_artefacts_removed",
+                synth=self.synth_cfg.get_name(),
+                paths=stale,
+            )
+        return self._invalidate_phys_half()
+
+    def _invalidate_phys_half(self) -> str | None:
+        """Null this flow's half of any model + manifest already here (#558).
+
+        See the Yosys backend's copy: publication only happens on a pass, so
+        the clear is where a run that will not publish has to withdraw the
+        previous one's module rows, and a withdrawal that failed stops the
+        run rather than leave them over a deleted `synth_stat.json` (#560).
+        The power half is untouched.
+
+        :returns: ``None`` on success, else `invalidate_half`'s ``error``.
+        """
+        result = invalidate_half(self.artefact_dir, "modules")
+        if result["error"]:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.phys_half_stale",
+                synth=self.synth_cfg.get_name(),
+                error=result["error"],
+            )
+            return result["error"]
+        if result["model"] or result["manifest"]:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.phys_half_invalidated",
+                synth=self.synth_cfg.get_name(),
+                model=result["model"],
+                manifest=result["manifest"],
+            )
+        return None
+
+    def _fail_after_yosys(self, desc: str) -> SynthFailResults:
+        """Fail a run that has already invoked Yosys, publishing no netlist.
+
+        Stage 1's script writes the netlist before its trailing `stat`, so a
+        Yosys that then crashes or logs an `ERROR:` line leaves it on disk —
+        as does a stage 1 that fully succeeds before stage 2 dies on
+        `link_design` or the SDC. Either way `rb synth` reports FAIL while
+        the netlist sits at the fixed path `rb pnr` and `rb power` resolve
+        (#469). Every post-Yosys failure return goes through here, so a new
+        failure gate added to this method inherits the cleanup by using it.
+
+        The clear withdraws this flow's published half as it goes, and a
+        withdrawal it could not make is said out loud in the description this
+        run already fails with: the run was over either way, but the user has
+        to know the artefact directory still publishes module rows over the
+        `synth_stat.json` just deleted (#560).
+        """
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            desc = f"{desc}; {withdrawal_failure_desc(stale_error)}"
+        return SynthFailResults(name=self.name + "/results", desc=desc)
+
     def run(self) -> SynthResults:
+        # The clear withdraws whatever this flow published here last time,
+        # and nothing else starts if it could not: the `synth_stat.json`
+        # behind those rows has just been deleted, so a run that went ahead
+        # and then failed would leave a breakdown of a design this directory
+        # no longer holds discoverable as a current one (#560).
+        stale_error = self._clear_stale_netlists()
+        if stale_error is not None:
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=withdrawal_failure_desc(stale_error),
+                fail_stage="setup",
+            )
         log_event(
             logger,
             logging.INFO,
@@ -479,6 +1046,17 @@ class OpenRoadSynth:
             tool=self.tool_cfg.get_executable(),
             top=self.synth_cfg.get_top(),
         )
+
+        # Both gate modes are resolved up front, ahead of the Liberty, LEF and
+        # filelist returns, so a misspelled value is fatal on every run rather
+        # than only on the runs that reach stage 1. Matches YosysSynth.run().
+        opts = self._resolve_yosys_opts()
+        resolve_static_functions_mode(opts)
+        resolve_conflicting_drivers_mode(opts)
+        # An unknown frontend or a missing slang plugin is a config error too,
+        # and stage 1's gates return before _write_yosys_script() would have
+        # reached the same check inside emit_frontend_read_cmds().
+        validate_frontend(opts, self.root_cfg)
 
         lib_paths = self._resolve_lib_paths()
         lef_paths = self._resolve_lef_paths()
@@ -491,6 +1069,7 @@ class OpenRoadSynth:
                     "(cfg-synth-platforms -> cfg-pdks corner) or add lib-paths "
                     "to the synth.yaml entry"
                 ),
+                fail_stage="setup",
             )
 
         if not lef_paths:
@@ -507,6 +1086,7 @@ class OpenRoadSynth:
                     "provide tech-lef/macro-lef, or add lef-paths to the "
                     "synth.yaml entry"
                 ),
+                fail_stage="setup",
             )
 
         fl_path = self._filelist_path()
@@ -528,10 +1108,12 @@ class OpenRoadSynth:
                 error=str(e),
             )
             return SynthFailResults(
-                name=self.name + "/results", desc=f"Filelist error: {e}"
+                name=self.name + "/results",
+                desc=f"Filelist error: {e}",
+                fail_stage="setup",
             )
 
-        gate_count, yosys_ok = self._run_yosys_stage(fl_path)
+        gate_count, yosys_ok, yosys_desc = self._run_yosys_stage(fl_path)
         if not yosys_ok:
             log_event(
                 logger,
@@ -541,9 +1123,14 @@ class OpenRoadSynth:
                 returncode=-1,
                 log=self._yosys_log_path(),
             )
-            return SynthFailResults(
-                name=self.name + "/results",
-                desc="Yosys stage failed; see synth_yosys.log",
+            # Stage 1 writes the netlist before its trailing `stat`, so a
+            # crash or an ERROR line here can still leave one behind.
+            return self._fail_after_yosys(
+                yosys_desc or "Yosys stage failed; see synth_yosys.log"
             )
 
-        return self._run_or_stage(gate_count, lef_paths, lib_paths)
+        result = self._run_or_stage(gate_count, lef_paths, lib_paths)
+        if isinstance(result, SynthFailResults):
+            # Stage 1 succeeded and published a netlist; stage 2 then failed.
+            return self._fail_after_yosys(result.results["desc"])
+        return result

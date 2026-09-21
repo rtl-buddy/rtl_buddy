@@ -2,7 +2,7 @@
 
 import pprint
 
-from .xfail import is_pass_with_xfail
+from .xfail import FAIL_STAGE_KEY, is_pass_with_xfail
 
 
 class FpvResults:
@@ -52,6 +52,13 @@ class FpvPassResults(FpvResults):
 
 
 class FpvFailResults(FpvResults):
+    """A failed verification.
+
+    ``fail_stage`` names a stage that failed *instead of* producing a
+    verdict on the design; such a failure is never excused by an xfail
+    marker (#553, #594). Leave it unset for the flow's own verdict.
+    """
+
     def __init__(
         self,
         name,
@@ -62,6 +69,7 @@ class FpvFailResults(FpvResults):
         runtime_s: float | None = None,
         desc: str | None = None,
         per_engine: list[dict] | None = None,
+        fail_stage: str | None = None,
     ):
         msg = desc or f"property disproved ({mode}, depth {depth})"
         super().__init__(
@@ -74,6 +82,8 @@ class FpvFailResults(FpvResults):
         if runtime_s is not None:
             self.results["runtime_s"] = runtime_s
         self.results["per_engine"] = list(per_engine) if per_engine is not None else []
+        if fail_stage is not None:
+            self.results[FAIL_STAGE_KEY] = fail_stage
 
 
 class FpvSkipResults(FpvResults):

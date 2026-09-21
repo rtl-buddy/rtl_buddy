@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,11 @@ from rtl_buddy.tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileRun,
 )
 
+# The stub tools below run a here-doc Python snippet, so they need an
+# interpreter that actually exists: a bare ``python`` is absent from a
+# stock macOS PATH.
+_PYTHON = shlex.quote(sys.executable)
+
 
 def _make_fake_profiler(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path]:
     """Drop a fake ``axi-profiler`` that records argv to a JSON sidecar."""
@@ -37,7 +44,7 @@ def _make_fake_profiler(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Pa
     script = tmp_path / "axi-profiler"
     script.write_text(
         "#!/usr/bin/env bash\n"
-        f'python - "$@" <<PY\n'
+        f'{_PYTHON} - "$@" <<PY\n'
         "import json, sys\n"
         f'open({json.dumps(str(record))}, "w").write(json.dumps(sys.argv[1:]))\n'
         "PY\n"
@@ -1002,7 +1009,7 @@ def _make_fake_marimo(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path
     script = tmp_path / "marimo"
     script.write_text(
         "#!/usr/bin/env bash\n"
-        f'python - "$@" <<PY\n'
+        f'{_PYTHON} - "$@" <<PY\n'
         "import json, os, sys\n"
         f"open({json.dumps(str(record))}, 'w').write(\n"
         "    json.dumps({\n"

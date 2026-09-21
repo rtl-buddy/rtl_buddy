@@ -1,0 +1,8 @@
+# Fixture for tests/test_graph_config_tier.py
+rtl-buddy-filetype: model_config
+
+models:
+  - name: "blk_a"
+    desc: "Block A DUT"
+    filelist: ["blk_a.sv"]
+    spec: "../../spec/blk_a/specs.yaml"

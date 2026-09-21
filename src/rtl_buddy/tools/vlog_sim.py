@@ -8,15 +8,22 @@ vlog_sim module handles verilog simulations for rtl-buddy
 
 """
 
+import contextlib
+import fnmatch
 import hashlib
 import json
 import os
 import random
 import re
 import shlex
+import shutil
 import signal
+import subprocess
 import logging
+import threading
 import types
+from dataclasses import dataclass, field
+from stat import S_ISREG
 
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
@@ -25,33 +32,1515 @@ from ..seed_mode import SeedMode
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
+from .vlog_post import grade_unknown_sim_exit
 from .vlog_cov import VlogCov
-from .artifact_paths import shared_build_dir, test_artifact_dir, test_build_dir_name
+from .artifact_paths import (
+    ARTIFACT_DIRNAME,
+    BUILD_DIR_PREFIX,
+    DISPATCH_OUTPUT_PATTERNS,
+    RESULT_JSON_NAME,
+    SHARED_BUILDS_DIRNAME,
+    atomic_tmp_name,
+    atomic_tmp_patterns,
+    run_artifact_root,
+    shared_build_dir,
+    shared_build_namespace,
+    test_artifact_dir,
+    test_build_dir_name,
+)
 
 import time
 import pprint
 from pathlib import Path
 
+from ..artifact_lock import build_dir_lock
+from ..dispatch.base import (
+    BUILD_PHASE_BUILD,
+    BUILD_PHASE_FULL,
+    BUILD_PHASE_VERILATE,
+)
 from ..errors import FatalRtlBuddyError
-from ..logging_utils import log_event, task_status
+from ..logging_utils import (
+    DEFAULT_FILE_LOG,
+    log_console_event,
+    log_event,
+    task_status,
+)
+from ..runner.result_io import build_compile_fail_desc, load_build_result_json
 from ..process_utils import run_managed_process
-from .vcs_license import VcsLicenseQueueMonitor
+from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
 
 
 def force_symlink(target, link_name):
-    if os.path.lexists(link_name):
-        os.remove(link_name)
+    """Atomically repoint ``link_name`` at ``target``.
 
-    os.symlink(target, link_name)
+    Create-a-temp-then-``os.replace`` instead of remove-then-create:
+    ``os.replace`` over a symlink is a single rename, so it cannot lose a
+    race. The check-then-act form (``lexists`` then ``remove`` then
+    ``symlink``) races when concurrent writers share a link — under
+    ``--dispatch`` every element of a suite's Slurm array runs at once
+    against the same suite-level ``test.log``/``test.err``/``test.randseed``,
+    and the interleaving killed passing tests with ``FileNotFoundError`` /
+    ``FileExistsError`` (#363). The temp name comes from
+    :func:`atomic_tmp_name`, which carries the pid and a random suffix so no
+    two writers — separate processes (real array elements) or threads — ever
+    collide on the intermediate link, and which the share-build fingerprint
+    derives its exclusion from so a link caught mid-flight in an include
+    directory is not read as a changed compile input (#613).
+    """
+    tmp = atomic_tmp_name(link_name)
+    os.symlink(target, tmp)
+    try:
+        os.replace(tmp, link_name)
+    except OSError:
+        # Don't leak the temp link into the suite dir if the rename fails.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
+
+# Sentinel for "argument not given", where None is a meaningful value the
+# caller may need to pass explicitly (see VlogSim.pre).
+_UNSET = object()
 
 # Stamp written into a shared build dir after a successful compile; records
 # the exact compile inputs the simv was built from so reuse can be validated.
-SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+# Defined in `artifact_paths` so the artefact-clearing helpers can protect it
+# from a co-named run's suffix clear (#469); re-exported here because this is
+# where every consumer already looks for it.
+from .artifact_paths import SHARED_BUILD_STAMP_NAME as SHARED_BUILD_STAMP_NAME
+
+# First line of the ``compile.log`` a *reuse* leaves (#494). Doubles as the
+# marker that tells a breadcrumb from a real compile transcript, so a reuse
+# can replace the one and preserve the other.
+_REUSE_TRANSCRIPT_MARKER = "Compile skipped: reused the build already in "
+
+# Separates a reuse breadcrumb from the compile transcript it preserves
+# below itself, and lets the next reuse carry that transcript forward
+# instead of nesting breadcrumb inside breadcrumb.
+_CARRIED_TRANSCRIPT_HEADER = (
+    "\n=== transcript of the compile that last wrote this file ===\n"
+)
+
+# Where a compile's command + captured output is kept, in the test's compile
+# work dir. The `.retry.` variant is used by exactly one caller: a
+# dispatched sim job that was gated on a build job and found that build's
+# stamp invalid. Its recompile runs under the SIM reservation, so its
+# failure mode is not the build job's — writing it to `compile.log` would
+# replace the build's real compile error with the retry's, which is how a
+# one-line lint error became three rounds of "raise compile memory" (#498).
+COMPILE_TRANSCRIPT_NAME = "compile.log"
+COMPILE_RETRY_TRANSCRIPT_NAME = "compile.retry.log"
+
+# The rest of what a test writes into its artefact directory, named rather
+# than spelled inline at the one `_get_*_path` that builds each: the
+# shared-build stamp has to recognise rtl_buddy's own outputs to keep them
+# out of a directory listing (#478), and a list of names guessed
+# separately from the code that writes them is a list that goes stale.
+FILELIST_NAME = "run.f"
+TEST_LOG_NAME = "test.log"
+TEST_ERR_NAME = "test.err"
+TEST_RANDSEED_NAME = "test.randseed"
+COVERAGE_DAT_NAME = "coverage.dat"
+SIMV_NAME = "simv"
+ICARUS_SNAPSHOT_NAME = "simv.vvp"
+
+# Simulator families whose compile output rtl_buddy can redirect wholesale
+# into a shared build dir, and whose simv still runs from there once other
+# tests point at it. Everything else compiles inside each test's own
+# artefact dir (correct, just unshared).
+SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
+
+
+@dataclass(frozen=True)
+class _TopFlagSpec:
+    """How one simulator family spells "elaborate from this module".
+
+    ``emit`` is the single spelling rtl_buddy writes. ``aliases`` is every
+    spelling that counts as *the user already pinned a top*, which is a
+    strictly larger set: Verilator documents ``--top-module`` and ``--top``
+    and accepts each with one or two leading dashes, so a project that
+    worked around #508 by putting ``--top spare_top`` in ``compile-time``
+    must be recognised — appending our own ``--top-module`` there would
+    silently win (Verilator takes the LAST top on the command line), which
+    is the exact inverse of the "configured flag wins" contract. Verified
+    against Verilator 5.050: all four spellings are accepted, ``--top-module=x``
+    is rejected outright, so no ``=``-glued form needs handling.
+
+    ``glued`` lists the prefixes whose value may be attached to the flag
+    (``iverilog -stb``); Verilator and VCS always take the module as a
+    separate token.
+    """
+
+    emit: str
+    aliases: tuple[str, ...]
+    glued: tuple[str, ...] = ()
+
+
+# The top-selection flag per simulator family, so a testbench's declared
+# `toplevel:` decides the elaboration root instead of whichever source the
+# composed filelist happens to name first (#506, #508). A family absent here
+# has no such flag rtl_buddy knows of, and its builds keep electing a top the
+# way they always did.
+TOP_MODULE_FLAGS = {
+    "verilator": _TopFlagSpec(
+        emit="--top-module",
+        aliases=("--top-module", "-top-module", "--top", "-top"),
+    ),
+    "vcs": _TopFlagSpec(emit="-top", aliases=("-top",)),
+    "icarus": _TopFlagSpec(emit="-s", aliases=("-s",), glued=("-s",)),
+}
+
+
+def _find_configured_top(spec, opts):
+    """The top the configured opts already pin, or ``None``.
+
+    Returns ``(flag_as_written, module_or_None)`` for the LAST occurrence,
+    because that is the one the simulator honours — Verilator's duplicate
+    options are last-wins, and scanning from the front would compare
+    ``toplevel:`` against a spelling the build overrides anyway.
+
+    The module is ``None`` for a flag with nothing usable after it: a
+    trailing bare ``--top``, or one followed by another option. That still
+    counts as pinned (rtl_buddy must not append a second top next to a
+    malformed one), there is simply no value to compare or to print.
+    """
+    found = None
+    for index, token in enumerate(opts):
+        if token in spec.aliases:
+            nxt = opts[index + 1] if index + 1 < len(opts) else None
+            # A module name never starts with `-`; anything that does is the
+            # next option, so the flag is bare.
+            value = nxt if (nxt and not nxt.startswith("-")) else None
+            found = (token, value)
+            continue
+        for prefix in spec.glued:
+            if token.startswith(prefix) and len(token) > len(prefix):
+                found = (prefix, token[len(prefix) :])
+                break
+    return found
+
+
+# Conflicts claimed by (family, configured top, declared toplevel) so a suite
+# of N tests over one misconfigured builder warns once rather than N times —
+# the same "one console line per distinct fact per process" discipline as
+# `_claim_rebuild` and `_first_reuse_announcement`. Keyed on the fact and not
+# on the test, because the fact is a property of the builder config every one
+# of those tests shares.
+_TOPLEVEL_CONFLICTS_LOCK = threading.Lock()
+_TOPLEVEL_CONFLICTS: set[tuple] = set()
+
+
+def _claim_toplevel_conflict(key: tuple) -> bool:
+    """Is this process's first warning about this conflict? Claims it."""
+    with _TOPLEVEL_CONFLICTS_LOCK:
+        if key in _TOPLEVEL_CONFLICTS:
+            return False
+        _TOPLEVEL_CONFLICTS.add(key)
+        return True
+
+
+def _reset_toplevel_conflicts() -> None:
+    """Forget every claim. Tests only — one pytest process is many runs."""
+    with _TOPLEVEL_CONFLICTS_LOCK:
+        _TOPLEVEL_CONFLICTS.clear()
+
+
+# The argv suffix that makes a simulator print its version cheaply, per
+# family, for the toolchain half of the shared-build stamp. A family absent
+# here keeps the path + size + mtime half and no version string. VCS is
+# deliberately absent: `vcs -ID` checks out a licence, and queueing for one
+# before every compile would cost far more than the check is worth — a VCS
+# install is versioned by its path, which the resolved executable already
+# carries.
+_TOOLCHAIN_VERSION_ARGS = {
+    "verilator": ("--version",),
+    "icarus": ("-V",),
+}
+
+# (resolved path, mtime_ns) -> version line. One fork per distinct binary per
+# process: a regression compiles many suites through the same toolchain, and
+# a dispatched fan-out re-probes once per job.
+_TOOLCHAIN_VERSION_CACHE: dict[tuple[str, int], str | None] = {}
+
+
+def _probe_toolchain_version(exe_path, simulator_family, mtime_ns):
+    """First line of the simulator's own version banner, or ``None``.
+
+    Plain ``subprocess.run`` rather than ``run_managed_process``: this is a
+    sub-second probe with no output to stream and nothing to clean up on a
+    signal, and it is memoised per (path, mtime) so a whole regression pays
+    for it once. The one thing that memo cannot see is an upgrade that
+    changes neither size nor mtime *while a run is in flight*; the next
+    process — the next ``rb``, or any dispatched job — probes afresh.
+
+    Every failure mode degrades to ``None``: a version we could not read
+    must never fail a compile, it only costs the stamp the ability to
+    notice an in-place upgrade.
+    """
+    args = _TOOLCHAIN_VERSION_ARGS.get(simulator_family)
+    if args is None:
+        return None
+    key = (exe_path, mtime_ns)
+    if key in _TOOLCHAIN_VERSION_CACHE:
+        return _TOOLCHAIN_VERSION_CACHE[key]
+    version = None
+    try:
+        proc = subprocess.run(
+            [exe_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        lines = ((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()
+        version = lines[0].strip() if lines else None
+    _TOOLCHAIN_VERSION_CACHE[key] = version
+    return version
+
+
+def _log_stale_stamp_toolchain(stored_inputs, current_inputs, *, test_name=None):
+    """Say so when a rebuild is the toolchain's doing, not the RTL's.
+
+    A recompile after a source edit explains itself. A recompile because
+    the simulator moved underneath a build that was being reused does not,
+    and reading it off a diff of two JSON stamps is not a thing anyone
+    should have to do — this is the case that used to be missed entirely.
+    Silent on a stamp predating the toolchain entry: that is an rtl_buddy
+    upgrade, not a toolchain change, and it happens exactly once.
+
+    Both sides are the *same* dict shape — the caller's comparison operands,
+    not one of them and the raw fingerprint — so that this stays right if it
+    ever diffs more than ``toolchain``.
+    """
+    if "toolchain" not in stored_inputs:
+        return
+    was = stored_inputs.get("toolchain")
+    # A caller may hand in no fingerprint at all to assert a stamp is stale;
+    # that is not a toolchain change either.
+    now = (current_inputs or {}).get("toolchain") or {}
+    if not isinstance(was, dict) or was == now:
+        return
+    log_event(
+        logger,
+        logging.WARNING,
+        "compile.build_toolchain_changed",
+        test=test_name,
+        was=was.get("version") or was.get("exe"),
+        now=now.get("version") or now.get("exe"),
+    )
+
+
+def share_build_supported(simulator_family) -> bool:
+    """Can this simulator family reuse one compiled simv across tests (#358)?
+
+    The single source of truth for the capability, because two places must
+    agree on it: :meth:`VlogSim.compile` decides whether to build into the
+    shared dir, and the dispatch head sizes a sim job's reservation on
+    whether that job will also compile (an unsupported family recompiles
+    inside every job, under the *sim* reservation — see
+    ``config.dispatch.combine_for_in_job_compile``).
+    """
+    return simulator_family in SHARE_BUILD_FAMILIES
+
+
+def share_build_unsupported_reason(builder_cfg):
+    """Why this builder cannot use a shared build, or ``None`` if it can.
+
+    Two ways out: a family rtl_buddy cannot redirect into the shared dir at
+    all, and an absolute ``builder-simv:`` — that pins the executable to one
+    exact path the user chose, which a per-compile-key shared dir cannot
+    honour without silently ignoring the config.
+
+    Module-level and taking the builder config rather than a live
+    :class:`VlogSim`, because the dispatch head must ask the *same* question
+    before any VlogSim exists: it sizes a sim job's reservation on whether
+    that job will also compile, and gates the fan-out on whether anything
+    needs serializing. A head that consulted only the family would plan a
+    VCS builder with an absolute ``builder-simv:`` as shareable and give it
+    a sim-sized reservation, while the job itself took the unshared path
+    (#369).
+    """
+    family = builder_cfg.get_simulator_family()
+    if not share_build_supported(family):
+        return f"simulator family {family!r} has no shared-build support"
+    pinned = pinned_simv_path(builder_cfg)
+    if pinned is not None:
+        return (
+            f"builder-simv is an absolute path "
+            f"({pinned}), which pins the "
+            "executable outside the shared build dir"
+        )
+    return None
+
+
+def pinned_simv_path(builder_cfg):
+    """The absolute executable this builder pins every test to, or ``None``.
+
+    Verilator and Icarus derive their output from the build dir, so
+    ``builder-simv:`` cannot move it; every other family honours an absolute
+    one verbatim (see :meth:`VlogSim._get_simv_path`). An absolute pin is
+    why such a builder cannot share a build (above): a per-compile-key
+    shared dir cannot honour one exact user-chosen path. Note this is a
+    *sharing* predicate only — the #495 compile-pool grouping key is the
+    resolved output path from ``_get_simv_path()`` itself, because a
+    RELATIVE ``builder-simv:`` whose ``..`` escapes the per-test workspace
+    collides on one file just as an absolute one does (#496 review), while
+    never being a reason to decline sharing.
+    """
+    if builder_cfg.get_simulator_family() in ("verilator", "icarus"):
+        return None
+    simv = builder_cfg.get_simv()
+    return simv if os.path.isabs(simv) else None
+
 
 # Matches the option prefixes VlogFilelist emits into run.f (see
-# VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
-_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
+# VlogFilelist._extract): `+incdir+`, `+libext+`, `+define+`, `-v `, `-y `,
+# `-F `. A `+define+` entry never resolves to a file, so it stamps as a raw
+# line — enough for the fingerprint to notice when the defines change. The
+# option is captured as well as the path: `+incdir+` and `-y ` are the two
+# that name a *directory*, and they are stamped by listing it (#478).
+_FILELIST_OPTION_RE = re.compile(r"^(\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*)$")
+
+_INCDIR_OPTION = "+incdir+"
+_LIBRARY_DIR_OPTION = "-y"
+
+# Compile-LINE options that name a path, and what that path is (#542 review).
+# The value is ``("dir", recursive)`` or ``"file"``, matching what
+# :meth:`VlogSim._directory_listing` and :meth:`VlogSim._tracked_entry`
+# respectively need. Only the options whose argument is an *input* are here:
+# an output location (`-o`, `--Mdir`) must never reach the compile key, or a
+# warm rebuild would hash the binary it just produced and move its own key.
+# `-f` and `-F` name a filelist, and differ in the one thing that decides
+# what its entries MEAN: a relative path inside a `-f` list is resolved by the
+# builder against its own working directory, while one inside a `-F` list is
+# resolved against the directory holding that list. Verilator, VCS and Icarus
+# agree on this (the same split `vlog_filelist` documents at its
+# `absolute_sources` pin), and the rule belongs to the FILE's contents — it is
+# set by the option that pulled the file in, and a nested list resets it.
+_CMD_PATH_OPTIONS = {
+    _LIBRARY_DIR_OPTION: ("dir", False),
+    "-v": "file",
+    "-f": "filelist-cwd",
+    "-F": "filelist-rel",
+}
+
+# How deep a nested `-f`/`-F` chain is followed when keying a persistent
+# cache, and the line shapes such a list may hold. Bounded so a pathological
+# (or, with the cycle guard, a merely repetitive) tree cannot turn a compile
+# key into a walk of the filesystem.
+#
+# Its own regex rather than `_FILELIST_OPTION_RE`: this one also accepts a
+# LOWERCASE `-f`, which rtl_buddy's generated `run.f` can never contain (the
+# filelist writer refuses one, `filelist.inline_f_disallowed`) but a
+# hand-written list the compile line points at may. Keeping the two separate
+# means adding it cannot change how a single generated `run.f` is stamped.
+_NESTED_FILELIST_MAX_DEPTH = 8
+
+#: What a key records in place of a filelist chain it refused to follow any
+#: further (#542 review round 5). It carries the list's ABSOLUTE path, which
+#: makes the key checkout-specific: the cache then serves that checkout
+#: alone rather than handing another one a build whose deepest inputs were
+#: never looked at.
+_DEPTH_BOUND_MARKER = "<unread-filelist> "
+_NESTED_FILELIST_OPTION_RE = re.compile(
+    r"^(\+(?:incdir|libext|define)\+|-[vyfF]\s+)?(.*)$"
+)
+
+# Compile-line options whose argument is an OUTPUT location. Their value must
+# never be read as an input: a key that hashed the binary a build produces
+# would move on every build and strand one cache directory per run. The
+# general guard is :func:`_is_build_tree_name` — this is the cheap,
+# certain half of it, for an output written somewhere the path says nothing
+# about (an absolute `builder-simv:`, say).
+_CMD_OUTPUT_OPTIONS = frozenset({"-o", "--Mdir", "-Mdir", "--exe-name"})
+
+# Path-valued options that can appear INSIDE a larger compile-line token —
+# `-CFLAGS=-I../../inc`, a pass-through a subclass builds — where nothing
+# above recognises the token as a path but it names one all the same (#542
+# review). Anchored to a boundary so `--Include` and `-Wno-INCDIR` do not
+# read as an `-I`, and the payload stops at the separators an option uses to
+# pack several values into one token.
+#
+# `+libext+` is deliberately absent: its argument is a list of suffixes, not
+# a path. So are the output options, which `_CMD_OUTPUT_OPTIONS` has already
+# taken out of the caller's hands — a key that read a build's own output
+# would move on every build.
+_EMBEDDED_PATH_OPTION_RE = re.compile(
+    r"""(?:^|[\s=,:'"])          # a boundary, so `--Include` is not an `-I`
+        (\+incdir\+|-I|-y)        # the option
+        \s*                       # `-I../inc` and `-I ../inc` alike
+        ([^\s:;,'"=]+)            # its payload
+    """,
+    re.VERBOSE,
+)
+
+#: Prefixes whose argument is a VALUE compiled into the model rather than a
+#: path rtl_buddy may relocate. Shared by the compile line and the generated
+#: ``run.f`` so the two cannot disagree (#542 review rounds 2 and 3).
+_MACRO_VALUE_PREFIXES = (
+    "+define+",
+    "+libext+",
+    "+parameter+",
+    "-D",
+    "-G",
+    "-pvalue+",
+)
+
+
+def _is_macro_shaped(token: str) -> bool:
+    """Is ``token`` a define/parameter assignment rather than a path?
+
+    A define's value is compiled INTO the model, so relativising one would
+    make two checkouts that bake in DIFFERENT absolute paths hash to one key
+    and share one binary — and content-keying one would hash a value that is
+    not an input. Either way the honest answer is to leave it exactly as
+    written (#542 review).
+
+    ``+libext+`` is here for the same reason by a different route: its
+    argument is a list of suffixes, never a path at all.
+
+    The trailing rule catches a bare ``NAME=value``, which no filelist or
+    compile line means as a path.
+    """
+    return token.startswith(_MACRO_VALUE_PREFIXES) or (
+        not token.startswith(("-", "+")) and "=" in token
+    )
+
+
+# Directory names an `+incdir+` walk must not descend into (#478 review).
+#
+# rtl_buddy's own artefact trees are the load-bearing half: a `+incdir+.`
+# declared in a tests.yaml, or a `+incdir+..` from a design directory that
+# contains verif suites, makes the walk reach `artefacts/` — and the files
+# under it (run.f, compile.log, the obj_dir, the stamp itself) are written
+# AFTER the fingerprint that lists them. Every later process would then see
+# a different listing and recompile, which under `--dispatch` is every
+# gated simulation job. Derived from the constants the writers use, so
+# renaming a managed directory cannot leave this behind.
+#
+# Dot-directories are the other half: `.git`, `.svn`, `.hg` and friends
+# hold no compile input and can be enormous.
+#
+# `__pycache__` is rtl_buddy's own side effect too, one level removed: a
+# `preproc` hook importing a helper module out of the suite directory makes
+# CPython write bytecode beside it, during the very phase that computes the
+# fingerprint (#537).
+_PRUNED_WALK_DIRNAMES = frozenset(
+    {ARTIFACT_DIRNAME, SHARED_BUILDS_DIRNAME, "__pycache__"}
+)
+_PRUNED_WALK_DIR_PREFIXES = (BUILD_DIR_PREFIX,)
+
+# Files that are metadata rather than compile input, as fnmatch patterns.
+#
+# A *name-based* denylist, not "everything starting with a dot": a dot-file
+# can be perfectly ordinary input — `` `include ".config.svh" `` resolves
+# and compiles — so skipping every dot name would reopen the gap this
+# stamp exists to close. What is listed here is editor and VCS bookkeeping
+# no simulator ever reads, and `.DS_Store` in particular, which browsing an
+# include directory in Finder writes and which used to force a full
+# recompile.
+_BOOKKEEPING_FILE_PATTERNS = (
+    ".DS_Store",
+    ".gitignore",
+    ".gitattributes",
+    ".gitkeep",
+    "*.swp",  # vim swap
+    "*.swo",
+    "*~",  # emacs/gedit backup
+    ".#*",  # emacs lock
+    "#*#",  # emacs autosave
+)
+
+#: What the verilate half of a split compile leaves in the build directory
+#: for the build half to consult (#593): the plan fingerprint it verilated,
+#: whether it succeeded, and the transcript that says why it did not. A
+#: dotfile, like the build lock beside it, so no suffix clear can match it.
+VERILATE_MARKER_NAME = ".rb-verilate.json"
+
+# rtl_buddy's OWN outputs, by name (#478 review).
+#
+# Pruning the `artefacts` directory is not enough on its own, because an
+# include root can *be* one: a `preproc` hook is documented to generate
+# headers into its `artifact_dir`, and the filelist then carries
+# `+incdir+artefacts/<test>` or a subdirectory of it. The walk starts
+# inside the managed tree, so no `artefacts` component is ever seen — and
+# every one of these files is written AFTER the fingerprint that would list
+# it, so the generated header the project actually wanted tracked came with
+# run.f, compile.log, test.log, the result envelope and the stamp itself
+# attached, and no run ever validated the stamp again.
+#
+# Generated inputs under `artefacts/` MUST stay tracked, so the tree is
+# walked and the outputs are removed by name instead. Every entry is taken
+# from the constant the writer uses, not restated here.
+_MANAGED_OUTPUT_FILE_PATTERNS = (
+    FILELIST_NAME,
+    COMPILE_TRANSCRIPT_NAME,
+    COMPILE_RETRY_TRANSCRIPT_NAME,
+    TEST_LOG_NAME,
+    TEST_ERR_NAME,
+    TEST_RANDSEED_NAME,
+    COVERAGE_DAT_NAME,
+    SIMV_NAME,
+    ICARUS_SNAPSHOT_NAME,
+    SHARED_BUILD_STAMP_NAME,
+    VERILATE_MARKER_NAME,
+    RESULT_JSON_NAME,
+) + DISPATCH_OUTPUT_PATTERNS
+# The head's own `rtl_buddy.log` is deliberately not here: it is excluded
+# by PATH in `_directory_listing` (see `_is_suite_log`), because a file of
+# that name in any other include directory is an ordinary input.
+
+# The same outputs caught MID-WRITE (#613).
+#
+# Every managed output above is written through a sibling temp file that
+# `os.replace` renames into place, so between the build job's fingerprint
+# and a gated sim job's validation of it an include directory can hold a
+# `test.log.<pid>.<uuid>.tmp` that existed in neither listing. That is the
+# writer's own in-flight file, not a compile input — but it read as one,
+# and a fan-out of gated sim jobs recompiled under a simulation
+# reservation because of it. `+incdir+.` on a suite directory, where the
+# suite-level `test.log`/`test.err`/`test.randseed` symlinks are
+# repointed per test, is what makes those temp names visible at all.
+#
+# Derived from the patterns above via the helper the WRITERS build their
+# temp names with, so a renamed output or a changed temp shape cannot
+# leave this list behind — the same rule the final names already follow.
+#
+# Anchored to a managed output's name, NOT a blanket `*.tmp`: a project
+# may `include "defs.tmp"`, and such a file is an ordinary input whose
+# edit must still move the fingerprint.
+_MANAGED_OUTPUT_TMP_PATTERNS = tuple(
+    tmp_pattern
+    for pattern in _MANAGED_OUTPUT_FILE_PATTERNS
+    for tmp_pattern in atomic_tmp_patterns(pattern)
+)
+
+_NON_INPUT_FILE_PATTERNS = (
+    _BOOKKEEPING_FILE_PATTERNS
+    + _MANAGED_OUTPUT_FILE_PATTERNS
+    + _MANAGED_OUTPUT_TMP_PATTERNS
+)
+
+# The stamp's own keys, as opposed to the compile fingerprint it wraps: the
+# builder's reported dependencies, the executable it produced, and (in cache
+# mode) the project root its relative spellings are anchored to. Removing
+# them leaves exactly the dict `_compile_fingerprint` returned, which is
+# what both the stamp comparison and `_fingerprint_sha` work on.
+#
+# `root` is META and never an input on purpose (#542): it is the ONE field
+# whose whole job is to differ between two checkouts that must still
+# validate each other's stamp, so comparing it would defeat the mode it
+# belongs to. Nothing reads it back — the relative spellings are re-anchored
+# against the *reader's* own root — but it is what makes a stamp found in a
+# shared cache self-describing for a human and for `rb graph`.
+_STAMP_META = frozenset({"deps", "deps_format", "simv", "root"})
+
+#: The flags that make a Verilator run build as well as verilate. One of
+#: them has to be in the compile line for there to be a build step to hold
+#: back, so their absence is what "this line cannot be split" means (#593).
+_BUILD_STEP_FLAGS = ("--binary", "--build")
+
+#: Does this Verilator support ``--no-verilate``? Keyed on the resolved
+#: executable and answered once per process: it costs a ``--help``, and the
+#: build half of every compile key in a suite asks the same question.
+_NO_VERILATE_SUPPORT: dict[str, bool] = {}
+
+#: Environment override for the persistent shared-build cache root (#542).
+#: Below ``--shared-build-root`` and above the root config's
+#: ``cfg-rtl-reg.shared-build-root``.
+SHARED_BUILD_ROOT_ENV = "RTL_BUDDY_SHARED_BUILD_ROOT"
+
+# A directory-valued source entry is `[line, None, None, None, listing]`:
+# four elements of the ordinary `[path, size, mtime_ns, sha]` shape, all
+# empty because a directory has no content of its own, plus the listing of
+# the regular files inside it. The extra element is deliberate — a stamp
+# written before #478 has four, so it cannot compare equal and fails closed
+# into exactly one rebuild (the #494 precedent).
+_DIRECTORY_ENTRY_LEN = 5
+
+# How a stamp's `deps` entries name their files. 2 is the declared path the
+# build used (`normpath`); the unversioned entries before it were `realpath`s,
+# which validate a retargeted symlink's *old* target and so cannot be told
+# apart from a current entry by shape. A stamp whose `deps` is a list and
+# whose `deps_format` is not this fails closed into one rebuild.
+_DEPS_FORMAT = 2
+
+# Verilator writes a make-style dependency file naming every input the
+# verilation consumed — sources, headers reached through `+incdir+`/`-y`,
+# its own std includes, and the `verilator_bin` binary itself. It is named
+# after `--prefix`, which rtl_buddy never sets, so it is found by glob
+# rather than construction. Other builders emit nothing comparable (#303).
+_VERILATOR_DEPEND_GLOB = "*__ver.d"
+
+# One token of a make dependency line: a run of non-whitespace, where a
+# backslash escapes the character after it (`\ ` inside a path).
+_DEPEND_TOKEN_RE = re.compile(r"(?:[^\s\\]|\\.)+")
+
+
+def parse_depend_prerequisites(text: str) -> list[str]:
+    """Prerequisite paths from a make-style dependency file.
+
+    Parsed rule by rule rather than "everything after the first colon":
+    with ``--MP`` (a ``builder-opts`` a project may set) Verilator appends a
+    ``gcc -MP``-style tail of phony rules — one bare ``<prerequisite>:`` per
+    line, so ``make`` does not fail on a deleted include. Those are targets,
+    and collecting them as prerequisites would stamp a shadow entry per real
+    dependency, each with a trailing colon and so resolving to a path that
+    never exists.
+
+    Within a rule, everything up to the ``:`` is the target list and is
+    dropped — those are generated files, not inputs. Line continuations are
+    joined and ``\\ `` escapes are unescaped; order is preserved and
+    duplicates are kept for the caller to collapse, since a prerequisite
+    listed twice is not an error.
+    """
+    prerequisites = []
+    for line in text.replace("\\\n", " ").splitlines():
+        tokens = _DEPEND_TOKEN_RE.findall(line)
+        for index, token in enumerate(tokens):
+            if token == ":" or token.endswith(":"):
+                # A rule with no prerequisites is a phony target: nothing to
+                # collect, and the next line starts a new rule either way.
+                prerequisites += tokens[index + 1 :]
+                break
+        # A line with no separator is not a rule rtl_buddy understands (a
+        # comment, or a stray target list); saying nothing beats treating
+        # every token on it as an input.
+    return [re.sub(r"\\(.)", r"\1", token) for token in prerequisites]
+
+
+def _stat_entry(path: str) -> list:
+    """``[path, size, mtime_ns]`` for a tracked input, or nulls if absent.
+
+    A vanished file records as ``[path, None, None]`` rather than being
+    dropped, so its later reappearance still invalidates the stamp.
+
+    Still stat-only, and deliberately: its one remaining caller stamps the
+    build's *output* (``simv``), which is a freshness check on a binary
+    rtl_buddy just wrote, not edit detection on an input. Hashing a
+    hundred-megabyte executable on every validation would buy nothing —
+    see :func:`_hashed_stat_entry` for the inputs, where content decides.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [path, None, None]
+    return [path, stat.st_size, stat.st_mtime_ns]
+
+
+def resolve_shared_build_root(raw, project_root) -> str | None:
+    """The persistent shared-build cache root in force, absolute, or None (#542).
+
+    ``raw`` is whatever the caller resolved from ``--shared-build-root``,
+    :data:`SHARED_BUILD_ROOT_ENV` or the root config, in that precedence;
+    blank and ``None`` both mean "no cache, use the in-tree default".
+
+    A relative root anchors to the **project root**, not the cwd: the same
+    configured value is read again by a build job on a compute node and by
+    every simulation job, each with its own working directory, and a root
+    that moved with the cwd would give them different caches. ``~`` and
+    ``$VAR`` are expanded, because a cache root is exactly the kind of
+    site-specific path a shared config spells with one.
+    """
+    if raw is None:
+        return None
+    text = os.path.expandvars(os.path.expanduser(str(raw))).strip()
+    if not text:
+        return None
+    if not os.path.isabs(text):
+        text = os.path.join(str(project_root), text)
+    return os.path.normpath(text)
+
+
+def _relativise_paths(text: str, root: str) -> str:
+    """``text`` with every mention of ``root`` stripped to a relative path.
+
+    The one transform the cache-mode compile key and stamp spellings share
+    (#542), applied to whole ``run.f`` *lines* and whole command *tokens*
+    rather than to bare paths, because that is what both of those are: a
+    line is ``+incdir+/proj/rtl/inc`` or ``-y /proj/lib``, and a token is
+    ``--Mdir=/proj/verif/alu/artefacts/...`` or a plain source argument.
+    Substring replacement handles all of them without a per-option table
+    that would silently miss the next flag somebody adds — and a token
+    carrying two of them (``-CFLAGS=-I/proj/a -I/proj/b``) at once.
+
+    Paths *outside* ``root`` are left absolute, which is what makes them
+    still comparable: a toolchain header is at the same place for every
+    checkout on the host, so keeping its absolute spelling is both honest
+    and checkout-independent.
+
+    Not a general path function: it is deliberately textual and therefore
+    exact-prefix-only, so a workspace reached through a different symlink
+    spelling is a different (still correct) key rather than a wrong match.
+    """
+    if not isinstance(text, str) or not root or root == os.sep:
+        return text
+    if text == root:
+        return os.curdir
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return text.replace(prefix, "")
+
+
+# One content hash per (path, size, mtime_ns) per process. A suite
+# validating N stamps over one source set otherwise re-reads every file N
+# times, and the #495 build job validates from worker threads, so the memo
+# is guarded rather than thread-local: two threads asking for the same file
+# should read it once between them.
+_CONTENT_HASH_LOCK = threading.Lock()
+_CONTENT_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+_CONTENT_HASH_CHUNK = 1 << 20
+
+# Above this, an input keeps the old size+mtime comparison instead of being
+# read. The hashing policy is locational, not by kind, so a memory-init
+# `.hex`, a vendored blob or a generated database named in run.f or in the
+# dependency file qualifies exactly as a `.sv` does — and would then be read
+# in full on every stamp validation, on every node. The cap is the same
+# trade as excluding the toolchain (brief invariant 4), drawn well above any
+# hand-written source so that what #494 is actually about is never affected;
+# what it does cost is that an edit to a file this large is only noticed by
+# its stats again. `compile.hash_skipped_large` says when that happens.
+_CONTENT_HASH_MAX_BYTES = 64 << 20
+
+# Paths this process has already reported as too large to hash. The DEBUG
+# line is worth having once per file; once per file per validated stamp is
+# noise. Guarded by _CONTENT_HASH_LOCK, like the memo beside it.
+_HASH_SKIPPED_LARGE: set[str] = set()
+
+
+def _log_hash_skipped_large(path: str, size: int) -> None:
+    """Name a tracked input the size cap left on the stat-only path.
+
+    The cap is invisible otherwise — the entry looks like any other
+    stat-only one — and "why did this file not get content-hashed" is the
+    question a second #494 would start from. Once per path per process.
+    """
+    with _CONTENT_HASH_LOCK:
+        if path in _HASH_SKIPPED_LARGE:
+            return
+        _HASH_SKIPPED_LARGE.add(path)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "compile.hash_skipped_large",
+        path=path,
+        size=size,
+        limit=_CONTENT_HASH_MAX_BYTES,
+    )
+
+
+def _hash_file_content(path: str, size: int, mtime_ns: int) -> str | None:
+    """``sha256`` hexdigest[:16] of ``path``'s bytes, or None if unreadable.
+
+    Memoised on ``(path, size, mtime_ns)``. The memo is a cost bound, not a
+    correctness claim about stats: it stops one process re-reading a file
+    once per validated stamp, which is the cost this whole check has to stay
+    under. The value it returns came from a real ``open()``, so it is
+    close-to-open-fresh as of when it was taken — and the boundary that
+    matters for #494, a *later* run on another node, is a different process
+    with an empty memo, where the re-read is guaranteed.
+    """
+    key = (path, size, mtime_ns)
+    with _CONTENT_HASH_LOCK:
+        cached = _CONTENT_HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as content_fp:
+            while True:
+                chunk = content_fp.read(_CONTENT_HASH_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError:
+        # A file that exists but cannot be read: record None and let the
+        # comparison fail closed against a stamp that has a hash.
+        return None
+    value = digest.hexdigest()[:16]
+    with _CONTENT_HASH_LOCK:
+        _CONTENT_HASH_CACHE[key] = value
+    return value
+
+
+# Build directories ``--rebuild`` has already forced in THIS process (#494).
+# The flag means "do not trust the stamp on disk", not "compile once per
+# test": a suite whose tests share one compile key meets the same directory
+# N times, and rebuilding it N times would both waste the run and put N
+# builders into one directory (#369). The first meeting rebuilds and claims
+# the directory; the rest validate the stamp that rebuild just wrote and
+# reuse it. Lock-guarded because the #495 build job compiles from worker
+# threads.
+_REBUILT_DIRS_LOCK = threading.Lock()
+_REBUILT_DIRS: set[str] = set()
+
+# Build dirs whose reuse this process has already put on the CONSOLE. The
+# file log keeps every `compile.build_reused`; the console line is the
+# once-per-build signal — a 50-test local regression reusing one build must
+# not print 50 identical lines (#494 review), while under dispatch each job
+# is its own process and still prints its one line.
+_REUSE_ANNOUNCED_LOCK = threading.Lock()
+_REUSE_ANNOUNCED: set[str] = set()
+
+
+def _first_reuse_announcement(build_dir: str) -> bool:
+    """Is this the process's first console-worthy reuse of ``build_dir``?"""
+    key = os.path.realpath(build_dir)
+    with _REUSE_ANNOUNCED_LOCK:
+        if key in _REUSE_ANNOUNCED:
+            return False
+        _REUSE_ANNOUNCED.add(key)
+        return True
+
+
+def _reset_reuse_announcements() -> None:
+    """Test hook: forget which build dirs already hit the console."""
+    with _REUSE_ANNOUNCED_LOCK:
+        _REUSE_ANNOUNCED.clear()
+
+
+def _claim_rebuild(build_dir: str) -> bool:
+    """Is this process's first ``--rebuild`` of ``build_dir``? Claims it.
+
+    ``realpath``'d, for the reason the compile grouping is: two spellings
+    of one directory (a symlinked parent, a ``..`` that escapes the test's
+    workspace) are one build, and a textual key would let each spelling
+    rebuild it.
+    """
+    key = os.path.realpath(build_dir)
+    with _REBUILT_DIRS_LOCK:
+        if key in _REBUILT_DIRS:
+            return False
+        _REBUILT_DIRS.add(key)
+        return True
+
+
+def _reset_rebuilt_dirs() -> None:
+    """Forget every claim. Tests only — one pytest process is many runs."""
+    with _REBUILT_DIRS_LOCK:
+        _REBUILT_DIRS.clear()
+
+
+def _build_dir_fields(build_dir, *, shared: bool) -> dict:
+    """The directory fields ``compile.build_reused`` and
+    ``compile.rebuild_forced`` both carry (#494).
+
+    One schema for the pair: ``build_dir`` is always the basename and
+    ``build_path`` always the full path, so a consumer keying on either
+    across the two events gets the same kind of thing. Which one the human
+    line shows is :func:`logging_utils._build_location`'s decision, and it
+    needs ``shared`` to make it — a shared directory is identified by its
+    ``obj_dir_<key>`` basename, an unshared one only by its path.
+    """
+    fields = {
+        "build_dir": os.path.basename(str(build_dir).rstrip(os.sep)),
+        "build_path": str(build_dir),
+    }
+    if not shared:
+        fields["shared"] = False
+    return fields
+
+
+def _path_is_under(path: str, root: str) -> bool:
+    """Is ``path`` inside ``root``? Both must already be canonical."""
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        # Different drives on Windows: not under the root by definition.
+        return False
+
+
+def _content_sha(
+    path: str,
+    stat: os.stat_result,
+    project_root: str | None,
+    *,
+    resolved: bool = False,
+    toolchain_prefix: str | None = None,
+) -> str | None:
+    """Hash ``path``'s content when policy allows, else None.
+
+    **Why content and not just stats (#494).** ``size``/``mtime_ns`` answer
+    "has this file changed?" correctly on one machine. Across a cluster they
+    do not: the edit happens on the submit host and the validation on a
+    compute node, and NFS serves that node a *cached* attribute answer for
+    up to ``acregmax`` — so a file edited seconds ago still stats as it did
+    before the edit and the stamp validates against a stale answer. Reading
+    the bytes is what closes it, because NFS close-to-open consistency
+    revalidates on ``open()``: the content of an edited file is visible even
+    while its cached stats are not. That is the difference between a rebuild
+    and a false PASS on a design that was never simulated.
+
+    **Policy: hash the project's own files, never the toolchain's** (brief
+    invariant 4). Verilator's dependency file names the toolchain's own std
+    includes and, for some installs, ``verilator_bin`` itself; hashing tens
+    of megabytes of unchanging install per validation is not a trade worth
+    making, and the toolchain fingerprint's version probe already catches an
+    install swapped underneath a build. So an entry qualifies only if it is
+    under ``project_root`` *and* outside ``toolchain_prefix`` — the install
+    tree of the resolved simulator executable, which a vendored
+    ``tools/verilator/`` or an in-repo venv puts under the project root.
+    Everything else stays stat-only, as is anything over
+    ``_CONTENT_HASH_MAX_BYTES``.
+
+    **Containment is decided on the name the build used, not only on where
+    that name lands.** Symlinking an IP or RTL tree into the project is a
+    common hardware-repo layout, and resolving first would put such a source
+    outside the root and leave it stat-only — turning the fix off for
+    exactly the files a shared IP mount holds. So the declared path counts
+    too, while the *exclusion* still tests the realpath, which is what
+    catches a symlink into the toolchain install.
+
+    ``resolved`` says ``path`` is already a ``realpath``, which saves a
+    second walk of one ``lstat`` per component on the NFS mount this check
+    exists for; a resolved entry has no declared path left to consult.
+    Neither the filelist's nor the dependency list's entries are resolved:
+    both are stored by the ``normpath`` the build used, so a header reached
+    through ``+incdir+`` from a symlinked-in tree is hashed like the tree's
+    sources are, and a symlink retargeted between two runs is seen by the
+    stat and hash of wherever it points *now*.
+
+    Only regular files are hashed: a directory or a FIFO named among the
+    prerequisites would otherwise reach ``open()``, and a FIFO blocks there
+    forever rather than failing closed.
+    """
+    if not project_root:
+        return None
+    if not S_ISREG(stat.st_mode):
+        return None
+    # Hash under the realpath so two spellings of one file share a memo entry.
+    real_path = path if resolved else os.path.realpath(path)
+    under_root = _path_is_under(real_path, project_root) or (
+        not resolved and _path_is_under(os.path.abspath(path), project_root)
+    )
+    if not under_root:
+        return None
+    if toolchain_prefix and _path_is_under(real_path, toolchain_prefix):
+        return None
+    if stat.st_size > _CONTENT_HASH_MAX_BYTES:
+        _log_hash_skipped_large(real_path, stat.st_size)
+        return None
+    return _hash_file_content(real_path, stat.st_size, stat.st_mtime_ns)
+
+
+def _hashed_stat_entry(
+    path: str,
+    *,
+    project_root: str | None,
+    resolved: bool = False,
+    toolchain_prefix: str | None = None,
+) -> list:
+    """``[path, size, mtime_ns, sha]`` for a tracked *input*.
+
+    ``sha`` is :func:`_content_sha` — a short content hash for the project's
+    own files, None for anything the hashing policy excludes (and for an
+    existing file that cannot be read, which :func:`_entry_matches` then
+    treats as changed). A vanished file records as ``[path, None, None,
+    None]`` rather than being dropped, so its later reappearance still
+    invalidates the stamp.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [path, None, None, None]
+    return [
+        path,
+        stat.st_size,
+        stat.st_mtime_ns,
+        _content_sha(
+            path,
+            stat,
+            project_root,
+            resolved=resolved,
+            toolchain_prefix=toolchain_prefix,
+        ),
+    ]
+
+
+def _is_pruned_walk_dir(name: str) -> bool:
+    """Should an ``+incdir+`` walk refuse to descend into ``name``?
+
+    See :data:`_PRUNED_WALK_DIRNAMES`: rtl_buddy's own artefact trees,
+    whose contents are written *after* the fingerprint that would list
+    them, and dot-directories, which hold no compile input.
+    """
+    return (
+        name.startswith(".")
+        or name in _PRUNED_WALK_DIRNAMES
+        or name.startswith(_PRUNED_WALK_DIR_PREFIXES)
+    )
+
+
+def _is_build_tree_name(name: str) -> bool:
+    """Is ``name`` a directory a BUILDER writes into — ``.shared-builds``
+    or an ``obj_dir*``?
+
+    Nothing in there is an input: it is object files, a simv and a stamp,
+    all written after any fingerprint that could list them, so keying on one
+    would move the key on every build.
+
+    Narrower than :func:`_is_pruned_walk_dir`, and deliberately so (#542
+    review round 3). That predicate also prunes every dot-directory and
+    ``__pycache__``, which is right for an ``+incdir+`` walk — nothing in a
+    ``.git`` is a compile input — and catastrophic as an output test: a
+    workspace at ``/home/ci/.worktrees/pr`` has a dot component in its
+    ABSOLUTE path, so every input under it would be read as an output and
+    the content keying would silently switch itself off for the whole
+    checkout. Asked only of components BELOW the project root (see
+    :meth:`VlogSim._key_input_path`).
+
+    ``artefacts`` is deliberately NOT here (#542 review round 5): a
+    ``preproc`` hook is documented to generate headers into its
+    ``artifact_dir``, and ``run.f`` incdirs pointing there are tracked. The
+    outputs beside those headers are excluded by NAME instead —
+    :func:`_is_non_input_file` — which is the same rule
+    :meth:`VlogSim._directory_listing` applies, so a search path is judged
+    file by file rather than thrown away whole.
+    """
+    return name == SHARED_BUILDS_DIRNAME or name.startswith(BUILD_DIR_PREFIX)
+
+
+def _key_spelling_is_relocated(spelling: str) -> bool:
+    """Does ``spelling`` name a path RELATIVE to a project root (#542 review)?
+
+    In cache mode that is exactly "inside the project root", because that is
+    the only thing :meth:`VlogSim._stamp_relpath` relativises. Those are the
+    paths of which every checkout has its OWN copy — so when one of them
+    cannot be content-hashed, the key must fall back to something rather
+    than to nothing, or two checkouts' differing copies collide.
+
+    A path left absolute is a path outside every project root: two checkouts
+    naming it name the same bytes on the same host, so "no hash" there is
+    not a collision and its stats have no business in the key.
+    """
+    match = _FILELIST_OPTION_RE.match(spelling)
+    path = match.group(2) if match else spelling
+    return bool(path) and not os.path.isabs(path)
+
+
+def _key_content_identity(spelling, entry, *, relocated: bool):
+    """What one tracked input contributes to a content-addressed key.
+
+    ``entry`` is a ``[path, size, mtime_ns, sha]`` stamp; ``spelling`` is the
+    name the key records, which is not always ``entry[0]`` (a directory
+    listing keys its files by name relative to the directory).
+
+    The hash when there is one. When there is not — an input over
+    :data:`_CONTENT_HASH_MAX_BYTES`, an unreadable one — an in-root path falls back
+    to ``[spelling, size, mtime_ns]`` (#542 review): a ROM image or a memory
+    init file above the cap is exactly the kind of input two branches
+    differ in, and recording it as ``[spelling, null]`` let two checkouts
+    with different images share one persistent build directory. The cost is
+    that such a suite stops sharing across checkouts at all, since mtimes
+    differ per checkout — correct over convenient, and documented.
+
+    The two shapes are different lengths, so a hashed entry can never
+    compare equal to an unhashed one.
+    """
+    if not isinstance(entry, list) or len(entry) != 4:
+        return entry
+    if entry[-1] is not None:
+        return [spelling, entry[-1]]
+    if relocated:
+        return [spelling, entry[1], entry[2]]
+    return [spelling, None]
+
+
+def _is_non_input_file(name: str) -> bool:
+    """Is ``name`` bookkeeping or rtl_buddy's own output, not a compile input?
+
+    Matched against :data:`_NON_INPUT_FILE_PATTERNS` by name only, and
+    everywhere in a listing rather than only under ``artefacts/``: an
+    include root can *be* an artefact directory (a ``preproc`` hook
+    generating headers into its ``artifact_dir``), and then no path
+    component says so. Every other file is listed, dot-prefixed ones
+    included — ``.config.svh`` is a legal include and dropping it would be
+    exactly the silent gap #478 is about.
+    """
+    return any(
+        fnmatch.fnmatchcase(name, pattern) for pattern in _NON_INPUT_FILE_PATTERNS
+    )
+
+
+def _is_directory_entry(entry) -> bool:
+    """Is ``entry`` a ``+incdir+``/``-y`` entry carrying a directory listing?
+
+    The listing is the last element and is itself a list of ordinary
+    tracked-input entries, keyed by the file's path *relative to the
+    directory*. The directory's own path is already fixed by ``entry[0]``,
+    the ``run.f`` line the compile key hashes, so every test sharing a build
+    carries the same one and repeating it per file would only bloat the
+    stamp.
+    """
+    return (
+        isinstance(entry, list)
+        and len(entry) == _DIRECTORY_ENTRY_LEN
+        and isinstance(entry[-1], list)
+    )
+
+
+def _listing_names(entries) -> list | None:
+    """The names a directory listing carries, or None if it is malformed.
+
+    The half of a listing that survives ``listing_names_only`` (#536): which
+    files exist, not what is in them.
+    """
+    if not isinstance(entries, list):
+        return None
+    names = []
+    for entry in entries:
+        if not isinstance(entry, list) or not entry or not isinstance(entry[0], str):
+            return None  # not a listing this version wrote
+        names.append(entry[0])
+    return names
+
+
+def _entry_matches(stored, current: list, *, listing_names_only: bool = False) -> bool:
+    """Does a stored stamp entry still describe what ``current`` describes?
+
+    The one comparison both tracked-input lists go through — the filelist
+    fingerprint's ``sources`` and the build's ``deps`` — so they cannot
+    drift on what "unchanged" means.
+
+    **The hash decides.** When both sides carry a content hash and the
+    hashes agree, the entry validates even if ``mtime_ns`` moved: a ``git
+    checkout`` that restores byte-identical content, a ``touch``, or a
+    rebuilt generated file no longer forces a rebuild. When either side has
+    no hash (an entry outside the project root, or an unreadable file), the
+    comparison falls back to today's exact ``[path, size, mtime_ns]``
+    equality, which is fail-closed in both directions: a stamp that recorded
+    a hash for a file we can no longer hash counts as changed.
+
+    **A directory entry compares by its listing.** An entry for a
+    ``+incdir+`` or ``-y`` directory (see :func:`_is_directory_entry`)
+    carries the files inside it instead of stats of its own, and matches
+    only when that whole listing does — so a file added to, removed from, or
+    edited inside such a directory is a change for every builder, whether or
+    not it emits a dependency file (#478).
+
+    ``listing_names_only`` narrows that to *which files exist*, and the
+    caller sets it exactly when the stamp carries the builder's ``deps``
+    (#536). A dependency file names every input the build actually opened,
+    headers reached through ``+incdir+`` included, so their content is
+    already decided there and hashing them a second time out of the listing
+    only adds a way to lose: an include directory that is also a working
+    directory — a suite dir under ``+incdir+.`` — collects the run's own
+    output while the run is still going, and every later fingerprint then
+    disagrees with the stamp over a file no compile ever read (#535/#537).
+    What the listing still decides is what ``deps`` structurally cannot see:
+    a file that *appears* or *vanishes*, which for ``-y`` is tomorrow's
+    module resolution (gap 2 of #478). With no dependency file the listing
+    is the only record of either, and the full comparison stands.
+
+    Anything that is not an entry of this version's shape — a 3-element
+    entry from a stamp written before #494, or a 4-element one where #478
+    now records a listing — is "we do not know", and the only honest reading
+    of that is one rebuild.
+    """
+    if not isinstance(stored, list) or len(stored) != len(current):
+        return False
+    if not stored or not current:
+        # Two empty entries are the same length and index into nothing.
+        # Unreachable while every `current` comes from _hashed_stat_entry,
+        # but this is the general comparator and it fails closed.
+        return False
+    if stored[0] != current[0]:
+        return False
+    if len(stored) == _DIRECTORY_ENTRY_LEN:
+        # A directory entry's last element is a listing, not a hash, so the
+        # generic tail comparison below would compare it by equality and
+        # re-introduce exactly the mtime sensitivity #494 removed. Recurse
+        # instead: the same content-decides rule, one level down. A
+        # five-element entry that is not a listing is a shape this version
+        # did not write, and fails closed.
+        if not (_is_directory_entry(stored) and _is_directory_entry(current)):
+            return False
+        if listing_names_only:
+            stored_names = _listing_names(stored[-1])
+            return stored_names is not None and stored_names == _listing_names(
+                current[-1]
+            )
+        return _entry_lists_match(stored[-1], current[-1])
+    stored_sha, current_sha = stored[-1], current[-1]
+    if stored_sha is not None and current_sha is not None:
+        # A size mismatch under equal content hashes cannot happen for a
+        # real file, so there is nothing else worth asking.
+        return stored_sha == current_sha
+    return stored == current
+
+
+def _entry_lists_match(stored, current, *, listing_names_only: bool = False) -> bool:
+    """:func:`_entry_matches` over two whole lists, order-sensitive.
+
+    Order matters because both lists are built deterministically (filelist
+    order, sorted dependency paths), so a reordering is a real difference.
+    A stored value that is not a list at all fails closed.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return False
+    if len(stored) != len(current):
+        return False
+    return all(
+        _entry_matches(
+            stored_entry, current_entry, listing_names_only=listing_names_only
+        )
+        for stored_entry, current_entry in zip(stored, current)
+    )
+
+
+def _first_listing_mismatch(stored, current, *, names_only: bool = False):
+    """What made two directory listings disagree, for a diagnostic.
+
+    Diffed **by name**, not position: an added or removed file shifts every
+    entry after it, and answering that with "(entry count 3 -> 4)" names the
+    directory but not the file, which is the whole point of the line. So a
+    name only one side carries is reported as ``+added.svh`` /
+    ``-removed.svh``, and a name both carry that no longer matches is
+    reported as itself. Diagnostic only — the decision stays with
+    :func:`_entry_lists_match`.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return "(listing is not a list)"
+
+    def _by_name(entries):
+        return {
+            entry[0]: entry
+            for entry in entries
+            if isinstance(entry, list) and entry and isinstance(entry[0], str)
+        }
+
+    stored_by_name, current_by_name = _by_name(stored), _by_name(current)
+    added = sorted(set(current_by_name) - set(stored_by_name))
+    removed = sorted(set(stored_by_name) - set(current_by_name))
+    if added:
+        return f"+{added[0]}"
+    if removed:
+        return f"-{removed[0]}"
+    if not names_only:
+        for name in sorted(set(stored_by_name) & set(current_by_name)):
+            if not _entry_matches(stored_by_name[name], current_by_name[name]):
+                return name
+    # Nothing named differs, so the disagreement is in a shape the mapping
+    # above dropped, or in the order the two lists carry.
+    return _first_entry_mismatch(stored, current, listing_names_only=names_only)
+
+
+def _first_resolution_change(stored_sources, sources, deps):
+    """A file that *appeared* in a stamped directory since the stamp and can
+    change what the compile resolves, as ``"<line> :: +<name>"``, or None.
+
+    The narrowing :meth:`VlogSim.adopt_group_build` makes — judge the
+    leader's build by what it consumed, not by the listing — is right for
+    the addition #535 is about: a member's own ``preproc`` output appearing
+    under ``+incdir+.``, which no compile of this key would read. It is
+    wrong for two other additions, and both are things a later ``preproc``
+    can do:
+
+    * any file appearing in a ``-y`` directory, because library resolution
+      is by module name on demand — a file nobody opened today is
+      tomorrow's answer, and no dependency file can say otherwise;
+    * a file appearing in an ``+incdir+`` under the same *relative name*
+      as an include the leader consumed, which the include search finds
+      first when that directory is searched first. Which directory wins is
+      the builder's business; both orders read as a change here.
+
+    A directory that did not exist at the stamp and does now is the same
+    question asked of every file in it: it stamped as a plain
+    ``[line, None, None, None]`` then and carries a listing now, so its
+    whole listing is the addition.
+
+    Removals are already decided: a vanished consumed input fails the
+    ``deps`` comparison, and a vanished bystander changed nothing that was
+    read. Two lists that do not line up as stamps of one ``run.f`` are a
+    change too, since nothing else can be said about them.
+    """
+    if not isinstance(stored_sources, list) or not isinstance(sources, list):
+        return "(stamp sources are not a list)"
+    if len(stored_sources) != len(sources):
+        return f"(entry count {len(stored_sources)} -> {len(sources)})"
+    consumed = tuple(
+        os.path.normpath(entry[0])
+        for entry in deps
+        if isinstance(entry, list) and entry and isinstance(entry[0], str)
+    )
+    for stored_entry, entry in zip(stored_sources, sources):
+        if not _is_directory_entry(entry):
+            continue
+        if not isinstance(stored_entry, list) or not stored_entry:
+            return f"{entry[0]} :: (stamp entry is malformed)"
+        if stored_entry[0] != entry[0]:
+            return str(entry[0])
+        names = _listing_names(entry[-1])
+        if _is_directory_entry(stored_entry):
+            stored_names = _listing_names(stored_entry[-1])
+        else:
+            stored_names = []
+        if stored_names is None or names is None:
+            return f"{entry[0]} :: (listing is not a list)"
+        added = sorted(set(names) - set(stored_names))
+        if not added:
+            continue
+        option_match = _FILELIST_OPTION_RE.match(entry[0])
+        option = (option_match.group(1) or "").strip() if option_match else ""
+        if option == _LIBRARY_DIR_OPTION:
+            return f"{entry[0]} :: +{added[0]}"
+        for name in added:
+            suffix = os.sep + name
+            if any(path.endswith(suffix) for path in consumed):
+                return f"{entry[0]} :: +{name}"
+    return None
+
+
+def _first_entry_mismatch(stored, current, *, listing_names_only: bool = False):
+    """What made :func:`_entry_lists_match` say no, for a diagnostic.
+
+    Returns the first mismatching entry's path/line, or a shape note when
+    the lists themselves are not comparable. Diagnostic only — never the
+    decision, which stays with the matchers above, so it is told what the
+    decision was made on (``listing_names_only``) rather than guessing.
+    """
+    if not isinstance(stored, list) or not isinstance(current, list):
+        return "(stamp sources are not a list)"
+    if len(stored) != len(current):
+        return f"(entry count {len(stored)} -> {len(current)})"
+    for stored_entry, current_entry in zip(stored, current):
+        if not _entry_matches(
+            stored_entry, current_entry, listing_names_only=listing_names_only
+        ):
+            if _is_directory_entry(stored_entry) and _is_directory_entry(current_entry):
+                # "+incdir+/p/inc" alone does not answer "why did this
+                # recompile" when the directory is what is stamped, so the
+                # line names the file inside it as well (#478).
+                inner = _first_listing_mismatch(
+                    stored_entry[-1],
+                    current_entry[-1],
+                    names_only=listing_names_only,
+                )
+                return f"{current_entry[0]} :: {inner}"
+            if isinstance(current_entry, list) and current_entry:
+                return current_entry[0]
+            if isinstance(stored_entry, list) and stored_entry:
+                return stored_entry[0]
+            return "(malformed entry)"
+    return "(no mismatch)"
+
+
+def _entry_identity(entry):
+    """The part of a tracked-input entry that decides :func:`_entry_matches`.
+
+    Exists so a *hash* of a fingerprint can mean the same thing the
+    entry-wise comparison means (#494 + #498). ``_entry_matches`` does not
+    compare entries by equality: when both sides carry a content hash, the
+    hash decides and ``size``/``mtime_ns`` are ignored, so a ``touch`` or a
+    ``git checkout`` that restores byte-identical content is *not* a change.
+    Hashing the raw entry would reintroduce exactly the mtime sensitivity
+    #494 removed — and would do it on the one comparison whose "different"
+    answer costs a re-run of a compile that already failed deterministically.
+
+    So an entry that carries a hash collapses to ``[path, sha]``, and one
+    that does not keeps its full ``[path, size, mtime_ns, None]`` shape —
+    which is what ``_entry_matches`` falls back to comparing exactly. The
+    two shapes can never compare equal to each other, matching that
+    comparator's fail-closed answer when only one side could be hashed.
+    Anything that is not an entry of this version's shape is passed through
+    untouched: an unrecognised shape is "we do not know" on both sides.
+    """
+    if _is_directory_entry(entry):
+        # Same reduction one level down, so a `touch` inside an include
+        # directory does not move the sha either.
+        return [entry[0], [_entry_identity(inner) for inner in entry[-1]]]
+    if isinstance(entry, list) and len(entry) == 4 and entry[-1] is not None:
+        return [entry[0], entry[-1]]
+    return entry
+
+
+def _fingerprint_sha(fingerprint):
+    """Compact identity of one compile's inputs (#498 review).
+
+    sha256 over the canonical JSON of the fingerprint dict — the very dict
+    the stamp comparison checks (``stored_inputs``: the stamp minus its
+    ``deps``/``simv`` keys), so "same sha" means exactly what "stamp would
+    match" means: same sources, same flags, same toolchain.
+
+    Canonical, not raw: each ``sources`` entry goes through
+    :func:`_entry_identity` first, because the stamp comparison decides
+    those entries by content hash where one exists (#494). Without that
+    step a benign ``touch`` — or a rebuilt generated file with identical
+    bytes — would move the sha, and a gated sim job would "earn" a retry of
+    a compile whose inputs never changed, recompiling a deterministic
+    failure under the sim reservation, which is the whole thing #498 is
+    about. The other direction is safe either way: an edited byte moves the
+    content hash and therefore the sha.
+
+    The ONE hashing used by both sides of the no-retry verdict: a build
+    job records it beside a failed compile's returncode, and the gated sim
+    job recomputes it over its own just-derived fingerprint. Equal says
+    the sim job is looking at the same compile the build failed, so
+    repeating it is pointless; different says the inputs moved since — an
+    edited source, a PRE that regenerated one — and the failure may not
+    reproduce, so the retry is earned. Factored here so the two sides
+    cannot drift. ``None`` in, ``None`` out.
+    """
+    if fingerprint is None:
+        return None
+    canonical = dict(fingerprint)
+    sources = canonical.get("sources")
+    if isinstance(sources, list):
+        canonical["sources"] = [_entry_identity(entry) for entry in sources]
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass
+class _CompilePlan:
+    """Everything about a compile that is decided *before* the builder runs.
+
+    Split out of :meth:`VlogSim.compile` so the compile key can be asked for
+    without compiling (#495): a dispatched build job groups its configs by
+    :attr:`group_dir` and compiles the groups concurrently, and two configs
+    that would write the same directory must land in the same group (#369).
+
+    The grouping value is derived here and nowhere else on purpose. A second
+    derivation — a standalone "what would the key be" helper — drifts from
+    the real one the first time somebody touches the Icarus wrapper args or
+    the VCS output-flag strip, and the symptom of that drift is two builders
+    in one directory, which is corruption rather than a wrong number.
+    """
+
+    compile_work_dir: str
+    filelist_path: str
+    build_dir: str
+    builder_opts: list = field(default_factory=list)
+    extra_compile_flags: list = field(default_factory=list)
+    assertion_flags: list = field(default_factory=list)
+    # The family's top-selection flag for the testbench's declared
+    # `toplevel:` (#506, #508), or empty when none is declared, the family
+    # has no such flag, or the configured opts already pin one.
+    top_flags: list = field(default_factory=list)
+    plusdefines: list = field(default_factory=list)
+    is_verilator: bool = False
+    # None unless share_build is on AND the family supports sharing.
+    key_cmd: list | None = None
+    fingerprint: dict | None = None
+    shared_dir: Path | None = None
+    # Why sharing was declined, or None. Set only when share_build is on.
+    unsupported_reason: str | None = None
+    # What this compile writes over: the shared build dir when the build is
+    # shareable, the absolute `builder-simv:` when one pins the executable,
+    # else the test's own compile work dir. Two configs with the same value
+    # MUST NOT compile concurrently.
+    #
+    # It is the build DIRECTORY and not (compile_work_dir, shared_dir):
+    # under share_build the whole point is that two DIFFERENT tests with one
+    # key write one shared dir, and a key that included the per-test dir
+    # would split them into two groups and put two builders in it (#369).
+    # The pinned-simv case is the same rule read the other way — there the
+    # per-test dirs differ but the output does not, so the output is the key.
+    group_dir: str = ""
 
 
 class VlogSim:
@@ -71,6 +1560,12 @@ class VlogSim:
         replay_run_id=None,
         suite_dir=None,
         share_build=False,
+        shared_build_root=None,
+        expect_prebuilt=False,
+        rebuild=False,
+        build_result_json=None,
+        build_phase=BUILD_PHASE_FULL,
+        run_tag=None,
     ):
         """
         compile and execute sim for given test
@@ -84,16 +1579,126 @@ class VlogSim:
         self.sim_mode = sim_mode
         # assert 'sim_to_stdout' in self.sim_mode NOTE: not used anywhere, may or may not become important in the future
         self.test_cfg = test_cfg
+        get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
+        self._resolved_runtime_seed = (
+            get_resolved_seed() if callable(get_resolved_seed) else None
+        )
+        self._resolved_runtime_seed_source = getattr(test_cfg, "seed_source", None)
+        self._resolved_runtime_seed_identity = getattr(test_cfg, "seed_identity", None)
+        self._resolved_runtime_seed_plusarg = getattr(
+            test_cfg, "sim_rand_seed_plusarg", None
+        )
         self.test_name = self.test_cfg.get_name()
         self.run_id = run_id
         self.replay_run_id = replay_run_id
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
+        # Why the last stamp check said no, in one phrase, or None. Read by
+        # the gated-retry warning, which is the only place a dispatched
+        # job's INFO-level log can carry it (#536).
+        self.stamp_mismatch_reason = None
+        # Which build this run ended up simulating: the stamp's own
+        # ``{fingerprint_sha, simv}``, recorded wherever a build is
+        # stamped, reused or adopted. It rides the result envelope so the
+        # head can check at collect that every run of one compile key named
+        # the same binary (#535).
+        self.last_build_stamp = None
+        # Did this instance's last compile succeed and then fail to record
+        # its stamp? The build job puts it in the envelope as
+        # ``stamp_written: false`` so a gated sim job reads "built, but no
+        # stamp" rather than rediscovering it as "no stamp or no simv" and
+        # recompiling under the simulation reservation (#534).
+        self.stamp_write_failed = False
         # Opt-in: key the build dir on a hash of the compile inputs so tests
         # with identical inputs share one simv (#293). The resolved shared
         # dir is only known once compile() has written the filelist.
         self.share_build = share_build
+        # Where those shared build dirs live, when a persistent cache root
+        # is configured (#542). Resolved below, once `_project_root` exists:
+        # a relative root anchors to the project, not to this process's cwd.
+        # None — the default — is the in-tree
+        # `<suite>/artefacts/.shared-builds/` layout, unchanged.
+        self._configured_shared_build_root = shared_build_root
+        # `--rebuild`: distrust the stamp and compile anyway (#494). The
+        # escape hatch for the case no stamp can see — a source restored to
+        # byte-identical content by a tool that also changed how it is
+        # built, an obj_dir somebody edited by hand — and the answer to the
+        # issue's "dropping --share-build does not stop the reuse". It is
+        # honoured at most ONCE per build dir per process; see
+        # :func:`_claim_rebuild`.
+        self.rebuild = rebuild
         self._shared_build_dir = None
+        # The directory the builder will run in, once a plan has settled it
+        # (#542 review round 4). It is what a relative entry inside a `-f`
+        # filelist resolves against — `-f` is cwd-relative for verilator,
+        # VCS and Icarus alike — so the cache key cannot read such a list
+        # without it. None until a plan exists, which makes a relative `-f`
+        # entry text-only rather than a guess.
+        self._compile_cwd = None
+        # Said once per instance: a chain that runs past the bound would
+        # otherwise log at every level of every config (#542 review round 5).
+        self._depth_bound_logged = False
+        # Filled by _compile_plan() and consumed (and cleared) by compile(),
+        # so a probe and the compile that follows it share one derivation
+        # while a *second* compile() on this instance still re-stats its
+        # sources — a source edited between two compiles has to invalidate
+        # the stamp.
+        self._compile_plan_cache = None
+        # What the last compile *this instance* performed cost, for the
+        # build envelope and the results overlay (#495). A dict
+        # {duration_sec, builder, reused} — never a stamp key: the stamp's
+        # key set IS the fingerprint comparison (_build_stamp_is_valid), so
+        # an extra key there would permanently invalidate every stamp ever
+        # written. None until something records one.
+        self.last_compile = None
+        # Set by a dispatched sim job that was gated on a build job, so
+        # compiling here means the stamp that build left did not
+        # validate — worth a WARNING, because the whole serialization
+        # guarantee rests on it (#369).
+        self.expect_prebuilt = expect_prebuilt
+        # Which half of the compile this instance runs (#593). ``full`` is
+        # `verilator --binary`, and every path off a split Slurm build job
+        # takes it. ``verilate`` emits the sources and `V<top>.mk` and
+        # stops; ``build`` runs make over what that left.
+        self.build_phase = build_phase
+        # Decided by the build half, consumed by :meth:`_compile_argv`:
+        # whether the marker cleared this key to skip the front end. False
+        # is a full compile, which is what every fallback falls back to.
+        self._skip_verilate = False
+        # What the verilate half spent on this key, off its marker. The two
+        # halves are one compile to every consumer of the record, so the
+        # build half reports their sum rather than its own C++ step.
+        self._verilate_sec = None
+        # That build job's envelope, when the head knew one (#498). It is
+        # what separates the two reasons a stamp fails to validate: the
+        # build's compile FAILED for this test (deterministic — retrying it
+        # here only burns the sim reservation and overwrites the real
+        # error), or the stamp is merely absent/stale (toolchain drift, a
+        # clock skew) and a retry is the right answer. None everywhere else,
+        # including every local run, where there is no build job at all.
+        self.build_result_json = build_result_json
+        # What a failed compile *this instance* ran cost the caller in
+        # diagnostics: {returncode, transcript}. Read by a dispatched build
+        # job to record the failure in its envelope (#498); None until a
+        # compile actually fails, and reset by each compile() so a second
+        # one on this instance cannot inherit the first's verdict.
+        self.last_compile_failure = None
+        # A one-line desc that replaces the generic "Compile failed" when
+        # this compile failed for a reason the sim itself already knows
+        # (#498). Set only on the gated-build-failed path.
+        self.compile_fail_desc = None
+        # Full-path override for where the next compile transcript is
+        # written; None means the test-scoped `compile.log`. The retry a
+        # gated sim job runs when the build's stamp did not validate must
+        # NOT truncate `compile.log`: that file is the build job's, and
+        # overwriting it replaces a real compile error with whatever the
+        # retry hit under the sim's (smaller) reservation — an 8G OOM
+        # reading as "signal 9" in the ECP report that filed #498. A full
+        # path rather than a name, because the retry log is RUN-scoped
+        # (#498 review): sibling runs of one fanned-out test share the test
+        # artefact dir, and a test-scoped retry log is one run's story
+        # advertised — and destroyed — by every sibling.
+        self._compile_transcript_override = None
         # CLI commands always pass suite_dir resolved from the test
         # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
         # is tests-only — `tests/test_setup_failures.py`,
@@ -104,8 +1709,86 @@ class VlogSim:
             if suite_dir is not None
             else os.path.abspath(os.getcwd())
         )
+        # The `--run-tag` namespace this run's artefacts hang under (#541).
+        # Threaded from the head rather than re-derived: a dispatched job
+        # that resolved a different tag would write beside the head's tree
+        # instead of into it. `None` is the flat layout every untagged run
+        # keeps. Note what it does NOT reach: the shared build directory is
+        # keyed on the compile fingerprint and stays shared across tags.
+        self.run_tag = run_tag
+        # Where the head writes its own log (ExecutionContext.log_path), the
+        # one path a directory listing skips by location rather than name.
+        # Left at the suite spelling under a `--run-tag`: that run's log is
+        # inside `artefacts/`, which every listing walk prunes wholesale, so
+        # only the flat path can ever reach a listing and only it needs
+        # naming here (#541).
+        self._suite_log_path = os.path.realpath(
+            os.path.join(self.suite_work_dir, DEFAULT_FILE_LOG)
+        )
 
-        output_dir = Path(self.suite_work_dir) / "artefacts"
+        # Which files this instance is allowed to content-hash for its build
+        # stamps (#494). The PROJECT root, not the suite dir: models, RTL and
+        # shared headers routinely live outside the suite that compiles them,
+        # and those are exactly the files an edit-then-rerun changes.
+        # Realpath'd once so containment tests compare canonical paths.
+        get_project_rootdir = getattr(self.root_cfg, "get_project_rootdir", None)
+        try:
+            project_root = (
+                get_project_rootdir() if get_project_rootdir is not None else None
+            )
+        except Exception:
+            # Deciding what may be hashed must never be what stops a build
+            # (build-job exit-0 contract): an unusable root just narrows the
+            # policy to the suite dir below.
+            project_root = None
+        # The cwd fallback matches suite_work_dir's, for the same
+        # directly-constructed callers.
+        derived = isinstance(project_root, str) and bool(project_root)
+        self._project_root = os.path.realpath(
+            project_root if derived else self.suite_work_dir
+        )
+        # Falling back narrows hashing to the suite dir, which turns the fix
+        # off for out-of-suite RTL — the thing #494 is about. Silent is the
+        # wrong way for that to happen, so the root actually in force (and
+        # where it came from) is readable off a build-job log.
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.hash_root",
+            test=self.test_name,
+            project_root=self._project_root,
+            derived=derived,
+        )
+        # Resolved lazily and once: an install prefix under the project root
+        # (a vendored toolchain, an in-repo venv) is excluded from hashing,
+        # and finding it costs a PATH walk that most instances never need.
+        self._toolchain_prefix = _UNSET
+
+        # Cache mode (#542), settled here because it needs `_project_root`
+        # to anchor a relative root. It is a property of the SHARED build
+        # only: with `--share-build` off there is no directory a second
+        # checkout could reuse, so a configured root would buy nothing and
+        # only re-spell the per-test stamps.
+        self.shared_build_root = (
+            resolve_shared_build_root(
+                self._configured_shared_build_root, self._project_root
+            )
+            if share_build
+            else None
+        )
+        if self.shared_build_root is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.shared_build_root",
+                test=self.test_name,
+                root=self.shared_build_root,
+                namespace=shared_build_namespace(
+                    self.suite_work_dir, self._project_root
+                ),
+            )
+
+        output_dir = run_artifact_root(self.suite_work_dir, self.run_tag)
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self.output_dir = str(output_dir)
@@ -133,16 +1816,21 @@ class VlogSim:
         - Icarus: `<artefact>/simv` — a tiny shell wrapper around `vvp <build>/simv.vvp`
           so the existing execute() path can invoke it as a single executable.
         - Other backends: honor `builder-simv:` from the builder config.
+
+        Under an active shared build the executable is always `simv`
+        directly inside the shared dir, whatever the family: that is the
+        one path every other test with the same compile key looks for, and
+        what `_shared_build_is_valid` validates against the stamp.
         """
+        if self._shared_build_dir is not None:
+            return str(Path(self._shared_build_dir) / SIMV_NAME)
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
-            if self._shared_build_dir is not None:
-                return str(Path(self._shared_build_dir) / "simv")
             return str(
-                Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
+                Path(self._get_compile_work_dir()) / self._get_build_dir() / SIMV_NAME
             )
         if self._get_simulator_family() == "icarus":
-            return str(Path(self._get_compile_work_dir()) / "simv")
+            return str(Path(self._get_compile_work_dir()) / SIMV_NAME)
         simv_path = self.rtl_builder_cfg.get_simv()
         if os.path.isabs(simv_path):
             return simv_path
@@ -150,8 +1838,12 @@ class VlogSim:
 
     def _get_icarus_snapshot_path(self):
         """Path to the .vvp snapshot produced by iverilog."""
+        if self._shared_build_dir is not None:
+            return str(Path(self._shared_build_dir) / ICARUS_SNAPSHOT_NAME)
         return str(
-            Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv.vvp"
+            Path(self._get_compile_work_dir())
+            / self._get_build_dir()
+            / ICARUS_SNAPSHOT_NAME
         )
 
     def _icarus_vvp_extra_args(self) -> list:
@@ -180,7 +1872,12 @@ class VlogSim:
 
     def _get_artifact_dir(self, run_id=None):
         return str(
-            test_artifact_dir(self.suite_work_dir, self.test_name, run_id=run_id)
+            test_artifact_dir(
+                self.suite_work_dir,
+                self.test_name,
+                run_id=run_id,
+                run_tag=self.run_tag,
+            )
         )
 
     def _ensure_artifact_dir(self, run_id=None):
@@ -189,19 +1886,64 @@ class VlogSim:
         return str(artifact_dir)
 
     def _get_compile_transcript_path(self):
-        return str(Path(self._get_compile_work_dir()) / "compile.log")
+        if self._compile_transcript_override is not None:
+            return self._compile_transcript_override
+        return str(Path(self._get_compile_work_dir()) / COMPILE_TRANSCRIPT_NAME)
+
+    def _get_retry_transcript_path(self):
+        """Where THIS run's gated retry writes its transcript (#498 review).
+
+        In the run's artifact directory (``run-NNNN`` under the test dir,
+        or the test dir itself for a single run) — the established home of
+        run-dependent outputs — because the retry is one run's recompile:
+        sibling runs of a fanned-out test share the test dir, and a
+        test-scoped ``compile.retry.log`` would be overwritten, unlinked
+        and advertised across runs that never retried.
+        """
+        return str(
+            Path(self._get_artifact_dir(run_id=self.run_id))
+            / COMPILE_RETRY_TRANSCRIPT_NAME
+        )
+
+    def clear_retry_transcripts(self, run_ids):
+        """Unlink the stale retry transcript of every run in ``run_ids``.
+
+        For a caller whose one compile serves several runs
+        (:meth:`TestRunner.run_multiple`): the per-run cleanup in
+        :meth:`pre`/:meth:`compile` reaches only ``self.run_id``, so a
+        local rerun after a dispatched fan-out would leave runs 2..N
+        advertising the dispatch's retry transcripts beside their fresh
+        results (#498 review). Best-effort, like every artefact-dir touch.
+        """
+        for run_id in run_ids:
+            try:
+                (
+                    Path(self._get_artifact_dir(run_id=run_id))
+                    / COMPILE_RETRY_TRANSCRIPT_NAME
+                ).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _get_build_compile_transcript_path(self):
+        """Where the *build job* wrote this test's transcript.
+
+        Always ``compile.log``, whatever this instance is about to write:
+        the gated sim job names the build's file when it declines to retry,
+        and it must not accidentally name its own retry log (#498).
+        """
+        return str(Path(self._get_compile_work_dir()) / COMPILE_TRANSCRIPT_NAME)
 
     def _get_filelist_path(self):
-        return str(Path(self._get_compile_work_dir()) / "run.f")
+        return str(Path(self._get_compile_work_dir()) / FILELIST_NAME)
 
     def _get_log_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.log")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_LOG_NAME)
 
     def _get_err_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.err")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_ERR_NAME)
 
     def _get_randseed_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.randseed")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_RANDSEED_NAME)
 
     def _coverage_enabled(self):
         compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -242,6 +1984,147 @@ class VlogSim:
             extras.append("--coverage-user")
         return extras
 
+    def _user_configured_top(self):
+        """The top the builder's own ``compile-time`` opts pin, or ``None``.
+
+        Returns ``(flag_as_written, module_or_None)``. USER opts only, and
+        filtered exactly as :meth:`_build_compile_plan` filters them, so a
+        subclass can ask "did the user already choose a top?" before
+        generating one of its own. A backend that generated unconditionally
+        would place its flag *after* the user's on the command line and win
+        on Verilator's last-wins precedence, silently overriding the
+        configured top and suppressing the conflict warning (#511 review).
+        """
+        spec = TOP_MODULE_FLAGS.get(self._get_simulator_family())
+        if spec is None:
+            return None
+        return _find_configured_top(
+            spec,
+            self._filter_builder_opts(
+                self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+            ),
+        )
+
+    def _get_top_module_flags(
+        self, builder_opts: list, extra_compile_flags: list
+    ) -> list:
+        """Root the compile at the testbench's declared ``toplevel:`` (#506, #508).
+
+        Without it, both the elected top and — for Verilator — the model
+        name and every emitted C++ file come from filelist order: the first
+        *ordinary* (non-``-v``) entry wins, so recomposing a model filelist
+        silently renames the model, and an ordinary input carrying a module
+        nothing instantiates turns the build into a MULTITOP error. The
+        declared ``toplevel:`` is the answer to both, and until now only the
+        SystemC and cocotb-on-VCS paths passed it on.
+
+        Nothing is added when no ``toplevel:`` is declared. A testbench
+        ``name:`` is a config label, not necessarily a module, so defaulting
+        the top to it would turn working builds into "top module not found"
+        — ``toplevel:`` stays the explicit knob.
+
+        Idempotent in the same spirit as
+        :meth:`_get_verilator_assertion_flags`. "Already pinned" is matched
+        across every spelling the family accepts, not just the one rtl_buddy
+        emits (see :class:`_TopFlagSpec`): a project that worked around #508
+        with ``--top spare_top`` in ``compile-time`` would otherwise get a
+        second, later ``--top-module`` that Verilator's last-wins precedence
+        hands the win to.
+
+        The two flag sources are consulted for DIFFERENT questions, and
+        keeping them apart is the point:
+
+        * ``builder_opts`` — the user's ``compile-time`` — answers "did the
+          user pin a top?". A configured top wins, because it is the more
+          specific statement about this build, and one that *disagrees* with
+          ``toplevel:`` is a WARNING: that combination is how a suite
+          silently simulates a different design than its config names. The
+          warning is claimed once per (family, configured top, declared top)
+          per process — the fact belongs to the builder config every test of
+          the suite shares, so warning per test would be N copies of one line.
+        * ``extra_compile_flags`` — what the SystemC / cocotb subclass
+          generated — answers only "would a second flag be a duplicate?".
+          Scanning it for the *conflict* would let our own generated flag
+          shadow the user's: it lands later on the command line, so the scan
+          would find it, call it agreement, and suppress the warning while
+          Verilator's last-wins handed the generated top the victory (#511
+          review). Those subclasses now suppress their own generated flag
+          when the user pinned one, so this branch only fires when there is
+          nothing of the user's to conflict with.
+        """
+        toplevel = getattr(self.testbench, "toplevel", None)
+        if not toplevel:
+            return []
+        family = self._get_simulator_family()
+        spec = TOP_MODULE_FLAGS.get(family)
+        if spec is None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.toplevel_family_unsupported",
+                test=self.test_name,
+                simulator=family,
+                toplevel=toplevel,
+            )
+            return []
+
+        pinned = _find_configured_top(spec, builder_opts)
+        if pinned is not None:
+            written, existing = pinned
+            if existing == toplevel:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.toplevel_already_pinned",
+                    test=self.test_name,
+                    simulator=family,
+                    flag=written,
+                    toplevel=toplevel,
+                    source="builder-opts",
+                )
+            elif _claim_toplevel_conflict((family, written, existing, toplevel)):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.toplevel_conflict",
+                    test=self.test_name,
+                    simulator=family,
+                    flag=written,
+                    toplevel=toplevel,
+                    # Omitted (not None) for a bare flag, so the human
+                    # message can say "with no value" instead of "None".
+                    configured=existing,
+                )
+            return []
+
+        generated = _find_configured_top(spec, extra_compile_flags)
+        if generated is not None:
+            # Ours, not the user's: never a conflict, only a duplicate to
+            # avoid. Reached when the backend generated a top and the user
+            # pinned none.
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.toplevel_already_pinned",
+                test=self.test_name,
+                simulator=family,
+                flag=generated[0],
+                toplevel=toplevel,
+                source="backend",
+            )
+            return []
+
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.toplevel",
+            test=self.test_name,
+            simulator=family,
+            flag=spec.emit,
+            toplevel=toplevel,
+        )
+        return [spec.emit, toplevel]
+
     def _get_simulator_family(self):
         """
         Return the canonical simulator family for backend-specific handling.
@@ -267,7 +2150,7 @@ class VlogSim:
         return {}
 
     def _get_cov_path(self, run_id=None):
-        return str(Path(self._get_artifact_dir(run_id=run_id)) / "coverage.dat")
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / COVERAGE_DAT_NAME)
 
     def _get_cov_abspath(self, run_id=None):
         return str(Path(self._get_cov_path(run_id=run_id)).resolve())
@@ -311,6 +2194,7 @@ class VlogSim:
             flatten=False,
             strip=False,
             deduplicate=True,
+            absolute_sources=True,
             test_filelist=self.testbench.get_filelist(),
             suite_dir=self.suite_work_dir,
         )
@@ -351,29 +2235,912 @@ class VlogSim:
                     pd_list += [f"+define+{plusdefine}"]
         return pd_list
 
-    def _fingerprint_filelist_sources(self, filelist_path):
-        """Per-entry (line, size, mtime_ns) stamps for the generated run.f.
+    def _get_toolchain_prefix(self):
+        """Install tree of the resolved simulator exe, if it is worth excluding.
 
-        Entries that don't resolve to a plain file (+incdir+/-y directories,
-        +libext+ suffixes) keep only their raw line; changes inside include
-        directories are not tracked.
+        The hashing policy is "the project's files, not the toolchain's"
+        (brief invariant 4), and "under the project root" only implements
+        that while the toolchain is installed elsewhere. A vendored
+        ``tools/verilator/bin/verilator`` or an in-repo venv puts
+        ``verilator_bin`` and ``verilated.h`` inside the root, where they
+        would be content-hashed — tens of megabytes read once per process
+        per node, the exact cost the policy exists to avoid.
+
+        The prefix is the exe's directory, or its parent when that
+        directory is ``bin`` (``<prefix>/bin/verilator`` alongside
+        ``<prefix>/share/verilator/include``). It is used only when it is a
+        *proper* subdirectory of the project root: a project that keeps its
+        simulator in ``<root>/bin`` would otherwise derive ``<root>`` and
+        silently exclude everything, turning the whole check off.
+        """
+        if self._toolchain_prefix is not _UNSET:
+            return self._toolchain_prefix
+        self._toolchain_prefix = None
+        try:
+            resolved = shutil.which(self.rtl_builder_cfg.get_exe())
+            if resolved is not None:
+                exe_dir = os.path.dirname(os.path.realpath(resolved))
+                prefix = (
+                    os.path.dirname(exe_dir)
+                    if os.path.basename(exe_dir) == "bin"
+                    else exe_dir
+                )
+                if prefix != self._project_root and _path_is_under(
+                    prefix, self._project_root
+                ):
+                    self._toolchain_prefix = prefix
+        except Exception:
+            # Never the thing that fails a build (exit-0 contract): an
+            # underivable prefix just means nothing is excluded.
+            self._toolchain_prefix = None
+        return self._toolchain_prefix
+
+    def _tracked_entry(self, path, *, resolved=False):
+        """:func:`_hashed_stat_entry` under this instance's hashing policy.
+
+        ``resolved`` says ``path`` is already a ``realpath`` and the
+        containment tests can skip re-walking it.
+        """
+        return _hashed_stat_entry(
+            path,
+            project_root=self._project_root,
+            resolved=resolved,
+            toolchain_prefix=self._get_toolchain_prefix(),
+        )
+
+    def _stamp_relpath(self, path):
+        """How this instance spells ``path`` in a build stamp and compile key.
+
+        Unchanged in the default mode, and relative to the project root in
+        cache mode (#542) — for every path under that root; anything outside
+        it (a toolchain header, the cache directory itself) keeps its
+        absolute spelling, which is already the same for every checkout on
+        the host. One canonical spelling per stamp, never a mix of both: a
+        reader re-anchors what it finds against *its own* root, so an entry
+        left absolute by accident would only ever validate for the checkout
+        that wrote it.
+        """
+        if self.shared_build_root is None:
+            return path
+        return _relativise_paths(path, self._project_root)
+
+    def _stamp_abspath(self, path):
+        """The inverse of :meth:`_stamp_relpath` for a *plain path* entry.
+
+        Re-anchors a stamp's relative ``deps``/``simv`` spelling against
+        THIS checkout's project root, which is what lets checkout B re-stat
+        the files checkout A recorded. Only plain paths go through it —
+        ``sources`` entries are ``run.f`` lines that carry option prefixes,
+        and they are only ever compared, never re-opened.
+        """
+        if self.shared_build_root is None or not isinstance(path, str):
+            return path
+        if os.path.isabs(path):
+            return path
+        return os.path.normpath(os.path.join(self._project_root, path))
+
+    def _stamp_tracked_entry(self, stored_path):
+        """:meth:`_tracked_entry` for a path spelled the way a stamp spells it.
+
+        Stats the file this checkout has (via :meth:`_stamp_abspath`) and
+        reports it under the stored spelling, so :func:`_entry_matches` —
+        which compares ``entry[0]`` first — is comparing content and stats
+        rather than two checkouts' prefixes.
+        """
+        return [stored_path] + self._tracked_entry(self._stamp_abspath(stored_path))[1:]
+
+    def _stamp_simv_entry(self, simv_path):
+        """The stamp's ``simv`` entry for ``simv_path``, in this mode's spelling."""
+        path = str(simv_path)
+        return [self._stamp_relpath(path)] + _stat_entry(path)[1:]
+
+    def _is_suite_log(self, path) -> bool:
+        """Is ``path`` the head's own ``rtl_buddy.log`` in the suite directory?
+
+        By name first, so the ``realpath`` is only paid for a candidate.
+        """
+        return (
+            os.path.basename(path) == DEFAULT_FILE_LOG
+            and os.path.realpath(path) == self._suite_log_path
+        )
+
+    def _directory_listing(self, dir_path, *, recursive):
+        """A listing of the regular files under ``dir_path``, or ``None``.
+
+        Each file is stamped with the same ``[name, size, mtime_ns, sha]``
+        shape :meth:`_tracked_entry` gives a source, so the whole listing
+        goes through :func:`_entry_matches` and is decided by content where
+        the hashing policy allows it — the point of #494 applies inside an
+        include directory too, and on the NFS mounts that motivated it a
+        listing compared by mtime would be no more trustworthy than the
+        stats it replaced.
+
+        ``recursive`` follows the search the option performs. An
+        ``+incdir+`` is walked, because `` `include "nested/deep.svh" ``
+        resolves *beneath* the include directory and a flat listing would
+        leave an edit to that header invisible on any builder with no
+        dependency file (#478 review). A ``-y`` library directory is not:
+        library resolution maps a module name to a file in the directory
+        itself, so a subdirectory holds nothing the search can reach. The
+        walk does not follow symlinked subdirectories — ``os.walk``'s
+        default — which bounds it against a link loop; a symlinked *file*
+        is listed like any other.
+
+        **Unfiltered.** Nothing is selected by suffix. For ``+incdir+`` any
+        name at all can be `` `include ``d; for ``-y`` the suffixes come
+        from ``+libext+``, which can be set on the builder command line
+        (``builder-opts.compile-time``) and never appear in ``run.f`` at
+        all — a filter derived from ``run.f`` alone silently missed those
+        and reused a stale build when a matching library file appeared,
+        which is the very failure this stamp exists to stop. Listing
+        everything costs a fraction of a second even for a few thousand
+        files, and over-approximating is the safe direction.
+
+        Names are relative to ``dir_path``, with ``/`` separators on every
+        platform so the stamp does not change spelling between them. The
+        directory's own path is already fixed by ``entry[0]`` — the
+        ``run.f`` line, which the compile key hashes, so every test sharing
+        a build has exactly the same one — and repeating it per file would
+        only bloat the stamp.
+
+        Two kinds of name are skipped, and only two. **Directories** that
+        are dot-prefixed (``.git``, ``.svn``) or are one of rtl_buddy's own
+        managed artefact trees are never descended into — see
+        :func:`_is_pruned_walk_dir`. **Files** are skipped when they match
+        :data:`_NON_INPUT_FILE_PATTERNS`, which is editor and VCS
+        bookkeeping, rtl_buddy's own per-test outputs, and those same
+        outputs caught mid-write — every one is renamed into place from a
+        sibling temp file, and a listing that recorded one could never
+        validate again (#613). A dot-*file* is
+        otherwise listed like any other: `` `include ".config.svh" `` is
+        legal and resolves, so a blanket dot-name skip would reopen the gap
+        this stamp closes. One more file is skipped by *path*: the suite's
+        own ``rtl_buddy.log`` (#537), which the head appends to for the
+        whole run. Only that one — a file of the same name anywhere else
+        is an input like any other, and stays tracked.
+
+        Both halves exist for one failure. Everything rtl_buddy writes into
+        an artefact directory — ``run.f``, the compile transcript, the
+        logs, the result envelope, the build output, the stamp itself — is
+        written *after* the fingerprint that would list it, so a listing
+        that contained any of them could never validate again: every later
+        process saw a different one and recompiled, which under
+        ``--dispatch`` is every gated simulation job. The directory prune
+        covers an ``+incdir+`` that is an *ancestor* of ``artefacts/``
+        (``+incdir+.`` in a tests.yaml). The file-name exclusion covers an
+        include root that *is* one — a ``preproc`` hook is documented to
+        generate headers into its ``artifact_dir``, and then the filelist
+        names ``+incdir+artefacts/<test>`` and no path component ever says
+        "managed". Those generated headers must stay tracked, so the tree
+        is walked and only the outputs are removed.
+
+        ``None`` comes back when the directory cannot be read. That degrades
+        to the pre-#478 untracked entry rather than to an empty listing,
+        which would claim the directory *is* empty and validate a reuse on
+        the strength of it.
+        """
+
+        def _reraise(error):
+            # os.walk swallows a directory it cannot open by DEFAULT, which
+            # here would produce an *empty* listing — the one answer this
+            # method must never give, since "the directory is empty"
+            # validates a reuse. Re-raise into the handler below instead.
+            raise error
+
+        entries = []
+        try:
+            if recursive:
+                for walk_root, dir_names, file_names in os.walk(
+                    dir_path, onerror=_reraise
+                ):
+                    # In-place, because os.walk reads this list back to
+                    # decide where to descend: a pruned name is never
+                    # walked at all, so a `.git` or an `artefacts/` inside
+                    # an include dir costs nothing rather than being walked
+                    # and dropped.
+                    dir_names[:] = sorted(
+                        name for name in dir_names if not _is_pruned_walk_dir(name)
+                    )
+                    for name in sorted(file_names):
+                        if _is_non_input_file(name):
+                            continue
+                        path = os.path.join(walk_root, name)
+                        if not os.path.isfile(path) or self._is_suite_log(path):
+                            # A dangling symlink is not an input; a FIFO
+                            # must never reach the hasher's `open()`.
+                            continue
+                        entries.append((os.path.relpath(path, dir_path), path))
+            else:
+                with os.scandir(dir_path) as scan:
+                    # `is_file` follows symlinks (a symlinked-in library
+                    # file is a perfectly ordinary input) and answers from
+                    # the dirent where the platform supplies one, so this
+                    # costs at most the one `stat` per file
+                    # `_tracked_entry` needs anyway.
+                    names = sorted(
+                        item.name
+                        for item in scan
+                        if item.is_file()
+                        and not _is_non_input_file(item.name)
+                        and not self._is_suite_log(item.path)
+                    )
+                entries = [(name, os.path.join(dir_path, name)) for name in names]
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.build_dir_unreadable",
+                test=self.test_name,
+                directory=str(dir_path),
+                error=str(e),
+            )
+            return None
+        return [
+            [name.replace(os.sep, "/")] + self._tracked_entry(path)[1:]
+            for name, path in sorted(entries)
+        ]
+
+    def _fingerprint_filelist_sources(self, filelist_path):
+        """Per-entry (line, size, mtime_ns, sha) stamps for the generated run.f.
+
+        The content hash is what makes an edit invalidate the stamp on a
+        cluster, where a cached NFS ``stat`` can still describe the file as
+        it was before the edit (#494) — see :func:`_content_sha`. It goes in
+        the *fingerprint*, never in the key: :meth:`_compile_config_key`
+        reads ``entry[0]`` only, so an edit still rebuilds in place instead
+        of stranding a new obj_dir per edit.
+
+        An entry that resolves to a **directory** — ``+incdir+``, ``-y`` —
+        gains a fifth element holding a listing of the files inside it
+        (:meth:`_directory_listing`, recursive for ``+incdir+`` and flat for
+        ``-y``, following what each option's search can reach), so a header
+        edit reachable only through an include path invalidates the stamp
+        for *every* builder, with or without a dependency file, and a file
+        *appearing* in a library directory does too. The latter is the case
+        no depfile can report at all: ``-y`` resolves by module name on
+        demand, so a file that changes tomorrow's elaboration was opened by
+        nobody today (#478). Where a builder does emit a dependency file it
+        stays the more precise record of what was consumed, and both are
+        kept.
+
+        This requires the absolute ``+incdir+``/``-y`` spelling #474 gives
+        ``run.f``. With the old relative one, a ``tests.yaml`` ``+incdir+.``
+        resolved against the *artefact* directory, whose contents change on
+        every run — the listing would then never match and the stamp would
+        never validate.
+
+        The listing is deliberately an over-approximation: it invalidates on
+        an edit to a header nothing includes. The two error directions are
+        not symmetric — over-invalidating costs one recompile, while
+        under-invalidating reports a stale binary as green — and this is a
+        stamp used to gate merges.
+
+        Entries that resolve to neither a file nor a directory (``+define+``,
+        ``+libext+`` suffixes, a path that no longer exists) keep only their
+        raw line.
+
+        Quoted entries (emitted for paths containing whitespace) are unquoted
+        here with ``shlex`` before stat'ing. This unquoting is independent of
+        the builder's own ``-f`` parser: Verilator's quote handling was
+        validated, other builders' were not — but a bare path with whitespace
+        was already broken for every builder, so quoting only appears where
+        nothing worked before. The raw (quoted) line is what goes into the
+        stamp, matching what ``run.f`` actually contains.
         """
         base = os.path.dirname(os.path.abspath(filelist_path))
-        stamps = []
         with open(filelist_path) as filelist_fp:
-            for raw_line in filelist_fp:
-                line = raw_line.strip()
-                if not line or line.startswith("//"):
-                    continue
-                option_match = _FILELIST_OPTION_RE.match(line)
-                entry_path = option_match.group(1) if option_match else line
-                resolved = os.path.normpath(os.path.join(base, entry_path))
-                if os.path.isfile(resolved):
-                    stat = os.stat(resolved)
-                    stamps.append([line, stat.st_size, stat.st_mtime_ns])
-                else:
-                    stamps.append([line, None, None])
+            lines = [
+                stripped
+                for stripped in (raw_line.strip() for raw_line in filelist_fp)
+                if stripped and not stripped.startswith("//")
+            ]
+        stamps = []
+        for line in lines:
+            option_match = _FILELIST_OPTION_RE.match(line)
+            option = (option_match.group(1) or "").strip() if option_match else ""
+            entry_path = option_match.group(2) if option_match else line
+            if entry_path.startswith('"') and entry_path.endswith('"'):
+                try:
+                    parsed = shlex.split(entry_path)
+                except ValueError:
+                    # An unbalanced quote must degrade to [line, None,
+                    # None, None] like every other malformed entry, not
+                    # abort the compile from the stamping path.
+                    parsed = []
+                if len(parsed) == 1:
+                    entry_path = parsed[0]
+            resolved = os.path.normpath(os.path.join(base, entry_path))
+            listing = None
+            if option in (_INCDIR_OPTION, _LIBRARY_DIR_OPTION) and os.path.isdir(
+                resolved
+            ):
+                listing = self._directory_listing(
+                    resolved, recursive=option == _INCDIR_OPTION
+                )
+            # In cache mode the line is re-spelled relative to the project
+            # root (#542) so two checkouts of the same content produce the
+            # same entry; in the default mode this is the raw line, byte for
+            # byte. Either way it is ONE canonical spelling per stamp.
+            #
+            # A `+define+` is the exception, exactly as it is on the compile
+            # line (#542 review round 3): a `tests.yaml` plusdefine whose
+            # VALUE is an absolute in-root path is compiled into the model,
+            # so relativising it would collapse two checkouts that bake in
+            # different paths onto one key AND one stamp.
+            stamp_line = line if _is_macro_shaped(line) else self._stamp_relpath(line)
+            if listing is not None:
+                # The line stays entry[0] here too, so a listing that
+                # changes moves the stamp and — outside cache mode — never
+                # the compile key.
+                stamps.append([stamp_line, None, None, None, listing])
+            elif os.path.isfile(resolved):
+                # The line, not the resolved path, stays entry[0]: it is
+                # what run.f contains and what the compile key hashes.
+                stamps.append([stamp_line] + self._tracked_entry(resolved)[1:])
+            else:
+                stamps.append([stamp_line, None, None, None])
         return stamps
+
+    def _key_input_path(self, resolved, *, directory: bool = False):
+        """``resolved`` if it is an in-root input worth reading, else None.
+
+        One gate for both ways a path reaches the key — a compile-line token
+        and a nested filelist's entry — so the two cannot disagree about
+        what counts as an input.
+
+        ``directory`` says this is an ``+incdir+``/``-y`` SEARCH PATH rather
+        than a file. The distinction decides how an artefact tree is
+        treated (#542 review round 5): a search path there is listed, with
+        :meth:`_directory_listing`'s own name exclusions removing rtl_buddy's
+        outputs file by file — the same rule a ``run.f`` incdir gets, and the
+        reason a ``preproc`` hook may generate headers into its
+        ``artifact_dir`` at all — while a file named directly is refused when
+        its NAME is one of those outputs. Refusing the whole directory
+        instead dropped every generated header with it.
+        """
+        root = self._project_root
+        if not (resolved == root or resolved.startswith(root + os.sep)):
+            # Outside the project root: two checkouts naming it name the
+            # same bytes, so its absolute text is identity enough.
+            return None
+        cache_root = self.shared_build_root
+        if cache_root is not None and (
+            resolved == cache_root or resolved.startswith(cache_root + os.sep)
+        ):
+            # The build's own directory. Reading it would make the key a
+            # function of the output it names.
+            return None
+        # Only the components BELOW the project root are asked, because
+        # only those are rtl_buddy's to name: the checkout itself may sit
+        # anywhere, `.worktrees/` and all (#542 review round 3).
+        if any(
+            _is_build_tree_name(part)
+            for part in Path(os.path.relpath(resolved, root)).parts
+        ):
+            # A `.shared-builds/` or an `obj_dir*` holds a builder's output,
+            # whichever kind of thing is being named inside it.
+            return None
+        if not directory and _is_non_input_file(os.path.basename(resolved)):
+            # `run.f`, `compile.log`, `simv`, the stamp: rtl_buddy's own
+            # outputs, each written after the fingerprint that would key it.
+            return None
+        return resolved
+
+    def _embedded_in_root_paths(self, token):
+        """Paths written INSIDE a larger option token, absolute or relative.
+
+        ``-CFLAGS=-I/checkout/inc``, ``-LDFLAGS=-L/checkout/lib``,
+        ``-CFLAGS=-I../../inc``, a pass-through a subclass builds — the
+        token as a whole is not a path, so nothing above recognises it, yet
+        it names one and the build reads it (#542 review). Two checkouts
+        whose header under such an ``-I`` differed took one persistent build
+        directory, and for VCS and Icarus, which report no dependencies,
+        nothing downstream would have noticed.
+
+        Two passes, because the two spellings are found by different means
+        and the relative one was the gap:
+
+        * **Absolute** — matched on exactly what :func:`_relativise_paths`
+          rewrites, the project root plus a separator, so the text that ends
+          up in the key and the content that ends up beside it come from one
+          rule and cannot drift. This finds an in-root path under ANY option,
+          recognised or not.
+        * **Relative** — matched by the option that introduces it
+          (:data:`_EMBEDDED_PATH_OPTION_RE`), because a relative path has no
+          prefix to recognise and the option is the only thing that says
+          "this is a path". The caller resolves it against the builder's
+          working directory, as it does every other relative compile-line
+          input, and a payload that resolves to nothing existing under the
+          project root contributes nothing — the token stays text, as it was.
+
+        Both stop at whitespace and at the separators compiler options use to
+        pack several values into one token, which under-approximates a path
+        containing one of those: it then resolves to nothing, which is the
+        safe direction. Each distinct spelling is yielded once, so an
+        absolute payload found by both passes is not keyed twice.
+        """
+        root_prefix = self._project_root + os.sep
+        emitted = set()
+
+        def _fresh(raw):
+            if not raw or raw in emitted:
+                return False
+            emitted.add(raw)
+            return True
+
+        for match in re.finditer(re.escape(root_prefix) + r"[^\s:;,'\"]*", token):
+            if _fresh(match.group(0)):
+                yield match.group(0)
+        if self._compile_cwd is None:
+            # Nothing to anchor a relative payload to; guessing would key a
+            # file the build never opens.
+            return
+        for match in _EMBEDDED_PATH_OPTION_RE.finditer(token):
+            option, payload = match.group(1), match.group(2)
+            # `+incdir+a+b` is two directories by filelist convention.
+            parts = payload.split("+") if option == _INCDIR_OPTION else [payload]
+            for part in parts:
+                if os.path.isabs(part):
+                    # An in-root one was already yielded above; one outside
+                    # the root stays text, as every out-of-root path does.
+                    continue
+                if _fresh(part):
+                    yield part
+
+    def _cmd_token_roles(self, key_cmd):
+        """Which compile-line tokens name a PATH, and what kind (#542 review).
+
+        Yields ``(index, prefix, raw, kind)``: the token's position, the
+        ``run.f``-style option prefix the key records it under, the path as
+        written, and what to read out of it (``("dir", recursive)``,
+        ``"file"``, ``"filelist"``, or ``"output"``).
+
+        A token NOT yielded here is not a path, and that is the whole point
+        of the distinction (#542 review): the compile line's relativisation
+        used to apply to every token, so ``+define+DATA="/checkout/data.hex"``
+        became ``+define+DATA="data.hex"`` and two checkouts whose builds
+        baked in *different* absolute paths hashed to one key and shared one
+        binary. A define's value is compiled INTO the model; it is not a
+        path rtl_buddy may relocate, whoever it happens to point at. Same
+        for ``-D``, ``-G``, ``-pvalue+`` and any other ``key=value`` token:
+        they stay verbatim, so those checkouts get different keys.
+
+        The option this walker does recognise is one whose argument rtl_buddy
+        genuinely resolves as a search path or a source, which is the only
+        case where relocating is meaning-preserving.
+
+        ``"output"`` is yielded so ``-o <path>``'s TEXT relativises like any
+        other in-root path — a key must not carry the checkout prefix — while
+        :meth:`_cmd_path_tokens` drops it before anything is read: hashing
+        the binary a build produces would move the key on every build.
+        """
+        awaiting = None
+        for index, token in enumerate(key_cmd):
+            if not isinstance(token, str):
+                awaiting = None
+                continue
+            if awaiting is not None:
+                prefix, kind = awaiting
+                awaiting = None
+                yield (index, prefix, token, kind)
+                continue
+            if token.startswith(_INCDIR_OPTION):
+                # `+incdir+a+b` names two directories — the same reading
+                # every filelist parser gives it.
+                for part in token[len(_INCDIR_OPTION) :].split("+"):
+                    yield (index, _INCDIR_OPTION, part, ("dir", True))
+                continue
+            if token in _CMD_PATH_OPTIONS:
+                awaiting = (f"{token} ", _CMD_PATH_OPTIONS[token])
+                continue
+            if token in _CMD_OUTPUT_OPTIONS:
+                awaiting = (f"{token} ", "output")
+                continue
+            if token.startswith(_LIBRARY_DIR_OPTION) and len(token) > len(
+                _LIBRARY_DIR_OPTION
+            ):
+                yield (
+                    index,
+                    f"{_LIBRARY_DIR_OPTION} ",
+                    token[len(_LIBRARY_DIR_OPTION) :],
+                    ("dir", False),
+                )
+                continue
+            if _is_macro_shaped(token):
+                # A define or parameter assignment. Its value is not a path
+                # this may relocate or read — see :func:`_is_macro_shaped`.
+                continue
+            if token.startswith(("-", "+")):
+                # Some other option — a warning switch, a flag, a compiler
+                # pass-through. Its own text stays as written, but a path it
+                # EMBEDS does not: `-CFLAGS=-I/checkout/inc` names a real
+                # include directory, and leaving its content out of the key
+                # let two checkouts whose headers differ share one build
+                # (#542 review round 3). Its argument, if it takes one, is
+                # judged on the next pass, because a boolean flag is
+                # routinely followed by a bare source
+                # (`--binary /proj/tb.sv`).
+                for embedded in self._embedded_in_root_paths(token):
+                    yield (index, "", embedded, "embedded")
+                continue
+            yield (index, "", token, "file")
+
+    def _relativise_cmd(self, key_cmd):
+        """The compile line as the fingerprint records it.
+
+        Verbatim outside cache mode. Inside it, the tokens
+        :meth:`_cmd_token_roles` recognises as paths are relativised against
+        the project root and **everything else is left alone** — see that
+        method for why a define is not a path.
+        """
+        if self.shared_build_root is None:
+            return list(key_cmd)
+        relocatable = {index for index, _, _, _ in self._cmd_token_roles(key_cmd)}
+        return [
+            self._stamp_relpath(token) if index in relocatable else token
+            for index, token in enumerate(key_cmd)
+        ]
+
+    def _nested_filelist_tokens(self, filelist_path, *, seen, depth, base):
+        """Everything a nested ``-f``/``-F`` filelist names, recursively.
+
+        A filelist the COMPILE LINE points at is an input whose bytes decide
+        nothing on their own: what matters is the sources, include
+        directories and further filelists it names (#542 review). Hashing
+        only the list itself let two checkouts with byte-identical nested
+        lists over *different* RTL take one persistent build directory — and
+        for VCS and Icarus, which emit no dependency file, the stamp agreed
+        too, so the reuse was silent and the binary was the other checkout's.
+
+        ``run.f`` has no such gap: :meth:`_write_filelist` unrolls every
+        ``-F`` chain before writing, so the generated list is already flat
+        and its entries are stamped one by one.
+
+        Never raises and never fails a build: an unreadable list, a
+        malformed line and a missing entry are all simply not keyed on, and
+        the compile that follows reports the real problem far better than a
+        key derivation could. That is also why this reads the lines itself
+        rather than through :class:`~rtl_buddy.tools.vlog_filelist.VlogFilelist`,
+        whose reader is a *validator* — it raises on a malformed line and
+        refuses ``-f`` outright, neither of which may happen here.
+
+        ``base`` is the directory a RELATIVE entry in *this* list resolves
+        against, and it is not always this file's own directory (#542 review
+        round 4). The two options differ in exactly that: a relative path
+        inside a ``-f`` list is resolved by the builder against its working
+        directory, one inside a ``-F`` list against the directory holding
+        that list — see :data:`_CMD_PATH_OPTIONS`. The rule belongs to the
+        file's CONTENTS, so it is handed down from whichever option pulled
+        this file in, and a nested ``-f``/``-F`` resets it for the file it
+        names. Reading a relative entry against the wrong base hashes a
+        different file from the one the simulator opens, or none at all —
+        and with VCS or Icarus, whose stamps carry no dependency list,
+        nothing downstream would have caught it.
+
+        ``base`` of ``None`` means the builder's working directory is not
+        knowable here, which makes a relative entry unresolvable: it is left
+        as text rather than guessed at. Absolute entries are unaffected
+        either way, which is what a generated list uses.
+
+        Bounded by :data:`_NESTED_FILELIST_MAX_DEPTH` and cycle-safe on
+        ``(realpath, base)``, so a list that includes itself costs one visit
+        while one genuinely read under two bases is read under each. The
+        bound fails CLOSED: what it refuses to read goes into the key as
+        :data:`_DEPTH_BOUND_MARKER` plus the list's absolute path, so the
+        key stops being checkout-independent rather than silently promising
+        something it never looked at.
+        """
+        # Identity is the file AND the base its entries resolve against
+        # (#542 review): one list reached through both `-f` and `-F` — or
+        # from two different `-F` parents — reads as two different sets of
+        # inputs, because every relative entry in it anchors somewhere else.
+        # A realpath-only check discarded the second reading and with it
+        # whatever sources or include directories only that base reaches.
+        # Cycle protection is unaffected: the same list under the SAME base
+        # is still entered once, and a file has at most two bases (the
+        # builder's cwd, or its own directory), so the walk still ends.
+        identity = (os.path.realpath(filelist_path), base)
+        if depth > _NESTED_FILELIST_MAX_DEPTH:
+            # Fail CLOSED (#542 review round 5). Returning quietly keyed the
+            # lists that were visited and silently nothing below them, so
+            # two checkouts differing only down there shared a build. The
+            # absolute path in the marker makes the key checkout-specific
+            # instead: no cross-checkout sharing for this suite, and no
+            # wrong reuse either.
+            if not self._depth_bound_logged:
+                self._depth_bound_logged = True
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.cache_key_depth_bound",
+                    test=self.test_name,
+                    filelist=str(filelist_path),
+                    depth=_NESTED_FILELIST_MAX_DEPTH,
+                )
+            yield (
+                f"{_DEPTH_BOUND_MARKER}{os.path.abspath(filelist_path)}",
+                filelist_path,
+                "opaque",
+            )
+            return
+        if identity in seen:
+            return
+        seen.add(identity)
+        try:
+            with open(filelist_path) as filelist_fp:
+                lines = [
+                    stripped
+                    for stripped in (raw_line.strip() for raw_line in filelist_fp)
+                    if stripped and not stripped.startswith("//")
+                ]
+        except OSError:
+            return
+        for line in lines:
+            match = _NESTED_FILELIST_OPTION_RE.match(line)
+            option = (match.group(1) or "").strip() if match else ""
+            entry_path = match.group(2) if match else line
+            if option in ("+define+", "+libext+"):
+                # Not paths. A define's value stays part of the list's own
+                # content hash, which is what already covers it.
+                continue
+            if entry_path.startswith('"') and entry_path.endswith('"'):
+                try:
+                    parsed = shlex.split(entry_path)
+                except ValueError:
+                    parsed = []
+                if len(parsed) == 1:
+                    entry_path = parsed[0]
+            parts = entry_path.split("+") if option == _INCDIR_OPTION else [entry_path]
+            for part in parts:
+                if not part:
+                    continue
+                if os.path.isabs(part):
+                    candidate = os.path.normpath(part)
+                elif base is None:
+                    # Relative, and nothing to anchor it to. Guessing would
+                    # key a file the build never opens.
+                    continue
+                else:
+                    candidate = os.path.normpath(os.path.join(base, part))
+                resolved = self._key_input_path(candidate)
+                if resolved is None:
+                    continue
+                spelled = self._stamp_relpath(resolved)
+                if option in ("-f", "-F"):
+                    # The nested option resets the rule for the file it
+                    # names: `-f` hands its contents the builder's cwd,
+                    # `-F` hands them their own directory.
+                    child_base = (
+                        self._compile_cwd
+                        if option == "-f"
+                        else os.path.dirname(resolved)
+                    )
+                    if (os.path.realpath(resolved), child_base) in seen:
+                        # Already read under this very base, so it would
+                        # contribute exactly what it contributed then.
+                        continue
+                    yield (f"{option} {spelled}", resolved, "file")
+                    yield from self._nested_filelist_tokens(
+                        resolved,
+                        seen=seen,
+                        depth=depth + 1,
+                        base=child_base,
+                    )
+                elif option == _INCDIR_OPTION:
+                    yield (f"{_INCDIR_OPTION}{spelled}", resolved, ("dir", True))
+                elif option == _LIBRARY_DIR_OPTION:
+                    yield (
+                        f"{_LIBRARY_DIR_OPTION} {spelled}",
+                        resolved,
+                        ("dir", False),
+                    )
+                else:
+                    yield (spelled, resolved, "file")
+
+    def _cmd_path_tokens(self, key_cmd):
+        """Compile-LINE inputs inside the project root, with their kind.
+
+        Yields ``(spelling, resolved, kind)`` — the ``run.f``-style spelling
+        the compile key records (``+incdir+rel``, ``-y rel``, or a bare
+        ``rel``), the absolute path it resolves to, and what to read out of
+        it.
+
+        An absolute path is taken as written; a RELATIVE one is resolved
+        against :attr:`_compile_cwd`, the directory the builder will run in,
+        so rtl_buddy reads the file the build will open (#542 review round
+        5). With no plan settled there is no such directory, and a relative
+        token is then left as text rather than guessed at — a guess here
+        keys a file the build never opens, which is the failure this is
+        avoiding rather than a lesser version of it.
+
+        Whatever it came from, an input is recorded under the spelling of
+        what it RESOLVES to, relative to the project root. The raw text will
+        not do: `+incdir+inc` on the compile line and the same line in
+        `run.f` name different directories.
+
+        Only ``+incdir+`` and ``-y`` are listed as directories: a directory
+        under any other option is not an input search path, and walking it
+        would be inventing one.
+        """
+        embedded_seen: set[str] = set()
+        for _, prefix, raw, kind in self._cmd_token_roles(key_cmd):
+            if kind == "output":
+                continue
+            if os.path.isabs(raw):
+                candidate = os.path.normpath(raw)
+            elif self._compile_cwd is not None:
+                # The builder resolves a relative compile-line path against
+                # its own working directory, and that directory is now
+                # known, so rtl_buddy can read the same file it will
+                # (#542 review round 5). Before this they were dropped, and
+                # `+incdir+inc` — the ordinary spelling — took no content
+                # with it into the key at all.
+                candidate = os.path.normpath(os.path.join(self._compile_cwd, raw))
+            else:
+                # No plan yet, so nothing to anchor it to. Guessing would
+                # key a file the build will not open.
+                continue
+            directory = kind == "embedded" or (
+                isinstance(kind, tuple) and kind[0] == "dir"
+            )
+            resolved = self._key_input_path(candidate, directory=directory)
+            if resolved is None:
+                continue
+            # Spelled by what it RESOLVES to, not by the text that named it:
+            # `+incdir+inc` on the compile line and `+incdir+inc` in `run.f`
+            # anchor to different directories, and one spelling for two
+            # directories would let the `covered` check drop a real input.
+            spelling = f"{prefix}{self._stamp_relpath(resolved)}"
+            if kind == "embedded":
+                # One directory named twice inside the command line — an
+                # absolute `-I` and a relative one that resolve to the same
+                # place, say — is one input, and keying it twice would only
+                # put the same digest in the key twice (#542 review).
+                if resolved in embedded_seen:
+                    continue
+                embedded_seen.add(resolved)
+                # Classified by what it IS, since the option that named it
+                # said nothing: a directory is keyed by its listing under
+                # the `+incdir+` spelling (which also dedupes it against a
+                # `run.f` entry for the same directory), a file by its sha.
+                if os.path.isdir(resolved):
+                    yield (
+                        f"{_INCDIR_OPTION}{self._stamp_relpath(resolved)}",
+                        resolved,
+                        ("dir", True),
+                    )
+                elif self._key_input_path(resolved) is not None:
+                    yield (spelling, resolved, "file")
+                continue
+            if kind in ("filelist-cwd", "filelist-rel"):
+                # The list's own bytes, and then everything it names — read
+                # against the base the option that named it implies.
+                yield (spelling, resolved, "file")
+                yield from self._nested_filelist_tokens(
+                    resolved,
+                    seen=set(),
+                    depth=1,
+                    base=(
+                        self._compile_cwd
+                        if kind == "filelist-cwd"
+                        else os.path.dirname(resolved)
+                    ),
+                )
+                continue
+            yield (spelling, resolved, kind)
+
+    def _fingerprint_cmd_inputs(self, key_cmd, sources):
+        """Content identity for the inputs the compile LINE names (#542 review).
+
+        ``sources`` covers what ``run.f`` names, and the cache-mode key
+        content-addresses every entry of it. The compile line can name
+        inputs too — an ``+incdir+``, a ``-y``, a ``-v``, or a bare source
+        path reaching the builder through ``builder-opts.compile-time`` or
+        a subclass's extra flags — and those entered the key as relativised
+        TEXT alone. Two checkouts whose ``run.f`` entries matched but whose
+        header content under such an ``+incdir+`` differed therefore picked
+        the SAME persistent ``obj_dir``, and the second rebuilt into it:
+        the clobber the content-addressed key exists to prevent, and under
+        dispatch a simulating job holds no build lock, so its ``simv`` can
+        be replaced underneath it.
+
+        So each such path contributes what its ``run.f`` equivalent
+        contributes — a file its ``sha``, an ``+incdir+``/``-y`` directory
+        the ``[name, sha]`` pairs of its listing, pruned and filtered by the
+        same rules — and the key moves when that content moves.
+
+        A path ``run.f`` already names under the same spelling is skipped:
+        its identity is in ``sources``, and hashing it twice would only buy
+        a second walk of the same tree.
+
+        Cache mode only, and never part of the fingerprint: the stamp's
+        comparison is an exact-equality bucket, so a listing stored there
+        would reintroduce the mtime sensitivity #494 removed — and adding a
+        key to the fingerprint would invalidate every stamp ever written,
+        including every default-mode one.
+        """
+        covered = {entry[0] for entry in sources if isinstance(entry, list) and entry}
+        entries = []
+        for spelling, resolved, kind in self._cmd_path_tokens(key_cmd):
+            if spelling in covered:
+                continue
+            if kind == "opaque":
+                # A filelist this refused to read. Its spelling already
+                # carries the absolute path that keeps the key
+                # checkout-specific; there is nothing to stat.
+                entries.append([spelling, None])
+                continue
+            # Everything here is in-root by construction, so an input that
+            # cannot be hashed falls back to its stats rather than to
+            # nothing (#542 review) — see :func:`_key_content_identity`.
+            if kind == "file":
+                if not os.path.isfile(resolved):
+                    continue
+                entry = _key_content_identity(
+                    spelling, self._tracked_entry(resolved), relocated=True
+                )
+            else:
+                if not os.path.isdir(resolved):
+                    continue
+                listing = self._directory_listing(resolved, recursive=kind[1])
+                if listing is None:
+                    continue
+                entry = [
+                    spelling,
+                    [
+                        _key_content_identity(inner[0], inner, relocated=True)
+                        if isinstance(inner, list) and inner
+                        else inner
+                        for inner in listing
+                    ],
+                ]
+            entries.append(entry)
+        return entries
+
+    def _fingerprint_toolchain(self, exe):
+        """Which simulator install this build would come out of.
+
+        ``cmd`` records the *configured* executable — "verilator", the same
+        string whichever install ``PATH`` resolves it to. Without this
+        entry, pointing the project at a different simulator left every
+        shared build's stamp still validating, so the new toolchain was
+        never invoked: the compile short-circuited and the run reported PASS
+        on a binary the old one had produced. That is silent by
+        construction, and it makes a toolchain A/B report green regardless
+        of which side it is on (INF-22). It bit hardest under ``--dispatch``,
+        which implies ``--share-build``, so the same regression run locally
+        (compiling per test) failed correctly and the dispatched one passed.
+
+        ``exe`` goes in the *key* — two installs get two build dirs, which
+        is what an A/B wants — while size, mtime and version go in the
+        *stamp*, so upgrading one install in place rebuilds in place
+        instead of stranding a directory per version. Same split as
+        ``sources``, and for the same reason.
+        """
+        resolved = shutil.which(exe)
+        entry = {
+            "exe": resolved or exe,
+            "size": None,
+            "mtime_ns": None,
+            "version": None,
+        }
+        if resolved is None:
+            # Nothing to stat: the compile below is about to fail on this
+            # anyway, with a better message than we could give here.
+            return entry
+        try:
+            stat = os.stat(resolved)
+        except OSError:
+            return entry
+        entry["size"] = stat.st_size
+        entry["mtime_ns"] = stat.st_mtime_ns
+        # A wrapper script (verilator's `bin/verilator` is one) can keep its
+        # size and mtime across an upgrade of the binary it dispatches to, so
+        # the version banner is the entry that actually catches that case.
+        entry["version"] = _probe_toolchain_version(
+            resolved, self._get_simulator_family(), stat.st_mtime_ns
+        )
+        return entry
 
     def _compile_fingerprint(self, key_cmd, filelist_path):
         """Everything that determines the compiled binary.
@@ -387,49 +3154,502 @@ class VlogSim:
         here would silently disable reuse rather than error.
         """
         return {
-            "cmd": list(key_cmd),
+            # Relativised in cache mode (#542), but only the tokens that
+            # really are paths: an `-o`, a `-y` or a bare source argument
+            # under the project root would otherwise make every entry of
+            # this dict a function of the checkout path, while a
+            # `+define+DATA="/checkout/data.hex"` must keep the value the
+            # model is about to bake in (#542 review). See
+            # :meth:`_cmd_token_roles`.
+            "cmd": self._relativise_cmd(key_cmd),
             "env": dict(sorted(self._get_extra_compile_env().items())),
             "sources": self._fingerprint_filelist_sources(filelist_path),
+            "toolchain": self._fingerprint_toolchain(key_cmd[0]),
         }
 
     @staticmethod
-    def _compile_config_key(fingerprint):
+    def _key_source_entry(entry, *, content: bool):
+        """One ``sources`` entry as the compile key reads it.
+
+        Path-only by default — ``entry[0]``, the run.f line — which is what
+        keeps an edit rebuilding *in place* rather than stranding one
+        obj_dir per edit. With ``content`` (cache mode, #542) the entry's
+        content digest joins it: the ``sha`` of a file, and the
+        ``[name, sha]`` pairs of a directory entry's listing. Size and
+        mtime are excluded from both, exactly as :func:`_entry_identity`
+        excludes them, so a ``touch`` or a rebuilt byte-identical generated
+        file never moves the key.
+
+        An entry whose shape this version did not write contributes itself
+        unchanged: an unrecognised shape is "we do not know", and the key's
+        job is to be a stable function of whatever it was handed.
+        """
+        if not content or not isinstance(entry, list) or not entry:
+            return entry[0] if isinstance(entry, list) and entry else entry
+        relocated = isinstance(entry[0], str) and _key_spelling_is_relocated(entry[0])
+        if _is_directory_entry(entry):
+            # The directory decides, not each file: a listing's names are
+            # relative to it by construction, so asking them would say
+            # "relative" even for an include tree outside the project.
+            return [
+                entry[0],
+                [
+                    _key_content_identity(inner[0], inner, relocated=relocated)
+                    if isinstance(inner, list) and inner
+                    else inner
+                    for inner in entry[-1]
+                ],
+            ]
+        if len(entry) == 4:
+            return _key_content_identity(entry[0], entry, relocated=relocated)
+        return entry
+
+    @staticmethod
+    def _compile_config_key(fingerprint, *, content: bool = False, cmd_inputs=None):
         """Short stable hash naming the shared build dir.
 
-        Excludes source size/mtime so editing RTL rebuilds in place in the
-        same dir (the stamp comparison catches the staleness) instead of
-        accumulating a new obj_dir per edit.
+        Excludes source size/mtime/content-hash — and the toolchain's
+        size/mtime/version — so editing RTL or upgrading a simulator in
+        place rebuilds in the same dir (the stamp comparison catches the
+        staleness) instead of accumulating a new obj_dir per edit. Only
+        ``entry[0]``, the run.f line, is read out of each source entry, so
+        adding the content hash to the stamp in #494 left every existing
+        key unchanged.
+
+        ``content`` inverts that trade for the persistent cache (#542), and
+        only there. A cache root outlives the workspace and is shared by
+        every checkout on the host, so "rebuild in place" stops being a
+        saving and becomes a hazard: two worktrees on different commits
+        whose ``run.f`` has the same *shape* would take turns overwriting
+        one obj_dir, and under dispatch a build replaced beneath a running
+        fan-out makes its simulation jobs decline and fail (#539). Hashing
+        the content instead makes the directory content-addressed —
+        identical inputs anywhere reuse it, different inputs get their own —
+        at the price of one directory per distinct input set, which is what
+        a cache is for. The stamp check still runs on top of it.
+
+        The caller pairs ``content`` with a fingerprint whose paths are
+        already relativised (:meth:`_stamp_relpath`); the two halves of
+        "checkout-independent" are not separable, and neither is ever
+        applied on the in-tree default path.
+
+        ``cmd_inputs`` is the same content identity for the inputs the
+        compile LINE names rather than ``run.f`` — see
+        :meth:`_fingerprint_cmd_inputs`, which is where the reasoning is.
+        It joins the key only under ``content``, as its own field, so the
+        default key's dict is literally the dict it always was.
         """
         config = {
             "cmd": fingerprint["cmd"],
             "env": fingerprint["env"],
-            "filelist": [entry[0] for entry in fingerprint["sources"]],
+            "filelist": [
+                VlogSim._key_source_entry(entry, content=content)
+                for entry in fingerprint["sources"]
+            ],
+            # The install, not its version: a rebuilt-in-place simulator
+            # should reuse this dir (the stamp catches the staleness), while
+            # a genuinely different install gets its own, so an A/B keeps
+            # both builds instead of overwriting one with the other.
+            "toolchain": fingerprint["toolchain"]["exe"],
         }
+        if content:
+            config["cmd_inputs"] = cmd_inputs or []
         digest = hashlib.sha256(
             json.dumps(config, sort_keys=True).encode("utf-8")
         ).hexdigest()
         return digest[:16]
 
-    @staticmethod
-    def _shared_build_is_valid(build_dir, fingerprint):
-        simv_path = Path(build_dir) / "simv"
-        stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
-        if not simv_path.is_file() or not stamp_path.is_file():
+    def _write_compile_transcript(self, run_str, result):
+        """Persist the compile command and its captured output; return the path.
+
+        Written on every compile that ran, pass or fail. Before #494 only a
+        failure (or a license-queued VCS build) left one, which was harmless
+        while the only other state was no file at all — but a reuse now
+        writes a breadcrumb here, and had success stayed silent the file's
+        *presence* would have come to mean "nothing compiled", inverting
+        what docs/concepts/tests.md says it is.
+
+        Best-effort, like the reuse breadcrumb it is now paired with: this
+        runs on the SUCCESS path too since #494, and a builder that exited 0
+        must not be turned into a failed compile because its transcript
+        could not be written. Returns ``None`` when nothing was written, so
+        the events below simply carry no transcript path.
+        """
+        transcript_path = self._get_compile_transcript_path()
+        try:
+            self._replace_text(
+                transcript_path,
+                f"Command: {run_str}\n\n"
+                "=== stderr ===\n"
+                f"{result.stderr or ''}"
+                "\n=== stdout ===\n"
+                f"{result.stdout or ''}",
+            )
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.transcript_unwritable",
+                test=self.test_name,
+                error=str(e),
+            )
+            return None
+        return transcript_path
+
+    def _compile_queued_for_license(self, result):
+        """Did a ``vcs`` elaboration wait in the ``-licqueue`` queue (#358)?
+
+        Elapsed compile time is only a measure of compile *work* when no
+        part of it was spent waiting for a seat. Under dispatch that
+        distinction decides whether a build job that hit its ``--time``
+        needs a bigger reservation or a freer license server, so the answer
+        is logged rather than left to be inferred from the wall clock.
+        Non-VCS families never queue, and there is nothing to inspect if the
+        output was not captured.
+        """
+        if self._get_simulator_family() != "vcs":
             return False
+        return has_license_queue_marker((result.stdout or "") + (result.stderr or ""))
+
+    def _share_build_unsupported_reason(self):
+        return share_build_unsupported_reason(self.rtl_builder_cfg)
+
+    def _vcs_shared_output_argv(self, build_dir):
+        """VCS flags that put the whole build inside ``build_dir``.
+
+        VCS has no single ``--Mdir``-style knob like Verilator: the
+        executable location comes from ``-o`` (and it writes its
+        ``simv.daidir`` beside it) while the intermediate C tree comes from
+        ``-Mdir``. Both are pointed into the shared dir so the build is
+        self-contained — a later stale-stamp rebuild driven from a different
+        test's artefact dir then reuses the same incremental tree instead of
+        starting from scratch.
+        """
+        return [
+            "-o",
+            str(Path(build_dir) / "simv"),
+            f"-Mdir={Path(build_dir) / 'csrc'}",
+        ]
+
+    @staticmethod
+    def _strip_vcs_output_opts(opts):
+        """Split configured VCS opts into (kept, dropped ``-o``/``-Mdir``).
+
+        A shared build owns the output location — the simv must land at
+        ``<shared>/simv`` or the tests pointed at it look in the wrong
+        place — so a ``builder-opts`` entry that also sets one is dropped
+        rather than left to fight ours on VCS's duplicate-option
+        precedence. Handles both ``-Mdir=dir`` and ``-Mdir dir``.
+        """
+        kept, dropped = [], []
+        skip_next = False
+        for opt in opts:
+            if skip_next:
+                skip_next = False
+                dropped.append(opt)
+                continue
+            if opt in ("-o", "-Mdir"):
+                skip_next = True
+                dropped.append(opt)
+            elif opt.startswith("-Mdir="):
+                dropped.append(opt)
+            else:
+                kept.append(opt)
+        return kept, dropped
+
+    def _collect_build_deps(self, build_dir, compile_cwd):
+        """Stamps for every input the verilation consumed, or ``None``.
+
+        Closes the gap the filelist fingerprint cannot: an entry resolving
+        to a *directory* (``+incdir+``, ``-y``) is recorded as a raw line,
+        so a header edit reachable only through one leaves the stamp valid
+        and a warm run reuses a simv built from the old header (#303). The
+        builder already knows exactly which files it opened, so this reads
+        its dependency file instead of re-deriving the include search.
+
+        ``None`` means no dependency information exists for this build —
+        every non-Verilator family, or a Verilator invocation that emitted
+        no ``.d`` — and is stored as such: it is the difference between
+        "nothing else was consumed" and "we do not know", and only the
+        first may validate a reuse.
+
+        Paths are resolved against ``compile_cwd`` and stored absolute:
+        the file is written relative to whichever test's artefact dir ran
+        the compile, and a *different* test with the same compile key
+        validates the stamp from its own directory. Stored by the name the
+        build used (``normpath``, as in :meth:`_fingerprint_filelist_sources`),
+        *not* its ``realpath``: a symlink among the prerequisites — an
+        ``+incdir+`` that is a link into a shared IP tree, or a header that
+        is itself a link — is re-resolved on every validation, so pointing
+        it at a new target invalidates the stamp even though the listing
+        the filelist fingerprint keeps still shows the same names. The
+        compile's own ``run.f`` is excluded (matched by realpath, so that a
+        symlinked suite dir cannot hide it) — it is regenerated on every
+        compile, so its mtime would invalidate the stamp for the very test
+        that built it, and its *contents* are already fingerprinted entry
+        by entry.
+        """
+        # Resolved against the compile cwd, not used as given: `build_dir` is
+        # an absolute shared dir on one path and a bare directory *name* on
+        # the other, and globbing the latter would search the process cwd.
+        depend_files = sorted(
+            (Path(compile_cwd) / build_dir).glob(_VERILATOR_DEPEND_GLOB)
+        )
+        if not depend_files:
+            return None
+        filelist_path = os.path.realpath(self._get_filelist_path())
+        seen: dict[str, None] = {}
+        for depend_file in depend_files:
+            try:
+                text = depend_file.read_text()
+            except OSError as e:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_deps_unreadable",
+                    test=self.test_name,
+                    depend_file=str(depend_file),
+                    error=str(e),
+                )
+                return None
+            for prerequisite in parse_depend_prerequisites(text):
+                declared = os.path.normpath(os.path.join(compile_cwd, prerequisite))
+                if os.path.realpath(declared) != filelist_path:
+                    seen.setdefault(declared, None)
+        # Sorted by the STORED spelling, not by the absolute path: the list
+        # is compared position by position, and in cache mode a project path
+        # sorts relative while a toolchain header stays absolute — so two
+        # checkouts at different prefixes would otherwise interleave the two
+        # kinds differently and never match (#542). Identical to
+        # `sorted(seen)` in the default mode, where the spelling is the path.
+        spelled = sorted((self._stamp_relpath(path), path) for path in seen)
+        return [[stored] + self._tracked_entry(path)[1:] for stored, path in spelled]
+
+    def _deps_unchanged(self, test_name, deps, *, quiet=False):
+        """Have any of the stamp's recorded inputs changed on disk?
+
+        Entry-wise through :func:`_entry_matches`, so a dependency inside
+        the project root is decided by its content and one outside it (a
+        toolchain header) by its stats — and a stamp written before #494,
+        whose entries are 3 elements long, fails closed into one rebuild.
+
+        Every shape this version does not recognise answers False rather
+        than raising, all the way up to ``deps`` not being a list at all: a
+        mixed-version cluster (submit host upgraded, compute nodes not) can
+        hand an older node a container type it was never taught, and the
+        answer to that is a rebuild, not an exception out of a build job.
+        """
+        if not isinstance(deps, list):
+            return self._note_stamp_mismatch("the stamp's dependency list is corrupt")
+        for entry in deps:
+            if not isinstance(entry, list) or len(entry) != 4:
+                return self._note_stamp_mismatch(
+                    "the stamp's dependency list is corrupt"
+                )
+            if not isinstance(entry[0], str):
+                # `os.stat` takes a file *descriptor* for an int, so a
+                # corrupt stamp must never reach it.
+                return self._note_stamp_mismatch(
+                    "the stamp's dependency list is corrupt"
+                )
+            if not _entry_matches(entry, self._stamp_tracked_entry(entry[0])):
+                # The one question worth answering when a warm run
+                # unexpectedly recompiles.
+                if not quiet:
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "compile.build_dep_changed",
+                        test=test_name,
+                        dependency=entry[0],
+                    )
+                return self._note_stamp_mismatch(
+                    f"a consumed input changed: {entry[0]}"
+                )
+        return True
+
+    def _note_stamp_mismatch(self, reason: str) -> bool:
+        """Record why the stamp lost and answer False, for the caller's ``return``."""
+        self.stamp_mismatch_reason = reason
+        return False
+
+    def _shared_build_is_valid(
+        self, build_dir, fingerprint, *, test_name=None, quiet=False
+    ):
+        return self._build_stamp_is_valid(
+            build_dir,
+            Path(build_dir) / "simv",
+            fingerprint,
+            test_name=test_name,
+            quiet=quiet,
+        )
+
+    def _build_stamp_is_valid(
+        self, stamp_dir, simv_path, fingerprint, *, test_name=None, quiet=False
+    ):
+        """Does the stamp in ``stamp_dir`` still describe ``simv_path``?
+
+        ``stamp_dir`` and the executable are separate arguments because an
+        unshared build does not put the executable inside a directory
+        rtl_buddy chose: the stamp goes in the test's compile work dir while
+        ``builder-simv:`` decides where the binary lands (#369).
+
+        Everything but the tracked inputs compares by exact equality; the
+        two tracked-input lists (``sources`` and ``deps``) go entry-wise
+        through :func:`_entry_matches`, which lets a content hash outvote a
+        moved mtime and a moved mtime outvote nothing at all (#494).
+
+        ``quiet`` suppresses the "why this stamp lost" diagnostics for the
+        one caller that asks the question twice — :meth:`compile`'s
+        unlocked reuse pre-check, whose in-lock repeat is the authority
+        and owns those lines. Whether the stamp validates is not affected.
+
+        Every verdict of False also records *why* in
+        :attr:`stamp_mismatch_reason`, which is what a gated sim job's
+        `compile.prebuilt_stamp_invalid` reports: those runs log at INFO,
+        so the DEBUG lines below are the one thing a reader of a dispatched
+        job's log cannot get at (#535/#536).
+        """
+        self.stamp_mismatch_reason = None
+        simv_path = Path(simv_path)
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
+        if not simv_path.is_file() or not stamp_path.is_file():
+            return self._note_stamp_mismatch("no stamp or no simv in the build dir")
         try:
             stored = json.loads(stamp_path.read_text())
         except (OSError, json.JSONDecodeError):
-            return False
-        return stored == fingerprint
+            return self._note_stamp_mismatch("the stamp is unreadable")
+        if not isinstance(stored, dict) or "deps" not in stored:
+            # Written before dependency tracking existed. Its silence about
+            # headers is indistinguishable from having had none, so the only
+            # honest reading is one rebuild — after which the stamp says
+            # which it is.
+            return self._note_stamp_mismatch("the stamp predates dependency tracking")
+        if (stored.get("root") is not None) != (self.shared_build_root is not None):
+            # A stamp's tracked inputs are spelled relative to a project root
+            # in cache mode and absolute outside it (#542). Comparing across
+            # the two would be comparing spellings, and re-anchoring a
+            # *relative* entry with no root to fall back on would stat it
+            # against this process's working directory — so the honest reading
+            # of a stamp from the other mode is one rebuild. This is also why
+            # enabling or disabling the cache root recompiles once.
+            return self._note_stamp_mismatch(
+                "the stamp was written in the other shared-build mode"
+            )
+        # The executable is an *output*, so the input fingerprint says
+        # nothing about it. That was harmless while the output always lived
+        # in a directory named after those inputs, and stops being harmless
+        # here: an absolute `builder-simv:` is one path shared by every test
+        # using that builder, while the stamp is per test. Without this,
+        # test_a's stamp keeps validating after test_b overwrote the binary
+        # they both point at, and test_a silently simulates test_b's build
+        # (#369).
+        if stored.get("simv") != self._stamp_simv_entry(simv_path):
+            if not quiet:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_dep_changed",
+                    test=test_name,
+                    dependency=str(simv_path),
+                )
+            return self._note_stamp_mismatch(f"the simv changed: {simv_path}")
+        if not isinstance(fingerprint, dict):
+            # A caller asserting a stamp is stale hands in no fingerprint;
+            # nothing can match one.
+            return self._note_stamp_mismatch("no fingerprint to compare against")
+        stored_inputs = {
+            key: value for key, value in stored.items() if key not in _STAMP_META
+        }
+        # `sources` is the one input list whose entries are not compared by
+        # equality, so it comes out of the dict comparison and goes through
+        # _entry_matches; cmd/env/toolchain stay exact. Popping from copies
+        # keeps the two sides symmetrical — a stamp that has no `sources`
+        # key at all still fails, because None is not a list.
+        stored_sources = stored_inputs.pop("sources", None)
+        current_inputs = dict(fingerprint)
+        current_sources = current_inputs.pop("sources", None)
+        if stored_inputs != current_inputs:
+            if not quiet:
+                _log_stale_stamp_toolchain(
+                    stored_inputs, current_inputs, test_name=test_name
+                )
+            return self._note_stamp_mismatch("the compile line or toolchain changed")
+        # A stamp that recorded the builder's own dependency list decides
+        # every tracked file's *content* there, so the directory listings
+        # are compared by name alone (#536) — see :func:`_entry_matches`.
+        deps = stored["deps"]
+        if not _entry_lists_match(
+            stored_sources, current_sources, listing_names_only=deps is not None
+        ):
+            # The deps path names what changed; the sources path answering
+            # "why did this rebuild" with silence made the two halves of
+            # the same question unequal (#494 review).
+            entry = _first_entry_mismatch(
+                stored_sources, current_sources, listing_names_only=deps is not None
+            )
+            if not quiet:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_source_changed",
+                    test=test_name,
+                    entry=entry,
+                )
+            return self._note_stamp_mismatch(f"a compile input changed: {entry}")
+        if deps is None:
+            # The builder emitted no dependency file. That used to mean the
+            # include directories were untracked for it, and reusing on "we
+            # do not know" is what #478 reported. It is sound now: `sources`
+            # above carries a listing of every `+incdir+`/`-y` directory,
+            # so the unknown this branch admits is bounded to what the
+            # filelist never named — see docs/known-issues.md.
+            return True
+        if stored.get("deps_format") != _DEPS_FORMAT:
+            return self._note_stamp_mismatch(
+                "the stamp's dependency list predates declared-path tracking"
+            )
+        return self._deps_unchanged(test_name, deps, quiet=quiet)
 
-    def pre(self):
+    def pre(self, run_id=_UNSET):
+        """Run the test's ``preproc`` hook; return a setup-failure string or None.
+
+        ``run_id`` is the run this single execution of the hook is preparing.
+        It defaults to ``self.run_id``, which is right when the hook runs once
+        per run — a plain ``test``, or one dispatched element. A caller that
+        runs the hook **once for several runs** must pass ``None`` explicitly:
+        :meth:`TestRunner.run_multiple` does, because the runner it builds
+        carries ``run_ids[0]`` and the hook it invokes serves all of them.
+        Defaulting there would tell the hook it was preparing run 1 and hand
+        it run 1's directory, which runs 2..N never read.
+        """
         script_path = self.test_cfg.get_preproc_path()
         if script_path is None:
             log_event(logger, logging.DEBUG, "preproc.skipped", test=self.test_name)
             return None
+        if run_id is _UNSET:
+            run_id = self.run_id
+
+        # This run's stale retry transcript goes before the hook runs, not
+        # only at compile() (#498 review): a reused run directory whose PRE
+        # fails here never reaches compile(), and the fresh SetupFail
+        # envelope would be paired with the previous invocation's retry log.
+        try:
+            Path(self._get_retry_transcript_path()).unlink(missing_ok=True)
+        except OSError:
+            pass
 
         with open(script_path, "r") as file:
             code = file.read()
+
+        # `artifact_dir` stays test-keyed for backward compatibility, and
+        # `run_artifact_dir` is where a generator whose output depends on the
+        # run must write instead (#415). They are the same directory when one
+        # hook run serves the whole invocation, so a hook can always use the
+        # latter. Both are created here: a hook is handed directories it may
+        # write to, not paths it has to mkdir.
+        artifact_dir = self._ensure_artifact_dir()
+        run_artifact_dir = self._ensure_artifact_dir(run_id=run_id)
 
         # Pass self.test_cfg to the preproc script as root_cfg
         # preproc script can mutate self.test_cfg, which is used for compile and sim
@@ -437,11 +3657,14 @@ class VlogSim:
             ns = exec_hook_script(
                 script_path,
                 code,
+                stage="preproc",
                 logger=logger,
                 test_cfg=self.test_cfg,
                 root_cfg=self.root_cfg,
                 suite_dir=self.suite_work_dir,
-                artifact_dir=self._get_artifact_dir(),
+                artifact_dir=artifact_dir,
+                run_id=run_id,
+                run_artifact_dir=run_artifact_dir,
             )
         except Exception as e:
             log_event(
@@ -523,22 +3746,65 @@ class VlogSim:
                 )
         return None
 
-    def compile(self):
+    def _record_compile(self, *, duration_sec, reused, verilate_sec=None):
+        """Stamp :attr:`last_compile` with this instance's compile outcome.
+
+        The one writer, so every path records the same three keys. Callers
+        read it off the sim after COMPILE: the build job folds it into the
+        build envelope's ``builds`` list, and the in-process path folds it
+        into the run's own result envelope. Best-effort telemetry — nothing
+        downstream may fail because a value here is ``None``.
+
+        ``verilate_sec`` is what a preceding verilate job spent on this key
+        (#593). It makes ``duration_sec`` the WHOLE compile rather than the
+        C++ step alone — which is what every consumer of the number reads
+        it as — and the two halves ride along beside it so a reader can
+        still see where the time went.
+        """
+        self.last_compile = {
+            "duration_sec": duration_sec,
+            "builder": self.rtl_builder_cfg.get_name(),
+            "reused": reused,
+        }
+        if verilate_sec is not None:
+            self.last_compile["duration_sec"] = round(
+                verilate_sec + (duration_sec or 0), 2
+            )
+            self.last_compile["verilate_sec"] = verilate_sec
+            self.last_compile["build_sec"] = duration_sec
+
+    def _build_compile_plan(self):
+        """Derive this test's :class:`_CompilePlan` — the pre-builder half.
+
+        Writes ``run.f`` as a side effect (the fingerprint stats what the
+        filelist names, so it cannot be computed before the file exists) and
+        sets ``self._shared_build_dir``, which ``_get_simv_path()`` branches
+        on. Deliberately does *not* touch stamps or create the shared dir:
+        those are decisions of an actual compile, and a probe that unlinked
+        a stamp would destroy the reuse it was asked about.
+        """
         rtl_builder_cfg = self.rtl_builder_cfg
-        log_event(
-            logger,
-            logging.DEBUG,
-            "compile.config",
-            test=self.test_name,
-            config=pprint.pformat(rtl_builder_cfg),
-        )
         compile_work_dir = self._ensure_artifact_dir()
+        # What `run_managed_process(..., cwd=compile_work_dir)` will use, so
+        # a `-f` filelist's relative entries resolve as the builder resolves
+        # them (#542 review round 4).
+        self._compile_cwd = compile_work_dir
+        # A probe is not a compile, but it is the point at which the builder
+        # for this config is settled (a preproc hook can no longer move it).
+        # Recording it here is what lets a config that never reaches a
+        # builder — a filelist failure, a killed job — still name the
+        # builder it would have used, with `reused` left unknown rather
+        # than guessed (#495).
+        self._record_compile(duration_sec=None, reused=None)
 
         builder_opts = self._filter_builder_opts(
             rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
         )
         extra_compile_flags = self._get_extra_compile_flags()
         assertion_flags = self._get_verilator_assertion_flags(builder_opts)
+        # After the extra flags, because the subclass that emits its own top
+        # flag emits it there and this must see it (#508).
+        top_flags = self._get_top_module_flags(builder_opts, extra_compile_flags)
         plusdefines = self._get_plusdefines()
         is_verilator = os.path.basename(rtl_builder_cfg.get_exe()).startswith(
             "verilator"
@@ -550,76 +3816,1344 @@ class VlogSim:
             filelist_path
         )  # raises FilelistError on bad path; caught by TestRunner
 
-        build_dir = self._get_build_dir()
-        fingerprint = None
-        if self.share_build:
-            if is_verilator:
-                key_cmd = (
-                    [rtl_builder_cfg.get_exe()]
-                    + builder_opts
-                    + extra_compile_flags
-                    + assertion_flags
-                    + plusdefines
-                )
-                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
-                shared_dir = shared_build_dir(
-                    self.suite_work_dir, self._compile_config_key(fingerprint)
-                )
-                self._shared_build_dir = str(shared_dir)
-                build_dir = str(shared_dir)
-                if self._shared_build_is_valid(shared_dir, fingerprint):
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "compile.build_reused",
-                        test=self.test_name,
-                        build_dir=build_dir,
-                    )
-                    return 0
-                shared_dir.mkdir(parents=True, exist_ok=True)
-                # A crashed/killed compile must never leave a stamp that
-                # validates a broken simv.
-                (shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
-            else:
+        plan = _CompilePlan(
+            compile_work_dir=compile_work_dir,
+            filelist_path=filelist_path,
+            build_dir=self._get_build_dir(),
+            builder_opts=builder_opts,
+            extra_compile_flags=extra_compile_flags,
+            assertion_flags=assertion_flags,
+            top_flags=top_flags,
+            plusdefines=plusdefines,
+            is_verilator=is_verilator,
+            # The group is the OUTPUT the compile writes, canonicalized —
+            # that is the single-writer resource the pool must not hand to
+            # two workers at once (#369). For verilator/icarus the output lives
+            # under the per-test compile dir, so every test is its own group
+            # and they may all compile at once. For a family that honours
+            # `builder-simv:`, two configs can name one executable — an
+            # absolute pin, or a relative spelling whose `..` escapes the
+            # per-test workspace (`../../shared/simv` from two tests meets
+            # at one file) — and grouping on the compile DIRS would run two
+            # builders onto one binary under `compile.parallel > 1`,
+            # attributing a compile failure or a simulation to another
+            # config's build (#496 review, twice). Grouping on the resolved
+            # path serializes them; it does not make them share (each still
+            # stamps and rebuilds in its own dir), and serializing is the
+            # whole fix. `realpath`, not `normpath(abspath(...))`: two
+            # spellings can also meet at one file through a symlinked
+            # parent, which textual normalization cannot see — and it keeps
+            # the group consistent with the suite dir the head `resolve()`d
+            # (macOS's /tmp is itself a symlink). A nonexistent tail is
+            # normalized textually, so the output need not exist yet.
+            # Resolved here, where `_shared_build_dir` is still unset, so
+            # this is always the UNSHARED output; the share-build branch
+            # below overrides the group with the shared dir.
+            group_dir=os.path.realpath(self._get_simv_path()),
+        )
+        if not self.share_build:
+            return plan
+
+        plan.unsupported_reason = self._share_build_unsupported_reason()
+        # One key_cmd for both branches. They agreed already; spelling it
+        # twice was an invitation for them to stop agreeing.
+        key_cmd = (
+            [rtl_builder_cfg.get_exe()]
+            + builder_opts
+            + extra_compile_flags
+            + assertion_flags
+            # The top flag changes which modules are elaborated and what the
+            # model is called, so two testbenches over one model that differ
+            # only in `toplevel:` must not share a build dir (#508). Empty
+            # when no `toplevel:` is declared, which is what keeps every
+            # existing key of an untouched project unchanged.
+            + top_flags
+            + plusdefines
+        )
+        if self._get_simulator_family() == "icarus":
+            # The Icarus `simv` wrapper lives IN the shared dir, and it
+            # bakes in these args (CocotbSim adds the VPI module to
+            # them while contributing no compile flags of its own). Two
+            # tests that differ only there would otherwise share a key
+            # and a wrapper, and whichever compiled first would decide
+            # how vvp is invoked for both. (Icarus never reaches the
+            # unsupported branch below — it is a share-build family and is
+            # exempt from the absolute-`builder-simv:` refusal — so adding
+            # this before the branch changes no key that exists.)
+            key_cmd = key_cmd + self._icarus_vvp_extra_args()
+        plan.key_cmd = key_cmd
+        # Keyed on the configured compile line, NOT on the output flags
+        # compile() appends later: those are derived from the resulting key,
+        # so including them would be circular.
+        plan.fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
+
+        if plan.unsupported_reason is None:
+            cache_root = self.shared_build_root
+            shared_dir = shared_build_dir(
+                self.suite_work_dir,
+                # Content-addressed exactly where the directory is
+                # persistent and shared between checkouts (#542).
+                self._compile_config_key(
+                    plan.fingerprint,
+                    content=cache_root is not None,
+                    # Everything the compile line names that `run.f` does
+                    # not, so an `+incdir+` reaching the builder through
+                    # `builder-opts.compile-time` is as content-addressed as
+                    # a filelist entry (#542 review).
+                    cmd_inputs=(
+                        self._fingerprint_cmd_inputs(
+                            key_cmd, plan.fingerprint["sources"]
+                        )
+                        if cache_root is not None
+                        else None
+                    ),
+                ),
+                cache_root=cache_root,
+                project_root=self._project_root,
+            )
+            plan.shared_dir = shared_dir
+            self._shared_build_dir = str(shared_dir)
+            plan.build_dir = str(shared_dir)
+            plan.group_dir = str(shared_dir)
+        else:
+            # Emitted from the plan, so since #495 it lands at probe time
+            # rather than compile time: it now precedes compile.config for
+            # the same test, and a config the caller probes and then drops
+            # warns about a compile that never runs. The count per build
+            # job is unchanged — the plan is derived once and cached.
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.share_build_unsupported",
+                test=self.test_name,
+                simulator=self._get_simulator_family(),
+                reason=plan.unsupported_reason,
+            )
+            # The build cannot be *shared*, but it can still be *reused*
+            # by the next process to ask for this test — which is what
+            # lets a dispatched fan-out compile once in the build job and
+            # have its elements short-circuit instead of racing each
+            # other into one directory (#369). Same fingerprint, same
+            # stamp file; only the scope differs, so the stamp lives in
+            # the test's own compile work dir. `group_dir` also stays as it
+            # was built above — the resolved output path, which is per-test
+            # unless a `builder-simv:` points two tests at one executable.
+        return plan
+
+    def _gated_build_verdict(self, fingerprint=None):
+        """What the build envelope says about THIS test, as ``(kind, record)``.
+
+        A gated job that reaches its own compile has already failed to
+        validate the build's stamp, and the envelope is the only thing that
+        can say whether compiling here is a recovery or a catastrophe
+        (#498/#535). Three answers:
+
+        ``("failed", record)`` — the builder ran for this config and exited
+        non-zero, on the same inputs. Deterministic; see below.
+
+        ``("built", record)`` — the build job recorded this config as
+        BUILT. The binary the whole fan-out was gated on exists, so the
+        stamp's disagreement is with a build that is there, and the caller
+        declines to compile: a recompile would run under the simulation
+        reservation, into the directory every sibling is queued on, and the
+        memory kill that follows hides whatever really drifted. ``record``
+        is ``{}`` for a build job too old to write per-config records — the
+        envelope still positively names this config as built, which is the
+        load-bearing half.
+
+        ``(None, None)`` — nothing decisive: no build job, no envelope
+        path, an unreadable or stale envelope, a config the build job never
+        reached (a crash, a cancellation), a test listed as failed with no
+        per-build record or with one carrying no ``returncode``, or a
+        recorded failure whose inputs have since moved. Those keep today's
+        retry, which writes ``compile.retry.log`` and leaves the build
+        job's transcript intact.
+
+        The envelope's ``failed`` list is not compile-only: the build job
+        also records PRE/setup failures, filelist-probe errors and worker
+        exceptions there, and none of those proves the *builder* would fail
+        again here — a sim job re-runs its own preproc, so a transient
+        setup failure can succeed on this side, and suppressing its retry
+        would turn that run into a false CompileFail (#498 review). The one
+        deterministic case a retry cannot fix is a builder that genuinely
+        ran and exited non-zero, and the per-build record proves it by
+        carrying a ``returncode``. That record is the only decisive answer.
+
+        Deterministic, that is, for the *same inputs* (#498 review). This
+        job's PRE has re-run and ``fingerprint`` is its own just-derived
+        compile fingerprint; when the record also carries the build's
+        ``fingerprint_sha`` and the two hash differently — an edited
+        source, a regenerated input, a moved toolchain since the build
+        failed — the failure may not reproduce, and suppressing the retry
+        would report a CompileFail for a compile nobody has run. The
+        verdict then falls through to the retry. A record without the sha
+        (an older build job) keeps the verdict, exactly as before.
+
+        Best-effort by construction. A sim job that cannot read the
+        envelope falls back to today's retry rather than inventing a
+        verdict — deciding on a guess would turn a readable file into a
+        lost run in one direction and an OOM in the other.
+        """
+        if not self.expect_prebuilt or self.build_result_json is None:
+            return None, None
+        try:
+            envelope = load_build_result_json(self.build_result_json)
+        except Exception:  # noqa: BLE001 - advisory; never costs a run
+            return None, None
+        if not envelope:
+            return None, None
+        record = next(
+            (
+                entry
+                for entry in envelope.get("builds") or ()
+                if entry.get("test") == self.test_name
+            ),
+            None,
+        )
+        if self.test_name not in set(envelope.get("failed") or ()):
+            if self.test_name in set(envelope.get("built") or ()):
+                return "built", (record or {})
+            return None, None
+        # Compiler evidence or nothing: no record at all, or one without a
+        # returncode, describes a failure that never reached a builder.
+        if record is None or record.get("returncode") is None:
+            return None, None
+        recorded_sha = record.get("fingerprint_sha")
+        if recorded_sha is not None:
+            own_sha = _fingerprint_sha(fingerprint)
+            if own_sha is not None and recorded_sha != own_sha:
+                # The build failed a *different* compile than the one this
+                # job would run: the inputs moved in between, so the retry
+                # is earned rather than a repeat.
                 log_event(
                     logger,
-                    logging.WARNING,
-                    "compile.share_build_unsupported",
+                    logging.INFO,
+                    "compile.build_failure_inputs_changed",
                     test=self.test_name,
-                    simulator=self._get_simulator_family(),
+                    run_id=self.run_id,
+                    recorded_sha=recorded_sha,
+                    own_sha=own_sha,
                 )
+                return None, None
+        return "failed", record
 
-        run_cmd = [rtl_builder_cfg.get_exe()]
+    def _decline_gated_recompile(self, record, fingerprint, build_dir):
+        """Fail a gated job whose build job built this test (#535).
+
+        The build job compiled this config successfully, so the binary the
+        whole fan-out was gated on is in ``build_dir``. This job's stamp
+        check disagreed with it anyway, and a recompile is the wrong answer
+        to that in every direction: it runs under the SIMULATION
+        reservation, which is what the scheduler kills for memory (#536);
+        every sibling element queues behind it on the same directory
+        (#369/#507); and the memory kill that follows replaces whatever
+        really drifted with `signal 9` in the summary (#498). Nothing here
+        is recoverable by compiling, so the test fails with the reason
+        instead — one row to read rather than N red jobs.
+
+        A record carrying ``stamp_written: false`` names its own reason: the
+        build job's compile succeeded and only the stamp write failed, so
+        there is nothing here for the stamp check to have found and nothing
+        a recompile would repair either.
+
+        Which reason depends on the two fingerprints. Equal (or unknown,
+        from a build job too old to record one) says the two sides describe
+        the same compile and the disagreement is in the stamp itself — a
+        dependency the builder no longer reports the same way, a
+        replaced ``simv``, a stamp that never landed. Different says this
+        node's inputs are not the build job's: a ``preproc`` hook that
+        generates something different here, or an edit that landed
+        mid-run.
+        """
+        recorded_sha = (record or {}).get("fingerprint_sha")
+        own_sha = _fingerprint_sha(fingerprint)
+        reason = self.stamp_mismatch_reason or "the build's stamp did not validate"
+        inputs_differ = (
+            recorded_sha is not None and own_sha is not None and recorded_sha != own_sha
+        )
+        # The build job already knows why there is no stamp to validate: its
+        # own compile succeeded and the stamp write failed (#534). Saying "no
+        # stamp or no simv in the build dir" here would send the reader
+        # looking for a build that is right there; name the write instead.
+        stamp_unwritten = (record or {}).get("stamp_written") is False
+        if stamp_unwritten:
+            reason = "the build job could not write the build stamp"
+        what = (
+            "but could not write its build stamp"
+            if stamp_unwritten
+            else (
+                "from different compile inputs than this job derived"
+                if inputs_differ
+                else "and its stamp still does not validate here"
+            )
+        )
+        transcript = self._get_build_compile_transcript_path()
+        log_event(
+            logger,
+            logging.ERROR,
+            "compile.build_stamp_rejected",
+            test=self.test_name,
+            run_id=self.run_id,
+            build_dir=build_dir,
+            reason=reason,
+            inputs_differ=inputs_differ,
+            stamp_unwritten=stamp_unwritten,
+            recorded_sha=recorded_sha,
+            own_sha=own_sha,
+            build_result=str(self.build_result_json),
+        )
+        # One line: `render_summary` puts it in a table cell.
+        self.compile_fail_desc = (
+            f"build job built this test {what} ({reason}); not recompiling "
+            f"under the simulation reservation (see {transcript})"
+        )
+        self.last_compile_failure = {
+            "returncode": 1,
+            "transcript": transcript,
+        }
+        return 1
+
+    def _compile_plan(self):
+        """The cached :class:`_CompilePlan`, deriving it on first ask."""
+        if self._compile_plan_cache is None:
+            self._compile_plan_cache = self._build_compile_plan()
+        return self._compile_plan_cache
+
+    def compile_group_dir(self):
+        """The directory this test's compile will write into (#495).
+
+        The probe a dispatched build job groups on: configs sharing a value
+        here must compile serially, configs differing may compile at once.
+        Raises :class:`FilelistError` exactly as :meth:`compile` does, and
+        callers map it the same way — it is the same ``_write_filelist``.
+        """
+        return self._compile_plan().group_dir
+
+    def _compile_argv_base(self, plan, *, quiet=False):
+        """The builder command line ``plan`` would run, before any phase.
+
+        Derived here and nowhere else, for the reason ``group_dir`` is: the
+        reuse breadcrumb (:meth:`_write_reuse_transcript`) records the
+        command that *would* have run, and a second assembly of it would
+        drift from the real one the first time somebody touches the VCS
+        output strip — leaving a ``compile.log`` that says a build was made
+        from flags no builder ever saw.
+
+        ``quiet`` drops the side effects that belong to a real compile: the
+        strip's DEBUG record, the assertions line, and the Icarus snapshot
+        directory. A reuse must not create directories or claim to have
+        enabled anything.
+        """
+        # Copied: the VCS strip below rewrites these, and the plan is the
+        # record of what was decided, not a scratch buffer.
+        builder_opts = list(plan.builder_opts)
+        extra_compile_flags = list(plan.extra_compile_flags)
+        build_dir = plan.build_dir
+        family = self._get_simulator_family()
+        shared = self._shared_build_dir is not None
+
+        run_cmd = [self.rtl_builder_cfg.get_exe()]
+        if shared and family == "vcs":
+            # Strip BOTH sources of compile flags, not just the configured
+            # opts: a `-o` reaching run_cmd from _get_extra_compile_flags()
+            # would be appended after _vcs_shared_output_argv() and so win on
+            # VCS's duplicate-option precedence. The simv would land outside
+            # the shared dir, the stamp check would never find it, and every
+            # job would recompile — silently, and forever. No subclass emits
+            # one today; this keeps that from being load-bearing.
+            builder_opts, dropped_opts = self._strip_vcs_output_opts(builder_opts)
+            extra_compile_flags, dropped_extra = self._strip_vcs_output_opts(
+                extra_compile_flags
+            )
+            dropped_opts += dropped_extra
+            if dropped_opts and not quiet:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.share_build_opts_overridden",
+                    test=self.test_name,
+                    dropped=dropped_opts,
+                    build_dir=build_dir,
+                )
         run_cmd += builder_opts
 
-        if is_verilator:
+        if plan.is_verilator:
             run_cmd += ["--Mdir", build_dir]
-        elif self._get_simulator_family() == "icarus":
+        elif family == "icarus":
             # Icarus has no -Mdir equivalent; output a single .vvp snapshot
-            # into the per-test build dir and let our execute() path wrap it.
-            icarus_build_dir = (
-                Path(self._get_compile_work_dir()) / self._get_build_dir()
-            )
-            icarus_build_dir.mkdir(parents=True, exist_ok=True)
+            # into the build dir (shared or per-test) and let our execute()
+            # path wrap it.
+            if not quiet:
+                Path(self._get_icarus_snapshot_path()).parent.mkdir(
+                    parents=True, exist_ok=True
+                )
             run_cmd += ["-o", self._get_icarus_snapshot_path()]
+        elif shared and family == "vcs":
+            run_cmd += self._vcs_shared_output_argv(build_dir)
 
         run_cmd += extra_compile_flags
 
-        if assertion_flags:
-            run_cmd += assertion_flags
-            log_event(
-                logger,
-                logging.INFO,
-                "compile.assertions_enabled",
-                test=self.test_name,
-                flags=assertion_flags,
-            )
+        if plan.assertion_flags:
+            run_cmd += plan.assertion_flags
+            if not quiet:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "compile.assertions_enabled",
+                    test=self.test_name,
+                    flags=plan.assertion_flags,
+                )
+
+        # Pin the elaboration root, in the same position it occupies in
+        # `key_cmd` so the reuse breadcrumb and the real compile agree.
+        run_cmd += plan.top_flags
 
         # add test plus-defines
-        run_cmd += plusdefines
+        run_cmd += plan.plusdefines
 
-        run_cmd += ["-f", filelist_path]
+        run_cmd += ["-f", plan.filelist_path]
+        return run_cmd
+
+    def _compile_argv(self, plan, *, quiet=False):
+        """:meth:`_compile_argv_base`, rewritten for this job's phase (#593).
+
+        What a caller that wants "the command this compile runs" asks for —
+        the reuse breadcrumb above all. :meth:`_compile_with_plan` assembles
+        the two halves itself, because it has to look at the base line
+        before it can know whether the phase applies at all.
+        """
+        return self._apply_build_phase(self._compile_argv_base(plan, quiet=quiet))
+
+    @staticmethod
+    def _splittable(run_cmd):
+        """Is there a build step in ``run_cmd`` for a verilate job to omit?
+
+        A compile line with neither ``--binary`` nor ``--build`` already
+        stops after the front end (``--cc`` alone, or any non-Verilator
+        family), so there is nothing to split: the verilate job runs it
+        whole and stamps, and the build job reuses that build (#593).
+        """
+        return any(arg in _BUILD_STEP_FLAGS for arg in run_cmd)
+
+    def _apply_build_phase(self, run_cmd):
+        """Rewrite ``run_cmd`` for the half of the compile this job runs (#593).
+
+        Applied at emission, never folded into ``plan.builder_opts``: the
+        compile key and the fingerprint are derived from the configured
+        command line, and a phase that changed them would give the two
+        halves of one compile two different shared build directories.
+
+        ``verilate`` expands ``--binary`` into its own documented parts
+        with the build left out — ``--main --exe --timing``, no
+        ``--build`` — so Verilator emits the C++ sources and the
+        ``V<top>.mk`` under ``--Mdir`` and stops. ``build`` adds
+        ``--no-verilate``, which Verilator documents as "when using
+        --build, disable the generation of C++/SystemC code, and execute
+        only the build", so the make runs over what the first half left.
+        """
+        if self.build_phase == BUILD_PHASE_FULL:
+            return run_cmd
+        if self.build_phase == BUILD_PHASE_BUILD:
+            # Only where the marker cleared this key. Every fallback — no
+            # marker, a stale one, a Verilator without the flag — runs the
+            # whole compile here instead, which is the argv it already is.
+            return run_cmd + ["--no-verilate"] if self._skip_verilate else run_cmd
+        if not self._splittable(run_cmd):
+            return run_cmd
+        rewritten = []
+        for arg in run_cmd:
+            if arg == "--binary":
+                rewritten += ["--exe", "--main", "--timing"]
+            elif arg == "--build":
+                # A line spelling the parts out (`--cc --exe --main
+                # --build`) needs only this half of the rewrite.
+                continue
+            else:
+                rewritten.append(arg)
+        return rewritten
+
+    def _verilator_supports_no_verilate(self):
+        """Will this Verilator run the make step alone (#593)?
+
+        Probed rather than version-gated: the flag is what the build half
+        needs, and a build reserved for a make that silently re-verilates
+        is the one outcome worth a ``--help`` to avoid. Answered once per
+        executable per process; anything that goes wrong reads as "no",
+        which falls the key back to a full compile.
+        """
+        exe = self.rtl_builder_cfg.get_exe()
+        cached = _NO_VERILATE_SUPPORT.get(exe)
+        if cached is not None:
+            return cached
+        try:
+            probe = subprocess.run(
+                [exe, "--help"], capture_output=True, text=True, timeout=60
+            )
+            supported = "--no-verilate" in f"{probe.stdout}{probe.stderr}"
+        except (OSError, subprocess.SubprocessError):
+            supported = False
+        _NO_VERILATE_SUPPORT[exe] = supported
+        return supported
+
+    @staticmethod
+    def _verilate_marker_path(stamp_dir):
+        """Where the verilate half records what it did, beside the stamp."""
+        return Path(stamp_dir) / VERILATE_MARKER_NAME
+
+    def _write_verilate_marker(
+        self, stamp_dir, *, fingerprint, status, transcript, duration_sec
+    ):
+        """Record this key's verilation for the build half. Never raises.
+
+        Best-effort like the stamp write beside it: a marker that did not
+        land makes the build half do the whole compile itself, which is
+        slower and never wrong.
+
+        ``duration_sec`` is carried so the build half can report the
+        compile's whole cost rather than its own C++ step: the two halves
+        are one compile to every consumer of the record.
+        """
+        path = self._verilate_marker_path(stamp_dir)
+        try:
+            self._replace_text(
+                path,
+                json.dumps(
+                    {
+                        "fingerprint_sha": _fingerprint_sha(fingerprint),
+                        "status": status,
+                        "transcript": transcript,
+                        "duration_sec": duration_sec,
+                        "timestamp": time.time(),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.verilate_marker_write_failed",
+                test=self.test_name,
+                marker=str(path),
+                error=str(exc),
+            )
+
+    def _read_verilate_marker(self, stamp_dir):
+        """The marker in ``stamp_dir`` as a dict, or ``None``. Never raises."""
+        try:
+            stored = json.loads(self._verilate_marker_path(stamp_dir).read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return stored if isinstance(stored, dict) else None
+
+    @staticmethod
+    def _verilate_marker_is_ok(marker, fingerprint):
+        """Does ``marker`` vouch for a successful verilation of THESE inputs?"""
+        if not isinstance(marker, dict) or marker.get("status") != "ok":
+            return False
+        recorded = marker.get("fingerprint_sha")
+        own = _fingerprint_sha(fingerprint)
+        return recorded is not None and own is not None and recorded == own
+
+    def _settle_verilate_phase(self, stamp_dir, fingerprint, *, forced):
+        """Has this key already been verilated? ``0`` = done, ``None`` = do it.
+
+        The marker is to this phase what the stamp is to a whole compile.
+        Two configs on one compile key land in one group, and the second
+        must not pay a second front end for the sources the first left —
+        which is what the build job's group-leader rule would normally
+        prevent, except that its subject is a stamp this phase
+        deliberately does not write (#593).
+        """
+        if forced:
+            return None
+        if not self._verilate_marker_is_ok(
+            self._read_verilate_marker(stamp_dir), fingerprint
+        ):
+            return None
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.verilate_reused",
+            test=self.test_name,
+            **_build_dir_fields(stamp_dir, shared=self._shared_build_dir is not None),
+        )
+        self._record_compile(duration_sec=0.0, reused=True)
+        return 0
+
+    def _settle_split_phase(self, stamp_dir, fingerprint):
+        """What the build half of a split compile does with this key (#593).
+
+        Returns a compile status to return outright, or ``None`` to go on
+        and compile — with :attr:`_skip_verilate` saying whether that
+        compile may skip the front end.
+
+        Four outcomes, and only the first is the fast one:
+
+        * a marker for these exact inputs, ``ok``, and a Verilator that
+          takes ``--no-verilate``: run the make alone.
+        * a marker for these inputs saying ``failed``: the verilation is
+          deterministic, so re-running it under the build reservation would
+          fail again and write over the transcript that holds the errors.
+          The key fails here carrying that transcript.
+        * no marker, or one from other inputs: verilate and build here, and
+          say which of the two it was.
+        * a Verilator that cannot be told to skip the front end: the same
+          full compile, said differently, because the reservation the
+          verilate job spent is the thing to reconsider.
+        """
+        marker = self._read_verilate_marker(stamp_dir)
+        if marker is None:
+            self._report_build_phase_fallback("marker-missing")
+            return None
+        recorded = marker.get("fingerprint_sha")
+        own = _fingerprint_sha(fingerprint)
+        if recorded is None or own is None or recorded != own:
+            self._report_build_phase_fallback("marker-stale")
+            return None
+        if marker.get("status") != "ok":
+            return self._decline_failed_verilation(marker)
+        if not self._verilator_supports_no_verilate():
+            self._report_build_phase_fallback("no-verilate-unsupported")
+            return None
+        self._skip_verilate = True
+        self._verilate_sec = marker.get("duration_sec")
+        return None
+
+    def _report_build_phase_fallback(self, reason):
+        """Say that this key's build job had to verilate for itself (#593).
+
+        WARNING, because it is the reservation that is wrong: the suite
+        paid for a verilate job and a build job, and one of them did the
+        whole compile under the other's cpus and memory.
+        """
+        log_event(
+            logger,
+            logging.WARNING,
+            "compile.build_phase_fallback",
+            test=self.test_name,
+            reason=reason,
+        )
+
+    def _decline_failed_verilation(self, marker):
+        """The verilate job failed this key; report it without re-running it.
+
+        The same reasoning as a gated sim job declining a failed build
+        (#498): the sources, the flags and the toolchain are unchanged, so
+        the second attempt fails identically and only costs the transcript
+        that holds the first one's errors.
+        """
+        transcript = (
+            marker.get("transcript") or self._get_build_compile_transcript_path()
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "compile.verilate_failed",
+            test=self.test_name,
+            transcript=transcript,
+        )
+        self.compile_fail_desc = (
+            "the verilate job failed to verilate this test; not re-running "
+            f"it under the build reservation (see {transcript})"
+        )
+        self.last_compile_failure = {"returncode": 1, "transcript": transcript}
+        return 1
+
+    def _rebuild_forced(self, build_dir, *, shared=True):
+        """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
+
+        True at most once per directory per process (invariant: a shared-key
+        suite rebuilds its one directory once, not once per test), and only
+        when the run asked for it.
+
+        Same field schema as its counterpart ``compile.build_reused`` —
+        basename in ``build_dir``, absolute in ``build_path`` — so a
+        consumer keying on either across the pair gets one kind of thing.
+        """
+        if not self.rebuild:
+            return False
+        if not _claim_rebuild(str(build_dir)):
+            return False
+        # Console, like the reuse line: between them the two answer "what
+        # produced the binary this run simulated?", and a `--rebuild` that
+        # reached a dispatched job silently is as hard to trust as a silent
+        # reuse. Fires once per build dir per process, so it cannot become
+        # chatter.
+        log_console_event(
+            logger,
+            logging.INFO,
+            "compile.rebuild_forced",
+            test=self.test_name,
+            **_build_dir_fields(build_dir, shared=shared),
+        )
+        return True
+
+    def _read_build_stamp(self, stamp_dir):
+        """The stamp in ``stamp_dir`` as a dict, or ``None``.
+
+        Never raises. Its callers are recording telemetry or deciding to
+        fall back to a compile, and neither may be what fails a run.
+        """
+        try:
+            stored = json.loads((Path(stamp_dir) / SHARED_BUILD_STAMP_NAME).read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return stored if isinstance(stored, dict) else None
+
+    def _record_build_stamp(self, stamp_dir):
+        """Record which binary this run's stamp vouched for (#535).
+
+        ``build_dir`` is the directory the stamp lives in, resolved — for a
+        shared build the ``obj_dir_<key>`` directory, so it *is* the compile
+        key, and the one thing every run of that key agrees on however its
+        inputs' contents fared. ``fingerprint_sha`` is the digest over the
+        stamp's input half — the same :func:`_fingerprint_sha` takes of a
+        live fingerprint, the stamp being that dict plus ``deps``/``simv`` —
+        and ``simv`` the entry the stamp vouched for. The head groups the
+        runs of one ``build_dir`` at collect: they were meant to validate
+        one stamp, so a run naming a different binary, or a different
+        digest, reused something nobody else did.
+        """
+        stored = self._read_build_stamp(stamp_dir)
+        if stored is None:
+            self.last_build_stamp = None
+            return
+        inputs = {key: value for key, value in stored.items() if key not in _STAMP_META}
+        self.last_build_stamp = {
+            "build_dir": os.path.realpath(str(stamp_dir)),
+            "fingerprint_sha": _fingerprint_sha(inputs),
+            "simv": stored.get("simv"),
+        }
+
+    def refresh_build_stamp(self):
+        """Re-read the stamp ``last_build_stamp`` was taken from.
+
+        A same-key sibling's adoption rewrites the shared stamp's listing
+        after the leader recorded its digest, so a record taken when the
+        group is done — the build job's envelope — must name the stamp the
+        gated jobs will validate, not the one the leader saw. Telemetry:
+        never raises.
+        """
+        stamp = self.last_build_stamp
+        if stamp is None or self._read_build_stamp(stamp["build_dir"]) is None:
+            return
+        self._record_build_stamp(stamp["build_dir"])
+
+    def _record_launched_simv(self, simv_path):
+        """Stamp the executable this run launches, not the one it validated.
+
+        The stamp check and the launch are separate moments, and another
+        process may rebuild the shared directory between them; the head's
+        binary audit is only worth its warning if each run names the binary
+        it actually ran.
+        """
+        if self.last_build_stamp is not None:
+            # Spelled exactly as the stamp spells it, so the head's audit
+            # compares two stats and never two prefixes (#542).
+            self.last_build_stamp["simv"] = self._stamp_simv_entry(simv_path)
+
+    def adopt_group_build(self):
+        """Take the build a same-key sibling just made, or say why not (#535).
+
+        A build job groups its configs by the directory their compile will
+        WRITE, so a group's members share a compile key by construction:
+        one ``key_cmd``, one set of ``run.f`` lines, one resolved builder.
+        The only thing that can differ between the leader's stamp and this
+        member's fingerprint is a file that moved *during the job* — and on
+        a cold tree the serial PRE phase guarantees one does: this member's
+        own ``preproc`` output, created after the leader was fingerprinted,
+        under an ``+incdir+`` the stamp lists by name. Recompiling the key
+        for that is what #535 reported.
+
+        So the question here is narrower than the stamp's. Did any input
+        the leader's build actually CONSUMED change? That is the stamp's
+        ``deps``, and a "yes" is not a stale build: it is two tests on one
+        compile key compiling different bytes, whose other outcome under
+        ``--share-build`` is one test silently simulating the other's
+        binary. Nothing is served by recompiling that.
+
+        The listing is not ignored outright, though: a file that appeared
+        where it can change what the compile *resolves* — anything new in a
+        ``-y`` directory, or a header shadowing a consumed include by name
+        (:func:`_first_resolution_change`) — means the leader's build is not
+        the one this member's compile would produce, and nothing here can
+        say what would be. That is handed back undecided.
+
+        Returns ``("adopted", None)``, ``("drift", <path>)``, or
+        ``(None, <reason>)`` for "not decidable here" — no shared build, no
+        stamp, a compile line that somehow differs, a resolution change as
+        above, or a builder that reports no dependencies. VCS and Icarus are
+        that last case: with no dependency file nothing separates a consumed
+        input from a bystander, so the leader's own full comparison decides
+        it and this member takes the pre-#535 path. A ``None`` verdict IS
+        that path — the caller compiles, and a valid stamp still
+        short-circuits it.
+
+        The second element is the detail in both non-adopting cases: the
+        drifted dependency's path, or the short reason this member could not
+        adopt. The caller logs that reason (#534/#535) — an adoption that
+        silently declined and a sibling that silently paid a full compile
+        were the same event with no record of the first half.
+
+        An adoption also rewrites the stamp's ``sources`` to this member's
+        listing. The stamp is what every gated simulation job validates
+        against, by name for the listings, and those jobs run after every
+        member's ``preproc`` has populated the tree: a stamp still listing
+        the leader's cold view would fail them all — the leader's included —
+        and a gated job whose build job built it does not recompile.
+
+        Validation and the rewrite happen under the build directory lock,
+        as a compile's stamp check does: what is validated is the stamp
+        that is rewritten, not one a concurrent process replaced between.
+        """
+        plan = self._compile_plan()
+        fingerprint = plan.fingerprint
+        if plan.shared_dir is None:
+            return None, "no shared build directory"
+        if not isinstance(fingerprint, dict):
+            return None, "no compile fingerprint"
+        with build_dir_lock(plan.shared_dir, test=self.test_name):
+            return self._adopt_group_build_locked(plan, fingerprint)
+
+    def _adopt_group_build_locked(self, plan, fingerprint):
+        stored = self._read_build_stamp(plan.shared_dir)
+        if stored is None:
+            return None, "no stamp"
+        deps = stored.get("deps")
+        if not isinstance(deps, list):
+            return None, "no dependency list (builder reports none)"
+        stored_format = stored.get("deps_format")
+        if stored_format != _DEPS_FORMAT:
+            return None, f"stamp dependency format {stored_format} != {_DEPS_FORMAT}"
+        if (stored.get("root") is not None) != (self.shared_build_root is not None):
+            # Same fail-closed reading as `_build_stamp_is_valid`'s: the
+            # exact-equality bucket below skips `root` on purpose, so nothing
+            # else here would notice the two spellings (#542).
+            return None, "stamp written in the other shared-build mode"
+        simv_path = self._get_simv_path()
+        if not Path(simv_path).is_file() or stored.get(
+            "simv"
+        ) != self._stamp_simv_entry(simv_path):
+            return None, "simv changed"
+        # Everything but the tracked inputs, compared exactly. The compile
+        # key already fixes the command and the toolchain's identity, so
+        # this only catches a toolchain replaced under a running job —
+        # cheap, and the one input a group's members do not share by
+        # construction.
+        skipped = _STAMP_META | {"sources"}
+        if {key: value for key, value in stored.items() if key not in skipped} != {
+            key: value for key, value in fingerprint.items() if key != "sources"
+        }:
+            return None, "stamp inputs differ"
+        for entry in deps:
+            if not isinstance(entry, list) or len(entry) != 4:
+                return None, "unreadable dependency entry"
+            if not isinstance(entry[0], str):
+                # `os.stat` takes a file *descriptor* for an int.
+                return None, "unreadable dependency entry"
+            if not _entry_matches(entry, self._stamp_tracked_entry(entry[0])):
+                return "drift", self._note_group_input_drift(entry[0])
+        # Listed now, under the lock: the plan's listing predates the wait
+        # for it, and a file another process added to a tracked directory
+        # meanwhile would neither be seen as a resolution change nor make
+        # it into the refreshed stamp the gated jobs validate by name.
+        sources = self._fingerprint_filelist_sources(plan.filelist_path)
+        appeared = _first_resolution_change(stored.get("sources"), sources, deps)
+        if appeared is not None:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.group_resolution_changed",
+                test=self.test_name,
+                appeared=appeared,
+            )
+            return None, f"resolution changed: {appeared}"
+        if not self._refresh_stamp_sources(plan.shared_dir, sources):
+            return None, "stamp refresh failed"
+        # Consumed like a compile: this instance has had its one build.
+        self._compile_plan_cache = None
+        self._report_build_reused(plan, stamp_dir=plan.shared_dir)
+        self._record_compile(duration_sec=0.0, reused=True)
+        return "adopted", None
+
+    def _refresh_stamp_sources(self, stamp_dir, sources):
+        """Rewrite the stamp in ``stamp_dir`` with ``sources`` as its listing.
+
+        Everything else — command, toolchain, ``deps``, ``simv`` — is kept
+        as stamped. Called with the build directory lock held, so the stamp
+        re-read here is the one just validated. Written as one atomic
+        replacement, so a reader never sees a truncated stamp.
+
+        Returns whether the stamp now carries ``sources``. ``False`` means
+        the caller must not report an adoption: the gated simulation jobs
+        would validate a listing that was never updated and, the build
+        envelope saying the config was built, fail rather than recompile.
+        """
+        stored = self._read_build_stamp(stamp_dir)
+        if stored is None:
+            return False
+        if stored.get("sources") == sources:
+            return True
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
+        try:
+            self._replace_text(
+                stamp_path, json.dumps({**stored, "sources": sources}, sort_keys=True)
+            )
+        except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.build_stamp_refresh_failed",
+                test=self.test_name,
+                stamp=str(stamp_path),
+                error=str(exc),
+            )
+            return False
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.build_stamp_sources_refreshed",
+            test=self.test_name,
+            stamp=str(stamp_path),
+        )
+        return True
+
+    def _note_group_input_drift(self, dependency):
+        """Record the drift verdict as a compile failure; return ``dependency``.
+
+        The build job reports this config failed, and the record it writes
+        has to be decisive on the sim side too: a ``returncode`` is what
+        stops the gated sim job from recompiling the key into the shared
+        directory (#498), which is the same clobber read from the other
+        end. No transcript, because no builder ran — the one line below is
+        the whole story, and it travels in the envelope's ``error_tail``.
+        """
+        line = (
+            f"same compile key, different compiled input: {dependency}; give "
+            "this test its own compile key, or fix the preproc that rewrites "
+            "that input per test"
+        )
+        self.compile_fail_desc = line
+        self.last_compile_failure = {"returncode": 1, "error_tail": [line]}
+        return dependency
+
+    def _report_build_reused(self, plan, *, stamp_dir, shared=True):
+        """Say — on the console, and in the test's ``compile.log`` — that
+        this compile was skipped (#494).
+
+        A stale reuse used to be deducible only from an *absent*
+        ``compile.log``, which reads as "nothing to do". Both records name
+        the directory and how old its stamp is, so the run that reuses a
+        build made before an edit says so where the reader is already
+        looking.
+        """
+        fingerprint = plan.fingerprint
+        toolchain = (
+            fingerprint["toolchain"]["version"] or fingerprint["toolchain"]["exe"]
+        )
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
+        try:
+            stamp_mtime = stamp_path.stat().st_mtime
+        except OSError:
+            # The stamp validated a moment ago, so this is a vanishing race
+            # rather than a state; report the reuse without an age instead
+            # of failing the compile over telemetry.
+            stamp_mtime = None
+        age_sec = (
+            None if stamp_mtime is None else max(0, round(time.time() - stamp_mtime))
+        )
+        fields = {
+            "test": self.test_name,
+            **_build_dir_fields(stamp_dir, shared=shared),
+            "stamp_age_sec": age_sec,
+            "toolchain": toolchain,
+        }
+        # Console, not just the log file: the console handler sits at
+        # WARNING, so a dispatched run's reuse would otherwise be invisible
+        # in exactly the transcript that has to show it (#435 pattern).
+        # Once per build dir per process on the console — a local regression
+        # reusing one build across N tests says so once, not N times; every
+        # reuse still lands in the file log (#494 review).
+        if _first_reuse_announcement(stamp_dir):
+            log_console_event(logger, logging.INFO, "compile.build_reused", **fields)
+        else:
+            log_event(logger, logging.INFO, "compile.build_reused", **fields)
+        self._write_reuse_transcript(
+            plan, stamp_dir=stamp_dir, stamp_mtime=stamp_mtime, toolchain=toolchain
+        )
+        self._record_build_stamp(stamp_dir)
+
+    def _write_reuse_transcript(self, plan, *, stamp_dir, stamp_mtime, toolchain):
+        """Leave a ``compile.log`` for a compile that did not run.
+
+        Same path a real transcript takes, and the same per-test,
+        per-attempt overwrite semantics: the question it answers is "what
+        produced the binary this run simulated", and for a reuse the honest
+        answer is a build made elsewhere, at a stated time, from the command
+        printed here. Best-effort — a reuse must not fail because its
+        breadcrumb could not be written.
+
+        A transcript a *compile* left here is kept below the breadcrumb
+        rather than dropped: under dispatch this path is written by the
+        build job's compile and then by every gated element's reuse, and
+        that first write is the run's only file-level record of, say, a VCS
+        ``-licqueue`` wait. Exactly one transcript is carried — a later
+        reuse takes over the one the breadcrumb it replaces was holding
+        rather than nesting inside it — so the file cannot grow element
+        over element.
+
+        Written temp-then-:func:`os.replace`, because a ``run_id`` fan-out
+        points N array elements at this one path at once and a truncating
+        write would let a reader see a half-file (#363's hazard class).
+        """
+        when = (
+            "unknown"
+            if stamp_mtime is None
+            else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp_mtime))
+        )
+        try:
+            run_str = " ".join(self._compile_argv(plan, quiet=True))
+        except Exception:  # noqa: BLE001 - a breadcrumb never fails a build
+            run_str = "(unavailable)"
+        text = (
+            f"{_REUSE_TRANSCRIPT_MARKER}{stamp_dir}\n"
+            f"Stamp written: {when}\n"
+            f"Toolchain: {toolchain}\n"
+            "Nothing was compiled for this run. The command a rebuild "
+            "would have run:\n\n"
+            f"Command: {run_str}\n\n"
+            "Use --rebuild to compile it again, or delete the directory "
+            "above.\n"
+        )
+        path = Path(self._get_compile_transcript_path())
+        previous = self._previous_compile_transcript(path)
+        if previous:
+            text += f"{_CARRIED_TRANSCRIPT_HEADER}{previous}"
+        try:
+            self._replace_text(path, text)
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.reuse_transcript_unwritable",
+                test=self.test_name,
+                error=str(e),
+            )
+
+    @staticmethod
+    def _previous_compile_transcript(path):
+        """The compile output already at ``path``, or ``""``.
+
+        A breadcrumb is not compile output, so reusing over one keeps what
+        that breadcrumb was itself carrying rather than nesting breadcrumbs:
+        N reuses of one build preserve exactly one transcript.
+
+        ``errors="replace"``, and ``ValueError`` caught beside ``OSError``:
+        a real transcript carries raw simulator output that owes nobody
+        valid UTF-8, and a breadcrumb helper must degrade — never raise —
+        on the exit-0 path (the same contract as the write side).
+        """
+        try:
+            existing = Path(path).read_text(errors="replace")
+        except (OSError, ValueError):
+            return ""
+        if existing.startswith(_REUSE_TRANSCRIPT_MARKER):
+            _, separator, carried = existing.partition(_CARRIED_TRANSCRIPT_HEADER)
+            return carried if separator else ""
+        return existing
+
+    def _replace_text(self, path, text):
+        """Write ``text`` to ``path`` as one atomic replacement."""
+        path = Path(path)
+        tmp = path.with_name(atomic_tmp_name(path.name))
+        try:
+            tmp.write_text(text)
+            os.replace(tmp, path)
+        except OSError:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+            raise
+
+    def compile(self):
+        rtl_builder_cfg = self.rtl_builder_cfg
+        # One compile, one verdict: a second compile() on this instance must
+        # not inherit the first's failure record, desc, or transcript name.
+        self.last_compile_failure = None
+        self.compile_fail_desc = None
+        self.stamp_write_failed = False
+        self._compile_transcript_override = None
+        # A retry transcript describes exactly one run's retry. Left behind,
+        # `rb graph results` would keep advertising it as this run's (#498
+        # review) — remove it up front so it exists only when this compile's
+        # own gated retry writes it. THIS run's own, never a sibling's: the
+        # retry log is run-scoped (#498 review round 6), and unlinking at
+        # test scope destroyed the one diagnostic a sibling run's failed
+        # retry had left. The same discipline as the stale stamp unlink;
+        # best-effort like every artefact-dir touch.
+        try:
+            Path(self._get_retry_transcript_path()).unlink(missing_ok=True)
+        except OSError:
+            pass
+        log_event(
+            logger,
+            logging.DEBUG,
+            "compile.config",
+            test=self.test_name,
+            config=pprint.pformat(rtl_builder_cfg),
+        )
+        plan = self._compile_plan()
+        # One plan serves one compile. A second compile() on this instance
+        # must re-stat its inputs — that is how an edited source invalidates
+        # the stamp — so the cache is consumed here rather than kept.
+        self._compile_plan_cache = None
+
+        if plan.shared_dir is None:
+            # Unshared builds stay unlocked: within a dispatched run #369
+            # already gives each per-test build directory one writer. An
+            # absolute `builder-simv:` pinning two *processes* to one
+            # executable is pre-existing exposure, out of this scope.
+            return self._compile_with_plan(plan)
+        # The reuse fast path takes NO lock. A dispatched suite's gated sim
+        # elements all call compile() against one already-valid shared
+        # build; serialising those on a cross-node flock would put N stamp
+        # validations (each content-hashing every tracked input, on a node
+        # with a cold page cache) on the critical path one after another,
+        # and would leave a reuser hostage to any compile that happened to
+        # hold the lock — a VCS licence queue, say. The lock buys the reuse
+        # path nothing durable anyway: it is released before execute() runs
+        # the simulation, so a reuser is exposed to a later concurrent
+        # relink either way.
+        #
+        # `--rebuild` is not decided here: `_rebuild_forced` CLAIMS the one
+        # rebuild this process owes the directory, and that claim belongs
+        # next to the compile it forces, inside the lock.
+        if not self.rebuild and self._reuse_shared_build(plan, quiet=True):
+            return 0
+        # Before the lock, because the lock file lives inside the directory
+        # it guards. (A reuse would find it there anyway; only a shared dir
+        # that never gets compiled into is newly created here.)
+        plan.shared_dir.mkdir(parents=True, exist_ok=True)
+        # Cross-process single writer (#494): several `rb` processes that
+        # start together against a cold shared tree would otherwise all
+        # compile into it at once. The stamp check lives INSIDE the lock, so
+        # a waiter re-decides after acquiring and reuses the build it waited
+        # for rather than repeating it. Lock ordering is in build_dir_lock:
+        # one build lock per thread, and never taken around the tree lock.
+        with build_dir_lock(plan.shared_dir, test=self.test_name):
+            return self._compile_with_plan(plan)
+
+    def _reuse_shared_build(self, plan, *, quiet=False):
+        """Reuse the stamped build in ``plan.shared_dir`` if it validates.
+
+        One place, because the question is asked twice: unlocked in
+        :meth:`compile` (the fast path — a warm build nobody is compiling
+        is the common case) and again inside the build lock, where it is
+        the second half of the double check. ``quiet`` is for the first,
+        advisory ask: the in-lock repeat owns the "why this stamp lost"
+        diagnostics, so a rebuild explains itself once rather than twice.
+        """
+        if not self._shared_build_is_valid(
+            plan.shared_dir, plan.fingerprint, test_name=self.test_name, quiet=quiet
+        ):
+            return False
+        self._report_build_reused(plan, stamp_dir=plan.shared_dir)
+        # 0.0, not the stamp-check time: the number is read as "what this
+        # build cost", and a reuse cost no build. The stat cost is real
+        # but sub-millisecond and would only invite someone to sum it
+        # against a compile.
+        self._record_compile(duration_sec=0.0, reused=True)
+        return True
+
+    def _compile_with_plan(self, plan):
+        """Check the stamp, compile if it does not validate, stamp the result.
+
+        Split from :meth:`compile` so the shared-build case can hold
+        :func:`build_dir_lock` across the whole sequence — check, compile
+        and stamp are one critical section, and a lock released between
+        them would let a second process see the invalidated stamp and
+        start its own compile into the same directory.
+
+        The stamp is validated against ``plan.fingerprint``, which
+        :meth:`_compile_plan` computed BEFORE any wait on the lock. So the
+        comparison is "as of when this compile was planned", not as of
+        acquisition: a source edited while this process queued behind
+        another compile is judged by its pre-wait hash and gets caught on
+        the next run instead. The window is the pre-existing one — a
+        fingerprint has always been taken before the compile it describes
+        — widened from ~0 to the length of somebody else's compile.
+        """
+        rtl_builder_cfg = self.rtl_builder_cfg
+        compile_work_dir = plan.compile_work_dir
+        build_dir = plan.build_dir
+        fingerprint = plan.fingerprint
+        # The stamp this compile is about to invalidate, removed only once a
+        # builder is certain to run in that directory (#534). A gated job
+        # that declines below returns without touching it: its stamp check
+        # lost, but the directory holds the build job's outputs, and a stamp
+        # removed here would fail every *sibling* element on the same key
+        # with "no stamp or no simv" — one job's drift cascading to the whole
+        # fan-out, and a plain re-run rebuilding from scratch.
+        stale_stamp = None
+        # Did `--rebuild` claim this directory? Read after the block below,
+        # where a split phase's reuse check has to respect it (#593).
+        forced = False
+
+        if self.share_build:
+            if plan.unsupported_reason is None:
+                # Claimed before the check, so `--rebuild` decides it rather
+                # than the stamp — and claimed only once per directory, so
+                # the next test with this key reuses what this one builds.
+                forced = self._rebuild_forced(plan.shared_dir)
+                if not forced and self._reuse_shared_build(plan):
+                    return 0
+                # (The directory itself was created by compile(), which
+                # needed it to put the build lock in.)
+                # A crashed/killed compile must never leave a stamp that
+                # validates a broken simv — so this goes, but below, once
+                # the gated verdict has had its say.
+                stale_stamp = plan.shared_dir / SHARED_BUILD_STAMP_NAME
+                # A shared build owns the output location, so a *relative*
+                # builder-simv: is discarded rather than honoured (the absolute
+                # case declines sharing outright). Say which value went
+                # unused instead of leaving it to be inferred from the path.
+                configured_simv = self.rtl_builder_cfg.get_simv()
+                if (
+                    self._get_simulator_family() not in ("verilator", "icarus")
+                    and configured_simv != "simv"
+                ):
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "compile.share_build_simv_overridden",
+                        test=self.test_name,
+                        configured=configured_simv,
+                        used=self._get_simv_path(),
+                    )
+            else:
+                forced = self._rebuild_forced(compile_work_dir, shared=False)
+                if not forced and self._build_stamp_is_valid(
+                    compile_work_dir,
+                    self._get_simv_path(),
+                    fingerprint,
+                    test_name=self.test_name,
+                ):
+                    self._report_build_reused(
+                        plan, stamp_dir=compile_work_dir, shared=False
+                    )
+                    self._record_compile(duration_sec=0.0, reused=True)
+                    return 0
+                stale_stamp = Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME
+
+        # Where this key's stamp and verilate marker live: the shared build
+        # directory when there is one, else beside the test's own compile
+        # outputs (the builder interprets `build_dir` relative to those).
+        stamp_dir = self._shared_build_dir or compile_work_dir
+        base_argv = self._compile_argv_base(plan)
+        # Is this invocation the verilation ALONE? Only where a build step
+        # was there to hold back: a line that already stops after the front
+        # end is run whole and stamped, and the build half then reuses it
+        # (#593).
+        verilate_only = self.build_phase == BUILD_PHASE_VERILATE and self._splittable(
+            base_argv
+        )
+        if self.build_phase == BUILD_PHASE_BUILD:
+            settled = self._settle_split_phase(stamp_dir, fingerprint)
+            if settled is not None:
+                return settled
+        elif verilate_only:
+            settled = self._settle_verilate_phase(stamp_dir, fingerprint, forced=forced)
+            if settled is not None:
+                return settled
+
+        run_cmd = self._apply_build_phase(base_argv)
         run_str = " ".join(run_cmd)
+        if self.expect_prebuilt:
+            # This job was ordered after a build job precisely so it would not
+            # have to compile. Reaching here means that build's stamp did not
+            # validate — and only the build envelope can say whether
+            # compiling now is a recovery or a catastrophe (#498/#535).
+            verdict, build_record = self._gated_build_verdict(fingerprint)
+            if verdict == "built":
+                return self._decline_gated_recompile(
+                    build_record, fingerprint, build_dir
+                )
+            if verdict == "failed":
+                build_failure = build_record
+                # The build job's compile for THIS test exited non-zero. That
+                # is deterministic: the same sources, the same flags and the
+                # same toolchain will fail again here, only now under the sim
+                # reservation — which is how a 40-character lint error became
+                # `%Error: Verilator threw signal 9` written over the build's
+                # own `compile.log`, and three rounds of raising compile
+                # memory chasing it. Fail immediately, carrying the build's
+                # verdict, and leave that transcript exactly as it is.
+                returncode = build_failure.get("returncode")
+                build_transcript = self._get_build_compile_transcript_path()
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "compile.build_job_failed",
+                    test=self.test_name,
+                    run_id=self.run_id,
+                    returncode=returncode,
+                    transcript=build_transcript,
+                    build_result=str(self.build_result_json),
+                )
+                self.compile_fail_desc = build_compile_fail_desc(
+                    returncode=returncode,
+                    error_tail=build_failure.get("error_tail"),
+                    logs=build_transcript,
+                )
+                self.last_compile_failure = {
+                    "returncode": returncode,
+                    "transcript": build_transcript,
+                }
+                # A non-zero status is the contract with _compile_outcome;
+                # the build's own is used so the two records agree.
+                # _gated_build_verdict guarantees a returncode is present,
+                # so the guard only keeps a malformed record (0, or a
+                # non-int from a hand-edited envelope) from turning this
+                # failure into a success.
+                return returncode if isinstance(returncode, int) and returncode else 1
+            # The stamp is merely absent or stale — a toolchain moved, a
+            # clock skewed, the build job never got to this config. The
+            # retry is right, but the dependency only *orders* the elements
+            # (it does not exclude them), so every sibling element is about
+            # to do the same thing into the same directory. That is #369
+            # resurrected, and this is the one line that says so; a
+            # `Compile failed` further down otherwise looks like a design
+            # error.
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.prebuilt_stamp_invalid",
+                test=self.test_name,
+                run_id=self.run_id,
+                build_dir=build_dir,
+                # WHAT drifted, not just that something did. The check's own
+                # diagnostics are DEBUG and a dispatched job logs at INFO,
+                # so without this the reader of the job that recompiled (or
+                # was OOM-killed doing it) has nothing to act on (#536).
+                reason=self.stamp_mismatch_reason,
+            )
+            # Beside the build's transcript, never over it: whatever this
+            # retry hits is the *sim job's* story, told under the sim job's
+            # reservation, and the build's compile.log is the only record of
+            # what the build job saw. In the RUN's own directory (#498
+            # review round 6): the retry is one run's recompile, and
+            # sibling runs share the test dir. `_ensure_artifact_dir`, not
+            # just the path — a failing retry must find the dir to write
+            # its transcript into.
+            self._ensure_artifact_dir(run_id=self.run_id)
+            self._compile_transcript_override = self._get_retry_transcript_path()
+        # Now, and only now: every path that returns without compiling has
+        # returned. A builder is about to write this directory, so the stamp
+        # describing what was there stops being true (#534) — a crashed or
+        # killed compile must not leave one that validates a half-written
+        # simv.
+        if stale_stamp is not None:
+            stale_stamp.unlink(missing_ok=True)
         log_event(
             logger,
             logging.INFO,
@@ -651,14 +5185,39 @@ class VlogSim:
                 raise FatalRtlBuddyError(f"Builder not found. Run exe: {run_cmd[0]}")
 
         e_time = time.time()
+        # Recorded before the pass/fail branch: a compile that failed after
+        # 14 minutes is exactly the number a build-job reservation is sized
+        # against, and dropping it would leave the slowest builds invisible.
+        self._record_compile(
+            duration_sec=round(e_time - s_time, 2),
+            reused=False,
+            # Set only where the build half consumed a marker, so an
+            # unsplit compile records exactly the three keys it always did.
+            verilate_sec=self._verilate_sec,
+        )
+        license_queued = self._compile_queued_for_license(result)
+        # Unconditional since #494 (see _write_compile_transcript): a reuse
+        # writes this file, so a compile that ran has to as well, or the
+        # file's presence would read as "nothing compiled".
+        #
+        # Whichever file that is — `compile.log`, or the `compile.retry.log`
+        # a gated retry writes so it does not truncate the build job's
+        # (#498). Every consumer that points a reader at "the transcript"
+        # reads the path off the events below, never off a name of its own.
+        transcript_path = self._write_compile_transcript(run_str, result)
+        if verilate_only:
+            # What the build half reads instead of a stamp. There is no
+            # stamp to write: nothing runnable exists yet, and one here
+            # would let a gated simulation reuse a directory holding no
+            # executable (#593).
+            self._write_verilate_marker(
+                stamp_dir,
+                fingerprint=fingerprint,
+                status="ok" if result.returncode == 0 else "failed",
+                transcript=transcript_path,
+                duration_sec=round(e_time - s_time, 2),
+            )
         if result.returncode != 0:
-            transcript_path = self._get_compile_transcript_path()
-            with open(transcript_path, "w") as transcript_fp:
-                transcript_fp.write(f"Command: {run_str}\n\n")
-                transcript_fp.write("=== stderr ===\n")
-                transcript_fp.write(result.stderr or "")
-                transcript_fp.write("\n=== stdout ===\n")
-                transcript_fp.write(result.stdout or "")
             log_event(
                 logger,
                 logging.ERROR,
@@ -667,7 +5226,24 @@ class VlogSim:
                 returncode=result.returncode,
                 duration_sec=round(e_time - s_time, 2),
                 transcript=transcript_path,
+                license_queued=license_queued,
             )
+            # What a dispatched build job records in its envelope for this
+            # config (#498): the status its own sim jobs would otherwise
+            # have to rediscover, and the file that says why.
+            self.last_compile_failure = {
+                "returncode": result.returncode,
+                "transcript": transcript_path,
+            }
+            failed_sha = _fingerprint_sha(fingerprint)
+            if failed_sha is not None:
+                # WHICH compile failed, not just that one did: a gated sim
+                # job compares this against its own fingerprint's sha, and
+                # honours the no-retry verdict only when they match (#498
+                # review). Recorded from the same `fingerprint` the stamp
+                # would have been written from, via the same helper the
+                # sim side hashes with.
+                self.last_compile_failure["fingerprint_sha"] = failed_sha
         else:
             log_event(
                 logger,
@@ -676,20 +5252,113 @@ class VlogSim:
                 test=self.test_name,
                 duration_sec=round(e_time - s_time, 2),
             )
+            if license_queued:
+                # Keep the evidence: on a dispatched build this is the only
+                # record that the wall-clock went to the license server, and
+                # the next run may be the one Slurm kills at --time.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.license_queued",
+                    test=self.test_name,
+                    duration_sec=round(e_time - s_time, 2),
+                    transcript=transcript_path,
+                )
             if result.stdout:
                 logger.debug("compile stdout\n%s", result.stdout)
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
-            if fingerprint is not None:
-                stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
-                stamp_path.write_text(json.dumps(fingerprint, sort_keys=True))
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "compile.build_stamp_written",
-                    test=self.test_name,
-                    stamp=str(stamp_path),
-                )
+            if fingerprint is not None and not verilate_only:
+                # A shared build owns its directory and stamps it; an
+                # unshared one has no directory of its own (`build_dir` is a
+                # bare relative name the builder interprets), so its stamp
+                # goes beside the rest of the test's compile outputs.
+                #
+                # Recorded from the finished build, not predicted from the
+                # filelist: the builder is the only thing that knows which
+                # headers it actually opened (#303). Read from the *build
+                # output* dir, which is the stamp dir only in the shared
+                # case — unshared, the builder's outputs are under
+                # `compile_work_dir / build_dir` while the stamp sits beside
+                # them in `compile_work_dir`.
+                deps = self._collect_build_deps(build_dir, compile_work_dir)
+                stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
+                try:
+                    # Atomic, like every other artefact on this path: the
+                    # reuse fast path in compile() reads the stamp with no
+                    # lock held, so a plain write would let a reader see a
+                    # truncated file, call it unreadable and recompile a
+                    # build that is perfectly good (#534).
+                    self._replace_text(
+                        stamp_path,
+                        json.dumps(
+                            # The executable is stamped too, so a reuse check
+                            # can tell "these inputs" from "this binary"
+                            # (#369).
+                            {
+                                **fingerprint,
+                                "deps": deps,
+                                "deps_format": _DEPS_FORMAT,
+                                "simv": self._stamp_simv_entry(self._get_simv_path()),
+                                # What the relative spellings above are
+                                # anchored to, in cache mode (#542). Never
+                                # compared — see `_STAMP_META` — but it is
+                                # what makes a stamp sitting in a shared
+                                # cache say which checkout last wrote it.
+                                **(
+                                    {"root": self._project_root}
+                                    if self.shared_build_root is not None
+                                    else {}
+                                ),
+                            },
+                            sort_keys=True,
+                        ),
+                    )
+                except OSError as exc:
+                    # The COMPILE succeeded — a full-size elaboration whose
+                    # output is sitting in the build directory — and the only
+                    # thing that failed is the note saying so. Letting the
+                    # OSError out of compile() would report that build failed
+                    # (`_compile_outcome` catches only FilelistError, so under
+                    # `rb _build-job` it surfaces as a worker exception), and
+                    # cancel the afterok fan-out behind a binary that exists.
+                    # So: keep the builder's status, say what happened, and
+                    # let the build job record it for the gated jobs — which
+                    # must decline rather than recompile, exactly as they do
+                    # for a stamp that fails to validate.
+                    self.stamp_write_failed = True
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "compile.stamp_write_failed",
+                        test=self.test_name,
+                        build_dir=str(stamp_dir),
+                        stamp=str(stamp_path),
+                        error=str(exc),
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "compile.build_stamp_written",
+                        test=self.test_name,
+                        stamp=str(stamp_path),
+                        # None, not "none": machine mode serialises these as
+                        # JSON Lines, and a field whose type varies by path
+                        # forces every consumer to type-check before
+                        # comparing. `null` is also how the stamp itself
+                        # spells the same thing.
+                        tracked_deps=None if deps is None else len(deps),
+                    )
+                    self._record_build_stamp(stamp_dir)
+            if self.build_phase == BUILD_PHASE_BUILD:
+                # A consumed marker must not outlive the build it cleared:
+                # the stale-fingerprint check is the second line of
+                # defence, not the first (#593). Removed on a fallback
+                # build too — that one produced the executable the marker
+                # was promising a build step for.
+                with contextlib.suppress(OSError):
+                    self._verilate_marker_path(stamp_dir).unlink(missing_ok=True)
         return result.returncode
 
     def execute(
@@ -703,6 +5372,10 @@ class VlogSim:
           - "default": use builder-config seed
           - "new": generate a fresh random seed
           - "replay": read seed from a previous run's .randseed file
+          - "master": use the seed resolved before preprocessing
+
+        A fixed per-test seed is also resolved before preprocessing and takes
+        precedence over the invocation's seed mode.
         """
         run_id = self.run_id if run_id is None else run_id
         replay_run_id = self.replay_run_id if replay_run_id is None else replay_run_id
@@ -713,7 +5386,35 @@ class VlogSim:
 
         run_cmd = [self._get_simv_path()]
 
-        if seed_mode == SeedMode.REPLAY:
+        resolved_seed = self._resolved_runtime_seed
+        if resolved_seed is not None:
+            seed = resolved_seed
+            self.test_cfg.resolved_seed = resolved_seed
+            self.test_cfg.seed_source = self._resolved_runtime_seed_source
+            self.test_cfg.seed_identity = self._resolved_runtime_seed_identity
+            self.test_cfg.sim_rand_seed_plusarg = self._resolved_runtime_seed_plusarg
+            ensure_seed_plusarg = getattr(
+                self.test_cfg, "ensure_resolved_seed_plusarg", None
+            )
+            if callable(ensure_seed_plusarg):
+                ensure_seed_plusarg()
+            log_event(
+                logger,
+                logging.INFO,
+                "sim.seed_selected",
+                test=self.test_name,
+                run_id=run_id,
+                seed=seed,
+                source=self._resolved_runtime_seed_source,
+                identity=self._resolved_runtime_seed_identity,
+            )
+
+        elif seed_mode == SeedMode.MASTER:
+            raise FatalRtlBuddyError(
+                f"test {self.test_name!r}: master seed was not resolved before preproc"
+            )
+
+        elif seed_mode == SeedMode.REPLAY:
             seed_source_run_id = replay_run_id if replay_run_id is not None else run_id
             seed_source_path = self._get_randseed_path(run_id=seed_source_run_id)
             try:
@@ -732,8 +5433,10 @@ class VlogSim:
                     test_out_fp.write(f"ERR: {err_msg}\n")
                 with open(err_path, "w+") as test_err_fp:
                     test_err_fp.write(err_msg + "\n")
-                force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-                force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+                # Convenience latest-run links: never fail a test over one.
+                with contextlib.suppress(OSError):
+                    force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+                    force_symlink(log_path, self._get_suite_symlink_path("test.log"))
                 return 1
 
         elif seed_mode == SeedMode.NEW:
@@ -765,6 +5468,7 @@ class VlogSim:
                 f"+verilator+coverage+file+{self._get_cov_abspath(run_id=run_id)}"
             ]
 
+        self._record_launched_simv(run_cmd[0])
         run_str = " ".join(run_cmd)
         log_event(
             logger,
@@ -785,6 +5489,24 @@ class VlogSim:
                 test=self.test_name,
                 run_id=run_id,
                 timeout_sec=timeout,
+            )
+        # Added rather than substituted, so per-test sim_timeout values keep
+        # their meaning and only the builder-specific allowance moves. The
+        # ``is not None`` guard is unreachable while default_timeout is 60, and
+        # is kept so an allowance can never manufacture a timeout for a caller
+        # that deliberately had none.
+        extra_timeout = self.root_cfg.resolve_extra_sim_timeout(self.rtl_builder_cfg)
+        if extra_timeout and timeout is not None:
+            timeout += extra_timeout
+            log_event(
+                logger,
+                logging.INFO,
+                "sim.timeout_extended",
+                test=self.test_name,
+                run_id=run_id,
+                timeout_sec=timeout,
+                extra_sec=extra_timeout,
+                builder=self.rtl_builder_cfg.get_name(),
             )
         artifact_paths = {
             "log": log_path,
@@ -879,9 +5601,12 @@ class VlogSim:
                 run_id=run_id,
             )
 
-        force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-        force_symlink(log_path, self._get_suite_symlink_path("test.log"))
-        force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
+        # Latest-run convenience links: a passing test must never fail over
+        # one (a suite dir removed mid-run, ENOSPC, read-only/EXDEV mount).
+        with contextlib.suppress(OSError):
+            force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+            force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+            force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
 
         if returncode != 0:
             log_event(
@@ -906,10 +5631,16 @@ class VlogSim:
 
         return returncode
 
-    def post(self, run_id=None):
+    def post(self, run_id=None, sim_returncode=None):
         """
         post-process vlog test output to determine test results
         return TestResult
+
+        ``sim_returncode`` is what the simulation this post-processes
+        exited with, so an unknown verdict can be graded against it
+        *here*, before ``postproc.completed`` announces the result
+        (#546). ``None`` -- the default every other caller keeps -- means
+        the caller has no exit status to offer and grades nothing.
         """
 
         run_id = self.run_id if run_id is None else run_id
@@ -936,6 +5667,13 @@ class VlogSim:
                 assertions_enabled=assertions_enabled,
             )
         results = self.vlog_post.get_results()
+        # Before the coverage overlay and before postproc.completed: that
+        # event's result/desc are the authoritative record for JSONL
+        # consumers (docs/agents.md), so the verdict has to be final by
+        # the time it is logged (#546).
+        grade_unknown_sim_exit(
+            results.results, sim_returncode, test=self.test_name, run_id=run_id
+        )
         if self._coverage_enabled():
             cov = VlogCov(
                 simulator_name=self._get_simulator_family(),

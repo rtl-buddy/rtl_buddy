@@ -56,6 +56,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+# `rb elab` and `rb elab-regression`. Imported only by the isolated worker,
+# so the core CLI and every existing command remain usable without this extra.
+elab = ["pyslang >= 10.0.0, <12"]
 # `rb mut` mutation testing. rtl-buddy-xeno is a library rtl_buddy
 # imports lazily (runner/mut_runner.py), not a subprocess tool, so it
 # installs into the same environment via this extra rather than via
@@ -65,6 +68,31 @@ classifiers = [
 # same floor at import time (_check_xeno_version) for git/editable
 # installs that bypass this resolve-time guard; keep the two in sync.
 mut = ["rtl-buddy-xeno[verible,slang] >= 0.1.0"]
+# `rb mcp`, the stdio Model Context Protocol server (#380). Optional on
+# purpose: MCP is a *second* agent surface, and everything it serves is
+# also reachable from the CLI with `--machine`, which needs no extra
+# dependency. `rtl_buddy.mcp.toolset` therefore imports no SDK at all --
+# only `rtl_buddy.mcp.server` does, lazily, behind `require_sdk()` -- so
+# an install without this extra still imports, still runs, and fails
+# only at `rb mcp` with an install hint. The `>= 1.2.0` floor is the
+# first SDK release with the low-level stdio server this uses; both the
+# 1.x decorator API and the 2.x constructor-callback API are supported
+# by `mcp/server.py:build_server`.
+mcp = ["mcp >= 1.2.0"]
+# The bundled binding-tier extractor for `rb graph build` (#391): the
+# clean-room implementation of the extract contract. A subprocess tool,
+# not a library import — it only needs to land on PATH in the same
+# environment, which an extra does fine. Was deliberately a dependency
+# GROUP while the extractor had no PyPI release (a wheel must never
+# advertise an extra pip cannot resolve — the v6.26.0 lesson, see
+# docs/known-issues.md); promoted to a real extra when
+# rtl-buddy-graph-extract 0.1.0 landed on PyPI
+# (rtl-buddy-graph-extract#1). The `>= 0.1.0` floor is the first
+# release implementing the extract contract this repo's
+# graph/extract.py drives. Guarded by
+# test_graph_extract_is_a_published_extra. Still optional at runtime:
+# `rb graph build` without it reports the binding tier as skipped.
+graph-extract = ["rtl-buddy-graph-extract >= 0.1.0"]
 
 [project.urls]
 Source = "https://github.com/rtl-buddy/rtl_buddy"
@@ -78,7 +106,7 @@ source = "vcs"
 # (pip, uv) actually requires: pyproject.toml, README.md, LICENSE, the
 # package source under src/, and docs/ (because the bundled skill
 # materializes them from the wheel). Dev/CI scaffolding (tests/,
-# scripts/, .github/, .agents/, .claude/, mkdocs.yml, uv.lock,
+# scripts/, .github/, .agents/, .claude/, Docusaurus config, lock files,
 # AGENTS.md, CLAUDE.md, .pre-commit-config.yaml, pytest.ini,
 # CONTRIBUTORS) is not needed at install time and only inflates the
 # release tarball.
@@ -99,11 +127,6 @@ exclude = ["src/rtl_buddy/docs"]
 "docs" = "rtl_buddy/docs"
 
 [dependency-groups]
-docs = [
-  "mkdocs>=1.6.0",
-  "mkdocs-material>=9.5.0",
-  "mike>=2.1.0",
-]
 lint = [
   "ruff>=0.11.0",
 ]
@@ -111,9 +134,13 @@ test = [
   "pytest>=9.0.3",
   "pytest-cov>=6.0.0",
   "pytest-asyncio>=0.24.0",
+  "pyslang>=10.0.0,<12",
+  # So CI actually exercises the `rb mcp` SDK boundary. The tests that
+  # need it still skip when it is absent (a contributor without the
+  # extra must not see red), but the skip must not be the CI outcome.
+  "mcp>=1.2.0",
 ]
 dev = [
-  { include-group = "docs" },
   { include-group = "lint" },
   { include-group = "test" },
 ]

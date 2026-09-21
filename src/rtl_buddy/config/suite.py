@@ -7,6 +7,7 @@ import os
 from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
+from .dispatch import SuiteCompileFile, validate_compile_block
 from .test import TestbenchConfig, TestConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -18,6 +19,18 @@ class SuiteConfigFile:
     testbenches: list[TestbenchConfig]
     tests: list[TestConfigFile]
     builder: str | None = None
+    # Optional suite-level compile reservation (#497). The dispatched build
+    # job is per suite, so the one reservation `cfg-dispatch.compile` hands
+    # every suite fences off the largest verilation in the repo for the
+    # smallest leaf-cell bench too. This layers over it field by field.
+    #
+    # Its own serde class, not `DispatchResourcesFile` (which is also every
+    # per-test `resources:` block) and not `DispatchCompileFile` (whose
+    # `parallel` defaults to 1 rather than to None): `parallel` layers here
+    # too, and "the suite said 1" has to stay distinguishable from "the
+    # suite said nothing" or a block overriding only `mem` would pin the
+    # build job to one build at a time (#547).
+    compile: SuiteCompileFile | None = None
 
 
 class SuiteConfig:
@@ -27,6 +40,9 @@ class SuiteConfig:
     Attributes:
       path (str): Path to the suite configuration file.
       tests (dict[str, TestConfig]): Test configs in suite, grouped by test name.
+      compile (SuiteCompileFile|None): Suite-level dispatch compile
+        reservation and concurrency, or ``None`` when the suite declared
+        none (#497, #547).
     """
 
     def __init__(self, path):
@@ -43,8 +59,28 @@ class SuiteConfig:
         tbs = {}
         self.tests = {}
         self.path = path
+        self.compile = None
 
         if data is not None:
+            # Validated at load, like cfg-dispatch's own blocks: an unquoted
+            # `time: 4:00:00` is an integer by the time serde sees it, and a
+            # reservation that silently means 10 days is worse than a load
+            # error. FatalRtlBuddyError, not a wrapped one — the message
+            # already names the trap and how to spell it (#497). Same for a
+            # `parallel` below 1, held to the rule cfg-dispatch's own key is
+            # held to so the two layers cannot disagree (#547).
+            try:
+                self.compile = validate_compile_block(data.compile)
+            except FatalRtlBuddyError as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "suite_config.compile_invalid",
+                    path=path,
+                    error=e,
+                )
+                raise FatalRtlBuddyError(f"{path}: {e}") from e
+
             # Fail loud on duplicate testbench / test names — the
             # dict-comprehensions below would silently overwrite the
             # first entry with the last, hiding the user's typo.
@@ -119,27 +155,40 @@ class SuiteConfig:
 
     def get_tests(self, test_name=None):
         """
-        Retrieves tests, optionally based on name.
+        Retrieves tests, optionally based on one or more names.
 
         Args:
-          test_name (str|None): (optional) Name of test to retrieve.
+          test_name (str|iterable[str]|None): (optional) Test name(s) to retrieve.
         Returns:
           tests (list[TestConfig]): List of tests.
         """
         if test_name is not None:
-            if test_name not in self.tests.keys():
+            test_names = [test_name] if isinstance(test_name, str) else list(test_name)
+            if len(test_names) != len(set(test_names)):
+                duplicate = next(
+                    name
+                    for index, name in enumerate(test_names)
+                    if name in test_names[:index]
+                )
+                raise FatalRtlBuddyError(
+                    f"duplicate test name {duplicate!r} in test selection"
+                )
+
+            missing = [name for name in test_names if name not in self.tests]
+            if missing:
                 log_event(
                     logger,
                     logging.ERROR,
                     "suite_config.test_missing",
                     path=self.path,
-                    test=test_name,
+                    test=missing[0],
                 )
-                raise FatalRtlBuddyError(
-                    f"test_name {test_name} not found in suite {self.path}"
-                )
-            else:
-                return [self.tests[test_name]]
+                if len(missing) == 1:
+                    message = f"test_name {missing[0]} not found in suite {self.path}"
+                else:
+                    message = f"test_names {', '.join(missing)} not found in suite {self.path}"
+                raise FatalRtlBuddyError(message)
+            return [self.tests[name] for name in test_names]
         else:
             return self.tests.values()
 
@@ -151,6 +200,16 @@ class SuiteConfig:
           list[str]: Test names from the loaded suite config.
         """
         return list(self.tests.keys())
+
+    def get_compile(self):
+        """
+        Retrieve the suite-level dispatch compile reservation (#497).
+
+        Returns:
+          SuiteCompileFile|None: The validated ``compile:`` block, or
+          ``None`` when the suite declared none (cfg-dispatch governs alone).
+        """
+        return self.compile
 
     def get_path(self):
         """

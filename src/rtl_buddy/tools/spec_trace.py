@@ -2,6 +2,7 @@ import logging
 import os
 
 from ..config.spec import SpecBlock, SpecConfig
+from ..config.fpv import FpvRegConfig
 from ..config.model import ModelConfig, ModelConfigLoader
 from ..config.suite import SuiteConfig
 from ..errors import FatalRtlBuddyError
@@ -76,6 +77,46 @@ def discover_suite_tests(root: str) -> tuple[list[tuple[str, object]], list[str]
             )
             failures.append(path)
     return results, failures
+
+
+def discover_fpv_verifications(
+    project_root: str,
+) -> tuple[list[tuple[str, object]], list[str]]:
+    """Every fpv run ``<project_root>/fpv_regression.yaml`` lists.
+
+    The formal flow's counterpart of :func:`discover_suite_tests`: an fpv
+    run may declare ``covers:`` exactly as a test does, so ``rb spec
+    check-coverage`` has to see the runs to count them. Discovery is by
+    the root-level filename convention — the same one the design
+    knowledge graph's flow provenance uses — because the suites live
+    under ``fpv/``, which no ``verif/`` walk reaches.
+
+    Returns ``(entries, failures)``: ``(fpv_yaml_path, FpvConfig)`` pairs
+    (duck-typing the ``(tests_yaml_path, TestConfig)`` shape
+    :func:`build_coverage_map` consumes — both carry ``name`` and
+    ``covers``), plus the paths that failed to load. A missing
+    ``fpv_regression.yaml`` is a project without a formal flow, not an
+    error.
+    """
+    reg_path = os.path.join(str(project_root), "fpv_regression.yaml")
+    if not os.path.isfile(reg_path):
+        return [], []
+    try:
+        reg = FpvRegConfig(name="spec_trace/fpv", path=reg_path)
+    except FatalRtlBuddyError as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "spec_trace.fpv_reg_load_failed",
+            path=reg_path,
+            error=str(exc),
+        )
+        return [], [reg_path]
+    return [
+        (suite.get_path(), verification)
+        for suite in reg.get_suite_configs()
+        for verification in suite.get_verifications()
+    ], []
 
 
 def build_coverage_map(

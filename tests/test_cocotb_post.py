@@ -398,6 +398,74 @@ def test_vcs_dedup_is_token_level_not_substring(tmp_path, monkeypatch):
     assert flags[flags.index("-top") + 1] == "my_dut"
 
 
+def test_vcs_configured_top_suppresses_the_generated_one_and_warns(
+    tmp_path, monkeypatch, caplog
+):
+    """A user `-top other_top` wins over `toplevel:`, with a warning (#511 review).
+
+    The cocotb VCS shim used to test `"-top" not in opts`, which missed a
+    disagreeing pin only in the sense that it saw one — but the base
+    plumbing then scanned the generated flags too, found OUR `-top my_dut`
+    last, and called it agreement. Now the shim generates nothing when the
+    user pinned a top, and the base warns about the override.
+    """
+    import logging as _logging
+
+    from rtl_buddy.tools import vlog_sim as _vlog_sim
+
+    _vlog_sim._reset_toplevel_conflicts()
+    try:
+        sim = _make_sim(
+            tmp_path, monkeypatch, "vcs", ["-sverilog", "-top", "other_top"]
+        )
+        builder_opts = sim._filter_builder_opts(
+            sim.rtl_builder_cfg.get_compile_time_opts("sim")
+        )
+        with caplog.at_level(_logging.WARNING):
+            extra = sim._get_extra_compile_flags()
+            top_flags = sim._get_top_module_flags(builder_opts, extra)
+        assert "-top" not in extra  # the shim generated none
+        assert top_flags == []  # and the base added none
+        line = builder_opts + extra + top_flags
+        assert [(tok, line[i + 1]) for i, tok in enumerate(line) if tok == "-top"] == [
+            ("-top", "other_top")
+        ]
+        conflict = [
+            r
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == "compile.toplevel_conflict"
+        ]
+        assert len(conflict) == 1
+        assert conflict[0].rtl_fields["configured"] == "other_top"
+    finally:
+        _vlog_sim._reset_toplevel_conflicts()
+
+
+def test_base_top_plumbing_does_not_double_the_vcs_top(tmp_path, monkeypatch):
+    # #508 taught the base VlogSim to pass `toplevel:` to the builder. The
+    # cocotb VCS path already emits `-top`, so the base must stand down.
+    sim = _make_sim(tmp_path, monkeypatch, "vcs", ["-sverilog"])
+    extra = sim._get_extra_compile_flags()
+    assert extra.count("-top") == 1
+    assert sim._get_top_module_flags(["-sverilog"], extra) == []
+
+
+def test_verilator_cocotb_gains_the_top_module_flag(tmp_path, monkeypatch):
+    # cocotb on Verilator elected its top from filelist order like any other
+    # build (#506); `toplevel:` is required for cocotb, so it can always
+    # root the compile.
+    sim = _make_sim(tmp_path, monkeypatch, "verilator", ["--binary", "-sv"])
+    extra = sim._get_extra_compile_flags()
+    assert "--top-module" not in extra
+    assert sim._get_top_module_flags(["-sv"], extra) == ["--top-module", "my_dut"]
+
+
+def test_icarus_cocotb_gains_the_top_flag(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, "icarus", ["-g2012"])
+    extra = sim._get_extra_compile_flags()
+    assert sim._get_top_module_flags(["-g2012"], extra) == ["-s", "my_dut"]
+
+
 def test_unsupported_family_raises(tmp_path, monkeypatch):
     # questa is not among the families cocotb can drive via a VPI shim here.
     sim = _make_sim(tmp_path, monkeypatch, "questa", [])

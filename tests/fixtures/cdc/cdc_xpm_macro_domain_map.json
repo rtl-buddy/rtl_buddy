@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.1",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.4.0"
+  },
+  "design": {
+    "top": "cdc_xpm_macro_top",
+    "frontend": "yosys"
+  },
+  "clocks": [
+    {
+      "name": "clk_a",
+      "period": 8.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_a"
+      ]
+    },
+    {
+      "name": "clk_b",
+      "period": 10.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_b"
+      ]
+    }
+  ],
+  "generated_clocks": [],
+  "clock_groups": [
+    {
+      "kind": "asynchronous",
+      "members": [
+        [
+          "clk_a"
+        ],
+        [
+          "clk_b"
+        ]
+      ]
+    }
+  ],
+  "false_path_pairs": [],
+  "flop_domains": [
+    {
+      "instance_path": "cdc_xpm_macro_top.$procdff$6",
+      "source_instance_path": "cdc_xpm_macro_top",
+      "clock": "clk_b",
+      "location": {
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "start_line": 98,
+        "start_column": 5,
+        "end_line": 98,
+        "end_column": 56
+      }
+    },
+    {
+      "instance_path": "cdc_xpm_macro_top.$procdff$7",
+      "source_instance_path": "cdc_xpm_macro_top",
+      "clock": "clk_b",
+      "location": {
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "start_line": 97,
+        "start_column": 5,
+        "end_line": 97,
+        "end_column": 55
+      }
+    },
+    {
+      "instance_path": "cdc_xpm_macro_top.$procdff$8",
+      "source_instance_path": "cdc_xpm_macro_top",
+      "clock": "clk_a",
+      "location": {
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "start_line": 70,
+        "start_column": 5,
+        "end_line": 70,
+        "end_column": 82
+      }
+    },
+    {
+      "instance_path": "cdc_xpm_macro_top.$procdff$9",
+      "source_instance_path": "cdc_xpm_macro_top",
+      "clock": "clk_a",
+      "location": {
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "start_line": 69,
+        "start_column": 5,
+        "end_line": 69,
+        "end_column": 51
+      }
+    }
+  ],
+  "port_domains": [
+    {
+      "module": "cdc_xpm_macro_top",
+      "port": "a_flag",
+      "clock": "clk_a",
+      "kind": "input"
+    },
+    {
+      "module": "cdc_xpm_macro_top",
+      "port": "a_incr",
+      "clock": "clk_a",
+      "kind": "input"
+    }
+  ],
+  "crossings": [],
+  "clock_network_crossings": []
+}

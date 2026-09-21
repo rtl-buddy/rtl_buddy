@@ -1,6 +1,7 @@
 import json
 import logging
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.markup import escape as rich_escape
 from rich.table import Table
 
 
@@ -26,6 +28,13 @@ _FILE_LOG_MACHINE: bool = False
 # (e.g. during regression's suite-by-suite loop) doesn't lose content.
 _OPENED_LOG_PATHS: set[str] = set()
 
+# Verdicts a --print-failures-only console render drops, and the order a
+# summary tally lists verdicts in before falling back to alphabetical.
+_HIDDEN_VERDICTS = frozenset({"PASS", "SKIP", "XFAIL"})
+_VERDICT_ORDER = ("PASS", "FAIL", "XFAIL", "XPASS", "SKIP", "NA")
+_KNOWN_VERDICTS = frozenset(_VERDICT_ORDER)
+_PRINT_FAILURES_ONLY = False
+
 
 def _result(self, message, *args, **kwargs):
     if self.isEnabledFor(RESULT_LEVEL):
@@ -38,6 +47,10 @@ class LoggingState:
     stdout_console: Console
     color: bool
     machine: bool
+    # The level the console handler was configured with. Recorded so
+    # log_console_event() can tell whether a record would already reach the
+    # console (and must therefore not be printed a second time).
+    console_level: int = logging.WARNING
 
 
 _STATE: LoggingState | None = None
@@ -85,6 +98,15 @@ def register_logging_levels() -> None:
 
 def is_machine_mode() -> bool:
     return _STATE.machine if _STATE is not None else False
+
+
+def set_print_failures_only(enabled: bool) -> None:
+    global _PRINT_FAILURES_ONLY
+    _PRINT_FAILURES_ONLY = enabled
+
+
+def print_failures_only() -> bool:
+    return _PRINT_FAILURES_ONLY
 
 
 def _should_use_rich_console() -> bool:
@@ -142,9 +164,10 @@ def setup_logging(
         )
         console_handler.setFormatter(logging.Formatter("%(message)s"))
 
-    console_handler.setLevel(
+    console_level = (
         logging.DEBUG if debug else logging.INFO if verbose else logging.WARNING
     )
+    console_handler.setLevel(console_level)
     console_handler.addFilter(_ExcludeResultFilter())
 
     root_logger.addHandler(console_handler)
@@ -155,6 +178,7 @@ def setup_logging(
         stdout_console=stdout_console,
         color=color_enabled,
         machine=machine,
+        console_level=console_level,
     )
     _FILE_LOG_LEVEL = logging.DEBUG if debug else logging.INFO
     _FILE_LOG_MACHINE = machine
@@ -220,23 +244,40 @@ def emit_console_text(
     style: str | None = None,
     stream: str = "stderr",
     markup: bool = True,
+    soft_wrap: bool = False,
 ) -> None:
     console = get_stdout_console() if stream == "stdout" else get_stderr_console()
     # Pass markup=False for text that may contain literal square brackets
     # (e.g. exception messages with `pkg[extra]` install hints) so Rich
     # doesn't swallow them as style tags.
+    #
+    # soft_wrap=True keeps a line whole: off a terminal Rich assumes 80
+    # columns and hard-wraps, which splits a log-style line (job ids, a
+    # progress report) across two console lines and defeats grepping it.
     if is_machine_mode():
-        console.print(text, highlight=False, markup=markup)
+        console.print(text, highlight=False, markup=markup, soft_wrap=soft_wrap)
     else:
-        console.print(text, style=style, highlight=False, markup=markup)
+        console.print(
+            text, style=style, highlight=False, markup=markup, soft_wrap=soft_wrap
+        )
 
 
 @contextmanager
 def task_status(message: str, *, spinner: str = "dots"):
-    if _should_use_rich_console():
-        with get_stderr_console().status(message, spinner=spinner) as status:
-            yield status
-        return
+    """A spinner for a long phase, degrading to one plain line.
+
+    The spinner is a Rich ``Live``, and a console allows exactly one of
+    those at a time — a second raises ``LiveError``. Since #495 a build job
+    compiles distinct builds on worker threads, so the spinner is confined
+    to the main thread; a worker announces its phase the way a non-terminal
+    run already does. The check lives here rather than at the call sites so
+    every future threaded caller inherits it.
+    """
+    if threading.current_thread() is threading.main_thread():
+        if _should_use_rich_console():
+            with get_stderr_console().status(message, spinner=spinner) as status:
+                yield status
+            return
 
     emit_console_text(message)
     yield None
@@ -261,6 +302,27 @@ def _format_duration(duration: Any) -> str | None:
         return str(duration)
 
 
+def _format_elapsed(seconds: Any) -> str:
+    """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``.
+
+    Distinct from :func:`_format_duration`, which reports a single phase's
+    cost to two decimals. A dispatch wait is measured in tens of minutes,
+    where ``754.00s`` is arithmetic the reader has to do.
+    """
+    try:
+        total = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return str(seconds)
+    total = max(0, total)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
 def _format_artifacts(fields: Mapping[str, Any]) -> str:
     artifact_paths = [
         str(fields[key])
@@ -268,6 +330,36 @@ def _format_artifacts(fields: Mapping[str, Any]) -> str:
         if fields.get(key)
     ]
     return ", ".join(artifact_paths)
+
+
+def _build_location(fields: Mapping[str, Any]) -> str:
+    """Which spelling of a build directory the compile events show (#494).
+
+    Both carry ``build_dir`` (the basename) and ``build_path`` (absolute).
+    A *shared* build lives at ``artefacts/.shared-builds/obj_dir_<key>``,
+    where the basename is the identity a reader compares against an ``ls``
+    of that directory, and a full path would bury it. An *unshared* build
+    lives at ``artefacts/<test>``, whose basename is the test name the line
+    already opens with — saying it twice tells the reader nothing and hides
+    where the build actually is, so that case shows the path.
+    """
+    if fields.get("shared", True):
+        return str(fields.get("build_dir") or fields.get("build_path"))
+    return str(fields.get("build_path") or fields.get("build_dir"))
+
+
+def _sim_exit_phrase(fields: Mapping[str, Any]) -> str:
+    """``exited 1`` / ``killed by signal 6`` for a sim-failure line.
+
+    The console twin of ``tools.vlog_post.describe_sim_exit``, spelled here
+    rather than imported: this module is below ``tools`` in the import
+    order, and a process killed by a signal reports a negative code that
+    "exited -6" would misreport (#546).
+    """
+    code = fields.get("returncode")
+    if isinstance(code, int) and code < 0:
+        return f"killed by signal {-code}"
+    return f"exited {code}"
 
 
 def _human_message(event: str, fields: Mapping[str, Any]) -> str:
@@ -317,6 +409,578 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Using regression config {fields.get('path')}"
         case "regression.suite_start":
             return f"Running suite {fields.get('suite')}"
+        case "build_job.compile_failed":
+            return (
+                f"{fields.get('test')}: compile failed in the dispatch build "
+                "job (its sim job will retry the compile and fail there)"
+            )
+        case "build_job.pool_configured":
+            parallel = fields.get("parallel")
+            requested = fields.get("parallel_requested")
+            groups = fields.get("groups")
+            # The configs that reached the pool, and the ones that never got
+            # a compile key at all (a failed PRE or filelist probe).
+            configs = fields.get("configs")
+            unprepared = fields.get("unprepared")
+            msg = f"Compiling {groups} distinct build(s), up to {parallel} at a time"
+            notes = []
+            if (
+                isinstance(configs, int)
+                and isinstance(groups, int)
+                and configs > groups
+            ):
+                # The fewer-builds-than-tests case is the healthy one under
+                # --share-build, and saying only "3 distinct builds" for a
+                # 20-config plan reads as 17 configs having been dropped.
+                # Only the configs that actually joined a group are counted,
+                # so a setup failure is never reported as sharing (#576).
+                notes.append(
+                    f"{configs} configs share {groups} keys; siblings adopt "
+                    "the leader's build"
+                )
+            if isinstance(unprepared, int) and unprepared > 0:
+                # The rest of the drop, said rather than left as a gap
+                # between the plan and this line.
+                notes.append(f"{unprepared} failed preparation")
+            if notes:
+                msg += f" ({'; '.join(notes)})"
+            if isinstance(requested, int) and isinstance(parallel, int):
+                if requested > parallel:
+                    # The head reserved cpus for `requested` concurrent
+                    # builds; the suite has fewer distinct compile keys than
+                    # that, so the surplus is deliberate over-provisioning
+                    # and not a number to read off the right-sizing table.
+                    #
+                    # Name the layer that actually governs: a suite's own
+                    # `compile.parallel` beats cfg-dispatch's, and pointing
+                    # a reader at the root key would send them to a value
+                    # editing which moves this job not at all (#547). The
+                    # cfg-dispatch spelling is the fallback for a job log
+                    # written before the field existed.
+                    origin = fields.get("parallel_origin")
+                    if not isinstance(origin, str) or not origin:
+                        origin = "cfg-dispatch.compile.parallel"
+                    # Quote the number the named key actually holds. The head
+                    # caps the configured value by the suite's planned
+                    # configs before the job ever sees it, so `requested` can
+                    # be smaller than what the file says — and a line reading
+                    # "compile.parallel is 2" beside a tests.yaml saying 4
+                    # contradicts the very key it sends the reader to edit
+                    # (#547 review). Absent (an older job log), or equal:
+                    # the cap did not bite and there is nothing to explain.
+                    configured = fields.get("parallel_configured")
+                    capped = isinstance(configured, int) and configured > requested
+                    msg += f" ({origin} is {configured if capped else requested}"
+                    if capped:
+                        # `requested` is the planned-config count whenever the
+                        # cap bit: the head takes min(configured, planned), so
+                        # the plan is what it landed on.
+                        msg += (
+                            f", capped to {requested} by the {requested} "
+                            "planned configs"
+                        )
+                    msg += (
+                        ", so the build job's cpus reservation is sized for "
+                        f"{requested} — effective parallelism here is "
+                        f"{parallel})"
+                    )
+            return msg
+        case "build_job.compile_worker_error":
+            return (
+                f"{fields.get('test')}: the build job's compile raised "
+                f"({fields.get('error')}) — counted as a compile failure so "
+                "the job still exits 0 and its afterok dependents run; the "
+                "test's own sim job will retry the compile"
+            )
+        case "build_job.build_records_failed":
+            return (
+                "build job: could not record per-compile telemetry in the "
+                f"build result ({fields.get('error')}) — the built/failed "
+                "outcome was written without it, so compile failures still "
+                "map correctly; only the compile durations are missing"
+            )
+        case "build_job.result_json_failed":
+            return (
+                "build job: could not write the build result "
+                f"{fields.get('path')} ({fields.get('error')}) — the job "
+                "still exits 0 so its afterok dependents run, but the head "
+                "cannot map a compile failure to its test; each affected "
+                "simulation job recompiles and reports the failure itself"
+            )
+        case "build_job.machine_result_failed":
+            return (
+                "build job: could not emit the machine-result envelope "
+                f"({fields.get('error')}) — the compiles themselves are "
+                "unaffected and the job still exits 0 so its afterok "
+                "dependents run, but the head sees no envelope from it"
+            )
+        case "build_job.failure_detail_failed":
+            return (
+                f"{fields.get('test')}: the build job could not record why "
+                f"its compile failed ({fields.get('error')}) — the failure "
+                "itself is still reported, so the test's sim job still "
+                "declines to recompile; only the error text is missing from "
+                "the build result"
+            )
+        case "compile.build_job_failed":
+            run = fields.get("run_id")
+            run_note = "" if run is None else f" (run {run})"
+            rc = fields.get("returncode")
+            rc_note = "" if rc is None else f" with exit {rc}"
+            return (
+                f"{fields.get('test')}{run_note}: not compiling — the build "
+                f"job's compile for this test already failed{rc_note}. "
+                "Recompiling here would fail the same way under the "
+                "simulation reservation and overwrite the build's own "
+                f"{fields.get('transcript')}, which is where the error is."
+            )
+        case "compile.build_stamp_rejected":
+            run = fields.get("run_id")
+            run_note = "" if run is None else f" (run {run})"
+            reason = fields.get("reason")
+            why = "" if not reason else f" ({reason})"
+            what = (
+                "but could not write its build stamp"
+                if fields.get("stamp_unwritten")
+                else (
+                    "from different compile inputs than this job derived"
+                    if fields.get("inputs_differ")
+                    else "and its stamp still does not validate here"
+                )
+            )
+            fix = (
+                "Give the build directory's filesystem room and permissions "
+                "to hold a stamp, and re-run."
+                if fields.get("stamp_unwritten")
+                else (
+                    "Fix what drifted — a preproc generating different bytes "
+                    "on this node, an edit that landed mid-run — and re-run."
+                )
+            )
+            return (
+                f"{fields.get('test')}{run_note}: not compiling — the build "
+                f"job built this test {what}{why}. Recompiling would run into "
+                f"{fields.get('build_dir')} under the SIMULATION reservation, "
+                "which the scheduler kills for memory, and that kill would "
+                f"hide the reason above. {fix}"
+            )
+        case "compile.stamp_write_failed":
+            return (
+                f"{fields.get('test')}: the compile succeeded but its build "
+                f"stamp {fields.get('stamp')} could not be written "
+                f"({fields.get('error')}). The build in "
+                f"{fields.get('build_dir')} is usable and this compile still "
+                "reports success; with nothing on disk to vouch for it, the "
+                "next run recompiles, and under dispatch the gated "
+                "simulation jobs decline to run rather than recompile it "
+                "under their own reservation. Check the build directory's "
+                "permissions and free space."
+            )
+        case "build_job.group_leader_unstamped":
+            return (
+                f"{fields.get('test')}: compiled {fields.get('group')} but "
+                "left no build stamp, so same-key configs behind it cannot "
+                "adopt that build and each compiles it again. See "
+                "compile.stamp_write_failed above for why the stamp is "
+                "missing."
+            )
+        case "compile.build_phase_fallback":
+            reason = {
+                "marker-missing": (
+                    "the verilate job left no record of this compile key"
+                ),
+                "marker-stale": (
+                    "the verilate job's record is for different compile inputs"
+                ),
+                "no-verilate-unsupported": (
+                    "this Verilator does not support --no-verilate"
+                ),
+            }.get(fields.get("reason"), str(fields.get("reason")))
+            return (
+                f"{fields.get('test')}: verilating as well as building, "
+                f"because {reason}. The compile is correct, but it runs the "
+                "front end under the BUILD job's reservation while the "
+                "verilate job's was paid for and unused — check "
+                "cfg-dispatch.compile.verilate, or set "
+                "compile.split-verilate: false."
+            )
+        case "compile.verilate_failed":
+            return (
+                f"{fields.get('test')}: the verilate job failed to verilate "
+                "this test, so the build job reports it rather than running "
+                "the same verilation again under its own reservation. The "
+                f"errors are in {fields.get('transcript')}."
+            )
+        case "compile.verilate_marker_write_failed":
+            return (
+                f"{fields.get('test')}: the verilate job could not write "
+                f"{fields.get('marker')} ({fields.get('error')}), so the "
+                "build job will verilate this key as well as building it. "
+                "Check the build directory's permissions and free space."
+            )
+        case "build_job.group_adoption_declined":
+            return (
+                f"{fields.get('test')}: could not adopt the build "
+                f"{fields.get('leader')} made for their shared compile key "
+                f"({fields.get('reason')}), so it compiles the key again. "
+                "One key compiled twice in one build job is what "
+                "cfg-dispatch.compile.parallel is sized against."
+            )
+        case "compile.build_stamp_refresh_failed":
+            return (
+                f"{fields.get('test')}: could not rewrite the shared build "
+                f"stamp {fields.get('stamp')} ({fields.get('error')}), so this "
+                "config compiles instead of adopting its group's build. Check "
+                "the shared build directory's permissions and free space."
+            )
+        case "build_job.group_input_drift":
+            return (
+                f"{fields.get('test')}: shares a compile key with "
+                f"{fields.get('leader')} but compiles a different "
+                f"{fields.get('dependency')}. Under --share-build one key is "
+                "one binary, so whichever config compiled last would decide "
+                "what both of them simulate. Give this test its own compile "
+                "key, or fix the preproc that rewrites a consumed input per "
+                "test."
+            )
+        case "dispatch.binary_mismatch":
+            return (
+                f"{fields.get('tests')}: runs of one shared build "
+                f"({fields.get('build_dir')}) did not all simulate the "
+                f"same binary — {fields.get('binaries')} distinct executables "
+                f"were stamped for it, over {fields.get('fingerprints')} "
+                "distinct input digests. One of those runs recompiled the shared "
+                "build instead of reusing it, so its neighbours may have "
+                "simulated a binary that was replaced under them. Look for "
+                "compile.prebuilt_stamp_invalid in those jobs' logs."
+            )
+        case "compile.prebuilt_stamp_invalid":
+            run = fields.get("run_id")
+            run_note = "" if run is None else f" (run {run})"
+            reason = fields.get("reason")
+            why = "" if not reason else f" ({reason})"
+            return (
+                f"{fields.get('test')}{run_note}: compiling despite being gated "
+                "on a build job — that build's stamp did not validate"
+                f"{why}, so every element of this fan-out queues on "
+                f"{fields.get('build_dir')} to do the same. This compile runs "
+                "under the SIMULATION reservation, which is the usual reason "
+                "one is killed for memory. It writes compile.retry.log, "
+                "leaving the build job's compile.log intact."
+            )
+        case "dispatch.compile_failed_in_build":
+            return (
+                f"{fields.get('test')}: compile failed in build job "
+                f"{fields.get('build_job')} — counting it as a compile failure"
+            )
+        case "rightsize.build_advice_withheld":
+            # INFO, but the fallback renderer would drop the reason — and the
+            # reason is the entire content of the event.
+            reason = fields.get("reason")
+            if reason == "undersampled":
+                why = (
+                    f"it ran for {fields.get('elapsed_s')}s, inside one "
+                    f"{fields.get('interval_s')}s accounting interval, so its "
+                    "cpu time was sampled at most once"
+                )
+            elif reason == "parallel-utilization-ambiguous":
+                # Narrower than the others: only the cpus row is withheld,
+                # and only because a whole-job ratio is not a per-build one
+                # once slots can idle in the tail.
+                #
+                # The line ends in an instruction, so it has to name the key
+                # that governs THIS job: a suite's own `compile.parallel`
+                # beats cfg-dispatch's, and sizing the root key would leave
+                # the suite's value in force and the advice withheld again
+                # next run (#547 review). The root spelling is the fallback
+                # for a job log written before the field existed.
+                origin = fields.get("parallel_origin")
+                if not isinstance(origin, str) or not origin:
+                    origin = "cfg-dispatch.compile.parallel"
+                return (
+                    f"{fields.get('suite')}: no cpus advice for the build "
+                    f"job: it ran up to {fields.get('parallel')} builds at "
+                    f"once at {fields.get('efficiency')} cpu efficiency, and "
+                    "an idle slot and an under-used compile look the same "
+                    f"from outside — size {origin} "
+                    "against the suite's distinct compile keys first"
+                )
+            elif reason == "compile-aggregate":
+                # The build job's reservation is a SUM over the planned
+                # builds, and a whole-job suggestion written into any one
+                # of them leaves the aggregate where it was (#551).
+                return (
+                    f"{fields.get('suite')}: no {fields.get('resource')} "
+                    "reduce advice for the build job: its reservation adds "
+                    "up the planned builds "
+                    f"({', '.join(fields.get('paths') or [])}), and a "
+                    "whole-job figure written into any one of them would "
+                    "not lower the total"
+                )
+            elif reason == "compile-origin-tied":
+                # The build job's reservation is aggregated over the planned
+                # testbenches, so `max`/`sum` can land on the same number
+                # from two editable places at once (#551).
+                return (
+                    f"{fields.get('suite')}: no {fields.get('resource')} "
+                    "reduce advice for the build job: its reservation is "
+                    "produced by more than one config value at once "
+                    f"({', '.join(fields.get('paths') or [])}), and lowering "
+                    "any one of them alone would leave it exactly where it is"
+                )
+            elif reason == "no-build-records":
+                # Distinct from "nothing compiled": the job was accounted for
+                # (that is how we got here) but left no envelope to say what
+                # it did — the shape of a build job killed mid-compile.
+                why = (
+                    "it left no record of what it built, so its elapsed time "
+                    "cannot be read as the cost of a compile"
+                )
+            else:
+                why = (
+                    f"none of its {fields.get('builds')} build(s) actually "
+                    "compiled — they reused their stamps, so its elapsed time "
+                    "says nothing about what a real compile costs"
+                )
+            return f"{fields.get('suite')}: no reduce advice for the build job: {why}"
+        case "result_io.annotate_failed":
+            return (
+                f"could not write the {fields.get('what')} into "
+                f"{fields.get('path')} ({fields.get('error')}); the result "
+                "itself is unaffected — the envelope keeps the content it "
+                "already had"
+            )
+        case "rightsize.advice":
+            return (
+                f"{fields.get('test')}: {fields.get('resource')} reserved "
+                f"{fields.get('reserved')}, peak {fields.get('peak')} "
+                f"({fields.get('utilization')}) → {fields.get('direction')} "
+                f"to {fields.get('suggested')}"
+            )
+        case "dispatch.accounting_frequency_unusable":
+            return (
+                f"cfg-dispatch.sbatch-args sets `{fields.get('sbatch_arg')}`, "
+                "which says nothing about task sampling — the rate memory "
+                "right-sizing depends on. Requesting "
+                f"`{fields.get('default')}` anyway; set an explicit "
+                "`--acctg-freq=task=<seconds>` to control it."
+            )
+        case "rightsize.request_from_scheduler":
+            args = fields.get("overrides") or []
+            # Listed, not multiplied: several of them combine by sbatch's own
+            # precedence, which this line does not try to reproduce (#505).
+            quoted = [f"`{a}`" for a in args]
+            named = (
+                quoted[0]
+                if len(quoted) == 1
+                else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+            )
+            return (
+                f"{named} sets this job's cpu request — cfg-dispatch."
+                "sbatch-args is appended after the generated flags, and the "
+                "SBATCH_* environment reaches sbatch too, so the resolved "
+                "cpus is not what the job asks for. CPU-efficiency advice "
+                "for this suite is measured against the scheduler's own "
+                "ReqCPUS instead."
+            )
+        case "rightsize.cpus_advice_withheld":
+            return (
+                f"{fields.get('suite')}: no cpus advice for "
+                f"{fields.get('test')} — its {fields.get('runs')} run(s) were "
+                "not all submitted with the same cpu request (a retry went "
+                "out after the ambient SBATCH_* environment changed), so no "
+                "single reservation or edit hint describes them all"
+            )
+        case "rightsize.mem_advice_unsampled":
+            tests = fields.get("tests") or []
+            interval = fields.get("interval_s")
+            # Reachable only when the user's own --acctg-freq set the rate,
+            # since dispatch otherwise requests task=1 — so name that as the
+            # cause rather than recommending the value they overrode.
+            if interval == float("inf"):
+                cause = "task accounting is disabled (--acctg-freq task=0)"
+            else:
+                interval_str = (
+                    f"{interval:g}" if isinstance(interval, float) else str(interval)
+                )
+                cause = (
+                    f"they ran shorter than the {interval_str}s accounting "
+                    "interval set by your cfg-dispatch.sbatch-args --acctg-freq"
+                )
+            return (
+                f"{fields.get('suite')}: memory advice omitted for "
+                f"{len(tests)} test(s) ({', '.join(map(str, tests))}) — "
+                f"{cause}, so their MaxRSS was never sampled. Lower it, or "
+                "drop the override for the --acctg-freq=task=1 default"
+            )
+        case "randtest.dispatch_ignored_for_replay":
+            jobs = fields.get("jobs")
+            also = f" (and --jobs {jobs})" if jobs is not None else ""
+            return (
+                f"--dispatch {fields.get('backend')}{also} ignored for replay "
+                f"(-r {fields.get('replay_run_id')}): a single-seed replay "
+                "runs locally"
+            )
+        case "dispatch.cancelled":
+            # The ids are the only route to a post-mortem once the head is
+            # gone, so an interrupted run leaves them on the console (#435).
+            ids = fields.get("job_ids") or []
+            id_note = f": {' '.join(map(str, ids))}" if ids else ""
+            return (
+                f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "
+                f"on the {fields.get('backend')} backend{id_note}"
+            )
+        case "dispatch.orphans_found":
+            # The default answer to an interrupted run, and the one that
+            # changes nothing — so the message has to carry both the
+            # evidence (which jobs, which run) and the two commands that act
+            # on it, or the user is told about a problem with no handle on
+            # it (#521).
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: {fields.get('jobs')} job(s) from an earlier run of "
+                f"{fields.get('suite_dir')} are still queued or running: "
+                f"{' '.join(map(str, ids))} (run token "
+                f"{fields.get('run_token')}, submitted by pid "
+                f"{fields.get('pid')}, recorded in {fields.get('manifest')}). "
+                "This run submits its own jobs beside them — re-run with "
+                "--orphans adopt to collect those instead, or --orphans "
+                "cancel to scancel them first"
+            )
+        case "dispatch.orphans_cancelled":
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: cancelled {fields.get('jobs')} job(s) left by an "
+                f"earlier run of {fields.get('suite_dir')} (run token "
+                f"{fields.get('run_token')}, pid {fields.get('pid')}): "
+                f"{' '.join(map(str, ids))}"
+            )
+        case "dispatch.orphans_cancel_failed":
+            # The run stops here, so this line has to carry everything a
+            # `scancel` by hand needs: which jobs, and how long we waited
+            # before deciding the cancellation had not taken (#521 review).
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: {fields.get('jobs')} job(s) of the interrupted "
+                f"run recorded in {fields.get('manifest')} are still queued "
+                f"or running {fields.get('waited_sec')}s after scancel (or "
+                f"the scheduler could not be asked): "
+                f"{' '.join(map(str, ids))}"
+            )
+        case "dispatch.orphans_adopted":
+            # The build job is a structured field but not repeated in the
+            # text: it is already one of the live ids listed here, and
+            # naming it twice reads as two different jobs.
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: adopting {fields.get('jobs')} job(s) from an "
+                f"earlier run of {fields.get('suite_dir')} instead of "
+                f"submitting new ones: {' '.join(map(str, ids))} (run token "
+                f"{fields.get('run_token')}, pid {fields.get('pid')})"
+            )
+        case "dispatch.orphans_ignored":
+            return (
+                f"dispatch: ignoring --orphans {fields.get('orphans')} on the "
+                f"{fields.get('backend')} backend — {fields.get('reason')}"
+            )
+        case "dispatch.suite_submitted":
+            ids = fields.get("job_ids") or []
+            build = fields.get("build_job")
+            verilate = fields.get("verilate_job")
+            build_note = f"build job {build}, " if build else "no build job needed, "
+            if verilate:
+                build_note = f"verilate job {verilate}, {build_note}"
+            count = fields.get("jobs")
+            plural = "" if count == 1 else "s"
+            return (
+                f"dispatch: {fields.get('suite')} → {build_note}"
+                f"sim jobs {' '.join(map(str, ids))} "
+                f"({count} job{plural} on {fields.get('backend')})"
+            )
+        case "dispatch.progress":
+            running, pending = fields.get("running"), fields.get("pending")
+            split = (
+                f" ({running} running, {pending} pending)"
+                if running is not None and pending is not None
+                else ""
+            )
+            longest_job, longest_s = fields.get("longest_job"), fields.get("longest_s")
+            longest = (
+                f", longest running {longest_job} {_format_elapsed(longest_s)}"
+                if longest_job is not None
+                else ""
+            )
+            return (
+                f"dispatch: {fields.get('remaining')}/{fields.get('total')} jobs "
+                f"remaining{split}, "
+                f"{_format_elapsed(fields.get('elapsed_s'))} elapsed{longest}"
+            )
+        case "dispatch.suite_drained":
+            # "finished", never "passed": results are collected afterwards.
+            return (
+                f"dispatch: {fields.get('suite')} — all {fields.get('jobs')} "
+                f"jobs finished ({_format_elapsed(fields.get('elapsed_s'))})"
+            )
+        case "dispatch.max_wait_exceeded":
+            ids = fields.get("jobs") or []
+            return (
+                f"dispatch: still waiting on {fields.get('remaining')} of "
+                f"{fields.get('total')} job(s) after cfg-dispatch.max-wait "
+                f"({_format_elapsed(fields.get('max_wait'))}) on the "
+                f"{fields.get('backend')} backend — cancelling the fleet: "
+                f"{' '.join(map(str, ids))}"
+            )
+        case "dispatch.retry":
+            # Names the classifier, not just the delay: the whole point of
+            # the rule is that only a license-queue kill is retried, and a
+            # reader must be able to see which one fired (#405).
+            target_job = fields.get("test")
+            if fields.get("run_id") is not None:
+                target_job = f"{target_job}:{fields.get('run_id')}"
+            return (
+                f"dispatch: retrying {target_job} (job {fields.get('job_id')}) "
+                f"in {_format_elapsed(fields.get('delay_sec'))} — "
+                f"{fields.get('classifier')}, attempt {fields.get('attempt')} "
+                f"of {fields.get('attempts')}"
+            )
+        case "dispatch.retry_abandoned":
+            # The run is still scored — every row was written before the
+            # retry was attempted — so this is a warning about a lost
+            # second chance, not a lost regression (#405).
+            return (
+                f"dispatch: giving up on retry attempt {fields.get('attempt')} for "
+                f"{fields.get('jobs')} job(s) on the {fields.get('backend')} "
+                "backend — keeping the results already collected "
+                f"({fields.get('error')})"
+            )
+        case "dispatch.result_missing":
+            state = fields.get("scheduler_state")
+            state_note = f" (scheduler state {state})" if state else ""
+            attempt = fields.get("attempt")
+            attempt_note = f" on attempt {attempt}" if attempt and attempt > 1 else ""
+            # A classified row is about to be resubmitted, so it is *not*
+            # counted as a failure yet — saying so would contradict the
+            # dispatch.retry line that follows it, and human mode is where
+            # a reader reconstructs the run (the fields are only legible
+            # under --machine otherwise) (#405 review).
+            classifier = fields.get("retry_classifier")
+            tail = (
+                f" — {classifier}, retrying"
+                if classifier
+                else " — counting it as a failure"
+            )
+            return (
+                f"Dispatch job {fields.get('job_id')} for "
+                f"{fields.get('test')} produced no result{state_note}"
+                f"{attempt_note}{tail}"
+            )
+        case "dispatch.test_artifact_collision":
+            return (
+                "dispatch: expanded tests "
+                f"{fields.get('first_test')!r} ({fields.get('first_suite')}) and "
+                f"{fields.get('second_test')!r} ({fields.get('second_suite')}) "
+                f"share {fields.get('artifact_dir')}"
+            )
         case "suite.skip":
             reason = "skip reason unavailable"
             if fields.get("reason") == "above_regression_level":
@@ -332,6 +996,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "hook.stdout":
+            # A hook's own print(), re-framed rather than dropped: the
+            # prefix says which script the line came from, since it is now
+            # interleaved with rtl_buddy's own console output on stderr
+            # instead of arriving as a contiguous block on stdout (#371).
+            stage = fields.get("stage")
+            script = fields.get("script")
+            name = Path(str(script)).name if script else "hook"
+            label = f"{stage} {name}" if stage else name
+            return f"[{label}] {fields.get('line')}"
         case "preproc.import_collision":
             return (
                 f"{fields.get('test')}: preproc import collision "
@@ -356,9 +1030,397 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
         case "compile.build_reused":
-            return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
+            # Age first, toolchain second: the question a stale reuse
+            # raises is "was this built before my edit?", and the answer is
+            # the age (#494). An unknown age says so rather than being
+            # dropped — "reused, age unknown" is a fact worth reading.
+            age = fields.get("stamp_age_sec")
+            built = (
+                f"built {_format_elapsed(age)} ago"
+                if age is not None
+                else "age unknown"
+            )
+            toolchain = fields.get("toolchain")
+            if toolchain is not None:
+                built = f"{built}, {toolchain}"
+            shared = "" if fields.get("shared", True) else "un"
+            return (
+                f"{target or 'compile'}: reused {shared}shared build "
+                f"{_build_location(fields)} ({built}); nothing compiled"
+            )
+        case "compile.verilate_reused":
+            # The verilate job's counterpart of build_reused (#593): there is
+            # no stamp yet — nothing runnable to vouch for — so the marker
+            # is what says this key's front end has already run.
+            return (
+                f"{target or 'compile'}: already verilated into "
+                f"{_build_location(fields)}; nothing to verilate"
+            )
+        case "compile.rebuild_forced":
+            # The counterpart of build_reused: with --rebuild the reader's
+            # question flips to "did it actually recompile?", and this is
+            # the line that answers it (once per build dir, #494).
+            return (
+                f"{target or 'compile'}: --rebuild given, compiling "
+                f"{_build_location(fields)} even though a stamp may validate"
+            )
+        case "compile.hash_root":
+            # DEBUG, but readable when asked for: which root gates content
+            # hashing decides whether an out-of-suite edit invalidates a
+            # stamp — the silent fallback is the wrong place for a raw
+            # dict (#494 review).
+            origin = (
+                "from root_config" if fields.get("derived") else "suite-dir fallback"
+            )
+            return (
+                f"{target or 'compile'}: content-hash root "
+                f"{fields.get('project_root')} ({origin})"
+            )
+        case "compile.build_lock_wait":
+            # Named ahead of the wait, not after it: a compile can take
+            # minutes, and a job log that simply stops for them is
+            # indistinguishable from a hang (#494). The holder is whatever
+            # the lock file could tell us — advisory, possibly stale, and
+            # absent entirely when nobody had written it yet, which is why
+            # the sentence stands up without it.
+            # Deferred for the same reason as artifact_lock.contended
+            # above: artifact_lock imports log_event from this module.
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "test": fields.get("holder_test"),
+                    "started": fields.get("holder_started"),
+                }
+            )
+            # Repeated every few minutes while the wait lasts, with the
+            # elapsed time appended from the second line on — the first
+            # says "this is a wait", the rest say "it is still a wait".
+            waited = fields.get("waited_sec") or 0
+            return (
+                f"{target or 'compile'}: waiting for another rtl-buddy "
+                f"process{holder} to finish compiling "
+                f"{_build_location(fields)}"
+                + (f" ({waited}s so far)" if waited else "")
+            )
+        case "compile.build_lock_unavailable":
+            # A filesystem that cannot flock (read-only, ENOLCK on some NFS
+            # mounts) must not fail the build — it loses the cross-process
+            # serialisation and says which guarantee went with it.
+            return (
+                f"{target or 'compile'}: could not lock "
+                f"{_build_location(fields)} ({fields.get('error')}); "
+                "compiling without it — concurrent rtl-buddy processes "
+                "populating this build directory are not serialised"
+            )
+        case "compile.build_toolchain_changed":
+            return (
+                f"{target or 'compile'}: the shared build was compiled by "
+                f"{fields.get('was')} but this run resolves "
+                f"{fields.get('now')} — rebuilding rather than reusing it"
+            )
         case "compile.share_build_unsupported":
-            return f"{fields.get('test')}: --share-build only supports Verilator builders; {fields.get('simulator')} compiles per test"
+            return (
+                f"{fields.get('test')}: --share-build cannot share this build "
+                f"({fields.get('reason') or fields.get('simulator')}); "
+                "it compiles per test"
+            )
+        case "compile.toplevel_conflict":
+            # WARNING, so it reaches a default console: a builder opt that
+            # names a different top than the testbench does is how a suite
+            # silently elaborates a design its config does not name.
+            # `configured` is absent when the configured flag is bare (a
+            # trailing `--top`, or one followed by another option) — say so
+            # rather than rendering the missing value as "None".
+            configured = fields.get("configured")
+            pin = (
+                f"{fields.get('flag')} {configured}"
+                if configured is not None
+                else f"{fields.get('flag')} with no value"
+            )
+            return (
+                f"{target or 'compile'}: builder opts pin {pin}, which "
+                f"overrides this testbench's toplevel: "
+                f"{fields.get('toplevel')} — the configured top is used"
+            )
+        case "dispatch.compile_mem_unparseable":
+            return (
+                f"cfg-dispatch compile mem {fields.get('mem')!r} is not a "
+                "value Slurm understands (expected e.g. 512M / 16G), so it "
+                "cannot be folded into an in-job compile's reservation"
+            )
+        case "dispatch.cancel_failed":
+            return (
+                f"dispatch: scancel failed for {fields.get('jobs')} "
+                f"(rc {fields.get('returncode')}) — those jobs are still "
+                f"queued and need cancelling by hand: {fields.get('error')}"
+            )
+        case "dispatch.build_submitted":
+            # `parallel` is only mentioned when it is doing something: at the
+            # default of 1 the line must read exactly as it did pre-#495.
+            parallel = fields.get("parallel") or 1
+            concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
+            return (
+                f"Submitted shared-build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')}{concurrency}"
+            )
+        case "dispatch.verilate_submitted":
+            # The first half of a split compile (#593). Same shape as the
+            # build-job line above, because a reader watching the queue
+            # sees the two side by side.
+            parallel = fields.get("parallel") or 1
+            concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
+            return (
+                f"Submitted verilate job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')}{concurrency}"
+            )
+        case "dispatch.build_job_deduped":
+            # WARNING, and the only line that explains why this run's build
+            # job sits PENDING behind a job the user did not submit in this
+            # invocation (#507).
+            ids = fields.get("job_ids")
+            joined = ", ".join(ids) if isinstance(ids, list) else str(ids)
+            # "reuses it if the inputs are unchanged", not "reuses it":
+            # the waiting job revalidates the stamp under the build lock,
+            # and `--rebuild`, an edit, or a different builder makes that
+            # fail and compile — which is correct, and which a line
+            # promising reuse would have made look like a bug.
+            return (
+                f"A shared build for {fields.get('suite_dir')} is already queued or "
+                f"running as job {joined}; this run's build job "
+                f"{fields.get('job_id')} waits for it, then revalidates the shared "
+                "build and reuses it if the inputs are unchanged, rather than "
+                "compiling into the same directory alongside it"
+            )
+        case "dispatch.submitted":
+            gate = fields.get("dependency")
+            target = fields.get("test")
+            if fields.get("run_id") is not None:
+                target = f"{target}:{fields.get('run_id')}"
+            return f"Submitted job {fields.get('job_id')} for {target}" + (
+                f", gated on build {gate}" if gate else ""
+            )
+        case "dispatch.array_submitted":
+            slices = fields.get("slices") or 1
+            # A group too big for one array is split (#509); say which piece
+            # this is, so the log shows the split rather than several
+            # unexplained arrays for one resource group.
+            piece = f" (slice {fields.get('slice')}/{slices})" if slices > 1 else ""
+            return (
+                f"Submitted array job {fields.get('job_id')} "
+                f"[{fields.get('array')}] for {fields.get('jobs')} test(s){piece}"
+            )
+        case "dispatch.max_array_size_unknown":
+            return (
+                "dispatch: could not read the cluster's array limits "
+                f"({fields.get('error')}), so a resource group is submitted as "
+                "one array — sbatch refuses a group larger than either limit; "
+                "set cfg-dispatch.max-array-size (and cfg-dispatch."
+                "max-array-tasks, where the cluster caps tasks per array below "
+                "it) to have such groups split"
+            )
+        case "dispatch.wait_poll_failed":
+            where = (
+                f" on cluster {fields.get('cluster')}" if fields.get("cluster") else ""
+            )
+            return (
+                f"dispatch: squeue could not be polled{where} "
+                f"({fields.get('error')}); {fields.get('jobs')} job(s) are still "
+                "assumed outstanding — a failed poll is not proof that they "
+                "finished, so the wait keeps asking"
+            )
+        case "dispatch.wait_states_unfiltered":
+            return (
+                "dispatch: squeue rejected the job-state filter "
+                f"({fields.get('dropped') or 'naming no state'}), so the wait "
+                "now sees only squeue's default states (pending, running, "
+                "completing); a job held in another state may be reported "
+                "finished early"
+            )
+        case "dispatch.wait_states_narrowed":
+            return (
+                f"dispatch: squeue does not know the job state(s) "
+                f"{fields.get('dropped')}, so the wait filters on "
+                f"{fields.get('states')} instead"
+            )
+        case "dispatch.drained":
+            return (
+                f"All {fields.get('jobs')} dispatched job(s) finished on the "
+                f"{fields.get('backend')} backend"
+            )
+        case "dispatch.job_started":
+            return (
+                f"Started {fields.get('kind')} job {fields.get('job_id')} "
+                f"(pid {fields.get('pid')}), logging to {fields.get('log')}"
+            )
+        case "dispatch.job_exited":
+            return (
+                f"{fields.get('kind')} job {fields.get('job_id')} exited with "
+                f"returncode {fields.get('returncode')}"
+            )
+        case "dispatch.pool_configured":
+            return (
+                f"Dispatching up to {fields.get('jobs')} job(s) concurrently on "
+                f"the {fields.get('backend')} backend "
+                f"({fields.get('cpus')} CPUs detected)"
+            )
+        case "dispatch.reservations_ignored":
+            reserved = ", ".join(
+                f"{key}={fields.get(key)}"
+                for key in ("cpus", "mem", "time")
+                if fields.get(key) is not None
+            )
+            return (
+                f"Resource reservations ({reserved}) are NOT enforced by the "
+                f"{fields.get('backend')} backend — one host has no portable "
+                "per-process cap, so --jobs is the only limit; size it for the "
+                "memory the heaviest tests need"
+            )
+        case "dispatch.dependency_failed":
+            return (
+                f"dispatch: skipping {len(fields.get('jobs') or [])} job(s) whose "
+                f"shared build failed ({fields.get('jobs')}) — see the build log"
+            )
+        case "dispatch.dependency_never_satisfied":
+            return (
+                f"dispatch: cancelling {len(fields.get('jobs') or [])} job(s) whose "
+                "build never succeeded — Slurm would leave them pending forever "
+                f"({fields.get('jobs')})"
+            )
+        case "dispatch.key_released":
+            tests = fields.get("tests") or []
+            job_ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: compile key {fields.get('group')} is built — "
+                f"released {len(job_ids)} simulation job(s) for "
+                f"{', '.join(str(name) for name in tests)} "
+                f"({', '.join(str(job_id) for job_id in job_ids)}); they start "
+                "now instead of waiting for the rest of the build job"
+            )
+        case "build_job.partial_result_failed":
+            return (
+                f"build job: could not update {fields.get('path')} with the "
+                f"compile keys built so far ({fields.get('error')}). The "
+                "simulation jobs released for those keys will find no verdict "
+                "for themselves and recompile if their stamp does not "
+                "validate; check the directory's permissions and free space."
+            )
+        case "dispatch.build_result_partial":
+            state = fields.get("scheduler_state")
+            state_note = "" if not state else f" (scheduler state {state})"
+            return (
+                f"dispatch: the build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')} did not finish{state_note} — its "
+                f"result names {fields.get('decided')} of "
+                f"{fields.get('planned')} planned test(s). Those ran; the "
+                "rest were never compiled and their jobs were cancelled with "
+                "the build. See the build log."
+            )
+        case "dispatch.release_skipped":
+            tests = fields.get("tests") or []
+            return (
+                f"dispatch: compile key {fields.get('group')} is built, but "
+                "its build record could not be written "
+                f"({fields.get('error')}), so its {len(tests)} simulation "
+                "job(s) were NOT released: they keep the dependency on this "
+                "build job and start when it ends, as they did before early "
+                "release existed. Nothing recompiles under a simulation "
+                "reservation — holding the gate is what prevents it, and it "
+                "held."
+            )
+        case "dispatch.gates_skipped":
+            return (
+                f"dispatch: {fields.get('suite_dir')}: {fields.get('reason')}. "
+                "Slurm takes a dependency expression whole, so a release "
+                f"would drop {fields.get('dependency')} along with this run's "
+                "own gate; every simulation job waits for its build job "
+                "instead."
+            )
+        case "dispatch.env_dependency_overridden":
+            return (
+                f"dispatch: {fields.get('suite_dir')}: the exported "
+                f"SBATCH_DEPENDENCY ({fields.get('dependency')}) is not what "
+                "gates these jobs — a --dependency on the command line "
+                "overrides it, and every job gated on a build job carries "
+                "one. Early release stays on; put the expression in "
+                "cfg-dispatch.sbatch-args if it is meant to hold them."
+            )
+        case "dispatch.build_result_final_write_lost":
+            return (
+                f"dispatch: the build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')} finished, but the write that "
+                "completes its result was lost — the file still names only "
+                f"{fields.get('decided')} of {fields.get('planned')} planned "
+                "test(s). Every test was compiled, so a missing simulation "
+                "result here is an ordinary missing result; only the "
+                "compile-reservation advice is dropped. Check the "
+                "filesystem's free space and permissions."
+            )
+        case "dispatch.gates_unavailable":
+            return (
+                "dispatch: no gates manifest at "
+                f"{fields.get('path')} ({fields.get('reason')}), so each "
+                "compile key's simulation jobs wait for the whole build job "
+                "as before. The head writes it after its last submission; a "
+                "head that was killed mid-fan-out never got there."
+            )
+        case "dispatch.gates_write_failed":
+            return (
+                f"dispatch: could not write the gates manifest "
+                f"{fields.get('path')} for {fields.get('suite_dir')} "
+                f"({fields.get('error')}), so this suite's simulation jobs "
+                "stay gated on its whole build job. The jobs themselves are "
+                "submitted and correct; only the early start is lost."
+            )
+        case "dispatch.release_unavailable":
+            return (
+                f"dispatch: {fields.get('reason')}. `scontrol` is an optional "
+                "Slurm binary and it has to be on the PATH of the compute "
+                "node running the build job, not just the submit host."
+            )
+        case "dispatch.release_failed":
+            skipped = fields.get("skipped")
+            job_note = (
+                "" if fields.get("job_id") is None else f" of {fields.get('job_id')}"
+            )
+            tail = (
+                ""
+                if not skipped
+                else (
+                    f" {skipped} further job(s) were not attempted, and no "
+                    "later compile key in this build job will try either — "
+                    "they all keep their afterok gate and start when it ends."
+                )
+            )
+            return (
+                f"dispatch: could not clear the dependency{job_note} for "
+                f"{fields.get('group')} ({fields.get('error')})."
+                f"{tail}"
+            )
+        case "compile.share_build_opts_overridden":
+            return (
+                f"{fields.get('test')}: shared build owns the output location, "
+                f"so {fields.get('dropped')} from builder-opts was dropped in "
+                f"favour of {fields.get('build_dir')}"
+            )
+        case "compile.share_build_simv_overridden":
+            return (
+                f"{fields.get('test')}: shared build owns the output location, "
+                f"so builder-simv {fields.get('configured')!r} was not used — "
+                f"the executable is {fields.get('used')}"
+            )
+        case "compile.license_queued":
+            # The transcript is the evidence, but it is best-effort since
+            # #494 (an unwritable artefact tree must not fail a compile that
+            # passed), so an absent one drops the clause instead of printing
+            # "transcript: None".
+            transcript = fields.get("transcript")
+            return (
+                f"{fields.get('test')}: compile waited in the VCS license queue — "
+                f"its {_format_duration(fields.get('duration_sec'))} is not all "
+                "compile work" + (f"; transcript: {transcript}" if transcript else "")
+            )
         case "sim.start":
             return f"{target or 'sim'}: simulation started"
         case "sim.output_paths":
@@ -392,10 +1454,31 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'sim'}: generated seed {fields.get('seed')}"
         case "sim.timeout_override":
             return f"{target or 'sim'}: using timeout override {fields.get('timeout_sec')}s"
+        case "sim.timeout_extended":
+            return (
+                f"{target or 'sim'}: timeout extended to {fields.get('timeout_sec')}s "
+                f"(+{fields.get('extra_sec')}s for builder {fields.get('builder')})"
+            )
         case "postproc.completed":
             return f"{target or 'postproc'}: post-processing completed with result {fields.get('result')} ({fields.get('desc')})"
         case "postproc.no_markers":
             return f"{fields.get('test')}: no PASS/FAIL markers found in {fields.get('log')}; result is NA"
+        case "sim.unknown_verdict":
+            return (
+                f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} and "
+                "the transcript has no PASS/FAIL verdict; result is FAIL (#546)"
+            )
+        case "sim.stage_failed":
+            return (
+                f"{fields.get('test')}: simulator {_sim_exit_phrase(fields)} before "
+                f"the --early-stop {fields.get('stage')} stop; result is FAIL "
+                "(transcript not post-processed)"
+            )
+        case "postproc.conflicting_markers":
+            return (
+                f"{fields.get('test')}: both PASS and FAIL markers found in "
+                f"{fields.get('log')}; result is {fields.get('chosen')}"
+            )
         case "filelist.malformed_line":
             return (
                 f'{fields.get("file")}: malformed filelist line "{fields.get("line")}"'
@@ -406,12 +1489,75 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"filelist directory missing: {fields.get('path')}"
         case "filelist.source_missing":
             return f"filelist source missing: {fields.get('path')}"
+        case "filelist.path_escapes_root":
+            return (
+                f"{fields.get('count')} filelist source(s) resolve outside the "
+                f"project root ({fields.get('root')}): {fields.get('paths')}. "
+                "The sim will compile those out-of-tree files, not any copy "
+                "inside your working tree — a false-green risk in nested git "
+                "worktrees. Verify these paths are intended."
+            )
+        case "filelist.incdir_unrepresentable":
+            return (
+                f"{fields.get('count')} include director(ies) contain '+' and "
+                f"cannot be pinned to an absolute path: {fields.get('paths')}. "
+                "Filelist parsers read `+incdir+a+b` as two directories and "
+                "quoting does not help, so these entries keep their spelling "
+                "relative to the generated filelist and resolve against the "
+                "builder's working directory instead. Remove '+' from the "
+                "path to make them checkout-independent."
+            )
+        case "fpv.filelist_define_reserved":
+            return (
+                f"ignoring `+define+{fields.get('define')}` from the model "
+                f"filelist: `{fields.get('name')}` is set by rtl-buddy for "
+                "every formal run and cannot be overridden"
+            )
+        case "fpv.filelist_define_unquotable":
+            return (
+                f"ignoring `+define+{fields.get('define')}` from the model "
+                "filelist: the value contains whitespace, and a yosys script "
+                "line is tokenised on whitespace with no quoting that "
+                "survives, so the define cannot be expressed"
+            )
+        case "fpv.filelist_define_redefined":
+            return (
+                f"`{fields.get('name')}` is defined more than once in the "
+                f"model filelist: keeping `{fields.get('kept')}`, dropping "
+                f"`{fields.get('dropped')}` — the two frontends disagree "
+                "about which duplicate wins, so the last definition is used "
+                "for both"
+            )
         case "filelist.write_done":
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":
             return f"Verible disabled: path not found at {fields.get('path')}"
         case "verible.path_fallback":
-            return f"Verible: configured path not found at {fields.get('path')}, using PATH"
+            return (
+                f"cfg-verible[{fields.get('name')}]: configured path "
+                f"{fields.get('configured_path')} does not exist; falling back to "
+                f"{fields.get('resolved_path')} from PATH. A deliberate pin is not "
+                f"being honoured — fix the path or drop it to silence this."
+            )
+        case "verible.path_incomplete":
+            resolved = fields.get("resolved_path")
+            tail = (
+                f"falling back to {resolved} from PATH"
+                if resolved
+                else f"and {fields.get('exe')} is not on PATH either"
+            )
+            return (
+                f"cfg-verible[{fields.get('name')}]: configured path "
+                f"{fields.get('configured_path')} exists but does not contain "
+                f"{fields.get('exe')}; {tail}. A deliberate pin is not being "
+                f"honoured — fix the path or drop it to silence this."
+            )
+        case "verible.exe_fallback":
+            return (
+                f"cfg-verible[{fields.get('name')}]: {fields.get('exe')} not found at "
+                f"{fields.get('configured_path')}; using "
+                f"{fields.get('resolved_path')} from PATH instead."
+            )
         case "verible.command":
             return f"Running {fields.get('executable')}"
         case "verible.completed":
@@ -420,6 +1566,40 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return "verible binaries unavailable"
         case "verible.command_invalid":
             return f'verible: invalid command "{fields.get("command")}"'
+        case "verible.model_files":
+            return (
+                f"--model {', '.join(fields.get('models', []))}: "
+                f"{fields.get('files')} source file(s)"
+                f" ({fields.get('excluded')} excluded)"
+            )
+        case "verible.model_files_empty":
+            return (
+                f"--model {', '.join(fields.get('models', []))} expanded to no"
+                " source files — every entry was a -v/-y library file, a"
+                " +directive, or matched an exclude glob"
+            )
+        case "lint_suite_config.load_failed":
+            return f"failed to load lint.yaml at {fields.get('path')}: {fields.get('error')}"
+        case "lint_suite_config.duplicate_check":
+            return (
+                f"{fields.get('path')}: duplicate lint check name "
+                f'"{fields.get("name")}"'
+            )
+        case "lint_suite_config.checks_malformed":
+            return (
+                f"{fields.get('path')}: checks section malformed: {fields.get('error')}"
+            )
+        case "lint_suite_config.check_missing":
+            return (
+                f'lint check "{fields.get("check")}" not found in {fields.get("path")}'
+            )
+        case "lint_reg_config.load_failed":
+            return (
+                f"failed to load lint regression config at {fields.get('path')}: "
+                f"{fields.get('error')}"
+            )
+        case "verible.exclude_without_model":
+            return "--exclude only filters --model expansion; no --model given, so it has no effect"
         case "wave.nvim_plugin_missing":
             return (
                 'nvim plugin not installed — run "rb nvim-install" to enable the hub'
@@ -452,6 +1632,71 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"abc constraint set to minimum {used} ns as a workaround; "
                 "consider separate synth entries per clock domain"
             )
+        case "synth.single_unit_ignored":
+            return (
+                f'single_unit: true has no effect with frontend "{fields.get("frontend")}" '
+                "— it only applies to the slang frontend; set frontend: slang to use it"
+            )
+        case "synth.best_effort_hierarchy_ignored":
+            return (
+                "best_effort_hierarchy: true has no effect with frontend "
+                f'"{fields.get("frontend")}" — it only applies to the slang '
+                "frontend; set frontend: slang to use it"
+            )
+        case "synth.static_functions":
+            findings = fields.get("findings") or []
+            listed = "; ".join(str(f) for f in findings)
+            truncated = fields.get("truncated") or 0
+            if truncated:
+                listed += f"; and {truncated} more"
+            # Only slang miscompiles these. The legacy verilog frontend inlines
+            # per call site, so a user who opted into `error` there is being
+            # told about portability, not corruption.
+            if fields.get("frontend") == "slang":
+                why = (
+                    "the slang frontend shares one storage location per formal "
+                    "across every call site, which silently merges registers"
+                )
+            else:
+                why = (
+                    f'the "{fields.get("frontend")}" frontend inlines each call '
+                    "site, so this design is correct here but not portable — "
+                    "the slang frontend silently merges registers"
+                )
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                "function/task declaration(s) without an explicit automatic "
+                f"lifetime — {listed}; {why}. Add `automatic`, or set synth "
+                "option static-functions: warn|allow to proceed"
+            )
+        case "synth.static_function":
+            return (
+                f"{fields.get('path')}:{fields.get('line')}: "
+                f"{fields.get('kind')} {fields.get('subroutine')} has static "
+                "lifetime (no explicit `automatic`); its formals are shared "
+                "storage and are not portable across synthesis frontends"
+            )
+        case "synth.filelist_defines_overridden":
+            overridden = fields.get("overridden") or []
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                "+define+ entr(ies) in the generated filelist are overridden "
+                "by the synth.yaml entry's `defines:` — "
+                + ", ".join(str(o) for o in overridden)
+                + ". Synthesis elaborates with the synth.yaml value, the "
+                "simulation flow with the filelist's; a bare filelist entry "
+                "has no single value to compare (empty under Verilator and "
+                "read_verilog, 1 under Icarus and slang). Drop one of the two "
+                "if the flows are meant to agree"
+            )
+        case "synth.conflicting_drivers":
+            return (
+                f'synthesis "{fields.get("synth")}": {fields.get("count")} '
+                '"multiple conflicting drivers" warning(s) in '
+                f"{fields.get('log')} — a net with incompatible drivers folds "
+                "to x and takes its downstream logic with it. Fix the design, "
+                "or set synth option conflicting-drivers: allow to proceed"
+            )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":
@@ -465,6 +1710,97 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'OpenROAD synthesis "{fields.get("synth")}" requires a mapped library; '
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
+            )
+        # The stale half could not be withdrawn, and the reports behind it
+        # have already been cleared. Not a by-product failure to log and
+        # carry on past: the flows fail the run on this, because what is
+        # left in the artefact directory publishes rows over files that are
+        # gone (#560).
+        case "synth.phys_half_stale":
+            return (
+                f'synthesis "{fields.get("synth")}": the previous run\'s '
+                "module rows could not be withdrawn from phys-model.json "
+                f"({fields.get('error')}) — the synth_stat.json behind them "
+                "has already been cleared, so this run stops rather than "
+                "leave them standing over it"
+            )
+        case "power.phys_half_stale":
+            return (
+                f'power run "{fields.get("power")}": the previous run\'s '
+                "per-instance rows could not be withdrawn from "
+                f"phys-model.json ({fields.get('error')}) — the per-instance "
+                "report behind them has already been cleared, so this run "
+                "stops rather than leave them standing over it"
+            )
+        # Two outcomes share this event, and they are opposites. A null
+        # `error` is a publication that happened and came out short of its
+        # per-row half; a set `error` is a publication that did not happen
+        # at all — the `phys-publish.lock` wait timed out, the write failed
+        # — and nothing may then be said about what phys-model.json holds,
+        # because whatever is there belongs to some earlier run (#560).
+        case "synth.phys_model_incomplete" if fields.get("error"):
+            return (
+                f'synthesis "{fields.get("synth")}": phys-model.json was not '
+                f"written — publishing the physical model failed "
+                f"({fields.get('error')}). The design totals are reported with "
+                "the run either way; any phys-model.json and phys-manifest.json "
+                "in the run's artefact directory are an earlier publication's "
+                "and do not describe this run"
+            )
+        case "synth.phys_model_incomplete":
+            return (
+                f'synthesis "{fields.get("synth")}": phys-model.json has no '
+                "per-module breakdown — the stat -json dump "
+                f"{fields.get('stats')} was not produced or could not be read. "
+                "The design totals scraped from the log are still "
+                "recorded; what is missing is this run's per-module synthesis "
+                "rows, so `rb phys module` has no cells or area for it — any "
+                "per-instance power rows in the same model still answer"
+            )
+        case "power.phys_model_incomplete" if fields.get("error"):
+            return (
+                f'power run "{fields.get("power")}": phys-model.json was not '
+                f"written — publishing the physical model failed "
+                f"({fields.get('error')}). The design totals are reported with "
+                "the run either way; any phys-model.json and phys-manifest.json "
+                "in the run's artefact directory are an earlier publication's "
+                "and do not describe this run"
+            )
+        case "power.phys_model_incomplete":
+            return (
+                f'power run "{fields.get("power")}": phys-model.json has no '
+                "per-instance breakdown — the per-instance report "
+                f"{fields.get('instances')} was not produced or could not be "
+                "read. The design totals from the report_power Total row "
+                "are still recorded; what is missing is this run's "
+                "per-instance power rows, so `rb phys instance` has nothing to "
+                "answer from — any per-module synthesis rows in the same model "
+                "still answer"
+            )
+        case "synth_tool_config.unknown_override":
+            unknown = fields.get("unknown") or []
+            accepted = fields.get("accepted") or []
+            hints = fields.get("hints") or []
+            msg = (
+                f"tool_overrides.{fields.get('tool')} in synth.yaml: unknown key(s) "
+                f"{', '.join(repr(str(k)) for k in unknown)} ignored; accepted keys "
+                f"are {', '.join(str(k) for k in accepted)}"
+            )
+            if hints:
+                msg += f" (did you mean {', '.join(str(h) for h in hints)}?)"
+            return msg + (
+                " — tool_overrides keys are snake_case attribute names, not the "
+                "kebab-case spelling used under cfg-synth-tools.opts"
+            )
+        case "synth_tool_config.override_type":
+            return (
+                f"tool_overrides.{fields.get('tool')}.{fields.get('key')} must be "
+                f"{fields.get('expected')}, got {fields.get('got')}"
+            )
+        case "synth_tool_config.override_not_mapping":
+            return (
+                f"tool_overrides.{fields.get('tool')} must be a mapping of option "
+                f"name to value, got {fields.get('got')}"
             )
         case "coverage.metric.failed":
             return (
@@ -490,6 +1826,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"root_config.yaml not found (searched {fields.get('max_levels')} levels from {fields.get('cwd')})"
         case "root_config.load_failed":
             return f'failed to load root config "{fields.get("path")}": {fields.get("error")}'
+        case "root_config.reg_cfg_block_unreadable":
+            return (
+                f"{fields.get('path')}: cfg-rtl-reg block could not be read "
+                f"({fields.get('error')}) — configured regression-manifest paths "
+                "ignored, falling back to the ./<flow>_regression.yaml filename "
+                "convention"
+            )
+        case "root_config.reg_cfg_unknown_keys":
+            return (
+                f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "
+                f"{fields.get('keys')} — ignored; the manifest-path keys are "
+                f"{fields.get('known')}"
+            )
         case "regression_config.load_failed":
             return f'failed to load regression config "{fields.get("path")}": {fields.get("error")}'
         case "suite_config.load_failed":
@@ -520,6 +1869,35 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"no builder configured for platform (os={fields.get('os')})"
         case "platform.verible_missing":
             return f'verible "{fields.get("verible")}" not found in config (os={fields.get("os")})'
+        case "platform.tool_missing":
+            return (
+                f"cfg-platforms[{fields.get('os')}].{fields.get('block')}: "
+                f'"{fields.get("entry")}" is not a configured entry '
+                f"(available: {fields.get('available') or 'none'})"
+            )
+        case "platform.tool_not_routable":
+            return (
+                f"cfg-platforms[{fields.get('os')}].{fields.get('block')}: this "
+                "block cannot be routed per platform; pin the path in the entry "
+                "itself with a candidate list"
+            )
+        case "tool_path.unresolved_var":
+            return (
+                f"{fields.get('block')}[{fields.get('name')}].{fields.get('field')}: "
+                f"every candidate references an unset environment variable "
+                f"({fields.get('candidates')}); using it literally, which will "
+                f"almost certainly fail. Set the variable (e.g. in "
+                f".rtl-buddy/.env) or add a fallback candidate."
+            )
+        case "tool_version.platform_unknown":
+            # The one cfg-tools error a typo produces, so rtl_buddy.log must
+            # carry the same text the console gets from FatalRtlBuddyError
+            # rather than the dotted-event fallback (#439 review).
+            return (
+                f"cfg-tools[{fields.get('name')}].platform: "
+                f'"{fields.get("entry_platform")}" is not a configured '
+                f"cfg-platforms os (available: {fields.get('available') or 'none'})"
+            )
         case "platform.match_missing":
             return f'{fields.get("name")}: no platform config matches uname "{fields.get("uname")}"'
         case "project_path.missing_directory":
@@ -637,11 +2015,231 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'cdc "{fields.get("analysis")}": {fields.get("exe")!r} not found — '
                 "skipping; run `rb tool-check --explain vivado` for install instructions"
             )
+        case "cdc.filelist_incdirs_unsupported":
+            incdirs = fields.get("incdirs") or []
+            return (
+                f'cdc "{fields.get("analysis")}": {fields.get("count")} '
+                "filelist +incdir+ entr(ies) cannot reach rtl-buddy-cdc, "
+                "which has no include-path option: "
+                + ", ".join(str(d) for d in incdirs)
+                + ". A header found only through them fails with "
+                "'Cannot find include file'; spell the `include relative to "
+                "the including file or use the vivado cdc tool"
+            )
         case "cdc.vivado_waivers_unsupported":
             return (
                 f'cdc "{fields.get("analysis")}": rtl-buddy-cdc waiver files do not '
                 "translate to the Vivado backend — waivers ignored; findings still "
                 "carry full detail for downstream filtering"
+            )
+        case "hier.tool_too_old":
+            installed = fields.get("installed") or "an older build"
+            return (
+                f"hier: the renderer rejected {fields.get('option')} — "
+                f"{installed} is installed, and that option needs "
+                f"rtl-buddy-sch >= {fields.get('required')}"
+            )
+        case "graph_config.suite_load_failed":
+            return (
+                f"graph: could not load {fields.get('path')} — its tests, "
+                "testbenches and coverage links are missing from the graph"
+            )
+        case "graph_config.regression_load_failed":
+            return (
+                f"graph: could not load {fields.get('path')} — the "
+                f"{fields.get('flow')} flow's suites are missing from the graph "
+                "and their tests are not flow-stamped"
+            )
+        case "graph_config.node_id_conflict":
+            return (
+                f"graph: node id {fields.get('node')!r} claimed by both "
+                f"{fields.get('first_type')} and {fields.get('second_type')} — "
+                "keeping the first; rename one so the id is unique"
+            )
+        case "model_config.invalid_model_top":
+            return (
+                f"{fields.get('path')}: model {fields.get('name')!r} declares "
+                f"top {fields.get('top')!r}, which is not a simple "
+                "SystemVerilog identifier — the top is elaborated by every "
+                "backend and also lands in artefact names and generated Tcl, "
+                "so it must start with a letter or underscore and contain "
+                "only letters, digits or underscore ('$' is legal SV but "
+                "substitutes in the generated Tcl)"
+            )
+        case "fpv_config.invalid_top" | "mut_config.invalid_top":
+            subject = (
+                "verification" if event == "fpv_config.invalid_top" else "campaign"
+            )
+            return (
+                f"{fields.get('path')}: {subject} {fields.get('name')!r} "
+                f"declares top {fields.get('top')!r}, which is not a simple "
+                "SystemVerilog identifier — this top wins over the model's "
+                "and is written into the generated yosys and sby scripts, so "
+                "it must start with a letter or underscore and contain only "
+                "letters, digits or underscore ('$' is legal SV but "
+                "substitutes in the generated Tcl)"
+            )
+        case "mut_config.top_override_unused":
+            return (
+                f"campaign {fields.get('name')!r} declares top "
+                f"{fields.get('top')!r} but configures no fpv oracle — only "
+                "the fpv oracle elaborates a top, so the sim oracle scores "
+                "mutants through the test suite's own testbenches and this "
+                "value has no effect"
+            )
+        case "mut_runner.fpv_top_override":
+            return (
+                f"campaign {fields.get('campaign')!r} elaborates the fpv "
+                f"oracle at top {fields.get('top')!r} instead of "
+                f"{fields.get('fpv_top')!r} declared by verification "
+                f"{fields.get('verification')!r} — the campaign top wins for "
+                "the baseline and every mutant"
+            )
+        case "model_config.invalid_model_name":
+            return (
+                f"{fields.get('path')}: model name {fields.get('name')!r} is "
+                "not usable as a directory name — it must start with a "
+                "letter, digit or underscore and contain only letters, "
+                "digits, underscore, dot or hyphen"
+            )
+        case "graph_build.design_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for model {fields.get('model')} — "
+                f"that model's modules, instances and ports are missing from "
+                f"the graph; see {fields.get('log')}"
+            )
+        case "graph_build.tb_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for testbench "
+                f"{fields.get('testbench')} (--tb-top {fields.get('tb_top')}) — "
+                f"that testbench's own hierarchy is missing from the graph, "
+                f"the DUT's is not; see {fields.get('log')}"
+            )
+        case "graph_build.run_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for flow run {fields.get('run')} "
+                f"(--tb-top {fields.get('top')}) — that run's checker hierarchy "
+                f"is missing from the graph and its `targets` edge is left "
+                f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
+            )
+        case "graph_build.stale_export_escapes":
+            return (
+                f"graph build: refusing to retract the export of model "
+                f"{fields.get('model')} — {fields.get('path')} resolves to "
+                f"{fields.get('resolved')}, outside "
+                f"{fields.get('design_root')}; a model name is a directory "
+                "name, so fix it in models.yaml or remove the symlink "
+                "standing in for that directory"
+            )
+        case "graph_build.stale_export_not_dropped":
+            return (
+                f"graph build: model {fields.get('model')} declares "
+                "`graph: false`, but its previous design-tier export at "
+                f"{fields.get('path')} could not be removed "
+                f"({fields.get('error')}) — that stale hierarchy would keep "
+                "being served; fix the directory's permissions or delete it "
+                "by hand"
+            )
+        case "graph_build.duplicate_design_model":
+            return (
+                f"graph build: more than one selected model is named "
+                f"{fields.get('model')} ({fields.get('paths')}) — every "
+                "per-model artefact path, and every selector that names a "
+                "model, is keyed on that name, so their exports would "
+                "overwrite each other and a lookup by name would silently "
+                "pick one; rename one of them (`graph: false` does not "
+                "resolve a name collision)"
+            )
+        case "graph_build.duplicate_design_top":
+            return (
+                f"graph build: models {fields.get('models')} "
+                f"({fields.get('paths')}) are all rooted at top "
+                f"{fields.get('top')} — `module:<top>` is a global id, so "
+                "their exports would merge into one hybrid hierarchy; give "
+                "them distinct `top:` roots in models.yaml, or set "
+                "`graph: false` on the one that is not the design of record"
+            )
+        case "graph_build.tb_id_collision":
+            return (
+                f"graph build: {fields.get('ids')} design-tier id(s) are "
+                f"claimed by more than one file (e.g. {fields.get('example')}) — "
+                "the testbench copies were qualified with their suite so the "
+                "merged graph keeps them apart; rename the duplicated module "
+                "to make the qualification unnecessary"
+            )
+        case "graph_build.extract_failed":
+            return (
+                f"graph build: the extractor's binding tier failed "
+                f"({fields.get('detail')}) — the design + config tiers were "
+                "still merged and written"
+            )
+        case "graph_build.extract_merge_mismatch":
+            return (
+                f"graph build: the extractor's `merge-graphs` disagrees with "
+                f"the internal merge ({fields.get('only_internal')} nodes only "
+                f"ours, {fields.get('only_extract')} only theirs) — the "
+                "internal merge is what was written; see graph-meta.json "
+                "merge.extract_cross_check"
+            )
+        case "graph_bind.cocotb_module_not_found":
+            return (
+                f"graph build: test {fields.get('test')} names cocotb module "
+                f"{fields.get('module')!r} but no {fields.get('expected')} "
+                "exists — the test still binds to the DUT, but nothing was "
+                "scanned for dut.<signal> accesses or golden-model imports"
+            )
+        case "spec_trace.fpv_reg_load_failed":
+            return (
+                f"{fields.get('path')}: fpv_regression.yaml would not load "
+                f"({fields.get('error')}) — no formal run's `covers:` is "
+                "counted, so `rb spec check-coverage` may report items as "
+                "uncovered that a property does verify"
+            )
+        case "graph_bind.dpi_symbol_not_found":
+            return (
+                f"graph build: DPI import {fields.get('symbol')!r} "
+                f"({fields.get('node')}) is defined by no C/C++/Python source "
+                "under verif/ or spec/ — the function node stays in the graph "
+                "with no implemented_by edge"
+            )
+        case "graph_results.overlay_rejected":
+            return (
+                f"graph: {fields.get('path')} is not a readable results "
+                f"overlay (filetype {fields.get('filetype')!r}, schema "
+                f"{fields.get('schema_version')!r}) — querying the graph "
+                "without result status; re-run `rb graph results`"
+            )
+        case "test.result_json_write_failed":
+            return (
+                f"could not write the result record for {fields.get('test')} to "
+                f"{fields.get('path')} ({fields.get('error')}) — the run itself "
+                "is unaffected, but `rb graph results` will report it as UNKNOWN"
+            )
+        case "elab.result_json_write_failed":
+            name = fields.get("model")
+            if fields.get("profile") is not None:
+                name = f"{name}:{fields.get('profile')}"
+            return (
+                f"could not write the elaboration result record for {name} to "
+                f"{fields.get('path')} ({fields.get('error')}) — the run itself "
+                "is unaffected"
+            )
+        case "test.result_json_refresh_failed":
+            return (
+                f"could not refresh the result record for {fields.get('test')} at "
+                f"{fields.get('path')} after coverage post-processing "
+                f"({fields.get('error')}) — the run itself is unaffected and the "
+                "record still exists, but it names none of the coverage artefacts"
+            )
+        case "graph_merge.node_type_conflict":
+            return (
+                f"graph: node id {fields.get('node')!r} is a "
+                f"{fields.get('first_type')} in one tier and a "
+                f"{fields.get('second_type')} in {fields.get('tier')} — "
+                "keeping the first; the two tiers disagree about what that id means"
             )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
@@ -657,7 +2255,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{event_text}{details}"
 
 
-def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) -> None:
+def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) -> str:
     sanitized_fields = {
         key: _machine_field_value(value)
         for key, value in fields.items()
@@ -667,6 +2265,51 @@ def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) 
     logger.log(
         level, message, extra={"rtl_event": event, "rtl_fields": sanitized_fields}
     )
+    return message
+
+
+def console_level() -> int:
+    """Level the console handler shows, or WARNING before setup_logging()."""
+    return _STATE.console_level if _STATE is not None else logging.WARNING
+
+
+def log_console_event(
+    logger: logging.Logger, level: int, event: str, /, **fields: Any
+) -> None:
+    """:func:`log_event`, plus the human message on the console regardless.
+
+    The console handler sits at WARNING unless ``-v``/``--debug`` raised it,
+    so an INFO event never reaches a CI console — which is where a long
+    dispatched run's log is the *only* artifact. Use this for the handful of
+    events that are a run's liveness signal (progress, the submitted job
+    ids): they are not warnings, so logging them at WARNING would be a lie,
+    and raising global verbosity to see them turns on DEBUG for everything
+    else in the one place that cannot afford it (#435).
+
+    The second sanctioned case is output that was **already on stdout and is
+    being re-framed**, not newly added: hook ``print()`` capture (#371) moves
+    text the user could always see onto the log system, so a plain
+    ``log_event()`` would make it vanish at default verbosity — a regression
+    dressed up as a cleanup. Newly-invented chatter does not qualify; it goes
+    through ``log_event()`` and earns its console line with ``-v``.
+
+    ``render_summary`` already establishes the pattern — print to the
+    console AND keep the structured record — and this is its generalisation.
+    When the console *would* show ``level`` anyway the extra print is
+    skipped, so ``-v`` shows one line, not two.
+
+    ``--machine`` is deliberately no different: its console handler is the
+    same WARNING-gated stream (rendering the human message — the JSON Lines
+    go to the file log), and an agent driving a dispatched regression needs
+    the liveness line for exactly the reason CI does. The lines are
+    throttled at the source (``progress-interval``), so a transcript sees a
+    line a minute, not one per poll.
+    """
+    message = log_event(logger, level, event, **fields)
+    if level < console_level():
+        # markup=False: job ids are rendered `1235_[1-40]`, and Rich would
+        # read the brackets as a style tag and swallow them.
+        emit_console_text(message, markup=False, soft_wrap=True)
 
 
 def _plain_summary_lines(
@@ -674,6 +2317,7 @@ def _plain_summary_lines(
     columns: Iterable[tuple[str, str]],
     rows: list[Mapping[str, Any]],
     metadata: list[str] | None = None,
+    footer: list[str] | None = None,
 ) -> list[str]:
     cols = list(columns)
     widths = {}
@@ -693,7 +2337,46 @@ def _plain_summary_lines(
         lines.append(
             "  ".join(f"{str(row.get(key, '')):<{widths[key]}}" for key, _label in cols)
         )
+    if footer:
+        lines.extend(footer)
     return lines
+
+
+def _verdict_column(
+    columns: list[tuple[str, str]], rows: list[Mapping[str, Any]]
+) -> str | None:
+    keys = {key for key, _label in columns}
+    for candidate in ("result", "status"):
+        if candidate in keys and any(
+            _verdict_of(row, candidate).upper() in _KNOWN_VERDICTS for row in rows
+        ):
+            return candidate
+    return None
+
+
+def _verdict_of(row: Mapping[str, Any], key: str) -> str:
+    return str(row.get(key, "")).strip()
+
+
+def _verdict_counts(rows: list[Mapping[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        verdict = _verdict_of(row, key) or "-"
+        counts[verdict] = counts.get(verdict, 0) + 1
+    return counts
+
+
+def _tally_line(counts: Mapping[str, int]) -> str:
+    def order(verdict: str) -> tuple[int, str]:
+        upper = verdict.upper()
+        if upper in _VERDICT_ORDER:
+            return (_VERDICT_ORDER.index(upper), "")
+        return (len(_VERDICT_ORDER), upper)
+
+    parts = ", ".join(
+        f"{counts[verdict]} {verdict}" for verdict in sorted(counts, key=order)
+    )
+    return f"Results: {parts} ({sum(counts.values())} total)"
 
 
 def render_summary(
@@ -704,7 +2387,21 @@ def render_summary(
     logger: logging.Logger,
     metadata: list[str] | None = None,
 ) -> None:
-    plain_lines = _plain_summary_lines(title, columns, rows, metadata=metadata)
+    """Console render honours print_failures_only; log and event keep every row."""
+    cols = list(columns)
+    verdict_key = _verdict_column(cols, rows)
+    counts = _verdict_counts(rows, verdict_key) if verdict_key else {}
+
+    footer = [_tally_line(counts)] if counts else []
+
+    if verdict_key is not None and print_failures_only():
+        console_rows = [
+            row
+            for row in rows
+            if _verdict_of(row, verdict_key).upper() not in _HIDDEN_VERDICTS
+        ]
+    else:
+        console_rows = rows
 
     if is_machine_mode():
         log_event(
@@ -714,22 +2411,46 @@ def render_summary(
             title=title,
             metadata=metadata or [],
             rows=rows,
+            counts=counts or None,
         )
-        emit_console_text("\n".join(plain_lines))
+        # markup=False for the same reason the table cells below are
+        # escaped: these lines carry user-derived strings (a rightsize edit
+        # hint reads `tests[name=alpha].resources.cpus`) and Rich would eat
+        # the brackets as a style tag (#520).
+        emit_console_text(
+            "\n".join(
+                _plain_summary_lines(
+                    title, cols, console_rows, metadata=metadata, footer=footer
+                )
+            ),
+            markup=False,
+        )
         return
 
-    logger.result("\n" + "\n".join(plain_lines))
+    logger.result(
+        "\n"
+        + "\n".join(
+            _plain_summary_lines(title, cols, rows, metadata=metadata, footer=footer)
+        )
+    )
 
-    table = Table(title=title)
-    if metadata:
-        table.caption = "\n".join(metadata)
+    # Everything below is data, not markup: no caller builds a cell, title
+    # or caption out of Rich style tags, but plenty of them interpolate
+    # user strings that contain square brackets — a rightsize edit-hint
+    # path, a test name, a graph query. Rich parses `[name=alpha]` as a
+    # style tag and drops it, silently hiding which test a hint names, so
+    # escape the data and let the table own its own styling (#520).
+    caption = list(metadata or []) + footer
+    table = Table(title=rich_escape(title))
+    if caption:
+        table.caption = rich_escape("\n".join(caption))
 
-    for key, label in columns:
+    for key, label in cols:
         justify = "right" if key in {"run_id"} else "left"
         no_wrap = key in {"result", "run_id"}
-        table.add_column(label, justify=justify, no_wrap=no_wrap)
+        table.add_column(rich_escape(label), justify=justify, no_wrap=no_wrap)
 
-    for row in rows:
-        table.add_row(*(str(row.get(key, "")) for key, _label in columns))
+    for row in console_rows:
+        table.add_row(*(rich_escape(str(row.get(key, ""))) for key, _label in cols))
 
     get_stderr_console().print(table)

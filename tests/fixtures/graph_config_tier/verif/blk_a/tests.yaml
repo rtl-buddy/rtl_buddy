@@ -1,0 +1,40 @@
+# Fixture for tests/test_graph_config_tier.py
+rtl-buddy-filetype: test_config
+
+testbenches:
+  - name: "tb_hdl"
+    filelist: ["tb_top.sv"]
+
+  - name: "tb_cocotb"
+    filelist: []
+    toplevel: blk_a
+    cocotb:
+      module: cocotb_blk_a
+
+  - name: "tb_unused"
+    filelist: []
+
+tests:
+  - name: "t_basic"
+    desc: "HDL test"
+    reglvl: 0
+    model: "blk_a"
+    model_path: "../../design/blk_a/models.yaml"
+    testbench: "tb_hdl"
+    covers:
+      - "A-COV-1"
+      - "GHOST-COV"
+
+  - name: "t_cocotb"
+    desc: "cocotb test scoreboarded against blk_a_model.py"
+    reglvl:
+      default: 100
+      verilator: 0
+    model: "blk_a"
+    model_path: "../../design/blk_a/models.yaml"
+    testbench: "tb_cocotb"
+    xfail: true
+    covers:
+      - "A-COV-1"
+      - "A-COV-2"
+      - "SHARED-COV"

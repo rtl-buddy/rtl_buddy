@@ -9,10 +9,15 @@ non-docs command is invoked.
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
 
+from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 
@@ -34,6 +39,21 @@ def test_test_list_explicit_config_path(minimal_project: Path):
     result = runner.invoke(rb.app, ["test", "-c", "tests.yaml", "--list"])
     assert result.exit_code == 0, result.output
     assert "basic" in result.output
+
+
+def test_test_list_keeps_ignoring_the_legacy_optional_name(minimal_project: Path):
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["test", "basic", "--list"])
+    assert result.exit_code == 0, result.output
+    assert "basic" in result.output
+    assert "extra" in result.output
+
+
+def test_test_list_rejects_the_new_filter_option(minimal_project: Path):
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["test", "--filter", "basic", "--list"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--list cannot be combined with --filter" in str(result.exception)
 
 
 def test_test_list_missing_config_errors_with_exit_2(minimal_project: Path):
@@ -177,8 +197,6 @@ def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
     git status inside every JSON envelope via meta.git. Suppress the
     stderr banner so machine output stays tight."""
     rb = RtlBuddy(name="test_cli_machine_no_banner")
-    import sys
-
     saved_argv = sys.argv[:]
     sys.argv = ["rb", "--machine", "test", "--list", "-c", "tests.yaml"]
     try:
@@ -191,6 +209,98 @@ def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
         "machine mode should not emit the human git banner to stderr; "
         f"got: {captured.err!r}"
     )
+
+
+def test_git_metadata_follows_the_project_not_the_cwd(
+    minimal_project: Path, tmp_path: Path, monkeypatch
+):
+    """#581: a job running outside the checkout still reports the project."""
+    for args in (
+        ["init", "-q", "-b", "trunk", "."],
+        ["add", "-A"],
+        ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init"],
+    ):
+        subprocess.run(
+            ["git", *args], cwd=minimal_project, check=True, capture_output=True
+        )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    rb = RtlBuddy(name="test_cli_git_root")
+    rb._pending_invoked_subcommand = "test"
+    rb._builder_override = None
+    rb._extra_sim_timeout_override = None
+    rb._enter_command_context(primary_config=minimal_project / "tests.yaml")
+    rb._artifact_locks.release_all()
+
+    monkeypatch.chdir(outside)
+    assert rb._project_root_for_git() == str(minimal_project)
+    assert rb._collect_git_status()["branch"] == "trunk"
+
+
+def test_git_metadata_anchors_list_only_commands(
+    minimal_project: Path, tmp_path: Path, monkeypatch, capsys
+):
+    """#581: --list skips root_cfg but still anchors on the command root."""
+    for args in (
+        ["init", "-q", "-b", "projbranch", "."],
+        ["add", "-A"],
+        ["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init"],
+    ):
+        subprocess.run(
+            ["git", *args], cwd=minimal_project, check=True, capture_output=True
+        )
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    for args in (
+        ["init", "-q", "-b", "ambient", "."],
+        ["commit", "-q", "--allow-empty", "-m", "other"],
+    ):
+        subprocess.run(
+            ["git", "-c", "user.email=t@e", "-c", "user.name=t", *args],
+            cwd=ambient,
+            check=True,
+            capture_output=True,
+        )
+
+    monkeypatch.chdir(ambient)
+    rb = RtlBuddy(name="test_cli_git_list_only")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rb",
+            "--machine",
+            "test",
+            "--list",
+            "-c",
+            str(minimal_project / "tests.yaml"),
+        ],
+    )
+    assert rb.run() == 0
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["meta"]["git"]["branch"] == "projbranch"
+
+
+def test_git_banner_emitted_once_per_invocation(
+    minimal_project: Path, tmp_path: Path, monkeypatch
+):
+    """A regression loop re-entering the command context must not repeat it."""
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    rb = RtlBuddy(name="test_cli_git_banner_once")
+    calls = []
+    monkeypatch.setattr(rb, "show_git_rev", lambda: calls.append(1))
+    rb._pending_invoked_subcommand = "test"
+    rb._builder_override = None
+    rb._extra_sim_timeout_override = None
+
+    rb._enter_command_context(primary_config=minimal_project / "tests.yaml")
+    rb._enter_command_context(primary_config=minimal_project / "tests.yaml")
+    rb._artifact_locks.release_all()
+
+    assert calls == [1]
 
 
 def test_synth_list_skips_root_config_load(tmp_path: Path, monkeypatch):
@@ -233,3 +343,86 @@ def test_synth_list_skips_root_config_load(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "synth_a" in result.output
     assert "synth_b" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Flow regression manifest resolution (#389)
+#
+# `-c` wins; then ./<flow>_regression.yaml in the invocation cwd; then the
+# flow's cfg-rtl-reg path from root_config.yaml. The graph's config tier
+# discovers manifests through the same machinery, so what these commands
+# find is exactly what `rb graph build` flow-stamps.
+# ---------------------------------------------------------------------------
+
+
+def _declare_cdc_manifest(project: Path, manifest_body: str) -> Path:
+    """Drop a cdc_regression.yaml at lint/cdc/ and declare it in
+    root_config.yaml via cfg-rtl-reg.cdc-reg-cfg-path."""
+    lint = project / "lint" / "cdc"
+    lint.mkdir(parents=True)
+    manifest = lint / "cdc_regression.yaml"
+    manifest.write_text(manifest_body)
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            'reg-cfg-path: "regression.yaml"',
+            'reg-cfg-path: "regression.yaml"\n'
+            '  cdc-reg-cfg-path: "lint/cdc/cdc_regression.yaml"',
+        )
+    )
+    return manifest
+
+
+def test_cdc_regression_falls_back_to_the_configured_manifest_path(
+    minimal_project: Path,
+):
+    """No ./cdc_regression.yaml at the root: the cfg-rtl-reg path is used."""
+    _declare_cdc_manifest(
+        minimal_project, "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
+    )
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["cdc-regression"])
+    assert result.exit_code == 0, result.output
+    assert "CDC Regression Summary" in result.output
+
+
+def test_a_local_manifest_beats_the_configured_path(minimal_project: Path):
+    """cfg-rtl-reg is the fallback, not an override — same precedence
+    `rb regression` gives ./regression.yaml over reg-cfg-path."""
+    # The configured manifest would fail to load if it were consulted.
+    _declare_cdc_manifest(minimal_project, "rtl-buddy-filetype: not_a_manifest\n")
+    (minimal_project / "cdc_regression.yaml").write_text(
+        "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
+    )
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["cdc-regression"])
+    assert result.exit_code == 0, result.output
+
+
+def test_a_configured_path_that_does_not_exist_is_named(minimal_project: Path):
+    """The configured path is existence-checked before it is returned — the
+    same isfile guard `graph/config_tier.py` applies — so the user sees the
+    path they typed being wrong instead of a load failure for a path they
+    never typed."""
+    _declare_cdc_manifest(
+        minimal_project, "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
+    )
+    (minimal_project / "lint" / "cdc" / "cdc_regression.yaml").unlink()
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["cdc-regression"])
+    assert result.exit_code != 0
+    message = str(result.exception) + result.output
+    assert "cfg-rtl-reg.cdc-reg-cfg-path" in message
+    assert "does not exist" in message
+    assert "lint/cdc/cdc_regression.yaml" in message.replace("\\", "/")
+
+
+def test_cdc_regression_without_any_manifest_names_the_config_key(
+    minimal_project: Path,
+):
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["cdc-regression"])
+    assert result.exit_code != 0
+    message = str(result.exception) + result.output
+    assert "cdc_regression.yaml not found" in message
+    assert "cfg-rtl-reg.cdc-reg-cfg-path" in message

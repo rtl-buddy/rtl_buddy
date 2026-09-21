@@ -110,5 +110,5 @@ def test_skill_print_gitignore_outputs_snippet():
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["skill", "print-gitignore"])
     assert result.exit_code == 0, result.output
-    assert ".claude/skills/rtl_buddy/" in result.output
-    assert ".agents/skills/rtl_buddy/" in result.output
+    assert ".claude/skills/rtl-buddy/" in result.output
+    assert ".agents/skills/rtl-buddy/" in result.output

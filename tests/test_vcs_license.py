@@ -175,3 +175,51 @@ def test_run_managed_process_does_not_time_out_while_queuing(tmp_path):
 
     assert result.timed_out is False
     assert result.returncode == 0
+
+
+def test_ctrl_c_hint_does_not_end_the_queue(tmp_path):
+    """The CTRL-C hint is banner, not simulation output (#383).
+
+    Verbatim replay of a license-starved test.err. Reading that line as
+    "license granted" resumed the timeout clock a second into the wait, so
+    the default 60s sim_timeout fired while the sim was still queuing and
+    657-test regressions came back as walls of RTL failures.
+    """
+    log_path = tmp_path / "test.log"
+    err_path = tmp_path / "test.err"
+    log_path.write_text("")
+    err_path.write_text("")
+    exited = []
+
+    monitor = VcsLicenseQueueMonitor(
+        log_path, err_path, on_exit_queue=lambda queued_sec: exited.append(queued_sec)
+    )
+
+    for chunk in (
+        "Licensed number of users already reached for VCS-BASE-RUNTIME/VCSRuntime_Net.\n",
+        "[Tue Aug  4 17:13:51] Queuing for License ......\n",
+        "\n",
+        " HIT CTRL-C to exit\n",
+    ):
+        _append(err_path, chunk)
+        assert monitor.is_waiting() is True
+
+    assert exited == []
+
+    # Genuine simulator output still releases the pause.
+    _append(err_path, "simulation resumed\n")
+    assert monitor.is_waiting() is False
+    assert len(exited) == 1
+
+
+def test_ctrl_c_hint_matching_tolerates_spacing_and_case(tmp_path):
+    log_path = tmp_path / "test.log"
+    err_path = tmp_path / "test.err"
+    log_path.write_text("Queuing for License ......\n")
+    err_path.write_text("")
+
+    monitor = VcsLicenseQueueMonitor(log_path, err_path)
+    assert monitor.is_waiting() is True
+
+    _append(log_path, "\thit  ctrl-c   TO exit  \n")
+    assert monitor.is_waiting() is True

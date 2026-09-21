@@ -21,6 +21,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..cov.source_paths import SourcePathResolver
 from ..logging_utils import log_event
 
 
@@ -230,25 +231,7 @@ class CoverviewPacker:
         """
         Rewrite `.desc` `SN:` entries from absolute project-root paths to project-relative paths.
         """
-        project_root = Path(self.project_root).resolve()
-        rewritten = []
-        with open(desc_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("SN:"):
-                    source_path = Path(line[3:].strip())
-                    try:
-                        if source_path.is_absolute():
-                            source_path = source_path.resolve()
-                        else:
-                            source_path = (project_root / source_path).resolve()
-                        rel_path = source_path.relative_to(project_root)
-                        rewritten.append(f"SN:{rel_path.as_posix()}\n")
-                        continue
-                    except Exception:
-                        pass
-                rewritten.append(line)
-        with open(desc_path, "w", encoding="utf-8") as fh:
-            fh.writelines(rewritten)
+        self._source_resolver().rewrite_desc(desc_path, relative=True)
 
     def _write_single_test_desc(
         self, info_path: str, outdir: str, desc_name: str, test_name: str
@@ -463,6 +446,19 @@ class CoverviewPacker:
         dataset_name = self._sanitize_dataset_name(dataset_name)
         return self._write_expression_info(raw_path, outdir, dataset_name)
 
+    def _source_resolver(self, base_dir=None, source_roots=None):
+        """
+        Build the shared source-path resolver for this project (#399).
+
+        One resolver, one contract: ``source_roots`` are the
+        ``[run dir, suite root]`` hints, most specific first.
+        """
+        return SourcePathResolver(
+            self.project_root,
+            base_dir=base_dir,
+            source_roots=source_roots,
+        )
+
     def _rewrite_sf_relative_to_project_root(
         self,
         info_path: str,
@@ -472,111 +468,9 @@ class CoverviewPacker:
         """
         Rewrite LCOV `SF:` entries from absolute project-root paths to project-relative paths.
         """
-        project_root = Path(self.project_root).resolve()
-        resolved_base = None if base_dir is None else Path(base_dir).resolve()
-        resolved_source_roots = (
-            []
-            if source_roots is None
-            else [Path(root).resolve() for root in source_roots if root is not None]
+        self._source_resolver(base_dir, source_roots).rewrite_info(
+            info_path, relative=True
         )
-        rewritten = []
-        with open(info_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                if line.startswith("SF:"):
-                    sf_path = Path(line[3:].strip())
-                    try:
-                        if not sf_path.is_absolute() and resolved_base is not None:
-                            candidate = (resolved_base / sf_path).resolve()
-                            if candidate.exists():
-                                try:
-                                    candidate.relative_to(project_root)
-                                    sf_path = candidate
-                                except Exception:
-                                    candidate = None
-                            else:
-                                candidate = None
-                            if candidate is None:
-                                parts = [
-                                    part
-                                    for part in sf_path.as_posix().split("/")
-                                    if part not in ("", ".", "..")
-                                ]
-                                repo_candidate = (project_root / Path(*parts)).resolve()
-                                basename = parts[-1] if parts else sf_path.name
-
-                                search_roots = list(resolved_source_roots)
-                                if project_root not in search_roots:
-                                    search_roots.append(project_root)
-                                source_root_matches = []
-                                matches = []
-                                for search_root in search_roots:
-                                    for match in search_root.rglob(basename):
-                                        if not match.is_file():
-                                            continue
-                                        match = match.resolve()
-                                        matches.append(match)
-                                        if search_root in resolved_source_roots:
-                                            source_root_matches.append(match)
-
-                                deduped_source_root_matches = []
-                                seen_source_matches = set()
-                                for match in source_root_matches:
-                                    key = str(match)
-                                    if key not in seen_source_matches:
-                                        seen_source_matches.add(key)
-                                        deduped_source_root_matches.append(match)
-
-                                if len(parts) > 0:
-                                    suffix = "/" + "/".join(parts)
-                                    suffix_source_matches = [
-                                        match
-                                        for match in deduped_source_root_matches
-                                        if str(match)
-                                        .replace("\\", "/")
-                                        .endswith(suffix)
-                                    ]
-                                    if len(suffix_source_matches) == 1:
-                                        sf_path = suffix_source_matches[0]
-                                    elif len(deduped_source_root_matches) == 1:
-                                        sf_path = deduped_source_root_matches[0]
-                                    elif repo_candidate.exists():
-                                        sf_path = repo_candidate
-                                    else:
-                                        suffix_matches = [
-                                            m
-                                            for m in matches
-                                            if str(m)
-                                            .replace("\\", "/")
-                                            .endswith(suffix)
-                                        ]
-                                        if len(suffix_matches) == 1:
-                                            sf_path = suffix_matches[0]
-                                        elif len(matches) == 1:
-                                            sf_path = matches[0]
-                                        else:
-                                            sf_path = repo_candidate
-                                elif len(deduped_source_root_matches) == 1:
-                                    sf_path = deduped_source_root_matches[0]
-                                elif len(matches) == 1:
-                                    sf_path = matches[0]
-                                else:
-                                    sf_path = repo_candidate
-                        elif not sf_path.is_absolute():
-                            repo_candidate = (project_root / sf_path).resolve()
-                            if repo_candidate.exists():
-                                sf_path = repo_candidate
-                            else:
-                                sf_path = repo_candidate
-                        else:
-                            sf_path = sf_path.resolve()
-                        rel_path = sf_path.relative_to(project_root)
-                        rewritten.append(f"SF:{rel_path.as_posix()}\n")
-                        continue
-                    except Exception:
-                        pass
-                rewritten.append(line)
-        with open(info_path, "w", encoding="utf-8") as fh:
-            fh.writelines(rewritten)
 
     def package_info(
         self,

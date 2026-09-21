@@ -32,6 +32,8 @@ from ..config.cdc import CdcConfig, CdcSuiteConfig
 from ..config.model import ModelConfig, resolve_back_pointer
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..tools.artifact_paths import clear_stale_artefacts
+from ..tools.cdc_rtl_buddy import warn_unsupported_incdirs
 from ..tools.vlog_filelist import VlogFilelist
 from .view_builder import cache_dir
 
@@ -77,7 +79,12 @@ def _resolve_cdc_analysis(model_cfg: ModelConfig) -> CdcConfig | None:
     # Otherwise pick the analysis whose ``model:`` field matches
     # this model's name. Ambiguity (multiple analyses for the same
     # model) is the user's bug — tell them to add a #fragment.
-    matches = [a for a in suite.get_analyses() if a.get_top() == model_cfg.name]
+    #
+    # Matched on the model's *identity*, never on ``get_top()``: since
+    # #479 an analysis's top follows the model's ``top:`` override, so a
+    # model with ``top: axi_xbar`` would match nothing here and the hub
+    # would refuse to start with "no analysis there has model:".
+    matches = [a for a in suite.get_analyses() if a.get_model().name == model_cfg.name]
     if len(matches) == 0:
         names = ", ".join(suite.get_analysis_names()) or "(none)"
         raise FatalRtlBuddyError(
@@ -111,9 +118,10 @@ def _resolve_cdc_executable() -> str:
 
 
 # Filelist entries we drop from the rtl-buddy-cdc command line —
-# CDC takes plain SystemVerilog source paths; ``-y`` / ``-F`` /
-# ``+incdir+`` directives don't apply.
-_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+# CDC takes plain SystemVerilog source paths; ``-y`` / ``-F`` don't
+# apply, and ``+incdir+`` has no analyzer option to map onto (warned
+# via ``cdc.filelist_incdirs_unsupported``).
+_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 
@@ -135,6 +143,19 @@ def _source_files_from_filelist(fl_path: str) -> list[str]:
     return paths
 
 
+def _clear_cached_map(out_path: Path, model_name: str) -> None:
+    """Drop the cached domain map, logging what went."""
+    removed = clear_stale_artefacts([out_path], owner=model_name)
+    if removed:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "hub.cdc_builder.stale_artefacts_removed",
+            model=model_name,
+            paths=removed,
+        )
+
+
 def build_domain_map(
     *,
     project_root: Path,
@@ -154,6 +175,18 @@ def build_domain_map(
     overlay and a dark toggle would be worse than a clear startup
     error.
     """
+    # Before every step that can fail. The map lives in the *persistent*
+    # `.rtl-buddy/cache/`, so a warm cache outlives the build that filled it,
+    # and each of the steps below — back-pointer resolution, SDC and waiver
+    # validation, filelist generation, the analyzer lookup — can raise. Any
+    # of them raising over a previous build's map leaves the hub rendering a
+    # clock overlay for a design state this build never confirmed (#469).
+    # There is no missing-tool carve-out here, unlike the tool flows: this is
+    # the hub's own derived cache rather than a user-produced artefact, and a
+    # rebuild that cannot run must not leave stale data to be served.
+    out_path = domain_map_path(project_root, model_cfg.name)
+    _clear_cached_map(out_path, model_cfg.name)
+
     analysis = _resolve_cdc_analysis(model_cfg)
     if analysis is None:
         return None
@@ -172,7 +205,6 @@ def build_domain_map(
 
     cache = cache_dir(project_root)
     cache.mkdir(parents=True, exist_ok=True)
-    out_path = domain_map_path(project_root, model_cfg.name)
 
     # Build a CDC-friendly filelist (unrolled + deduplicated). We
     # write into the same artefacts area RtlBuddyCdc uses so a
@@ -196,6 +228,7 @@ def build_domain_map(
         )
 
     cdc_exe = _resolve_cdc_executable()
+    warn_unsupported_incdirs(analysis.get_name(), fl_path)
     log_path = artefact_dir / "cdc.log"
     # ``--format json --output /dev/null`` keeps lint's chatter off
     # the hub log; we only care about the emitted domain map. The
@@ -242,6 +275,10 @@ def build_domain_map(
     # they don't impede the overlay (the domain map still gets
     # emitted); we hard-fail on anything worse.
     if proc.returncode not in (0, 1):
+        # The analyzer writes the map before it finishes, so an unsupported
+        # exit code can arrive with the file already recreated — clear it
+        # again or the rejected build's map is what the hub serves (#469).
+        _clear_cached_map(out_path, model_cfg.name)
         raise FatalRtlBuddyError(
             f"cdc analysis {analysis.get_name()!r}: rtl-buddy-cdc "
             f"exited with code {proc.returncode}; see {log_path}"

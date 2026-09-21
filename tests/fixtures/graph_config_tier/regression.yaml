@@ -1,0 +1,7 @@
+# Fixture for tests/test_graph_config_tier.py — the simulation flow.
+# verif/empty_suite is deliberately absent: a suite no regression claims
+# must still be stamped `sim`.
+rtl-buddy-filetype: reg_config
+
+test-configs:
+  - "verif/blk_a/tests.yaml"

@@ -10,6 +10,7 @@ we don't want to require in CI; the subprocess is mocked. Tests pin:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from textwrap import dedent
 
@@ -59,28 +60,38 @@ _CDC_YAML_MULTI = dedent("""\
 """)
 
 
-def _seed_project(tmp_path: Path, *, cdc_field: str = "cdc.yaml") -> ModelConfig:
+def _seed_project(
+    tmp_path: Path, *, cdc_field: str = "cdc.yaml", top: str | None = None
+) -> ModelConfig:
     """Create a project skeleton with models.yaml + cdc.yaml + SDC +
     one source file, and return a ModelConfig pointing at it (with
-    ``.path`` set so the cdc back-pointer can resolve)."""
+    ``.path`` set so the cdc back-pointer can resolve).
+
+    ``top`` writes a models.yaml ``top:`` override (#479), which the
+    analysis inherits when the suite re-loads the model."""
     (tmp_path / "src").mkdir(parents=True, exist_ok=True)
     (tmp_path / "src" / "a.sv").write_text("module a; endmodule\n")
     (tmp_path / "demo.sdc").write_text(
         "create_clock -name clk -period 10 [get_ports clk]\n"
     )
     models_path = tmp_path / "models.yaml"
-    body = dedent(f"""\
+    top_line = f"    top: {top}\n" if top else ""
+    body = (
+        dedent(f"""\
         rtl-buddy-filetype: model_config
         models:
           - name: demo
             filelist: ["-v src/a.sv"]
             cdc: {cdc_field}
     """)
+        + top_line
+    )
     models_path.write_text(body)
     return ModelConfig(
         name="demo",
         filelist=["-v src/a.sv"],
         cdc=cdc_field,
+        top=top,
         path=str(models_path),
     )
 
@@ -144,6 +155,70 @@ def test_build_domain_map_resolves_via_model_match(tmp_path, monkeypatch):
     # SDC should be the absolute path resolved against cdc.yaml.
     sdc_idx = cmd.index("--sdc")
     assert Path(cmd[sdc_idx + 1]) == tmp_path / "demo.sdc"
+
+
+def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplog):
+    """rtl-buddy-cdc has no include-path option, so a model `+incdir+`
+    is reported rather than silently dropped (#519)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "inc").mkdir()
+    model.filelist.insert(0, "+incdir+inc")
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text('{"schema_version": "1.0", "clocks": []}')
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "cdc.filelist_incdirs_unsupported"
+    ]
+    assert len(events) == 1
+    assert events[0].rtl_fields["analysis"] == "demo_cdc"
+    assert events[0].rtl_fields["incdirs"] == [str(tmp_path / "inc")]
+
+
+def test_build_domain_map_resolves_a_model_with_a_top_override(tmp_path, monkeypatch):
+    """A models.yaml ``top:`` must not break back-pointer resolution.
+
+    Analyses are selected by the model they name, not by the module they
+    root at — since #479 the two differ whenever a model declares
+    ``top:``, and matching on ``get_top()`` made ``rb hub`` refuse to
+    start with "no analysis there has model: 'demo'". The lint call still
+    roots at the override.
+    """
+    model = _seed_project(tmp_path, top="axi_xbar")
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+
+    captured = {}
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        captured["cmd"] = cmd
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text('{"schema_version": "1.0", "clocks": []}')
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+    assert result == cdc_builder.domain_map_path(tmp_path, "demo")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--top") + 1] == "axi_xbar"
 
 
 def test_build_domain_map_honours_fragment(tmp_path, monkeypatch):
@@ -239,3 +314,151 @@ def test_build_domain_map_tolerates_violations_exit_1(tmp_path, monkeypatch):
     result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
     assert result is not None
     assert result.is_file()
+
+
+def test_build_domain_map_ignores_a_previous_builds_cache(tmp_path, monkeypatch):
+    """The domain map lives in the persistent `.rtl-buddy/cache/`, so a warm
+    cache outlives the build that filled it. Exit 1 is tolerated (rule
+    violations still emit a map), so a crash exiting 1 must not leave the hub
+    rendering the previous build's map (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+
+    stale = cdc_builder.domain_map_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "clocks": ["stale_clk"]}')
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        # Crashes with the "rule violations found" code, writing nothing.
+        return type("R", (), {"returncode": 1})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    with pytest.raises(FatalRtlBuddyError, match="produced no domain map"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+    assert not stale.exists()
+
+
+def test_build_domain_map_still_accepts_a_map_this_build_wrote(tmp_path, monkeypatch):
+    """The pre-run clear must not break the tolerated exit-1 path: a map the
+    current invocation writes is still returned (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+
+    stale = cdc_builder.domain_map_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"clocks": ["stale_clk"]}')
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def fake_run(cmd, stdout=None, stderr=None, **kwargs):
+        out = cmd[cmd.index("--emit-domain-map") + 1]
+        Path(out).write_text('{"clocks": ["fresh_clk"]}')
+        return type("R", (), {"returncode": 1})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
+
+    result = cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+    assert "fresh_clk" in result.read_text()
+
+
+def _seed_cached_map(tmp_path) -> Path:
+    """A domain map left in the persistent cache by an earlier build."""
+    stale = cdc_builder.domain_map_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "clocks": ["stale_clk"]}')
+    return stale
+
+
+def test_build_domain_map_clears_the_cache_before_back_pointer_resolution(tmp_path):
+    """The cache is cleared before every step that can fail. A bad `cdc:`
+    back-pointer raises during resolution, and the hub must not go on serving
+    the previous build's overlay for a design state this build never
+    confirmed (#469)."""
+    model = _seed_project(tmp_path, cdc_field="does_not_exist.yaml")
+    stale = _seed_cached_map(tmp_path)
+
+    with pytest.raises(FatalRtlBuddyError):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_the_cache_when_the_sdc_is_missing(tmp_path):
+    """Same for SDC validation, which also raises before the analyzer runs."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    (tmp_path / "demo.sdc").unlink()
+    stale = _seed_cached_map(tmp_path)
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_the_cache_when_the_analyzer_is_absent(
+    tmp_path, monkeypatch
+):
+    """And for the analyzer lookup. Unlike the tool flows there is no
+    missing-tool carve-out here: this is the hub's own derived cache, not a
+    user-produced artefact, so a rebuild that cannot run must not leave stale
+    data to be served (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    stale = _seed_cached_map(tmp_path)
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: None)
+
+    with pytest.raises(FatalRtlBuddyError):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_the_cache_when_the_back_pointer_is_gone(tmp_path):
+    """A model that no longer requests an overlay returns None — and must not
+    leave the map an earlier configuration cached (#469)."""
+    model = ModelConfig(name="demo", filelist=[], path=str(tmp_path / "models.yaml"))
+    stale = _seed_cached_map(tmp_path)
+
+    assert cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model) is None
+    assert not stale.exists()
+
+
+def test_build_domain_map_clears_a_map_the_analyzer_wrote_then_rejected(
+    tmp_path, monkeypatch
+):
+    """The analyzer writes the map before it finishes, so an unsupported exit
+    code arrives with the file already recreated. Clearing only up front would
+    leave the rejected build's map as what the hub serves (#469)."""
+    model = _seed_project(tmp_path)
+    (tmp_path / "cdc.yaml").write_text(
+        _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
+    )
+    out_path = cdc_builder.domain_map_path(tmp_path, "demo")
+
+    monkeypatch.setattr(cdc_builder.shutil, "which", lambda _: "/fake/rtl-buddy-cdc")
+
+    def _writes_then_dies(cmd, stdout=None, stderr=None, **kwargs):
+        target = Path(cmd[cmd.index("--emit-domain-map") + 1])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('{"clocks": ["half built"]}')
+        return type("R", (), {"returncode": 2})()
+
+    monkeypatch.setattr(cdc_builder.subprocess, "run", _writes_then_dies)
+
+    with pytest.raises(FatalRtlBuddyError, match="exited with code 2"):
+        cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
+
+    assert not out_path.exists()

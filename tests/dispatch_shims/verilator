@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Fake Verilator for CI dispatch tests: emit a simv that prints a PASS log.
+#
+# It also models the split compile (#593). `--help` advertises
+# `--no-verilate`, which is what the build job probes for, and the three
+# phases behave as Verilator's do:
+#
+#   * verilate only (no `--binary`, no `--build`): write the generated
+#     sources and `Vtop.mk` under --Mdir, and NO executable.
+#   * build only (`--no-verilate`): require that `Vtop.mk` and write the
+#     executable from it. Missing means the chain is broken, and the shim
+#     fails loudly rather than producing a simv the test would pass on.
+#   * the whole compile (`--binary`): both halves, as before.
+#
+# With $RB_SHIM_SPANS set it also records one `<mdir-basename> <start> <end>`
+# line per invocation, so a test can prove the build job really compiled two
+# distinct builds at the same time (#495). The sleep is what makes the spans
+# wide enough to be compared at all: a serial build job produces disjoint
+# spans, a parallel one overlapping ones. Off by default, so every other
+# shim test keeps the instantaneous fake it had.
+#
+# With $RB_SHIM_HANG set it records its own pid in $RB_SHIM_PIDS and then
+# sleeps that many seconds before doing any work, so a test can cancel the
+# build job mid-compile and check that this process died with it rather than
+# being orphaned (#495). Also off by default.
+for a in "$@"; do
+  if [ "$a" = "--help" ]; then
+    cat <<'HELP'
+fake-verilator usage: verilator --binary [options] -f file.f
+  --binary                    Create a executable (implies --main --exe --build --timing)
+  --build                     Build model executable/library after Verilation
+  --no-verilate               Skip verilation and just compile previously Verilated code
+  --Mdir <directory>          Name of output object directory
+HELP
+    exit 0
+  fi
+done
+mdir=""
+prev=""
+binary=0
+build=0
+no_verilate=0
+for a in "$@"; do
+  [ "$prev" = "--Mdir" ] && mdir="$a"
+  case "$a" in
+    --binary) binary=1 ;;
+    --build) build=1 ;;
+    --no-verilate) no_verilate=1 ;;
+  esac
+  prev="$a"
+done
+[ -z "$mdir" ] && { echo "no --Mdir" >&2; exit 1; }
+# With $RB_SHIM_WAIT_FILE set it records its own pid in $RB_SHIM_PIDS and
+# then blocks until that file exists (bounded, so a broken test fails rather
+# than hanging the suite). That turns "a compile is in flight" into something
+# a test can observe and then release on demand, which is what a build-lock
+# race needs: park one builder inside the lock, let the second reach it, then
+# let the first finish (#507).
+if [ -n "${RB_SHIM_WAIT_FILE:-}" ]; then
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "$$" >> "$RB_SHIM_PIDS"
+  waited=0
+  while [ ! -e "$RB_SHIM_WAIT_FILE" ] && [ "$waited" -lt 1200 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+fi
+if [ -n "${RB_SHIM_HANG:-}" ]; then
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "$$" >> "$RB_SHIM_PIDS"
+  sleep "$RB_SHIM_HANG"
+  [ -n "${RB_SHIM_PIDS:-}" ] && echo "survived $$" >> "$RB_SHIM_PIDS"
+fi
+start=""
+if [ -n "${RB_SHIM_SPANS:-}" ]; then
+  start=$(python3 -c 'import time; print("%.6f" % time.time())')
+  sleep 0.5
+fi
+mkdir -p "$mdir"
+# The front end, unless this invocation was told to skip it.
+if [ "$no_verilate" = "0" ]; then
+  echo "// fake generated model" > "$mdir/Vtop.cpp"
+  printf 'default:\n\t@true\n' > "$mdir/Vtop.mk"
+  # With $RB_SHIM_DEPS set it also writes the make-style dependency file real
+  # Verilator emits, naming the `.sv` lines of the filelist it was handed. The
+  # stamp compares a `+incdir+` listing by name alone once a build reports its
+  # dependencies (#536), so a test about that has to be run by a builder that
+  # reports them. Off by default: every other shim test wants `deps: null`.
+  if [ -n "${RB_SHIM_DEPS:-}" ]; then
+    filelist=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "-f" ] && filelist="$a"
+      prev="$a"
+    done
+    {
+      printf '%s/Vtop.cpp %s/Vtop.mk :' "$mdir" "$mdir"
+      if [ -n "$filelist" ]; then
+        while read -r line; do
+          case "$line" in *.sv) printf ' %s' "$line" ;; esac
+        done < "$filelist"
+      fi
+      printf '\n'
+    } > "$mdir/Vtop__ver.d"
+  fi
+fi
+# The build step: only where this invocation was asked for one.
+if [ "$binary" = "1" ] || [ "$build" = "1" ] || [ "$no_verilate" = "1" ]; then
+  if [ ! -f "$mdir/Vtop.mk" ]; then
+    echo "fake-verilator: no $mdir/Vtop.mk to build from" >&2
+    exit 1
+  fi
+  cat > "$mdir/simv" <<'SIMV'
+#!/usr/bin/env bash
+echo "PASS (nwrn=  0)"
+SIMV
+  chmod +x "$mdir/simv"
+fi
+if [ -n "$start" ]; then
+  end=$(python3 -c 'import time; print("%.6f" % time.time())')
+  # One append per line: concurrent writers of a short line to an O_APPEND
+  # fd do not interleave.
+  echo "$(basename "$mdir") $start $end" >> "$RB_SHIM_SPANS"
+fi
+echo "fake-verilator: wrote $mdir"

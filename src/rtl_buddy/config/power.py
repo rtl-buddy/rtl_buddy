@@ -11,6 +11,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .pnr import PnrSuiteConfig
 from .synth import SynthSuiteConfig
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +19,33 @@ logger = logging.getLogger(__name__)
 @serde
 class PowerToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
 
 
 class PowerToolConfig:
-    def __init__(self, cfg: PowerToolConfigFile):
+    def __init__(self, cfg: PowerToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
+        # Directory relative `tool:` candidates are existence-tested
+        # against: the one holding root_config.yaml, never the process
+        # cwd (rb is routinely invoked from a suite directory).
+        self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            base_dir=self._base_dir,
+            block="cfg-power-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
 
 
 @serde
@@ -68,6 +84,13 @@ class PowerConfigFile:
     synth_path: str = field(rename="synth-path", default="")
     pnr: str = ""
     pnr_path: str = field(rename="pnr-path", default="")
+    # The synthesis run this analysis publishes its half of the physical
+    # model beside, named in the `synth-path` suite (#589). Empty means
+    # the run publishes into its own artefact directory, which is the
+    # convention that came first: a merged model then happens only where
+    # the power run is named after the synthesis and configured in the
+    # same directory. See `PowerConfig.get_phys_run`.
+    phys_run: str = field(rename="phys-run", default="")
     constraints: str | None = None
     platform: str = ""
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
@@ -102,6 +125,28 @@ class PowerConfigFile:
                 raise FatalRtlBuddyError(
                     f"power run '{self.name}': netlist-source 'pnr' requires "
                     "'pnr-path' (path to the pnr.yaml that defines the entry)"
+                )
+
+        if self.phys_run:
+            if self.netlist_source != "synth":
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': 'phys-run' publishes this "
+                    "run's half of the physical model beside a synthesis "
+                    "run's, and only a 'netlist-source: synth' run measures "
+                    "the netlist that pairing is gated on — this one reads "
+                    f"'{self.netlist_source}', whose half can never merge "
+                    "with a synthesis' and would replace it instead"
+                )
+            if any(sep and sep in self.phys_run for sep in (os.sep, os.altsep, "/")):
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': 'phys-run' names a run in "
+                    f"'{self.synth_path}', not a path — got '{self.phys_run}'"
+                )
+            if self.phys_run in (os.curdir, os.pardir):
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': 'phys-run' names a run in "
+                    f"'{self.synth_path}', not a directory — got "
+                    f"'{self.phys_run}'"
                 )
 
         if not self.platform:
@@ -149,6 +194,7 @@ class PowerConfigFile:
             activity=activity,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            phys_run=self.phys_run or None,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -170,6 +216,9 @@ class PowerConfig:
     activity: PowerActivity
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    # Optional, so it sits with the defaults rather than beside the
+    # `synth`/`synth-path` pair it is resolved against (#589).
+    phys_run: str | None = None
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -206,6 +255,24 @@ class PowerConfig:
 
     def get_pnr_suite_path(self) -> str | None:
         return self.pnr_suite_path
+
+    def get_phys_run(self) -> str | None:
+        """The synthesis run this analysis publishes its model half beside.
+
+        ``None`` for a run that says nothing, and that is the convention
+        the flow had before the field existed: the power half is
+        published into the run's own ``artefacts/<name>/``, so the two
+        halves of a model meet only where a power run is named after the
+        synthesis it reads *and* configured in the same directory. Rename
+        either side and the halves land in two directories, each
+        half-filled, with nothing said about it (#589).
+
+        Naming a run says the pairing out loud. It does not weaken the
+        merge: the netlist sha256 both producers record is still what
+        decides whether the two halves describe one design, and this only
+        decides which directory they are asked to meet in.
+        """
+        return self.phys_run
 
     def get_constraints(self) -> str | None:
         return self.constraints
@@ -275,6 +342,29 @@ class PowerConfig:
             )
         suite = SynthSuiteConfig(self.synth_suite_path)
         return suite.get_syntheses(self.synth_name)[0]
+
+    def resolve_phys_run_cfg(self):
+        """The synthesis entry ``phys-run`` names, or a fatal config error.
+
+        Read out of the same ``synth-path`` suite :meth:`resolve_synth_cfg`
+        reads, because ``phys-run`` names a *sibling* of the synthesis
+        this analysis measures: the directory it publishes into is that
+        suite's ``artefacts/<run>/``, which is where a synthesis entry of
+        that name writes its own half. A name no entry carries is a typo
+        or a rename, and publishing into the empty directory it points at
+        would be the half-filled model the field exists to prevent —
+        harder to find, because the directory would not even be a run's.
+
+        Called for its check rather than its value; the entry is returned
+        because the loader has it and a caller may want the top.
+        """
+        if not self.synth_suite_path or not self.phys_run:
+            raise FatalRtlBuddyError(
+                f"power run '{self.name}': resolve_phys_run_cfg() called but "
+                "phys-run/synth-path are not configured"
+            )
+        suite = SynthSuiteConfig(self.synth_suite_path)
+        return suite.get_syntheses(self.phys_run)[0]
 
     def resolve_pnr_cfg(self):
         """Load the upstream pnr.yaml and return the referenced entry.

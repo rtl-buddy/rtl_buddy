@@ -19,7 +19,7 @@ from pathlib import Path
 from ..config.fpga import FpgaConfig
 from ..errors import FatalRtlBuddyError
 from ..runner.fpga_results import FpgaResults
-from .vlog_filelist import VlogFilelist
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class BaseFpga(ABC):
     def _source_files_from_filelist(self, fl_path: str) -> list[str]:
         """Return absolute source file paths from a generated filelist."""
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
-        _SKIP = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+        _SKIP = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
         _SOURCE_PREFIX = "-v "
         paths = []
         with open(fl_path) as f:
@@ -125,6 +125,10 @@ class BaseFpga(ABC):
                     line = line[len(_SOURCE_PREFIX) :]
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
+
+    def _incdirs_from_filelist(self, fl_path: str) -> list[str]:
+        """The filelist's ``+incdir+`` directories, for the tool's include option."""
+        return incdirs_from_filelist(fl_path)
 
     @abstractmethod
     def run(self) -> FpgaResults:  # pragma: no cover - abstract

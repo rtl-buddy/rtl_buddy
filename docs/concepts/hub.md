@@ -1,263 +1,238 @@
 ---
-description: rtl-buddy-hub is the broker that mediates between the rtl-buddy-view SPA, surfer (via rb wave), and editor adapters. Invocation, config, troubleshooting.
+description: Start and operate the rtl_buddy hub, connect browser and editor peers, switch designs, send commands, and diagnose connection or view failures.
 ---
 
 # Hub (`rb hub`)
 
-> **Integration type:** Integrated tool. Ships in-tree at `src/rtl_buddy/hub/`; invoked via `rb hub start|stop|status|log|install-launchagent|uninstall-launchagent|config validate|send …`.
->
-> **External binary required:** None for the hub itself. The wave adapter still needs the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) fork for live WCP integration; see [Waveform Viewer](wave.md).
->
-> **Default install carries it:** No external dependency; the hub is pure Python.
-
-The **rtl-buddy-hub** is the broker between the [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) schematic viewer, the surfer waveform viewer (via the `rb wave` bridge), and editor adapters (nvim today, VS Code later). It owns the live coordinate-system translation (view ↔ wave ↔ source) and routes selection / cursor / scope events between every connected peer.
-
-The hub is **server-only**: every external speaker connects *into* the hub. The hub itself never initiates an outbound connection. This keeps reconnection logic to a single "tolerate any peer reattaching at any time" rule and makes the dispatch surface transport-agnostic — TCP and WebSocket clients hit the same envelope router.
-
-```
-        ┌──────────────────────────────────┐
-        │   rtl-buddy-view (browser SPA)   │
-        └─────────────┬────────────────────┘
-                      │ WebSocket /ws
-                      ▼
-        ┌──────────────────────────────────┐         ┌──────────────────────┐
-        │       rtl-buddy-hub              │◀──TCP──▶│  rb wave bridge     │
-        │       .rtl-buddy/hub.json        │         │  (surfer WCP)        │
-        │       .rtl-buddy/hub.toml        │         └──────────────────────┘
-        │                                  │         ┌──────────────────────┐
-        │                                  │◀──TCP──▶│  nvim Lua plugin     │
-        │                                  │         │  (rtl-buddy-nvim)    │
-        └──────────────────────────────────┘         └──────────────────────┘
-```
+The hub coordinates the schematic, waveform viewer, source editor, graph pane, coverage pane, and synth+power pane. It translates between their view, wave, and source coordinates and routes live events among connected peers.
 
 ## Quick start
 
+Start the hub from the project root:
+
 ```bash
-cd <project_root>
-uv run rb hub start                   # foreground TCP server only
-uv run rb hub start --serve-viewer    # also expose the viewer HTTP+WS endpoint
-uv run rb hub status                  # in another shell: who's connected
-uv run rb hub stop                    # graceful shutdown via SIGTERM
+uv run rb hub start --serve-viewer
 ```
 
-`rb hub start` runs in the foreground by default; backgrounding is the caller's job (`nohup rb hub start &`, a process manager, or — on macOS — the bundled LaunchAgent: see [`rb hub install-launchagent`](#auto-start-on-macos-launchagent)). The server binds the OS-assigned port (TCP, and HTTP if `--serve-viewer` is set) unless `hub.toml` pins them; the resolved TCP address (and HTTP port, with `--serve-viewer`) is written to `.rtl-buddy/hub.json` so peers can discover it.
+Open the printed `http://127.0.0.1:<http_port>/` URL. The landing page links the available apps:
 
-## CLI surface
+| Route | App |
+| --- | --- |
+| `/sch` | Interactive schematic. |
+| `/gph` | Design knowledge graph. |
+| `/cov` | Coverage browser. |
+| `/phy` | Synthesis area and power browser. |
 
-| Command | Purpose |
-|---|---|
-| `rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N] [--model NAME] [--models-file PATH] [--axi-perf-from PATH]` | Bind the TCP server (and optionally the viewer HTTP+WS layer), write `.rtl-buddy/hub.json`, run the asyncio loop. `--listen-port` / `--http-port` override `[hub].listen_port` / `[hub].http_port` from `hub.toml` (default 0 = OS-assigned). `--axi-perf-from` bakes an AXI-perf overlay into served views (see [AXI-perf overlay & notebook spawning](#axi-perf-overlay-and-notebook-spawning)). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on `SIGINT` / `SIGTERM` / `rb hub stop` and removes its discovery file. |
-| `rb hub stop` | Send `SIGTERM` to the PID in `.rtl-buddy/hub.json`. |
-| `rb hub status` | Print the current discovery record + liveness. Reports stale records (PID gone) so users know to clear them. |
-| `rb hub log [--lines N] [--follow]` | Tail `.rtl-buddy/hub.log`. |
-| `rb hub install-launchagent` | (macOS) Install a LaunchAgent so the hub auto-starts at login. See [Auto-start on macOS](#auto-start-on-macos-launchagent). |
-| `rb hub uninstall-launchagent` | (macOS) Remove the LaunchAgent. |
-| `rb hub config validate [--path PATH]` | Schema-check `hub.toml` and exit non-zero on the first error. |
-| `rb hub send <verb> …` | One-shot peer that connects as `origin=cli` to drive the running hub from scripts. See [Driving the hub from the CLI](#driving-the-hub-from-the-cli-rb-hub-send). |
+Use a second shell to inspect or stop the process:
 
-`--daemon` is reserved; today it warns and runs in the foreground. Treat the explicit `--foreground` as load-bearing; future versions may detach when `--daemon` is given.
+```bash
+uv run rb hub status
+uv run rb hub log --follow
+uv run rb hub stop
+```
 
-`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
+`rb hub start` stays in the foreground by default. Add `--daemon` to detach and log to `.rtl-buddy/hub.log`. Startup waits until the detached process publishes discovery; an early failure returns non-zero with the log tail.
 
-When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing, `/view.json` returns 404 and the SPA falls back to the empty state.
+The hub itself has no external binary dependency. The schematic needs `rtl-buddy-sch`, and live wave integration needs the rtl-buddy Surfer fork. See [Installation](../install.md#external-tools-by-feature) and [Waveform Viewer](wave.md).
 
-### Picking a model at start time (`--model NAME`)
+## Start with a model or testbench
 
-`--model NAME` tells the hub to generate `view.json` on the fly from a model entry in `models.yaml`, instead of relying on a pre-staged file:
+Generate and serve a schematic from `models.yaml` at startup:
 
 ```bash
 rb hub start --serve-viewer --model ip_demo_tiny_npu
+rb hub start --serve-viewer --model ip_demo_tiny_npu \
+  --models-file design/npu/models.yaml
 ```
 
-Resolution rules:
+`--model` requires `--serve-viewer`. Without `--models-file`, the hub searches the project and requires exactly one matching model. Zero or multiple matches fail with the discovered files and model names. Use `--models-file` to constrain discovery when names overlap.
 
-- The hub walks the project tree for every `models.yaml` it can find (skipping common build/VCS directories) and looks for an entry named `NAME`.
-- Exactly one match → load it, generate `view.json` into `.rtl-buddy/cache/view-<model>.json`, serve it.
-- Zero matches → error with the list of model names per discovered `models.yaml` so a typo is easy to spot.
-- Two or more matches → error naming all the conflicting `models.yaml` paths. Pass `--models-file PATH` to disambiguate.
+The browser can switch without restarting:
 
-`--models-file PATH` skips the discovery walk entirely and loads the model from the named file. Use it when you have multiple `models.yaml` files in the tree with overlapping names.
+- `GET /models` lists models and their current view status.
+- `GET /view.json?model=NAME` builds or reuses `.rtl-buddy/cache/view-<NAME>.json`, activates it, and broadcasts `view_changed`.
+- `GET /tests` lists runnable testbench views.
+- `GET /view.json?test=NAME` builds and activates a TB-rooted view from the test's model and testbench.
 
-`--model` requires `--serve-viewer` (the generated `view.json` is only useful as something the SPA HTTP layer can serve). Without `--serve-viewer` the hub errors at startup rather than silently discarding the generated file.
+Model discovery is refreshed per request. View generation is serialized per model or test to prevent duplicate concurrent builds. Restart the hub when you need to force regeneration after source changes.
 
-The view.json regenerates on every `rb hub start --model` invocation. Cache invalidation isn't modelled yet — restart the hub to pick up source-tree changes.
+A rebuild clears the cached `view-<NAME>.json` and the model's cached domain map before it starts, so a build that fails — a bad `cdc:` back-pointer, a missing viewer, a crashed analyzer — reports the failure instead of leaving the previous build's hierarchy to be served in its place. A renderer that writes the file and *then* fails, or writes one whose schema this rtl_buddy rejects, has it removed too: the hub serves a cached view by testing the file, so a rejected view left on disk would be served regardless of the recorded failure.
 
-### Clock-domain overlay (`cdc:` back-pointer)
+## Diagnose view errors
 
-When the chosen model's `models.yaml` entry has a `cdc:` field, the hub also generates a clock-domain map and feeds it to the view-builder as `--cdc-annotations`:
+Failed `GET /view.json` requests return JSON with `error.kind`. Branch on the kind, not the prose:
 
-```yaml
-# models.yaml
-rtl-buddy-filetype: model_config
-models:
-  - name: ip_demo_tiny_npu
-    filelist: [...]
-    cdc: cdc.yaml          # or cdc.yaml#analysis_name to pin one analysis
-```
+| Kind | Meaning | Recovery |
+| --- | --- | --- |
+| `view_generation_failed` | Filelist, parse, or elaboration failed. | Read `log_tail` or `log_path`, fix the model, then restart or request it again. |
+| `unknown_model` | No unique matching model exists. | Correct the name or pass `--models-file`. |
+| `no_active_model` | No model or prebuilt view is selected. | Request `?model=NAME` or start with `--model`. |
+| `no_project_root` | The hub cannot discover project configuration. | Start inside the project or provide the correct root context. |
 
-The hub:
+`view_generation_failed` includes the final renderer log lines. Common causes are unsupported parser syntax, missing submodules, and filelist entries the renderer cannot consume.
 
-1. Resolves the `cdc:` back-pointer to a `cdc.yaml` file.
-2. Picks the analysis — either the one named by the optional `#fragment`, or the one whose `model:` field matches the model name. Ambiguity is a hard error (the message tells you to add a `#fragment`).
-3. Invokes `rtl-buddy-cdc lint --emit-domain-map .rtl-buddy/cache/domain-<model>.json ...` with the analysis's SDC + waivers.
-4. Passes the resulting domain map to `rtl-buddy-view --cdc-annotations`. The clock overlay toggle in the SPA then has data to render.
+## Discovery and configuration
 
-Models without a `cdc:` field skip this step entirely — view.json is generated without overlays and the toggle stays dark. `rtl-buddy-cdc` must be on `PATH` when the `cdc:` field is present; absence is a hub-start error (no silent dark toggle).
+The hub writes `.rtl-buddy/hub.json` after binding. It contains the PID, TCP address, project root, server version, and optional HTTP port and active model. Peers discover this file by walking upward from their current directory.
 
-### Switching models at runtime
+Set `RTL_BUDDY_HUB=<host>:<port>` when a peer runs outside the project tree. Use the `tcp` value from `hub.json`; the variable is not a file path.
 
-Once the hub is up, the SPA can change models without restarting:
-
-- `GET /models` — list every model the hub can serve. JSON shape:
-  ```json
-  {
-    "models": [
-      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml", "has_cdc": true},
-      {"name": "ip_dtnpu_dma",     "models_file": "/abs/path/to/models.yaml", "has_cdc": true}
-    ],
-    "active": "ip_demo_tiny_npu"
-  }
-  ```
-  `has_cdc` is end-to-end: `true` only when the model has a `cdc:` field AND the referenced cdc.yaml exists AND at least one analysis resolves cleanly for the model. The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
-- `GET /view.json?model=NAME` — build (or reuse) the per-model view.json at `.rtl-buddy/cache/view-<NAME>.json`, serve it, and promote `NAME` to the active model. `--models-file` constraints apply: `?model=` only honours entries in the pinned file. Per-model `asyncio.Lock` serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
-- `GET /tests` — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as `/models`; entries carry the resolved `(model, tb)` pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
-  ```json
-  {
-    "tests": [
-      {"name": "basic", "model": "ip_demo_tiny_npu", "tb": "tb_top", "tests_file": "/abs/path/to/tests.yaml"}
-    ],
-    "active": "basic"
-  }
-  ```
-- `GET /view.json?test=NAME` — build (or reuse) the per-`(model, tb)` view.json at `.rtl-buddy/cache/view-<MODEL>-tb-<TB>.json`, serve it, and promote the test (and its underlying model) to active. Per-test `asyncio.Lock` mirrors the per-model lock. The renderer runs in TB-rooted mode: rtl-buddy-view is invoked with `--top <model>` + `--tb-top <tb.toplevel>` so the rendered tree is rooted at the testbench top with the DUT recorded for the SPA's dashed-boundary overlay.
-- `view_changed` event — broadcast on every active-view change. Envelope:
-  ```json
-  {"v":1, "id":"…", "origin":"cli", "kind":"event", "type":"view_changed",
-   "payload":{"model":"ip_dtnpu_dma", "models_file":"/abs/path/to/models.yaml",
-              "view_url":"/view.json?model=ip_dtnpu_dma",
-              "view_mode":"dut"}}
-  ```
-  In TB-view mode (`?test=` switch) the payload carries `view_mode: "tb"` plus `test` + `tb` + `tests_file` fields (the `view_url` points at `/view.json?test=<NAME>`). v1.0 SPAs that don't know about `view_mode` ignore it and fall through to the legacy `model`-driven `switchModel` path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, `rb wave` bridge) so they can refresh view-scoped state.
-
-The active model is also recorded in `.rtl-buddy/hub.json` under `active_model` (optional field) and surfaced in `rb hub status` output.
-
-## Discovery (`.rtl-buddy/hub.json`)
-
-When the hub binds, it writes a small JSON record under the project root's `.rtl-buddy/` directory:
-
-```json
-{
-  "v": 1,
-  "pid": 41231,
-  "tcp": "127.0.0.1:53201",
-  "server_version": "0.5.0",
-  "project_root": "/path/to/project",
-  "started_at": "2026-05-19T12:34:56+00:00",
-  "http_port": 53202,
-  "active_model": "ip_demo_tiny_npu"
-}
-```
-
-The TCP listener address is the single `tcp` `host:port` string (there is no `listen_port` field). `v` is the discovery-schema version and `server_version` is the hub build. `http_port` is present only when the hub was started with `--serve-viewer`; `active_model` is present when the hub started with `--model NAME` or after a `GET /view.json?model=` switch (both optional keys are omitted when unset).
-
-Peers (the viewer SPA, the `rb wave` bridge, the nvim plugin) read this file to find the hub. The hub deletes the record on clean shutdown; a stale record after a crash is detected by `rb hub status` (PID not live) and the next `rb hub start` overwrites it.
-
-Override discovery resolution with the `RTL_BUDDY_HUB` environment variable when running outside a project tree — set it to the hub's `host:port` (the `tcp` value from `hub.json`, e.g. `RTL_BUDDY_HUB=127.0.0.1:53201`), **not** a path to a file.
-
-## Configuration (`.rtl-buddy/hub.toml`)
-
-Optional; sensible defaults apply when the file is absent. Two top-level sections:
+Optional `.rtl-buddy/hub.toml` settings include:
 
 ```toml
 [hub]
-listen_port = 0          # 0 = OS-assigned (default). Pin to a specific port to survive across restarts.
-http_port   = 0          # Same, for the viewer HTTP+WS layer (only used with --serve-viewer).
-log_path    = ".rtl-buddy/hub.log"   # Relative paths resolve from the project root.
+listen_port = 0
+http_port = 0
+log_path = ".rtl-buddy/hub.log"
 
 [mapping]
-tb_prefix   = "tb.dut."  # Fallback for DUT-rooted views. When the loaded view.json carries tb_top (rtl-buddy-view v1.1, #99 / 6b), the resolver short-circuits to identity wave↔view mapping and tb_prefix is bypassed — the rendered TB tree already speaks the wave-side coordinate system.
-view_json   = ".rtl-buddy/view.json"  # Snapshot the resolver consumes. Defaults shown.
+tb_prefix = "tb.dut."
+view_json = ".rtl-buddy/view.json"
 
-# Optional pre-strip aliases — applied before tb_prefix is stripped.
 [[mapping.signal_aliases]]
 wave = "tb.legacy_dut.clk"
 view = "tb.dut.clk"
 ```
 
-Unknown top-level sections fail validation (typo guard). Unknown keys *inside* known sections are tolerated for forward-compat. `rb hub config validate` runs the same loader and reports errors with file:line context.
+Port `0` lets the OS choose. Relative paths resolve from the project root. Signal aliases are applied before `tb_prefix` is removed. Validate edits with:
 
-## Peers (who connects to the hub)
+```bash
+rb hub config validate
+```
 
-| Peer | Transport | How it connects |
-|---|---|---|
-| **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Loaded from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
-| **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
-| **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
+Only `[hub]` and `[mapping]` are valid top-level sections. Unknown keys inside those sections are tolerated for forward compatibility.
 
-Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), and `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one.
+## Connect peers
 
-## Protocol
+The hub accepts inbound connections only; every adapter is responsible for connecting and reconnecting.
 
-Wire envelope is line-delimited JSON, one record per line, UTF-8. The full spec lives in [rtl-buddy/rtl-buddy-view#19](https://github.com/rtl-buddy/rtl-buddy-view/issues/19); the JSON Schema enforcing it ships at `src/rtl_buddy/hub/schema/hub-protocol-v1.json`. Encoded and decoded by `rtl_buddy.hub.protocol`, which validates on both sides — unknown fields are caller bugs, not forward-compat points.
+| Peer | Origin | Transport |
+| --- | --- | --- |
+| Schematic SPA | `view` | WebSocket `/ws`. |
+| Graph pane | `graph` | WebSocket `/ws`. |
+| Coverage pane | `cov` | WebSocket `/ws`. |
+| Synth+power pane | `phys` | WebSocket `/ws`. |
+| `rb wave` bridge | `wave` | Line-delimited JSON over TCP. |
+| Editor adapter | `src` | Line-delimited JSON over TCP. |
+| `rb hub send` | `cli` | One-shot TCP client. |
 
-State events (selection_changed, signal_selected, cursor_moved, …) are broadcast to every connected peer **except** the origin. Requests (`resolve_*`, `goto_declaration`, …) are routed to the peer whose origin owns the target coordinate system; if no peer is registered for that origin, the hub replies with `error{code: "not_connected"}`. The `view ↔ wave ↔ src` resolver lives in `rtl_buddy.hub.resolver` and consumes the `view.json` snapshot pointed at by `mapping.view_json`.
+The hub permits one client per origin. A second browser tab can take over and disconnect the prior tab; the prior tab stops reconnecting until the user explicitly takes the connection back. The landing page does not register an origin and therefore cannot evict an app.
 
-Lifecycle events (`hello` / `welcome` / `peer_joined` / `bye`) keep each peer's view of the registry live without re-fetching: `welcome` carries the snapshot at handshake time, and `peer_joined` / `bye` are deltas the hub broadcasts when later peers connect or disconnect. The joining or leaving peer's origin is in the envelope's `origin` field (payload is empty). Consumers should react to all three to maintain a current peer list — relying on `welcome` alone leaves the list frozen at handshake time.
+`rb hub status` shows the live origins. It intentionally reports protocol origin names such as `view`, `graph`, and `phys`, while the browser labels those apps `sch`, `gph`, and `phy`.
 
-The hub also **augments `source_focused`**: when a `src` peer (e.g. nvim's `:RtlBuddyShow`) broadcasts `{file, line, col}`, the resolver looks up the instance(s) whose `source` range in `view.json` contains the point and the hub emits a derived `selection_changed { instance_path: [...] }` with `origin: "cli"`. The schematic SPA already handles `selection_changed` — pan/highlight the matching instance — so this bridge makes editor cursor movement light up the schematic without a SPA-side protocol change. Multiple matches (nested instances) come back smallest-range first; consumers picking element `[0]` get the most-specific instance. Line-only matching is used for multi-line ranges (cursor at column 1 still finds an instantiation whose keyword sits further right); single-line ranges still use columns so two instantiations on the same line resolve distinctly.
+## Driving the hub from the CLI
 
-The hub also relays a **`diagnostics_set`** event for CDC / RDC / lint findings to the SPA's on-canvas badge layer. Each `diagnostics_set` carries a producer `source` key (latest-writer-wins per source, so re-publishing replaces that source's set), a list of `{file, line, severity, code, message}` items, and an optional `instance_path` per item (a fast path for the SPA badge layer that skips the file+line resolver). `rb cdc` publishes its violations this way, and `rb hub send diagnose SOURCE ITEM…` (with `--clear` / `--instance`) lets any tool push diagnostics. A **`wave_values_changed`** event is emitted on `cursor_moved` so the SPA can show signal values at the cursor.
+`rb hub send` is the scripting interface to a running hub. Examples:
 
-`GET /healthz` returns `ok` for liveness probes.
+```bash
+rb hub send state
+rb hub send select demo_top.u_dma
+rb hub send open-source design/dma.sv:84
+rb hub send graph-focus module:dma_engine
+rb hub send cov-focus file:design/dma.sv --line 84
+rb hub send phys-focus module:dma_engine --metric area
+rb hub send wave-add tb.dut.req tb.dut.ready
+rb hub send wave-zoom 1000 2000
+rb hub send capture --out schematic.png --format png
+```
 
-## Driving the hub from the CLI (`rb hub send`)
+The command groups cover state broadcasts, waveform control and item management, schematic pan/overlay/capture, source opening, diagnostics, graph, coverage or physical focus, and coordinate resolution. See the [CLI reference](../reference/cli.md#hub-send) for all verbs and arguments.
 
-`rb hub send` is a one-shot peer: it connects to the running hub as `origin=cli`, sends one request or state event, prints any reply, and disconnects. It exits with code 2 when no hub is running (or `$RTL_BUDDY_HUB` is unset). It is the scripting/automation entry point and the easiest way to poke the hub by hand.
+The hub caches the latest selection, graph focus, coverage focus, and physical focus. You can send a focus before its app opens; it is replayed when the peer registers. Each cache is one slot, latest writer wins: a late-joining pane opens on the most recent target rather than replaying a backlog. Surfer-side rejection, an unknown id, or an unavailable target peer returns a real hub error and a non-zero exit.
 
-The verbs group into broadcast, wave-control, SPA, source, and resolve families (see the [CLI reference](../reference/cli.md#hub-send) for the full flag list of each):
+## Design knowledge graph pane
 
-- **State broadcast:** `select INSTANCE_PATH`, `signal SIGNAL`, `cursor T_FS`, `scope WAVE_SCOPE`, `open FILE:LINE[:COL]`.
-- **Wave control** (routed to surfer via the `rb wave` bridge): `wave-add VARIABLES…`, `wave-cursor T_FS`, `wave-scope WAVE_SCOPE`, `wave-pan T_FS`, `wave-zoom START_FS END_FS`, `wave-zoom-fit`.
-- **Wave-view item management** (also via the `rb wave` bridge — lets an agent curate the signal list): `wave-items` (list the displayed items as `{id, type, name}`), `wave-remove IDS…` (reports `removed` vs `not_found`), `wave-move IDS… --to N | --before ID` (reorder), `wave-comment TEXTS… [--after ID]` (add comment rows / dividers, returns their ids). Every verb reports genuine success/error: a surfer-side rejection (unknown id, illegal move, unknown scope) comes back as a hub `error` and a non-zero CLI exit, not a false `{"ok": true}`. `wave-move`/`wave-comment` need the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) fork with the `move_items` / `add_dividers` WCP commands.
-- **SPA:** `view-pan INSTANCE_PATH`, `overlay NAME --on/--off` (`clock` / `reset` / `axi-perf` / `wave`), `capture --out PATH [--format png|svg] [--scale …]`.
-- **Source:** `open-source FILE:LINE[:COL]`.
-- **Diagnostics:** `diagnose SOURCE ITEM…` (each `ITEM` is `file:line:severity:code:message`; `--clear`, `--instance`).
-- **State / resolve:** `state` (snapshot of active model / selection / cursor / scope / peers), and `resolve {view-to-wave|wave-to-view|signal-to-view}`.
+Build the graph, start the browser layer, and open `/gph`:
 
-## Auto-start on macOS (LaunchAgent)
+```bash
+rb graph build
+rb graph results
+rb hub start --serve-viewer
+```
 
-On macOS, `rb hub install-launchagent` writes `~/Library/LaunchAgents/com.rtl-buddy.hub.plist` (with `RunAtLoad` + `KeepAlive`) and `launchctl load`s it, so the hub starts at login and restarts if it dies. The agent runs `rb hub start --foreground` from the project directory and routes stdout/stderr to `.rtl-buddy/hub.log`. `rb hub uninstall-launchagent` unloads and removes the plist. On non-macOS platforms both commands error with `LaunchAgentUnsupportedError`.
+`GET /graph.json` reads `graph.json` and `results-overlay.json`, joins results and coverage in memory, and adds presentation categories. It returns 404 with a command hint if no graph exists. Reload the page after rebuilding or refreshing results.
+
+Clicking graph nodes can:
+
+- send `selection_changed` for an instance, or the shallowest instance of a module;
+- send `open_source` for nodes with file locations;
+- translate a selected node into coverage focus.
+
+A model node is placed through its `maps_to` edge, so it lands on the module the model actually roots at even when `models.yaml` sets `top:`. A model that opted out with `graph: false` has no such edge and no design coordinate: its send buttons stay dark and say so, rather than focusing a module id the graph does not contain.
+
+The pane also reads the physical model. Ticking `heat` fetches `GET /phy.json` — on the first tick, not on load — and fills module nodes with the shared heat ramp: cells and area from the synthesis half by module name, counted once for the module definition, and the power of every leaf row inside every instantiation of the module, summed by instance path. The inspector prints how many instantiations and how many rows each figure covers. Its metric switcher and its run dropdown are the `/phy` pane's, over the same `?dir=` coordinate, and `/gph?dir=<phys dir>` opens the pane on one run; a run the route refuses keeps the model on screen and reports the refusal, and a bad `?dir=` before anything has loaded falls back to the newest run. With no `phys-manifest.json` under the project the control is muted and names `rb synth` / `rb power`; the probe runs when the document is rendered, so a model produced after the tab opened needs the tab reloaded. Coverage and heat share the node fill, so ticking either releases the other. An inbound `phys_focus` turns the overlay on — it names a coordinate in the model and carries the metric to foreground, so a pane that has not read the model yet loads it and applies the focus when it lands — and highlights the node its target belongs to, a module by name and an instance path by the module whose body holds the leaf, without adding anything to what the pane emits.
+
+The on-disk graph is never modified by the browser join. See [Design Knowledge Graph](graph.md) for graph semantics.
+
+## Coverage pane
+
+Open `/cov` after a coverage-producing run. `GET /cov.json` uses the same coverage-model builder as `rb cov summary`, so CLI and browser totals agree. `GET /cov/source?path=...` serves only files named by that coverage model and only from under the project root.
+
+The pane supports metric filtering, coldest-file ordering, a per-test lens, annotated source, and per-point attribution. Clicking source can send `source_focused` and `open_source`; clicking a module can send `graph_focus`. The hub resolves source locations into schematic selections where possible.
+
+Coverage discovery is cached briefly. Reload after a run finishes if the landing page has not yet updated. See [Coverage](coverage.md) for collection and metric definitions.
+
+## Synth+power pane
+
+Open `/phy` after `rb synth` or `rb power`. `GET /phy.json` uses the same builder as `rb phys summary`, so CLI and browser numbers agree; unlike the CLI it truncates nothing, because the pane sorts and filters the whole model client-side. It returns 404 with a command hint when the project has no `phys-manifest.json`.
+
+`?dir=<project-relative phys_dir>` selects one run; bare `/phy.json` serves the newest manifest. The value is validated against the project root before anything is read: outside it is 403, and a directory with no `phys-manifest.json` is 404 naming `rb phys runs`. Containment is decided on the path as written rather than on its resolved form, so a suite whose `artefacts/` is a symlink to scratch storage — the layout discovery already walks into — stays selectable; a `..` still collapses and is refused. Where the path as written stays inside the project but *resolves* outside it, a link was crossed, and the route admits only the links discovery admits: an `artefacts` component below the project root. A `vendor/` or `$HOME` link is 403, so what the route will read is exactly what the run listing offers.
+
+The body carries the `rb phys runs` listing as a `runs` block, bounded to the 50 newest with the untruncated count beside it, and the pane renders it as a run dropdown in its header. Entries read `run · top · backends · mode (activity) · experiment` and mark the run being shown and the newest separately; the artefact directory, the configuration fingerprint and the timestamp are on the hover. Choosing one re-fetches with `?dir=`; reload re-reads whichever run is shown. The newest entry is the exception: it selects the bare route rather than its own directory, so choosing it keeps the pane following discovery to whatever run finishes next, while choosing any other pins that run. A selection the server refuses keeps the run on screen and reports the refusal in the status line.
+
+The pane switches between `cells`, `area`, `leakage`, `dynamic`, and `total`. `dynamic` is internal plus switching, summed in the browser: no producer writes that column. The totals header shows the flow's own scraped total beside the sum of the rows and flags a disagreement rather than reconciling it, because the two numbers come from different scrapes.
+
+A model with only one half keeps working. The pane names the command that fills the other one — unless that command could not merge with the half already there: a power half taken from a routed database (`netlist-source: pnr`) records no netlist hash, so a later `rb synth` would replace the model rather than complete it, and the banner says to synthesise first and re-run `rb power` on the netlist it writes. `rb hub send phys-focus` still drives whichever half is present.
+
+Reload re-reads the run the pane is showing, and a pane that has selected nothing follows discovery. A reload that lands on the same model keeps your metric, sort, filter, module lens and selected instance; one that lands on a *different* model — another run became the newest, the design was re-topped, the same run was published again over a revision switch — keeps the controls but drops the lens and the selection, which were statements about rows that are gone. A `phys-focus` sent while the pane was loading still applies to whatever model arrives.
+
+An inbound `phys_focus` applies to the run the pane is displaying. The message carries a target and a metric and names no run: a sender addresses the pane, the pane addresses one run at a time, and the reader is the one who chose it, so switching runs is a gesture in the pane rather than something another app can do to it.
+
+Clicking a module sends `graph_focus`; clicking an instance sends `selection_changed`, since an instance path is already the schematic's coordinate. Instance-path separators are levelled onto the wire's dots on the way out. An inbound `selection_changed` highlights the matching instance row.
+
+Physical discovery is cached briefly, like coverage. See [Physical Metrics](phys.md) for the model and the CLI verbs.
 
 ## AXI-perf overlay and notebook spawning
 
-When the hub is started with `rb hub start --serve-viewer --axi-perf-from <axi-perf.json>` (the file produced by `rb axi-profile run`), it bakes a per-bundle / per-interconnect throughput overlay into every generated `view.json` and records the source test + suite dir so the SPA's "Open in marimo" button can launch the matching notebook without re-prompting. Point `--axi-perf-from` at the canonical `<suite>/artefacts/axi/<test>/axi-perf.json` so that derivation works. The file's existence is checked up-front (a missing path is a clean start-up error).
+Start with a canonical per-test `axi-perf.json` to add AXI performance data to generated schematics:
 
-The SPA and a deep-dive marimo notebook stay in sync through an in-memory **event broker** exposed as a WebSocket at `GET /api/events/sync` (opaque-string pub/sub: the broker relays each inbound message to every *other* connected client; topic routing and echo-suppression live in the clients; a slow client's outbound queue is bounded and drops the oldest message on overflow). `GET /api/axi-profile/notebook?test=NAME&suite_dir=PATH` spawns `rb axi-profile notebook --headless` on demand, with marimo-session reuse and shutdown cleanup. The hub injects `RB_HUB_EVENTS_URL=ws://127.0.0.1:<http_port>/api/events/sync` into the spawned notebook so it joins the broker as a peer with `origin=notebook`; SPA bundle-node clicks then drive the live notebook.
+```bash
+rb hub start --serve-viewer \
+  --axi-perf-from <suite>/artefacts/axi/<test>/axi-perf.json
+```
+
+The file must exist at startup. Keeping the canonical layout lets the schematic identify the source test and launch its marimo notebook. The hub starts notebooks through `/api/axi-profile/notebook` and injects the local event-broker URL so schematic selections and the notebook remain synchronized.
+
+See [AXI Interconnect Profiling](axi-profile.md#hub-integration) for how to produce the JSON and transaction Parquet files.
+
+## Protocol and adapters
+
+The protocol is UTF-8, line-delimited JSON over TCP or WebSocket. Its JSON Schema is `src/rtl_buddy/hub/schema/hub-protocol-v1.json` — a **vendored copy**. The contract is owned by [`rtl-buddy-sch/schemas/hub-protocol-v1.json`](https://github.com/rtl-buddy/rtl-buddy-sch/blob/main/schemas/hub-protocol-v1.json); re-copy it byte-for-byte rather than editing ours.
+
+The `origin` vocabulary in that schema is hand-copied into `hub/protocol.py`'s `Origin` enum, which `tests/test_hub_protocol.py::test_origin_enum_matches_vendored_schema` pins to the vendored file — without it a re-sync that adds a peer passes schema validation and then raises `ValueError` in `decode()` on that peer's first envelope. Adding an origin is a lockstep edit across three repos in a fixed merge order (schema first, this repo last); the checklist, naming the test that catches each missed copy, is [`docs/hub-protocol.md` §13](https://github.com/rtl-buddy/rtl-buddy-sch/blob/main/docs/hub-protocol.md#13-adding-or-renaming-an-origin--lockstep-checklist) in that repo.
+
+After connecting, a peer sends `hello`, receives `welcome`, and tracks `peer_joined` and `bye` updates. State events are broadcast to every peer except their origin. Requests are routed to the origin that owns the target coordinate system; an absent target returns `not_connected`.
+
+The hub augments `source_focused` with resolved `selection_changed` events and relays producer-scoped `diagnostics_set` updates. `GET /healthz` is the liveness endpoint.
+
+For a new adapter, validate envelopes against the schema and use `src/rtl_buddy/tools/wave_hub_bridge.py` as the narrow reference: connect, translate to the peer API, route, and reconnect.
+
+## Auto-start on macOS
+
+Install or remove the bundled LaunchAgent:
+
+```bash
+rb hub install-launchagent
+rb hub uninstall-launchagent
+```
+
+The agent runs the hub from the project directory, restarts it when needed, and logs to `.rtl-buddy/hub.log`. These commands fail with `LaunchAgentUnsupportedError` on other platforms.
 
 ## Troubleshooting
 
-**`rb hub start` exits with "already running"** — `.rtl-buddy/hub.json` exists and its PID is live. If the prior daemon really is gone, the file is stale (clean shutdown didn't run); delete it and retry. `rb hub status` distinguishes the two cases.
-
-**Port already in use** — pin `listen_port` (and `http_port` if using `--serve-viewer`) to a free port in `hub.toml`, or leave them at `0` to let the OS pick. The chosen port lands in `hub.json` either way.
-
-**Peer can't find the hub from outside the project tree** — set `RTL_BUDDY_HUB=<host>:<port>` (the `tcp` value from `.rtl-buddy/hub.json`, e.g. `RTL_BUDDY_HUB=127.0.0.1:53201`) in the peer's environment. The default discovery walks up from `cwd` looking for `.rtl-buddy/hub.json`, which doesn't work for processes launched from elsewhere. The override is a `host:port` string, not a file path.
-
-**`rb wave` bridge reports surfer disconnected** — the bridge owns the WCP TCP connection, not the hub. Check the surfer fork is on PATH and built with WCP support; see [Waveform Viewer](wave.md). The hub stays up regardless; reconnect is automatic.
-
-**`rb hub config validate` reports "unknown section"** — typo. The schema accepts exactly `[hub]` and `[mapping]`; everything else (surfer flags, nvim keymaps, …) belongs in the adapters' own config.
-
-**Hub log empty or absent** — `rb hub log` tails `.rtl-buddy/hub.log` by default. The `[hub].log_path` setting controls the location; logs route through `log_event()` like the rest of `rtl_buddy`, so `--machine` mode produces JSON Lines.
-
-## Writing a new adapter
-
-Bring up a TCP client against the hub's `listen_port`, send the `hello` envelope claiming an origin, accept the `welcome` reply, then send / receive state events and requests per [rtl-buddy-view#19](https://github.com/rtl-buddy/rtl-buddy-view/issues/19). The JSON Schema at `src/rtl_buddy/hub/schema/hub-protocol-v1.json` is the contract — validate against it on both sides and unknown `type` strings should be silently dropped (forward-compat rule from §11 of the spec).
-
-The existing peers — `tools/wave_hub_bridge.py` and the [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) plugin — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.
-
-## Reference
-
-- Wire protocol spec: [rtl-buddy-view#19](https://github.com/rtl-buddy/rtl-buddy-view/issues/19)
-- JSON Schema: `src/rtl_buddy/hub/schema/hub-protocol-v1.json`
-- Implementation: `src/rtl_buddy/hub/`
-- Wave bridge: `src/rtl_buddy/tools/wave_hub_bridge.py`, `src/rtl_buddy/tools/wave_launcher.py`
-- nvim plugin: [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) (installer: `src/rtl_buddy/tools/nvim_install.py`, command `rb nvim-install`)
+- **Already running:** run `rb hub status`. Stop the live process, or remove `.rtl-buddy/hub.json` only if the recorded PID is stale.
+- **Port in use:** choose a free fixed port in `hub.toml`, override it on the command line, or use `0` for OS assignment.
+- **Peer cannot discover the hub:** set `RTL_BUDDY_HUB` to the `tcp` address in `hub.json`.
+- **Wave bridge disconnected:** verify the supported Surfer fork is running with WCP enabled. The hub can stay running while the bridge reconnects.
+- **Empty hub log:** foreground mode logs to the terminal. `--daemon` and the LaunchAgent redirect to the configured log file.
+- **Viewer placeholder:** install `rtl-buddy-sch` or pass `--viewer-bundle PATH` for a development SPA build.

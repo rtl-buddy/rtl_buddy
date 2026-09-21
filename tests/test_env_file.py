@@ -12,6 +12,12 @@ from rtl_buddy.config.env_file import (
 from rtl_buddy.errors import FatalRtlBuddyError
 
 
+# The `clean_environ` fixture these tests take lives in conftest.py and
+# is autouse there: the leak it guards against belongs to
+# `RootConfig.__init__`, not to this file. Requested by name below anyway,
+# because here it is load-bearing rather than incidental.
+
+
 # ---------------------------------------------------------------------------
 # parse_env_file
 # ---------------------------------------------------------------------------
@@ -89,12 +95,12 @@ def _write_project_env(tmp_path, text):
     return env_path
 
 
-def test_apply_missing_file_is_noop(tmp_path, monkeypatch):
+def test_apply_missing_file_is_noop(tmp_path, monkeypatch, clean_environ):
     monkeypatch.setattr(os, "environ", dict(os.environ))
     assert apply_env_file(tmp_path) == {}
 
 
-def test_apply_sets_absent_vars(tmp_path, monkeypatch):
+def test_apply_sets_absent_vars(tmp_path, monkeypatch, clean_environ):
     monkeypatch.setattr(os, "environ", dict(os.environ))
     os.environ.pop("RB_TEST_ENVFILE_A", None)
     _write_project_env(tmp_path, "RB_TEST_ENVFILE_A=hello\n")
@@ -102,7 +108,7 @@ def test_apply_sets_absent_vars(tmp_path, monkeypatch):
     assert os.environ["RB_TEST_ENVFILE_A"] == "hello"
 
 
-def test_apply_never_overrides_process_env(tmp_path, monkeypatch):
+def test_apply_never_overrides_process_env(tmp_path, monkeypatch, clean_environ):
     monkeypatch.setattr(os, "environ", dict(os.environ))
     os.environ["RB_TEST_ENVFILE_B"] = "from-shell"
     _write_project_env(tmp_path, "RB_TEST_ENVFILE_B=from-file\n")
@@ -110,7 +116,7 @@ def test_apply_never_overrides_process_env(tmp_path, monkeypatch):
     assert os.environ["RB_TEST_ENVFILE_B"] == "from-shell"
 
 
-def test_apply_is_idempotent_first_value_wins(tmp_path, monkeypatch):
+def test_apply_is_idempotent_first_value_wins(tmp_path, monkeypatch, clean_environ):
     monkeypatch.setattr(os, "environ", dict(os.environ))
     os.environ.pop("RB_TEST_ENVFILE_C", None)
     env_path = _write_project_env(tmp_path, "RB_TEST_ENVFILE_C=first\n")
@@ -120,7 +126,9 @@ def test_apply_is_idempotent_first_value_wins(tmp_path, monkeypatch):
     assert os.environ["RB_TEST_ENVFILE_C"] == "first"
 
 
-def test_apply_logs_info_only_when_vars_injected(tmp_path, monkeypatch, caplog):
+def test_apply_logs_info_only_when_vars_injected(
+    tmp_path, monkeypatch, caplog, clean_environ
+):
     import logging
 
     monkeypatch.setattr(os, "environ", dict(os.environ))
@@ -139,7 +147,7 @@ def test_apply_logs_info_only_when_vars_injected(tmp_path, monkeypatch, caplog):
     assert levels == [logging.INFO, logging.DEBUG]
 
 
-def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch):
+def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch, clean_environ):
     """End-to-end through the consumer that motivated the feature."""
     from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path
 
@@ -148,3 +156,44 @@ def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch):
     _write_project_env(tmp_path, f"{SLANG_PLUGIN_ENV}=/tools/slang.so\n")
     apply_env_file(tmp_path)
     assert resolve_plugin_path(None, None) == "/tools/slang.so"
+
+
+def test_env_file_applies_before_tool_paths_expand(
+    tmp_path, monkeypatch, clean_environ
+):
+    """`.rtl-buddy/.env` must land before cfg-surfer expands its path (#439).
+
+    cfg-verible and cfg-surfer resolve their paths inside RootConfig's
+    constructor, so an env file applied afterwards would be too late for
+    exactly the per-user override it exists to provide.
+    """
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    from rtl_buddy.config.root import RootConfig
+
+    fixtures = _Path(__file__).parent / "fixtures" / "minimal_project"
+    project = tmp_path / "project"
+    _shutil.copytree(fixtures, project)
+
+    tools = tmp_path / "mytools" / "bin"
+    tools.mkdir(parents=True)
+    exe = tools / "surfer"
+    exe.write_text("")
+    exe.chmod(0o755)
+
+    (project / ".rtl-buddy").mkdir()
+    (project / ".rtl-buddy" / ".env").write_text(
+        f"RB_ENV_ORDER_TOOLS={tmp_path / 'mytools'}\n"
+    )
+    with (project / "root_config.yaml").open("a") as fh:
+        fh.write(
+            "\ncfg-surfer:\n"
+            '  - name: "surfer-default"\n'
+            '    path: ["${RB_ENV_ORDER_TOOLS}/bin/surfer", "surfer"]\n'
+        )
+
+    monkeypatch.delenv("RB_ENV_ORDER_TOOLS", raising=False)
+    monkeypatch.chdir(project)
+    rc = RootConfig(name="env-order")
+    assert rc.get_surfer_cfg().path == str(exe)

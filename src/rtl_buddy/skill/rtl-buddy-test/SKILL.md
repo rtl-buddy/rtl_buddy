@@ -1,0 +1,133 @@
+---
+name: rtl-buddy-test
+description: Run and debug rtl_buddy tests, randtests, and regressions; use for verdicts, timeouts, artefacts, and shared builds.
+---
+
+# rtl_buddy tests and regressions
+
+Report `rb --version` at the top of every run summary.
+
+Use `rb --machine`; read `payload.results`, not rendered tables. For complete
+syntax and schemas, use `rb test --help`, `rb randtest --help`, and
+`rb --machine docs show concepts/tests` or `concepts/regressions`.
+
+## Invocation and outputs
+
+- Pass `-c path/to/tests.yaml` to make the suite explicit. Inspect
+  `rb test --help`: use multi-select when available, otherwise loop exact names.
+- Config-relative paths and outputs anchor on `dirname(tests.yaml)`.
+- `rb test --plusarg KEY=VALUE` (repeatable; bare `KEY` for `+KEY`) adds or
+  replaces one runtime plusarg for a single run instead of editing `tests.yaml`.
+  It reaches `preproc` and the simulator, survives `--dispatch`, never rebuilds,
+  and is recorded as `plusarg_overrides`.
+- A regression anchors each suite on its `tests.yaml`; its orchestration output
+  anchors on `dirname(regression.yaml)`.
+- Test artefacts are under `artefacts/<test>/`; randtest iterations use
+  `run-NNNN/`. Durable verdicts live in `result.json`; `rtl_buddy.log` is JSONL.
+- "another rtl-buddy run is already using this artefact tree" means one lock per
+  artefact tree. To run two tiers at once (one per simulator), give each
+  `--run-tag <name>`: its tree, lock, log and overlay move under
+  `artefacts/.runs/<name>/`, shared builds stay shared, and
+  `rb graph results --run-tag <name>` converts that run. Unset changes nothing.
+- On a long regression use `rb --print-failures-only --machine regression ...`
+  to trim `PASS`/`SKIP`/`XFAIL` rows from the console summary; the `summary`
+  event and the log keep every row.
+
+## Verdicts
+
+- UVM uses its report thresholds; cocotb uses `cocotb_results.xml`.
+- Other simulations need a line beginning `PASS` or `FAIL` in `test.log`.
+  Follow `FAIL` with `ERR:` or `FAT:` so `desc` contains the reason.
+- Treat `payload.results[*].result` and `desc` as authoritative. `NA` means no
+  verdict was produced and needs review; it is not proof of a pass.
+- `test`, `randtest`, and `regression` exit 0 with no real `FAIL` (including an
+  intentional early-stop `NA` or an `XFAIL`), 1 for a real `FAIL`, an unknown
+  `NA`, or a strict `XPASS`, and 2 for a fatal configuration or environment
+  error. Only an `NA` carrying `early_stop: true` (a `-E pre|comp|sim` stop)
+  exits 0.
+
+## Reproducible seeds
+
+- Use `rb test ... --master-seed N` or `rb regression --master-seed N` when a
+  run must replay without old artefacts. Reuse the same command and master.
+- A test with randomized preprocessing configures
+  `sim-rand-seed-plusarg: NAME`; the hook reads that plusarg or
+  `test_cfg.get_resolved_seed()`, and the simulator receives the same value.
+  Use a master or fixed seed instead of `--rnd-new`/`--rnd-last`; `randtest`
+  needs a fixed seed because its preprocessor runs once for all iterations.
+- A test-level `sim-rand-seed` pins timing-sensitive stimulus across master
+  rotations. It overrides other runtime seed modes.
+- Record the master from the summary and the resolved seed from machine
+  results or `test.randseed`. Use `rb --machine docs show concepts/tests#run-with-randomized-seeds`
+  for the full contract.
+
+## `Sim hit timeout`
+
+This is rtl_buddy's wall-clock `sim_timeout` kill. It is distinct from a
+testbench's simulated-time watchdog. Before raising it:
+
+1. Check whether sibling tests under the same builder pass.
+2. Check `test.log` timestamps/progress to see whether simulated time advances.
+3. Identify the last completed activity and distinguish slow progress from a
+   functional wedge.
+4. Confirm the resolved timeout; an omitted `sim_timeout` defaults to 60 s.
+
+A recognized VCS `-licqueue` wait pauses the `sim_timeout` clock. Check the
+reported queue duration before treating a visibly long run as a timeout bug.
+
+A killed process may not flush its final output. A log ending mid-line, often at
+a power-of-two size, is a truncated buffer—not the point where the DUT stopped.
+
+## Memory and shared builds
+
+Verilator elaboration of large generated structures can be OOM-killed. A Slurm
+`OUT_OF_MEMORY` state or local compiler `Killed`/SIGKILL calls for more memory,
+not a longer simulation timeout; use the `rtl-buddy-dispatch` skill when queued.
+
+`--share-build` reuses only identical compile inputs. Tracked/reported source or
+header inputs, filelists, plusdefines, compile options, configured extra compile
+environment, builder, or toolchain changes rebuild; runtime plusargs, seeds, and
+`sim_timeout` do not.
+Every builder's stamp lists each `+incdir+` tree (recursively) and `-y`
+directory (flat), unfiltered by suffix. Verilator reports which files it
+consumed, so for it the listing is compared by name only: an added or removed
+file rebuilds, an edit rebuilds only if the build read that file (headers
+included, via the dependency list, which follows symlinks on every check).
+VCS/Icarus report no header dependencies, so for them any edited, added, or
+removed file in a listed directory rebuilds. The walk skips dot-directories,
+`artefacts`/`obj_dir*`, editor/VCS bookkeeping, rtl_buddy's own outputs by
+name (run.f, compile.log, test.log, result.json, the stamp) and those same names
+caught mid-write (`<output>.tmp`, `<output>.<pid>.<random>.tmp`), and the suite's
+own `rtl_buddy.log` by path; a header generated into a test's `artifact_dir` by a
+preproc hook is still tracked. One exception: inside a dispatch build job,
+same-key configs adopt the first one's Verilator build when its consumed inputs
+are unchanged, even if a later `preproc` added an unrelated file to a listed
+directory; a new `-y` file or shadowing header still declines adoption, and a
+consumed input that differs fails the config with `build_job.group_input_drift`.
+Batch compile-input edits before
+an expensive build and use independent cheap suites while it runs.
+
+Reuse is reported, not silent: when an edit seems not to take effect or a PASS
+looks suspicious after one, read the `compile.build_reused` line (in the run's own log; on the console
+once per build directory) and the test's `compile.log` breadcrumb, which name the reused build directory and its
+stamp's age. `--rebuild` then forces a fresh compile; use it instead of deleting
+`artefacts/.shared-builds/`, and note that `--dispatch` implies `--share-build`,
+so dropping the flag there does not stop reuse. Read
+`rb --machine docs show known-issues` for the remaining limits.
+
+`shared-build-root` moves those builds to
+`<root>/<suite-relative-to-project>/obj_dir_<key>` so a cache survives a
+workspace wipe. `--shared-build-root` wins over `RTL_BUDDY_SHARED_BUILD_ROOT`,
+which wins over `cfg-rtl-reg: shared-build-root:`; a relative root anchors to
+the project root, and an empty flag or variable turns the cache off. It applies
+under `--dispatch` too, where the head forwards one resolved root to the build
+job and every sim job. There the key is checkout-relative and
+content-addressed — filelist entries and in-root compile-line inputs
+(`+incdir+`, `-y`, `-v`, bare sources, `-f`/`-F` lists expanded to what they
+name, and a path embedded in an option such as `-CFLAGS=-I<root>/inc`) alike,
+while a path-valued `+define+`/`-D`/`-G` stays verbatim and an unhashable input
+falls back to its stats: two checkouts with identical inputs reuse one
+directory, different inputs get their own, and enabling or disabling the root
+compiles once. Nothing prunes it —
+`find <root> -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf
+{} +`, between runs and never during one.

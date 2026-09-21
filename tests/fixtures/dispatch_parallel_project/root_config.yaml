@@ -1,0 +1,47 @@
+# CI dispatch integration fixture for the parallel build job (#495): the
+# dispatch_project builder, plus `compile: parallel: 2`. Its one suite has
+# TWO compile keys (beta carries a plusdefine alpha does not), so the build
+# job has two distinct builds to run at once — which dispatch_project, whose
+# tests share a key, deliberately does not.
+#
+# A separate fixture rather than a knob on dispatch_project: the shim e2e
+# there is a module-scoped single run that several assertions read, and
+# changing what that run does changes what all of them see.
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "fakevrl"
+    verible: "stub-verible"
+
+cfg-rtl-builder:
+  - name: "fakevrl"
+    builder: "verilator"          # basename starts with "verilator" -> simv path convention
+    simulator-family: "verilator" # engages share-build + enables time advice
+    builder-simv: "simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      reg:
+        compile-time: "--binary"
+        run-time: "+quiet"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/usr/bin"
+    extra_args: {}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+
+cfg-dispatch:
+  backend: slurm
+  resources:
+    cpus: 1
+    mem: 512M
+    time: "01:00:00"
+  compile:
+    # No cpus/mem/time of its own: the build job's reservation is the sim
+    # one scaled by `parallel`, which is exactly what this fixture asserts.
+    parallel: 2

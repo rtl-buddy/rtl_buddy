@@ -8,6 +8,7 @@ import re
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 
 def process_opts(opts):
@@ -39,23 +40,36 @@ class RtlBuilderConfig:
       name (str): Unique builder identifier.
       simulator_family (str | None): Simulator family identifier used for
         backend-specific behavior such as coverage processing.
-      exe (str): Name of the compiler executable (without location).
+      exe (str | list[str]): Name of the compiler executable, a path to
+        it, or a list of candidates in preference order (see
+        :mod:`rtl_buddy.config.toolpath`). ``~`` and ``$VAR`` are expanded.
       simv (str): Name of the executable file for simulation (on disc).
       sim_rand_seed (int): Random seed for the simulation.
       sim_rand_prefix (str): Simulator-specific prefix for the random seed.
       opts (dict[str, RtlBuilderConfigOpts]): Command-line options for the builder, keyed by mode.
       wave_format (str | None): Optional post-sim waveform handling for `rb
         wave`. ``fst-postproc`` converts a VCD dump to FST via ``vcd2fst``.
+      extra_sim_timeout (int | None): Seconds added to every test's
+        ``sim_timeout`` under this builder.
     """
 
     name: str
-    exe: str = field(rename="builder")
+    exe: str | list[str] = field(rename="builder")
     simv: str = field(rename="builder-simv")
     sim_rand_seed: int = field(rename="sim-rand-seed")
     sim_rand_prefix: str = field(rename="sim-rand-seed-prefix")
     opts: dict[str, RtlBuilderConfigOpts] = field(rename="builder-opts")
     simulator_family: str | None = field(rename="simulator-family", default=None)
     wave_format: str | None = field(rename="wave-format", default=None)
+    extra_sim_timeout: int | None = field(rename="extra-sim-timeout", default=None)
+    #: Directory relative ``builder:`` candidates are anchored at, set by
+    #: :meth:`set_base_dir`. Declared (``skip=True``: it is not a YAML key
+    #: and must never be serialised) rather than attached post hoc, so an
+    #: unanchored config reads its real default instead of a ``getattr``
+    #: fallback — a construction path that forgot the anchor would
+    #: otherwise existence-test relative candidates against the process
+    #: cwd and look exactly like "the tool is not installed" (#439 review).
+    _base_dir: str | None = field(default=None, skip=True)
 
     def get_name(self) -> str:
         """
@@ -65,6 +79,17 @@ class RtlBuilderConfig:
           name (str): The value of name.
         """
         return self.name
+
+    def set_base_dir(self, base_dir: str | None) -> None:
+        """Anchor relative ``builder:`` candidates at ``base_dir``.
+
+        Set by :class:`~rtl_buddy.config.root.RootConfig` to the directory
+        holding ``root_config.yaml``, so a relative candidate is
+        existence-tested there rather than against the process cwd — `rb`
+        is routinely invoked from a suite directory (#439). A config built
+        outside RootConfig (tests) simply has no anchor.
+        """
+        self._base_dir = base_dir
 
     def get_simulator_family(self) -> str:
         """
@@ -76,7 +101,7 @@ class RtlBuilderConfig:
         if self.simulator_family is not None:
             return self.simulator_family
 
-        exe_base = self.exe.split()[0].split("/")[-1].lower()
+        exe_base = self.get_exe().split()[0].split("/")[-1].lower()
         if exe_base.startswith("verilator"):
             return "verilator"
         if exe_base.startswith("vcs"):
@@ -94,14 +119,60 @@ class RtlBuilderConfig:
         """
         return self.wave_format
 
-    def get_exe(self) -> str:
+    def get_extra_sim_timeout(self) -> int:
         """
-        Retrieves the value of exe.
+        Seconds this builder adds to every test's simulation timeout.
+
+        For builders that queue for a license seat, or are otherwise slower
+        than the per-test ``sim_timeout`` assumes, without making that
+        allowance apply to builders that do not need it: a tight timeout is
+        worth keeping wherever nothing legitimately blocks, so a hung test
+        still fails fast there.
 
         Returns:
-          exe (str): The value of exe.
+          seconds (int): Extra seconds, 0 when unset.
+        Raises:
+          FatalRtlBuddyError: The configured value is negative.
         """
-        return self.exe
+        if self.extra_sim_timeout is None:
+            return 0
+        # Rejected rather than clamped: a negative value would *shrink* every
+        # test's timeout, and one below -sim_timeout reaches the process wait
+        # as a negative timeout, i.e. an instant timeout verdict on a sim that
+        # never ran. Silently clamping that to 0 would hide a config typo.
+        if self.extra_sim_timeout < 0:
+            log_event(
+                logger,
+                logging.ERROR,
+                "builder.extra_sim_timeout_negative",
+                builder=self.name,
+                seconds=self.extra_sim_timeout,
+            )
+            raise FatalRtlBuddyError(
+                f'Builder "{self.name}" has a negative extra-sim-timeout '
+                f"({self.extra_sim_timeout}); it must be >= 0"
+            )
+        return self.extra_sim_timeout
+
+    def get_exe(self) -> str:
+        """
+        Retrieves the value of exe, with ``~`` / ``$VAR`` expanded.
+
+        ``builder:`` may be a single value or a list of candidates in
+        preference order; the first that expands cleanly and exists wins,
+        with a trailing bare name left for ``PATH``. See
+        :mod:`rtl_buddy.config.toolpath`.
+
+        Returns:
+          exe (str): The effective compiler executable.
+        """
+        return resolve_tool_path(
+            self.exe,
+            base_dir=self._base_dir,
+            block="cfg-rtl-builder",
+            name=self.name,
+            field="builder",
+        )
 
     def get_simv(self) -> str:
         """

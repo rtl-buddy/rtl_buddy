@@ -14,6 +14,7 @@ from typing import Iterator
 import pytest
 
 from rtl_buddy import tool_manifest as tm
+from rtl_buddy.errors import FatalRtlBuddyError
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +39,54 @@ def test_version_satisfies():
     assert tm._version_satisfies("v0.0-3600", "v0.0-3724") is False
     # Non-digit minimum → bail out as satisfied (we can't compare).
     assert tm._version_satisfies("1.0", "anything") is True
+
+
+def test_version_below():
+    assert tm._version_below("99", None) is True
+    assert tm._version_below(None, "12") is True
+    assert tm._version_below("11.9.1", "12") is True
+    assert tm._version_below("12", "12") is False
+    assert tm._version_below("12.0.0", "12") is False
+    assert tm._version_below("13.1", "12") is False
+    assert tm._version_below("1.0", "anything") is True
+
+
+def test_check_tool_reports_unsupported_above_maximum(monkeypatch):
+    spec = tm.resolve_spec(tm.get_manifest(), "pyslang")
+    assert spec is not None
+    assert spec.minimum_version == "10.0.0"
+    assert spec.maximum_version_exclusive == "12"
+
+    def fake_version(package: str) -> str:
+        return fake_version.value
+
+    monkeypatch.setattr(tm.importlib_metadata, "version", fake_version)
+    for value, expected in (
+        ("9.9", "outdated"),
+        ("10.0.0", "ok"),
+        ("11.3.0", "ok"),
+        ("12.0.0", "unsupported"),
+        ("13.0", "unsupported"),
+    ):
+        fake_version.value = value
+        status = tm.check_tool(spec)
+        assert status.status == expected, value
+        assert status.maximum_version_exclusive == "12"
+
+    fake_version.value = "12.0.0"
+    with pytest.raises(FatalRtlBuddyError, match="not supported"):
+        tm.require("pyslang", None)
+    statuses = [tm.check_tool(spec)]
+    readiness = tm.subcommand_readiness(statuses, [spec])
+    assert readiness["elab"]["status"] == "unsupported"
+    assert readiness["elab"]["unsupported"] == ["pyslang"]
+    assert (
+        tm.compute_exit_code(statuses, required_for="elab", subcommands=readiness) == 2
+    )
+    assert "(need < 12)" in tm.render_text(statuses, readiness)
+    payload = tm.build_json_payload(statuses, readiness)
+    assert payload["tools"]["pyslang"]["maximum_version_exclusive"] == "12"
+    assert payload["subcommands"]["elab"]["unsupported"] == ["pyslang"]
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +216,84 @@ def test_python_sibling_detector_returns_both_version_and_path(fake_bin: Path):
     # kind is "path" when the binary is on PATH (so the table shows the
     # absolute path instead of "(python)").
     assert result.kind == "path"
+
+
+def test_python_sibling_detector_falls_back_to_a_legacy_dist_name():
+    """A renamed dist is found under its old name too, current first.
+
+    The viewer's distribution was renamed rtl-buddy-view ->
+    rtl-buddy-sch (rtl-buddy-sch#157); the detector must read whichever
+    is installed, and prefer the current name when both are.
+    """
+    spec = tm.ToolSpec(
+        name="fake",
+        binaries=("nonexistent-cmd-zzz",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(
+            tm.PythonSiblingDetector(
+                "nonexistent-package-zzz", legacy_packages=("pytest",)
+            ),
+        ),
+    )
+    result = tm.detect_tool(spec)
+    # Current name is absent; the legacy name carries the version.
+    assert result.found is True
+    assert result.version
+    assert result.kind == "python"
+
+    # Both present: the current name wins, so a stale frozen dist left
+    # behind by an upgrade cannot mask the installed one.
+    current_first = tm.ToolSpec(
+        name="fake",
+        binaries=("nonexistent-cmd-zzz",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(tm.PythonSiblingDetector("pytest", legacy_packages=("coverage",)),),
+    )
+    import importlib.metadata as md
+
+    assert tm.detect_tool(current_first).version == md.version("pytest")
+
+
+def test_legacy_dist_metadata_yields_to_the_executable_probe(fake_bin: Path):
+    """A legacy-name version is dropped when the binary is on PATH.
+
+    `uv tool install rtl-buddy-sch` — what the docs now recommend — puts
+    the current dist in an isolated env, so a project venv that still
+    holds the abandoned wheel would otherwise report that frozen version
+    for a demonstrably newer binary. Leaving `version=None` sends
+    `check_tool` to `probe_version()`, which asks the executable.
+    """
+    _make_exe(fake_bin / "stub-tool", body="#!/bin/sh\necho 'stub-tool 9.9.9'\n")
+    spec = tm.ToolSpec(
+        name="fake",
+        binaries=("stub-tool",),
+        version_cmd=("stub-tool", "--version"),
+        version_regex=r"stub-tool\s+([\d.]+)",
+        minimum_version=None,
+        detection=(
+            tm.PythonSiblingDetector(
+                "nonexistent-package-zzz", legacy_packages=("pytest",)
+            ),
+        ),
+    )
+    detected = tm.detect_tool(spec)
+    assert detected.found is True
+    assert detected.kind == "path"
+    assert detected.version is None
+    assert tm.check_tool(spec, probe_versions=True, cache={}).version == "9.9.9"
+
+    # The current name is authoritative and keeps its metadata version:
+    # there the dist and the binary it installed cannot disagree.
+    current = tm._replace(
+        spec, detection=(tm.PythonSiblingDetector("pytest"),), version_cmd=None
+    )
+    import importlib.metadata as md
+
+    assert tm.detect_tool(current).version == md.version("pytest")
 
 
 def test_python_sibling_detector_misses_when_neither_present(tmp_path: Path):
@@ -465,6 +592,104 @@ def test_icarus_simulator_declared():
     assert icarus.used_by == ("test", "randtest", "regression")
 
 
+def test_slurm_gates_test_as_well_as_regression():
+    """`rb test --dispatch slurm` needs the client too (#440).
+
+    `--required-for test` and `--explain slurm` are the gate the bundled
+    SKILL.md tells agents to check before dispatching, so `used_by` has
+    to name every command that can dispatch.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+
+    slurm = by_name["slurm"]
+    assert slurm.optional  # the default --dispatch local needs nothing
+    assert set(slurm.used_by) == {
+        "regression",
+        "randtest",
+        "test",
+        "elab",
+        "elab-regression",
+    }
+    assert "rb test --dispatch slurm" in slurm.notes
+
+
+def test_slurm_explains_scontrol_as_an_optional_probe():
+    """`rb tool-check --explain slurm` must name scontrol and what it buys.
+
+    The backend shells out to `scontrol show config` for the cluster's
+    MaxArraySize (#509), and the build job to `scontrol update … Dependency=`
+    for per-key release (#548). Missing scontrol is not a gate — chunking
+    simply stays off and simulations wait for the whole build job — but a
+    site that hits `Invalid job array specification`, or wonders why no key
+    is released, needs the manifest to say so and to name the config
+    fallback, since --explain is what the bundled skill tells agents to read.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    slurm = by_name["slurm"]
+
+    # NOT in `binaries`: that tuple is any-of and feeds the version probe.
+    assert "scontrol" not in slurm.binaries
+    assert "scontrol" in slurm.optional_binaries
+
+    text = tm.explain(slurm)
+    assert "scontrol" in text
+    assert "MaxArraySize" in text
+    assert "cfg-dispatch.max-array-size" in text
+    # BOTH ceilings, because scontrol is the only source of either and they
+    # are configured separately: a cluster whose SchedulerParameters=
+    # max_array_tasks is the lower one still refuses the group after
+    # max-array-size is pinned to the real MaxArraySize (#527).
+    assert "max_array_tasks" in text
+    assert "cfg-dispatch.max-array-tasks" in text
+    # ...and its second role (#548), including the half a submit-host check
+    # cannot answer: the release is issued from the compute node running the
+    # build job, so scontrol has to be on THAT PATH.
+    assert "Dependency=" in text
+    assert "compute node" in text
+    # Still optional overall: sbatch is the version probe and the gate.
+    assert slurm.version_cmd[0] == "sbatch"
+    assert slurm.optional
+
+
+def test_an_optional_binary_alone_does_not_make_a_tool_present(monkeypatch, tmp_path):
+    """A host with `scontrol` but no `sbatch` cannot dispatch (#509 review).
+
+    Detection is any-of over `binaries` and `probe_version` substitutes the
+    found path into `version_cmd`, so listing the auxiliary binary there
+    would report `ok` — and run `scontrol --version` to say so — on a host
+    that cannot submit a single job.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _make_exe(bindir / "scontrol")
+    monkeypatch.setenv("PATH", str(bindir))
+
+    by_name = {s.name: s for s in tm.get_manifest()}
+    status = tm.check_tool(by_name["slurm"])
+    assert status.status == "missing"
+    assert status.path is None
+
+    # ...while the real client on the same PATH is found as usual.
+    _make_exe(bindir / "sbatch")
+    assert tm.check_tool(by_name["slurm"], probe_versions=False).status == "ok"
+
+
+def test_optional_binaries_are_listed_with_their_role_not_as_status():
+    """--explain must not let an optional binary read as the tool's status."""
+    spec = tm.ToolSpec(
+        name="stub",
+        binaries=("stub-tool",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(tm.PathDetector(),),
+        optional_binaries={"stub-extra": "buys the extra thing"},
+    )
+    text = tm.explain(spec)
+    assert "stub-extra: buys the extra thing" in text
+    assert "not required" in text
+
+
 def test_rtl_buddy_view_declares_floor_and_version_probe():
     """rtl-buddy-view carries a 0.3.0 FLOOR (no upper cap) and a probe.
 
@@ -483,6 +708,189 @@ def test_rtl_buddy_view_declares_floor_and_version_probe():
     # The tagless hatch-vcs dev build still resolves to its base version.
     m = re.search(spec.version_regex, "rtl-buddy-view 0.2.2.dev0+g0f37a432d")
     assert m is not None and m.group(1) == "0.2.2"
+
+
+def test_rtl_buddy_view_spec_probes_both_distribution_names():
+    """Executable contracts unchanged; dist metadata read under both names.
+
+    The PyPI distribution was renamed rtl-buddy-view -> rtl-buddy-sch at
+    0.7.0 (rtl-buddy-sch#157). The tool key, the binary, the version
+    command and its output literal are unchanged contracts — only the
+    metadata lookup and the install hint move.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["rtl-buddy-view"]
+    assert spec.binaries == ("rtl-buddy-view",)
+    assert spec.version_cmd == ("rtl-buddy-view", "--version")
+
+    detector = spec.detection[0]
+    assert isinstance(detector, tm.PythonSiblingDetector)
+    assert detector.package == "rtl-buddy-sch"
+    assert "rtl-buddy-view" in detector.legacy_packages
+    assert tm.VIEWER_DIST_NAMES == ("rtl-buddy-sch", "rtl-buddy-view")
+
+    # `rb tool-check --explain` must send people to the dist that still
+    # gets releases, not the one frozen at 0.5.0.
+    assert "rtl-buddy-sch" in spec.install_hint["any"]
+
+
+def _alias_spec(name: str, aliases: tuple[str, ...] = ()) -> tm.ToolSpec:
+    """Minimal spec for exercising name/alias lookup and collisions."""
+    return tm.ToolSpec(
+        name=name,
+        binaries=(name,),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(),
+        aliases=aliases,
+    )
+
+
+def test_viewer_spec_aliases_its_current_dist_name():
+    """`rtl-buddy-sch` is the string users type; the spec answers to it.
+
+    The dist renamed at 0.7.0 and our own install hint names it, so the
+    lookup has to accept it — while `name` stays `rtl-buddy-view`, the
+    frozen executable / probe-literal / wire-origin contract
+    (rtl_buddy#445).
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    assert by_name["rtl-buddy-view"].aliases == ("rtl-buddy-sch",)
+    assert "rtl-buddy-sch" not in by_name
+
+
+def test_resolve_spec_matches_name_then_alias():
+    specs = tm.get_manifest()
+    canonical = tm.resolve_spec(specs, "rtl-buddy-view")
+    aliased = tm.resolve_spec(specs, "rtl-buddy-sch")
+    assert canonical is not None
+    # Same spec object, and the identity it reports is the canonical one.
+    assert aliased is canonical
+    assert aliased.name == "rtl-buddy-view"
+    assert tm.resolve_spec(specs, "does-not-exist") is None
+
+
+def test_resolve_spec_prefers_a_canonical_name_over_an_alias():
+    """A name always outranks another spec's alias for the same string.
+
+    The manifest assert forbids that overlap, but resolve_spec is a
+    public helper — callers passing their own list get the deterministic
+    answer rather than list order.
+    """
+    specs = [_alias_spec("beta", aliases=("alpha",)), _alias_spec("alpha")]
+    assert tm.resolve_spec(specs, "alpha").name == "alpha"
+
+
+def test_known_tool_names_annotates_aliases():
+    rendered = tm.known_tool_names(tm.get_manifest())
+    assert "rtl-buddy-view (alias: rtl-buddy-sch)" in rendered
+    # Tools without aliases stay bare.
+    assert "verible" in rendered
+    assert tm.known_tool_names([_alias_spec("x", aliases=("y", "z"))]) == [
+        "x (aliases: y, z)"
+    ]
+
+
+def test_manifest_build_rejects_an_alias_colliding_with_a_name(monkeypatch):
+    """A shadowed lookup key is a manifest bug, caught at build time."""
+    monkeypatch.setattr(
+        tm,
+        "_builtin_manifest",
+        lambda: [_alias_spec("alpha"), _alias_spec("beta", aliases=("alpha",))],
+    )
+    with pytest.raises(AssertionError, match="duplicate lookup key 'alpha'"):
+        tm.get_manifest()
+
+
+def test_manifest_build_rejects_two_specs_sharing_an_alias(monkeypatch):
+    monkeypatch.setattr(
+        tm,
+        "_builtin_manifest",
+        lambda: [
+            _alias_spec("alpha", aliases=("shared",)),
+            _alias_spec("beta", aliases=("shared",)),
+        ],
+    )
+    with pytest.raises(AssertionError, match="duplicate lookup key 'shared'"):
+        tm.get_manifest()
+
+
+def test_manifest_build_rejects_a_duplicate_name_even_with_a_root_cfg(monkeypatch):
+    """Reconciliation must not dedupe the collision away before the check.
+
+    `_reconcile_with_root_cfg` rebuilds the list through ``{s.name: s}``,
+    which silently collapses a duplicate name — so with a
+    ``root_config.yaml`` present a post-reconcile assert could only ever
+    catch the alias shapes (#445 review).
+    """
+    monkeypatch.setattr(
+        tm,
+        "_builtin_manifest",
+        lambda: [_alias_spec("alpha"), _alias_spec("alpha")],
+    )
+    with pytest.raises(AssertionError, match="duplicate lookup key 'alpha'"):
+        tm.get_manifest(root_cfg=object())
+
+
+def test_builtin_manifest_lookup_keys_are_unique():
+    """The shipped manifest itself satisfies the invariant."""
+    specs = tm.get_manifest()
+    keys = [s.name for s in specs] + [a for s in specs for a in s.aliases]
+    assert len(keys) == len(set(keys))
+
+
+def test_require_resolves_the_alias_and_reports_the_canonical_name():
+    """`require("rtl-buddy-sch")` must never be the unknown-tool path.
+
+    Whether the viewer is installed here decides which branch runs; both
+    have to name `rtl-buddy-view`, since that is what the user must
+    `--explain` and what --machine consumers are keyed on.
+    """
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    try:
+        status = tm.require("rtl-buddy-sch")
+    except FatalRtlBuddyError as exc:
+        message = str(exc)
+        assert "unknown tool" not in message
+        assert "rtl-buddy-view" in message
+        assert "rtl-buddy-sch" not in message
+    else:
+        assert status.name == "rtl-buddy-view"
+
+
+def test_require_still_rejects_an_unknown_name():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    with pytest.raises(FatalRtlBuddyError, match="unknown tool 'does-not-exist'"):
+        tm.require("does-not-exist")
+
+
+def test_viewer_dist_version_probes_new_name_then_old(monkeypatch):
+    """Probe order: rtl-buddy-sch, then rtl-buddy-view, then None."""
+    installed: dict[str, str] = {}
+    real_version = tm.importlib_metadata.version
+
+    # The patch lands on the stdlib module object, so only the viewer's
+    # own names are answered from the fixture; everything else defers to
+    # the real lookup and stays usable inside the patched window.
+    def _version(name: str) -> str:
+        if name in installed:
+            return installed[name]
+        if name in tm.VIEWER_DIST_NAMES:
+            raise tm.importlib_metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(tm.importlib_metadata, "version", _version)
+
+    assert tm.viewer_dist_version() is None
+
+    installed["rtl-buddy-view"] = "0.5.0"
+    assert tm.viewer_dist_version() == ("rtl-buddy-view", "0.5.0")
+
+    installed["rtl-buddy-sch"] = "0.7.0"
+    assert tm.viewer_dist_version() == ("rtl-buddy-sch", "0.7.0")
 
 
 def test_rtl_buddy_view_outdated_below_floor(fake_bin: Path):
@@ -718,6 +1126,91 @@ def test_cli_tool_check_explain_unknown_exits_1(tmp_path: Path):
     assert result.returncode == 1
 
 
+def test_cli_tool_check_explain_accepts_the_viewer_alias(tmp_path: Path):
+    """--explain rtl-buddy-sch resolves, and answers as rtl-buddy-view."""
+    result = _run_rb(
+        "tool-check", "--explain", "rtl-buddy-sch", "--no-probe-versions", cwd=tmp_path
+    )
+    assert result.returncode == 0
+    assert "unknown tool" not in result.stderr
+    assert result.stdout.startswith("rtl-buddy-view")
+
+
+def test_cli_tool_check_machine_explain_alias_keeps_canonical_name(tmp_path: Path):
+    """The alias is an input courtesy — the JSON key must not drift."""
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "rtl-buddy-sch",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)["payload"]
+    assert list(payload["tools"]) == ["rtl-buddy-view"]
+    assert "rtl-buddy-sch" not in payload["tools"]
+
+
+def test_cli_machine_tool_check_keeps_optional_binaries_out_of_the_payload(
+    tmp_path: Path,
+):
+    """Optional binaries are documentation, not a state to gate on (#509).
+
+    They appear in the human explanation — which `--machine` mirrors in
+    `instructions` — and nowhere in the structured `tools` entry, so no
+    consumer can build a readiness check on one.
+    """
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "slurm",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)["payload"]
+    entry = payload["tools"]["slurm"]
+    assert set(entry) <= {"status", "version", "path", "optional", "minimum_version"}
+    assert "scontrol" not in json.dumps(payload["tools"])
+    assert "scontrol" in payload["instructions"]
+
+
+def test_cli_tool_check_explain_unknown_hint_surfaces_aliases(tmp_path: Path):
+    """The rejection tells the user which spellings exist."""
+    result = _run_rb(
+        "tool-check", "--explain", "does-not-exist", "--no-probe-versions", cwd=tmp_path
+    )
+    assert result.returncode == 1
+    # The console word-wraps the hint, so compare on collapsed whitespace.
+    hint = " ".join(result.stderr.split())
+    assert "rtl-buddy-view (alias: rtl-buddy-sch)" in hint
+
+
+def test_cli_tool_check_machine_explain_unknown_carries_aliases(tmp_path: Path):
+    """The --machine rejection is discoverable too, without moving `known`.
+
+    An agent that guessed `rtl-buddy-sch` hits this envelope, so the
+    mapping has to be in it — as an additive sibling, because `known`
+    stays bare canonical names that consumers are keyed on
+    (rtl_buddy#445 review).
+    """
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "does-not-exist",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)["payload"]
+    assert "rtl-buddy-view" in payload["known"]
+    assert "rtl-buddy-sch" not in payload["known"]
+    assert payload["aliases"]["rtl-buddy-view"] == ["rtl-buddy-sch"]
+
+
 def test_cli_tool_check_required_for_present(tmp_path: Path):
     # `tool-check` itself has no deps in the manifest; pick a sub that
     # depends only on a tool we are confident is installed (pytest is
@@ -778,3 +1271,278 @@ def test_cli_tool_check_default_exit_is_0(tmp_path: Path):
     """Default behavior: no --strict, no --required-for → exit 0 always."""
     result = _run_rb("tool-check", "--no-probe-versions", cwd=tmp_path)
     assert result.returncode == 0
+
+
+def test_graph_extract_spec_is_optional_with_anchored_regex():
+    """The bundled binding-tier extractor (rtl_buddy#391): optional=True
+    with used_by graph — its absence must not fail `rb tool-check
+    --required-for graph` (the design promise: the binding tier is
+    skipped and the build still succeeds). Version-regex discipline:
+    odd formats yield NO version, never a wrong one."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["rtl-buddy-graph-extract"]
+    assert spec.optional
+    assert "graph" in spec.used_by
+    assert spec.binaries == ("rb-graph-extract",)
+    assert any(
+        isinstance(d, tm.PythonPackageDetector)
+        and d.package == "rtl-buddy-graph-extract"
+        for d in spec.detection
+    )
+    m = re.search(spec.version_regex, "rb-graph-extract 0.1.0")
+    assert m is not None and m.group(1) == "0.1.0"
+    # Editable/git installs report PEP 440 dev+local versions; the full
+    # string must land in the fingerprint, not a truncated prefix.
+    m = re.search(spec.version_regex, "rb-graph-extract 0.1.dev1+g0d74f48e0")
+    assert m is not None and m.group(1) == "0.1.dev1+g0d74f48e0"
+    assert re.search(spec.version_regex, "rb-graph-extract (python 3.12) 0.2.0") is None
+    # The floor mirrors the graph-extract extra's `>= 0.1.0` for installs
+    # that bypass pip's resolver — and a dev build of 0.1 must satisfy it
+    # (the digit-tuple comparator extends past the floor), or an editable
+    # checkout would probe as "outdated".
+    assert spec.minimum_version == "0.1.0"
+    assert tm._version_satisfies("0.1.dev1+g0d74f48e0", spec.minimum_version)
+
+
+def test_rtl_buddy_view_is_required_for_graph():
+    """The design tier's exporter is a hard requirement of the graph
+    flow: used_by must carry graph so --required-for graph enforces it."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    assert "graph" in by_name["rtl-buddy-view"].used_by
+
+
+def test_mcp_sdk_detects_via_python_package_with_floor():
+    """The mcp SDK is a library: no binaries contract, PythonPackage
+    detection only, and the documented 1.2.0 floor."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["mcp"]
+    assert spec.optional
+    assert spec.binaries == ()
+    assert spec.minimum_version == "1.2.0"
+    assert len(spec.detection) == 1
+    assert isinstance(spec.detection[0], tm.PythonPackageDetector)
+    assert "mcp" in spec.used_by
+
+
+# ---------------------------------------------------------------------------
+# Manifest reconciliation — cfg-platforms tool routing (#439)
+
+
+_SURFER_ROUTING_BLOCKS = """
+cfg-surfer:
+  - name: "surfer-default"
+    path: "surfer"
+  - name: "surfer-shared"
+    path: "{shared_surfer}"
+
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+  - name: "yosys-shared"
+    tool: "{shared_yosys}"
+"""
+
+
+def _write_routed_root_config(target: Path, shared_dir: Path, routing: str) -> None:
+    """A root config whose platform routes surfer/synth-tools at ``shared_dir``."""
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    for binary in ("surfer", "yosys"):
+        exe = shared_dir / binary
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+    _write_minimal_root_config(
+        target,
+        extra=_SURFER_ROUTING_BLOCKS.format(
+            shared_surfer=shared_dir / "surfer", shared_yosys=shared_dir / "yosys"
+        ),
+    )
+    text = (target / "root_config.yaml").read_text()
+    text = text.replace(
+        '    verible: "stub-verible"\n', '    verible: "stub-verible"\n' + routing
+    )
+    (target / "root_config.yaml").write_text(text)
+
+
+def test_routed_surfer_entry_pins_the_detector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`_reconcile_with_root_cfg` follows the platform, not "surfer-default"."""
+    shared = tmp_path / "shared" / "bin"
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-shared"\n')
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    rc = RootConfig(name="routed")
+    by_name = {s.name: s for s in tm.get_manifest(rc)}
+    detectors = by_name["surfer"].detection
+    assert isinstance(detectors[0], tm.AbsolutePathDetector)
+    assert detectors[0].abs_path == str(shared / "surfer")
+
+
+def test_routing_a_tools_block_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`cfg-*-tools` is not routable, and saying so beats doing nothing.
+
+    tool-check must report the binary the run uses. A routed `*-tools`
+    entry could only ever change tool-check, because every flow yaml
+    names its own `tool:` — so routing one would make the report *dis*agree
+    with the run. The supported pin is a candidate list in the entry, which
+    both sides read (#439).
+    """
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    shared = tmp_path / "shared" / "bin"
+    _write_routed_root_config(tmp_path, shared, '    synth-tools: "yosys-shared"\n')
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    with pytest.raises(FatalRtlBuddyError, match="cannot be routed per platform"):
+        RootConfig(name="routed")
+
+
+def test_unrouted_surfer_keeps_the_default_entrys_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No routing keys → the pre-#439 chain, unchanged.
+
+    Asserted against the routable block. `cfg-*-tools` never contributed
+    a detector in the first place, routed or not, so asserting on `yosys`
+    here would pass whatever routing did.
+    """
+    shared = tmp_path / "shared" / "bin"
+    _write_routed_root_config(tmp_path, shared, "")
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    rc = RootConfig(name="unrouted")
+    unrouted = {s.name: s for s in tm.get_manifest(rc)}["surfer"]
+
+    # Routing absent must be exactly routing to `surfer-default`, which is
+    # the entry the unrouted accessor falls back to. Compared against the
+    # explicit form rather than against a fixed shape, because what
+    # `surfer-default` (a bare name) resolves to depends on the host's PATH.
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-default"\n')
+    routed_to_default = {s.name: s for s in tm.get_manifest(RootConfig(name="routed"))}[
+        "surfer"
+    ]
+
+    assert unrouted.detection == routed_to_default.detection
+    # …and not the routed-elsewhere chain, or the comparison proves nothing.
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-shared"\n')
+    routed_elsewhere = {s.name: s for s in tm.get_manifest(RootConfig(name="shared"))}[
+        "surfer"
+    ]
+    assert routed_elsewhere.detection != unrouted.detection
+    assert routed_elsewhere.detection[0].abs_path == str(shared / "surfer")
+
+
+def test_root_cfg_tools_min_version_honours_active_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _write_minimal_root_config(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    rc = RootConfig(name="pins")
+    by_name = {s.name: s for s in tm.get_manifest(rc)}
+    assert by_name["verilator"].minimum_version == "5.050"
+
+
+# ---------------------------------------------------------------------------
+# Per-subcommand minimum versions (rtl_buddy#550)
+
+
+def _viewer_status(version: str | None) -> tuple[tm.ToolSpec, tm.ToolStatus]:
+    spec = tm.resolve_spec(tm.get_manifest(), "rtl-buddy-view")
+    assert spec is not None
+    status = tm.ToolStatus(
+        name=spec.name,
+        status="ok",
+        version=version,
+        path="/usr/bin/rtl-buddy-view",
+        optional=spec.optional,
+        minimum_version=spec.minimum_version,
+        kind="path",
+        used_by=spec.used_by,
+        subcommand_minimum_versions=dict(spec.subcommand_minimum_versions),
+    )
+    return spec, status
+
+
+def test_viewer_graph_floor_is_the_one_graph_build_enforces():
+    from rtl_buddy.graph import build as graph_build
+
+    spec, _ = _viewer_status("0.3.0")
+    floor = spec.subcommand_minimum_versions["graph"]
+    assert floor == graph_build.VIEW_GRAPH_MIN_VERSION
+    # The contract the issue asked for: whatever tool-check accepts for
+    # `graph`, graph build accepts too, and vice versa.
+    assert graph_build.check_view_supports_graph(floor) is None
+    assert graph_build.check_view_supports_graph("0.3.0") is not None
+
+
+def test_viewer_below_graph_floor_is_outdated_for_graph_only():
+    spec, status = _viewer_status("0.3.0")
+    readiness = tm.subcommand_readiness([status], [spec])
+    assert readiness["graph"]["status"] == "outdated"
+    assert readiness["graph"]["outdated"] == ["rtl-buddy-view"]
+    assert readiness["graph"]["minimum_versions"] == {"rtl-buddy-view": "0.4.0"}
+    for sub in ("hier", "hier-query", "hub"):
+        assert readiness[sub]["status"] == "ok"
+        assert readiness[sub]["minimum_versions"] == {}
+
+
+@pytest.mark.parametrize("version", ["0.4.0", "0.4", "0.10.1", None])
+def test_viewer_at_or_above_graph_floor_is_ready(version):
+    spec, status = _viewer_status(version)
+    readiness = tm.subcommand_readiness([status], [spec])
+    assert readiness["graph"]["status"] == "ok"
+
+
+def test_graph_floor_reaches_the_json_payload_text_and_explain():
+    spec, status = _viewer_status("0.3.0")
+    readiness = tm.subcommand_readiness([status], [spec])
+    payload = tm.build_json_payload([status], readiness)
+    tool = payload["tools"]["rtl-buddy-view"]
+    assert tool["status"] == "ok"
+    assert tool["minimum_version"] == "0.3.0"
+    assert tool["subcommand_minimum_versions"] == {"graph": "0.4.0"}
+    assert payload["subcommands"]["graph"]["status"] == "outdated"
+    assert payload["subcommands"]["graph"]["minimum_versions"] == {
+        "rtl-buddy-view": "0.4.0"
+    }
+    assert "minimum_versions" not in payload["subcommands"]["hier"]
+
+    text = tm.render_text([status], readiness)
+    assert "outdated: rtl-buddy-view (need ≥ 0.4.0)" in text
+
+    explained = tm.explain(spec, status)
+    assert "Minimum version for rb graph: 0.4.0" in explained
+    assert "too old" in explained
+    assert "too old" not in tm.explain(spec, _viewer_status("0.4.0")[1])
+
+
+def test_graph_floor_fails_required_for_graph():
+    spec, status = _viewer_status("0.3.0")
+    readiness = tm.subcommand_readiness([status], [spec])
+    assert (
+        tm.compute_exit_code([status], required_for="graph", subcommands=readiness) != 0
+    )
+    assert (
+        tm.compute_exit_code([status], required_for="hier", subcommands=readiness) == 0
+    )

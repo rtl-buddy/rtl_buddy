@@ -2,12 +2,14 @@
 config, suite/regression YAML loading, sby driver helpers. Mirrors the
 structure of ``test_cdc.py``."""
 
+import os
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import patch
 
 import pytest
 
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.config.fpv import (
     FpvConfig,
     FpvRegConfig,
@@ -298,6 +300,134 @@ def test_fpv_suite_config_constraints_resolved_relative_to_yaml(tmp_path):
     assert Path(verif.get_constraints()) == tmp_path / "shared_clock_reset.sv"
 
 
+# ---------------------------------------------------------------------------
+# covers: — spec coverage claims on formal runs (rtl-buddy/rtl_buddy#385)
+# ---------------------------------------------------------------------------
+
+_COVERS_SUITE_YAML = dedent("""\
+    rtl-buddy-filetype: fpv_config
+
+    verifications:
+      - name: "fpv_covered"
+        desc: "Bounded proof claiming a spec coverage item"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        top: "mod_a"
+        properties:
+          - "mod_a_props.sv"
+        mode: "bmc"
+        covers:
+          - "A-COV-1"
+          - "A-COV-2"
+      - name: "fpv_uncovered"
+        desc: "No coverage claims"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        top: "mod_a"
+        mode: "bmc"
+""")
+
+
+def _write_covers_project(tmp_path):
+    """A minimal project root with an fpv flow claiming coverage items."""
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "fpv.yaml").write_text(_COVERS_SUITE_YAML)
+    (tmp_path / "fpv_regression.yaml").write_text(
+        "rtl-buddy-filetype: fpv_reg_config\nfpv-configs:\n  - fpv.yaml\n"
+    )
+    return tmp_path
+
+
+def test_fpv_config_covers_defaults_to_none():
+    assert _make_fpv_cfg().covers is None
+
+
+def test_fpv_suite_config_parses_covers(tmp_path):
+    """`covers:` mirrors tests.yaml: same field name, same attribute, so
+    `build_coverage_map` reads a run exactly as it reads a test."""
+    _write_covers_project(tmp_path)
+    cfg = FpvSuiteConfig(str(tmp_path / "fpv.yaml"))
+    assert cfg.get_verifications("fpv_covered")[0].covers == ["A-COV-1", "A-COV-2"]
+    assert cfg.get_verifications("fpv_uncovered")[0].covers is None
+
+
+def test_discover_fpv_verifications_feeds_the_coverage_map(tmp_path):
+    from rtl_buddy.tools.spec_trace import (
+        build_coverage_map,
+        discover_fpv_verifications,
+    )
+
+    _write_covers_project(tmp_path)
+    entries, failures = discover_fpv_verifications(str(tmp_path))
+    assert failures == []
+    assert [(Path(p).name, v.get_name()) for p, v in entries] == [
+        ("fpv.yaml", "fpv_covered"),
+        ("fpv.yaml", "fpv_uncovered"),
+    ]
+    cov_map = build_coverage_map(entries)
+    assert {item: [name for _, name in hits] for item, hits in cov_map.items()} == {
+        "A-COV-1": ["fpv_covered"],
+        "A-COV-2": ["fpv_covered"],
+    }
+
+
+def test_discover_fpv_verifications_without_a_regression_is_empty(tmp_path):
+    from rtl_buddy.tools.spec_trace import discover_fpv_verifications
+
+    assert discover_fpv_verifications(str(tmp_path)) == ([], [])
+
+
+def test_discover_fpv_verifications_reports_a_broken_regression(tmp_path):
+    from rtl_buddy.tools.spec_trace import discover_fpv_verifications
+
+    (tmp_path / "fpv_regression.yaml").write_text(
+        "rtl-buddy-filetype: fpv_reg_config\nfpv-configs:\n  - missing/fpv.yaml\n"
+    )
+    entries, failures = discover_fpv_verifications(str(tmp_path))
+    assert entries == []
+    assert [Path(f).name for f in failures] == ["fpv_regression.yaml"]
+
+
+def test_spec_check_coverage_counts_an_fpv_run(tmp_path, monkeypatch):
+    """`rb spec check-coverage` sees formal `covers:` claims (#385)."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _write_covers_project(tmp_path)
+    spec_dir = tmp_path / "spec" / "mod_a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "specs.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: spec_config
+
+        blocks:
+          - name: "mod_a"
+            desc: "Block covered only by a formal run"
+            coverage-items:
+              - id: "A-COV-1"
+                desc: "Claimed by fpv_covered"
+              - id: "A-COV-3"
+                desc: "Claimed by nothing"
+    """)
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_fpv_check_coverage")
+    result = runner.invoke(rb.app, ["--machine", "spec", "check-coverage"])
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    items = {i["id"]: i for i in json.loads(lines[-1])["payload"]["items"]}
+    assert items["A-COV-1"]["covered"] is True
+    assert [t["test"] for t in items["A-COV-1"]["tests"]] == ["fpv_covered"]
+    assert items["A-COV-1"]["tests"][0]["path"].endswith("fpv.yaml")
+    assert items["A-COV-3"]["covered"] is False
+
+
 def test_fpv_suite_config_missing_name_raises(tmp_path):
     from rtl_buddy.errors import FatalRtlBuddyError
 
@@ -329,6 +459,40 @@ def test_fpv_suite_config_invalid_mode_raises(tmp_path):
     suite_yaml.write_text(bad_yaml)
     with pytest.raises(FatalRtlBuddyError, match="mode"):
         FpvSuiteConfig(str(suite_yaml))
+
+
+@pytest.mark.parametrize(
+    "scalar",
+    ['"../../etc/mod_a"', '"mod_a$cfg"', "'\\mod_a.top '", '"mod_a\\n"'],
+)
+def test_fpv_suite_config_rejects_a_top_that_is_not_a_simple_identifier(
+    tmp_path, scalar
+):
+    """A verification's own `top:` wins over the model's and is written into
+    the generated yosys / sby script, so it answers to the models.yaml rule.
+    """
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(
+        _SUITE_YAML.format(models_path="models.yaml").replace(
+            'top: "mod_a"', f"top: {scalar}", 1
+        )
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not a simple SystemVerilog"):
+        FpvSuiteConfig(str(suite_yaml))
+
+
+def test_the_invalid_fpv_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "fpv_config.invalid_top",
+        {"path": "fpv/mod_a/fpv.yaml", "name": "fpv_a", "top": "a/b"},
+    )
+    assert msg != "fpv config invalid_top"
+    assert "fpv/mod_a/fpv.yaml" in msg
+    assert "fpv_a" in msg
+    assert "a/b" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +559,7 @@ def test_sby_fpv_writes_sby_file_with_expected_sections(tmp_path):
         tool_cfg=tool_cfg,
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     sby_path = sby._write_sby_file(sources, incdirs)
 
     content = Path(sby_path).read_text()
@@ -443,7 +607,7 @@ def test_sby_fpv_writes_constraints_before_properties(tmp_path):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     sby_path = sby._write_sby_file(sources, incdirs)
     content = Path(sby_path).read_text()
 
@@ -488,7 +652,7 @@ def test_sby_fpv_constraints_optional_default_unchanged(tmp_path):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     content = Path(sby._write_sby_file(sources, incdirs)).read_text()
     # Exactly two read statements: design + props.
     assert content.count("read -sv -formal ") == 2
@@ -533,7 +697,7 @@ def test_sby_fpv_incdir_in_model_filelist_reaches_sby_as_include_dir(tmp_path):
         name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
     )
 
-    sources, incdirs = sby._parse_filelist(sby._write_filelist())
+    sources, incdirs, _defines = sby._parse_filelist(sby._write_filelist())
 
     # the include dir is captured as an incdir, NOT a (missing) source
     assert any(Path(d).resolve() == inc.resolve() for d in incdirs)
@@ -572,7 +736,7 @@ def _sby_for(tmp_path, *, properties, frontend="verilog"):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     return sby, sources, incdirs
 
 
@@ -665,7 +829,7 @@ def test_sby_fpv_parse_filelist_extracts_incdirs(tmp_path):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     assert sources == [str((tmp_path / "design.sv").resolve())] or sources == [
         str(tmp_path / "design.sv")
     ]
@@ -1229,6 +1393,28 @@ def test_apply_xfail_fail_becomes_xfail_and_passes():
         assert res.results["desc"].startswith("xfail (expected fail): ")
 
 
+def test_apply_xfail_does_not_excuse_a_proof_without_a_verdict():
+    """#594: sby reporting UNKNOWN / a solver timeout / an error is not a
+    disproof, so a marked verification is not covered by it."""
+    from rtl_buddy.runner.fpv_results import FpvFailResults
+    from rtl_buddy.runner.xfail import apply_xfail
+
+    for strict in (False, True):
+        res = FpvFailResults(
+            name="t",
+            mode="prove",
+            depth=20,
+            desc="sby reported TIMEOUT (see fpv.log)",
+            fail_stage="tool",
+        )
+        apply_xfail(res, strict=strict)
+        assert res.results["result"] == "FAIL"
+        assert res.is_pass() is False
+        assert res.results["desc"].startswith(
+            "xfail not applied (tool failure before a verdict): "
+        )
+
+
 def test_apply_xfail_nonstrict_xpass_still_passes():
     from rtl_buddy.runner.fpv_results import FpvPassResults
     from rtl_buddy.runner.xfail import apply_xfail
@@ -1261,3 +1447,458 @@ def test_apply_xfail_skip_passes_through_unchanged():
     apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True
+
+
+# ---------------------------------------------------------------------------
+# `+define+` in a model filelist (#305): a preprocessor define is an option,
+# not a source path. It must survive the VlogFilelist round-trip unresolved
+# and reach the generated script as a `-D` flag on whichever frontend runs.
+# ---------------------------------------------------------------------------
+
+
+def test_sby_fpv_parse_filelist_extracts_defines(tmp_path):
+    """`+define+NAME` / `+define+NAME=VALUE` / the multi `+define+A+B=C` form
+    become defines, never (missing) source files."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+VERILATOR\n+define+WIDTH=8\n+define+A+B=3\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["VERILATOR", "WIDTH=8", "A", "B=3"]
+    assert incdirs == []
+    # the design source is the only thing treated as a path
+    assert [Path(s).name for s in sources] == ["design.sv"]
+
+
+def test_sby_fpv_parse_filelist_drops_reserved_formal_define(tmp_path, caplog):
+    """rtl-buddy owns FORMAL: a filelist define for it is dropped with a
+    warning rather than silently changing what `ifdef FORMAL elaborates.
+    The two frontends do not even agree on which duplicate `-D` wins
+    (verilog keeps the last, yosys-slang the first), so the only safe
+    answer is to refuse the override."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+FORMAL=0\n+define+KEEP=1\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["KEEP=1"]
+    assert "FORMAL" in caplog.text and "cannot be overridden" in caplog.text
+
+
+def test_sby_fpv_parse_filelist_drops_a_define_it_cannot_express(tmp_path, caplog):
+    """A define value carrying whitespace has no honourable rendering.
+
+    Both renderers splice the token into a yosys *script* line, which yosys
+    tokenises on whitespace, so `+define+MSG=hello world` becomes
+    `-DMSG=hello` plus a stray `world` argument and the failure surfaces as
+    an unrelated read_slang error deep in `fpv.log`. Drop it where the
+    message can still name the entry — the same shape as the reserved-name
+    rule, and the outcome the FORMAL handling exists to avoid."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+MSG=hello world\n+define+KEEP=1\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["KEEP=1"]
+    assert "MSG=hello world" in caplog.text
+    assert "whitespace" in caplog.text
+
+
+def test_sby_fpv_parse_filelist_collapses_a_redefined_name_to_the_last(
+    tmp_path, caplog
+):
+    """Two definitions of one name is the reserved-name failure in a new
+    costume: yosys's verilog frontend keeps the LAST `-D` and yosys-slang
+    keeps the FIRST, so passing both through proves `WIDTH=16` on one
+    frontend and `WIDTH=8` on the other, silently. Easy to reach through a
+    `-F` chain pulling in two vendor filelists. Last wins — filelist
+    convention, and what the verilog frontend would have done anyway."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+WIDTH=8\n+define+KEEP=1\n+define+WIDTH=16\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    # One WIDTH, the last one, and it keeps the position of the first
+    # appearance so a duplicate-free filelist is byte-identical.
+    assert defines == ["WIDTH=16", "KEEP=1"]
+    assert "WIDTH" in caplog.text and "dropping" in caplog.text
+
+
+def test_sby_fpv_parse_filelist_is_quiet_about_an_identical_repeat(tmp_path, caplog):
+    """The same define twice with the same value changes nothing, so it is
+    deduped without a warning — a `-F` chain that includes one common
+    filelist twice is ordinary, not a mistake."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+WIDTH=8\n+define+WIDTH=8\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["WIDTH=8"]
+    assert "dropping" not in caplog.text
+
+
+def test_sby_fpv_define_in_model_filelist_survives_write_round_trip(tmp_path):
+    """Regression for #305: `+define+FOO` in models.yaml used to be resolved
+    as a file path by VlogFilelist and fail with "filelist source missing"
+    before _parse_filelist ever saw it."""
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "top.sv"
+    src.write_text("module top(); endmodule\n")
+    models = tmp_path / "models.yaml"
+    models.write_text("rtl-buddy-filetype: model_config\n")
+
+    model = ModelConfig(
+        name="top",
+        filelist=["+define+VERILATOR", "+define+WIDTH=8", "top.sv"],
+        path=str(models),
+    )
+    fpv_cfg = FpvConfig(
+        name="demo",
+        desc="t",
+        model=model,
+        tool="sby",
+        top="top",
+        properties=[],
+        constraints=None,
+        mode="bmc",
+        depth=20,
+        engines=["smtbmc yices"],
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    sby = SbyFpv(
+        name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+
+    sources, incdirs, defines = sby._parse_filelist(sby._write_filelist())
+
+    assert defines == ["VERILATOR", "WIDTH=8"]
+    assert [Path(s).name for s in sources] == ["top.sv"]
+    assert incdirs == []
+
+    # ... and reaches the verilog frontend as a yosys define directive.
+    content = Path(sby._write_sby_file(sources, incdirs, defines)).read_text()
+    assert "verilog_defaults -add -DVERILATOR" in content
+    assert "verilog_defaults -add -DWIDTH=8" in content
+
+
+# ---------------------------------------------------------------------------
+# `params:` — reduced-configuration proofs (#359)
+# ---------------------------------------------------------------------------
+
+
+_PARAMS_SUITE_YAML = dedent("""\
+    rtl-buddy-filetype: fpv_config
+
+    verifications:
+      - name: "mod_a_k8"
+        desc: "Reduced-configuration proof at K=8"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        top: "mod_a"
+        mode: "bmc"
+        depth: 24
+        params:
+          K: 8
+          WIDTH: "8'h20"
+          ENABLE: true
+""")
+
+
+def _write_params_suite(tmp_path, body=None):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(body or _PARAMS_SUITE_YAML)
+    return suite_yaml
+
+
+def test_fpv_params_default_is_empty():
+    assert _make_fpv_cfg().get_params() == {}
+    assert _make_fpv_cfg().get_param_tokens() == []
+
+
+def test_fpv_suite_config_loads_params(tmp_path):
+    cfg = FpvSuiteConfig(str(_write_params_suite(tmp_path)))
+    v = cfg.get_verifications("mod_a_k8")[0]
+    assert v.get_params() == {"K": 8, "WIDTH": "8'h20", "ENABLE": True}
+
+
+def test_fpv_param_tokens_render_scalars_for_yosys(tmp_path):
+    """int -> decimal, bool -> 1/0 (SystemVerilog has no bare `true`),
+    string -> verbatim expression text so a sized literal survives. Order
+    is declaration order so the generated script is stable."""
+    cfg = FpvSuiteConfig(str(_write_params_suite(tmp_path)))
+    v = cfg.get_verifications("mod_a_k8")[0]
+    assert v.get_param_tokens() == [
+        ("K", "8"),
+        ("WIDTH", "8'h20"),
+        ("ENABLE", "1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "params_block,match",
+    [
+        # non-scalar values: a parameter override is one token
+        ("params:\n      K: [1, 2]\n", "must be an integer"),
+        ("params:\n      K: {a: 1}\n", "must be an integer"),
+        ("params:\n      K: 1.5\n", "must be an integer"),
+        ("params:\n      K: null\n", "must be an integer"),
+        # not a map at all — pyserde rejects the shape before the
+        # validator sees it, so the suite load is what fails
+        ("params: 8\n", "failed to load"),
+        ("params:\n      - K\n", "failed to load"),
+        # a value yosys could not tokenise: it splits script lines on
+        # whitespace, and quotes inside a token are not grouping characters
+        ('params:\n      K: "8 + 1"\n', "may not contain"),
+        ('params:\n      K: ""\n', "empty"),
+        # `#` starts a yosys comment for the rest of the LINE, mid-line
+        # included, so a value carrying one silently swallows the source
+        # files that follow it on the read line.
+        ('params:\n      K: "4#"\n', "may not contain"),
+        # `;` does not separate commands in a script file — it reaches the
+        # frontend and dies as a syntax error inside the design source,
+        # with nothing pointing back at fpv.yaml.
+        ('params:\n      K: "4;stat"\n', "may not contain"),
+        # PyYAML is YAML 1.1: a bare `on:` key parses as the boolean True,
+        # which is not an identifier — caught here rather than emitted as
+        # `chparam -set True ...`
+        ("params:\n      on: 1\n", "identifier"),
+        ("params:\n      2FOO: 1\n", "identifier"),
+    ],
+)
+def test_fpv_params_rejected_shapes(tmp_path, params_block, match):
+    body = (
+        dedent("""\
+        rtl-buddy-filetype: fpv_config
+
+        verifications:
+          - name: "v"
+            desc: "d"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "sby"
+            top: "mod_a"
+            %s
+    """)
+        % params_block.replace("\n", "\n        ").rstrip()
+    )
+    with pytest.raises(FatalRtlBuddyError, match=match):
+        FpvSuiteConfig(str(_write_params_suite(tmp_path, body)))
+
+
+def test_fpv_validate_params_rejects_non_mapping():
+    """Reachable only from a hand-built FpvConfigFile — pyserde catches the
+    shape first when the value comes from YAML."""
+    from rtl_buddy.config.fpv import validate_params
+
+    with pytest.raises(FatalRtlBuddyError, match="must be a map"):
+        validate_params("v", ["K"])
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the generated script really elaborates the reduced
+# configuration. Runs yosys itself (no sby / no solver needed — the
+# question is whether the override reached elaboration), and is skipped
+# when yosys is not installed. The slang half additionally needs
+# RTL_BUDDY_SLANG_PLUGIN, the same env var the runner honours.
+# ---------------------------------------------------------------------------
+
+
+_PARAM_DUT = dedent("""\
+    module ctr #(parameter int K = 16) (
+      input  logic clk,
+      input  logic rst_n,
+      output logic [K-1:0] cnt
+    );
+      always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) cnt <= '0;
+        else if (cnt != {K{1'b1}}) cnt <= cnt + 1'b1;
+      `ifdef FORMAL
+      always @(posedge clk) assert property (cnt <= {K{1'b1}});
+      `endif
+    endmodule
+""")
+
+
+def _yosys_port_bits(sby_path, work_dir) -> int:
+    """Run the `[script]` section of a generated .sby through yosys and
+    return the top module's port-bit count."""
+    import re
+    import shutil
+    import subprocess
+
+    text = Path(sby_path).read_text()
+    script = text.split("[script]", 1)[1].split("[files]", 1)[0].strip()
+    # The sby script names sources by basename (sby stages them in its
+    # workdir); stage them the same way here.
+    for src in text.split("[files]", 1)[1].strip().splitlines():
+        if src.strip():
+            shutil.copy(src.strip(), Path(work_dir) / Path(src.strip()).name)
+    ys = Path(work_dir) / "run.ys"
+    ys.write_text(script + "\nstat\n")
+    res = subprocess.run(
+        ["yosys", "-s", str(ys)],
+        capture_output=True,
+        text=True,
+        cwd=str(work_dir),
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    m = re.search(r"^\s*(\d+)\s+port bits\s*$", res.stdout, re.MULTILINE)
+    assert m, res.stdout
+    return int(m.group(1))
+
+
+def _render_param_proof(tmp_path, frontend, params, plugin_path=None):
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    (tmp_path / "ctr.sv").write_text(_PARAM_DUT)
+    (tmp_path / "models.yaml").write_text("rtl-buddy-filetype: model_config\n")
+    model = ModelConfig(
+        name="ctr", filelist=["ctr.sv"], path=str(tmp_path / "models.yaml")
+    )
+    fpv_cfg = FpvConfig(
+        name="ctr_proof",
+        desc="t",
+        model=model,
+        tool="sby",
+        top="ctr",
+        properties=[],
+        constraints=None,
+        mode="bmc",
+        depth=8,
+        engines=["smtbmc yices"],
+        _reglvl=None,
+        tool_overrides=None,
+        frontend=frontend,
+        params=dict(params),
+    )
+    tool_cfg = FpvToolConfig(
+        FpvToolConfigFile(
+            name="sby",
+            tool="sby",
+            opts=FpvToolOptsFile(plugin_path=plugin_path),
+        )
+    )
+    suite_dir = tmp_path / frontend
+    suite_dir.mkdir()
+    sby = SbyFpv(
+        name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=tool_cfg, suite_dir=str(suite_dir)
+    )
+    sources, incdirs, defines = sby._parse_filelist(sby._write_filelist())
+    return sby._write_sby_file(sources, incdirs, defines)
+
+
+def _yosys_missing():
+    import shutil
+
+    return shutil.which("yosys") is None
+
+
+@pytest.mark.skipif(_yosys_missing(), reason="yosys not installed")
+def test_params_reduce_elaboration_verilog_frontend(tmp_path):
+    """`chparam` in the generated script must actually shrink the design:
+    clk + rst_n + cnt[K-1:0] is 18 port bits at the default K=16 and 6 at
+    K=4."""
+    sby_path = _render_param_proof(tmp_path, "verilog", {"K": 4})
+    work = tmp_path / "run_verilog"
+    work.mkdir()
+    assert _yosys_port_bits(sby_path, work) == 6
+
+
+@pytest.mark.skipif(_yosys_missing(), reason="yosys not installed")
+def test_no_params_keeps_default_elaboration_verilog_frontend(tmp_path):
+    sby_path = _render_param_proof(tmp_path, "verilog", {})
+    work = tmp_path / "run_verilog"
+    work.mkdir()
+    assert _yosys_port_bits(sby_path, work) == 18
+
+
+@pytest.mark.skipif(
+    _yosys_missing() or not os.environ.get("RTL_BUDDY_SLANG_PLUGIN"),
+    reason="yosys + RTL_BUDDY_SLANG_PLUGIN required",
+)
+def test_params_reduce_elaboration_slang_frontend(tmp_path):
+    """`read_slang -G` is the slang-side mechanism — `chparam` cannot work
+    there, since slang has already elaborated the module by then."""
+    sby_path = _render_param_proof(
+        tmp_path,
+        "slang",
+        {"K": 4},
+        plugin_path=os.environ["RTL_BUDDY_SLANG_PLUGIN"],
+    )
+    work = tmp_path / "run_slang"
+    work.mkdir()
+    assert _yosys_port_bits(sby_path, work) == 6
+
+
+def test_fpv_get_params_hands_back_a_copy(tmp_path):
+    """The returned dict is stamped onto a graph node and serialized, so
+    config state must not share an object with the payload."""
+    cfg = FpvSuiteConfig(str(_write_params_suite(tmp_path)))
+    v = cfg.get_verifications("mod_a_k8")[0]
+    before = v.get_params()
+
+    mutated = v.get_params()
+    mutated["K"] = 999
+    mutated["INJECTED"] = 1
+
+    assert v.get_params() == before

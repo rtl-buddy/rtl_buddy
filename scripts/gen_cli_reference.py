@@ -21,9 +21,12 @@ SUBCOMMANDS = [
     "test",
     "randtest",
     "regression",
+    "elab",
+    "elab-regression",
     "filelist",
     "hier",
     "hier-query",
+    "mcp",
     "wave",
     "wave-fpv",
     "nvim-install",
@@ -32,12 +35,17 @@ SUBCOMMANDS = [
     "pnr",
     "power",
     "power-regression",
+    "fpga",
+    "fpga-regression",
     "saif",
-    "cdc",
-    "cdc-regression",
+    "lint",
+    "lint-regression",
     "fpv",
     "fpv-regression",
     "tool-check",
+    "graph",
+    "cov",
+    "phys",
     "axi-profile",
     "verible",
     "mut",
@@ -45,17 +53,20 @@ SUBCOMMANDS = [
     "skill",
     "docs",
     "spec",
+    "xplr",
 ]
+
+EXCLUDED_COMMANDS = {"cdc", "cdc-regression"}
 
 HEADER = """\
 ---
-description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+description: Auto-generated CLI reference for documented rtl-buddy commands and their options.
 ---
 
 # CLI Reference
 
 This page is auto-generated from `rtl-buddy --help` output.
-Run `python scripts/gen_cli_reference.py` from the repo root to regenerate it.
+Run `uv run python scripts/gen_cli_reference.py` from the repo root to regenerate it.
 
 <!-- AUTO-GENERATED: do not edit below this line manually -->"""
 
@@ -71,7 +82,7 @@ def run_help(*args):
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stderr}")
     plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
-    return plain.strip()
+    return "\n".join(line.rstrip() for line in plain.splitlines()).strip()
 
 
 def extract_subcommands(help_text):
@@ -97,6 +108,28 @@ def extract_subcommands(help_text):
     return cmds
 
 
+def scrub_help_text(help_text):
+    """Remove commands/options intentionally omitted from the docs reference."""
+    lines = []
+    skip_wrapped = False
+    for line in help_text.splitlines():
+        command_row = re.match(r"^[│|] (cdc|cdc-regression)\s", line)
+        cdc_option = "--cdc-annotations" in line
+        if command_row or cdc_option:
+            skip_wrapped = cdc_option
+            continue
+
+        if skip_wrapped:
+            next_option = re.match(r"^[│|] --", line)
+            panel_end = "╰" in line or "└" in line
+            if not next_option and not panel_end:
+                continue
+            skip_wrapped = False
+
+        lines.append(line.replace("rtl-buddy-cdc", "analysis-tool"))
+    return "\n".join(lines)
+
+
 def emit_command(path, parts):
     """Render ``path`` (a list of command words) and recurse into subcommands.
 
@@ -110,13 +143,16 @@ def emit_command(path, parts):
             raise
         print(f"Warning: skipping `{' '.join(path)}` ({e})", file=sys.stderr)
         return
+    help_text = scrub_help_text(help_text)
     parts.append(f"## {' '.join(path)}\n\n```text\n{help_text}\n```")
     for child in extract_subcommands(help_text):
+        if child in EXCLUDED_COMMANDS:
+            continue
         emit_command(path + [child], parts)
 
 
 def generate():
-    parts = [HEADER, f"## rtl-buddy\n\n```text\n{run_help()}\n```"]
+    parts = [HEADER, f"## rtl-buddy\n\n```text\n{scrub_help_text(run_help())}\n```"]
     for sub in SUBCOMMANDS:
         emit_command([sub], parts)
     return "\n\n".join(parts) + "\n"
@@ -152,21 +188,6 @@ def main():
 
     OUTPUT.write_text(content)
     print(f"Written: {OUTPUT}")
-
-
-def on_pre_build(config):
-    """MkDocs hook: regenerate cli.md before each build."""
-    import logging
-
-    log = logging.getLogger("mkdocs")
-    try:
-        content = generate()
-        existing = OUTPUT.read_text() if OUTPUT.exists() else ""
-        if content != existing:
-            OUTPUT.write_text(content)
-            log.info("gen_cli_reference: updated docs/reference/cli.md")
-    except RuntimeError as e:
-        log.warning(f"gen_cli_reference: skipped ({e}), using committed cli.md")
 
 
 if __name__ == "__main__":

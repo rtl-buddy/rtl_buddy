@@ -1,0 +1,4597 @@
+"""Slurm dispatch backend unit tests (#351 P1): sbatch argv shape,
+job-id capture, queue-drain polling, and cancellation — all against a
+faked subprocess layer, no Slurm required."""
+
+from __future__ import annotations
+
+import math
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from rtl_buddy.config.dispatch import DispatchConfigFile, JobResources
+from rtl_buddy.dispatch import base as base_module
+from rtl_buddy.dispatch.base import JobHandle, TestJobSpec
+from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
+from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.seed_mode import SeedMode
+
+from rtl_buddy.dispatch import slurm as slurm_module
+
+
+@pytest.fixture(autouse=True)
+def _no_tool_check(monkeypatch):
+    # SlurmDispatchBackend.__init__ asserts the Slurm client is installed;
+    # these unit tests construct it directly with no sbatch on PATH.
+    monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_cluster(monkeypatch):
+    # $SBATCH_CLUSTERS selects a cluster exactly as `--clusters` does
+    # (#509), so a developer or CI host that exports it would otherwise
+    # change what every probe in this module asks for.
+    monkeypatch.delenv("SBATCH_CLUSTERS", raising=False)
+
+
+def _spec(**overrides) -> TestJobSpec:
+    defaults = dict(
+        test_name="basic",
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        result_json=Path("/proj/verif/blk/artefacts/basic/dispatch/result.json"),
+        resources=JobResources(cpus=2, mem=None, time="01:00:00"),
+    )
+    defaults.update(overrides)
+    return TestJobSpec(**defaults)
+
+
+def _fake_run(calls, results, *, max_array_size=None, max_array_tasks=None):
+    """subprocess.run stand-in: records argv, pops canned results.
+
+    Any ``scontrol`` call — the MaxArraySize probe (#509), with or without
+    the ``-M <cluster>`` a cross-cluster ``sbatch-args`` adds — is answered from
+    ``max_array_size`` instead — neither recorded nor popped — so a test
+    about sbatch argv keeps asserting on sbatch calls alone. ``None`` (the
+    default) makes the probe fail, i.e. no chunking. The probe itself is
+    covered by the tests in the chunking section, which record it.
+    """
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            return _scontrol_result(max_array_size, max_array_tasks)
+        calls.append(list(argv))
+        result = (
+            results.pop(0)
+            if results
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        return result
+
+    return run
+
+
+def _scontrol_result(max_array_size, max_array_tasks=None):
+    """`scontrol show config` output, or a failure when the limit is unknown.
+
+    ``SchedulerParameters`` is always rendered — a real dump has the line
+    whether or not it carries ``max_array_tasks`` — so the "not set" case
+    is the realistic one rather than a line the parser never sees.
+    """
+    if max_array_size is None:
+        return SimpleNamespace(
+            returncode=1, stdout="", stderr="scontrol: error: Unable to contact slurm"
+        )
+    params = "bf_window=2880,default_queue_depth=100"
+    if max_array_tasks is not None:
+        params += f",max_array_tasks={max_array_tasks}"
+    return SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "Configuration data as of 2026-08-31T12:00:00\n"
+            "MaxArrayJobs            = 20\n"
+            f"MaxArraySize            = {max_array_size}\n"
+            "MaxDBDMsgs              = 20000\n"
+            f"SchedulerParameters     = {params}\n"
+        ),
+        stderr="",
+    )
+
+
+def test_submit_builds_sbatch_argv_and_parses_job_id(monkeypatch):
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="123;cluster\n", stderr="")],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
+    )
+
+    handle = backend.submit(_spec(log_path=Path("/tmp/slurm.log")))
+
+    assert handle.job_id == "123"
+    (argv,) = calls
+    assert argv[0] == "sbatch"
+    assert "--parsable" in argv
+    assert "--job-name=rb:basic" in argv
+    assert "--chdir=/proj/verif/blk" in argv
+    assert "--time=01:00:00" in argv  # always explicit
+    assert "--cpus-per-task=2" in argv
+    assert not any(a.startswith("--mem") for a in argv)  # mem unset → no flag
+    assert "--output=/tmp/slurm.log" in argv
+    assert "--partition=verif" in argv  # sbatch-args passthrough
+
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[0] == sys.executable
+    assert wrapped[1:4] == ["-m", "rtl_buddy", "--machine"]
+    assert "_test-job" in wrapped
+    assert "basic" in wrapped
+    assert "--share-build" in wrapped
+    assert "--result-json" in wrapped
+
+
+def test_submit_mem_and_run_id_and_seed_flags(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = _spec(
+        resources=JobResources(cpus=1, mem="24G", time="04:00:00"),
+        run_id=3,
+        seed_mode=SeedMode.NEW,
+    )
+    handle = backend.submit(spec)
+
+    assert handle.job_id == "7"
+    (argv,) = calls
+    assert "--mem=24G" in argv
+    assert "--job-name=rb:basic:3" in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--run-id") + 1] == "3"
+    assert wrapped[wrapped.index("--seed-mode") + 1] == "new"
+
+
+def test_submit_failure_fails_loud(monkeypatch):
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="sbatch: error: no partition"
+            )
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="no partition"):
+        backend.submit(_spec())
+
+
+def test_wait_all_polls_until_queue_drains(monkeypatch):
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=0,
+            stdout="1|Resources|PENDING|0:00|rb:basic\n2|None|RUNNING|0:12|rb:basic:1\n",
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0, stdout="2|None|RUNNING|0:22|rb:basic:1\n", stderr=""
+        ),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handles = [JobHandle("1", _spec()), JobHandle("2", _spec(run_id=1))]
+    backend.wait_all(handles)
+
+    assert len(calls) == 3
+    assert calls[0][0] == "squeue"
+    assert "--jobs" in calls[0] and "1,2" in calls[0]
+
+
+def test_wait_all_cancels_jobs_whose_dependency_can_never_be_satisfied(monkeypatch):
+    """A failed build leaves its afterok dependents PENDING forever (#358).
+
+    Slurm only reaps them when the site sets `kill_invalid_depend`, which is
+    off by default — so PD would keep the head polling until it is killed.
+    Cancel them and stop waiting; collection reports them as no-result.
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "7_[1-3]|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n"
+                    "9|Resources|PENDING|0:00|rb:basic:1\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # queue drained
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.wait_all([JobHandle("7_1", _spec()), JobHandle("9", _spec(run_id=1))])
+
+    # The doomed array was cancelled by BASE id (one scancel clears it all),
+    # and the still-queued job 9 kept the wait going for one more poll.
+    scancels = [argv for argv in calls if argv[0] == "scancel"]
+    assert scancels == [["scancel", "7"]]
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+
+
+def test_wait_all_returns_when_only_doomed_jobs_remain(monkeypatch):
+    """Nothing else queued: the head must not poll a second time."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="7|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.wait_all([JobHandle("7", _spec())])
+
+    assert [argv[0] for argv in calls] == ["squeue", "scancel"]
+
+
+def test_wait_all_asks_squeue_for_reason_state_time_and_name(monkeypatch):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("1", _spec())]
+    )
+    # Reason drives dependency reaping; state/time/name drive the progress
+    # line's running-vs-pending split and its longest-running job (#435).
+    assert "--format=%i|%r|%T|%M|%j" in calls[0]
+
+
+def test_wait_all_tolerates_a_short_squeue_line(monkeypatch):
+    """A Slurm rendering fewer columns must not break the wait itself."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="1|Resources\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("1", _spec())]
+    )
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+
+
+def test_wait_all_treats_squeue_error_as_drained(monkeypatch):
+    # Once every job has aged out of the queue, squeue exits nonzero with
+    # "Invalid job id specified" — that is completion, not failure.
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=1, stdout="", stderr="Invalid job id specified")],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.wait_all([JobHandle("99", _spec())])
+    assert len(calls) == 1
+
+
+# ---------- #527 review: the drain poll must see every live state, and a
+# ---------- failed poll is not a drain
+
+
+@pytest.mark.parametrize("state", ["REQUEUE_HOLD", "SIGNALING", "STOPPED"])
+def test_a_job_held_in_an_exotic_state_keeps_the_wait_going(monkeypatch, state):
+    """A live job must never fall out of the wait because of its state.
+
+    The drain poll used to filter on six short codes, so a job that entered
+    REQUEUE_HOLD (or SIGNALING, or STOPPED) matched nothing: squeue returned
+    no row, `_outstanding` saw an empty queue, `wait_all` returned, and the
+    collector recorded a missing envelope for a job that was still there —
+    unwaited and, on a failure path, uncancelled. The filter is now the same
+    non-terminal set the dedup probe uses (#527 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout=f"7|None|{state}|0:10|rb:basic\n", stderr=""
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("7", _spec())])
+    # Two polls: the state above kept the fleet outstanding for one more
+    # round, and only the empty answer drained it.
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+    assert state in slurm_module._DRAIN_FILTER.split(",")
+
+
+@pytest.mark.parametrize("state", ["PREEMPTED", "REVOKED"])
+def test_a_retained_result_does_not_hold_the_fleet(monkeypatch, state):
+    """PREEMPTED and REVOKED are results, not jobs to wait for (#527 round 19).
+
+    Slurm keeps such a record until it is purged. Waiting on it delays
+    collection and the license-queue retry for as long as the site's purge
+    takes — and under a finite `max-wait` fails a run whose jobs had all
+    ended. PREEMPTED is exactly where the collector expects a preempted job:
+    `retry.RESOURCE_KILL_STATES` classifies it as an allocation lost and
+    re-submits it.
+
+    The filter no longer asks for either, and a row that arrives anyway — a
+    poll that fell back to squeue's own filter, a Slurm that renders a state
+    the filter did not name — is skipped rather than counted.
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout=f"7|None|{state}|0:10|rb:basic\n", stderr=""
+            )
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("7", _spec())])
+
+    # One poll: the row was a result, so the fleet drained on it rather than
+    # waiting for the record to be purged.
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 1
+    # ...and the filter did not ask for it in the first place.
+    assert state not in _states_of(calls[0])
+
+
+def test_a_preempted_job_that_requeues_still_holds_the_fleet(monkeypatch):
+    """The case the exclusion must not break (#527 round 19).
+
+    A site that preempts with requeue moves the job on to REQUEUED and then
+    PENDING, both of which the drain filter does ask for — so the job is
+    still waited for, and only a job left terminally preempted drains.
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout="7|None|REQUEUED|0:00|rb:basic\n", stderr=""
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("7", _spec())])
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+
+
+def test_the_drain_filter_excludes_what_retry_calls_an_allocation_loss():
+    """The two modules must agree about what a finished job looks like.
+
+    `retry.RESOURCE_KILL_STATES` is the collector's view — TIMEOUT,
+    NODE_FAIL, PREEMPTED are jobs that lost their allocation and may be
+    re-submitted. None of them may be a state the wait holds a fleet on
+    (#527 round 19).
+    """
+    from rtl_buddy.dispatch import retry as retry_module
+
+    drain = set(slurm_module._DRAIN_FILTER.split(","))
+    assert not drain & retry_module.RESOURCE_KILL_STATES
+
+
+def test_the_dedup_filter_is_the_drain_filter_plus_the_retained_results(monkeypatch):
+    """One base, two derived sets — so they cannot drift apart (#527 review).
+
+    Both answer "is a job of ours still in the queue", and answering it with
+    two independently maintained lists is what made a held job invisible to
+    the wait while the probe could see it. They are not IDENTICAL, though:
+    PREEMPTED and REVOKED are results Slurm retains, so the probe may name
+    them and the wait must not hold a fleet on them (#527 round 19).
+    """
+    assert slurm_module._DEDUP_STATES == (
+        slurm_module._LIVE_STATES + slurm_module._TERMINAL_RETAINED_STATES
+    )
+    assert slurm_module._DRAIN_FILTER == ",".join(slurm_module._LIVE_STATES)
+    assert slurm_module._DEDUP_FILTER == ",".join(slurm_module._DEDUP_STATES)
+    # ...and no state is in both halves of the derivation.
+    assert not set(slurm_module._LIVE_STATES) & set(
+        slurm_module._TERMINAL_RETAINED_STATES
+    )
+
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    backend.wait_all([JobHandle("1", _spec())])
+    (wait_states,) = [arg for arg in calls[0] if str(arg).startswith("--states=")]
+    # The WAIT asks with the live set, spelled the way job_state_codes(7)
+    # spells it, and never asks for a retained result.
+    assert wait_states == f"--states={slurm_module._DRAIN_FILTER}"
+    asked = wait_states.split("=", 1)[1].split(",")
+    assert asked == list(slurm_module._LIVE_STATES)
+    for retained in slurm_module._TERMINAL_RETAINED_STATES:
+        assert retained not in asked
+
+
+def test_an_unknown_state_name_is_dropped_and_the_poll_retried(monkeypatch, caplog):
+    """A Slurm older than a state name still gets the rest of the filter.
+
+    squeue names the state it refuses, and a name it refuses is one that
+    build has no concept of — so no job can be sitting in it, and dropping
+    just that name keeps every state the cluster does know. Retrying
+    unfiltered instead would fall back to squeue's own narrower default and
+    hide exactly the held job this filter exists to see (#527 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified: RESV_DEL_HOLD",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("1", _spec())])
+
+    first, second = [argv for argv in calls if argv[0] == "squeue"]
+    assert "RESV_DEL_HOLD" in [
+        s for arg in first if str(arg).startswith("--states=") for s in arg.split(",")
+    ]
+    retried = [arg for arg in second if str(arg).startswith("--states=")][0]
+    assert "RESV_DEL_HOLD" not in retried
+    # Every other state survived: the filter was narrowed, not abandoned.
+    assert "REQUEUE_HOLD" in retried and "STOPPED" in retried
+    (fields,) = _events(caplog, "dispatch.wait_states_narrowed")
+    assert fields["dropped"] == "RESV_DEL_HOLD"
+    # ...and it is remembered, so the rest of the run does not re-learn it.
+    assert "RESV_DEL_HOLD" not in backend._wait_states_for(None)
+
+
+def test_a_rejection_naming_no_state_drops_the_filter_loudly(monkeypatch, caplog):
+    """Nothing to drop means the filter goes — and the user is told.
+
+    squeue's own default (pending, running, completing) is narrower than the
+    wait wants, so a job held in another state can be reported finished
+    early. That is a degradation, not a silent fallback (#527 review).
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("1", _spec())])
+
+    _, second = [argv for argv in calls if argv[0] == "squeue"]
+    assert not [arg for arg in second if str(arg).startswith("--states=")]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_states_unfiltered"
+    ]
+    assert record.levelno == logging.WARNING  # console-visible by default
+    assert "pending, running, completing" in record.getMessage()
+    assert backend._wait_states_for(None) is None
+
+
+def _by_cluster_run(calls, answers):
+    """subprocess.run stand-in that answers per cluster, in poll order.
+
+    ``answers`` is ``{cluster: [result, ...]}``; the cluster is read off the
+    `-M` of the argv (``None`` for an unqualified poll), and each poll of a
+    cluster pops that cluster's next result. This is the shape a federation
+    has — one `squeue -M <name>` per cluster, per round — which a single
+    shared result queue cannot model.
+    """
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        argv = list(argv)
+        calls.append(argv)
+        cluster = argv[argv.index("-M") + 1] if "-M" in argv else None
+        queue = answers[cluster]
+        return (
+            queue.pop(0)
+            if queue
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+    return run
+
+
+def _states_of(argv):
+    """The `--states=` value of one poll's argv, or None when unfiltered."""
+    flags = [arg for arg in argv if str(arg).startswith("--states=")]
+    return flags[0].split("=", 1)[1] if flags else None
+
+
+def test_one_clusters_rejection_does_not_narrow_another(monkeypatch):
+    """A federation can run several Slurm versions (#527 review).
+
+    An old cluster that rejects RESV_DEL_HOLD used to narrow the filter for
+    the WHOLE backend, so the next cluster — new enough to have that state,
+    and holding a job in it — was polled with a filter too small to see it.
+    squeue returned no row, `wait_all` declared the fleet drained, and the
+    live job was collected as a missing result and left behind. The
+    narrowing belongs to the cluster that asked for it.
+    """
+    calls = []
+    answers = {
+        "old": [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified: RESV_DEL_HOLD",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+        "new": [
+            # The job the old cluster's rejection must not hide.
+            SimpleNamespace(
+                returncode=0,
+                stdout="8|None|RESV_DEL_HOLD|0:10|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    }
+    monkeypatch.setattr(slurm_module.subprocess, "run", _by_cluster_run(calls, answers))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("7", _spec(run_id=1), cluster="old"),
+            JobHandle("8", _spec(run_id=2), cluster="new"),
+        ]
+    )
+
+    old_polls = [argv for argv in calls if "old" in argv]
+    new_polls = [argv for argv in calls if "new" in argv]
+    # The old cluster dropped the name it refused and was asked again...
+    assert "RESV_DEL_HOLD" in _states_of(old_polls[0])
+    assert "RESV_DEL_HOLD" not in _states_of(old_polls[1])
+    assert "REQUEUE_HOLD" in _states_of(old_polls[1])  # narrowed, not dropped
+    # ...while every poll of the new cluster kept the full filter, including
+    # the round after the rejection.
+    assert len(new_polls) == 2
+    for argv in new_polls:
+        assert _states_of(argv) == slurm_module._DRAIN_FILTER
+    # Which is what kept its RESV_DEL_HOLD job in the wait: the fleet needed
+    # a second round, rather than draining on the first.
+    assert len(old_polls) == 3  # the rejection, its retry, then round two
+    assert backend._wait_states_for("new") == slurm_module._DRAIN_FILTER
+    assert "RESV_DEL_HOLD" not in backend._wait_states_for("old")
+
+
+def test_an_unfiltered_degradation_stays_on_the_refusing_cluster(monkeypatch, caplog):
+    """Dropping the filter entirely is scoped the same way (#527 review)."""
+    import logging
+
+    calls = []
+    answers = {
+        "old": [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="squeue: error: Invalid job state specified",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+        "new": [SimpleNamespace(returncode=0, stdout="", stderr="")],
+    }
+    monkeypatch.setattr(slurm_module.subprocess, "run", _by_cluster_run(calls, answers))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all(
+            [
+                JobHandle("7", _spec(run_id=1), cluster="old"),
+                JobHandle("8", _spec(run_id=2), cluster="new"),
+            ]
+        )
+
+    old_polls = [argv for argv in calls if "old" in argv]
+    new_polls = [argv for argv in calls if "new" in argv]
+    assert _states_of(old_polls[1]) is None  # asked again without the filter
+    assert _states_of(new_polls[0]) == slurm_module._DRAIN_FILTER
+    assert backend._wait_states_for("old") is None
+    assert backend._wait_states_for("new") == slurm_module._DRAIN_FILTER
+    (fields,) = _events(caplog, "dispatch.wait_states_unfiltered")
+    # The WARNING names the cluster it applies to, or a reader would take it
+    # for the whole fleet.
+    assert fields["cluster"] == "old"
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_states_unfiltered"
+    ]
+    assert record.levelno == logging.WARNING
+
+
+def test_a_failed_poll_is_not_a_drain(monkeypatch, caplog):
+    """An errored squeue says nothing about the jobs (#527 review).
+
+    A transient controller timeout used to take the same path as an empty
+    queue — the wait returned, the collector scored every absent envelope as
+    a failure, and the fleet ran on with nothing waiting for it or
+    cancelling it. The jobs stay outstanding and the next poll asks again.
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="slurm_load_jobs error: Socket timed out on send/recv operation",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("7", _spec())])
+
+    # It polled again rather than declaring the fleet finished on an error.
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_poll_failed"
+    ]
+    assert record.levelno == logging.WARNING
+    assert "Socket timed out" in record.__dict__["rtl_fields"]["error"]
+    # ...and the drain event is the one that ended the wait, not the failure.
+    assert _events(caplog, "dispatch.drained")
+
+
+def test_a_repeatedly_failing_poll_warns_once_then_debugs(monkeypatch, caplog):
+    """One WARNING per cluster: a wedged squeue must not fill the console."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="slurm_load_jobs error: x"),
+            SimpleNamespace(returncode=1, stdout="", stderr="slurm_load_jobs error: x"),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    with caplog.at_level("DEBUG"):
+        backend.wait_all([JobHandle("7", _spec())])
+
+    levels = [
+        r.levelno
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.wait_poll_failed"
+    ]
+    assert levels == [logging.WARNING, logging.DEBUG]
+
+
+def test_a_failed_poll_still_honours_max_wait(monkeypatch):
+    """The deadline is only armed while something is outstanding (#435).
+
+    So a poll that fails has to keep the jobs outstanding for that reason
+    too: a squeue that never answers must end in the `max-wait` failure, not
+    in an unbounded loop (#527 review).
+    """
+    clock = iter([0.0, 0.0, 0.0, 100.0, 100.0, 200.0, 200.0, 300.0, 300.0])
+    monkeypatch.setattr(slurm_module.time, "monotonic", lambda: next(clock, 400.0))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    calls = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        return SimpleNamespace(
+            returncode=1, stdout="", stderr="slurm_load_jobs error: unreachable"
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0, max_wait=10.0))
+
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        backend.wait_all([JobHandle("7", _spec())])
+
+
+def test_wait_all_no_handles_is_a_no_op(monkeypatch):
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, []))
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all([])
+    assert calls == []
+
+
+def test_cancel_all_scancels_every_job(monkeypatch):
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.cancel_all([JobHandle("5", _spec()), JobHandle("6", _spec(run_id=2))])
+    (argv,) = calls
+    assert argv == ["scancel", "5", "6"]
+
+
+def test_cancel_all_ignores_none_handles(monkeypatch):
+    # cancel_all is the last line of defence against an orphaned fleet, so a
+    # None handle (e.g. a zero-test suite's absent build handle, #361) must
+    # not disarm it — it still scancels the real jobs.
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.cancel_all([None, JobHandle("7", _spec()), None])
+    (argv,) = calls
+    assert argv == ["scancel", "7"]
+
+
+# ---------------------------------------------------------------- P2: arrays
+
+
+def test_submit_array_builds_manifest_script_and_throttle(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(sbatch_args=["--qos=fast"]))
+
+    specs = [_spec(run_id=i) for i in (1, 2, 3)]
+    array_dir = tmp_path / "array-001"
+    handles = backend.submit_array(specs, array_dir=array_dir, max_parallel=2)
+
+    assert [h.job_id for h in handles] == ["500_1", "500_2", "500_3"]
+    manifest = (array_dir / "manifest.txt").read_text().splitlines()
+    assert len(manifest) == 3
+    assert "--run-id 1" in manifest[0] and "--run-id 3" in manifest[2]
+    assert (array_dir / "array.sh").read_text().startswith("#!/bin/bash")
+    # Element logs are deterministic and stamped back onto the specs.
+    assert specs[0].log_path == array_dir / "slurm-1.log"
+
+    (argv,) = calls
+    assert "--array=1-3%2" in argv
+    assert f"--output={array_dir}/slurm-%a.log" in argv
+    assert "--qos=fast" in argv
+    assert argv[-2:] == [str(array_dir / "array.sh"), str(array_dir / "manifest.txt")]
+
+
+def test_submit_array_no_throttle_when_cap_exceeds_size(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)], array_dir=tmp_path, max_parallel=200
+    )
+    (argv,) = calls
+    assert "--array=1-2" in argv
+
+
+def test_submit_array_single_spec_falls_back_to_submit(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    handles = backend.submit_array([_spec()], array_dir=tmp_path, max_parallel=8)
+    assert [h.job_id for h in handles] == ["9"]
+    (argv,) = calls
+    assert not any(a.startswith("--array") for a in argv)
+    assert "--wrap" in argv
+
+
+def test_wait_and_cancel_use_base_array_ids(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    handles = [
+        JobHandle("500_1", _spec(run_id=1)),
+        JobHandle("500_2", _spec(run_id=2)),
+        JobHandle("42", _spec()),
+    ]
+    backend.wait_all(handles)
+    assert "500,42" in calls[0]
+
+    backend.cancel_all(handles)
+    assert calls[1] == ["scancel", "500", "42"]
+
+
+# ------------------------------------------------------- P2: sacct telemetry
+
+
+def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
+    sacct_out = "\n".join(
+        [
+            # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqCPUS|ReqMem|TotalCPU|MaxRSS
+            "500_1|COMPLETED|75|60|2|2|4G||",
+            "500_1.batch|COMPLETED|75||2|2||01:02.500|2948K",
+            "500_2|TIMEOUT|3600|60|2|2|4G||",
+            "500_2.batch|CANCELLED|3600||2|2||59:00.000|1.5G",
+            # A whole-core site: one cpu asked for, two handed out (#505).
+            "42|COMPLETED|10|1|2|1|500M||",
+            "42.batch|COMPLETED|10||2|1||00:03.250|10240K",
+        ]
+    )
+    calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    handles = [
+        JobHandle("500_1", _spec(run_id=1)),
+        JobHandle("500_2", _spec(run_id=2)),
+        JobHandle("42", _spec()),
+    ]
+    telemetry = backend.collect_telemetry(handles)
+
+    (argv,) = calls
+    assert argv[0] == "sacct" and "500,42" in argv
+
+    t1 = telemetry["500_1"]
+    assert t1["state"] == "COMPLETED"
+    assert t1["elapsed_s"] == 75
+    assert t1["timelimit_s"] == 3600  # TimelimitRaw is minutes
+    assert t1["alloc_cpus"] == 2
+    assert t1["req_cpus"] == 2
+    assert t1["req_mem_bytes"] == 4 * 2**30
+    assert t1["max_rss_bytes"] == 2948 * 1024
+    assert t1["total_cpu_s"] == 62.5
+
+    t2 = telemetry["500_2"]
+    assert t2["state"] == "TIMEOUT"
+    assert t2["max_rss_bytes"] == int(1.5 * 2**30)
+
+    assert telemetry["42"]["total_cpu_s"] == 3.25
+    # The requested cpus are carried alongside the allocated ones: right-sizing
+    # judges efficiency against what the reservation asked for, because that is
+    # the number a tests.yaml edit can move (#505).
+    assert telemetry["42"]["alloc_cpus"] == 2
+    assert telemetry["42"]["req_cpus"] == 1
+
+
+def test_collect_telemetry_no_accounting_degrades_to_empty(monkeypatch):
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="sacct: error: accounting disabled"
+            )
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+    assert backend.collect_telemetry([JobHandle("5", _spec())]) == {}
+
+
+def test_mem_and_cpu_time_parsers():
+    assert slurm_module._parse_mem_to_bytes("2948K") == 2948 * 1024
+    assert slurm_module._parse_mem_to_bytes("4Gn") == 4 * 2**30
+    assert slurm_module._parse_mem_to_bytes("1.5G") == int(1.5 * 2**30)
+    assert slurm_module._parse_mem_to_bytes("123") == 123
+    assert slurm_module._parse_mem_to_bytes("") is None
+    assert slurm_module._parse_cpu_time_to_seconds("01:02.500") == 62.5
+    assert slurm_module._parse_cpu_time_to_seconds("2-01:00:00") == 2 * 86400 + 3600
+    assert slurm_module._parse_cpu_time_to_seconds("") is None
+
+
+# ------------------------------------------- P2 review: telemetry robustness
+
+
+def test_collect_telemetry_sums_cpu_time_across_steps(monkeypatch):
+    # TotalCPU is per step; a job's CPU time is the SUM (.batch + srun step),
+    # while MaxRSS stays a high-water max.
+    sacct_out = "\n".join(
+        [
+            "9|COMPLETED|100|60|4|4|4G||",
+            "9.batch|COMPLETED|100||4|4||00:10.000|500M",
+            "9.0|COMPLETED|100||4|4||01:30.000|900M",
+        ]
+    )
+    calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    t = backend.collect_telemetry([JobHandle("9", _spec())])["9"]
+    assert t["total_cpu_s"] == 100.0  # 10s + 90s summed
+    assert t["max_rss_bytes"] == 900 * 2**20  # max, not sum
+
+
+def test_collect_telemetry_missing_sacct_binary_degrades(monkeypatch):
+    # sacct absent (FileNotFoundError) must not fail a finished run.
+    def boom(*a, **k):
+        raise FileNotFoundError("sacct")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", boom)
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+    assert backend.collect_telemetry([JobHandle("1", _spec())]) == {}
+
+
+def test_collect_telemetry_timeout_degrades(monkeypatch):
+    def slow(*a, **k):
+        raise slurm_module.subprocess.TimeoutExpired(cmd="sacct", timeout=60)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", slow)
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+    assert backend.collect_telemetry([JobHandle("1", _spec())]) == {}
+
+
+def test_array_script_fails_loud_on_missing_manifest_line():
+    # The array runner exits non-zero (not a silent COMPLETED) when the
+    # SLURM_ARRAY_TASK_ID line is absent.
+    assert "set -uo pipefail" in slurm_module._ARRAY_SCRIPT
+    assert "exit 2" in slurm_module._ARRAY_SCRIPT
+
+
+# ------------------------------------------ dispatched build job + dependency
+
+
+def test_submit_build_builds_argv(monkeypatch):
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    calls, results = (
+        [],
+        [
+            # The dedup probe: nothing of this identity is in the queue.
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
+    )
+
+    spec = BuildJobSpec(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+        reg_level=1000,
+        log_path=Path("/proj/verif/blk/artefacts/.dispatch/build.log"),
+    )
+    handle = backend.submit_build(spec)
+
+    assert handle.job_id == "900"
+    probe, argv = calls
+    assert probe[0] == "squeue"
+    assert argv[0] == "sbatch"
+    assert f"--job-name={slurm_module.build_job_name(spec)}" in argv
+    assert "--time=02:00:00" in argv and "--cpus-per-task=8" in argv
+    assert "--mem=16G" in argv
+    assert "--partition=verif" in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert "_build-job" in wrapped
+    assert "--share-build" in wrapped
+    assert wrapped[wrapped.index("-l") + 1] == "1000"
+    assert "_test-job" not in wrapped  # it's a build, not a sim
+    # Default concurrency leaves both the reservation and the argv as they
+    # were before #495.
+    assert "--parallel" not in wrapped
+
+
+def test_submit_build_reserves_the_head_scaled_cpus(monkeypatch):
+    """The backend submits what the head sized; it never re-scales (#495).
+
+    The head folded `cfg-dispatch.compile.parallel` into `resources.cpus`
+    (and capped it against the planned configs) before the spec got here,
+    so the backend's only job is to emit both numbers: the reservation the
+    job holds, and the concurrency it is allowed to spend it on.
+    """
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="901\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = BuildJobSpec(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=16, mem="16G", time="02:00:00"),
+        parallel=4,
+    )
+    backend.submit_build(spec)
+
+    _probe, argv = calls
+    assert "--cpus-per-task=16" in argv
+    # mem/time are NOT multiplied by the head, so they arrive as configured.
+    assert "--mem=16G" in argv and "--time=02:00:00" in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--parallel") + 1] == "4"
+
+
+def test_build_submitted_event_records_the_concurrency(monkeypatch, caplog):
+    """cpus alone cannot explain a 16-CPU build job; the pair can (#495)."""
+    import logging
+
+    from rtl_buddy.dispatch.base import BuildJobSpec
+    from rtl_buddy.logging_utils import _human_message
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="902\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(
+            BuildJobSpec(
+                suite_dir="/proj/verif/blk",
+                test_config_path="/proj/verif/blk/tests.yaml",
+                resources=JobResources(cpus=16),
+                parallel=4,
+            )
+        )
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_submitted"
+    ]
+    fields = record.__dict__["rtl_fields"]
+    assert (fields["cpus"], fields["parallel"]) == (16, 4)
+    assert "4 builds at a time" in _human_message("dispatch.build_submitted", fields)
+    # ...and the default reads exactly as it did before the knob existed.
+    assert _human_message(
+        "dispatch.build_submitted", {"job_id": "902", "suite_dir": "s", "parallel": 1}
+    ) == ("Submitted shared-build job 902 for s")
+
+
+def test_submit_sim_with_dependency_adds_afterok(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), dependency="900")
+    (argv,) = calls
+    assert "--dependency=afterok:900" in argv
+
+
+def test_submit_sim_without_dependency_has_no_flag(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec())
+    (argv,) = calls
+    assert not any(a.startswith("--dependency") for a in argv)
+
+
+def test_build_argv_carries_plan_and_result_json(monkeypatch):
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = BuildJobSpec(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+        plan_path=Path("/proj/verif/blk/artefacts/.dispatch/plan-1.json"),
+        result_json=Path("/proj/verif/blk/artefacts/.dispatch/build-result-1.json"),
+    )
+    backend.submit_build(spec)
+    _probe, argv = calls
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--plan") + 1] == str(spec.plan_path)
+    assert wrapped[wrapped.index("--result-json") + 1] == str(spec.result_json)
+
+
+def test_sim_argv_carries_plan(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    plan = Path("/proj/verif/blk/artefacts/.dispatch/plan-1.json")
+    backend.submit(_spec(plan_path=plan))
+    (argv,) = calls
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--plan") + 1] == str(plan)
+
+
+def test_submit_array_accepts_dependency(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)],
+        array_dir=tmp_path / "array-001",
+        max_parallel=4,
+        dependency="900",
+    )
+    (argv,) = calls
+    assert "--dependency=afterok:900" in argv
+
+
+def test_wait_all_matches_a_reason_rendered_with_surrounding_text(monkeypatch):
+    """Substring, not equality: an exact match could regress into the poll."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="7|(DependencyNeverSatisfied)|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("7", _spec())]
+    )
+    assert [argv[0] for argv in calls] == ["squeue", "scancel"]
+
+
+def test_wait_all_reports_a_failed_scancel(monkeypatch, caplog):
+    """The jobs are already dropped from `remaining`, so a failed cancel leaves
+    them queued after the run exits — that has to be recoverable by hand."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="7|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="scancel: error: Invalid job id"
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    with caplog.at_level(logging.WARNING):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+            [JobHandle("7", _spec())]
+        )
+    assert "still" in caplog.text and "queued" in caplog.text
+    assert "Invalid job id" in caplog.text
+
+
+# ------------- reaping afterok dependents when the build fails
+
+
+def test_dependent_submit_asks_slurm_to_reap_on_invalid_dependency(monkeypatch):
+    """cancel_all cannot run if the head is SIGKILLed, so Slurm must own it."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), dependency="42")
+
+    (argv,) = calls
+    assert "--dependency=afterok:42" in argv
+    assert "--kill-on-invalid-dep=yes" in argv
+
+
+def test_undependent_submit_does_not_pass_the_flag(monkeypatch):
+    """It only means anything alongside a dependency."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), dependency=None)
+
+    (argv,) = calls
+    assert not [a for a in argv if a.startswith("--dependency")]
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+
+def test_dependent_array_submit_asks_slurm_to_reap_too(tmp_path, monkeypatch):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="9", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)],
+        array_dir=tmp_path / "arr",
+        dependency="42",
+    )
+
+    (argv,) = calls
+    assert "--dependency=afterok:42" in argv
+    assert "--kill-on-invalid-dep=yes" in argv
+
+
+def test_undependent_array_submit_does_not_pass_the_flag(tmp_path, monkeypatch):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="9", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)],
+        array_dir=tmp_path / "arr",
+        dependency=None,
+    )
+
+    (argv,) = calls
+    # Both halves, so a bare `--dependency=afterok:None` cannot slip through.
+    assert not [a for a in argv if a.startswith("--dependency")]
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+
+def test_the_flag_precedes_user_sbatch_args(monkeypatch):
+    """User sbatch-args come last so a site can still override the behaviour."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--kill-on-invalid-dep=no"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit(_spec(), dependency="42")
+
+    (argv,) = calls
+    assert argv.index("--kill-on-invalid-dep=yes") < argv.index(
+        "--kill-on-invalid-dep=no"
+    )
+
+
+# ---------------------------------- accounting sampling frequency (#365)
+
+
+def test_per_second_task_accounting_is_requested_by_default(monkeypatch):
+    """MaxRSS is a high-water mark over samples, and a sim job is usually
+    shorter than the stock 30 s JobAcctGatherFrequency — so it is sampled
+    once, near zero, and right-sizing advises from that (#365)."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.accounting_interval_s() == 1.0
+    backend.submit(_spec())
+    (argv,) = calls
+    assert "--acctg-freq=task=1" in argv
+
+
+def test_a_configured_acctg_freq_is_left_alone(monkeypatch):
+    """A site that must not raise the sampling rate says so in sbatch-args."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=task=15,energy=0"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    # ...and right-sizing is told the rate that will really apply.
+    assert backend.accounting_interval_s() == 15.0
+    backend.submit(_spec())
+    (argv,) = calls
+    assert len([a for a in argv if a.startswith("--acctg-freq")]) == 1
+    assert "--acctg-freq=task=15,energy=0" in argv
+
+
+def test_a_separated_acctg_freq_value_is_recognised(monkeypatch):
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq", "30"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.accounting_interval_s() == 30.0
+    assert "--acctg-freq=task=1" not in backend.sbatch_args
+
+
+def test_arrays_carry_the_accounting_frequency_too(monkeypatch, tmp_path):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="55", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array([_spec(run_id=1), _spec(run_id=2)], array_dir=tmp_path / "arr")
+
+    (argv,) = calls
+    assert "--acctg-freq=task=1" in argv
+
+
+def test_task_sampling_interval_parsing():
+    parse = slurm_module._task_sampling_interval
+    assert parse("30") == 30.0
+    assert parse("task=5") == 5.0
+    assert parse("energy=30,task=2") == 2.0
+    # An explicit disable is a KNOWN absence of sampling, not an unknown
+    # interval: every peak must be distrusted, not trusted.
+    assert parse("task=0") == math.inf
+    # These say nothing about task sampling at all.
+    assert parse("energy=30") is None
+    assert parse("task=nonsense") is None
+
+
+def test_a_flag_that_says_nothing_about_task_sampling_does_not_disarm_the_guard(
+    monkeypatch, caplog
+):
+    """`--acctg-freq=energy=30` is about a different datatype. Deferring to it
+    would leave tasks on the site default AND report the interval as unknown,
+    which right-sizing reads as "trust the peak" — #365 back, both guards
+    disarmed by one flag neither guard was about."""
+    import logging
+
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=energy=30"]).initialise()
+    with caplog.at_level(logging.WARNING):
+        backend = SlurmDispatchBackend(cfg)
+
+    assert backend.accounting_interval_s() == 1.0
+    assert "--acctg-freq=task=1" in backend.sbatch_args
+    assert "says nothing about task sampling" in caplog.text
+    # The user's own flag is still passed through, and still wins.
+    assert backend.sbatch_args.index("--acctg-freq=task=1") < backend.sbatch_args.index(
+        "--acctg-freq=energy=30"
+    )
+
+
+def test_disabled_task_accounting_is_reported_as_never_sampled(monkeypatch):
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=task=0"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    # inf, not None: no elapsed time can exceed it, so no peak is trusted.
+    assert backend.accounting_interval_s() == math.inf
+    assert "--acctg-freq=task=1" not in backend.sbatch_args
+
+
+# ------------------------------- #435: progress, job counting, max-wait
+
+
+def test_expand_squeue_id_covers_every_shape_squeue_speaks():
+    expand = slurm_module._expand_squeue_id
+    # A non-array id is itself.
+    assert expand("1235") == ["1235"]
+    # One element of an array is itself.
+    assert expand("1235_3") == ["1235_3"]
+    # A pending range is every element it holds...
+    assert expand("1235_[1-3]") == ["1235_1", "1235_2", "1235_3"]
+    # ...including a mixed list...
+    assert expand("1235_[1,3-5]") == ["1235_1", "1235_3", "1235_4", "1235_5"]
+    # ...and the throttle suffix is not an element.
+    assert expand("1235_[1-2%4]") == ["1235_1", "1235_2"]
+    # A bare base id with array handles is conservatively all of them: the
+    # alternative reports a 40-element array as one outstanding job.
+    assert expand("1235", ["1235_1", "1235_2", "9"]) == ["1235_1", "1235_2"]
+
+
+def test_wait_all_counts_handles_not_queue_lines(monkeypatch, caplog):
+    """One pending array line stands for as many jobs as it has elements."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="9_[1-3]|Priority|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    handles = [JobHandle(f"9_{i}", _spec(run_id=i)) for i in (1, 2, 3)]
+
+    with caplog.at_level(logging.INFO):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(handles)
+
+    progress = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ]
+    assert progress, "expected a progress record"
+    assert progress[0].__dict__["rtl_fields"]["remaining"] == 3
+    assert progress[0].__dict__["rtl_fields"]["total"] == 3
+    assert progress[0].__dict__["rtl_fields"]["pending"] == 3
+
+
+def test_progress_names_the_longest_running_job(monkeypatch, caplog):
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "9_1|None|RUNNING|8:02|rb:demo_alu\n"
+                    "9_2|None|RUNNING|0:11|rb:demo_fifo\n"
+                    "9_3|Priority|PENDING|0:00|rb:demo_mem\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    handles = [JobHandle(f"9_{i}", _spec(run_id=i)) for i in (1, 2, 3)]
+
+    with caplog.at_level(logging.INFO):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(handles)
+
+    fields = [
+        r.__dict__["rtl_fields"]
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ][0]
+    assert (fields["running"], fields["pending"]) == (2, 1)
+    assert fields["longest_job"] == "rb:demo_alu"
+    assert fields["longest_s"] == 482.0
+
+
+def test_max_wait_fails_loud_with_the_outstanding_ids(monkeypatch, caplog):
+    """An unbounded wait turns a stuck queue into a silent hang (#435)."""
+    import logging
+
+    never_drains = SimpleNamespace(
+        returncode=0, stdout="9_[1-3]|Priority|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    calls = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        return never_drains
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    # Every sleep advances a fake clock past the deadline.
+    clock = {"now": 0.0}
+    monkeypatch.setattr(
+        slurm_module.time,
+        "sleep",
+        lambda s: clock.__setitem__("now", clock["now"] + 100),
+    )
+    monkeypatch.setattr(slurm_module.time, "monotonic", lambda: clock["now"])
+
+    cfg = DispatchConfigFile(max_wait=60.0).initialise()
+    handles = [JobHandle(f"9_{i}", _spec(run_id=i)) for i in (1, 2, 3)]
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(FatalRtlBuddyError) as excinfo:
+            SlurmDispatchBackend(cfg).wait_all(handles)
+
+    assert "9_[1-3]" in str(excinfo.value)
+    assert "max-wait" in str(excinfo.value)
+    warnings = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.max_wait_exceeded"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert warnings[0].__dict__["rtl_fields"]["jobs"] == ["9_[1-3]"]
+
+
+def test_cancelled_warning_carries_the_grouped_ids(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.cancel_all(
+            [
+                JobHandle("500_1", _spec()),
+                JobHandle("500_2", _spec()),
+                JobHandle("42", _spec()),
+            ]
+        )
+
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.cancelled"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["500_[1-2]", "42"]
+    assert "500_[1-2]" in record.message
+
+
+# ------------------------------------------- #405: retry backoff via --begin
+
+
+def test_retry_delay_becomes_a_begin_flag(monkeypatch):
+    """The scheduler serves the backoff, so the delayed job holds nothing.
+
+    Sleeping in the head would keep the reservation the license pool needs
+    to drain; ``--begin`` leaves the job PENDING instead.
+    """
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), delay_sec=90.0)
+
+    (argv,) = calls
+    assert "--begin=now+90" in argv
+
+
+def test_no_begin_flag_without_a_delay(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec())
+
+    (argv,) = calls
+    assert not any(a.startswith("--begin") for a in argv)
+
+
+@pytest.mark.parametrize(
+    "delay, expected",
+    [
+        (0.0, None),
+        (0.4, None),  # rounds to 0 s: an inert `now+0` is not worth emitting
+        (1.6, "--begin=now+2"),
+        (63.2, "--begin=now+63"),
+        (600.0, "--begin=now+600"),
+    ],
+)
+def test_begin_flag_rounds_to_whole_seconds(monkeypatch, delay, expected):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), delay_sec=delay)
+
+    (argv,) = calls
+    begin = [a for a in argv if a.startswith("--begin")]
+    assert begin == ([expected] if expected else [])
+
+
+def test_delayed_submit_still_carries_reservation_and_dependency(monkeypatch):
+    """A retry is a normal submit plus a hold — nothing else changes."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
+    )
+
+    backend.submit(_spec(), dependency="88", delay_sec=30.0)
+
+    (argv,) = calls
+    assert "--begin=now+30" in argv
+    assert "--dependency=afterok:88" in argv
+    assert "--time=01:00:00" in argv
+    assert "--partition=verif" in argv
+    # sbatch-args stay last, so a site value still wins any duplicate.
+    assert argv.index("--begin=now+30") < argv.index("--partition=verif")
+
+
+def test_submitted_event_records_the_backoff(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit(_spec(), delay_sec=45.0)
+
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.submitted"
+    ]
+    assert record.__dict__["rtl_fields"]["begin_delay_sec"] == 45.0
+
+
+def test_max_wait_is_widened_by_a_backoff_the_head_asked_for(monkeypatch):
+    """A job held on ``--begin`` is PENDING for the whole backoff.
+
+    squeue reports it outstanding all that time, so charging the hold
+    against max-wait would fail every retry round whose backoff is longer
+    than max-wait, before the job had been allowed to start (#405 review).
+    """
+    pending = SimpleNamespace(
+        returncode=0, stdout="9|BeginTime|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    drained = SimpleNamespace(returncode=0, stdout="", stderr="")
+    clock = {"now": 0.0}
+
+    def _install(monkeypatch):
+        """Fresh squeue transcript + fake clock: pending twice, then gone."""
+        clock["now"] = 0.0
+        polls = iter([pending, pending, drained])
+        monkeypatch.setattr(
+            slurm_module.subprocess,
+            "run",
+            lambda argv, capture_output=True, text=True, cwd=None, timeout=None: next(
+                polls
+            ),
+        )
+        monkeypatch.setattr(
+            slurm_module.time,
+            "sleep",
+            lambda s: clock.__setitem__("now", clock["now"] + 100),
+        )
+        monkeypatch.setattr(slurm_module.time, "monotonic", lambda: clock["now"])
+
+    cfg = DispatchConfigFile(max_wait=60.0).initialise()
+    handles = [JobHandle("9", _spec())]
+
+    # 100 s of held-and-pending is past a bare 60 s budget...
+    _install(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        SlurmDispatchBackend(cfg).wait_all(handles)
+
+    # ...but not past 60 s plus the 600 s hold the head itself imposed.
+    _install(monkeypatch)
+    SlurmDispatchBackend(cfg).wait_all(handles, extra_wait=600.0)
+    assert clock["now"] == 200.0
+
+
+# ------- #505 review: why SBATCH_CPUS_PER_TASK is not treated as an override
+
+
+def test_every_submit_path_states_cpus_per_task_on_the_command_line(
+    monkeypatch, tmp_path
+):
+    """Load-bearing for right-sizing, not just cosmetic (#505 review).
+
+    sbatch's documented precedence is command line > environment > script,
+    so `SBATCH_CPUS_PER_TASK` in a site's environment is always beaten by
+    the flag rtl-buddy itself passes — which is why
+    `cpu_request_overrides()` deliberately does NOT treat that variable as
+    an override. Make any of these three paths emit the flag conditionally
+    and that reasoning stops holding, so pin all three here rather than
+    discover it through wrong advice.
+    """
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    def _argv_of(submit):
+        # Only sbatch gets a job id; the build path's squeue dedup probe
+        # (#507) is answered with an empty queue and left out of the answer.
+        calls = []
+
+        def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+            calls.append(list(argv))
+            stdout = "7\n" if argv[0] == "sbatch" else ""
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(slurm_module.subprocess, "run", run)
+        backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+        submit(backend)
+        (argv,) = [a for a in calls if a[0] == "sbatch"]
+        return argv
+
+    sim = _argv_of(lambda b: b.submit(_spec()))
+    array = _argv_of(
+        lambda b: b.submit_array(
+            [_spec(run_id=i) for i in (1, 2)],
+            array_dir=tmp_path / "array",
+            max_parallel=2,
+        )
+    )
+    build = _argv_of(
+        lambda b: b.submit_build(
+            BuildJobSpec(
+                suite_dir="/proj/verif/blk",
+                test_config_path="/proj/verif/blk/tests.yaml",
+                resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+                reg_level=0,
+                log_path=None,
+            )
+        )
+    )
+
+    for argv in (sim, array, build):
+        assert any(a.startswith("--cpus-per-task=") for a in argv), argv
+        # ...and none of them states the task or node counts, which is why
+        # the SBATCH_* variables for THOSE do reach sbatch and are treated
+        # as overrides.
+        assert not any(
+            a.startswith(("--ntasks", "-n", "--nodes", "-N")) for a in argv
+        ), argv
+
+
+def test_effective_sbatch_args_is_what_the_backend_will_append():
+    """Right-sizing reads its cpu overrides from here, so it must be real.
+
+    The backend is built once from the orchestration config, before the
+    suite loop, and keeps that list however `root_cfg` is later rebuilt —
+    which is exactly why the snapshot is taken from the backend and not
+    from whichever `cfg-dispatch` is current (#505 review).
+    """
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif", "--ntasks=4"]).initialise()
+    )
+    args = backend.effective_sbatch_args
+    assert "--partition=verif" in args and "--ntasks=4" in args
+    # ...including the accounting rate it prepends, since that is submitted too.
+    assert any(a.startswith("--acctg-freq") for a in args)
+    # It is the same list every submission appends, not a copy taken early.
+    assert args is backend.sbatch_args
+
+    bare = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    assert not [a for a in bare.effective_sbatch_args if not a.startswith("--acctg")]
+
+
+# ------------------------------------- MaxArraySize chunking (#509)
+
+
+def _events(caplog, event):
+    """The `rtl_fields` of every record logged for one rtl_event."""
+    return [
+        r.__dict__["rtl_fields"]
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == event
+    ]
+
+
+def _array_ranges(calls):
+    """The `--array=` value of every sbatch call, in submission order."""
+    return [
+        arg.split("=", 1)[1]
+        for argv in calls
+        for arg in argv
+        if arg.startswith("--array=")
+    ]
+
+
+def test_a_group_larger_than_max_array_size_is_split_across_arrays(
+    monkeypatch, tmp_path
+):
+    """`sbatch --array=1-1128` on a MaxArraySize=1001 cluster is refused and
+    the whole run dies; the group must be chunked instead (#509)."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    # max-array-size is Slurm's MaxArraySize: the largest task index is one
+    # below it, so 5 means at most four elements per array.
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    specs = [_spec(run_id=i) for i in range(1, 11)]
+    array_dir = tmp_path / "array-001"
+    handles = backend.submit_array(specs, array_dir=array_dir)
+
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    # Concatenated in spec order, so collection sees one logical group.
+    assert [h.job_id for h in handles] == [
+        "100_1",
+        "100_2",
+        "100_3",
+        "100_4",
+        "101_1",
+        "101_2",
+        "101_3",
+        "101_4",
+        "102_1",
+        "102_2",
+    ]
+    assert [h.spec for h in handles] == specs
+
+    # One manifest per slice, each covering exactly its own elements, so %a
+    # still maps 1:1 onto a manifest line.
+    for index, expected in ((1, 4), (2, 4), (3, 2)):
+        slice_dir = array_dir / f"slice-{index}"
+        assert len((slice_dir / "manifest.txt").read_text().splitlines()) == expected
+        assert (slice_dir / "array.sh").read_text().startswith("#!/bin/bash")
+        assert f"--output={slice_dir}/slurm-%a.log" in calls[index - 1]
+        assert calls[index - 1][-2:] == [
+            str(slice_dir / "array.sh"),
+            str(slice_dir / "manifest.txt"),
+        ]
+    assert "--run-id 5" in (array_dir / "slice-2" / "manifest.txt").read_text()
+
+    # Element logs never collide across slices: each is under its own slice.
+    assert specs[0].log_path == array_dir / "slice-1" / "slurm-1.log"
+    assert specs[4].log_path == array_dir / "slice-2" / "slurm-1.log"
+    assert specs[9].log_path == array_dir / "slice-3" / "slurm-2.log"
+
+    # The job name says which slice of the group this array is.
+    names = [a for argv in calls for a in argv if a.startswith("--job-name=")]
+    assert names == [
+        "--job-name=rb:basic+3/1",
+        "--job-name=rb:basic+3/2",
+        "--job-name=rb:basic+1/3",
+    ]
+
+
+def test_a_group_within_the_limit_keeps_todays_single_array_layout(
+    monkeypatch, tmp_path
+):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=11).initialise())
+
+    specs = [_spec(run_id=i) for i in range(1, 11)]
+    array_dir = tmp_path / "array-001"
+    backend.submit_array(specs, array_dir=array_dir)
+
+    assert _array_ranges(calls) == ["1-10"]
+    # No slice-N/ subdirectory: unchunked artefact paths do not move.
+    assert (array_dir / "manifest.txt").exists()
+    assert not (array_dir / "slice-1").exists()
+    assert specs[0].log_path == array_dir / "slurm-1.log"
+
+
+def test_an_unknown_limit_submits_one_array_as_before(monkeypatch, tmp_path, caplog):
+    """No `scontrol` and no config override: chunking is off, not guessed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+
+    assert _array_ranges(calls) == ["1-10"]
+    assert len(_events(caplog, "dispatch.max_array_size_unknown")) == 1
+    # ...and the single-array event still reports itself as one slice of one.
+    (fields,) = _events(caplog, "dispatch.array_submitted")
+    assert (fields["slice"], fields["slices"]) == (1, 1)
+
+
+def test_the_throttle_applies_per_slice(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)],
+        array_dir=tmp_path / "arr",
+        max_parallel=3,
+    )
+    # %N caps each array, so the group's peak concurrency is slices x N; the
+    # last slice is smaller than the cap and needs no throttle at all.
+    assert _array_ranges(calls) == ["1-4%3", "1-4%3", "1-2"]
+
+
+def test_max_array_size_is_read_from_scontrol_once_per_backend(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102, 103)
+    ]
+    probes = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            probes.append((list(argv), cwd, timeout))
+            return _scontrol_result(4)
+        return _fake_run(calls, results)(
+            argv, capture_output=capture_output, text=text, cwd=cwd, timeout=timeout
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+    backend.submit_array(
+        [_spec(run_id=i) for i in (5, 6, 7, 8)], array_dir=tmp_path / "b"
+    )
+
+    # MaxArraySize 4 => task indices 0..3 => at most three 1-based elements.
+    assert _array_ranges(calls) == ["1-3", "1-1", "1-3", "1-1"]
+    # Resolved once and cached: the second group re-uses the first probe.
+    assert len(probes) == 1
+    argv, cwd, timeout = probes[0]
+    assert argv == ["scontrol", "show", "config"]
+    assert cwd == "/proj/verif/blk"  # explicit, per the engineering guidelines
+    assert timeout is not None  # time-boxed: a wedged scontrol must not hang
+
+
+def test_the_configured_limit_wins_over_scontrol(monkeypatch, tmp_path):
+    """A site whose submit host has no usable `scontrol` pins the value."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=3).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+    # The probe still runs — it is the only source of the SECOND ceiling,
+    # `max_array_tasks` (#509 review) — but its MaxArraySize does not win.
+    assert probed == [["scontrol", "show", "config"]]
+
+
+def test_both_ceilings_pinned_need_no_probe_at_all(monkeypatch, tmp_path):
+    """A site with no scontrol states both, and nothing is shelled out."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=2).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+    assert probed == []
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_an_unusable_scontrol_answer_disables_chunking_loudly(
+    monkeypatch, tmp_path, caplog
+):
+    """rc=0 but no MaxArraySize line: unknown, and said so once."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            return SimpleNamespace(
+                returncode=0, stdout="SlurmVersion = 24.05\n", stderr=""
+            )
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    # "Loudly" is the whole point: silence here is a cluster whose groups
+    # will be refused by sbatch with nothing in the log to say why.
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "no usable MaxArraySize" in fields["error"]
+
+
+def test_a_wedged_scontrol_does_not_fail_the_submit(monkeypatch, tmp_path, caplog):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:2]) == ["scontrol", "show"]:
+            raise slurm_module.subprocess.TimeoutExpired(cmd=argv, timeout=timeout or 0)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    assert len(_events(caplog, "dispatch.max_array_size_unknown")) == 1
+
+
+def test_a_refused_array_names_the_unread_limit(monkeypatch, tmp_path):
+    """The reporter's exact failure, made actionable on the console.
+
+    `Invalid job array specification` IS an oversized group, and the probe
+    that would have split it only says so at INFO — which a default console
+    never shows. The error that fails the run carries the fix instead.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid job array specification" in str(excinfo.value)
+    assert "cfg-dispatch.max-array-size" in str(excinfo.value)
+
+
+def test_an_unrelated_submit_failure_offers_no_red_herring(monkeypatch, tmp_path):
+    """An unknown limit is not a reason to blame every rejected submit.
+
+    An invalid account/partition/QoS has its own recovery action, and a
+    MaxArraySize hint stapled to it buries the sentence that matters.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid partition name specified",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    # The limit is unknown here — the other guard alone must not be what
+    # keeps the hint away.
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "Invalid partition name" in str(excinfo.value)
+    assert "max-array-size" not in str(excinfo.value)
+
+
+def test_a_refused_array_within_a_known_limit_points_at_the_override(
+    monkeypatch, tmp_path
+):
+    """The array was inside everything the probe could see, and still refused.
+
+    So the cluster enforces something it did not report, and the sentence
+    must say that rather than claim the limit could not be read — while
+    still naming the one knob that fixes it (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "Invalid job array specification" in message
+    # 1000 = the pinned MaxArraySize of 1001 minus its exclusive index bound.
+    assert "1000 element(s) per array" in message
+    assert "read from config" in message
+    assert "lower cfg-dispatch.max-array-size" in message
+    # ...and NOT the unknown-limit sentence, which would be false here.
+    assert "could not be read" not in message
+
+
+def test_a_failed_slice_cancels_the_slices_already_submitted(monkeypatch, tmp_path):
+    """The caller only learns of handles this call RETURNS, so a mid-group
+    failure has to clean up its own earlier slices or orphan them."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Invalid job array"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="sbatch array submit failed"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+
+    assert calls[-1] == ["scancel", "100"]
+
+
+def test_selected_cluster_reads_every_spelling_and_takes_the_last():
+    """sbatch takes four forms and lets a later one override an earlier."""
+    parse = slurm_module._selected_cluster
+    assert parse([]) is None
+    assert parse(["--partition=verif"]) is None
+    assert parse(["-M", "remote"]) == "remote"
+    assert parse(["-Mremote"]) == "remote"
+    assert parse(["--clusters=remote"]) == "remote"
+    assert parse(["--clusters", "remote"]) == "remote"
+    assert parse(["--cluster=remote"]) == "remote"
+    # A project appending an override to a shared list must win here for
+    # the same reason it wins at submit.
+    assert parse(["-M", "first", "--clusters=second"]) == "second"
+    # A dangling option selects nothing rather than eating the next flag.
+    assert parse(["--partition=verif", "-M"]) is None
+
+
+def test_selected_cluster_ignores_prefixes_sbatch_itself_refuses():
+    """`--clusters` has no unambiguous abbreviation, so none is accepted.
+
+    sbatch resolves unambiguous long-option prefixes, but every prefix of
+    `--clusters` is also a prefix of `--cluster-constraint`, so getopt_long
+    rejects them and the command line never runs. Matching them here would
+    read a selection out of a submit that cannot happen — and the same
+    loose match would take a `--cluster-constraint` FEATURE list for a
+    cluster name, which is the failure that matters.
+    """
+    parse = slurm_module._selected_cluster
+    for ambiguous in ("--cl", "--clus", "--clust", "--cluste"):
+        assert parse([f"{ambiguous}=remote"]) is None, ambiguous
+        assert parse([ambiguous, "remote"]) is None, ambiguous
+    # The colliding option is a feature list, and must never be read as one.
+    assert parse(["--cluster-constraint=haswell"]) is None
+    assert parse(["--cluster-constraint", "haswell"]) is None
+    # ...while a real selection alongside it is still found.
+    assert parse(["--cluster-constraint=haswell", "-M", "remote"]) == "remote"
+    assert parse(["--clusters=remote", "--cluster-constraint=haswell"]) == "remote"
+
+
+def test_the_probe_asks_the_cluster_the_jobs_are_submitted_to(monkeypatch, tmp_path):
+    """`scontrol show config` unqualified reads the LOCAL cluster, whose
+    MaxArraySize is not the one the arrays are submitted against (#509)."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probes = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probes.append(list(argv))
+            return _scontrol_result(3)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=remote"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.cluster == "remote"
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "a"
+    )
+
+    assert probes == [["scontrol", "-M", "remote", "show", "config"]]
+    # ...and the remote cluster's answer is what chunks the group.
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_several_clusters_leave_the_limit_unknown(monkeypatch, tmp_path, caplog):
+    """`--clusters=a,b` is resolved at submit, so no single limit applies."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(sbatch_args=["-M", "alpha,beta"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a"
+        )
+
+    assert _array_ranges(calls) == ["1-3"]
+    # Probing either one would pin a limit the other may not have.
+    assert probed == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "alpha,beta" in fields["error"]
+    assert fields["cluster"] == "alpha,beta"
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+
+
+def test_a_pinned_limit_needs_no_cluster_probe(monkeypatch, tmp_path):
+    """The config value is the answer for whichever cluster is selected."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(
+        sbatch_args=["-M", "alpha,beta"], max_array_size=4
+    ).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array([_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "a")
+    assert probed == []
+    assert _array_ranges(calls) == ["1-3"]
+
+
+def test_an_ambiguous_cluster_still_earns_the_submit_failure_hint(
+    monkeypatch, tmp_path
+):
+    """Unknown is unknown, however it became unknown."""
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=alpha,beta"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    assert "cfg-dispatch.max-array-size" in str(excinfo.value)
+
+
+def _probe_recording_run(calls, results, *, max_array_size, probes):
+    """A fake subprocess.run that RECORDS the scontrol probe argv."""
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probes.append(list(argv))
+            return _scontrol_result(max_array_size)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    return run
+
+
+def test_the_cluster_can_come_from_the_environment(monkeypatch, tmp_path):
+    """Slurm reads $SBATCH_CLUSTERS as `--clusters`, so the probe must too."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "from-env")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.cluster == "from-env"
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "-M", "from-env", "show", "config"]]
+
+
+def test_sbatch_args_beat_the_environment(monkeypatch, tmp_path):
+    """Slurm gives the command line precedence; so does the probe."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "from-env")
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=from-args"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.cluster == "from-args"
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "-M", "from-args", "show", "config"]]
+
+
+def test_a_blank_environment_selection_means_the_local_cluster(monkeypatch):
+    """An exported-but-empty variable selects nothing, as it does for sbatch."""
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=3, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "   ")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.cluster is None
+    backend._max_elements_per_array(cwd="/proj/verif/blk")
+    assert probes == [["scontrol", "show", "config"]]
+
+
+def test_several_clusters_in_the_environment_leave_the_limit_unknown(
+    monkeypatch, caplog
+):
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=1001, probes=probes),
+    )
+    monkeypatch.setenv("SBATCH_CLUSTERS", "alpha,beta")
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        assert backend._max_elements_per_array(cwd="/proj/verif/blk") is None
+    assert probes == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert fields["cluster"] == "alpha,beta"
+
+
+def test_the_reserved_all_selection_leaves_the_limit_unknown(monkeypatch, caplog):
+    """`--clusters=all` names no single cluster (#509 review).
+
+    `scontrol -M all show config` answers with one config block per
+    cluster, so a first-match regex would pin whichever sorted first — a
+    limit belonging to a cluster the array may never be submitted to.
+    """
+    calls, results, probes = [], [], []
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _probe_recording_run(calls, results, max_array_size=1001, probes=probes),
+    )
+    cfg = DispatchConfigFile(sbatch_args=["--clusters=all"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("INFO"):
+        assert backend._max_elements_per_array(cwd="/proj/verif/blk") is None
+    assert probes == []
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert fields["cluster"] == "all"
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args,env,expected",
+    [
+        ([], None, None),
+        (["-M", "remote"], None, "remote"),
+        ([], "from-env", "from-env"),
+        (["--clusters=alpha,beta"], None, None),
+        (["--clusters=all"], None, None),
+        (["--clusters=ALL"], None, None),
+        ([], "alpha,beta", None),
+    ],
+)
+def test_cluster_property_names_one_cluster_or_nothing(
+    monkeypatch, sbatch_args, env, expected
+):
+    """`backend.cluster` is the single cluster a `-M` may name, or None.
+
+    Any per-cluster scheduler query (squeue, sacct, scontrol) reads this,
+    so a multi-cluster selection has to resolve to None: qualifying a query
+    with one name out of several would ask about a cluster nothing was
+    necessarily submitted to.
+    """
+    if env is not None:
+        monkeypatch.setenv("SBATCH_CLUSTERS", env)
+    cfg = DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    assert SlurmDispatchBackend(cfg).cluster == expected
+
+
+# ------------------------------- SchedulerParameters max_array_tasks (#509)
+
+
+def test_max_array_tasks_caps_the_slice_below_max_array_size(monkeypatch, tmp_path):
+    """A cluster may cap tasks-per-array well below MaxArraySize.
+
+    `scontrol show config` keeps reporting the larger MaxArraySize, so
+    slicing from that alone hands sbatch an array the cluster refuses —
+    and, the limit now being non-None, the failure hint would once have
+    been the wrong one (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=1001, max_array_tasks=4),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    # max_array_tasks is a COUNT (inclusive), not an index bound: 4 means
+    # four elements per array, not three.
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_without_max_array_tasks_the_index_bound_still_governs(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=5),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_the_larger_of_the_two_ceilings_never_wins(monkeypatch, tmp_path, caplog):
+    """A max_array_tasks ABOVE the index bound cannot raise the slice."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=5, max_array_tasks=1000),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    # Both ceilings are recorded, so a reader can see which one governed.
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert (fields["max_array_size"], fields["max_array_tasks"]) == (5, 1000)
+    assert fields["max_elements"] == 4
+
+
+def test_max_array_tasks_is_read_from_the_scheduler_parameters_line():
+    parse = slurm_module._max_array_tasks
+    assert parse("MaxArraySize = 1001\n") is None
+    assert parse("SchedulerParameters = bf_window=2880\n") is None
+    assert parse("SchedulerParameters = max_array_tasks=64,bf_window=2880\n") == 64
+    assert parse("SchedulerParameters = bf_window=2880,max_array_tasks=64\n") == 64
+    # A key that merely ENDS in the name is a different parameter.
+    assert parse("SchedulerParameters = other_max_array_tasks=64\n") is None
+    # ...and a mention outside the SchedulerParameters line is not the setting.
+    assert parse("SomeOtherKey = max_array_tasks=64\n") is None
+
+
+def test_a_pinned_max_array_size_still_honours_the_probed_task_cap(
+    monkeypatch, tmp_path
+):
+    """The recommended override must not hide the cluster's OTHER ceiling.
+
+    `cfg-dispatch.max-array-size` is what every diagnostic tells a site to
+    set, so if it also suppressed the `max_array_tasks` probe the advice
+    would hand back the same oversized slices it was meant to fix (#509
+    review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=9999, max_array_tasks=4),
+    )
+    # Config wins for MaxArraySize (1001 -> 1000 elements); the probe still
+    # supplies max_array_tasks, and 4 is smaller, so 4 governs.
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=1001).initialise())
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+    )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+
+
+def test_a_pinned_task_cap_needs_no_scontrol(monkeypatch, tmp_path, caplog):
+    """A site without scontrol can state the second ceiling on its own."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    # scontrol fails: the pinned pair is the only source of either ceiling.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=4).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    # The governing value came from config, and the event says which.
+    assert fields["source"] == "config"
+
+
+def test_the_config_source_event_carries_both_ceilings(monkeypatch, caplog):
+    """`max_array_tasks` is reported on the config path too (#509 review).
+
+    `log_event` drops `None` fields for every event in the package, so the
+    field is present whenever a cap is known — configured or probed — and
+    absent only when none is.
+    """
+    calls, results = [], []
+    # No scontrol at all, so nothing but the config can supply a ceiling.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+
+    with caplog.at_level("DEBUG"):
+        SlurmDispatchBackend(
+            DispatchConfigFile(max_array_size=1001, max_array_tasks=250).initialise()
+        )._max_elements_per_array(cwd="/proj/verif/blk")
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert fields["max_array_size"] == 1001
+    assert fields["max_array_tasks"] == 250
+    assert fields["max_elements"] == 250
+    assert fields["source"] == "config"
+
+    # ...and with no cap known anywhere, the key is simply absent.
+    caplog.clear()
+    with caplog.at_level("DEBUG"):
+        SlurmDispatchBackend(
+            DispatchConfigFile(max_array_size=1001).initialise()
+        )._max_elements_per_array(cwd="/proj/verif/blk")
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert "max_array_tasks" not in fields
+    assert fields["max_elements"] == 1000
+
+
+# ---------------------------- cancelling where the jobs actually are (#509)
+
+
+def test_parsable_submission_splits_the_cluster_suffix():
+    parse = slurm_module._parsable_submission
+    assert parse("500\n") == ("500", None)
+    assert parse("500;remote\n") == ("500", "remote")
+    # A trailing separator with nothing after it is not a cluster name.
+    assert parse("500;\n") == ("500", None)
+
+
+def test_a_submission_records_the_cluster_that_accepted_it(monkeypatch, tmp_path):
+    """`sbatch --parsable` answers `jobid;cluster` for a remote submit."""
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="500;remote\n", stderr="")],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handle = backend.submit(_spec())
+    # The id stays the bare number — the cluster is not part of it...
+    assert handle.job_id == "500"
+    # ...but it is remembered, because an id only means anything there.
+    assert handle.cluster == "remote"
+
+
+def test_array_handles_carry_the_cluster_and_a_failed_slice_cancels_there(
+    monkeypatch, tmp_path
+):
+    """The slice-failure cleanup must reach the cluster it submitted to.
+
+    Without the `-M`, `scancel 100` is issued against the LOCAL cluster and
+    the earlier remote slices keep running (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="100;remote\n", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr="Invalid job array"),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(max_array_size=5).initialise())
+
+    with pytest.raises(FatalRtlBuddyError, match="sbatch array submit failed"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert calls[-1] == ["scancel", "-M", "remote", "100"]
+
+
+def test_a_selected_cluster_stands_in_when_sbatch_names_none(monkeypatch, tmp_path):
+    """A Slurm that omits the suffix still put the job where -M pointed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["-M", "remote"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.submit(_spec()).cluster == "remote"
+
+
+def test_cancel_all_issues_one_scancel_per_cluster(monkeypatch):
+    """One `--clusters=a,b` group can be spread over both, so one -M cannot
+    cover it; and a purely local fleet keeps today's bare command."""
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.cancel_all(
+        [
+            JobHandle("100_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("100_2", _spec(run_id=2), cluster="alpha"),
+            JobHandle("200_1", _spec(run_id=3), cluster="beta"),
+            JobHandle("7", _spec(run_id=4)),
+            None,
+        ]
+    )
+    assert calls == [
+        ["scancel", "-M", "alpha", "100"],
+        ["scancel", "-M", "beta", "200"],
+        ["scancel", "7"],
+    ]
+
+
+def test_reaping_a_doomed_job_cancels_it_on_its_own_cluster(monkeypatch):
+    """squeue answers with bare ids, so the reap needs the submissions' record."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="500_1|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # drained
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    # Raw config: a 0 poll interval is rejected by initialise(), and the
+    # other wait tests in this module construct it the same way.
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all([JobHandle("500_1", _spec(), cluster="remote")])
+    assert ["scancel", "-M", "remote", "500"] in calls
+
+
+def test_telemetry_is_queried_once_per_cluster(monkeypatch):
+    """One query per cluster, because the rows carry no cluster of their own.
+
+    `_SACCT_FORMAT` has no cluster column, so a combined `-M a,b` answer
+    cannot be split back apart; asking each cluster separately makes the
+    provenance structural (#509 review).
+    """
+    calls, results = (
+        [],
+        [SimpleNamespace(returncode=0, stdout="", stderr="") for _ in range(2)],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.collect_telemetry(
+        [
+            JobHandle("100_1", _spec(run_id=1), cluster="beta"),
+            JobHandle("200_1", _spec(run_id=2), cluster="alpha"),
+        ]
+    )
+    assert len(calls) == 2
+    for argv, cluster, job in zip(calls, ("beta", "alpha"), ("100", "200")):
+        assert argv[argv.index("-M") + 1] == cluster
+        assert argv[argv.index("--jobs") + 1] == job
+
+
+def _sacct_row(job_id, *, elapsed, cpu):
+    """One `_SACCT_FORMAT` allocation row plus its `.batch` step row."""
+    return (
+        f"{job_id}|COMPLETED|{elapsed}|60|2|2|4G||\n"
+        f"{job_id}.batch|COMPLETED|{elapsed}|60|2|2|4G|{cpu}|1024K\n"
+    )
+
+
+def test_the_same_job_id_on_two_clusters_keeps_its_own_telemetry(monkeypatch):
+    """`--clusters=a,b` can put slices on clusters that reuse a number.
+
+    Keyed by id alone the two rows merge: the allocation values overwrite
+    each other and the step metrics are summed, so both handles are
+    right-sized from a job that never ran (#509 review).
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("77", elapsed=10, cpu="00:10"),
+                stderr="",
+            ),
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("77", elapsed=900, cpu="15:00"),
+                stderr="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [
+            JobHandle("77", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    assert set(telemetry) == {"alpha:77", "beta:77"}
+    assert telemetry["alpha:77"]["elapsed_s"] == 10
+    assert telemetry["beta:77"]["elapsed_s"] == 900
+    # Step metrics stay with their own job rather than summing across both.
+    assert telemetry["alpha:77"]["total_cpu_s"] == 10.0
+    assert telemetry["beta:77"]["total_cpu_s"] == 900.0
+
+
+def test_telemetry_key_is_the_bare_job_id_off_a_cluster():
+    """The single-cluster/local shape every consumer already reads."""
+    assert base_module.telemetry_key(JobHandle("500_1", _spec())) == "500_1"
+    assert (
+        base_module.telemetry_key(JobHandle("500_1", _spec(), cluster="remote"))
+        == "remote:500_1"
+    )
+
+
+def test_one_clusters_missing_accounting_does_not_discard_the_others(monkeypatch):
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=1, stdout="", stderr="sacct: error: no cluster"),
+            SimpleNamespace(
+                returncode=0,
+                stdout=_sacct_row("200", elapsed=5, cpu="00:05"),
+                stderr="",
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [
+            JobHandle("100", _spec(run_id=1), cluster="alpha"),
+            JobHandle("200", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    assert set(telemetry) == {"beta:200"}
+
+
+def test_local_telemetry_argv_is_unchanged(monkeypatch):
+    """The single-cluster path must be byte-identical to before #509."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    telemetry = backend.collect_telemetry(
+        [JobHandle("100_1", _spec(run_id=1)), JobHandle("100_2", _spec(run_id=2))]
+    )
+    (argv,) = calls
+    assert argv == [
+        "sacct",
+        "--parsable2",
+        "--noheader",
+        f"--format={slurm_module._SACCT_FORMAT}",
+        "--jobs",
+        "100",
+    ]
+    assert telemetry == {}
+
+
+# ------------------------------- polling every cluster that ran a slice (#509)
+
+
+def test_the_wait_polls_every_cluster_and_outlasts_the_first_to_drain(monkeypatch):
+    """A remote slice absent from the LOCAL queue is not a drained slice.
+
+    One unqualified squeue reports the jobs it cannot see as gone, so the
+    wait would return and collection would read result files for jobs that
+    are still queued (#509 review). Both slices here carry job id 77.
+    """
+    queued = SimpleNamespace(
+        returncode=0, stdout="77_1|None|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    empty = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls, results = (
+        [],
+        [
+            empty,  # poll 1, alpha: already drained...
+            queued,  # ...poll 1, beta: still queued, so the wait must go on
+            empty,  # poll 2, alpha
+            empty,  # poll 2, beta
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    slept = []
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: slept.append(s))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("77_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77_1", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    # Two polls, each asking both clusters — not one unqualified query.
+    assert [argv[argv.index("-M") + 1] for argv in calls] == [
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+    ]
+    # ...and it did not return on the first poll, when beta was queued.
+    assert len(slept) == 1
+
+
+def test_a_pending_slice_is_not_covered_by_its_twin_on_another_cluster(monkeypatch):
+    """The outstanding set is keyed per cluster, so ids cannot stand in."""
+    queued = SimpleNamespace(
+        returncode=0, stdout="77|None|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run([], [queued, queued]))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    handles = [
+        JobHandle("77", _spec(run_id=1), cluster="alpha"),
+        JobHandle("77", _spec(run_id=2), cluster="beta"),
+    ]
+    states = {}
+    for cluster in ("alpha", "beta"):
+        records = [slurm_module._parse_squeue_line("77|None|PENDING|0:00|rb:basic")]
+        cluster_states, _ = backend._outstanding(records, handles, cluster=cluster)
+        states.update(cluster_states)
+    # Two jobs outstanding, not one collapsed entry.
+    assert states == {"alpha:77": "pending", "beta:77": "pending"}
+
+
+def test_a_doomed_job_is_reaped_on_the_cluster_that_reported_it(monkeypatch):
+    """squeue answered for one cluster, so its ids belong to that cluster."""
+    doomed = SimpleNamespace(
+        returncode=0,
+        stdout="77_1|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+        stderr="",
+    )
+    empty = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls, results = [], [empty, doomed, empty, empty, empty]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [
+            JobHandle("77_1", _spec(run_id=1), cluster="alpha"),
+            JobHandle("77_1", _spec(run_id=2), cluster="beta"),
+        ]
+    )
+    # beta reported it, so beta is where it is cancelled — never alpha.
+    assert ["scancel", "-M", "beta", "77"] in calls
+    assert ["scancel", "-M", "alpha", "77"] not in calls
+
+
+def test_the_local_wait_argv_is_unchanged(monkeypatch):
+    """The single-cluster path must be byte-identical to before #509."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    backend.wait_all(
+        [JobHandle("500_1", _spec(run_id=1)), JobHandle("500_2", _spec(run_id=2))]
+    )
+    (argv,) = calls
+    assert argv == [
+        "squeue",
+        "--noheader",
+        f"--format={slurm_module._SQUEUE_FORMAT}",
+        f"--states={slurm_module._DRAIN_FILTER}",
+        "--jobs",
+        "500",
+    ]
+
+
+def test_a_task_cap_rejection_points_at_max_array_tasks(monkeypatch, tmp_path):
+    """The knob that produced the slice is the knob to lower (#509 review).
+
+    A hidden cap below a configured `max-array-tasks: 500` used to be
+    answered with "lower max-array-size", which would have the site state a
+    MaxArraySize its cluster does not have — the exact confusion the
+    separate task-count field exists to remove.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_size=1001, max_array_tasks=500).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "500 element(s) per array" in message
+    assert "lower cfg-dispatch.max-array-tasks" in message
+    assert "max-array-size" not in message
+
+
+def test_a_size_governed_rejection_still_points_at_max_array_size(
+    monkeypatch, tmp_path
+):
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        )
+    ]
+    monkeypatch.setattr(
+        slurm_module.subprocess,
+        "run",
+        _fake_run(calls, results, max_array_size=101, max_array_tasks=1000),
+    )
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    # 101 - 1 = 100 elements, below the 1000-task cap, so size governed.
+    assert "100 element(s) per array" in message
+    assert "read from scontrol" in message
+    assert "lower cfg-dispatch.max-array-size" in message
+    assert "max-array-tasks" not in message
+
+
+def test_an_unreadable_limit_recovery_names_both_ceilings(monkeypatch, tmp_path):
+    """Pinning MaxArraySize alone does not clear a lower task cap (#527).
+
+    With no limit resolved the recovery used to name
+    `cfg-dispatch.max-array-size` only. A cluster whose binding ceiling is
+    `SchedulerParameters=max_array_tasks` then refuses the next submission
+    identically — the slices are within the index bound and still above the
+    task count — so both independently configurable ceilings have to be in
+    the sentence.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="sbatch: error: Batch job submission failed: "
+            "Invalid job array specification",
+        ),
+    ]
+    # No `max_array_size`/`max_array_tasks`: the scontrol probe fails, which
+    # is the submit host this recovery text is written for.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "arr"
+        )
+    message = str(excinfo.value)
+    assert "could not be read" in message  # this IS the unknown-limit path
+    assert "cfg-dispatch.max-array-size" in message
+    assert "cfg-dispatch.max-array-tasks" in message
+    # ...and says which cluster value each one stands in for, or a site
+    # cannot tell them apart well enough to write the right number.
+    assert "MaxArraySize" in message
+    assert "max_array_tasks" in message
+
+
+def test_the_unknown_limit_run_log_line_names_both_ceilings_too(
+    monkeypatch, tmp_path, caplog
+):
+    """The same recovery, on the line that reports the cause (#527).
+
+    The `hint` field already carried both; the rendered sentence — what a
+    console actually shows — named only the index bound.
+    """
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="100\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in (1, 2, 3)], array_dir=tmp_path / "arr"
+        )
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+    assert "max-array-tasks" in fields["hint"]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.max_array_size_unknown"
+    ]
+    message = record.getMessage()
+    assert "cfg-dispatch.max-array-size" in message
+    assert "max-array-tasks" in message
+
+
+def test_handle_key_round_trips_through_its_split():
+    key = base_module.telemetry_key(JobHandle("77_1", _spec(), cluster="alpha"))
+    assert base_module.split_handle_key(key) == ("alpha", "77_1")
+    # A local id has no cluster half and comes back untouched.
+    assert base_module.split_handle_key("500_1") == (None, "500_1")
+
+
+def test_a_configured_task_cap_governs_without_any_max_array_size(
+    monkeypatch, tmp_path, caplog
+):
+    """A site that can state only its task cap must still be honoured.
+
+    With no scontrol to read MaxArraySize from, the explicitly configured
+    ceiling was ignored and the group went out whole — guaranteed to
+    violate the very number the project had written down (#509 review).
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101, 102)
+    ]
+    # scontrol fails, so max_array_size stays unknown throughout.
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(max_array_tasks=4).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    with caplog.at_level("DEBUG"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-4", "1-4", "1-2"]
+    (fields,) = _events(caplog, "dispatch.max_array_size")
+    assert fields["max_array_tasks"] == 4
+    assert fields["max_elements"] == 4
+    assert fields["source"] == "config"
+    assert fields["governed_by"] == "cfg-dispatch.max-array-tasks"
+    # Nothing was learned about MaxArraySize, so nothing is claimed.
+    assert "max_array_size" not in fields
+    # ...and the run is not told the limit is unknown, because it is not.
+    assert not _events(caplog, "dispatch.max_array_size_unknown")
+
+
+def test_a_task_cap_governs_under_a_multi_cluster_selection(monkeypatch, tmp_path):
+    """The other route to "no MaxArraySize": nothing to probe."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    probed = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        if list(argv[:1]) == ["scontrol"]:
+            probed.append(list(argv))
+            return _scontrol_result(1001)
+        return _fake_run(calls, results)(argv, cwd=cwd)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    cfg = DispatchConfigFile(
+        sbatch_args=["--clusters=alpha,beta"], max_array_tasks=2
+    ).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in (1, 2, 3, 4)], array_dir=tmp_path / "arr"
+    )
+    assert probed == []
+    assert _array_ranges(calls) == ["1-2", "1-2"]
+
+
+def test_neither_ceiling_known_is_still_one_unsplit_array(
+    monkeypatch, tmp_path, caplog
+):
+    """The unchanged fallback: nothing configured, nothing probed."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level("INFO"):
+        backend.submit_array(
+            [_spec(run_id=i) for i in range(1, 11)], array_dir=tmp_path / "arr"
+        )
+    assert _array_ranges(calls) == ["1-10"]
+    (fields,) = _events(caplog, "dispatch.max_array_size_unknown")
+    assert "cfg-dispatch.max-array-size" in fields["hint"]
+    assert "max-array-tasks" in fields["hint"]
+
+
+# ------------------------------------- build-job dedup on the queue (#507)
+#
+# The in-job `flock` (#504) makes two build jobs of one compile key safe,
+# but only by parking the second inside a compute allocation for the whole
+# of the first's compile. These prove the head declines to create that
+# second builder in the first place: it names the job after what it
+# builds and hands Slurm `--dependency=singleton`, which serialises jobs
+# sharing a name and owner. The `squeue` probe only names the jobs being
+# waited on in the warning; nothing else reads it.
+
+
+def _build_spec(**overrides):
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    defaults = dict(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+    )
+    defaults.update(overrides)
+    return BuildJobSpec(**defaults)
+
+
+def _dedup_results(queued: str, job_id: str = "900"):
+    """squeue's answer, then sbatch's — the order submit_build asks in."""
+    return [
+        SimpleNamespace(returncode=0, stdout=queued, stderr=""),
+        SimpleNamespace(returncode=0, stdout=f"{job_id}\n", stderr=""),
+    ]
+
+
+def test_the_build_job_name_is_derived_from_the_suite_directory(monkeypatch):
+    """Same identity → same name, which is what singleton serialises on."""
+    name = slurm_module.build_job_name(_build_spec())
+    assert name.startswith("rb-build-")
+    # Deterministic across processes: no pid, no time, no run token.
+    assert name == slurm_module.build_job_name(_build_spec())
+
+
+def test_a_regression_and_a_single_test_share_one_build_job_name():
+    """The whole point: `rb regression` over a suite and `rb test alpha`
+    inside it compile the same key into the same `obj_dir_<key>`, so
+    interrupting the first and re-running the second must dedup. A name
+    that carried the planned tests would separate exactly that pair."""
+    assert slurm_module.build_job_name(_build_spec()) == slurm_module.build_job_name(
+        _build_spec(reg_level=1000, plan_path=Path("/proj/p.json"), parallel=4)
+    )
+
+
+@pytest.mark.parametrize(
+    "same",
+    [{"builder_mode": "debug"}, {"builder_override": "vcs"}],
+    ids=["other-mode", "other-builder"],
+)
+def test_the_builder_selection_does_not_split_the_job_name(same):
+    """Two builder modes whose `compile-time` options are identical and
+    differ only in `run-time` resolve to ONE `obj_dir_<key>`. Keying the
+    name on the mode would let a `-M debug` run and a `-M reg` run build
+    into that one directory at once — the identity stops at the suite,
+    which is the unit that owns the shared-build tree."""
+    assert slurm_module.build_job_name(_build_spec()) == slurm_module.build_job_name(
+        _build_spec(**same)
+    )
+
+
+def test_another_suite_gets_a_different_job_name():
+    """Over-matching costs latency; under-matching costs the dedup. But
+    another suite owns another shared-build tree, and must not queue
+    behind a build that cannot collide with it."""
+    assert slurm_module.build_job_name(_build_spec()) != slurm_module.build_job_name(
+        _build_spec(suite_dir="/proj/verif/other")
+    )
+
+
+def test_the_job_name_is_taken_from_the_absolute_suite_path(tmp_path, monkeypatch):
+    """Two heads may spell one suite differently — a relative cwd, a `..`
+    — and a rendezvous point that they spell apart is not one."""
+    suite = tmp_path / "verif" / "blk"
+    suite.mkdir(parents=True)
+    monkeypatch.chdir(suite)
+    assert slurm_module.build_job_name(
+        _build_spec(suite_dir=str(suite))
+    ) == slurm_module.build_job_name(_build_spec(suite_dir="."))
+
+
+def test_every_build_job_is_submitted_as_a_singleton(monkeypatch):
+    """The guarantee, and it is Slurm's rather than the head's: no
+    check-then-submit window, and no dependence on `squeue` existing."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+    # Not the sim path's self-reaping flag: `singleton` waits for
+    # terminations, so it can never become unsatisfiable.
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+
+def test_an_in_flight_build_job_is_named_in_the_warning(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], _dedup_results("41\n42\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    spec = _build_spec()
+
+    with caplog.at_level(logging.WARNING):
+        handle = backend.submit_build(spec)
+
+    assert handle.job_id == "900"
+    probe, argv = calls
+    job_name = slurm_module.build_job_name(spec)
+    # The probe: this user's jobs of this identity that still occupy the
+    # queue, ids only — the same scope `singleton` has, so the line
+    # describes the jobs the dependency really waits for.
+    assert probe[0] == "squeue"
+    assert "--noheader" in probe and "--format=%i" in probe
+    assert f"--name={job_name}" in probe
+    assert f"--states={slurm_module._DEDUP_FILTER}" in probe
+    assert any(a.startswith("--user=") for a in probe)
+    # ...and it runs BEFORE the submit, or it would find this run's own job.
+    assert argv[0] == "sbatch"
+    assert "--dependency=singleton" in argv
+
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.levelno == logging.WARNING  # console-visible by default
+    fields = record.__dict__["rtl_fields"]
+    assert fields["job_ids"] == ["41", "42"]
+    assert fields["job_name"] == job_name
+    assert fields["suite_dir"] == "/proj/verif/blk"
+    assert fields["job_id"] == "900"  # the job that will do the waiting
+    message = record.getMessage()
+    assert "41, 42" in message and "900" in message
+    # It promises a revalidation, not a reuse: the waiting job checks the
+    # stamp under the build lock, and `--rebuild`, an edit, or another
+    # builder makes it compile instead — correct behaviour that a line
+    # promising reuse would have made look like a bug.
+    assert "revalidates the shared build and reuses it if the inputs are unchanged" in (
+        message
+    )
+
+
+def test_a_completing_build_job_still_counts_as_in_flight():
+    """A COMPLETING job is still finishing, so naming it explains a wait
+    that has not ended."""
+    assert "COMPLETING" in slurm_module._DEDUP_FILTER.split(",")
+
+
+def test_a_stopped_build_job_still_counts_as_in_flight():
+    """SIGSTOP does not terminate a job, so `singleton` keeps waiting (#527).
+
+    job_state_codes(7) has a STOPPED job retaining its CPUs. Omitted from
+    the filter, `squeue` returned no predecessor id and
+    `dispatch.build_job_deduped` gave none of the documented `scancel`
+    recovery guidance for the very job that is holding the allocation.
+    """
+    assert "STOPPED" in slurm_module._DEDUP_FILTER.split(",")
+
+
+def test_the_probe_still_names_a_preempted_predecessor(monkeypatch, caplog):
+    """The probe keeps the states the drain poll dropped (#527 round 19).
+
+    Its over-report is free: it only names the ids `singleton` may be
+    waiting for, and a predecessor whose record is still in the queue —
+    preempted and about to requeue, or a revoked federation sibling — is
+    exactly the id the documented `scancel`/`squeue -j` recovery starts from.
+    The drain poll cannot afford the same guess, which is why the two sets
+    are derived rather than shared.
+    """
+    import logging
+
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    probe, _argv = calls
+    (asked,) = [arg for arg in probe if str(arg).startswith("--states=")]
+    for retained in slurm_module._TERMINAL_RETAINED_STATES:
+        assert retained in asked.split(",")
+    # ...and the id it found is reported, whatever state it was in.
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41"]
+
+
+def test_the_dedup_dependency_composes_with_a_configured_one(monkeypatch):
+    """A site that gates every job behind a staging job means it.
+
+    The composed flag is emitted last so Slurm's last-one-wins picks it up
+    — a `--dependency` in `sbatch-args` would otherwise silently drop the
+    dedup — and it carries the configured expression, so neither condition
+    is lost.
+    """
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--dependency=afterok:7"]).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    composed = "--dependency=afterok:7,singleton"
+    assert composed in argv
+    assert argv.index(composed) > argv.index("--dependency=afterok:7")
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["--dependency", "afterok:7"], ["-d", "afterok:7"], ["-dafterok:7"]],
+    ids=["separated-long", "separated-short", "joined-short"],
+)
+def test_every_spelling_of_a_configured_dependency_is_composed_with(
+    monkeypatch, sbatch_args
+):
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:7,singleton" in argv
+
+
+def test_an_any_of_dependency_is_left_alone_rather_than_made_invalid(
+    monkeypatch, caplog
+):
+    """Slurm takes `,` or `?` in one expression, never both.
+
+    `afterok:7?afterok:8,singleton` is rejected by sbatch, which would turn
+    a configured any-of dependency into a failed submission — a fatal error
+    in place of an optimisation. The dedup stands down instead, saying so
+    at DEBUG, and the run keeps the in-job build lock it always had.
+    """
+    import logging
+
+    calls = []
+    # No probe here: nothing will be waited on, so there is nothing to name.
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7?afterok:8"]
+        ).initialise()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        assert backend.submit_build(_build_spec()).job_id == "900"
+
+    (argv,) = calls
+    assert argv[0] == "sbatch"
+    # The user's own flag is untouched; nothing of ours was appended.
+    assert [a for a in argv if a.startswith("--dependency")] == [
+        "--dependency=afterok:7?afterok:8"
+    ]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert "?" in record.__dict__["rtl_fields"]["error"]
+
+
+def test_an_empty_queue_submits_a_singleton_without_a_warning(monkeypatch, caplog):
+    """Nothing to wait for, so nothing to say — but the dependency is
+    still there, because the next run is what it protects against."""
+    import logging
+
+    calls, results = [], _dedup_results("\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+    assert [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ] == []
+
+
+def test_a_squeue_that_errors_keeps_the_guarantee_and_loses_the_line(
+    monkeypatch, caplog
+):
+    """The probe is the explanation, not the mechanism.
+
+    A site with no squeue on the submit host, or one that rejects the
+    query, still gets the singleton — it loses only the warning that would
+    have named the job ahead of it. DEBUG, not a warning: nothing about
+    the run is wrong.
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            # Both attempts fail: the state-filtered one and the fallback
+            # that drops `--states` for an older squeue.
+            SimpleNamespace(returncode=1, stdout="", stderr="squeue: error: nope"),
+            SimpleNamespace(returncode=1, stdout="", stderr="squeue: error: nope"),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        handle = backend.submit_build(_build_spec())
+
+    assert handle.job_id == "900"
+    _probe, _fallback, argv = calls
+    assert "--dependency=singleton" in argv
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert "squeue: error: nope" in record.__dict__["rtl_fields"]["error"]
+
+
+@pytest.mark.parametrize(
+    "boom",
+    [
+        FileNotFoundError("squeue"),
+        slurm_module.subprocess.TimeoutExpired("squeue", 20),
+    ],
+    ids=["absent", "wedged"],
+)
+def test_a_squeue_that_never_answers_still_submits_a_singleton(monkeypatch, boom):
+    """Absent or wedged, the probe costs a DEBUG line and nothing else —
+    it sits between the user and their submission, so it is time-boxed."""
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            assert timeout == slurm_module._DEDUP_TIMEOUT_SEC
+            raise boom
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.submit_build(_build_spec()).job_id == "900"
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+
+
+def test_the_submitted_event_records_the_job_name(monkeypatch, caplog):
+    """The queue is full of `rb-build-<hash>` entries; the log is what
+    ties each one back to the suite that submitted it — and what gives
+    `squeue --name=` / `scancel --name=` a value to use."""
+    import logging
+
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    spec = _build_spec()
+
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(spec)
+
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_submitted"
+    ]
+    assert record.__dict__["rtl_fields"]["job_name"] == slurm_module.build_job_name(
+        spec
+    )
+
+
+def test_a_configured_singleton_is_not_repeated(monkeypatch):
+    """A site that already asks for it gets one clause, not two."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--dependency=singleton"]).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert [a for a in argv if a.startswith("--dependency")] == [
+        "--dependency=singleton",
+        "--dependency=singleton",
+    ]
+
+
+def test_a_non_utf8_suite_path_still_names_a_job():
+    """A path byte that is not valid UTF-8 reaches Python surrogate-
+    escaped (PEP 383). Encoding that with `.encode("utf-8")` raises, so
+    the name has to be taken over `os.fsencode` — a suite the filesystem
+    accepts must not crash the submit before sbatch ever runs."""
+    odd = "/proj/verif/bl\udcffk"
+    name = slurm_module.build_job_name(_build_spec(suite_dir=odd))
+    assert name.startswith("rb-build-")
+    assert name == slurm_module.build_job_name(_build_spec(suite_dir=odd))
+    assert name != slurm_module.build_job_name(_build_spec())
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [
+        ["--dependency=afterok:7", "--dependency=afterok:8"],
+        ["--dependency=afterok:7", "-d", "afterok:8"],
+        ["-dafterok:7", "--dependency=afterok:8"],
+        ["-d", "afterok:7", "-dafterok:8"],
+    ],
+    ids=["long-long", "long-separated", "short-long", "separated-short"],
+)
+def test_the_last_configured_dependency_is_the_one_composed_with(
+    monkeypatch, sbatch_args
+):
+    """Slurm obeys the last `--dependency` it is given, so composing onto
+    the first would build the dedup on top of an expression the scheduler
+    has already discarded — and drop the one the user meant."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert argv[-3] == "--dependency=afterok:8,singleton"
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["--job-name=custom"], ["-J", "custom"], ["-Jcustom"]],
+    ids=["long", "separated-short", "joined-short"],
+)
+def test_a_configured_job_name_cannot_take_the_build_job_s_identity(
+    monkeypatch, sbatch_args
+):
+    """The build job's name is what `singleton` serialises on.
+
+    A `--job-name` in `sbatch-args` is appended after the generated flags
+    and would win, which is worse than cosmetic: every suite would answer
+    to that one name, so unrelated builds across the repo would serialise
+    on each other, and the probe and the logged `job_name` would name
+    something Slurm is not using. So this one flag is emitted last too.
+    """
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+    spec = _build_spec()
+
+    backend.submit_build(spec)
+
+    probe, argv = calls
+    generated = f"--job-name={slurm_module.build_job_name(spec)}"
+    assert generated in argv
+    assert argv.index(generated) > max(
+        index for index, arg in enumerate(argv) if arg in sbatch_args
+    )
+    # ...and the probe asks about the name Slurm will really use.
+    assert f"--name={slurm_module.build_job_name(spec)}" in probe
+
+
+def test_a_configured_job_name_still_reaches_the_sim_jobs(monkeypatch):
+    """Only the build job's name is reserved. A sim job's name carries no
+    scheduling meaning, so `sbatch-args` keeps overriding it."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--job-name=custom"]).initialise()
+    )
+
+    backend.submit(_spec())
+
+    (argv,) = calls
+    assert argv.index("--job-name=custom") > argv.index("--job-name=rb:basic")
+
+
+def test_an_exported_dependency_is_composed_with_too(monkeypatch):
+    """`SBATCH_DEPENDENCY` is sbatch's own default for `-d`.
+
+    Before the dedup this backend passed no dependency flag at all, so a
+    gate exported that way reached the build job untouched. Emitting
+    `--dependency=singleton` would silently replace it, so it is folded
+    into the same composition a configured one gets.
+    """
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9")
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:9,singleton" in argv
+
+
+def test_sbatch_args_beat_the_exported_dependency(monkeypatch):
+    """sbatch's precedence: a command-line option overrides the
+    environment. Composing onto the env value would gate the build job on
+    something the scheduler was never going to apply."""
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9")
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7", "-d", "afterok:8"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    # The last `sbatch-args` value, and the export ignored entirely.
+    assert "--dependency=afterok:8,singleton" in argv
+    assert not any("afterok:9" in arg for arg in argv)
+
+
+def test_an_exported_any_of_dependency_stands_the_dedup_down(monkeypatch, caplog):
+    """Same reasoning as the `sbatch-args` case: one separator per
+    expression, so composing would make sbatch reject the submission. The
+    export stays in force — it is still in sbatch's environment — and the
+    build lock keeps concurrent builders safe."""
+    import logging
+
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9?afterok:10")
+    calls = []
+    # No probe: nothing will be waited on, so there is nothing to name.
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        assert backend.submit_build(_build_spec()).job_id == "900"
+
+    (argv,) = calls
+    assert not any(a.startswith("--dependency") for a in argv)
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert record.levelno == logging.DEBUG
+    assert "afterok:9?afterok:10" in record.__dict__["rtl_fields"]["error"]
+
+
+@pytest.mark.parametrize("exported", ["", "   "], ids=["empty", "blank"])
+def test_a_blank_exported_dependency_is_no_dependency(monkeypatch, exported):
+    """An empty export is not an expression to hang a comma off."""
+    monkeypatch.setenv("SBATCH_DEPENDENCY", exported)
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+
+
+def test_the_exported_dependency_is_read_at_submit_time(monkeypatch):
+    """The backend is constructed once per run and the environment can
+    change under it, so the read belongs at the submission."""
+    calls, results = (
+        [],
+        _dedup_results("", job_id="900") + _dedup_results("", job_id="901"),
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+    monkeypatch.setenv("SBATCH_DEPENDENCY", "afterok:9")
+    backend.submit_build(_build_spec())
+
+    first, second = calls[1], calls[3]
+    assert "--dependency=singleton" in first
+    assert "--dependency=afterok:9,singleton" in second
+
+
+def test_a_failed_probe_is_not_repeated_for_the_rest_of_the_run(monkeypatch, caplog):
+    """A wedged `squeue` costs its timeout once, not once per suite.
+
+    A regression submits one build job per suite, and the probe only
+    decorates a warning — so paying N x 20 s for it is the one cost it
+    must never impose. The first failure retires it on this backend, and
+    the guarantee it does not provide (`--dependency=singleton`) is
+    unaffected.
+    """
+    import logging
+
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            raise slurm_module.subprocess.TimeoutExpired("squeue", timeout)
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+        backend.submit_build(_build_spec(suite_dir="/proj/verif/other"))
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch", "sbatch"]
+    # ...and it said so once, naming what is lost and what is not.
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    assert "not asking again this run" in record.getMessage()
+    assert "singleton" in record.getMessage()
+    # Both jobs are still serialised; only the explanation was lost.
+    assert all("--dependency=singleton" in argv for argv in calls[1:])
+
+
+def test_a_probe_that_answers_keeps_being_asked(monkeypatch):
+    """Retirement is for a broken probe, not for an empty queue."""
+    calls, results = (
+        [],
+        _dedup_results("", job_id="900") + _dedup_results("41\n", job_id="901"),
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+    backend.submit_build(_build_spec())
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch", "squeue", "sbatch"]
+
+
+def test_a_new_run_asks_again(monkeypatch):
+    """The latch lives on the backend instance, which lives for one run —
+    a submit host that was wedged an hour ago is not wedged forever."""
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            raise FileNotFoundError("squeue")
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    cfg = DispatchConfigFile().initialise()
+
+    SlurmDispatchBackend(cfg).submit_build(_build_spec())
+    SlurmDispatchBackend(cfg).submit_build(_build_spec())
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch", "squeue", "sbatch"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["-M", "remote"], ["-Mremote"], ["--clusters=remote"], ["--cluster", "remote"]],
+    ids=["separated", "joined", "long-equals", "singular-separated"],
+)
+def test_the_dedup_probe_follows_the_selected_cluster(monkeypatch, sbatch_args):
+    """A bare `squeue` reads the LOCAL queue.
+
+    With `sbatch-args` submitting elsewhere that means either silence or,
+    worse, local job ids named in a warning about a remote wait — so the
+    probe goes where the build job goes (#509 parsed the selection).
+    """
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    probe, argv = calls
+    assert probe[0] == "squeue"
+    assert probe[1:3] == ["-M", "remote"]
+    assert "--dependency=singleton" in argv
+
+
+def test_a_multi_cluster_selection_skips_the_probe(monkeypatch, caplog):
+    """`--clusters=a,b` lets Slurm choose at submit, so an id from either
+    queue may belong to a cluster this build job is not on — and an id
+    means nothing without its cluster. The singleton is unaffected: Slurm
+    resolves it wherever the job lands."""
+    import logging
+
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--clusters=a,b"]).initialise()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+
+    (argv,) = calls  # no probe at all
+    assert argv[0] == "sbatch"
+    assert "--dependency=singleton" in argv
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+    message = record.getMessage()
+    assert "several clusters (a,b)" in message
+    # ...and the same condition bounds the guarantee itself: a site with
+    # DependencyParameters=disable_remote_singleton fulfils `singleton` on
+    # the submitting cluster only, so builds routed to different clusters
+    # of one federation are left to the shared directory's flock. This is
+    # the one line that says so, and the selection cannot change under a
+    # run, so saying it once is saying it as often as it can be true.
+    assert "disable_remote_singleton" in message
+    assert "flock" in message
+
+
+def test_the_cluster_banner_is_not_read_as_a_job_id(monkeypatch, caplog):
+    """`--noheader` drops the column header, not the `CLUSTER: name` line
+    `-M` prints ahead of each queue."""
+    import logging
+
+    calls, results = [], _dedup_results("CLUSTER: remote\n41\n42\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["-M", "remote"]).initialise()
+    )
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41", "42"]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [
+        ["--dep=afterok:7"],
+        ["--depe=afterok:7"],
+        ["--depend=afterok:7"],
+        ["--dependenc=afterok:7"],
+        ["--dep", "afterok:7"],
+        ["--depend", "afterok:7"],
+    ],
+    ids=[
+        "shortest-equals",
+        "depe-equals",
+        "depend-equals",
+        "dependenc-equals",
+        "shortest-separated",
+        "depend-separated",
+    ],
+)
+def test_an_abbreviated_dependency_is_composed_with(monkeypatch, sbatch_args):
+    """sbatch resolves any unambiguous abbreviation of a long option, so
+    `--depend=afterok:7` is a real gate. Reading only the full spelling
+    would let the generated `singleton` replace it — the exact failure the
+    composition exists to prevent."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:7,singleton" in argv
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [
+        ["--deadline=2026-01-01T00:00:00"],
+        ["--delay-boot=10"],
+        ["--distribution=cyclic"],
+        ["--de=afterok:7"],
+        ["--d=afterok:7"],
+    ],
+    ids=["deadline", "delay-boot", "distribution", "ambiguous-de", "ambiguous-d"],
+)
+def test_a_colliding_prefix_is_not_read_as_a_dependency(monkeypatch, sbatch_args):
+    """`--de` still matches `--deadline` and `--delay-boot`, so `--dep` is
+    the shortest prefix that can only mean `--dependency`. Claiming less
+    would compose the dedup onto a deadline."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=singleton" in argv
+    # Whatever it was, it was left alone.
+    assert all(arg in argv for arg in sbatch_args)
+
+
+def test_abbreviations_take_part_in_last_wins(monkeypatch):
+    """One option, however spelled: the last occurrence is the one Slurm
+    obeys, so the scan cannot rank spellings above position."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7", "--dep=afterok:8"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec())
+
+    _probe, argv = calls
+    assert "--dependency=afterok:8,singleton" in argv
+
+
+def test_an_abbreviated_any_of_dependency_stands_the_dedup_down(monkeypatch, caplog):
+    """The `?` stand-down reads the same expression, so it sees the
+    abbreviated spelling too — otherwise this submission would carry the
+    mixed-separator argv sbatch rejects."""
+    import logging
+
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--depend=afterok:7?afterok:8"]).initialise()
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        backend.submit_build(_build_spec())
+
+    (argv,) = calls
+    assert [a for a in argv if a.startswith("--dep")] == [
+        "--depend=afterok:7?afterok:8"
+    ]
+    assert [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_dedup_unavailable"
+    ]
+
+
+@pytest.mark.parametrize(
+    "sbatch_args",
+    [["--job=custom"], ["--job-nam=custom"], ["--j", "custom"], ["-J", "custom"]],
+    ids=["job", "job-nam", "shortest", "short-flag"],
+)
+def test_an_abbreviated_job_name_cannot_take_the_identity_either(
+    monkeypatch, sbatch_args
+):
+    """`--job-name` is the only `j` option sbatch has, so `--j custom` is
+    a valid rename — and the build job's name must survive every spelling
+    of it, since `--dependency=singleton` serialises on that name. Nothing
+    scans for it: the generated flag is simply emitted after
+    `sbatch-args`, which is what makes the guarantee spelling-proof.
+    """
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=sbatch_args).initialise()
+    )
+    spec = _build_spec()
+
+    backend.submit_build(spec)
+
+    probe, argv = calls
+    generated = f"--job-name={slurm_module.build_job_name(spec)}"
+    assert argv.index(generated) > max(
+        index for index, arg in enumerate(argv) if arg in sbatch_args
+    )
+    assert f"--name={slurm_module.build_job_name(spec)}" in probe
+
+
+def test_the_probe_asks_for_every_non_terminal_state():
+    """`singleton` waits for earlier same-name jobs to TERMINATE, so the
+    probe that names them has to ask about every state that is not a
+    termination — the held ones especially. A predecessor parked in
+    `REQUEUE_HOLD` or `SPECIAL_EXIT` is the indefinitely-stuck job the
+    documented `scancel` recovery exists for, and the old filter left
+    exactly those ids unreportable.
+    """
+    states = slurm_module._DEDUP_FILTER.split(",")
+    for non_terminal in (
+        "PENDING",
+        "RUNNING",
+        "SUSPENDED",
+        "CONFIGURING",
+        "COMPLETING",
+        "STAGE_OUT",
+        "SIGNALING",
+        "RESIZING",
+        "REQUEUED",
+        "REQUEUE_HOLD",
+        "REQUEUE_FED",
+        "SPECIAL_EXIT",
+        "REVOKED",
+        "PREEMPTED",
+        # A SIGSTOPped job retains its CPUs (job_state_codes(7)), so it has
+        # not terminated and `singleton` still waits for it; and a job held
+        # because its reservation was deleted is as stuck as a REQUEUE_HOLD
+        # one (#527).
+        "STOPPED",
+        "RESV_DEL_HOLD",
+    ):
+        assert non_terminal in states, non_terminal
+    # ...and nothing that has already ended: naming a finished job as one
+    # this run is waiting for would be a false alarm.
+    for terminal in (
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED",
+        "TIMEOUT",
+        "NODE_FAIL",
+        "BOOT_FAIL",
+        "DEADLINE",
+        "OUT_OF_MEMORY",
+    ):
+        assert terminal not in states, terminal
+
+
+def test_a_held_predecessor_is_named(monkeypatch, caplog):
+    """The end-to-end version of the same claim: a job squeue reports only
+    because the filter asks about held states still reaches the warning."""
+    import logging
+
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    probe, _argv = calls
+    (states,) = [a for a in probe if a.startswith("--states=")]
+    assert "REQUEUE_HOLD" in states and "SPECIAL_EXIT" in states
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41"]
+
+
+def test_a_squeue_that_rejects_the_state_list_falls_back_once(monkeypatch, caplog):
+    """Older Slurms predate `SIGNALING` / `STAGE_OUT` / `REQUEUE_FED` and
+    answer `Invalid job state specified`, which would take the whole probe
+    down. One retry without `--states` leaves such a site with squeue's own
+    default — pending, running, completing — which is what the probe had
+    before it was widened, rather than with nothing.
+    """
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="squeue: error: Invalid job state"
+            ),
+            SimpleNamespace(returncode=0, stdout="41\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="900\n", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.submit_build(_build_spec())
+
+    filtered, fallback, argv = calls
+    assert any(a.startswith("--states=") for a in filtered)
+    assert not any(a.startswith("--states=") for a in fallback)
+    # The rest of the query is unchanged, so the fallback still asks about
+    # this user's jobs of this name.
+    assert [a for a in fallback if a.startswith(("--user=", "--name="))] == [
+        a for a in filtered if a.startswith(("--user=", "--name="))
+    ]
+    assert argv[0] == "sbatch"
+    # The probe survived, so the warning still names the job ahead.
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.build_job_deduped"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["41"]
+
+
+def test_a_wedged_squeue_is_not_retried(monkeypatch):
+    """The fallback is for an error return, not for a hang: retrying a
+    timeout would double the one cost the probe promised to bound."""
+    calls = []
+
+    def _run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        if argv[0] == "squeue":
+            raise slurm_module.subprocess.TimeoutExpired("squeue", timeout)
+        return SimpleNamespace(returncode=0, stdout="900\n", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", _run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec())
+
+    assert [argv[0] for argv in calls] == ["squeue", "sbatch"]
+
+
+# ------------------------------------------------ per-key release (#548)
+
+
+def _release_run(calls, results):
+    """subprocess.run stand-in for ``scontrol update``: records, pops."""
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append({"argv": list(argv), "cwd": cwd, "timeout": timeout})
+        result = (
+            results.pop(0)
+            if results
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    return run
+
+
+def test_release_dependency_clears_each_job_id(monkeypatch):
+    """One ``scontrol update`` per job — plain ids and array elements alike.
+
+    An empty ``Dependency=`` is the whole point: it clears the gate rather
+    than replacing it, so a job PENDING on the build job's ``afterok``
+    becomes runnable while its array siblings stay pending.
+    """
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    outcome = slurm_module.release_dependency(
+        ["1234_1", "1234_3", "999"], cwd="/proj/verif/blk"
+    )
+    assert outcome.released == ["1234_1", "1234_3", "999"]
+    assert (outcome.failures, outcome.skipped, outcome.systemic) == ([], [], None)
+    assert [call["argv"] for call in calls] == [
+        ["scontrol", "update", "JobId=1234_1", "Dependency="],
+        ["scontrol", "update", "JobId=1234_3", "Dependency="],
+        ["scontrol", "update", "JobId=999", "Dependency="],
+    ]
+    # Explicit cwd per the engineering guidelines, and time-boxed: a wedged
+    # slurmctld must not hold a compute allocation open.
+    assert {call["cwd"] for call in calls} == {"/proj/verif/blk"}
+    assert all(call["timeout"] is not None for call in calls)
+
+
+def test_release_dependency_addresses_the_cluster_that_issued_the_ids(monkeypatch):
+    """A job id is unique only within its cluster (#509)."""
+    calls = []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, []))
+
+    slurm_module.release_dependency(["77_2"], cluster="hpc", cwd="/proj")
+    assert calls[0]["argv"] == [
+        "scontrol",
+        "-M",
+        "hpc",
+        "update",
+        "JobId=77_2",
+        "Dependency=",
+    ]
+
+
+def test_release_dependency_reports_failures_without_raising(monkeypatch):
+    """The build job's exit status is the fan-out's life: a failed release
+    is a slower start, an exception would be a cancelled suite.
+
+    A refused id is about that id — an unknown or already-finished job —
+    so the batch carries on and the rest are still released.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(returncode=1, stdout="", stderr="slurm_update: Invalid job id"),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+        SimpleNamespace(returncode=1, stdout="", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    outcome = slurm_module.release_dependency(["1_1", "1_2", "1_3"])
+    assert [job_id for job_id, _ in outcome.failures] == ["1_1", "1_3"]
+    assert "Invalid job id" in outcome.failures[0][1]
+    # An empty stderr still says which command failed and how.
+    assert "rc=1" in outcome.failures[1][1]
+    assert outcome.released == ["1_2"]
+    # Every id was attempted; one refusal does not abandon the rest.
+    assert len(calls) == 3
+    assert outcome.skipped == [] and outcome.systemic is None
+
+
+def test_release_dependency_survives_a_missing_or_wedged_scontrol(monkeypatch):
+    def run(argv, **kwargs):
+        raise OSError("No such file or directory: 'scontrol'")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    outcome = slurm_module.release_dependency(["1_1"])
+    assert [job_id for job_id, _ in outcome.failures] == ["1_1"]
+    assert "scontrol" in outcome.failures[0][1]
+    assert outcome.systemic is not None
+
+
+def test_a_systemic_failure_stops_the_batch_instead_of_paying_it_per_id(monkeypatch):
+    """A wedged controller answers the same way for every id behind it.
+
+    One 30 s timeout per id multiplies by the fan-out — a key with a
+    thousand runs would hold the build job, and the compile slot it
+    occupies, for hours to buy an optimization (#548 review). So the first
+    timeout ends the batch and names what was not attempted.
+    """
+    calls = []
+    results = [subprocess.TimeoutExpired(cmd="scontrol", timeout=30)]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _release_run(calls, results))
+
+    outcome = slurm_module.release_dependency(["1_1", "1_2", "1_3", "1_4"])
+    assert len(calls) == 1, calls
+    assert [job_id for job_id, _ in outcome.failures] == ["1_1"]
+    assert outcome.skipped == ["1_2", "1_3", "1_4"]
+    assert outcome.systemic is not None
+    assert outcome.released == []
+
+
+def test_a_release_batch_shares_one_budget_across_its_ids(monkeypatch):
+    """The cost of a release is bounded by the batch, not by the fan-out."""
+    calls = []
+    clock = iter([0.0, 0.0, 0.4, 0.9, 1.4])
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    monkeypatch.setattr(slurm_module.time, "monotonic", lambda: next(clock))
+
+    outcome = slurm_module.release_dependency(
+        ["1_1", "1_2", "1_3", "1_4"], budget_s=1.0
+    )
+    # Each call is time-boxed to what is LEFT of the batch's budget, and
+    # the batch stops once there is none.
+    assert calls == [pytest.approx(1.0), pytest.approx(0.6), pytest.approx(0.1)]
+    assert outcome.released == ["1_1", "1_2", "1_3"]
+    assert outcome.skipped == ["1_4"]
+    assert "budget" in outcome.systemic
+    # Nothing failed: the ids simply ran out of time and keep their gate.
+    assert outcome.failures == []
+
+
+# ------------------------- an interrupted run's surviving jobs (#521)
+
+
+def test_live_job_ids_asks_squeue_for_the_recorded_bases(monkeypatch):
+    """One query per cluster, over base ids, expanded back to elements.
+
+    The handles come from a run manifest rather than from this process's
+    own submissions, so the ids are all this backend has: it asks about the
+    array bases and maps each squeue row back onto the elements recorded.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=0,
+            stdout="77_[2-3]|Dependency|PENDING|0:00|rb:beta\n",
+            stderr="",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    live = backend.live_job_ids(
+        [
+            JobHandle("76", _spec()),
+            JobHandle("77_1", _spec(run_id=1)),
+            JobHandle("77_2", _spec(run_id=2)),
+            JobHandle("77_3", _spec(run_id=3)),
+        ]
+    )
+
+    (argv,) = calls
+    assert argv[0] == "squeue"
+    assert "--noheader" in argv
+    assert f"--format={slurm_module._SQUEUE_FORMAT}" in argv
+    assert argv[-2] == "--jobs"
+    assert sorted(argv[-1].split(",")) == ["76", "77"]
+    # 77_1 has started and left the queue; the build job 76 is gone.
+    assert live == {"77_2", "77_3"}
+
+
+def test_live_job_ids_reports_a_drained_fleet_as_gone(monkeypatch):
+    """`Invalid job id specified` is how a fleet that aged out of the queue
+    answers, and it is the answer that retires a manifest as stale."""
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="slurm_load_jobs error: Invalid job id specified",
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.live_job_ids([JobHandle("88", _spec())]) == set()
+
+
+def test_live_job_ids_treats_a_failed_poll_as_still_live(monkeypatch):
+    """A query that errored says nothing about the jobs.
+
+    Reading it as "gone" would submit a second fleet beside a first one
+    still holding the cluster, or silently skip the `scancel` the user
+    asked for — so an unanswered probe reports the recorded ids live and
+    the run errs towards not acting.
+    """
+    calls = []
+    results = [
+        SimpleNamespace(
+            returncode=1, stdout="", stderr="slurm_load_jobs error: timeout"
+        )
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handles = [JobHandle("91", _spec()), JobHandle("92_1", _spec(run_id=1))]
+    assert backend.live_job_ids(handles) == {"91", "92_1"}
+
+
+def test_live_job_ids_queries_each_cluster_with_its_own_selection(monkeypatch):
+    """A job id means nothing on a cluster that did not issue it (#509), so
+    a fleet spread over two clusters is two queries."""
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout="10|None|RUNNING|0:30|rb:a\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    live = backend.live_job_ids(
+        [
+            JobHandle("10", _spec(), cluster="alpha"),
+            JobHandle("11", _spec(), cluster="beta"),
+        ]
+    )
+
+    assert live == {"10"}
+    assert [argv[argv.index("-M") + 1] for argv in calls] == ["alpha", "beta"]
+
+
+def test_live_job_ids_bounds_each_probe_and_reads_a_timeout_as_live(monkeypatch):
+    """A wedged controller must not hold the cancellation check open.
+
+    `--orphans cancel` re-probes on a 30 s grace and `squeue` had no
+    timeout, so one unresponsive controller could block the head for as
+    long as it liked. The probe now carries the caller's remaining
+    deadline, and running out of it is an answer about the query, never
+    about the jobs — so the ids come back LIVE and the run errs towards
+    not acting (#580 review).
+    """
+    calls = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append((list(argv), timeout))
+        if timeout is not None:
+            # A controller that takes longer than the caller can wait.
+            raise slurm_module.subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    handles = [JobHandle("31", _spec()), JobHandle("32_1", _spec(run_id=1))]
+    assert backend.live_job_ids(handles, timeout_s=0.25) == {"31", "32_1"}
+    assert [timeout for _argv, timeout in calls] == [0.25]
+
+    # ...and with no deadline the call is unbounded, exactly as the drain
+    # wait has always issued it.
+    calls.clear()
+    assert backend.live_job_ids(handles) == set()
+    assert [timeout for _argv, timeout in calls] == [None]
+
+
+def test_the_drain_wait_still_polls_without_a_timeout(monkeypatch):
+    """`wait_all` has `max-wait` above it and nothing to gain from giving
+    up on one poll, so its argv and its call shape are unchanged."""
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="", stderr="")]
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(timeout)
+        return (
+            results.pop(0)
+            if results
+            else SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    backend.wait_all([JobHandle("41", _spec())])
+    assert calls == [None]
+
+
+# --- the split compile: two chained jobs (#593) -----------------------------
+
+
+def test_the_verilate_job_has_its_own_name_over_the_same_digest():
+    """`singleton` serialises on the (user, name) pair, so the two halves
+    of one compile must not share a name: each phase would then wait for
+    the other phase's predecessor, which two overlapping runs of one suite
+    can satisfy only by deadlock."""
+    verilate = slurm_module.build_job_name(_build_spec(phase="verilate"))
+    build = slurm_module.build_job_name(_build_spec(phase="build"))
+    assert verilate.startswith("rb-verilate-")
+    assert build.startswith("rb-build-")
+    # One suite, one digest: the prefix is the only difference.
+    assert verilate.split("-", 2)[2] == build.split("-", 2)[2]
+    # ...and an unsplit compile keeps the name it always had.
+    assert build == slurm_module.build_job_name(_build_spec())
+
+
+def test_the_verilate_job_is_submitted_like_a_build_job_with_its_own_phase(
+    monkeypatch,
+):
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = _build_spec(
+        phase="verilate", resources=JobResources(cpus=2, mem="96G", time="01:00:00")
+    )
+    backend.submit_build(spec)
+
+    _probe, argv = calls
+    assert f"--job-name={slurm_module.build_job_name(spec)}" in argv
+    assert "--cpus-per-task=2" in argv and "--mem=96G" in argv
+    assert "--dependency=singleton" in argv
+    # Nothing to reap: it waits for no job of its own.
+    assert "--kill-on-invalid-dep=yes" not in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--phase") + 1] == "verilate"
+
+
+def test_the_build_half_waits_for_the_verilate_job_and_keeps_the_dedup(monkeypatch):
+    """Both conditions, ANDed: the chain, and the one-at-a-time identity."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_build(_build_spec(phase="build"), dependency="1000")
+
+    _probe, argv = calls
+    assert "--dependency=afterok:1000,singleton" in argv
+    # An `afterok` CAN become unsatisfiable, so Slurm owns the cleanup —
+    # the head may be gone by the time the verilate job fails.
+    assert "--kill-on-invalid-dep=yes" in argv
+
+
+def test_the_chained_dependency_is_appended_after_sbatch_args(monkeypatch):
+    """Same ordering the build job's own flags already rely on: Slurm
+    resolves a repeated `--dependency` to the LAST one, so a site's
+    passthrough must not be able to drop the chain."""
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--partition=verif", "--dependency=afterok:7"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec(phase="build"), dependency="1000")
+
+    _probe, argv = calls
+    generated = "--dependency=afterok:1000,afterok:7,singleton"
+    assert argv.index(generated) > argv.index("--partition=verif")
+    assert argv.index("--dependency=afterok:7") < argv.index(generated)
+
+
+def test_an_any_of_dependency_loses_the_dedup_but_never_the_chain(monkeypatch):
+    """Slurm allows one separator per expression, so `?` cannot be composed
+    with. The dedup is what gives way — the in-job build lock still makes
+    two builders safe — while the chain is the correctness condition and
+    stays."""
+    # No dedup clause means no queue probe, so sbatch is the only call.
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(
+            sbatch_args=["--dependency=afterok:7?afterok:8"]
+        ).initialise()
+    )
+
+    backend.submit_build(_build_spec(phase="build"), dependency="1000")
+
+    (argv,) = calls
+    assert "--dependency=afterok:1000" in argv
+    assert "--kill-on-invalid-dep=yes" in argv
+    assert not any("singleton" in arg for arg in argv)
+
+
+def test_the_verilate_job_gets_its_own_submission_event(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], _dedup_results("")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(_build_spec(phase="verilate"))
+    events = [r.__dict__.get("rtl_event") for r in caplog.records]
+    assert "dispatch.verilate_submitted" in events
+    assert "dispatch.build_submitted" not in events
+
+    caplog.clear()
+    calls[:] = []
+    results[:] = _dedup_results("")
+    with caplog.at_level(logging.INFO):
+        backend.submit_build(_build_spec(phase="build"), dependency="1000")
+    events = [r.__dict__.get("rtl_event") for r in caplog.records]
+    assert "dispatch.build_submitted" in events
+    assert "dispatch.verilate_submitted" not in events

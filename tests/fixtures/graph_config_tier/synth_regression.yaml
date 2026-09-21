@@ -1,0 +1,5 @@
+# Fixture for tests/test_graph_config_tier.py — the synthesis flow.
+rtl-buddy-filetype: synth_reg_config
+
+synth-configs:
+  - "impl/blk_a/synth.yaml"

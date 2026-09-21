@@ -1,58 +1,41 @@
 ---
-description: How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, cdc, pnr, and power runs.
+description: Mark known failures, choose whether an unexpected pass should fail a run, and know which failures a marker never covers.
 ---
 
-# Expected failures (xfail)
+# Expected Failures
 
-Mark a verification that is **known not to hold** — a teaching property
-that is true but not inductive under FPV `mode: prove`, a test guarding
-an unfixed bug, a CDC lint with intentional violations, a synthesis or
-P&R configuration whose current failure is documented — when you want it
-tracked in the suite rather than deleted.
+Use an expected-failure marker only for a known, understood failure that should remain visible in a suite. The fields are available on runs in `tests.yaml`, `fpv.yaml`, `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `lint.yaml`.
 
-`xfail` and `xfail_strict` are one shared mechanism wired across every
-command whose results carry a PASS / FAIL / SKIP verdict: `fpv.yaml`,
-`tests.yaml`, `synth.yaml`, `cdc.yaml`, `pnr.yaml`, and `power.yaml`. A
-verification is treated as expected-to-fail when **either** marker is
-set; the verdict is then re-interpreted:
+## Choose strictness
 
-| Actual outcome | Reported as | Counts as |
-|---|---|---|
-| FAIL | `XFAIL` | **pass** — the expected failure happened, so it does not fail the run or the regression |
-| PASS | `XPASS` | depends on strictness (see below) |
-| SKIP / NA | unchanged | unchanged |
+| Marker | Actual failure | Unexpected pass | Use when |
+| --- | --- | --- | --- |
+| `xfail: true` | `XFAIL`, counts as pass | `XPASS`, counts as pass | Either outcome is acceptable |
+| `xfail_strict: true` | `XFAIL`, counts as pass | `XPASS`, counts as fail | A pass means the marker is stale |
 
-## Strict vs non-strict
+If both fields are set, strict behavior wins. `SKIP` and `NA` are unchanged, so a marker does not cover an unknown `NA`: that outcome still exits 1.
 
-The two markers differ **only** in how an unexpected pass is counted:
+Prefer `xfail_strict: true` for a known bug or intentionally failing teaching case so the regression reports when the underlying behavior changes.
 
-| Marker | `XPASS` counts as | Use when |
-|---|---|---|
-| `xfail: true` | **pass** (non-strict) | the run *may* start passing and that is fine / not worth failing on |
-| `xfail_strict: true` | **fail** (strict) | a pass means the marker is stale and you want to be told — the safe choice for a regression guard |
+## What the marker covers
 
-If both are set, strict wins. Each verification picks the marker it
-needs. A common pattern: `xfail_strict: true` on a teaching demo or a
-not-yet-fixed bug, so the regression turns red (via `XPASS`) the moment
-the run starts passing and the marker should be removed.
+A marker excuses only a verdict the flow's own tool reported at its own end: a simulation that ran and printed `FAIL`, a property sby disproved, a violation count, a gate the tool evaluated. A failure that happened *instead of* a verdict is graded `FAIL` however the marker is spelled, because the run never reached the behavior the marker is about:
 
-## Caveat
+| Flow | Graded `FAIL` under a marker |
+| --- | --- |
+| `test` | preproc, sweep, and filelist setup failures; compile failures; a sim killed at `sim_timeout`; a simulator that exited without a verdict; a dispatched job the scheduler lost |
+| `fpv` | sby reporting `UNKNOWN`, a solver timeout, or an error instead of `PASS`/`FAIL` |
+| `cdc`, `lint` | the analyzer failing before it produced a count |
+| `synth`, `pnr`, `power`, `fpga` | setup failures — a missing tool, an unresolvable platform or PDK, a filelist or script-generation error |
 
-Like pytest `xfail` without `raises=`, this does not distinguish a
-genuine disproof from an infrastructure error that also surfaces as a
-FAIL. Reserve the marker for runs whose failure mode is understood.
+A run graded this way says why, so the reason is in the summary table and in `result.json`:
 
-## Where it shows up
+```
+<suite>  <test>  FAIL  xfail not applied (sim timeout): Sim hit timeout
+```
 
-The marker is a per-verification field in each command's yaml; the
-exact schema entries live in [YAML Formats](../reference/yaml.md).
-Common contexts:
+The result carries a `fail_stage` key naming the stage (`setup`, `compile`, `sim_timeout`, `sim`, `dispatch`, `tool`), and the `*_suite.xfail` event carries `excused: false` with the same reason for machine consumers. A negative control that stopped compiling, or that was killed on a busy node before reaching the mismatch it exists to catch, therefore fails the run rather than reporting green.
 
-- **`fpv.yaml`** — a teaching property that is true but not inductive
-  under `mode: prove` (see [Writing properties that prove](fpv.md#writing-properties-that-prove-bmc-vs-induction)).
-- **`tests.yaml`** — a test that guards a known unfixed bug or an
-  environment limitation.
-- **`cdc.yaml`** — a design with known / intentional CDC violations
-  tracked in the suite.
-- **`synth.yaml` / `pnr.yaml` / `power.yaml`** — a configuration whose
-  current failure is documented and tracked.
+A tool-reported failure in `synth`, `pnr`, `power`, and `fpga` is that flow's verdict — those flows have no later verdict stage — so a marker still covers a synthesis the tool rejected.
+
+See [YAML Formats](../reference/yaml.md) for the field on each configuration type.

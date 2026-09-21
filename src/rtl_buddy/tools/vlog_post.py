@@ -13,6 +13,7 @@ import os
 logger = logging.getLogger(__name__)
 import re
 from ..runner.test_results import TestResults
+from ..runner.xfail import FAIL_STAGE_KEY
 from ..logging_utils import log_event
 
 
@@ -48,6 +49,63 @@ def count_assertion_failures(*paths) -> int:
     return total
 
 
+def describe_sim_exit(sim_returncode) -> str:
+    """How a simulator ended, for a one-line desc or console message.
+
+    ``exited 1`` / ``killed by signal 6``. A process killed by a signal
+    comes back as a negative code (SIGABRT is -6, which is what an abort
+    looks like), and "exited -6" would misreport it. One spelling, because
+    every message about a failed simulation shows the same fact.
+    """
+    if sim_returncode is not None and sim_returncode < 0:
+        return f"killed by signal {-sim_returncode}"
+    return f"exited {sim_returncode}"
+
+
+def grade_unknown_sim_exit(results: dict, sim_returncode, *, test, run_id=None):
+    """Re-grade an unknown ``NA`` whose simulator exited nonzero (#546).
+
+    Marker parsing grades a transcript with no PASS/FAIL banner as ``NA``
+    -- "unknown", which is not a pass. A simulator that died (Verilator's
+    ``Aborting...`` after a null dereference, a segfault, a wrapper
+    swallowing ``$fatal``) leaves exactly that transcript *and* a nonzero
+    exit status, and the pair is a failure rather than an outcome to
+    hand-check. Mutates ``results`` in place and returns whether it did.
+
+    Only the unknown case is re-graded: a simulator exit code is not a
+    verdict on its own, so a transcript that did state one keeps it -- a
+    PASS banner with a nonzero exit stays PASS, a FAIL keeps its own
+    reason -- and so does a UVM or cocotb verdict, neither of which is
+    ever ``NA``. ``sim_returncode`` of ``None`` means "no simulation ran
+    here" and grades nothing.
+
+    Applied where the verdict is decided, before ``postproc.completed``
+    announces it: ``docs/agents.md`` documents that event's ``result`` and
+    ``desc`` as authoritative, so a later re-grade would leave JSONL
+    consumers recording an unknown outcome while the envelope and the exit
+    code say failure (#574 review).
+    """
+    if not sim_returncode or results.get("result") != "NA":
+        return False
+    log_event(
+        logger,
+        logging.ERROR,
+        "sim.unknown_verdict",
+        test=test,
+        run_id=run_id,
+        returncode=sim_returncode,
+    )
+    results["result"] = "FAIL"
+    results["desc"] = (
+        f"Sim {describe_sim_exit(sim_returncode)} with no PASS/FAIL "
+        "verdict in the transcript"
+    )
+    # The simulator died instead of reporting, so an xfail marker on this
+    # test has no verdict to excuse (#594).
+    results[FAIL_STAGE_KEY] = "sim"
+    return True
+
+
 class VlogPost:
     """
     Verilog test output post-processing
@@ -76,13 +134,37 @@ class VlogPost:
                     match_err = re.search(r"^(ERR|FAT):\s*(.*)", line)
 
         results = {"result": "NA", "desc": "test result unknown"}
-        if match_fail is not None:
-            results = {
-                "result": "FAIL",
-                "desc": f"{match_fail.group(1)} {match_err.group(2).strip()}",
-            }
         if match_pass is not None:
             results = {"result": "PASS", "desc": match_pass.group(1)}
+        # FAIL is applied last so it wins: a failure signal must not be
+        # erasable by a PASS line elsewhere in the log. A transcript can carry
+        # both -- a per-phase PASS ahead of a final FAIL, a wrapper printing
+        # its own PASS after a failing sub-check, or output from two phases
+        # concatenated -- and scoring that PASS is a silent false green.
+        # Mirrors count_assertion_failures, which already overrides a PASS
+        # when an assertion fired.
+        if match_fail is not None:
+            # An ERR:/FAT: line is conventional alongside FAIL but not
+            # guaranteed: a testbench may print its verdict and nothing else.
+            # Reading match_err unconditionally turned that into an
+            # AttributeError that took the whole run down instead of reporting
+            # the failure, losing the results table for every other test too.
+            detail = match_err.group(2).strip() if match_err is not None else ""
+            desc = f"{match_fail.group(1)} {detail}".strip()
+            results = {"result": "FAIL", "desc": desc}
+            if match_pass is not None:
+                # The log contradicts itself. FAIL is the safe reading, but
+                # the testbench is not obeying "emit exactly one terminal
+                # marker" and that is worth saying rather than silently
+                # picking a winner.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "postproc.conflicting_markers",
+                    test=self.name,
+                    log=str(self.path),
+                    chosen="FAIL",
+                )
         if match_pass is None and match_fail is None:
             log_event(
                 logger,

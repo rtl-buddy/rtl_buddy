@@ -1,8 +1,9 @@
 """rtl-buddy-hub daemon package.
 
 Phase 10b implementation (`rtl-buddy/rtl_buddy#115`) of the wire
-contract frozen by `rtl-buddy/rtl-buddy-view#19` —
-``docs/hub-protocol.md`` v1 in the rtl-buddy-view repo.
+contract frozen by `rtl-buddy/rtl-buddy-sch#19` —
+``docs/hub-protocol.md`` v1 in the rtl-buddy-sch repo (formerly named
+rtl-buddy-view).
 
 The daemon mediates messages between three views of a SystemVerilog
 design (schematic / waveform / source) so a click in one is reflected

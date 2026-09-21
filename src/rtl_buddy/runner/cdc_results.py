@@ -2,7 +2,7 @@
 
 import pprint
 
-from .xfail import is_pass_with_xfail
+from .xfail import FAIL_STAGE_KEY, is_pass_with_xfail
 
 
 class CdcResults:
@@ -50,6 +50,13 @@ class CdcPassResults(CdcResults):
 
 
 class CdcFailResults(CdcResults):
+    """A failed analysis.
+
+    ``fail_stage`` names a stage that failed *instead of* producing a
+    verdict on the design; such a failure is never excused by an xfail
+    marker (#553, #594). Leave it unset for the flow's own verdict.
+    """
+
     def __init__(
         self,
         name,
@@ -58,6 +65,7 @@ class CdcFailResults(CdcResults):
         suppressed: int = 0,
         crossings: int | None = None,
         desc: str | None = None,
+        fail_stage: str | None = None,
     ):
         msg = desc or f"{violations} CDC violation(s)"
         super().__init__(
@@ -68,6 +76,8 @@ class CdcFailResults(CdcResults):
         self.results["suppressed"] = suppressed
         if crossings is not None:
             self.results["crossings"] = crossings
+        if fail_stage is not None:
+            self.results[FAIL_STAGE_KEY] = fail_stage
 
 
 class CdcSkipResults(CdcResults):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,56 @@ builder-opts:
 
 def _verilator_builder() -> RtlBuilderConfig:
     return from_yaml(RtlBuilderConfig, _VERILATOR_BUILDER_YAML)
+
+
+def test_rtl_builder_extra_sim_timeout_defaults_to_zero():
+    assert _verilator_builder().get_extra_sim_timeout() == 0
+
+
+def test_rtl_builder_extra_sim_timeout_from_config():
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML + "extra-sim-timeout: 900\n",
+    )
+    assert cfg.get_extra_sim_timeout() == 900
+
+
+def test_resolve_extra_sim_timeout_prefers_cli_override():
+    """``--extra-sim-timeout`` wins over the builder's own value, and 0 is honoured.
+
+    0 must not be mistaken for "unset", or a caller could not turn a
+    configured allowance back off for one run.
+    """
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML + "extra-sim-timeout: 900\n",
+    )
+    root = RootConfig.__new__(RootConfig)
+
+    root.extra_sim_timeout_override = None
+    assert root.resolve_extra_sim_timeout(cfg) == 900
+
+    root.extra_sim_timeout_override = 120
+    assert root.resolve_extra_sim_timeout(cfg) == 120
+
+    root.extra_sim_timeout_override = 0
+    assert root.resolve_extra_sim_timeout(cfg) == 0
+
+
+def test_rtl_builder_negative_extra_sim_timeout_is_fatal():
+    """Rejected, not clamped: a negative value shrinks every test's timeout."""
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML + "extra-sim-timeout: -100\n",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="negative extra-sim-timeout"):
+        cfg.get_extra_sim_timeout()
+
+
+def test_resolve_extra_sim_timeout_zero_when_neither_set():
+    root = RootConfig.__new__(RootConfig)
+    root.extra_sim_timeout_override = None
+    assert root.resolve_extra_sim_timeout(_verilator_builder()) == 0
 
 
 def test_rtl_builder_simulator_family_from_explicit_field():
@@ -218,6 +269,99 @@ def test_test_config_plusargs_lazy_init_and_merge():
     assert cfg.get_plusargs() == {"FOO": 1, "BAR": 2, "BAZ": 3}
 
 
+def test_master_seed_is_exposed_as_plusarg_before_preproc():
+    cfg = _make_test_config()
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+
+    resolution = cfg.resolve_runtime_seed(
+        master_seed=20260914,
+        suite_identity="verif/vxp/tests.yaml",
+        run_id=None,
+    )
+
+    assert cfg.get_resolved_seed() == resolution.seed
+    assert cfg.get_plusarg("stimulus_seed") == resolution.seed
+    assert cfg.seed_source == "master"
+
+    cfg.resolved_seed = 999
+    cfg.set_plusarg("stimulus_seed", 999)
+    cfg.ensure_resolved_seed_plusarg()
+    assert cfg.get_resolved_seed() == resolution.seed
+    assert cfg.get_plusarg("stimulus_seed") == resolution.seed
+
+
+def test_fixed_test_seed_opts_out_of_master_rotation():
+    cfg = _make_test_config()
+    cfg.sim_rand_seed = 41
+    cfg.sim_rand_seed_plusarg = "stimulus_seed"
+
+    first = cfg.resolve_runtime_seed(
+        master_seed=100,
+        suite_identity="verif/timing/tests.yaml",
+        run_id=None,
+    )
+    second = cfg.resolve_runtime_seed(
+        master_seed=200,
+        suite_identity="verif/timing/tests.yaml",
+        run_id=None,
+    )
+
+    assert first.seed == second.seed == 41
+    assert second.source == "fixed"
+    assert cfg.get_plusarg("stimulus_seed") == 41
+
+
+def test_suite_config_loads_runtime_seed_fields(minimal_project: Path):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n"
+            "    sim-rand-seed: 41\n"
+            "    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    cfg = SuiteConfig(str(suite_path)).get_tests("basic")[0]
+
+    assert cfg.sim_rand_seed == 41
+    assert cfg.sim_rand_seed_plusarg == "stimulus_seed"
+
+
+@pytest.mark.parametrize("seed", [0, -1, 1 << 31])
+def test_suite_config_rejects_invalid_fixed_runtime_seed(
+    minimal_project: Path, seed: int
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            f"    sim_timeout:\n    sim-rand-seed: {seed}\n",
+            1,
+        )
+    )
+
+    with pytest.raises(FatalRtlBuddyError, match="sim-rand-seed must be between"):
+        SuiteConfig(str(suite_path))
+
+
+def test_suite_config_rejects_empty_runtime_seed_plusarg(minimal_project: Path):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            '    sim_timeout:\n    sim-rand-seed-plusarg: ""\n',
+            1,
+        )
+    )
+
+    with pytest.raises(
+        FatalRtlBuddyError, match="sim-rand-seed-plusarg must not be empty"
+    ):
+        SuiteConfig(str(suite_path))
+
+
 def test_test_config_plusdefines_lazy_init_and_merge():
     cfg = _make_test_config()
     assert cfg.get_plusdefines() is None
@@ -231,6 +375,105 @@ def test_test_config_timeout_default_and_override():
     cfg = _make_test_config(timeout=None)
     timeout, is_custom = cfg.get_timeout()
     assert is_custom is False and timeout == cfg.default_timeout
+
+
+# ---------------------------------------------------------------------------
+# TestConfig — dispatch plan (de)serialization (#351)
+# ---------------------------------------------------------------------------
+
+
+def test_testconfig_plan_roundtrip():
+    """A fully-populated TestConfig survives to_plan_dict -> from_plan_dict.
+
+    This is the fidelity guarantee the dispatch plan manifest relies on:
+    the sweep hook runs once on the head, and every field a hook could
+    have set must reach the build/sim jobs unchanged.
+    """
+    import json
+
+    from rtl_buddy.config.dispatch import (
+        DispatchResourcesFile,
+        TestbenchCompileFile,
+    )
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.config.uvm import UVMConfig
+
+    original = TC(
+        name="axi_soak.W64",
+        desc="soak, 64-bit",
+        model=ModelConfig(
+            name="axi", filelist=["rtl/axi.sv"], desc="axi dut", path="/abs/models.yaml"
+        ),
+        _reglvl={"verilator": 1000, "default": 500},
+        pa={"ITERS": 4000},
+        pd={"WIDTH": 64},
+        uvm=UVMConfig(max_warns=3, max_errors=1),
+        preproc_path="/abs/hooks/pre.py",
+        postproc_path=None,
+        sweep_path="/abs/hooks/sweep.py",
+        tb=TB(
+            name="axi_tb",
+            filelist=["tb/axi_tb.sv"],
+            toplevel="axi_top",
+            resources=DispatchResourcesFile(cpus=2, mem="8G"),
+            # The per-testbench compile reservation rides to the build
+            # and sim jobs on `tb` alone (#551), so the round trip is
+            # the only thing guarding it.
+            compile=TestbenchCompileFile(mem="256G", time="06:00:00"),
+        ),
+        timeout=120,
+        covers=["axi.rd", "axi.wr"],
+        builder_name="verilator",
+        assertions=True,
+        resources=DispatchResourcesFile(cpus=4, mem="16G", time="02:00:00"),
+        xfail=True,
+        xfail_strict=False,
+        sim_rand_seed=17,
+        sim_rand_seed_plusarg="stimulus_seed",
+        resolved_seed=29,
+        seed_source="master",
+        seed_identity="verif/axi/tests.yaml::axi_soak.W64::single",
+    )
+
+    original.ensure_resolved_seed_plusarg()
+    plan = original.to_plan_dict()
+    # Must be JSON-safe: the manifest is written as JSON on the shared FS.
+    reloaded = TC.from_plan_dict(json.loads(json.dumps(plan)))
+    assert reloaded == original
+
+
+def test_testconfig_plan_dict_covers_every_field():
+    """Guard: adding a TestConfig field must force a plan-serialization update.
+
+    Fails loudly if a new dataclass field is not carried by to_plan_dict,
+    so a silently-dropped field can't reach a sim job as a default.
+    """
+    import dataclasses
+
+    field_names = {f.name for f in dataclasses.fields(TC)}
+    carried = {TC._PLAN_FIELD_RENAMES.get(n, n) for n in field_names}
+    plan = _make_full_plan_dict()
+    assert carried == set(plan.keys())
+
+
+def _make_full_plan_dict() -> dict:
+    from rtl_buddy.config.model import ModelConfig
+
+    cfg = TC(
+        name="t",
+        desc="d",
+        model=ModelConfig(name="m", filelist=[], path="/abs/models.yaml"),
+        _reglvl=0,
+        pa=None,
+        pd=None,
+        uvm=None,
+        preproc_path=None,
+        postproc_path=None,
+        sweep_path=None,
+        tb=TB(name="tb", filelist=["a.sv"]),
+        timeout=None,
+    )
+    return cfg.to_plan_dict()
 
     cfg.set_timeout(120)
     timeout, is_custom = cfg.get_timeout()
@@ -436,6 +679,70 @@ def test_suite_config_resolves_hook_paths_against_suite_dir(tmp_path):
     assert test.sweep_path == os.path.normpath(str(suite_dir / "scripts" / "sweep.py"))
     # Absolute paths pass through unchanged.
     assert test.postproc_path == "/abs/path/post.py"
+
+
+_SUITE_WITH_COMPILE = """\
+rtl-buddy-filetype: test_config
+compile:
+  cpus: 8
+  mem: 48G
+  time: "03:00:00"
+testbenches:
+  - name: tb1
+    filelist: [tb.sv]
+tests:
+  - name: basic
+    desc: example
+    model: m
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb1
+    sim_timeout:
+"""
+
+
+def _write_compile_suite(tmp_path, body):
+    (tmp_path / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n  - name: m\n    filelist: [top.sv]\n"
+    )
+    path = tmp_path / "tests.yaml"
+    path.write_text(body)
+    return path
+
+
+def test_suite_config_loads_the_compile_block(tmp_path):
+    """The suite-level dispatch compile reservation survives load (#497)."""
+    path = _write_compile_suite(tmp_path, _SUITE_WITH_COMPILE)
+    cfg = SuiteConfig(str(path))
+    block = cfg.get_compile()
+    assert (block.cpus, block.mem, block.time) == (8, "48G", "03:00:00")
+    # The accessor and the attribute are the same object; nothing else in
+    # the suite is disturbed by the extra key.
+    assert cfg.get_compile() is cfg.compile
+    assert cfg.get_test_names() == ["basic"]
+
+
+def test_suite_config_without_a_compile_block_reports_none(tmp_path):
+    body = _SUITE_WITH_COMPILE.replace(
+        'compile:\n  cpus: 8\n  mem: 48G\n  time: "03:00:00"\n', ""
+    )
+    assert SuiteConfig(str(_write_compile_suite(tmp_path, body))).get_compile() is None
+
+
+def test_suite_config_compile_block_rejects_unquoted_time(tmp_path):
+    """YAML 1.1 reads `3:00:00` as 10800; a 10800-minute build is not it."""
+    path = _write_compile_suite(
+        tmp_path, _SUITE_WITH_COMPILE.replace('"03:00:00"', "3:00:00")
+    )
+    with pytest.raises(FatalRtlBuddyError, match="sexagesimal"):
+        SuiteConfig(str(path))
 
 
 def test_suite_config_duplicate_test_raises(tmp_path):
@@ -876,16 +1183,32 @@ def test_suite_config_loads_xfail_flags(tmp_path):
 
 
 def test_apply_test_xfail_fail_becomes_xfail_and_passes():
-    from rtl_buddy.runner.test_results import CompileFailResults
+    from rtl_buddy.runner.test_results import TestResults
     from rtl_buddy.runner.xfail import apply_xfail
 
     for strict in (False, True):
-        res = CompileFailResults(name="t")
+        # A verdict the simulation itself reported: the excusable kind.
+        res = TestResults(
+            name="t", results={"result": "FAIL", "desc": "mismatch at 120ns"}
+        )
         assert res.is_pass() is False
         apply_xfail(res, strict=strict)
         assert res.results["result"] == "XFAIL"
         assert res.is_pass() is True  # XFAIL passes regardless of strictness
         assert res.results["desc"].startswith("xfail (expected fail): ")
+
+
+def test_apply_test_xfail_does_not_excuse_a_compile_failure():
+    """#553: a negative control that stopped compiling is not green."""
+    from rtl_buddy.runner.test_results import CompileFailResults
+    from rtl_buddy.runner.xfail import apply_xfail
+
+    for strict in (False, True):
+        res = CompileFailResults(name="t")
+        apply_xfail(res, strict=strict)
+        assert res.results["result"] == "FAIL"
+        assert res.is_pass() is False
+        assert res.results["desc"].startswith("xfail not applied (compile failure): ")
 
 
 def test_apply_test_xfail_nonstrict_xpass_still_passes():
@@ -920,3 +1243,1251 @@ def test_apply_test_xfail_skip_passes_through_unchanged():
     apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True
+
+
+# ---------------------------------------------------------------------------
+# Tool path resolution — $VAR / ~ expansion and candidate lists (#439)
+# ---------------------------------------------------------------------------
+
+
+def _mkdir(path):
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _touch_exe(path):
+    """Create an executable stub.
+
+    Tool-path resolution requires the executable bit for binary-valued
+    fields, so its existence test agrees with the callers' availability
+    checks (#439) — a plain `touch` would be skipped.
+    """
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_expand_path_resolves_set_var(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.setenv("RB_TEST_TOOLS", "/opt/rb")
+    assert expand_path("${RB_TEST_TOOLS}/bin/surfer") == "/opt/rb/bin/surfer"
+
+
+def test_expand_path_returns_none_for_unset_var(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    assert expand_path("${RB_TEST_TOOLS}/bin/surfer") is None
+
+
+def test_expand_path_expands_tilde(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.setenv("HOME", "/home/rb")
+    assert expand_path("~/tools/surfer") == "/home/rb/tools/surfer"
+
+
+def test_resolve_tool_path_single_string_passes_through(monkeypatch):
+    """The pre-#439 shape: one bare name, resolved by PATH at exec time."""
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    assert resolve_tool_path("definitely-not-installed") == "definitely-not-installed"
+
+
+def test_resolve_tool_path_env_override_wins_over_canonical(tmp_path, monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    mine = tmp_path / "mine" / "bin"
+    mine.mkdir(parents=True)
+    _touch_exe(mine / "surfer")
+    canonical = tmp_path / "canonical" / "bin"
+    canonical.mkdir(parents=True)
+    _touch_exe(canonical / "surfer")
+
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path / "mine"))
+    chosen = resolve_tool_path(
+        ["${RB_TEST_TOOLS}/bin/surfer", str(canonical / "surfer"), "surfer"]
+    )
+    assert chosen == str(mine / "surfer")
+
+
+def test_resolve_tool_path_falls_through_unset_var_to_canonical(tmp_path, monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    canonical = tmp_path / "canonical" / "bin"
+    canonical.mkdir(parents=True)
+    _touch_exe(canonical / "surfer")
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    chosen = resolve_tool_path(
+        ["${RB_TEST_TOOLS}/bin/surfer", str(canonical / "surfer"), "surfer"]
+    )
+    assert chosen == str(canonical / "surfer")
+
+
+def test_resolve_tool_path_falls_through_missing_path_to_bare_name(
+    tmp_path, monkeypatch
+):
+    """Nothing on disk: the trailing bare name is the PATH fallback slot."""
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    chosen = resolve_tool_path(
+        [
+            "${RB_TEST_TOOLS}/bin/surfer",
+            str(tmp_path / "nowhere" / "surfer"),
+            "surfer-not-installed",
+        ]
+    )
+    assert chosen == "surfer-not-installed"
+
+
+def test_resolve_tool_path_all_candidates_unresolved_returns_literal(monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    assert (
+        resolve_tool_path("${RB_TEST_TOOLS}/bin/surfer")
+        == "${RB_TEST_TOOLS}/bin/surfer"
+    )
+
+
+def test_resolve_tool_path_relative_candidate_anchors_at_base_dir(tmp_path):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    (tmp_path / "vendor").mkdir()
+    _touch_exe(tmp_path / "vendor" / "yosys")
+    chosen = resolve_tool_path(
+        ["vendor/nope/yosys", "vendor/yosys", "yosys"], base_dir=str(tmp_path)
+    )
+    # Returned unjoined — callers keep their own relative-path semantics.
+    assert chosen == "vendor/yosys"
+
+
+def test_builder_exe_expands_env_var(monkeypatch, tmp_path):
+    """cfg-rtl-builder.builder gets the cfg-systemc.home treatment."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _touch_exe(bindir / "verilator")
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path))
+
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML.replace(
+            "builder: verilator", 'builder: "${RB_TEST_TOOLS}/bin/verilator"'
+        ),
+    )
+    assert cfg.get_exe() == str(bindir / "verilator")
+    # Family inference reads the resolved path, not the literal.
+    assert cfg.get_simulator_family() == "verilator"
+
+
+def test_builder_exe_candidate_list_falls_back_to_bare_name(monkeypatch):
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    yaml = _VERILATOR_BUILDER_YAML.replace(
+        "builder: verilator",
+        'builder: ["${RB_TEST_TOOLS}/bin/verilator", "verilator"]',
+    )
+    cfg = from_yaml(RtlBuilderConfig, yaml)
+    assert cfg.get_exe() == "verilator"
+
+
+def test_surfer_path_candidate_list_picks_existing(tmp_path, monkeypatch):
+    from rtl_buddy.config.surfer import SurferConfigFile
+
+    bindir = tmp_path / "opt" / "bin"
+    bindir.mkdir(parents=True)
+    exe = _touch_exe(bindir / "surfer")
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+
+    cfg = SurferConfigFile(
+        name="surfer-shared",
+        path=["${RB_TEST_TOOLS}/bin/surfer", str(exe), "surfer"],
+    ).initialise(str(tmp_path / "root_config.yaml"))
+    assert cfg.path == str(exe)
+    assert cfg.available is True
+
+
+def test_synth_tool_executable_expands_env_var(monkeypatch, tmp_path):
+    from rtl_buddy.config.synth import SynthToolConfig, SynthToolConfigFile
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _touch_exe(bindir / "yosys")
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path))
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(name="yosys", tool="${RB_TEST_TOOLS}/bin/yosys")
+    )
+    assert cfg.get_executable() == str(bindir / "yosys")
+
+
+def test_fpv_tool_executable_candidate_list(monkeypatch, tmp_path):
+    from rtl_buddy.config.fpv import FpvToolConfig, FpvToolConfigFile
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    cfg = FpvToolConfig(
+        FpvToolConfigFile(
+            name="sby", tool=["${RB_TEST_TOOLS}/bin/sby", str(tmp_path / "gone"), "sby"]
+        )
+    )
+    assert cfg.get_executable() == "sby"
+
+
+def test_resolve_tool_path_warns_once_for_unresolved_var(monkeypatch, caplog):
+    """The WARNING is emitted, and emitted once.
+
+    `resolve_tool_path` runs on every `get_exe()` / `get_executable()` —
+    several times per test — so an unset variable would otherwise put
+    thousands of identical lines through a regression (#439).
+    """
+    import logging
+
+    from rtl_buddy.config import toolpath
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    toolpath.reset_unresolved_warnings()
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.toolpath"):
+        for _ in range(3):
+            chosen = toolpath.resolve_tool_path(
+                "${RB_TEST_TOOLS}/bin/surfer",
+                block="cfg-surfer",
+                name="surfer-shared",
+                field="path",
+            )
+
+    assert chosen == "${RB_TEST_TOOLS}/bin/surfer"
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1
+    assert "RB_TEST_TOOLS" in records[0].getMessage()
+
+
+def test_resolve_tool_path_skips_a_non_executable_candidate(tmp_path):
+    """Existence test and availability test must agree.
+
+    `os.path.exists` let a non-executable file (or a directory named
+    `surfer`) win resolution and then be reported unavailable, skipping a
+    later candidate that would have worked (#439).
+    """
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    not_exec = tmp_path / "readonly" / "surfer"
+    not_exec.parent.mkdir()
+    not_exec.write_text("")
+    not_exec.chmod(0o644)
+    a_directory = tmp_path / "dir" / "surfer"
+    a_directory.mkdir(parents=True)
+    good = _touch_exe(_mkdir(tmp_path / "good") / "surfer")
+
+    chosen = resolve_tool_path([str(not_exec), str(a_directory), str(good)])
+    assert chosen == str(good)
+
+
+def test_tool_candidates_anchor_at_root_config_not_cwd(tmp_path, monkeypatch):
+    """A relative `tool:` candidate resolves next to root_config.yaml.
+
+    `rb` is routinely invoked from a suite directory, so testing a
+    relative candidate against the process cwd made resolution depend on
+    where the user stood (#439).
+    """
+    _write_routed_project(tmp_path)
+    _touch_exe(_mkdir(tmp_path / "vendor" / "bin") / "yosys")
+    cfg = tmp_path / "root_config.yaml"
+    cfg.write_text(
+        cfg.read_text().replace(
+            'cfg-synth-tools:\n  - name: "yosys"\n    tool: "yosys"\n',
+            'cfg-synth-tools:\n  - name: "yosys"\n'
+            '    tool: ["vendor/bin/yosys", "yosys"]\n',
+            1,
+        )
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    monkeypatch.chdir(suite)
+
+    rc = RootConfig(name="anchored", start_dir=str(tmp_path))
+    assert rc.get_synth_tool_cfg("yosys").get_executable() == "vendor/bin/yosys"
+
+
+# ---------------------------------------------------------------------------
+# cfg-verible — a pinned path that silently falls back to PATH (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_verible_path_fallback_warns_naming_both_paths(tmp_path, monkeypatch, caplog):
+    """A pin that resolves to something else must not pass unannounced."""
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    fake_path_bin = tmp_path / "site" / "verible-verilog-syntax"
+    fake_path_bin.parent.mkdir(parents=True)
+    fake_path_bin.write_text("")
+    monkeypatch.setattr(
+        "rtl_buddy.config.verible.shutil.which", lambda _n: str(fake_path_bin)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned/dir", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert records, "expected a WARNING for the silent PATH fallback"
+    text = records[0].getMessage()
+    assert str(tmp_path / "pinned" / "dir") in text
+    assert str(fake_path_bin) in text
+
+
+def test_verible_path_present_does_not_warn(tmp_path, caplog):
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    _touch_exe(pinned / "verible-verilog-syntax")
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_verible_path_exists_but_is_empty_warns(tmp_path, monkeypatch, caplog):
+    """The other half of the silent-pin case: directory there, binaries not.
+
+    `initialise` only saw the missing-directory case, so a pin at an empty
+    directory reported available with no diagnostic at all (#439).
+    """
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    (tmp_path / "pinned").mkdir()
+    site = _touch_exe(
+        _mkdir(tmp_path / "site") / "verible-verilog-syntax",
+    )
+    monkeypatch.setattr("rtl_buddy.config.verible.shutil.which", lambda _n: str(site))
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert records, "expected a WARNING for the empty pinned directory"
+    text = records[0].getMessage()
+    assert str(tmp_path / "pinned") in text
+    assert "verible-verilog-syntax" in text
+
+
+def test_verible_get_exe_path_warns_once_on_path_fallback(
+    tmp_path, monkeypatch, caplog
+):
+    """Per-binary fallback is the same broken pin, and must not be silent."""
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    _touch_exe(pinned / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-lint")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    verible_mod.reset_exe_fallback_warnings()
+
+    cfg = verible_mod.VeribleConfigFile(
+        name="verible-pinned", path="pinned", extra_args={}
+    ).initialise(str(tmp_path / "root_config.yaml"))
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        first = cfg.get_exe_path("verible-verilog-lint")
+        second = cfg.get_exe_path("verible-verilog-lint")
+
+    assert first == str(site)
+    assert second == str(site)
+    records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "verible-verilog-lint" in r.getMessage()
+    ]
+    # Warned, and warned once: get_exe_path runs per lint invocation.
+    assert len(records) == 1
+
+
+_TWO_VERIBLE_ROOT = """\
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "verible-active"
+  - os: "other-host"
+    unames: ["NoSuchUname"]
+    builder: "stub"
+    verible: "verible-inactive"
+
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "verible-active"
+    path: "{active}"
+    extra_args: {{}}
+  - name: "verible-inactive"
+    path: "{inactive}"
+    extra_args: {{}}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+"""
+
+
+def _write_two_verible_project(root, *, active: str, inactive: str) -> None:
+    """A project whose two platforms take one `cfg-verible` entry each."""
+    (root / "root_config.yaml").write_text(
+        _TWO_VERIBLE_ROOT.format(active=active, inactive=inactive)
+    )
+    (root / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+
+
+def _verible_records(caplog, level):
+    return [
+        r
+        for r in caplog.records
+        if r.name == "rtl_buddy.config.verible" and r.levelno == level
+    ]
+
+
+def test_verible_pin_diagnostics_skip_the_unrouted_entry(tmp_path, monkeypatch, caplog):
+    """The other platform's broken pin is not this host's warning.
+
+    Every `cfg-verible` entry is initialised at load, so a stock
+    two-platform project would otherwise WARN about the *other*
+    platform's directory on every single `rb` invocation — about a pin
+    that is not being used, and that nobody on this host can act on
+    (#439). It stays visible at DEBUG.
+    """
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    active = _mkdir(tmp_path / "verible-here")
+    _touch_exe(active / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-syntax")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    _write_two_verible_project(
+        tmp_path, active=str(active), inactive=str(tmp_path / "absent-elsewhere")
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.verible"):
+        rc = RootConfig(name="two-platforms")
+
+    assert rc.platform_cfg.get_verible().get_name() == "verible-active"
+    assert _verible_records(caplog, logging.WARNING) == []
+    debug = [r.getMessage() for r in _verible_records(caplog, logging.DEBUG)]
+    assert any("verible-inactive" in m for m in debug)
+
+
+def test_verible_pin_diagnostics_fire_for_the_routed_entry(
+    tmp_path, monkeypatch, caplog
+):
+    """Scoping the warning must not silence the case it exists for."""
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    inactive = _mkdir(tmp_path / "verible-elsewhere")
+    _touch_exe(inactive / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-syntax")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    _write_two_verible_project(
+        tmp_path, active=str(tmp_path / "absent-here"), inactive=str(inactive)
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.verible"):
+        RootConfig(name="two-platforms")
+
+    warnings = [r.getMessage() for r in _verible_records(caplog, logging.WARNING)]
+    assert len(warnings) == 1
+    assert "verible-active" in warnings[0]
+    assert str(tmp_path / "absent-here") in warnings[0]
+    assert str(site) in warnings[0]
+
+
+def test_verible_directory_candidate_without_separator_is_found(tmp_path):
+    """A bare candidate on `path:` is a directory, never a PATH lookup.
+
+    `cfg-verible.path` names a directory, so routing a separator-free
+    candidate through `shutil.which` made an existing `verible-arm/` next
+    to root_config.yaml invisible and silently selected the absent one
+    (#439).
+    """
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    present = tmp_path / "verible-arm"
+    present.mkdir()
+    _touch_exe(present / "verible-verilog-syntax")
+
+    cfg = VeribleConfigFile(
+        name="v", path=["verible-arm", "verible-x86"], extra_args={}
+    ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.path == str(present)
+    assert cfg.available is True
+
+
+# ---------------------------------------------------------------------------
+# cfg-platforms — routing an entry in any tool block (#439)
+# ---------------------------------------------------------------------------
+
+_ROUTING_BLOCKS = """
+cfg-surfer:
+  - name: "surfer-shared"
+    path: "surfer-shared-bin"
+  - name: "surfer-default"
+    path: "surfer"
+
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+  - name: "yosys-shared"
+    tool: "yosys-shared-bin"
+
+cfg-fpv-tools:
+  - name: "sby-shared"
+    tool: "sby-shared-bin"
+
+cfg-cdc-tools:
+  - name: "cdc-shared"
+    tool: "rtl-buddy-cdc"
+
+cfg-pnr-tools:
+  - name: "openroad-shared"
+    tool: "openroad"
+
+cfg-power-tools:
+  - name: "power-shared"
+    tool: "opensta"
+
+cfg-fpga-tools:
+  - name: "vivado-shared"
+    tool: "vivado"
+"""
+
+
+#: A second, legitimately configured platform whose unames never match
+#: this host — for asserting that "another platform's" behaviour is the
+#: quiet skip, as distinct from naming a platform that does not exist.
+_INACTIVE_PLATFORM = """\
+  - os: "other-host"
+    unames: ["NoSuchUname"]
+    builder: "stub"
+    verible: "stub-verible"
+"""
+
+
+def _write_routed_project(
+    root: Path, *, routing: str = "", extra_platform: str = "", extra: str = ""
+) -> None:
+    (root / "root_config.yaml").write_text(
+        f"""\
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "stub-verible"
+{routing}{extra_platform}
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/usr/bin"
+    extra_args: {{}}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+"""
+        + _ROUTING_BLOCKS
+        + extra
+    )
+    (root / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+
+
+def test_platform_routes_surfer(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-shared"\n')
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="routed")
+
+    assert rc.get_platform_tool_name("surfer") == "surfer-shared"
+    assert rc.get_surfer_cfg().name == "surfer-shared"
+
+
+def test_unrouted_blocks_keep_their_global_default(tmp_path, monkeypatch):
+    """Zero impact on existing configs: no routing keys, today's behaviour."""
+    _write_routed_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="unrouted")
+
+    assert rc.get_platform_tool_name("surfer") is None
+    # cfg-surfer keeps the hardcoded "surfer-default" fallback.
+    assert rc.get_surfer_cfg().name == "surfer-default"
+    # *-tools blocks are not routable: the flow yaml's `tool:` names one.
+    assert rc.get_synth_tool_cfg("yosys").get_name() == "yosys"
+
+
+def test_explicit_name_wins_over_platform_routing(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-shared"\n')
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="routed")
+
+    assert rc.get_surfer_cfg("surfer-default").name == "surfer-default"
+
+
+def test_platform_routing_to_missing_entry_is_fatal(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-nope"\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="cfg-surfer"):
+        RootConfig(name="routed")
+
+
+def test_routing_typo_on_an_inactive_platform_is_still_fatal(tmp_path, monkeypatch):
+    """A bad Linux entry must not wait for the CI host to be discovered.
+
+    The second entry's unames never match this host, so only a load-time
+    sweep over *every* platform entry catches it (#439).
+    """
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-shared"\n')
+    cfg = tmp_path / "root_config.yaml"
+    cfg.write_text(
+        cfg.read_text().replace(
+            "cfg-rtl-builder:\n",
+            '  - os: "never-this-host"\n'
+            '    unames: ["NoSuchUname"]\n'
+            '    builder: "stub"\n'
+            '    verible: "stub-verible"\n'
+            '    surfer: "surfer-typo"\n\n'
+            "cfg-rtl-builder:\n",
+            1,
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="never-this-host"):
+        RootConfig(name="routed")
+
+
+def test_tools_blocks_are_not_routable(tmp_path, monkeypatch):
+    """`*-tools` keys are rejected, not silently ignored.
+
+    Their entry name doubles as the backend selector, so routing them
+    could never bind at run time; the candidate list in `tool:` is the
+    supported way to pin one of those binaries per platform (#439).
+    """
+    _write_routed_project(tmp_path, routing='    synth-tools: "yosys-shared"\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="cannot be routed per platform"):
+        RootConfig(name="routed")
+
+
+def test_platform_config_file_parses_routing_keys():
+    from rtl_buddy.config.platform import PlatformConfigFile
+
+    cfg = from_yaml(
+        PlatformConfigFile,
+        'os: "linux"\n'
+        'unames: ["Linux"]\n'
+        'builder: "verilator"\n'
+        'verible: "verible-x86_64"\n'
+        'surfer: "surfer-shared"\n',
+    )
+    assert cfg.get_routed_names() == {"surfer": "surfer-shared"}
+
+
+# ---------------------------------------------------------------------------
+# cfg-tools — per-platform min-version (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_min_version_platform_specific_wins(tmp_path, monkeypatch):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.050"
+
+
+def test_tool_min_version_platform_specific_wins_regardless_of_order(
+    tmp_path, monkeypatch
+):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.050"
+
+
+def test_tool_min_version_other_platform_entry_is_dropped(tmp_path, monkeypatch):
+    """A pin for a *configured* other platform is skipped, silently."""
+    _write_routed_project(
+        tmp_path,
+        extra_platform=_INACTIVE_PLATFORM,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "other-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.049"
+
+
+def test_tool_min_version_unknown_platform_is_fatal(tmp_path, monkeypatch):
+    """A `platform:` that names no cfg-platforms os is a config error.
+
+    Dropping it as "another platform's pin" is what makes a typo lethal:
+    the version floor then applies nowhere and `rb tool-check` goes green
+    on every host, which is exactly the silent no-op that naming an
+    unroutable block or a missing routed entry is already fatal for (#439).
+    """
+    _write_routed_project(
+        tmp_path,
+        extra_platform=_INACTIVE_PLATFORM,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "osxx"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        RootConfig(name="pins")
+    message = str(excinfo.value)
+    # The bad value and the set it had to come from — a message naming
+    # only one of the two leaves the reader guessing at the other.
+    assert "osxx" in message
+    assert "other-host" in message and "test-host" in message
+
+
+def test_unknown_platform_pin_has_a_dedicated_human_message():
+    """The ERROR event must not render through the dotted-event fallback.
+
+    A typo in `cfg-tools[].platform` is the config error a user is most
+    likely to hit here, and `rtl_buddy.log` reads the human message —
+    without a case it would say less than the console does (#439 review).
+    """
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "tool_version.platform_unknown",
+        {"name": "verilator", "entry_platform": "osxx", "available": "linux, macos"},
+    )
+    assert msg != "tool_version platform_unknown"
+    assert "verilator" in msg
+    assert "osxx" in msg
+    assert "linux, macos" in msg
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — graph opt-out + top override (#479)
+# ---------------------------------------------------------------------------
+
+
+def test_model_config_graph_and_top_default_to_graphable_self_topped():
+    """Every existing models.yaml keeps its current meaning.
+
+    ``graph:`` defaults to True and ``top:`` to None, so ``get_top()``
+    reproduces the project convention the whole codebase assumed before
+    the knobs existed: the model's root module is named after the model.
+    """
+    model = ModelConfig(name="soc", filelist=["src/soc.sv"])
+    assert model.graph is True
+    assert model.top is None
+    assert model.get_top() == "soc"
+
+
+def test_model_config_graph_false_and_top_override_round_trip(tmp_path):
+    """The two #479 knobs parse out of models.yaml and reach ``get_top()``."""
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "apb_intf"\n'
+        '    desc: "interface library"\n'
+        '    filelist: ["-v apb_intf.sv"]\n'
+        "    graph: false\n"
+        '  - name: "pp_axi"\n'
+        '    desc: "vendored collection"\n'
+        '    filelist: ["-F pp_axi.f"]\n'
+        '    top: "axi_xbar"\n'
+    )
+    loader = ModelConfigLoader(str(models_yaml))
+    intf = loader.get_model("apb_intf")
+    assert intf.graph is False
+    assert intf.get_top() == "apb_intf"
+
+    coll = loader.get_model("pp_axi")
+    assert coll.graph is True
+    assert coll.top == "axi_xbar"
+    assert coll.get_top() == "axi_xbar"
+
+
+def test_model_top_override_reaches_the_non_simulation_flows(tmp_path):
+    """``top:`` is the model's root module, not a graph-only fact.
+
+    ``cdc.yaml`` / ``synth.yaml`` / ``lint.yaml`` / ``fpga.yaml`` runs all
+    default their top to the model, so the override has to reach them —
+    otherwise a project needs the same escape hatch four more times.
+    """
+    from types import SimpleNamespace
+
+    from rtl_buddy.config.cdc import CdcConfig
+    from rtl_buddy.config.fpga import FpgaConfig
+    from rtl_buddy.config.lint import LintConfig
+    from rtl_buddy.config.synth import SynthConfig
+
+    model = ModelConfig(
+        name="pp_axi",
+        filelist=["-F pp_axi.f"],
+        top="axi_xbar",
+        path=str(tmp_path / "models.yaml"),
+    )
+    # `get_top` reads nothing but `self.model`, and each of these entry
+    # classes needs a dozen unrelated required fields to instantiate —
+    # so call the accessor against the one attribute it uses.
+    entry = SimpleNamespace(model=model)
+    for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
+        assert cls.get_top(entry) == "axi_xbar", cls.__name__
+
+    plain = SimpleNamespace(model=ModelConfig(name="pp_axi", filelist=[]))
+    for cls in (CdcConfig, SynthConfig, LintConfig, FpgaConfig):
+        assert cls.get_top(plain) == "pp_axi", cls.__name__
+
+
+def _top_override_project(tmp_path, *, model_top: str | None) -> tuple:
+    """A one-model project whose fpv.yaml + mut.yaml run against it.
+
+    Returns ``(fpv.yaml path, mut.yaml path)``. ``model_top`` writes the
+    models.yaml ``top:`` override (#479); neither run declares its own
+    ``top:``, so both inherit the model's root module.
+    """
+    design_dir = tmp_path / "design" / "leaf"
+    design_dir.mkdir(parents=True)
+    (design_dir / "leaf.sv").write_text("module leaf_core; endmodule\n")
+    top_line = f'    top: "{model_top}"\n' if model_top else ""
+    (design_dir / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "leaf"\n'
+        '    filelist: ["-v leaf.sv"]\n' + top_line
+    )
+    fpv_dir = tmp_path / "fpv" / "leaf"
+    fpv_dir.mkdir(parents=True)
+    fpv_path = fpv_dir / "fpv.yaml"
+    fpv_path.write_text(
+        "rtl-buddy-filetype: fpv_config\n"
+        "verifications:\n"
+        '  - name: "leaf_safety"\n'
+        '    desc: "safety"\n'
+        '    tool: "sby"\n'
+        '    model: "leaf"\n'
+        '    model_path: "../../design/leaf/models.yaml"\n'
+        "    properties: []\n"
+        '    mode: "bmc"\n'
+    )
+    mut_path = fpv_dir / "mut.yaml"
+    mut_path.write_text(
+        "rtl-buddy-filetype: mut_config\n"
+        'model: "leaf"\n'
+        'model_path: "../../design/leaf/models.yaml"\n'
+        'design_file: "../../design/leaf/leaf.sv"\n'
+        "operators: [arith_flip]\n"
+        "verify:\n"
+        '  fpv_config: "fpv.yaml"\n'
+        '  verification: "leaf_safety"\n'
+    )
+    return fpv_path, mut_path
+
+
+def test_fpv_and_mut_runs_inherit_the_models_yaml_top(tmp_path):
+    """A run with no ``top:`` of its own roots at the model's root module.
+
+    Both files default their top to the model; before #479 that default
+    was the model *name*, which is exactly the assumption `top:` exists
+    to escape.
+    """
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top="leaf_core")
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf_core"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_core"
+
+
+def test_fpv_and_mut_runs_default_to_the_model_name_without_an_override(tmp_path):
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top=None)
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf"
+
+
+def test_an_explicit_run_top_still_beats_the_models_yaml_override(tmp_path):
+    """``top:`` in fpv.yaml / mut.yaml is the narrower statement and wins.
+
+    A formal checker top lives in the run's own ``properties:``, so the
+    model-level default must never overwrite it.
+    """
+    from rtl_buddy.config.fpv import FpvSuiteConfig
+    from rtl_buddy.config.mut import MutSuiteConfig
+
+    fpv_path, mut_path = _top_override_project(tmp_path, model_top="leaf_core")
+    fpv_path.write_text(
+        fpv_path.read_text().replace(
+            "    properties: []\n", '    top: "leaf_chk"\n    properties: []\n'
+        )
+    )
+    mut_path.write_text(mut_path.read_text() + 'top: "leaf_mut"\n')
+    (fpv,) = FpvSuiteConfig(str(fpv_path)).get_verifications()
+    assert fpv.get_top() == "leaf_chk"
+    assert MutSuiteConfig(path=str(mut_path)).get_config().top == "leaf_mut"
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — the name is a path segment (#479)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["..", ".", "../../..", "a/../..", "/etc", "a/b", "a\\b", ".hidden", ""],
+)
+def test_model_config_loader_refuses_a_name_that_is_not_a_path_segment(tmp_path, name):
+    """A model name becomes ``artefacts/<flow>/<name>/`` everywhere.
+
+    Nothing downstream re-checks it, and ``rb graph build`` *deletes*
+    ``artefacts/graph/design/<name>/`` when a model opts out — so a name
+    that normalises upwards or is absolute would reach `rmtree` pointed
+    at the caller's own tree. It is refused at the config boundary, for
+    every model rather than only the opted-out ones, because the export
+    path is keyed on the same string.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        f'  - name: "{name}"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "not usable" in message
+    assert str(path) in message
+
+
+@pytest.mark.parametrize("name", ["pp_axi", "my-model", "blk.a", "_x", "9lives"])
+def test_model_config_loader_accepts_ordinary_names(tmp_path, name):
+    """The rule is "safe path segment", not "SystemVerilog identifier".
+
+    A hyphen or an inner dot is harmless as a directory name and
+    plausible in a project that already exists, so the check must not
+    fail one.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        f'  - name: "{name}"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    assert ModelConfigLoader(str(path)).get_model(name).name == name
+
+
+def test_the_invalid_model_name_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "model_config.invalid_model_name",
+        {"path": "design/x/models.yaml", "name": ".."},
+    )
+    assert msg != "model config invalid_model_name"
+    assert "design/x/models.yaml" in msg
+    assert ".." in msg
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — the top is an HDL identifier AND a script token (#479)
+# ---------------------------------------------------------------------------
+
+
+def _models_yaml_with_top(tmp_path, top: str):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "blk_a"\n'
+        '    filelist: ["a.sv"]\n'
+        f"    top: {json.dumps(top)}\n"
+    )
+    return path
+
+
+@pytest.mark.parametrize(
+    "top",
+    [
+        "..",
+        "a/b",
+        "/abs/top",
+        "a\nb",
+        "axi_xbar\n",
+        "top; rm -rf /",
+        "$display",
+        "a b",
+        "9x",
+        "",
+        "\\escaped.id",
+        # Legal SystemVerilog, refused anyway: `$` substitutes in the Tcl
+        # these tops are written into unquoted.
+        "a$b",
+        "foo$bar",
+    ],
+)
+def test_model_config_loader_refuses_a_top_that_is_not_an_identifier(tmp_path, top):
+    """`top:` does not stay in HDL.
+
+    The FPGA flows join it into an artefact path (``<top>.bit``) and the
+    Yosys, Vivado and OpenROAD generators interpolate it into Tcl
+    (``set top <top>``), none of them quoting it. A separator, a newline
+    or a shell/Tcl metacharacter would write outside the artefact
+    directory or append commands to a generated script, so the value is
+    constrained once, at load, instead of escaped differently per tool.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, top)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "not a simple SystemVerilog identifier" in message
+    assert "blk_a" in message
+
+
+def test_an_escaped_identifier_top_says_why_it_is_refused(tmp_path):
+    """SystemVerilog escaped identifiers are legal HDL and refused anyway.
+
+    ``\\a/b;c `` is a valid module name, and there is no safe way to name
+    an artefact file or a Tcl token after it. Refusing it outright beats
+    per-tool escaping, so the message has to say that rather than claim
+    the name is malformed.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, "\\a/b;c")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    assert "escaped identifiers are refused" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("top", ["top", "axi_xbar", "_t1", "_", "T9"])
+def test_model_config_loader_accepts_simple_identifier_tops(tmp_path, top):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, top)
+    assert ModelConfigLoader(str(path)).get_model("blk_a").get_top() == top
+
+
+def test_a_dollar_in_a_top_is_refused_with_the_tcl_reason(tmp_path):
+    """`foo$bar` is a legal SV identifier and still cannot be used.
+
+    The generators write it into Tcl unquoted — `synth_design -top
+    foo$bar` in the Vivado flow, `synth -top foo$bar` in Yosys and
+    OpenROAD — where `$bar` substitutes, so the tool elaborates a
+    different name than the YAML declares, or fails. Having chosen to
+    make the value safe at the boundary rather than escape it in six
+    generators, the rule is the intersection of "legal SV" and "inert in
+    Tcl", so the message has to explain the narrowing rather than call a
+    legal identifier malformed.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = _models_yaml_with_top(tmp_path, "foo$bar")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        ModelConfigLoader(str(path))
+    message = str(excinfo.value)
+    assert "substitution character" in message
+    assert "Rename the module" in message
+
+
+def test_a_model_name_is_inert_in_tcl_even_though_it_is_wider(tmp_path):
+    """The name rule reaches the same Tcl through the `get_top()` fallback.
+
+    It admits `-` and `.`, which are not Tcl metacharacters, and its
+    first character may not be `-`, so a name can never be read as an
+    option flag either. Nothing here needs narrowing — but it does need
+    pinning, because the fallback makes a name a script token.
+    """
+    from rtl_buddy.config.model import MODEL_NAME_RE
+
+    for hostile in ["a$b", "a[b]", "a{b}", 'a"b', "a\\b", "a;b", "a b", "-a"]:
+        assert not MODEL_NAME_RE.match(hostile), hostile
+    for benign in ["my-model", "blk.a", "blk_a"]:
+        assert MODEL_NAME_RE.match(benign), benign
+
+
+def test_a_model_without_a_top_is_not_top_checked(tmp_path):
+    """`top:` is optional; the fallback is the already-validated name.
+
+    ``MODEL_NAME_RE`` is wider than the identifier rule — it admits ``-``
+    and ``.`` — but it admits no separator, whitespace or metacharacter
+    either, so the safety invariant holds on both paths.
+    """
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        '  - name: "my-model"\n'
+        '    filelist: ["a.sv"]\n'
+    )
+    assert ModelConfigLoader(str(path)).get_model("my-model").get_top() == "my-model"
+
+
+@pytest.mark.parametrize("value", ["blk_a\n", "axi_xbar\n"])
+def test_a_trailing_newline_passes_neither_rule(value):
+    """Python's ``$`` also matches before a trailing newline.
+
+    Both rules exist to guarantee the value carries no newline, so both
+    anchor with ``\\Z``; ``$`` would have let ``"axi_xbar\\n"`` through the
+    very check meant to stop it.
+    """
+    from rtl_buddy.config.model import MODEL_NAME_RE, MODEL_TOP_RE
+
+    assert not MODEL_NAME_RE.match(value)
+    assert not MODEL_TOP_RE.match(value)
+
+
+def test_the_invalid_model_top_event_has_a_human_message_case():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "model_config.invalid_model_top",
+        {"path": "design/x/models.yaml", "name": "blk_a", "top": "a/b"},
+    )
+    assert msg != "model config invalid_model_top"
+    assert "design/x/models.yaml" in msg
+    assert "blk_a" in msg
+    assert "a/b" in msg
+
+
+# ---------------------------------------------------------------------------
+# cfg-rtl-reg.shared-build-root — the persistent build cache (#542)
+# ---------------------------------------------------------------------------
+
+
+def test_root_config_reads_the_shared_build_root(minimal_project: Path):
+    """The key is optional, read as configured, and absent means absent."""
+    cfg = minimal_project / "root_config.yaml"
+    assert RootConfig(name="no-root").get_shared_build_root() is None
+    cfg.write_text(
+        cfg.read_text().replace(
+            "cfg-rtl-reg:\n",
+            "cfg-rtl-reg:\n  shared-build-root: /shared/nfs/rb-build-cache\n",
+            1,
+        )
+    )
+    assert (
+        RootConfig(name="with-root").get_shared_build_root()
+        == "/shared/nfs/rb-build-cache"
+    )
+
+
+def test_the_lenient_reg_block_loader_does_not_flag_the_shared_build_root(
+    tmp_path, caplog
+):
+    """``load_reg_cfg_paths`` warns about an unknown key so a misspelled
+    ``*-reg-cfg-path`` cannot reproduce #389's silence. ``shared-build-root``
+    is a known key of the block, not a typo (#542)."""
+    import logging
+
+    from rtl_buddy.config.root import load_reg_cfg_paths
+
+    rc = tmp_path / "root_config.yaml"
+    rc.write_text(
+        "cfg-rtl-reg:\n"
+        '  reg-cfg-path: "regression.yaml"\n'
+        "  shared-build-root: /nfs/cache\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        loaded = load_reg_cfg_paths(rc)
+    assert loaded is not None and loaded.shared_build_root == "/nfs/cache"
+    assert [
+        record
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "root_config.reg_cfg_unknown_keys"
+    ] == []

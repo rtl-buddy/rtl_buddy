@@ -1,7 +1,13 @@
+import copy
 import logging
 from dataclasses import dataclass
 from typing import Literal
-from serde import serde, field
+from serde import serde, field, from_dict, to_dict
+from .dispatch import (
+    DispatchResourcesFile,
+    TestbenchCompileFile,
+    validate_testbench_compile_block,
+)
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
 
@@ -10,6 +16,13 @@ import os
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from ..seeding import (
+    SeedResolution,
+    derive_test_seed,
+    expanded_test_seed_identity,
+    validate_sim_seed,
+    validate_resolved_seed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +77,31 @@ class TestbenchConfig:
     Attributes:
       name (str): Unique testbench identifier.
       filelist (list[str]): List of paths to files involved in running the testbench.
-      toplevel (str | None): Top-level DUT module name. Required for cocotb and SystemC testbenches.
+      toplevel (str | None): Name of the module the compile elaborates from.
+        Required for cocotb and SystemC testbenches; optional but recommended
+        for a plain SystemVerilog one, where it is passed to the builder as
+        Verilator ``--top-module`` / VCS ``-top`` / Icarus ``-s`` (#506, #508).
+        Without it the top — and, for Verilator, the model name — is elected
+        from filelist order, which also makes an uninstantiated module in an
+        ordinary (non-``-v``) input a MULTITOP error. Not defaulted to
+        ``name``: a testbench name is a config label, not necessarily a module.
+        For a plain SystemVerilog testbench this is the BENCH, not the DUT it
+        instantiates — a DUT-valued ``toplevel:`` left over from when the
+        field was only graph metadata elaborates the wrong root (see
+        docs/known-issues.md).
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
+      resources (DispatchResourcesFile | None): default per-job reservation for
+        dispatched runs of this testbench's tests (#351); tests override per field.
+      compile (TestbenchCompileFile | None): this testbench's own PER-BUILD
+        compile reservation (#551), layered over the suite's ``compile:``
+        block the way that block layers over ``cfg-dispatch.compile``. For a
+        suite whose testbenches verilate at wildly different sizes — the same
+        design at two geometries, say — this is what stops the whole suite
+        from reserving the largest one's memory for every build. The suite's
+        build job aggregates these (see
+        :func:`~.dispatch.aggregate_compile_resources`); ``parallel`` is rejected
+        here, because one build job compiles every testbench.
     """
 
     name: str
@@ -74,8 +109,21 @@ class TestbenchConfig:
     toplevel: str | None = None
     cocotb: CocotbTestbenchConfig | None = None
     systemc: SystemCTestbenchConfig | None = None
+    resources: DispatchResourcesFile | None = None
+    compile: TestbenchCompileFile | None = None
 
     def __post_init__(self):
+        # Validated at load, in the same place and with the same wording the
+        # suite-level block uses, so the YAML 1.1 sexagesimal trap (an
+        # unquoted `4:00:00` read as the integer 14400) cannot reach sbatch
+        # as a ten-day reservation, an unaddable `mem` cannot reach the build
+        # job's sum, and a `parallel:` written here is refused rather than
+        # silently dropped. Named by testbench, matching the other errors
+        # raised here (#551).
+        try:
+            self.compile = validate_testbench_compile_block(self.compile)
+        except FatalRtlBuddyError as e:
+            raise FatalRtlBuddyError(f"testbench '{self.name}': {e}") from e
         if self.cocotb is not None and self.systemc is not None:
             raise FatalRtlBuddyError(
                 f"testbench '{self.name}': cocotb: and systemc: are mutually exclusive "
@@ -163,6 +211,10 @@ class TestConfig:
     covers: list[str] | None = None
     builder_name: str | None = None
     assertions: bool = False
+    # Per-test reservation override for dispatched runs (#351). Layered
+    # field-wise over the testbench's `resources:` and the cfg-dispatch
+    # defaults by config.dispatch.resolve_resources().
+    resources: "DispatchResourcesFile | None" = None
     # Expected-fail markers (pytest-style xfail). A test is treated as
     # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
     # FAIL is reported as XFAIL and counts as a pass; SKIP/NA pass through.
@@ -175,6 +227,11 @@ class TestConfig:
     xfail: bool = False
     xfail_strict: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
+    sim_rand_seed: int | None = None
+    sim_rand_seed_plusarg: str | None = None
+    resolved_seed: int | None = None
+    seed_source: str | None = None
+    seed_identity: str | None = None
 
     def get_name(self):
         """
@@ -274,6 +331,106 @@ class TestConfig:
         if self.pa is None:
             self.pa = {}
         self.pa.update(new_args)
+
+    def with_plusarg_overrides(self, overrides):
+        """Return this config with ``overrides`` merged over its ``plusargs:``.
+
+        The one place a ``rb test --plusarg`` override is applied (#552), so
+        every consumer — the preprocessor hook that reads
+        :meth:`get_plusarg`, the simulator command line built from
+        :meth:`get_plusargs`, and the dispatch plan the jobs rebuild their
+        configs from — sees one merged view rather than each re-deriving it.
+
+        ``overrides`` wins over the configured value, matching the "later
+        wins" rule the repeated CLI flag already follows among its own
+        entries. A ``preproc`` hook still runs afterwards and may overwrite
+        one deliberately; hooks are the last word, as they are for every
+        other field.
+
+        Empty or ``None`` overrides return ``self`` unchanged — not a copy —
+        so a run without the flag is byte-for-byte the run it always was.
+        Otherwise a shallow copy carrying a *fresh* ``plusargs`` dict is
+        returned, leaving the suite's own loaded config untouched. Only that
+        dict is copied: everything else (the testbench, the model, the
+        plusdefines dict) stays shared, exactly as it is today when a hook
+        mutates the config the suite loaded.
+
+        Overriding the plusarg a test's ``sim-rand-seed-plusarg`` manages is
+        a fatal error, not a merge — see the raise below.
+
+        Args:
+          overrides (dict | None): Plusarg overrides; a ``None`` value means
+            a valueless ``+KEY``, exactly as in ``plusargs:``.
+
+        Returns:
+          TestConfig: This config, or a copy with the overrides merged in.
+
+        Raises:
+          FatalRtlBuddyError: When an override names this test's
+            ``sim-rand-seed-plusarg``.
+        """
+        if not overrides:
+            return self
+        if (
+            self.sim_rand_seed_plusarg is not None
+            and self.sim_rand_seed_plusarg in overrides
+        ):
+            # Refused rather than merged: rtl_buddy re-writes this plusarg
+            # from the resolved seed after the preprocessor runs
+            # (:meth:`ensure_resolved_seed_plusarg`), so the override would
+            # reach neither the hook's second read nor the simulator. A
+            # silently dropped value is the worse answer.
+            raise FatalRtlBuddyError(
+                f"test {self.name!r}: --plusarg {self.sim_rand_seed_plusarg} "
+                "names the plusarg its sim-rand-seed-plusarg manages, and "
+                "rtl_buddy restores the resolved seed there — the override "
+                "would be dropped. Choose the seed with --master-seed or a "
+                "test-level sim-rand-seed instead."
+            )
+        merged = copy.copy(self)
+        merged.pa = {**(self.pa or {}), **overrides}
+        return merged
+
+    def resolve_runtime_seed(
+        self, *, master_seed: int | None, suite_identity: str, run_id: int | None
+    ) -> SeedResolution | None:
+        """Resolve and expose this run's seed before its preprocessor executes."""
+        if self.sim_rand_seed is not None:
+            resolution = SeedResolution(
+                seed=validate_sim_seed(self.sim_rand_seed),
+                source="fixed",
+                identity=expanded_test_seed_identity(suite_identity, self.name, run_id),
+            )
+        elif master_seed is not None:
+            resolution = derive_test_seed(
+                master_seed,
+                suite_identity=suite_identity,
+                test_name=self.name,
+                run_id=run_id,
+            )
+        else:
+            return None
+
+        self.set_resolved_seed(resolution)
+        return resolution
+
+    def set_resolved_seed(self, resolution: SeedResolution) -> None:
+        """Store a planned seed and update its configured runtime plusarg."""
+        self.resolved_seed = validate_resolved_seed(resolution.seed, resolution.source)
+        self._resolved_seed_lock = self.resolved_seed
+        self.seed_source = resolution.source
+        self.seed_identity = resolution.identity
+        self.ensure_resolved_seed_plusarg()
+
+    def ensure_resolved_seed_plusarg(self) -> None:
+        """Restore the managed seed plusarg after a preprocessor mutation."""
+        resolved_seed = self.get_resolved_seed()
+        if resolved_seed is not None and self.sim_rand_seed_plusarg is not None:
+            self.set_plusarg(self.sim_rand_seed_plusarg, resolved_seed)
+
+    def get_resolved_seed(self) -> int | None:
+        """Return the pre-resolved runtime seed, when this run has one."""
+        return getattr(self, "_resolved_seed_lock", self.resolved_seed)
 
     def get_plusdefine(self, key):
         """
@@ -425,6 +582,104 @@ class TestConfig:
 
         return reglvl
 
+    # ---- dispatch plan (de)serialization (#351) -------------------------
+    #
+    # Under ``--dispatch`` the sweep hook must run exactly once, on the
+    # head: re-running it in the build job and again in each sim job both
+    # wastes work and risks a nondeterministic hook expanding differently
+    # per process (so a sim job's compile key never gets built). The head
+    # therefore expands once and writes each resulting TestConfig to a plan
+    # manifest; the build/sim jobs rebuild it from the manifest instead of
+    # re-expanding. Full-fidelity round trip — a hook may mutate any field,
+    # so every field is carried, and ``test_testconfig_plan_roundtrip``
+    # guards the field list against silent drift.
+
+    # to_plan_dict keys, mapped to the dataclass field they carry. The
+    # only rename is the private ``_reglvl`` -> ``reglvl``. Kept as a class
+    # attribute so the completeness guard test can assert coverage.
+    _PLAN_FIELD_RENAMES = {"_reglvl": "reglvl"}
+
+    def to_plan_dict(self) -> dict:
+        """Serialize to a JSON-safe dict for the dispatch plan manifest."""
+        return {
+            "name": self.name,
+            "desc": self.desc,
+            "model": to_dict(self.model),
+            "reglvl": self._reglvl,
+            "pa": self.pa,
+            "pd": self.pd,
+            "uvm": to_dict(self.uvm) if self.uvm is not None else None,
+            "preproc_path": self.preproc_path,
+            "postproc_path": self.postproc_path,
+            "sweep_path": self.sweep_path,
+            "tb": to_dict(self.tb),
+            "timeout": self.timeout,
+            "covers": self.covers,
+            "builder_name": self.builder_name,
+            "assertions": self.assertions,
+            "resources": to_dict(self.resources)
+            if self.resources is not None
+            else None,
+            "xfail": self.xfail,
+            "xfail_strict": self.xfail_strict,
+            "default_timeout": self.default_timeout,
+            "sim_rand_seed": self.sim_rand_seed,
+            "sim_rand_seed_plusarg": self.sim_rand_seed_plusarg,
+            "resolved_seed": self.get_resolved_seed(),
+            "seed_source": self.seed_source,
+            "seed_identity": self.seed_identity,
+        }
+
+    @classmethod
+    def from_plan_dict(cls, d: dict) -> "TestConfig":
+        """Rebuild a TestConfig from a :meth:`to_plan_dict` manifest entry.
+
+        Hook paths and ``model.path`` were resolved to absolute on the head
+        at load time and carried verbatim, so the rebuilt config runs the
+        same regardless of the job's cwd — no re-resolution needed.
+        """
+        config = cls(
+            d["name"],
+            d["desc"],
+            from_dict(ModelConfig, d["model"]),
+            d["reglvl"],
+            d["pa"],
+            d["pd"],
+            from_dict(UVMConfig, d["uvm"]) if d["uvm"] is not None else None,
+            d["preproc_path"],
+            d["postproc_path"],
+            d["sweep_path"],
+            from_dict(TestbenchConfig, d["tb"]),
+            d["timeout"],
+            covers=d["covers"],
+            builder_name=d["builder_name"],
+            assertions=d["assertions"],
+            resources=from_dict(DispatchResourcesFile, d["resources"])
+            if d["resources"] is not None
+            else None,
+            xfail=d["xfail"],
+            xfail_strict=d["xfail_strict"],
+            default_timeout=d["default_timeout"],
+            sim_rand_seed=d.get("sim_rand_seed"),
+            sim_rand_seed_plusarg=d.get("sim_rand_seed_plusarg"),
+            resolved_seed=d.get("resolved_seed"),
+            seed_source=d.get("seed_source"),
+            seed_identity=d.get("seed_identity"),
+        )
+
+        if config.resolved_seed is not None:
+            try:
+                config.set_resolved_seed(
+                    SeedResolution(
+                        config.resolved_seed, config.seed_source, config.seed_identity
+                    )
+                )
+            except ValueError as e:
+                raise FatalRtlBuddyError(
+                    f"dispatch plan seed for {config.name!r} is invalid: {e}"
+                ) from e
+        return config
+
     def __str__(self):
         return pprint.pformat(self)
 
@@ -458,8 +713,22 @@ class TestConfigFile:
     assertions: bool = False
     xfail: bool = False
     xfail_strict: bool = False
+    resources: DispatchResourcesFile | None = None
+    sim_rand_seed: int | None = field(rename="sim-rand-seed", default=None)
+    sim_rand_seed_plusarg: str | None = field(
+        rename="sim-rand-seed-plusarg", default=None
+    )
 
     def initialise(self, config_dir, tbs, suite_builder=None):
+        if self.sim_rand_seed is not None:
+            try:
+                validate_sim_seed(self.sim_rand_seed)
+            except ValueError as e:
+                raise FatalRtlBuddyError(f"test {self.name!r}: {e}") from e
+        if self.sim_rand_seed_plusarg == "":
+            raise FatalRtlBuddyError(
+                f"test {self.name!r}: sim-rand-seed-plusarg must not be empty"
+            )
         tb = tbs[self.tb]
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
@@ -490,7 +759,62 @@ class TestConfigFile:
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            resources=self.resources,
+            sim_rand_seed=self.sim_rand_seed,
+            sim_rand_seed_plusarg=self.sim_rand_seed_plusarg,
         )
+
+
+def parse_plusarg_overrides(values) -> dict:
+    """Parse repeated ``--plusarg`` values into a plusargs dict (#552).
+
+    Each value is ``KEY=VALUE`` or a bare ``KEY`` for the valueless
+    ``+KEY`` form ``plusargs:`` spells as a null value. The result merges
+    over a test's configured ``plusargs:`` — see
+    :meth:`TestConfig.with_plusarg_overrides` — and a key repeated on the
+    command line keeps its LAST value, so the rule is "later wins" whether
+    the earlier value came from the YAML or from an earlier flag.
+
+    Rejected, because the simulator would never see what the user typed: an
+    empty key, a key carrying the ``+`` that introduces a plusarg (the
+    value keeps any ``+`` it contains), and whitespace anywhere in the key
+    — the argv token splits the plusarg list, so a space in a key is a
+    second plusarg the bench will not recognise.
+
+    Args:
+      values (list[str] | None): Raw ``--plusarg`` values, in CLI order.
+
+    Returns:
+      dict: ``{key: value}``, with ``None`` for a valueless plusarg.
+
+    Raises:
+      FatalRtlBuddyError: On a malformed value.
+    """
+    overrides: dict = {}
+    for raw in values or []:
+        key, sep, value = raw.partition("=")
+        # `strip("+")` so a name that is nothing but the prefix ("+", "++")
+        # is reported as the missing name it is, rather than falling into
+        # the '+' branch below and suggesting an empty replacement.
+        if not key.strip("+"):
+            raise FatalRtlBuddyError(
+                f"--plusarg {raw!r} has no name; write --plusarg KEY=VALUE "
+                "(or --plusarg KEY for a valueless plusarg)"
+            )
+        if "+" in key:
+            raise FatalRtlBuddyError(
+                f"--plusarg {raw!r}: the name must not contain '+' — rtl_buddy "
+                f"adds it, so write --plusarg {key.lstrip('+')}"
+                f"{'=' + value if sep else ''}"
+            )
+        if any(c.isspace() for c in key):
+            raise FatalRtlBuddyError(
+                f"--plusarg {raw!r}: the name must not contain whitespace; a "
+                "space would split it into a second plusarg on the simulator "
+                "command line"
+            )
+        overrides[key] = value if sep else None
+    return overrides
 
 
 def _resolve_hook_path(path: str | None, config_dir: str) -> str | None:

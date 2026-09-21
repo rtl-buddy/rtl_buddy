@@ -1,7 +1,7 @@
 """Wire envelope codec for the rtl-buddy-hub protocol v1.
 
 The spec lives in ``docs/hub-protocol.md`` of the
-``rtl-buddy/rtl-buddy-view`` repo and is enforced by the JSON Schema at
+``rtl-buddy/rtl-buddy-sch`` repo and is enforced by the JSON Schema at
 ``schemas/hub-protocol-v1.json`` (vendored alongside this module as
 :mod:`rtl_buddy.hub.schema`).
 
@@ -52,6 +52,40 @@ class Origin(str, Enum):
     SRC = "src"
     CLI = "cli"
     NOTEBOOK = "notebook"
+    GRAPH = "graph"
+    """The hub-served design-knowledge-graph pane (``GET /gph``).
+
+    The ORIGIN stays ``graph`` though the page moved to ``/gph`` in
+    #423 — a page rename does not touch the wire.
+
+    Its own origin rather than a second ``view``: the graph pane and the
+    schematic SPA are meant to be open at the same time (clicking a
+    module in the graph *selects it in the schematic*), and the hub
+    allows one client per origin — sharing ``view`` would make the two
+    panes evict each other."""
+
+    COV = "cov"
+    """The hub-served coverage pane (``GET /cov``).
+
+    Its own origin for the same reason ``GRAPH`` has one: the point of
+    the pane is to drive the *other* panes — clicking a cold line opens
+    it in the editor and selects the instance in the schematic — so it
+    has to be open alongside them, and one client per origin means a
+    shared slot would evict whichever tab you looked at second."""
+
+    PHYS = "phys"
+    """The hub-served synth+power pane (``GET /phy``).
+
+    Its own origin for the third time, and for the third time because
+    the pane's job is to drive the others: clicking the module that owns
+    the area selects it in the schematic and opens it in the editor, so
+    the phys tab is open *alongside* them rather than instead of one.
+    One client per origin means a shared ``view`` or ``cov`` slot would
+    have the two tabs evicting each other.
+
+    The ORIGIN is ``phys`` while the page is ``/phy`` and the label is
+    ``phy`` — the same split ``GRAPH``/``/gph`` already carries. A page
+    route and a display name are chrome; the wire is protocol v1."""
 
 
 class Kind(str, Enum):
@@ -135,7 +169,7 @@ def schema() -> dict[str, Any]:
     """Return a deep copy of the vendored JSON Schema.
 
     Useful for tests that want to drift-check against the source-of-
-    truth copy in ``rtl-buddy-view/schemas/hub-protocol-v1.json``.
+    truth copy in ``rtl-buddy-sch/schemas/hub-protocol-v1.json``.
     """
 
     return json.loads(json.dumps(_SCHEMA))

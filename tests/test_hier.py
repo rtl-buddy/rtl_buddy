@@ -5,13 +5,15 @@ tests stub it with a tiny shell script that records its argv and
 exits with a controllable status. This pins the CLI shape we promise
 to the downstream viewer (``--top``, ``--filelist``, ``--format``,
 ``--output``, ``--frontend``, ``--cdc-annotations``, ``--rdc-annotations``,
-``--clock-legend``).
+``--clock-legend``, ``--block-diagram``).
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,13 @@ from typer.testing import CliRunner
 from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyView
+
+# The stub tools below run a here-doc Python snippet, so they need an
+# interpreter that actually exists: a bare ``python`` is absent from a
+# stock macOS PATH. Capture the real interpreter at import time -- one
+# test monkeypatches ``sys.executable`` to probe PATH-less resolution,
+# and the stubs must not inherit that fake path.
+_PYTHON = shlex.quote(sys.executable)
 
 
 def _make_fake_view(
@@ -30,7 +39,7 @@ def _make_fake_view(
     script = tmp_path / name
     script.write_text(
         "#!/usr/bin/env bash\n"
-        f'python - "$@" <<PY\n'
+        f'{_PYTHON} - "$@" <<PY\n'
         "import json, sys\n"
         f'open({json.dumps(str(record))}, "w").write(json.dumps(sys.argv[1:]))\n'
         "PY\n"
@@ -38,6 +47,50 @@ def _make_fake_view(
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return script, record
+
+
+def _make_old_view(
+    tmp_path: Path,
+    *,
+    version: str | None = "0.7.1",
+    option: str = "--block-diagram",
+    name: str = "old-view",
+) -> Path:
+    """A fake viewer that predates ``option``.
+
+    Rejects the unknown option the way the viewer's Click/Typer parser
+    does — a message on stderr plus a non-zero exit — and, unless
+    ``version`` is None, answers ``--version`` so the wrapper's probe
+    has something to name in its error.
+    """
+    script = tmp_path / name
+    version_branch = (
+        f'if [ "$1" = "--version" ]; then\n'
+        f'  echo "rtl-buddy-view {version}"\n'
+        f"  exit 0\n"
+        f"fi\n"
+        if version is not None
+        else ""
+    )
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        + version_branch
+        + f'echo "Error: No such option: {option}" >&2\n'
+        "exit 2\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script
+
+
+def _example_model(tmp_path: Path) -> ModelConfig:
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir(exist_ok=True)
+    src.write_text("module example; endmodule\n")
+    return ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
 
 
 def _runner() -> tuple[CliRunner, RtlBuddy]:
@@ -113,6 +166,132 @@ def test_wrapper_forwards_optional_flags(tmp_path: Path):
     assert argv[argv.index("--cdc-annotations") + 1] == str(cdc_map)
     assert argv[argv.index("--rdc-annotations") + 1] == str(rdc_map)
     assert "--clock-legend" in argv
+
+
+# --- --block-diagram (rtl-buddy-sch#160) ----------------------------------
+
+
+def test_wrapper_forwards_block_diagram_when_set(tmp_path: Path):
+    """The dot-only block-diagram mode reaches the renderer verbatim."""
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        executable=str(script),
+    )
+    assert view.run() == 0
+    assert "--block-diagram" in json.loads(record.read_text())
+
+
+def test_wrapper_omits_block_diagram_when_unset(tmp_path: Path):
+    """Default off means the CLI we hand the renderer is byte-identical
+    to the pre-#160 contract — that is what keeps `rb hier` working
+    against every released viewer while the flag is still unreleased."""
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        executable=str(script),
+    )
+    assert view.run() == 0
+    assert "--block-diagram" not in json.loads(record.read_text())
+
+
+def test_wrapper_old_viewer_rejects_block_diagram_with_clear_error(tmp_path: Path):
+    """A renderer that predates the flag exits non-zero with an
+    unknown-option complaint. The wrapper reads that back out of
+    hier.log and re-raises it naming the release to upgrade to, rather
+    than leaving the user with a bare exit code."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_BLOCK_DIAGRAM_MIN_VERSION
+
+    script = _make_old_view(tmp_path, version="0.7.1")
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        view.run()
+    message = str(exc.value)
+    assert "--block-diagram" in message
+    assert VIEW_BLOCK_DIAGRAM_MIN_VERSION in message
+    # The probe names what is actually installed, so the user does not
+    # have to go find out themselves.
+    assert "0.7.1" in message
+    # ...and the raw renderer output is still cited, not swallowed.
+    assert "hier.log" in message
+
+
+def test_wrapper_old_viewer_error_survives_a_failed_version_probe(tmp_path: Path):
+    """A viewer too old to answer `--version` is still diagnosed — the
+    probe is a nicety on this path, not the gate. (Pre-emptively gating
+    on the probe would refuse a dev/editable viewer that does carry the
+    feature.)"""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_BLOCK_DIAGRAM_MIN_VERSION
+
+    script = _make_old_view(tmp_path, version=None)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        view.run()
+    assert VIEW_BLOCK_DIAGRAM_MIN_VERSION in str(exc.value)
+    assert "predates it" in str(exc.value)
+
+
+def test_wrapper_block_diagram_does_not_hijack_unrelated_failures(tmp_path: Path):
+    """An ordinary renderer failure (parse error, missing top) under
+    --block-diagram must keep propagating as an exit code. Only the
+    unknown-option signature is re-raised, or every real bug in a
+    block-diagram run would be reported as a version problem."""
+    script, _ = _make_fake_view(tmp_path, exit_code=1)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        block_diagram=True,
+        executable=str(script),
+    )
+    assert view.run() == 1
+
+
+def test_wrapper_block_diagram_does_not_claim_another_flags_rejection(tmp_path: Path):
+    """An unknown-option failure naming a *different* flag is not a
+    --block-diagram version problem, and must not be reported as one.
+
+    The trap this guards: hier.log opens with the echoed command line,
+    which repeats every flag we passed — so a naive search for
+    ``--block-diagram`` in "what the viewer said" matches whenever the
+    flag was set, whatever the viewer actually complained about. The
+    echo is subtracted before matching."""
+    script = _make_old_view(tmp_path, option="--clock-legend")
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        clock_legend=True,
+        block_diagram=True,
+        executable=str(script),
+    )
+    # Propagates as an exit code; no misattributed version error.
+    assert view.run() == 2
 
 
 def test_wrapper_forwards_axi_perf_annotations_as_overlay(tmp_path: Path):
@@ -288,6 +467,44 @@ def test_wrapper_rejects_missing_tool_on_path(tmp_path: Path, monkeypatch):
         view.run()
 
 
+def test_wrapper_resolves_sibling_of_interpreter(tmp_path: Path, monkeypatch):
+    """A bare command name absent from PATH still resolves when the
+    binary sits next to ``sys.executable`` — rb invoked by absolute venv
+    path without activation must not lose the viewer that venv ships."""
+    import sys as _sys
+
+    bindir = tmp_path / "venvbin"
+    bindir.mkdir()
+    fake = bindir / "totally-fake-binary-xyz"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(_sys, "executable", str(bindir / "python"))
+    monkeypatch.setenv("PATH", "")
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable="totally-fake-binary-xyz",
+    )
+    # run() proceeds past resolution (the fake tool exits 0 with no
+    # output, which the wrapper reports as a tool failure downstream —
+    # anything but the "not found" FatalRtlBuddyError proves the point).
+    try:
+        view.run()
+    except Exception as exc:  # noqa: BLE001 - only the message matters here
+        assert "not found" not in str(exc)
+    assert view.executable == str(fake)
+
+
 # --- rb hier command (integration through Typer) --------------------------
 
 
@@ -313,6 +530,106 @@ def test_rb_hier_invokes_stubbed_viewer(minimal_project: Path):
     assert argv[argv.index("--format") + 1] == "json"
     # Filelist artefact landed under artefacts/hier/<model>/.
     assert (minimal_project / "artefacts" / "hier" / "example" / "hier.f").is_file()
+
+
+def test_rb_hier_block_diagram_flag_reaches_the_renderer(minimal_project: Path):
+    """`rb hier <model> --format dot --block-diagram` is the whole point
+    of the plumbing: before #160 the wrapper forwarded a fixed flag list
+    and the mode was unreachable from rtl_buddy."""
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "example",
+            "-c",
+            "models.yaml",
+            "--format",
+            "dot",
+            "--block-diagram",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--format") + 1] == "dot"
+    assert "--block-diagram" in argv
+
+
+def test_rb_hier_without_block_diagram_omits_it(minimal_project: Path):
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "example",
+            "-c",
+            "models.yaml",
+            "--format",
+            "dot",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--block-diagram" not in json.loads(record.read_text())
+
+
+def test_rb_hier_block_diagram_on_old_viewer_reports_the_version(
+    minimal_project: Path,
+):
+    """End to end, the old-tool path exits non-zero with the actionable
+    message instead of a traceback."""
+    from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_BLOCK_DIAGRAM_MIN_VERSION
+
+    script = _make_old_view(minimal_project, version="0.7.1")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "example",
+            "-c",
+            "models.yaml",
+            "--format",
+            "dot",
+            "--block-diagram",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code != 0
+    rendered = result.output + str(result.exception or "")
+    assert VIEW_BLOCK_DIAGRAM_MIN_VERSION in rendered
+    assert "Traceback" not in result.output
+
+
+def test_rb_hier_view_tb_forwards_block_diagram(minimal_project: Path):
+    """The TB-rooted branch builds its own RtlBuddyView — the flag has
+    to be threaded through both, not just the DUT path."""
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "basic",
+            "--view",
+            "tb",
+            "--test-config",
+            "tests.yaml",
+            "--format",
+            "dot",
+            "--block-diagram",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--block-diagram" in json.loads(record.read_text())
 
 
 def test_rb_hier_unknown_model_exits_nonzero(minimal_project: Path):
@@ -495,6 +812,47 @@ def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
     assert "+incdir+" not in fl
     # The TB source file survives the filter.
     assert "tb.sv" in fl
+
+
+def test_wrapper_drops_model_filelist_defines_from_hier_f(tmp_path: Path):
+    """A `+define+` in the MODEL's own filelist must not reach hier.f.
+
+    The TB-side filter (`_is_non_source_filelist_line`) never sees the
+    model's entries — they go straight through `write_output(strip=True)`,
+    and #305 made `_process` skip the strip branch for defines so the
+    marker survives for the FPV consumers that read the file back. `rb
+    hier` does not read it back: it hands the path to rtl-buddy-view, which
+    opens every line as a source. So the skip has to happen at write time,
+    keyed on `strip` — otherwise the models this feature exists to unblock
+    are exactly the ones `rb hier` / `rb hier-query` / `rb graph build`
+    start failing on.
+    """
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=["+define+SYNTHESIS", "+define+WIDTH=8", str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    script, _ = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        format="json",
+        executable=str(script),
+    )
+    assert view.run() == 0
+
+    fl = (tmp_path / "artefacts" / "hier" / "example" / "hier.f").read_text()
+    body = [ln for ln in fl.splitlines() if ln and not ln.startswith("//")]
+    assert "+define+" not in fl
+    # ...and not as a bare `SYNTHESIS` line the renderer would try to open.
+    assert "SYNTHESIS" not in fl
+    assert "WIDTH=8" not in fl
+    assert [ln for ln in body if ln.endswith("example.sv")]
+    assert all(ln.endswith(".sv") for ln in body), body
 
 
 def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):

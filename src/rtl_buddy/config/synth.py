@@ -10,6 +10,7 @@ from typing import Literal
 from .model import ModelConfig, ModelConfigLoader
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,23 @@ class SynthToolOpts:
     strategy: str = ""
     frontend: str = "verilog"
     plugin_path: str = ""
+    # Parse all model sources as one SystemVerilog compilation unit, so
+    # preprocessor definitions stay visible across file boundaries.
+    # Forwarded to yosys-slang as ``read_slang --single-unit``; the
+    # legacy verilog frontend has no equivalent.
+    single_unit: bool = False
+    # Keep module instances as hierarchy instead of inlining them. Forwarded
+    # to yosys-slang as ``read_slang --best-effort-hierarchy``; the legacy
+    # verilog frontend has no equivalent.
+    best_effort_hierarchy: bool = False
+    # Pre-synthesis gate on `function`/`task` declarations that lack an
+    # explicit `automatic` lifetime: "error", "warn", or "allow". Empty
+    # selects the frontend-dependent default -- see
+    # :func:`resolve_static_functions_mode`.
+    static_functions: str = ""
+    # Post-synthesis gate on Yosys "multiple conflicting drivers" warnings:
+    # "error" (the default) or "allow".
+    conflicting_drivers: str = ""
 
 
 @serde
@@ -70,6 +88,89 @@ class SynthToolOptsFile:
     strategy: str = field(default="")
     frontend: str = field(default="verilog")
     plugin_path: str = field(rename="plugin-path", default="")
+    single_unit: bool = field(rename="single-unit", default=False)
+    best_effort_hierarchy: bool = field(rename="best-effort-hierarchy", default=False)
+    static_functions: str = field(rename="static-functions", default="")
+    conflicting_drivers: str = field(rename="conflicting-drivers", default="")
+
+
+# Accepted values for the two correctness gates, and the default each takes
+# when the option is left empty.
+STATIC_FUNCTIONS_MODES: tuple[str, ...] = ("error", "warn", "allow")
+CONFLICTING_DRIVERS_MODES: tuple[str, ...] = ("error", "allow")
+
+
+def resolve_static_functions_mode(opts: SynthToolOpts) -> str:
+    """Effective ``static-functions`` mode for these tool options.
+
+    The default depends on the frontend because the hazard does. yosys-slang
+    lowers a static-lifetime subroutine literally and shares one net per
+    formal across every call site, so the netlist is silently wrong: default
+    ``error``. The legacy ``verilog`` frontend inlines per call site, so the
+    design is correct there but not portable, and the default is ``warn``.
+    An explicit setting always wins.
+    """
+    mode = (opts.static_functions or "").strip()
+    if not mode:
+        return "error" if opts.frontend == "slang" else "warn"
+    if mode not in STATIC_FUNCTIONS_MODES:
+        raise FatalRtlBuddyError(
+            f"synth option static-functions must be one of "
+            f"{', '.join(STATIC_FUNCTIONS_MODES)}, got {mode!r}"
+        )
+    return mode
+
+
+def resolve_conflicting_drivers_mode(opts: SynthToolOpts) -> str:
+    """Effective ``conflicting-drivers`` mode; defaults to ``error``."""
+    mode = (opts.conflicting_drivers or "").strip()
+    if not mode:
+        return "error"
+    if mode not in CONFLICTING_DRIVERS_MODES:
+        raise FatalRtlBuddyError(
+            f"synth option conflicting-drivers must be one of "
+            f"{', '.join(CONFLICTING_DRIVERS_MODES)}, got {mode!r}"
+        )
+    return mode
+
+
+# Accepted keys of a `synth.yaml` ``tool_overrides.<tool>`` block. These are
+# the snake_case attribute names of SynthToolOpts, NOT the kebab-case YAML
+# spellings used under ``cfg-synth-tools.opts`` — an override written in the
+# kebab form used to be accepted and silently ignored, which is exactly the
+# failure mode this list exists to close.
+SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
+    "synth_args",
+    "abc_args",
+    "strategy",
+    "frontend",
+    "plugin_path",
+    "single_unit",
+    "best_effort_hierarchy",
+    "static_functions",
+    "conflicting_drivers",
+)
+
+# Overrides whose value type is checked, as key -> (type, label, hint).
+# PyYAML gives `single_unit: "true"` as a str, which is truthy and would
+# silently enable the flag from a value the author may have meant as
+# anything. Type errors here are fatal: `single_unit` is new, so no existing
+# config can hold a wrongly-typed one, and serde already rejects the same
+# values under `cfg-synth-tools.opts.single-unit`.
+_SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
+    "single_unit": (bool, "bool", "write an unquoted YAML true/false"),
+    "best_effort_hierarchy": (bool, "bool", "write an unquoted YAML true/false"),
+    "static_functions": (
+        str,
+        "string",
+        f"write one of {', '.join(STATIC_FUNCTIONS_MODES)}",
+    ),
+    "conflicting_drivers": (
+        str,
+        "string",
+        f"write one of {', '.join(CONFLICTING_DRIVERS_MODES)}",
+    ),
+}
 
 
 @serde
@@ -122,19 +223,86 @@ def default_effort_config() -> SynthEffortConfig:
 @serde
 class SynthToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
     opts: SynthToolOptsFile = field(default_factory=SynthToolOptsFile)
 
 
 class SynthToolConfig:
-    def __init__(self, cfg: SynthToolConfigFile):
+    def __init__(self, cfg: SynthToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
+        # Directory relative `tool:` candidates are existence-tested
+        # against: the one holding root_config.yaml, never the process
+        # cwd (rb is routinely invoked from a suite directory).
+        self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            base_dir=self._base_dir,
+            block="cfg-synth-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
+
+    def _validate_overrides(self, overrides: dict) -> None:
+        """Check a ``tool_overrides.<tool>`` block before it is merged.
+
+        A misspelled or kebab-case override key used to be dropped on the
+        floor: the run proceeded with the tool-level default and nothing
+        said so. It is now **warned** about and still ignored — rejecting
+        it outright would break configs that load today, and breaking
+        changes only land on major bumps (docs/migrations.md). Promoting
+        this to a hard error is a candidate for the next major.
+
+        A wrongly-typed ``single_unit`` *is* fatal: the field is new, so
+        no config in the wild can already carry a bad one, and serde
+        already rejects the same values under ``cfg-synth-tools.opts``.
+        """
+        unknown = sorted(
+            (str(k) for k in overrides if k not in SYNTH_TOOL_OVERRIDE_KEYS)
+        )
+        if unknown:
+            hints = [
+                f"{key!r} -> {key.replace('-', '_')!r}"
+                for key in unknown
+                if key.replace("-", "_") in SYNTH_TOOL_OVERRIDE_KEYS
+            ]
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth_tool_config.unknown_override",
+                tool=self._cfg.name,
+                unknown=unknown,
+                accepted=list(SYNTH_TOOL_OVERRIDE_KEYS),
+                hints=hints,
+            )
+
+        for key, (expected, label, hint) in _SYNTH_OVERRIDE_TYPES.items():
+            if key not in overrides:
+                continue
+            value = overrides[key]
+            if not isinstance(value, expected):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth_tool_config.override_type",
+                    tool=self._cfg.name,
+                    key=key,
+                    expected=label,
+                    got=type(value).__name__,
+                )
+                raise FatalRtlBuddyError(
+                    f"tool_overrides.{self._cfg.name}.{key} must be a {label}, "
+                    f"got {type(value).__name__} ({value!r}); {hint}"
+                )
 
     def get_opts(self, overrides: dict | None = None) -> SynthToolOpts:
         synth_args = self._cfg.opts.synth_args
@@ -142,18 +310,50 @@ class SynthToolConfig:
         strategy = self._cfg.opts.strategy
         frontend = self._cfg.opts.frontend
         plugin_path = self._cfg.opts.plugin_path
+        single_unit = self._cfg.opts.single_unit
+        best_effort_hierarchy = self._cfg.opts.best_effort_hierarchy
+        static_functions = self._cfg.opts.static_functions
+        conflicting_drivers = self._cfg.opts.conflicting_drivers
         if overrides:
+            if not isinstance(overrides, dict):
+                # Previously this reached `overrides.get(...)` and died with a
+                # bare AttributeError, so naming the file and the shape it
+                # wanted is strictly better, not a compatibility break.
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth_tool_config.override_not_mapping",
+                    tool=self._cfg.name,
+                    got=type(overrides).__name__,
+                )
+                raise FatalRtlBuddyError(
+                    f"tool_overrides.{self._cfg.name} must be a mapping, "
+                    f"got {type(overrides).__name__} ({overrides!r})"
+                )
+            self._validate_overrides(overrides)
             synth_args = overrides.get("synth_args", synth_args)
             abc_args = overrides.get("abc_args", abc_args)
             strategy = overrides.get("strategy", strategy)
             frontend = overrides.get("frontend", frontend)
             plugin_path = overrides.get("plugin_path", plugin_path)
+            single_unit = overrides.get("single_unit", single_unit)
+            best_effort_hierarchy = overrides.get(
+                "best_effort_hierarchy", best_effort_hierarchy
+            )
+            static_functions = overrides.get("static_functions", static_functions)
+            conflicting_drivers = overrides.get(
+                "conflicting_drivers", conflicting_drivers
+            )
         return SynthToolOpts(
             synth_args=synth_args,
             abc_args=abc_args,
             strategy=strategy,
             frontend=frontend,
             plugin_path=plugin_path,
+            single_unit=single_unit,
+            best_effort_hierarchy=best_effort_hierarchy,
+            static_functions=static_functions,
+            conflicting_drivers=conflicting_drivers,
         )
 
 
@@ -249,7 +449,13 @@ class SynthConfig:
         return self.model
 
     def get_top(self) -> str:
-        return self.model.name
+        """The module this run elaborates — the model's root module.
+
+        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
+        ``top:`` override (#479) reaches this flow too; without the
+        override it is still the model name.
+        """
+        return self.model.get_top()
 
     def get_constraints(self) -> str | None:
         return self.constraints

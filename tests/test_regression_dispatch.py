@@ -1,0 +1,8025 @@
+"""Dispatched regression flow tests (#351 P1).
+
+Exercise ``rb regression --dispatch ...`` end-to-end over the
+``minimal_project`` fixture with a fake backend and a stubbed
+``TestRunner``: head-node build pass, fan-out, collection, failure
+mapping, and result ordering — no scheduler or simulator involved.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+import rtl_buddy.rtl_buddy as rtl_buddy_module
+from rtl_buddy.config.dispatch import mem_to_bytes, time_to_seconds
+from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
+
+# Aliased so pytest does not try to collect the dataclass as a test class.
+from rtl_buddy.dispatch.base import TestJobSpec as SimJobSpec
+from rtl_buddy.dispatch.plan import (
+    read_plan_config,
+    read_plan_configs,
+    read_plan_master_seed,
+    read_plan_token,
+)
+from rtl_buddy.dispatch.run_manifest import discover_run_manifests
+from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.rtl_buddy import RtlBuddy
+from rtl_buddy.runner.result_io import write_build_result_json, write_result_json
+from rtl_buddy.runner.test_results import (
+    CompileFailResults,
+    EarlyStopResults,
+    SimTimeoutResults,
+    TestPassResults,
+)
+from rtl_buddy.seed_mode import SeedMode
+from rtl_buddy.seeding import derive_test_seed
+
+
+class _FakeBackend(DispatchBackend):
+    """Records specs; 'runs' each job at submit time by writing (or
+    deliberately not writing) its result envelope."""
+
+    name = "fake"
+
+    def __init__(self, job_result="PASS", write_results=True):
+        self.job_result = job_result
+        self.write_results = write_results
+        self.submitted = []
+        self.build_submitted = []
+        self.verilate_submitted = []
+        # What each build job was chained behind, in submission order
+        # (#593): the verilate job's id for a split compile's build
+        # half, None everywhere else.
+        self.build_dependencies = []
+        self.dependencies = []
+        self.waited = False
+        self.cancelled = False
+        self.extra_waits = []
+        # Job ids each collect_telemetry pass asked about, so a test can
+        # prove the build handle joined the first query and only that one
+        # (#495).
+        self.telemetry_queries = []
+
+    def submit_build(self, spec, *, dependency=None):
+        # Kept apart, so `build_submitted` keeps meaning "the build job"
+        # whether or not this suite's compile was split (#593).
+        if spec.phase == "verilate":
+            self.verilate_submitted.append(spec)
+        else:
+            self.build_submitted.append(spec)
+        self.build_dependencies.append(dependency)
+        # `fake-build` for the whole compile and for the build half of a
+        # split one, so an unsplit suite's ids are what they always were;
+        # the verilate half needs its own, since telemetry keys on the id.
+        return JobHandle(
+            job_id="fake-verilate" if spec.phase == "verilate" else "fake-build",
+            spec=spec,
+        )
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        # `delay_sec` is accepted (and ignored) so the base fake matches the
+        # DispatchBackend ABC: a backend that does not take the retry
+        # backoff kwarg is exactly the out-of-tree breakage #405 introduced,
+        # and nothing would catch it if only the retry fake had it.
+        self.submitted.append(spec)
+        self.dependencies.append(dependency)
+        if self.write_results:
+            results = (
+                TestPassResults(name=spec.test_name + "/results")
+                if self.job_result == "PASS"
+                else CompileFailResults(name=spec.test_name + "/results")
+            )
+            if spec.resolved_seed is not None:
+                planned_cfg = read_plan_config(spec.plan_path, spec.test_name)
+                results.results["seed"] = {
+                    "master_seed": spec.master_seed,
+                    "resolved_seed": spec.resolved_seed,
+                    "source": planned_cfg.seed_source,
+                    "identity": planned_cfg.seed_identity,
+                }
+            # Mirror the real rb _test-job: stamp the head's run token
+            # (carried in the plan) into the envelope so collection accepts
+            # it (#362).
+            run_token = read_plan_token(spec.plan_path) if spec.plan_path else None
+            write_result_json(
+                spec.result_json,
+                test_name=spec.test_name,
+                run_id=spec.run_id,
+                results=results,
+                run_token=run_token,
+            )
+        return JobHandle(job_id=f"fake-{len(self.submitted)}", spec=spec)
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        self.waited = True
+        self.extra_waits.append(extra_wait)
+
+    def cancel_all(self, handles):
+        self.cancelled = True
+
+
+class _StubBuildRunner:
+    """TestRunner stand-in for the head-node build pass."""
+
+    canned = None
+    inits = []
+    # The compile record VlogSim stamps on itself (#495); the in-process
+    # path folds it into every run's result envelope.
+    compile_record = {"duration_sec": 2.5, "builder": "stub", "reused": False}
+
+    def __init__(self, **kwargs):
+        type(self).inits.append(kwargs)
+
+    def run(self):
+        return type(self).canned
+
+    def run_multiple(self, run_ids):
+        return [type(self).canned for _ in run_ids]
+
+    @property
+    def last_compile(self):
+        return type(self).compile_record
+
+
+@pytest.fixture
+def stub_build_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StubBuildRunner]:
+    _StubBuildRunner.canned = EarlyStopResults(
+        name="build/results", desc="Stopped early at compile"
+    )
+    _StubBuildRunner.inits = []
+    monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StubBuildRunner)
+    return _StubBuildRunner
+
+
+@pytest.fixture
+def fake_backend(monkeypatch: pytest.MonkeyPatch) -> _FakeBackend:
+    backend = _FakeBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "create_dispatch_backend",
+        _backend_factory(backend),
+    )
+    return backend
+
+
+def _invoke(args):
+    runner, rb = CliRunner(), RtlBuddy(name="test_regression_dispatch")
+    return runner.invoke(rb.app, args), rb
+
+
+def _set_stub_builder_family(project: Path, family: str):
+    """Declare a simulator family on the fixture's stub builder.
+
+    The fixture's `builder: "echo"` infers the family `"echo"`, which is
+    neither share-build capable (so no build job is submitted, #358) nor
+    eligible for time advice (gated to verilator, #329). Tests that exercise
+    either path have to say which family they mean.
+    """
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            '    builder: "echo"\n',
+            f'    builder: "echo"\n    simulator-family: "{family}"\n',
+        )
+    )
+
+
+def _mark_stub_builder_verilator(project: Path):
+    _set_stub_builder_family(project, "verilator")
+
+
+def _write_colocated_suites(project: Path) -> Path:
+    """Add a second tests config with distinct names in the same directory."""
+    second = project / "other-tests.yaml"
+    second.write_text(
+        (project / "tests.yaml")
+        .read_text()
+        .replace("  - name: basic\n", "  - name: other_basic\n")
+        .replace("  - name: extra\n", "  - name: other_extra\n")
+    )
+    (project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - other-tests.yaml\n"
+    )
+    return second
+
+
+def test_dispatched_regression_passes(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    # Only "basic" (reglvl 0) runs at -l 0; "extra" (reglvl 5) is skipped.
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert fake_backend.waited
+    assert not fake_backend.cancelled
+
+    # The compile runs as a dispatched build job (never on the head), and
+    # the sim is gated on it via afterok.
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.build_submitted[0].resources.time is not None
+    assert fake_backend.dependencies == ["fake-build"]
+
+    # Dispatch implies share_build; sim jobs carry a defined reservation.
+    assert rb.share_build is True
+    spec = fake_backend.submitted[0]
+    assert spec.share_build is True
+    assert spec.resources.time is not None
+    assert spec.result_json.is_file()
+
+
+def test_dispatched_regression_carries_master_and_resolved_seed(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    spec = fake_backend.submitted[0]
+    assert spec.seed_mode == SeedMode.MASTER
+    assert spec.master_seed == 20260914
+    assert spec.resolved_seed is not None
+    assert read_plan_master_seed(spec.plan_path) == 20260914
+    planned = read_plan_config(spec.plan_path, spec.test_name)
+    assert planned.get_resolved_seed() == spec.resolved_seed
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert envelope["payload"]["master_seed"] == 20260914
+
+
+def test_dispatched_master_seed_uses_sweep_expanded_names(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    (minimal_project / "sweep.py").write_text(
+        "import copy\n"
+        "out_test_cfgs = []\n"
+        "for suffix in ('fp16', 'fp32'):\n"
+        "    cfg = copy.deepcopy(test_cfg)\n"
+        "    cfg.name = test_cfg.name + '.' + suffix\n"
+        "    out_test_cfgs.append(cfg)\n"
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sweep:\n", "    sweep:\n      path: sweep.py\n", 1
+        )
+    )
+
+    result, _ = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    specs = {spec.test_name: spec for spec in fake_backend.submitted}
+    assert set(specs) == {"basic.fp16", "basic.fp32"}
+    for name, spec in specs.items():
+        expected = derive_test_seed(
+            20260914,
+            suite_identity="tests.yaml",
+            test_name=name,
+            run_id=None,
+        )
+        assert spec.resolved_seed == expected.seed
+        assert (
+            read_plan_config(spec.plan_path, name).get_resolved_seed() == expected.seed
+        )
+
+
+def test_direct_test_and_regression_derive_the_same_seed(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    suite_dir = minimal_project / "verif" / "foo"
+    suite_dir.mkdir(parents=True)
+    for name in ("tests.yaml", "models.yaml"):
+        (suite_dir / name).write_text((minimal_project / name).read_text())
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs:\n  - verif/foo/tests.yaml\n"
+    )
+
+    monkeypatch.chdir(suite_dir)
+    direct, direct_rb = _invoke(
+        [
+            "--machine",
+            "test",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert direct.exit_code == 0, direct.output
+    direct_cfg = stub_build_runner.inits[-1]["test_cfg"]
+    direct_seed = direct_cfg.get_resolved_seed()
+    direct_rb._artifact_locks.release_all()
+
+    stub_build_runner.inits = []
+    monkeypatch.chdir(minimal_project)
+    regression, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert regression.exit_code == 0, regression.output
+    regression_seed = stub_build_runner.inits[-1]["test_cfg"].get_resolved_seed()
+
+    assert direct_seed == regression_seed
+    assert direct_cfg.seed_identity == "verif/foo/tests.yaml::basic::single"
+
+
+def test_same_master_seed_replays_local_regression_seed(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    first, first_rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert first.exit_code == 0, first.output
+    first_seed = stub_build_runner.inits[-1]["test_cfg"].get_resolved_seed()
+    first_rb._artifact_locks.release_all()
+
+    stub_build_runner.inits = []
+    second, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--master-seed",
+            "20260914",
+        ]
+    )
+    assert second.exit_code == 0, second.output
+    second_seed = stub_build_runner.inits[-1]["test_cfg"].get_resolved_seed()
+
+    assert first_seed is not None
+    assert second_seed == first_seed
+
+
+def test_test_accepts_master_seed_above_signed_64_bit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    master_seed = (1 << 96) + 20260914
+
+    result, _ = _invoke(
+        ["--machine", "test", "basic", "--master-seed", str(master_seed)]
+    )
+
+    assert result.exit_code == 0, result.output
+    cfg = stub_build_runner.inits[-1]["test_cfg"]
+    assert (
+        cfg.get_resolved_seed()
+        == derive_test_seed(
+            master_seed,
+            suite_identity="tests.yaml",
+            test_name="basic",
+            run_id=None,
+        ).seed
+    )
+
+
+@pytest.mark.parametrize("rnd_flag", ["--rnd-new", "--rnd-last"])
+def test_test_rejects_master_seed_with_legacy_random_modes(
+    minimal_project: Path,
+    rnd_flag: str,
+):
+    result, _ = _invoke(["test", "basic", "--master-seed", "20260914", rnd_flag])
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cannot be combined" in str(result.exception)
+
+
+def test_randtest_rejects_unresolved_preprocessor_seed(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["randtest", "basic", "2"])
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cannot expose new seeds before preproc" in str(result.exception)
+    assert stub_build_runner.inits == []
+
+
+@pytest.mark.parametrize("seed", [0, 1, -1, 2**31])
+def test_default_builder_seed_is_exposed_before_preprocessor(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    seed,
+):
+    root_path = minimal_project / "root_config.yaml"
+    root_path.write_text(
+        root_path.read_text().replace("sim-rand-seed: 1", f"sim-rand-seed: {seed}")
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["test", "basic"])
+
+    assert result.exit_code == 0, result.output
+    run_cfg = stub_build_runner.inits[-1]["test_cfg"]
+    assert run_cfg.get_resolved_seed() == seed
+    assert run_cfg.seed_source == "default"
+    assert run_cfg.get_plusarg("stimulus_seed") == seed
+
+
+def test_randtest_fixed_seed_is_shared_by_preprocessor_and_all_runs(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n"
+            "    sim-rand-seed: 41\n"
+            "    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["--machine", "randtest", "basic", "2"])
+
+    assert result.exit_code == 0, result.output
+    run_cfg = stub_build_runner.inits[-1]["test_cfg"]
+    assert stub_build_runner.inits[-1]["seed_mode"] == SeedMode.NEW
+    assert run_cfg.get_resolved_seed() == 41
+    assert run_cfg.get_plusarg("stimulus_seed") == 41
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = json.loads(payload_line)["payload"]["results"]
+    assert [
+        (row["seed"]["resolved_seed"], row["seed"]["identity"]) for row in rows
+    ] == [
+        (41, "tests.yaml::basic::single"),
+        (41, "tests.yaml::basic::single"),
+    ]
+
+
+def test_master_seed_rejects_one_shared_preprocessor_for_multiple_runs():
+    rb = RtlBuddy(name="test_master_seed_multiple")
+
+    with pytest.raises(
+        FatalRtlBuddyError, match="requires one run id per expanded test"
+    ):
+        rb._do_test_suite(
+            object(),
+            run_ids=[1, 2],
+            seed_mode=SeedMode.MASTER,
+            master_seed=20260914,
+        )
+
+
+def test_dispatched_regression_missing_result_is_dispatch_fail(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    fake_backend.write_results = False
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert "produced no result" in rows["basic"]["desc"]
+
+
+def test_zero_test_suite_is_skipped_not_crashed(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A suite that selects no test at the requested level submits nothing
+    (build_handle=None). The head must skip it, not crash on the None in
+    all_handles and orphan the other suites' already-submitted jobs (#361)."""
+    # Second suite: every test is far above -l 0, so it selects nothing.
+    # Reuse the fixture suite but bump every test far above -l 0 so the
+    # suite selects nothing (keeps every schema field valid).
+    empty = (
+        (minimal_project / "tests.yaml")
+        .read_text()
+        .replace("reglvl: 0", "reglvl: 10000")
+        .replace("reglvl: 5", "reglvl: 10000")
+    )
+    (minimal_project / "empty_tests.yaml").write_text(empty)
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - empty_tests.yaml\n"
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # Only the non-empty suite's "basic" reached the fleet; the empty suite
+    # queued nothing, and the run drained cleanly rather than cancelling.
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert fake_backend.waited
+    assert not fake_backend.cancelled
+
+
+def test_head_does_not_preunlink_and_rejects_stale_by_token(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The head must NOT pre-unlink the result path (that caches an NFS
+    negative dentry and blinds it, #362). A stale envelope left in place is
+    instead rejected by run_token, so an old PASS never satisfies this run."""
+    fake_backend.write_results = False  # this run's job leaves no fresh envelope
+
+    # Pre-seed a stale PASS envelope with a token from an "earlier run" at the
+    # exact path this run's "basic" job will use.
+    stale = minimal_project / "artefacts" / "basic" / "dispatch" / "result-single.json"
+    write_result_json(
+        stale,
+        test_name="basic",
+        run_id=None,
+        results=TestPassResults(name="basic/results"),
+        run_token="STALE-run",
+    )
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    # The stale file was NOT unlinked by the head at submit (still on disk,
+    # still the old token) — proving the negative-dentry trigger is gone.
+    assert stale.is_file()
+    assert json.loads(stale.read_text())["run_token"] == "STALE-run"
+    # And its stale PASS did not count: the run reports no result for basic.
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert "produced no result" in rows["basic"]["desc"]
+
+
+def test_dispatched_regression_submits_build_before_sims(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    # With a share-build-capable builder a build job is submitted (the
+    # compile no longer runs on the head), and every sim depends on it.
+    # Compile failures now surface via the sim job's own envelope, not by
+    # the head refusing to submit.
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.submitted, "expected sim jobs submitted"
+    assert all(dep == "fake-build" for dep in fake_backend.dependencies)
+
+
+def test_dispatch_local_keeps_in_process_path(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "local"])
+    assert result.exit_code == 0, result.output
+    # No jobs — the stubbed TestRunner ran in-process via _do_test_suite.
+    assert fake_backend.submitted == []
+
+
+def test_dispatch_unknown_backend_fails_loud(minimal_project: Path):
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "nonsense"]
+    )
+    assert result.exit_code != 0
+
+
+def test_cfg_dispatch_backend_used_when_no_cli_flag(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n  backend: slurm\n"
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml"])
+    assert result.exit_code == 0, result.output
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+
+
+# --------------------------------------------- P1 review: robustness fixes
+
+
+def test_dispatch_creates_log_parent_before_submit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Regression for the blocking bug: the sbatch --output parent must
+    # exist at submit time (slurmstepd opens it before rb _test-job runs).
+    seen_parent_exists = []
+
+    class _CheckBackend(_FakeBackend):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            seen_parent_exists.append(spec.log_path.parent.is_dir())
+            return super().submit(spec)
+
+    backend = _CheckBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert seen_parent_exists == [True]
+
+
+def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Two tests with distinct resources -> two arrays; the second array
+    # submit raises. The first array's jobs must be cancelled, not left
+    # running after the head exits and releases its lock.
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    resources: { mem: 24G }\n",
+        )
+    )
+
+    class _FlakyBackend(_FakeBackend):
+        def __init__(self):
+            super().__init__()
+            self.array_calls = 0
+
+        def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+            self.array_calls += 1
+            if self.array_calls >= 2:
+                raise FatalRtlBuddyError("sbatch: QOS limit reached")
+            return [self.submit(spec) for spec in specs]
+
+    backend = _FlakyBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code != 0
+    assert backend.cancelled is True
+
+
+def test_build_compile_failure_surfaces_as_compile_fail(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The build job records "basic" as a compile failure; its sim job's
+    # recompile is then killed (writes no envelope). The head must map that
+    # to a CompileFail — the clean design-error result the in-process path
+    # produces — not an infrastructure DispatchFail.
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _CompileFailBuild(_FakeBackend):
+        def __init__(self):
+            super().__init__(write_results=False)  # sim envelope never appears
+
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(spec.result_json, built=[], failed=["basic"])
+            return super().submit_build(spec, dependency=dependency)
+
+    backend = _CompileFailBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert "compile failed in build job" in rows["basic"]["desc"]
+    assert "produced no result" not in rows["basic"]["desc"]
+
+
+def test_build_compile_failure_puts_the_real_error_in_the_summary(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The row names the build job, its exit status and its error (#498).
+
+    The failure this replaces: the sim job retried the compile under its
+    own reservation, was OOM-killed, wrote `%Error: Verilator threw signal
+    9` over the build's compile.log, and the summary said `Compile failed`
+    pointing at that file. Three rounds of raising compile memory went by
+    before anyone opened `.dispatch/build-<id>.log` and found a one-line
+    lint error.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _CompileFailBuild(_FakeBackend):
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "transcript": os.path.join("artefacts", "basic", "compile.log"),
+                        "error_tail": [
+                            "=== stderr ===",
+                            "%Error: src/top.sv:3:7: Signal is not driven: 'q'",
+                            "%Error: Exiting due to 1 error(s)",
+                        ],
+                    }
+                ],
+            )
+            return super().submit_build(spec, dependency=dependency)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            # The real gated job declines to recompile and reports the
+            # build's verdict; its envelope is a CompileFail with the
+            # generic desc when it predates #498, which is the case the
+            # head still has to enrich.
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _CompileFailBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    # Every gated job was handed the envelope it needs to make that call.
+    gated = {spec.test_name: spec for spec in backend.submitted}
+    assert gated["basic"].expect_prebuilt is True
+    assert gated["basic"].build_result_json == backend.build_submitted[0].result_json
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    desc = rows["basic"]["desc"]
+    assert rows["basic"]["result"] == "FAIL"
+    assert desc.startswith("compile failed in build job fake-build (exit 1)")
+    assert "Signal is not driven" in desc
+    assert desc != "Compile failed"
+    # One line: the summary renders it in a table cell.
+    assert "\n" not in desc
+    # A test the build actually built keeps its own verdict untouched.
+    assert "compile failed in build job" not in rows["extra"]["desc"]
+    # The rewrite is durable, not just rendered: `rb graph results` re-reads
+    # the envelope, which would otherwise still say `Compile failed` (#498
+    # review).
+    envelope = json.loads(Path(gated["basic"].result_json).read_text())
+    assert envelope["result"]["results"]["desc"] == desc
+
+
+def test_a_sim_failure_is_not_relabelled_as_the_build_job_s_compile_error(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`failed` says a compile failed, not that THIS row's failure was it.
+
+    A config the build job failed to compile can still have a sim job that
+    recompiled successfully (the stamp path is per-key) and then failed in
+    simulation. Rewriting that row's desc would replace a real diagnosis
+    with a guess (#498).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _SimFailAfterBuildFail(_FakeBackend):
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(spec.result_json, built=[], failed=["basic"])
+            return super().submit_build(spec, dependency=dependency)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            handle = super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+            if spec.test_name == "basic":
+                write_result_json(
+                    spec.result_json,
+                    test_name=spec.test_name,
+                    run_id=spec.run_id,
+                    results=SimTimeoutResults(name=spec.test_name + "/results"),
+                    run_token=read_plan_token(spec.plan_path),
+                )
+            return handle
+
+    backend = _SimFailAfterBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["desc"] == "Sim hit timeout"
+
+
+def test_an_evidence_less_build_failure_keeps_the_retry_s_own_compile_fail(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's rewrite demands the same compiler evidence as the sim's gate.
+
+    A `failed` entry whose record carries no returncode is a setup or worker
+    error; the sim job saw no evidence, retried, and here failed its *own*
+    compile. Rewriting that generic desc would attribute the retry's genuine
+    compile failure to a build job whose compiler never ran (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _EvidencelessBuildFail(_FakeBackend):
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "error_tail": ["PRE hook raised: OSError: license server"],
+                    }
+                ],
+            )
+            return super().submit_build(spec, dependency=dependency)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _EvidencelessBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+
+
+def test_an_inputs_changed_retry_s_own_failure_is_not_relabelled(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A sha-bearing record plus a generic desc means the sim retried.
+
+    A current-generation sim job suppresses the retry on matching inputs
+    and stamps the build prefix into its own desc — so a desc still saying
+    `Compile failed` beside a `fingerprint_sha` record is the retry's own
+    failure after input drift, not the build's stale verdict (#498 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _DriftedBuildFail(_FakeBackend):
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(
+                spec.result_json,
+                built=["extra"],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "fingerprint_sha": "0" * 64,
+                        "error_tail": ["%Error: the OLD sources' error"],
+                    }
+                ],
+            )
+            return super().submit_build(spec, dependency=dependency)
+
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            self.job_result = "FAIL" if spec.test_name == "basic" else "PASS"
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    backend = _DriftedBuildFail()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert rows["basic"]["desc"] == "Compile failed"
+    assert "the OLD sources' error" not in rows["basic"]["desc"]
+
+
+def test_empty_suite_submits_no_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    # Every test filtered out by the level window: no compile, no jobs, no
+    # build job queued for zero work (which wait_all would then block on).
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-s", "100", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert fake_backend.submitted == []
+
+
+def test_dispatch_writes_plan_and_threads_it_to_jobs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    # The head writes one plan manifest and hands it to both the build job
+    # and every sim job (so neither re-runs the sweep hook).
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.plan_path is not None and Path(build.plan_path).is_file()
+    sim = fake_backend.submitted[0]
+    assert sim.plan_path == build.plan_path
+    # A suite whose command root is not shared keeps the established flat
+    # .dispatch layout.
+    dispatch_root = minimal_project / "artefacts" / ".dispatch"
+    assert Path(build.plan_path).parent == dispatch_root
+    assert Path(build.result_json).parent == dispatch_root
+    assert Path(build.log_path).parent == dispatch_root
+
+
+def test_dispatch_suite_identity_is_stable_and_filesystem_safe(tmp_path: Path):
+    config = tmp_path / "suite config !.yaml"
+    identity = rtl_buddy_module._dispatch_suite_identity(config)
+    assert identity == rtl_buddy_module._dispatch_suite_identity(config)
+    stem, separator, digest = identity.rpartition("-")
+    assert separator and stem == "suite_config"
+    assert len(digest) == 12 and set(digest) <= set("0123456789abcdef")
+    assert identity != rtl_buddy_module._dispatch_suite_identity(
+        tmp_path / "other" / config.name
+    )
+
+
+# ------------------------------------------------- P2: arrays / cross-suite
+
+
+class _RecordingBackend(_FakeBackend):
+    """FakeBackend that also records array submissions and wait calls."""
+
+    def __init__(self, telemetry=None, build_result=None, **kwargs):
+        super().__init__(**kwargs)
+        self.array_calls = []
+        self.wait_calls = 0
+        self.telemetry = telemetry or {}
+        # What the build job "wrote" — {built, failed, builds} (#495). The
+        # base fake never runs a build job, so without this the head has no
+        # build envelope to read compile records out of.
+        self.build_result = build_result
+
+    def submit_build(self, spec, *, dependency=None):
+        handle = super().submit_build(spec, dependency=dependency)
+        if self.build_result is not None:
+            write_build_result_json(
+                spec.result_json,
+                built=self.build_result.get("built", []),
+                failed=self.build_result.get("failed", []),
+                builds=self.build_result.get("builds"),
+            )
+        return handle
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        self.array_calls.append(
+            {
+                "n": len(specs),
+                "max_parallel": max_parallel,
+                "array_dir": array_dir,
+                "dependency": dependency,
+            }
+        )
+        return [self.submit(spec) for spec in specs]
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        self.wait_calls += 1
+        super().wait_all(handles, extra_wait=extra_wait)
+
+    def collect_telemetry(self, handles):
+        self.telemetry_queries.append([h.job_id for h in handles])
+        return self.telemetry
+
+
+class _DelayedPlanBackend(_RecordingBackend):
+    """Consume every plan only when the regression begins its global wait."""
+
+    def __init__(self):
+        super().__init__(write_results=False)
+        self.consumed_build_plans = {}
+        self.consumed_sim_plans = {}
+
+    def submit_build(self, spec, *, dependency=None):
+        self.build_submitted.append(spec)
+        return JobHandle(job_id=f"delayed-build-{len(self.build_submitted)}", spec=spec)
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        self.submitted.append(spec)
+        self.dependencies.append(dependency)
+        return JobHandle(job_id=f"delayed-sim-{len(self.submitted)}", spec=spec)
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        # This is intentionally the first plan read. Both suites have already
+        # submitted, matching a scheduler that leaves the first suite queued
+        # until the second suite has replaced any colliding scratch files.
+        for spec in self.build_submitted:
+            self.consumed_build_plans[Path(spec.test_config_path).name] = [
+                cfg.get_name() for cfg in read_plan_configs(spec.plan_path)
+            ]
+        for spec in self.submitted:
+            configs = {cfg.get_name() for cfg in read_plan_configs(spec.plan_path)}
+            self.consumed_sim_plans[Path(spec.test_config_path).name] = configs
+            assert spec.test_name in configs
+            write_result_json(
+                spec.result_json,
+                test_name=spec.test_name,
+                run_id=spec.run_id,
+                results=TestPassResults(name=spec.test_name + "/results"),
+                run_token=read_plan_token(spec.plan_path),
+            )
+        super().wait_all(handles, extra_wait=extra_wait)
+
+
+@pytest.fixture
+def recording_backend(monkeypatch: pytest.MonkeyPatch) -> _RecordingBackend:
+    backend = _RecordingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "create_dispatch_backend",
+        _backend_factory(backend),
+    )
+    return backend
+
+
+def test_regression_namespaces_colocated_suites_and_waits_once(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    # Two distinct configs share one command root. Their jobs must all be in
+    # flight before the single wait, without sharing any suite-scoped path.
+    _mark_stub_builder_verilator(minimal_project)
+    _write_colocated_suites(minimal_project)
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert len(recording_backend.submitted) == 2
+    assert len(recording_backend.build_submitted) == 2
+    assert recording_backend.wait_calls == 1
+
+    plans = [Path(spec.plan_path) for spec in recording_backend.build_submitted]
+    assert len(set(plans)) == 2
+    namespaces = {plan.parent for plan in plans}
+    dispatch_root = minimal_project / "artefacts" / ".dispatch"
+    assert {path.parent for path in namespaces} == {dispatch_root}
+    for namespace in namespaces:
+        stem, separator, digest = namespace.name.rpartition("-")
+        assert separator and stem
+        assert len(digest) == 12 and set(digest) <= set("0123456789abcdef")
+
+    for build in recording_backend.build_submitted:
+        namespace = Path(build.plan_path).parent
+        assert Path(build.result_json).parent == namespace
+        assert Path(build.log_path).parent == namespace
+    assert {
+        Path(call["array_dir"]).parent for call in recording_backend.array_calls
+    } == namespaces
+
+    planned = {
+        Path(json.loads(path.read_text())["suite_config"]).name: [
+            test["name"] for test in json.loads(path.read_text())["tests"]
+        ]
+        for path in plans
+    }
+    assert planned == {"tests.yaml": ["basic"], "other-tests.yaml": ["other_basic"]}
+
+
+def test_colocated_suite_plans_survive_until_delayed_job_consumption(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Queued jobs consume their own plan after every suite has submitted."""
+    _mark_stub_builder_verilator(minimal_project)
+    _write_colocated_suites(minimal_project)
+    backend = _DelayedPlanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    expected = {"tests.yaml": ["basic"], "other-tests.yaml": ["other_basic"]}
+    assert backend.consumed_build_plans == expected
+    assert {
+        name: sorted(tests) for name, tests in backend.consumed_sim_plans.items()
+    } == expected
+
+
+def test_a_later_suites_sweep_hook_does_not_alter_an_earlier_suites_submission(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Every suite is planned before any submits; each submits from its own env.
+
+    The second suite's sweep hook exports `SBATCH_NTASKS=64` in this process.
+    Pre-expansion runs that hook before the first suite's jobs go out, so
+    without a per-suite snapshot the first suite's build and array would
+    inherit the second suite's environment (and its analysis would record
+    the wrong override). After the last submission the process keeps the
+    hook's environment, since a retry is documented as a fresh sbatch from
+    whatever the head holds by then.
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    _mark_stub_builder_verilator(minimal_project)
+    second = _write_colocated_suites(minimal_project)
+    second.write_text(
+        second.read_text().replace(
+            "    sweep:\n", "    sweep:\n      path: export-sweep.py\n"
+        )
+    )
+    (minimal_project / "export-sweep.py").write_text(
+        "import os\nos.environ['SBATCH_NTASKS'] = '64'\nout_test_cfgs = [test_cfg]\n"
+    )
+
+    seen = {"build": {}, "sim": {}}
+    real_submit_build = recording_backend.submit_build
+    real_submit = recording_backend.submit
+
+    def submit_build_recording_env(spec, **kwargs):
+        seen["build"][Path(spec.test_config_path).name] = os.environ["SBATCH_NTASKS"]
+        return real_submit_build(spec, **kwargs)
+
+    def submit_recording_env(spec, **kwargs):
+        seen["sim"][spec.test_name] = os.environ["SBATCH_NTASKS"]
+        return real_submit(spec, **kwargs)
+
+    monkeypatch.setattr(recording_backend, "submit_build", submit_build_recording_env)
+    monkeypatch.setattr(recording_backend, "submit", submit_recording_env)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["build"] == {"tests.yaml": "4", "other-tests.yaml": "64"}
+    assert seen["sim"] == {"basic": "4", "other_basic": "64"}
+    assert os.environ["SBATCH_NTASKS"] == "64"
+
+
+def test_colocated_duplicate_test_artifact_is_rejected_before_submission(
+    minimal_project: Path,
+    recording_backend: _RecordingBackend,
+):
+    duplicate = minimal_project / "duplicate-tests.yaml"
+    duplicate.write_text((minimal_project / "tests.yaml").read_text())
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - duplicate-tests.yaml\n"
+    )
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code != 0, result.output
+    assert recording_backend.build_submitted == []
+    assert recording_backend.submitted == []
+    assert recording_backend.array_calls == []
+    assert "expanded tests 'basic'" in result.output
+    assert "tests.yaml" in result.output
+    assert "duplicate-tests.yaml" in result.output
+    assert str(minimal_project / "artefacts" / "basic") in result.output
+
+
+def test_same_resources_group_into_one_array(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    # Run both fixture tests (extra is reglvl 5) — identical resources →
+    # one submit_array call with both specs, throttled by max-jobs-per-array.
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  max-jobs-per-array: 7\n"
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [c["n"] for c in recording_backend.array_calls] == [2]
+    assert recording_backend.array_calls[0]["max_parallel"] == 7
+    assert ".dispatch" in str(recording_backend.array_calls[0]["array_dir"])
+
+
+def test_different_resources_split_arrays(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    resources: { mem: 24G }\n",
+        )
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # Two resource groups of one spec each.
+    assert sorted(c["n"] for c in recording_backend.array_calls) == [1, 1]
+
+
+def test_early_stop_with_dispatch_rejected(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    result, _ = _invoke(
+        [
+            "--early-stop",
+            "comp",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code != 0
+    assert fake_backend.submitted == []
+
+
+def test_collect_attaches_telemetry_to_results_and_envelope(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600}
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    envelope = json.loads(backend.submitted[0].result_json.read_text())
+    assert envelope["telemetry"]["state"] == "COMPLETED"
+    assert envelope["telemetry"]["elapsed_s"] == 5
+
+
+# ------------------------------------------- #495: build-job telemetry
+
+
+def _build_telemetry_backend(monkeypatch, *, builds=None, build_telemetry=None):
+    """A fleet whose build job left both a result envelope and a sacct row."""
+    telemetry = {
+        "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600},
+    }
+    if build_telemetry is not None:
+        telemetry["fake-build"] = build_telemetry
+    backend = _RecordingBackend(
+        telemetry=telemetry,
+        build_result={
+            "built": ["basic"],
+            "failed": [],
+            "builds": builds
+            if builds is not None
+            else [
+                {
+                    "test": "basic",
+                    "builder": "hook-chosen-builder",
+                    "duration_sec": 42.5,
+                    "reused": False,
+                    "group": "obj_dir_cafe",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    return backend
+
+
+def test_cpu_overrides_are_snapshotted_at_submit_not_reread_at_analysis(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The environment can move between a suite's submit and its analysis.
+
+    A dispatched regression submits every suite before collecting any, and
+    a suite's sweep hook is `exec()`d in this same process (hooks.py), so a
+    later suite's hook can set or unset `SBATCH_*` in the window between
+    this suite's jobs going out and its advice being computed. Re-reading
+    `os.environ` at analysis would judge these jobs by a different
+    environment: the wrong cpu denominator, and an `edit_hint` naming an
+    override that was never active for them (#505 review).
+
+    `wait_all` is that window — it runs after the last submit and before
+    the first collect — so mutating the environment there reproduces the
+    hook's effect exactly, without needing a second suite.
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    backend = _build_telemetry_backend(
+        monkeypatch,
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 100,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "req_cpus": 8,  # 4 tasks x the generated 2 cpus
+            "total_cpu_s": 200,  # 0.25 efficiency
+        },
+    )
+    backend.telemetry["fake-1"] = {
+        "state": "COMPLETED",
+        "elapsed_s": 100,
+        "timelimit_s": 3600,
+        "alloc_cpus": 8,
+        "req_cpus": 8,
+        "total_cpu_s": 200.0,  # 0.25 efficiency
+    }
+
+    # Stand in for the later suite's sweep hook: same process, same window.
+    real_wait_all = backend.wait_all
+
+    def wait_all_then_change_the_environment(handles, **kwargs):
+        os.environ["SBATCH_NTASKS"] = "64"
+        return real_wait_all(handles, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_change_the_environment)
+
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert os.environ["SBATCH_NTASKS"] == "64", "the stand-in hook must have run"
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    cpus_rows = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus_rows, "both the test and the build job are over-reserved"
+    # Both halves of the suite's advice describe ONE submission: the
+    # environment as it stood when these jobs were sent.
+    assert {a["test"] for a in cpus_rows} == {"basic", "(build job)"}
+    for row in cpus_rows:
+        note = row["edit_hint"]["note"]
+        assert "`SBATCH_NTASKS=4`" in note, note
+        assert "64" not in note, note
+
+
+def test_collect_attaches_the_build_jobs_own_telemetry_to_its_envelope(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The build job's sacct row travels with its artifact too (#495).
+
+    Until now the one job in a dispatched fleet whose reservation nobody
+    could check afterwards was the one holding the whole fan-out.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _build_telemetry_backend(
+        monkeypatch,
+        build_telemetry={"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build_envelope = json.loads(
+        Path(backend.build_submitted[0].result_json).read_text()
+    )
+    assert build_envelope["telemetry"]["elapsed_s"] == 60
+    # Additive: the half the head has always read is untouched.
+    assert build_envelope["built"] == ["basic"]
+    # The build handle rode along in the first (and only) telemetry query.
+    assert backend.telemetry_queries == [["fake-build", "fake-1"]]
+
+
+def test_sim_rows_and_envelopes_carry_the_build_jobs_compile_record(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The compile a test never ran itself still shows up on its row (#495).
+
+    The record is folded into the envelope's nested ``result.results``,
+    which is where `rb graph results` reads a run's payload from — a
+    top-level key would travel with the artifact and stay invisible.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _build_telemetry_backend(monkeypatch)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    envelope = json.loads(Path(backend.submitted[0].result_json).read_text())
+    compile_block = envelope["result"]["results"]["compile"]
+    assert compile_block["duration_sec"] == 42.5
+    # The build job's observation wins over the builder the head resolved
+    # before submitting: a preproc hook can move it, and the envelope is
+    # what actually ran.
+    assert compile_block["builder"] == "hook-chosen-builder"
+    assert compile_block["reused"] is False
+    # `group` is build-job bookkeeping, not part of the per-run record.
+    assert "group" not in compile_block
+
+
+def test_an_old_build_envelope_without_compile_records_still_collects(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Mixed-version fleets degrade, never fail (#495).
+
+    A build job from before the records writes no ``builds`` key; the head
+    must simply leave the sim rows without a compile block.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _build_telemetry_backend(monkeypatch, builds=None)
+    backend.build_result["builds"] = None  # exactly the old envelope shape
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build_envelope = json.loads(
+        Path(backend.build_submitted[0].result_json).read_text()
+    )
+    assert "builds" not in build_envelope
+    envelope = json.loads(Path(backend.submitted[0].result_json).read_text())
+    assert "compile" not in envelope["result"]["results"]
+
+
+def test_a_retry_pass_does_not_re_query_or_re_attach_the_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Build telemetry is a first-pass fact (#495).
+
+    A retry pass collects a resubmitted *sim* subset; the build job is
+    never resubmitted and was already finished by the fleet-wide wait, so
+    re-querying it would buy a second identical row and a second identical
+    write.
+    """
+    # Share-build capable, so the suite actually gets a build job to leave
+    # out of the second query.
+    _mark_stub_builder_verilator(minimal_project)
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(backend.telemetry_queries) == 2
+    assert backend.telemetry_queries[0][0] == "fake-build"
+    assert "fake-build" not in backend.telemetry_queries[1]
+
+
+def test_dispatch_fail_desc_names_scheduler_state(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        write_results=False,
+        telemetry={"fake-1": {"state": "TIMEOUT", "elapsed_s": 3600}},
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert "scheduler state TIMEOUT" in rows["basic"]["desc"]
+
+
+# ------------------------------------------------------ P2: randtest fan-out
+
+
+def test_randtest_dispatch_fans_out_seeds(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    result, rb = _invoke(["--machine", "randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.run_id for spec in recording_backend.submitted] == [1, 2, 3]
+    assert all(spec.seed_mode.value == "new" for spec in recording_backend.submitted)
+    assert recording_backend.wait_calls == 1
+    # One array of three seeds (identical resources).
+    assert [c["n"] for c in recording_backend.array_calls] == [3]
+    assert rb.share_build is True
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert [r["run_id"] for r in envelope["payload"]["results"]] == [1, 2, 3]
+
+
+def test_randtest_dispatch_fixed_seed_reports_shared_identity_on_every_row(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n"
+            "    sim-rand-seed: 41\n"
+            "    sim-rand-seed-plusarg: stimulus_seed\n",
+            1,
+        )
+    )
+
+    result, _ = _invoke(["--machine", "randtest", "basic", "2", "--dispatch", "slurm"])
+
+    assert result.exit_code == 0, result.output
+    assert [spec.resolved_seed for spec in recording_backend.submitted] == [41, 41]
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = json.loads(payload_line)["payload"]["results"]
+    assert [
+        (row["seed"]["resolved_seed"], row["seed"]["identity"]) for row in rows
+    ] == [
+        (41, "tests.yaml::basic::single"),
+        (41, "tests.yaml::basic::single"),
+    ]
+
+
+def test_randtest_replay_stays_local(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["randtest", "basic", "3", "-r", "2", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert recording_backend.submitted == []
+
+
+# ---------------------------------------------- P2 review: robustness fixes
+
+
+def test_array_dir_is_per_invocation(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    import os
+
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  max-jobs-per-array: 4\n"
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    array_dir = str(recording_backend.array_calls[0]["array_dir"])
+    # Under a .dispatch sibling and tagged with the head pid (not a fixed
+    # array-001), so overlapping runs don't rewrite each other's manifest.
+    assert ".dispatch" in array_dir
+    assert f"{os.getpid()}-" in Path(array_dir).name
+
+
+def test_randtest_replay_with_explicit_dispatch_warns(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(
+        ["--machine", "randtest", "basic", "3", "-r", "2", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # Stayed local (no jobs) but logged the ignored-flag warning.
+    assert recording_backend.submitted == []
+    assert "ignored for replay" in result.output
+
+
+def test_dispatched_collect_reenters_suite_context(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Two suites; a missing envelope for suite 1 must log under suite 1's
+    # own root, not the last-entered suite — assert collect re-enters the
+    # per-suite command context.
+    other_dir = minimal_project / "other"
+    other_dir.mkdir()
+    other_suite = other_dir / "tests.yaml"
+    other_suite.write_text(
+        (minimal_project / "tests.yaml")
+        .read_text()
+        .replace("model_path: models.yaml", "model_path: ../models.yaml")
+    )
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - other/tests.yaml\n"
+    )
+    backend = _RecordingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    entered = []
+    rb = RtlBuddy(name="ctx")
+    orig = rb._enter_command_context
+
+    def spy(*a, **k):
+        if "primary_config" in k:
+            entered.append(str(k["primary_config"]))
+        return orig(*a, **k)
+
+    monkeypatch.setattr(rb, "_enter_command_context", spy)
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(
+        rb.app, ["regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # Each suite is entered for planning, submission, and collection.
+    assert entered.count(str(minimal_project / "tests.yaml")) == 3
+    assert entered.count(str(other_suite)) == 3
+
+
+# ------------------------------------ #358: builders that compile in-job
+
+
+def _add_dispatch_resources(project: Path, block: str):
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + block)
+
+
+def test_no_build_job_when_no_test_can_share_a_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A build job whose output no sim job can read is pure waste (#358).
+
+    The fixture's inferred "echo" family has no shared-build support, so the
+    head must skip the build pass entirely rather than burn a compile on a
+    compute node and make every element queue behind it.
+    """
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    # Nothing to gate on: the element compiles for itself and runs unblocked.
+    assert fake_backend.dependencies == [None]
+
+
+def test_in_job_compile_reservation_covers_both_phases(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The one allocation is sized max(sim, compile) field by field (#358).
+
+    ``parallel: 4`` is set to prove it does NOT reach here (#495): a sim
+    job that compiles for itself runs exactly one build, whatever the
+    build job would have been allowed to do concurrently. That holds for
+    the ``compile_floor`` rows as well as the reservation — the floor is
+    what clamps a `reduce` suggestion, so a scaled one would advise every
+    in-job compile up to N times the cpus it can use.
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n'
+        "    parallel: 4\n",
+    )
+    rows_analyzed: list[dict] = []
+    original = rtl_buddy_module.analyze_suite_reservations
+
+    def _spy(suite_results, **kwargs):
+        rows_analyzed.extend(suite_results)
+        return original(suite_results, **kwargs)
+
+    monkeypatch.setattr(rtl_buddy_module, "analyze_suite_reservations", _spy)
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    resources = fake_backend.submitted[0].resources
+    assert resources.cpus == 8  # compile needs more; NOT 4 x 8
+    assert resources.mem == "16G"  # compile needs more
+    assert resources.time == "00:20:00"  # sim needs more; compile's is smaller
+
+    floors = [row["compile_floor"] for row in rows_analyzed if "compile_floor" in row]
+    assert floors, "no in-job-compile row reached right-sizing"
+    for floor in floors:
+        assert floor == {"cpus": 8, "mem": "16G", "time": "00:10:00"}
+
+
+def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The compile block must NOT inflate sim jobs that only simulate."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    sim = fake_backend.submitted[0].resources
+    assert (sim.cpus, sim.mem, sim.time) == (1, "2G", "00:20:00")
+    # ...while the build job it depends on carries the compile reservation.
+    build = fake_backend.build_submitted[0].resources
+    assert (build.cpus, build.mem, build.time) == (8, "16G", "02:00:00")
+    # Nothing asked for concurrency, so the reservation is unscaled and the
+    # spec says so.
+    assert fake_backend.build_submitted[0].parallel == 1
+
+
+def _add_suite_compile(project: Path, block: str):
+    """Prepend a suite-level ``compile:`` block to the fixture's tests.yaml.
+
+    Top of file, after the filetype line, which is where the docs put it.
+    """
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text()
+    marker = "rtl-buddy-filetype: test_config\n"
+    assert body.startswith(marker)
+    tests_yaml.write_text(marker + block + body[len(marker) :])
+
+
+def test_suite_compile_block_overrides_the_build_job_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A suite's own ``compile:`` beats cfg-dispatch, field by field (#497).
+
+    The reported waste: one global compile reservation fences off the
+    largest verilation in the repo for every leaf-cell bench's build job.
+    The suite that genuinely needs the memory states it, and the cpus/time
+    it says nothing about still come from cfg-dispatch.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, "compile:\n  mem: 48G\n")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0].resources
+    assert build.mem == "48G"  # the suite's
+    assert (build.cpus, build.time) == (4, "02:00:00")  # inherited
+    # Sim jobs only simulate: the compile block, at either level, is not
+    # allowed anywhere near their reservation.
+    sim = fake_backend.submitted[0].resources
+    assert (sim.cpus, sim.mem, sim.time) == (1, "2G", "00:20:00")
+
+
+def test_suite_compile_block_scales_with_compile_parallel(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A suite that overrides only cpus still inherits the root `parallel`."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 6\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    # The suite said nothing about concurrency, so the cluster-wide 2 binds,
+    # capped at the 2 planned configs.
+    assert build.parallel == 2
+    assert build.resources.cpus == 12  # 2 x the suite's 6, not 2 x 4
+    assert build.resources.mem == "16G"  # cfg-dispatch's, unscaled
+
+
+def test_suite_compile_parallel_overrides_the_cluster_wide_value(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The reported defect (#547): the suite's `parallel` was ignored.
+
+    A one-key suite writes `parallel: 1` precisely so its build job does
+    not fence off a second slot it cannot use. `mem` came through from the
+    same block, so the reservation was plainly being read — only the
+    concurrency was still sized from the root value, and the build job
+    reserved `cpus x root_parallel`.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _add_suite_compile(
+        minimal_project,
+        'compile:\n  cpus: 8\n  mem: 20G\n  time: "00:30:00"\n  parallel: 1\n',
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 1  # the suite's, not the cluster-wide 2
+    # Nothing was capped here, so the configured value is what it was given.
+    assert build.parallel_configured == 1
+    assert build.resources.cpus == 8  # the suite's cpus, NOT 16
+    assert (build.resources.mem, build.resources.time) == ("20G", "00:30:00")
+
+
+def test_suite_compile_parallel_raises_above_the_cluster_wide_value(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Layering, not a floor: the suite wins in both directions (#547).
+
+    The planned-config cap still applies on top, because it is a fact
+    about this run rather than about either config layer.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_third_test(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(1))
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 2\n  parallel: 3\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 3  # 3 planned configs, so the cap does not bite
+    assert build.resources.cpus == 6  # 3 x the suite's 2
+
+
+def test_suite_compile_parallel_is_still_capped_by_the_planned_configs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Two planned configs cannot keep four suite-requested slots busy."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(1))
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 2\n  parallel: 4\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2  # basic + extra, not the suite's 4
+    assert build.resources.cpus == 4  # 2 x 2
+    # ...and the pre-cap value rides along, so the job's own console line
+    # can quote the 4 the suite's tests.yaml holds instead of attributing
+    # the capped 2 to a key that says otherwise (#547 review).
+    assert build.parallel_configured == 4
+
+
+def test_suite_compile_parallel_never_reaches_an_in_job_compile(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A sim job that compiles for itself runs one build, whatever #547 says.
+
+    The fixture's inferred "echo" family cannot share a build, so there is
+    no build job and the compile reservation only shows up in the
+    field-wise maximum. A `parallel` that leaked in there would reserve N
+    times the cpus one serial compile can use.
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 2\n    mem: 4G\n    time: "00:10:00"\n',
+    )
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 3\n  parallel: 4\n")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert fake_backend.submitted[0].resources.cpus == 3  # not 12
+
+
+def test_suite_compile_block_reaches_an_in_job_compile_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A builder that compiles in its own sim job gets the suite block too.
+
+    The fixture's inferred "echo" family cannot share a build, so there is
+    no build job at all — the compile reservation only ever shows up in the
+    field-wise maximum that sizes the sim job. A suite block that stopped
+    at the build job would leave exactly that case under-reserved (#497).
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 2\n    mem: 4G\n    time: "00:10:00"\n',
+    )
+    _add_suite_compile(minimal_project, "compile:\n  cpus: 8\n  mem: 48G\n")
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    resources = fake_backend.submitted[0].resources
+    assert resources.cpus == 8  # the suite's compile, over cfg-dispatch's 2
+    assert resources.mem == "48G"  # the suite's compile, over cfg-dispatch's 4G
+    assert resources.time == "00:20:00"  # sim's is longer than compile's
+
+
+# --- per-testbench compile reservation (#551) ---------------------------
+
+
+def _two_geometry_suite(project: Path, *, small: str = "", big: str = ""):
+    """Rewrite the fixture as the issue's two-geometry suite (#551).
+
+    Two testbenches over the same sources — the reported shape, where the
+    geometry is one plusdefine and the verilations differ by an order of
+    magnitude — each optionally carrying its own ``compile:`` block, plus a
+    reglvl-5 test on the second one. ``small``/``big`` are those blocks'
+    YAML, indented for a testbench entry.
+    """
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text()
+    entry = "  - name: {name}\n    toplevel: tb_basic\n    filelist:\n      - src/example.sv\n"
+    body = body.replace(
+        entry.format(name="tb_basic") + "tests:\n",
+        entry.format(name="tb_basic")
+        + small
+        + entry.format(name="tb_big")
+        + big
+        + "tests:\n",
+        1,
+    )
+    assert "tb_big" in body
+    body += (
+        "  - name: big\n"
+        "    desc: the product geometry\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 5\n"
+        "    testbench: tb_big\n"
+    )
+    tests_yaml.write_text(body)
+
+
+def test_build_job_reserves_the_max_over_the_planned_testbenches(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One build job, one allocation, sized per field by its largest build.
+
+    The reported waste (#551): a suite covering a chip top level at two
+    geometries had to state the product geometry's 130G at suite level, so
+    every pull request fenced that off for a build needing a twentieth of
+    it. Each entry now states its own, and the build job takes the maximum
+    field by field — cpus from the small entry here, mem and time from the
+    big one, which no single block states.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    _two_geometry_suite(
+        minimal_project,
+        small="    compile:\n      cpus: 6\n      mem: 6G\n",
+        big='    compile:\n      mem: 96G\n      time: "06:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, 'compile:\n  mem: 8G\n  time: "00:30:00"\n')
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0].resources
+    assert build.cpus == 6  # tb_basic's, the larger of the two
+    assert build.mem == "96G"  # tb_big's, over the suite's 8G
+    assert build.time == "06:00:00"  # tb_big's, over the suite's 00:30:00
+
+
+def test_an_unselected_testbench_does_not_inflate_the_build_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The whole point: a build nobody asked for must not fence off memory.
+
+    Same suite as above, run at the default regression level, which selects
+    only the small geometry's test. The product geometry compiles nothing,
+    so its 96G is not in the maximum.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    _two_geometry_suite(
+        minimal_project,
+        big='    compile:\n      mem: 96G\n      time: "06:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, 'compile:\n  mem: 8G\n  time: "00:30:00"\n')
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0].resources
+    assert (build.cpus, build.mem, build.time) == (4, "8G", "00:30:00")
+
+
+def test_the_testbench_max_is_still_scaled_by_compile_parallel(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """cpus x parallel applies AFTER the maximum, not instead of it (#551)."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_geometry_suite(
+        minimal_project, big="    compile:\n      cpus: 6\n      mem: 96G\n"
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    assert build.resources.cpus == 12  # 2 x max(4 root, 6 tb_big)
+    # tb_big's stated 96G plus the cfg-dispatch 16G the unannotated build
+    # beside it implies — the two that fit the two slots, unscaled.
+    assert mem_to_bytes(build.resources.mem) == 112 * 2**30
+
+
+def test_an_in_job_compile_uses_its_own_testbenchs_block(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Each sim job that compiles for itself compiles ONE testbench (#551).
+
+    The fixture's inferred "echo" family cannot share a build, so there is
+    no build job and the compile reservation only shows up inside each sim
+    job's field-wise maximum. Handing every job the build job's aggregate
+    would give the small geometry the big one's memory — the fencing-off
+    this issue removes, moved from the build job to every sim job.
+    """
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 2\n    mem: 4G\n    time: "00:10:00"\n',
+    )
+    _two_geometry_suite(minimal_project, big="    compile:\n      mem: 96G\n")
+    _add_suite_compile(minimal_project, "compile:\n  mem: 8G\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    by_test = {spec.test_name: spec.resources for spec in fake_backend.submitted}
+    # The two tests on the small geometry keep the suite's 8G...
+    assert by_test["basic"].mem == "8G"
+    assert by_test["extra"].mem == "8G"
+    # ...and only the product geometry's job is sized for 96G.
+    assert by_test["big"].mem == "96G"
+
+
+def test_build_job_sums_the_memory_of_the_builds_that_overlap(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`compile.parallel: 2` means two elaborations hold their peaks at once.
+
+    A maximum would reserve one of them and let the pair OOM (#551 review):
+    the head is the only place that knows both figures and the concurrency
+    it sized the job for.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_geometry_suite(
+        minimal_project,
+        small='    compile:\n      mem: 20G\n      time: "00:30:00"\n',
+        big='    compile:\n      mem: 96G\n      time: "01:30:00"\n',
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # 96G + 20G, the two builds that can be in flight together.
+    assert mem_to_bytes(build.resources.mem) == 116 * 2**30
+    # ...while the wall clock stays at cfg-dispatch's whole-job 2h: the
+    # 1.5h build is the longest and the queue's makespan is 1h, so nothing
+    # the testbenches say reaches above the value the job already has.
+    assert time_to_seconds(build.resources.time) == 7200
+
+
+def test_build_job_time_is_the_serial_total_at_parallel_one(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One worker compiles both benches back to back (#551 review)."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "00:10:00"\n',
+    )
+    _two_geometry_suite(
+        minimal_project,
+        small='    compile:\n      time: "00:30:00"\n',
+        big='    compile:\n      time: "01:00:00"\n',
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 1
+    # 30m + 60m, not max(30m, 60m): a maximum times the job out mid-queue.
+    assert time_to_seconds(build.resources.time) == 5400
+    # mem said nothing at testbench level, so the whole-job value stands.
+    assert build.resources.mem == "16G"
+
+
+def test_every_distinct_planned_build_reaches_the_aggregation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One reservation per distinct BUILD, not per distinct testbench.
+
+    The build job groups on the post-preproc `compile_group_dir`, so two
+    selected tests on one testbench that differ in plusdefines, builder or
+    model compile separately and each hold their own peak. Collapsing them
+    by (testbench, block) would have given two 96G builds 96G (#551 review
+    round 2). Configs whose head-visible ingredients are identical still
+    collapse: they are one compile, however many tests share it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    (minimal_project / "sweep.py").write_text(
+        "import copy\n"
+        "from rtl_buddy.config.dispatch import TestbenchCompileFile\n"
+        "out_test_cfgs = []\n"
+        # a: its own block. b: a bigger block. c: identical to b in every
+        # head-visible ingredient, so it is the SAME build and collapses.
+        # d: b's block again, but a plusdefine of its own — a separate
+        # verilation, and a second 96G peak.
+        "for suffix, mem, pd in (\n"
+        "    ('a', '20G', None),\n"
+        "    ('b', '96G', None),\n"
+        "    ('c', '96G', None),\n"
+        "    ('d', '96G', {'WIDTH': 64}),\n"
+        "):\n"
+        "    cfg = copy.deepcopy(test_cfg)\n"
+        "    cfg.name = test_cfg.name + '.' + suffix\n"
+        "    cfg.tb.compile = TestbenchCompileFile(mem=mem)\n"
+        "    if pd is not None:\n"
+        "        cfg.pd = dict(pd)\n"
+        "    out_test_cfgs.append(cfg)\n"
+    )
+    suite_path = minimal_project / "tests.yaml"
+    suite_path.write_text(
+        suite_path.read_text().replace(
+            "    sweep:\n", "    sweep:\n      path: sweep.py\n", 1
+        )
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Three distinct builds (b and c are one), so the two largest that can
+    # overlap are the two separate 96G verilations — not 96G + 20G, which
+    # is what a (testbench, block) key would have produced.
+    assert mem_to_bytes(build.resources.mem) == 192 * 2**30
+
+
+def test_identical_planned_configs_are_one_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The other half of the rule: one compile is one reservation.
+
+    The fixture's two tests share a testbench, a model, a builder and an
+    empty plusdefines map, so they are one build — counting them twice
+    would fence off memory for a verilation that never runs.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_geometry_suite(minimal_project, small="    compile:\n      mem: 20G\n")
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    # `basic` and `extra` are the same compile on tb_basic, so exactly ONE
+    # 20G build is in the sums — two would make it 40G. `big` states no
+    # block, so it contributes the cfg-dispatch 16G its slot implies.
+    build = fake_backend.build_submitted[0]
+    assert mem_to_bytes(build.resources.mem) == 36 * 2**30
+
+
+def _two_tests_on_one_30g_testbench(project: Path, extra: str = ""):
+    """One 30G testbench, two tests identical but for ``extra`` YAML."""
+    tests_yaml = project / "tests.yaml"
+    body = tests_yaml.read_text().replace(
+        "    filelist:\n      - src/example.sv\n",
+        "    filelist:\n      - src/example.sv\n    compile:\n      mem: 30G\n",
+        1,
+    )
+    body += (
+        "  - name: twin\n"
+        "    desc: the same compile again\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    testbench: tb_basic\n" + extra
+    )
+    tests_yaml.write_text(body)
+
+
+def test_a_preproc_hook_makes_a_test_its_own_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A hook may set plusdefines, and the key is snapshotted before it runs.
+
+    The build job runs PRE and only then probes `compile_group_dir()`, so
+    two configs that look identical to the head can leave the hook wanting
+    different builds. A test with a preprocessing hook is assumed to
+    produce its own compile — an over-count, and the safe one (#551 rev 5).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    (minimal_project / "pre.py").write_text("pass\n")
+    _two_tests_on_one_30g_testbench(
+        minimal_project, extra="    preproc:\n      path: pre.py\n"
+    )
+    # ...and the fixture's own `basic` gets one too, so BOTH are per-test.
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "    preproc:\n    postproc:\n",
+            "    preproc:\n      path: pre.py\n    postproc:\n",
+            1,
+        )
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Two builds of the same 30G testbench, both peaks held at once.
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
+
+
+def test_without_a_preproc_hook_identical_tests_are_one_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The other half: no hook, nothing to mutate, one compile."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_tests_on_one_30g_testbench(minimal_project)
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert mem_to_bytes(build.resources.mem) == 30 * 2**30
+
+
+def test_assertion_mode_splits_a_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`assertions: true` changes the compile command, so it splits the key.
+
+    `_build_compile_plan` folds Verilator's `--assert` / `--coverage-user`
+    into `key_cmd`, so two tests identical in every other head-visible
+    ingredient still compile separately and each hold their own peak
+    (#551 review round 4).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    tests_yaml = minimal_project / "tests.yaml"
+    body = tests_yaml.read_text()
+    body = body.replace(
+        "    filelist:\n      - src/example.sv\n",
+        "    filelist:\n      - src/example.sv\n    compile:\n      mem: 30G\n",
+        1,
+    )
+    # `basic` keeps the default (false); this one differs in nothing else.
+    body += (
+        "  - name: asserted\n"
+        "    desc: same compile but with SVA in\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    assertions: true\n"
+        "    testbench: tb_basic\n"
+    )
+    tests_yaml.write_text(body)
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Two builds of the same 30G testbench, so both peaks are held at once;
+    # a key blind to `assertions` would have reserved one 30G build.
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
+
+
+def test_self_compiling_configs_each_count_as_their_own_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A builder that cannot share compiles per TEST, so each is a build.
+
+    The build job runs PRE+COMPILE for the whole plan, self-compiling
+    configs included, and their `group_dir` is the resolved simv — per
+    test. Two of them with identical ingredients are still two concurrent
+    ThreadPool groups holding two peaks, so the key carries the test name
+    for those entries (#551 review round 3).
+    """
+    # A second builder that CAN share, so the suite submits a build job at
+    # all; the fixture's own `echo` family cannot (#358).
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            "\ncfg-verible:",
+            '  - name: "stub-vrl"\n'
+            '    builder: "echo"\n'
+            '    simulator-family: "verilator"\n'
+            '    builder-simv: "obj_dir/simv"\n'
+            "    sim-rand-seed: 1\n"
+            '    sim-rand-seed-prefix: "+seed="\n'
+            "    builder-opts:\n"
+            "      debug:\n"
+            '        compile-time: "--no-op"\n'
+            '        run-time: "--no-op"\n'
+            "\ncfg-verible:",
+            1,
+        )
+    )
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    tests_yaml = minimal_project / "tests.yaml"
+    body = tests_yaml.read_text()
+    entry = "  - name: {name}\n    toplevel: tb_basic\n    filelist:\n      - src/example.sv\n"
+    body = body.replace(
+        entry.format(name="tb_basic") + "tests:\n",
+        entry.format(name="tb_basic")
+        + "    compile:\n      mem: 30G\n"
+        + entry.format(name="tb_shared")
+        + "    compile:\n      mem: 10G\n"
+        + "tests:\n",
+        1,
+    )
+    # `basic` and `extra` share everything the head can see and still
+    # compile separately, into their own artefact directories.
+    body += (
+        "  - name: shared\n"
+        "    desc: the one config whose builder can share a build\n"
+        "    model: example\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    builder: stub-vrl\n"
+        "    testbench: tb_shared\n"
+    )
+    tests_yaml.write_text(body)
+
+    # -l 5 so both self-compiling tests are planned: the fixture's `extra`
+    # sits at reglvl 5, and one of them alone proves nothing.
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2
+    # Three builds: basic(30G), extra(30G) and shared(10G). The two that
+    # can overlap are the pair of 30G self-compiles — a key without the
+    # test name would have collapsed them and reserved 30 + 10 = 40G.
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
+
+
+def _add_third_test(project: Path):
+    """A third planned config, so ``parallel`` can be the binding limit.
+
+    The fixture ships two tests (basic at reglvl 0, extra at 5), which is
+    not enough to tell a cap by the planned configs from a cap by the knob.
+    """
+    tests_yaml = project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        + "\n".join(
+            [
+                "  - name: third",
+                "    desc: third test entry",
+                "    model: example",
+                "    model_path: models.yaml",
+                "    reglvl: 5",
+                "    testbench: tb_basic",
+            ]
+        )
+        + "\n"
+    )
+
+
+def _compile_parallel_config(parallel: int) -> str:
+    return (
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 16G\n    time: "02:00:00"\n'
+        f"    parallel: {parallel}\n"
+    )
+
+
+def test_build_job_cpus_scale_with_compile_parallel(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """N concurrent builds get N times the cpus — and only cpus (#495).
+
+    The reported defect: one 16-CPU reservation ran eight ~1.1-core
+    Verilations one after another while 24 sims waited. The reservation is
+    what pays for the concurrency, so the head is the only place that can
+    size it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_third_test(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    # 3 planned configs, knob of 2: the knob binds, not the cap.
+    assert [spec.test_name for spec in fake_backend.submitted] == [
+        "basic",
+        "extra",
+        "third",
+    ]
+    assert build.parallel == 2
+    assert build.resources.cpus == 8  # 2 x 4
+    # mem/time are the project's to size for N concurrent Verilations.
+    assert (build.resources.mem, build.resources.time) == ("16G", "02:00:00")
+
+    # The sim jobs are untouched: they only simulate.
+    sim = fake_backend.submitted[0].resources
+    assert (sim.cpus, sim.mem, sim.time) == (1, "2G", "00:20:00")
+
+
+def test_build_job_parallel_is_capped_by_the_planned_configs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Two planned configs cannot keep three build slots busy (#495).
+
+    Without the cap the head would reserve cpus for slots that are
+    guaranteed to idle — the reservation grows and the wall clock does not.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(3))
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 2  # basic + extra, not the configured 3
+    assert build.parallel_configured == 3  # what cfg-dispatch actually says
+    assert build.resources.cpus == 8  # 2 x 4, not 3 x 4
+
+
+def test_single_planned_config_leaves_the_build_reservation_alone(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One config is one build: today's spec, byte for byte."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(4))
+    # -l 0 plans "basic" alone (extra is reglvl 5).
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.parallel == 1
+    assert build.resources.cpus == 4
+
+
+def test_fanned_out_in_job_compile_gets_a_build_job_to_serialize_it(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The reported defect (#369): a dispatched randtest on a builder with no
+    shared-build support ran N full compiles into one `artefacts/<test>/` at
+    once, and the losers reported `Compile failed` with nothing wrong.
+
+    The fix is a single writer — the build job compiles once and every
+    element waits for it, then short-circuits on the stamp it left.
+    """
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert [spec.run_id for spec in fake_backend.submitted] == [1, 2, 3]
+    # No element starts before the compile it would otherwise have raced.
+    assert fake_backend.dependencies == ["fake-build"] * 3
+
+
+def test_single_run_in_job_compiles_still_skip_the_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One writer per directory already: distinct tests each own their own
+    `artefacts/<test>/`, so serializing them behind a build job would only
+    trade parallel compiles for serial ones."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic", "extra"]
+    assert fake_backend.dependencies == [None, None]
+
+
+def _add_second_builder(project: Path, *, name: str, family: str):
+    """Give the fixture a second builder so a suite can mix families."""
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            "cfg-verible:",
+            f'  - name: "{name}"\n'
+            f'    builder: "echo"\n'
+            f'    simulator-family: "{family}"\n'
+            f'    builder-simv: "obj_dir/simv"\n'
+            f"    sim-rand-seed: 1\n"
+            f'    sim-rand-seed-prefix: "+seed="\n'
+            f"    builder-opts:\n"
+            f"      debug:\n"
+            f'        compile-time: "--no-op"\n'
+            f'        run-time: "--no-op"\n'
+            f"\ncfg-verible:",
+        )
+    )
+
+
+def test_every_group_waits_for_the_build_job_that_writes_its_directory(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    """The build job runs PRE+COMPILE for the whole plan, so it writes into a
+    self-compiling test's artefact dir too — an ungated element would be the
+    second writer there. That is the mixed-builder case, which needs no
+    fan-out at all: one shareable test puts a build job in the plan, and the
+    unshareable one beside it must still wait for it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_second_builder(minimal_project, name="unshareable", family="questa")
+    tests_yaml = minimal_project / "tests.yaml"
+    # `extra` compiles for itself AND resolves to a different reservation, so
+    # the two tests land in different arrays.
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    builder: unshareable\n    resources: { mem: 24G }\n",
+        )
+    )
+
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in recording_backend.submitted] == [
+        "basic",
+        "extra",
+    ]
+    # Two reservation groups, one build job, and neither group runs unblocked.
+    assert len(recording_backend.build_submitted) == 1
+    assert len(recording_backend.array_calls) == 2
+    assert [call["dependency"] for call in recording_backend.array_calls] == [
+        "fake-build",
+        "fake-build",
+    ]
+
+
+# --------------------------------------------------- P3: reservation advice
+
+
+def _telemetry_backend(monkeypatch):
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 10,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 2**30,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    return backend
+
+
+def test_regression_machine_payload_carries_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _telemetry_backend(monkeypatch)
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    advice = envelope["payload"]["reservation_advice"]
+    by_resource = {a["resource"]: a for a in advice}
+    # 10s of 1h and 1G of 8G are both over-reserved.
+    assert by_resource["time"]["direction"] == "reduce"
+    assert by_resource["mem"]["direction"] == "reduce"
+    mem = by_resource["mem"]
+    assert mem["event"] == "reservation-advice"
+    assert mem["test"] == "basic"
+    assert mem["suggested"] == "1536M"
+    assert mem["edit_hint"]["path"] == "tests[name=basic].resources.mem"
+    assert mem["runs"] == 1
+
+
+def _raise_and_reduce_backend(minimal_project, monkeypatch):
+    """`basic` over-reserved on time and killed on memory; `extra` fits both.
+
+    The analyzer emits time before mem per test, so the one `raise` is
+    second of four and every other finding is a `reduce`.
+    """
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "OUT_OF_MEMORY",
+                "elapsed_s": 10,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 8 * 2**30,
+            },
+            "fake-2": {
+                "state": "COMPLETED",
+                "elapsed_s": 10,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 2**30,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    return ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+
+
+def test_reservation_advice_payload_lists_raise_findings_first(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The one reservation that failed leads the list; reduces keep their order."""
+    argv = _raise_and_reduce_backend(minimal_project, monkeypatch)
+    result, _ = _invoke(["--machine", *argv])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [(a["test"], a["resource"], a["direction"]) for a in advice] == [
+        ("basic", "mem", "raise"),
+        ("basic", "time", "reduce"),
+        ("extra", "time", "reduce"),
+        ("extra", "mem", "reduce"),
+    ]
+
+
+def test_reservation_advice_table_lists_raise_findings_first(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The human table is rendered from the same ordered list."""
+    argv = _raise_and_reduce_backend(minimal_project, monkeypatch)
+    result, _ = _invoke(argv)
+    assert result.exit_code == 0, result.output
+    advice_table = result.output[result.output.index("Reservation Advice") :]
+    directions = re.findall(r"\b(raise|reduce) ", advice_table)
+    assert directions == ["raise", "reduce", "reduce", "reduce"]
+
+
+def _raise_in_the_second_suite_backend(minimal_project, monkeypatch):
+    """Two colocated suites; only the second one's first test is OOM-killed.
+
+    Suites are analyzed in submission order, so every `reduce` is found
+    before the run's single `raise`.
+    """
+    fits = {
+        "state": "COMPLETED",
+        "elapsed_s": 10,
+        "timelimit_s": 3600,
+        "req_mem_bytes": 8 * 2**30,
+        "max_rss_bytes": 2**30,
+    }
+    killed = dict(fits, state="OUT_OF_MEMORY", max_rss_bytes=8 * 2**30)
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": fits,
+            "fake-2": fits,
+            "fake-3": killed,
+            "fake-4": fits,
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _write_colocated_suites(minimal_project)
+    _mark_stub_builder_verilator(minimal_project)
+    return ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+
+
+def test_rightsize_advice_events_are_raise_first_across_suites(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The logged events follow the regression-wide order, not each suite's.
+
+    Emitting per suite puts suite 1's `reduce` records ahead of suite 2's
+    `raise`, contradicting both the payload and the documented ordering.
+    """
+    argv = _raise_in_the_second_suite_backend(minimal_project, monkeypatch)
+    result, _ = _invoke(["--machine", *argv])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert advice[0]["direction"] == "raise"
+    assert advice[0]["test"] == "other_basic"
+    assert advice[0]["resource"] == "mem"
+    assert [a["direction"] for a in advice[1:]] == ["reduce"] * (len(advice) - 1)
+
+    log_lines = (minimal_project / "rtl_buddy.log").read_text().splitlines()
+    records = [json.loads(line) for line in log_lines if line.strip()]
+    logged = [r for r in records if r.get("event") == "rightsize.advice"]
+    assert [(r["test"], r["resource"], r["direction"]) for r in logged] == [
+        (a["test"], a["resource"], a["direction"]) for a in advice
+    ]
+
+
+def test_whole_core_rounding_produces_no_cpus_advice_end_to_end(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's own `--cpus-per-task` reaches right-sizing (#505).
+
+    The project reserves the default 1 cpu; the site allocates a whole core
+    and reports 2, with no `ReqCPUS` at all. Judged against the allocation a
+    fully-busy single-threaded run measures 0.5 efficiency and every test
+    gets advised down to the `cpus: 1` it already has. The row records what
+    the head submitted, so the ratio is 1.0 and there is nothing to say.
+    """
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "total_cpu_s": 25.0,  # 0.125 eff vs the allocation, 0.25 vs 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+    # `allocated` is on every finding, so the key set stays stable; it is
+    # only ever non-null on a cpus row.
+    assert advice, "the time/mem rows should still be there"
+    assert all(a["allocated"] is None for a in advice)
+
+
+@pytest.mark.parametrize(
+    "sbatch_args,named",
+    [
+        ("[--cpus-per-task=4]", "--cpus-per-task=4"),
+        # sbatch obeys the LAST occurrence of one option, and so must the hint.
+        ("[--cpus-per-task=2, --cpus-per-task=4]", "--cpus-per-task=4"),
+    ],
+)
+def test_an_sbatch_args_cpus_override_sends_the_analysis_back_to_reqcpus(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    sbatch_args: str,
+    named: str,
+):
+    """`sbatch-args` is appended last and wins, so the YAML is not the request.
+
+    The project resolves the default 1 cpu, but `cfg-dispatch.sbatch-args`
+    states a cpu request of 4 directly, and that is what the jobs run with.
+    Recording the resolved 1 as the request would analyse a genuinely
+    over-reserved run against cpus it never had and, with `cpus: 1` failing
+    the `cpus > 1` guard, silently drop the finding. The head records
+    nothing instead, so `ReqCPUS` carries it (#505 review). A task count
+    rather than a cpu count is covered separately: the denominator is the
+    same, the note is not.
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + f"\ncfg-dispatch:\n  sbatch-args: {sbatch_args}\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # what the override actually asked for
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    # `-D` so the DEBUG line explaining the fallback reaches the console:
+    # rb reconfigures the root logger, so caplog never sees a CLI run's
+    # events and the output is what can be asserted on.
+    result, _ = _invoke(
+        [
+            "-D",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # Analysed against the 4 the override submitted, not the 1 the YAML
+    # resolved to -- which would have been dropped by the `cpus > 1` guard.
+    assert cpus["reserved"] == "4"
+    assert cpus["allocated"] is None
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    # ...and the hint names the argument, not the field it masks: editing
+    # `resources.cpus` would leave the next job's reservation where it is.
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert (
+        f"sbatch-args `{named}` sets this job's cpu request, "
+        "superseding tests[name=basic].resources.cpus" in cpus["edit_hint"]["note"]
+    )
+    # time still names its own field; a cpu argument supersedes nothing there.
+    (time_row,) = [a for a in advice if a["resource"] == "time"]
+    assert time_row["edit_hint"]["path"] == "tests[name=basic].resources.time"
+    # ...and the run says why the advice came from sacct rather than from
+    # the reservation, naming the argument responsible.
+    assert "sbatch-args" in result.output
+    assert named in result.output
+    assert "ReqCPUS" in result.output
+
+
+def test_an_sbatch_env_var_reaches_the_analysis_end_to_end(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`SBATCH_NTASKS` is inherited by `subprocess.run`, so sbatch reads it.
+
+    The project resolves the default 1 cpu and nothing in `sbatch-args`
+    touches cpus, but the environment asks for four tasks — a four-cpu job
+    that `requested_cpus` would call one, overstating efficiency fourfold.
+    The environment is deliberately NOT sanitized; it is recognised
+    instead, so the analysis falls back to `ReqCPUS` and the hint names the
+    variable rather than a YAML field it masks (#505 review).
+    """
+    monkeypatch.setenv("SBATCH_NTASKS", "4")
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # Analysed against the 4 the environment asked for, not the 1 the YAML
+    # resolved to — which the `cpus > 1` guard would have dropped.
+    assert cpus["reserved"] == "4"
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5)
+    assert cpus["edit_hint"]["path"] == "env"
+    assert "file" not in cpus["edit_hint"]
+    assert (
+        "`SBATCH_NTASKS=4` multiplies this job's cpu request"
+        in (cpus["edit_hint"]["note"])
+    )
+
+
+def test_sbatch_cpus_per_task_in_the_environment_is_not_an_override(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The generated `--cpus-per-task` beats it, so nothing changes.
+
+    Command line > environment is sbatch's own precedence, and every
+    submit path states `--cpus-per-task`. Treating the variable as an
+    override would discard a request the head knows and resurrect the
+    spurious "reduce cpus to 1" this issue is about (#505 review).
+    """
+    monkeypatch.setenv("SBATCH_CPUS_PER_TASK", "4")
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded the one cpu asked for
+                "total_cpu_s": 50.0,  # 0.25 eff vs 2, 0.5 vs the requested 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+
+
+@pytest.mark.parametrize(
+    "arg",
+    [
+        # Node SELECTION: restricts which nodes and hardware threads may be
+        # used; the generated `--cpus-per-task` still states the request.
+        "--threads-per-core=2",
+        "-B 2:4:1",
+        # Placement MAXIMA: cap where the tasks `--ntasks` asked for may
+        # land. Alone they request nothing at all (#505 review).
+        "--ntasks-per-core=2",
+        "--ntasks-per-socket=2",
+        "--ntasks-per-gpu=2",
+    ],
+)
+def test_a_placement_or_selection_arg_is_not_treated_as_a_cpu_override(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+    arg: str,
+):
+    """These shape placement; they do not set the cpu request.
+
+    The generated `--cpus-per-task=1` still states what the job asks for,
+    so the head knows the request and must keep using it. Reading one of
+    these as an override would throw that away, fall back to a `ReqCPUS`
+    the site rounded to 2, and resurrect the exact spurious "reduce cpus
+    to 1" this issue is about — with the hint pointing at `sbatch-args`
+    for good measure (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + f"\ncfg-dispatch:\n  sbatch-args: [{arg}]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 2,
+                "req_cpus": 2,  # the site rounded the one cpu asked for
+                "total_cpu_s": 50.0,  # 0.25 eff vs 2, 0.5 vs the requested 1
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+    # ...and nothing was retargeted: the other rows still name the YAML.
+    (time_row,) = [a for a in advice if a["resource"] == "time"]
+    assert time_row["edit_hint"]["path"] == "tests[name=basic].resources.time"
+
+
+def test_a_lone_ntasks_override_does_not_claim_to_take_the_suggestion(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--ntasks` is a task count, so "write 2 in here" would mean 2 tasks.
+
+    End to end: one override argument, but not a cpu count. The finding
+    still has to reach the reader with the whole-job figure, and the note
+    must not tell them to put it into an argument that would not take it
+    (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  sbatch-args: [--ntasks=4]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"
+    assert cpus["suggested"] == "2"  # ceil(4 x 0.25 x 1.5), whole-job
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus["edit_hint"]["note"]
+    assert "`--ntasks=4` multiplies this job's cpu request" in note
+    assert "change it there" not in note
+
+
+def test_orthogonal_sbatch_args_cpu_options_withhold_the_per_argument_edit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--ntasks` x `--cpus-per-task` is a product, so neither takes the number.
+
+    End to end: the request is 4 tasks of 2 cpus, the run uses a quarter of
+    it, and the advice still has to reach the reader — but pointing at
+    either argument alone would be wrong in both directions and the finding
+    would recur (#505 review).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n  sbatch-args: [--ntasks=4, --cpus-per-task=2]\n"
+    )
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "alloc_cpus": 8,
+                "req_cpus": 8,  # 4 x 2
+                "total_cpu_s": 200.0,  # 0.25 efficiency against those 8
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "-D",
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "8"  # the product, from ReqCPUS
+    assert cpus["suggested"] == "3"  # ceil(8 x 0.25 x 1.5), whole-job
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    note = cpus["edit_hint"]["note"]
+    assert (
+        "`--ntasks=4` and `--cpus-per-task=2` set this job's cpu request together"
+        in note
+    )
+    assert "product" not in note
+    assert "decompose it across them per sbatch's own precedence" in note
+    # The DEBUG line lists both arguments, for the same reason.
+    assert "`--ntasks=4` and `--cpus-per-task=2`" in result.output
+
+
+def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """End to end: advice for a job that compiled must be reachable (#358).
+
+    The allocation is max(sim, compile), so no reduce can take it below the
+    compile side. A suggestion under that floor is clamped up to it and
+    re-attributed to the field that governs; one the clamp pushes all the way
+    back to the current reservation saves nothing and is dropped.
+    """
+    _telemetry_backend(monkeypatch)  # elapsed 10s of 1h, 1G of 8G reserved
+    # No simulator-family override: the fixture's inferred "echo" family has
+    # no shared-build support, so the sim job compiles for itself.
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 1\n    mem: 8G\n    time: "00:30:00"\n',
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+
+    # time: 10s of 1h would suggest the 5-minute floor, but the compile needs
+    # 30 minutes — so that is the suggestion, and cfg-dispatch.compile.time is
+    # the field that would have to move.
+    (time_a,) = [a for a in advice if a["resource"] == "time"]
+    assert time_a["phase"] == "compile+sim"
+    assert time_a["direction"] == "reduce"
+    assert time_a["suggested"] == "00:30:00"
+    assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
+
+    # mem: reserved 8G IS the compile reservation, so every reduce clamps
+    # straight back to it. Silence beats advice that cannot retire.
+    assert [a for a in advice if a["resource"] == "mem"] == []
+
+
+def test_machine_payload_carries_build_job_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The build job's own reservation gets a `compile` advice row (#495).
+
+    It owns no suite_results row, so it is the one job in the fleet that
+    per-test analysis can never see — and with `compile.parallel` it is
+    also the one whose reservation a project is most likely to overshoot.
+    Two builds over two slots is also the shape whose *cpus* row is
+    withheld: see below.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": name,
+                "builder": "hook-chosen-builder",
+                "duration_sec": 42.5,
+                "reused": False,
+                "group": f"obj_dir_{group}",
+            }
+            for name, group in (("basic", "cafe"), ("extra", "f00d"))
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 7200,
+            # 8 cpus (4 per build x parallel 2) that used 60 core-seconds of
+            # the 480 they had: badly over-reserved.
+            "alloc_cpus": 8,
+            "total_cpu_s": 60,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    parallel: 2\n",
+    )
+    # -l 5 puts both fixture tests in the plan, so the head's cap does not
+    # collapse `parallel: 2` back to 1 for a single-config suite.
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
+
+    # No cpus row: the job ran two build slots, so its efficiency counts
+    # idle slots in the tail as well as under-used compilers and nothing in
+    # sacct separates them (#496 review). The withholding itself, and the
+    # reason it carries, is pinned in tests/test_dispatch_rightsize.py.
+    assert "cpus" not in build_advice
+
+    # time IS still advised: it is wall clock, which N concurrent builds do
+    # not inflate, so it needs no note and no division.
+    time_a = build_advice["time"]
+    assert time_a["test"] == "(build job)"
+    assert time_a["reserved"] == "02:00:00"
+    assert time_a["direction"] == "reduce"
+    assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
+    assert "note" not in time_a["edit_hint"]
+
+
+def test_build_advice_uses_the_suite_resolved_parallel_for_its_cpus_gate(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The `parallel > 1` gate reads the resolved value, not the root (#547).
+
+    Same two-config suite as the test above, whose `cpus` row is withheld
+    at the cluster-wide `parallel: 2`. Here the suite sets `parallel: 1`,
+    so the job really did run one build at a time and its whole-job
+    efficiency IS its per-build one — the row must be offered. Gating on
+    the root value instead would withhold advice for a job whose
+    reservation was never scaled.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": name,
+                "builder": "hook-chosen-builder",
+                "duration_sec": 42.5,
+                "reused": False,
+                "group": f"obj_dir_{group}",
+            }
+            for name, group in (("basic", "cafe"), ("extra", "f00d"))
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 7200,
+            # 4 cpus, NOT 8: the suite's `parallel: 1` is what sized this.
+            "alloc_cpus": 4,
+            "total_cpu_s": 30,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    parallel: 2\n",
+    )
+    _add_suite_compile(minimal_project, "compile:\n  parallel: 1\n")
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
+
+    cpus_a = build_advice["cpus"]
+    assert cpus_a["test"] == "(build job)"
+    assert cpus_a["reserved"] == "4"  # the unscaled per-build value
+    assert cpus_a["direction"] == "reduce"
+    # One slot, so there is no product to decompose and no lever to name.
+    assert "the build job reserved 4" in cpus_a["edit_hint"]["note"]
+    assert "compile.parallel" not in cpus_a["edit_hint"]["note"]
+    assert cpus_a["edit_hint"]["path"] == "cfg-dispatch.compile.cpus"
+
+
+def test_build_advice_names_the_suite_file_for_a_field_the_suite_overrode(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The advice must point at the file that holds the winning value (#497).
+
+    A suite-level `compile.time` beats cfg-dispatch, so advice that named
+    `cfg-dispatch.compile.time` would send a project to edit a key that
+    moves nothing. The suite block travels to the post-run analysis through
+    the dispatch state, which is what this exercises end to end.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": "basic",
+                "builder": "hook-chosen-builder",
+                "duration_sec": 42.5,
+                "reused": False,
+                "group": "obj_dir_cafe",
+            }
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 60,
+            "timelimit_s": 10800,
+            "alloc_cpus": 4,
+            "total_cpu_s": 60,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n',
+    )
+    _add_suite_compile(minimal_project, 'compile:\n  time: "03:00:00"\n')
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    build_advice = {a["resource"]: a for a in advice if a["phase"] == "compile"}
+
+    time_a = build_advice["time"]
+    # The suite's 3 h, not cfg-dispatch's 2 h, is what was reserved...
+    assert time_a["reserved"] == "03:00:00"
+    # ...and it is the suite's tests.yaml the project is sent to edit.
+    assert time_a["edit_hint"]["path"] == "compile.time"
+    assert time_a["edit_hint"]["file"].endswith("tests.yaml")
+
+    # cpus came from cfg-dispatch, so its row still names the root config.
+    cpus_a = build_advice["cpus"]
+    assert cpus_a["edit_hint"]["path"] == "cfg-dispatch.compile.cpus"
+    assert cpus_a["edit_hint"]["file"].endswith("root_config.yaml")
+
+
+def test_a_build_job_that_only_reused_stamps_gets_no_reduce_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The re-run trap the whole feature could otherwise walk into (#495).
+
+    Re-dispatch an unchanged suite (the normal case after a flaky sim) and
+    every build short-circuits on its stamp: the build job is seconds long
+    against its 2 h limit with near-zero cpu time. sacct alone cannot tell
+    that from a fast compile, so without the envelope's ``reused`` flags
+    the advice would be "reduce time → 00:05:00" — which the next real RTL
+    change TIMEOUTs against, and afterok then cancels the sim fan-out.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(
+        monkeypatch,
+        builds=[
+            {
+                "test": "basic",
+                "builder": "verilator",
+                "duration_sec": 0.0,
+                "reused": True,
+                "group": "obj_dir_cafe",
+            }
+        ],
+        build_telemetry={
+            "state": "COMPLETED",
+            "elapsed_s": 12,
+            "timelimit_s": 7200,
+            "alloc_cpus": 8,
+            "total_cpu_s": 3,
+        },
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    parallel: 2\n",
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["phase"] == "compile"] == []
+
+
+def test_no_build_reservation_advice_without_build_telemetry(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A backend that reports no usage gets no build advice (#495).
+
+    local-parallel is exactly that backend: `collect_telemetry` returns
+    ``{}``, and inventing a reservation verdict from nothing would be the
+    one kind of wrong that costs a compile an OOM kill.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _build_telemetry_backend(monkeypatch, build_telemetry=None)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    assert [a for a in advice if a["phase"] == "compile"] == []
+
+
+def test_rightsize_report_false_disables_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _telemetry_backend(monkeypatch)
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  rightsize:\n    report: false\n"
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert envelope["payload"]["reservation_advice"] == []
+
+
+def test_local_run_has_no_reservation_advice_key(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["--machine", "regression", "-c", "regression.yaml"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert "reservation_advice" not in envelope["payload"]
+
+
+def test_randtest_machine_payload_carries_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        telemetry={
+            f"fake-{i}": {
+                "state": "COMPLETED",
+                "elapsed_s": 5 * i,
+                "timelimit_s": 3600,
+            }
+            for i in (1, 2, 3)
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["--machine", "randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    advice = envelope["payload"]["reservation_advice"]
+    (time_a,) = [a for a in advice if a["resource"] == "time"]
+    # Aggregated across the 3 seeds: peak elapsed 15s of 1h → reduce.
+    assert time_a["runs"] == 3
+    assert time_a["direction"] == "reduce"
+
+
+def test_unresolvable_builder_does_not_abort_finished_run(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A dispatched row whose builder name no longer resolves must not turn
+    # a completed regression into an exit-2 abort during advice analysis.
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 10, "timelimit_s": 3600}
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    _mark_stub_builder_verilator(minimal_project)
+
+    rb = RtlBuddy(name="unknown_builder")
+    from typer.testing import CliRunner
+
+    # Force every builder lookup during analysis to fail as if the name
+    # vanished from cfg-rtl-builder.
+    import rtl_buddy.config.root as root_mod
+
+    orig = root_mod.RootConfig.resolve_rtl_builder_cfg
+
+    def flaky(self, name=None):
+        if name == "__gone__":
+            from rtl_buddy.errors import FatalRtlBuddyError
+
+            raise FatalRtlBuddyError("no such builder")
+        return orig(self, name)
+
+    monkeypatch.setattr(root_mod.RootConfig, "resolve_rtl_builder_cfg", flaky)
+
+    # Stamp the missing builder onto the collected row via the backend.
+    result = CliRunner().invoke(
+        rb.app,
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"],
+    )
+    # The run completes and reports (exit 0/1 from results), not exit 2.
+    assert result.exit_code in (0, 1), result.output
+    assert '"command": "regression"' in result.output
+
+
+def test_jobs_flag_sizes_the_local_parallel_pool(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``-j`` reaches the backend as its pool size (#360)."""
+    backend, seen = _FakeBackend(), {}
+
+    def _capture(name, cfg, *, config_path=None):
+        seen["name"], seen["jobs"] = name, cfg.jobs
+        seen["config_path"] = config_path
+        return backend
+
+    monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", _capture)
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+            "-j",
+            "3",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    # ...and the config it was built from travels with it, so advice about an
+    # `sbatch-args` override can name the file that holds it (#527).
+    assert seen == {
+        "name": "local-parallel",
+        "jobs": 3,
+        "config_path": str(minimal_project / "root_config.yaml"),
+    }
+
+
+def test_jobs_flag_is_rejected_against_a_backend_without_a_pool(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A silently ignored concurrency knob is worse than a refusal (#360)."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "slurm", "-j", "4"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)
+    # Rejected before anything was submitted, so there is no fleet to clean up.
+    assert not fake_backend.submitted
+    assert not fake_backend.build_submitted
+
+
+def test_zero_jobs_is_rejected(minimal_project: Path):
+    result, _ = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+            "-j",
+            "0",
+        ]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--jobs must be >= 1" in str(result.exception)
+
+
+def test_missing_result_does_not_blame_a_scheduler_off_slurm(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An unscheduled backend's failures must not be explained by `afterok`.
+
+    The pool *is* the scheduler (#360), so "the queue killed it" is never
+    the cause; the diagnostic has to name what can actually have happened.
+    """
+
+    class _PoolLikeBackend(_FakeBackend):
+        name = "local-parallel"
+        scheduled = False
+
+    backend = _PoolLikeBackend(write_results=False)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    desc = json.loads(payload_line)["payload"]["results"][0]["desc"]
+    assert "produced no result" in desc
+    assert "afterok" not in desc
+    assert "scheduler" not in desc
+    assert "never ran" in desc
+
+
+def test_jobs_on_a_randtest_replay_is_never_silently_dropped(minimal_project: Path):
+    """`-r` skips dispatch entirely, so `-j` has to be accounted for (#360).
+
+    The replay path never builds a backend, so validation has to run before
+    that branch; when the pool is the configured backend the flag is legal but
+    unused, and the existing ignored-flag warning must name it.
+    """
+    # Legal but unused: warned about, alongside the ignored backend.
+    result, _ = _invoke(
+        ["randtest", "basic", "3", "-r", "1", "--dispatch", "local-parallel", "-j", "4"]
+    )
+    warned = " ".join(result.output.split())
+    assert "--dispatch local-parallel (and --jobs 4) ignored for replay" in warned
+
+
+def test_jobs_on_a_replay_against_a_poolless_backend_is_still_rejected(
+    minimal_project: Path,
+):
+    """Validation runs before the replay short-circuit, so it still fires."""
+    result, _ = _invoke(
+        ["randtest", "basic", "3", "-r", "1", "--dispatch", "slurm", "-j", "4"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)
+
+
+def test_gated_jobs_are_told_they_were_gated(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """A gated element that still compiles is the signal that the build's
+    stamp failed and every sibling is compiling too (#369 review)."""
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert all(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+def test_ungated_jobs_are_not(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """With no build job there is nothing to have been prebuilt, and one
+    writer per directory, so compiling is the expected path."""
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert not any(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+@pytest.mark.parametrize("backend", ["slurm", "local-parallel"])
+def test_rebuild_goes_to_the_build_job_and_not_to_its_gated_elements(
+    backend: str,
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The head rule for ``--rebuild`` under dispatch (#494).
+
+    The build job is the single writer of the shared directory, so it is
+    the one place a forced recompile costs one compile instead of one per
+    element. Handing the gated array ``--rebuild`` as well would defeat the
+    fresh stamp that is exactly what stops the elements compiling, and put
+    every one of them into that directory at once (#369).
+
+    ``local-parallel`` is the same rule and, deliberately, the same head
+    code: its jobs are separate PROCESSES gated on the build's result just
+    as Slurm's array elements are, so the per-process rebuild memo does not
+    cover them either. Parametrised rather than written twice so that the
+    duplication is visible as duplication — if the head ever grows a
+    backend-specific branch, this is where it gets caught.
+    """
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", backend, "--rebuild"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.build_submitted[0].rebuild is True
+    assert not any(spec.rebuild for spec in fake_backend.submitted)
+
+
+def test_rebuild_goes_to_the_sim_jobs_when_no_build_job_was_submitted(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """With no build job every element owns its own per-test build dir, so
+    rebuilding there races nothing — and it is the only place the request
+    can be honoured at all."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "slurm", "--rebuild"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert fake_backend.submitted
+    assert all(spec.rebuild for spec in fake_backend.submitted)
+
+
+def test_a_suite_that_did_not_ask_carries_no_rebuild_anywhere(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """Byte-parity at the default: the specs are a pre-#494 head's."""
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert not fake_backend.build_submitted[0].rebuild
+    assert not any(spec.rebuild for spec in fake_backend.submitted)
+
+
+def test_a_retry_carries_rebuild_but_never_adds_it(minimal_project: Path):
+    """A gated element denied ``--rebuild`` on its first attempt must not
+    acquire it on its second, and one that legitimately holds it (its own
+    per-test dir) still needs it if the attempt died before compiling."""
+    rb = RtlBuddy(name="retry_rebuild")
+    gated = SimJobSpec(
+        test_name="alpha",
+        suite_dir=".",
+        test_config_path="tests.yaml",
+        result_json=Path("r.json"),
+        expect_prebuilt=True,
+    )
+    assert rb._retry_spec(gated, attempt=2).rebuild is False
+    ungated = replace(gated, expect_prebuilt=False, rebuild=True)
+    assert rb._retry_spec(ungated, attempt=2).rebuild is True
+
+
+def test_a_pinned_builder_simv_is_planned_as_compiling_in_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The planner and the runtime must agree on what can share a build.
+
+    A VCS builder with an absolute `builder-simv:` declines sharing at
+    runtime; a planner consulting only the family would give it a sim-sized
+    reservation and never count it as needing serialization (#369 review).
+    """
+    _set_stub_builder_family(minimal_project, "vcs")
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            '    builder-simv: "obj_dir/simv"', '    builder-simv: "/pinned/simv"'
+        )
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n',
+    )
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    # Sized for the compile it will really do, not for the sim alone.
+    resources = fake_backend.submitted[0].resources
+    assert (resources.cpus, resources.mem) == (8, "16G")
+    # ...and nothing can share, so no build job is submitted for one run.
+    assert fake_backend.build_submitted == []
+
+
+# ------------------------- #435: the job ids reach the console before the wait
+
+
+def _spy_on_console_events(monkeypatch, order):
+    """Record every log_console_event the head makes, in call order."""
+    real = rtl_buddy_module.log_console_event
+
+    def spy(logger, level, event, **fields):
+        order.append((event, fields))
+        return real(logger, level, event, **fields)
+
+    monkeypatch.setattr(rtl_buddy_module, "log_console_event", spy)
+
+
+def _spy_on_wait(monkeypatch, backend, order):
+    original = backend.wait_all
+
+    def wait(handles):
+        order.append(("wait_all", {"handles": list(handles)}))
+        return original(handles)
+
+    monkeypatch.setattr(backend, "wait_all", wait)
+
+
+def test_suite_job_ids_are_announced_before_the_wait(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If the head dies mid-wait, those ids are the only post-mortem route.
+
+    So the ordering is the deliverable: the line must be on the console
+    *before* wait_all blocks, not reconstructed afterwards (#435).
+    """
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    _spy_on_wait(monkeypatch, fake_backend, order)
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    names = [event for event, _ in order]
+    assert names.index("dispatch.suite_submitted") < names.index("wait_all")
+    (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
+    assert fields["job_ids"] == ["fake-1"]
+    assert fields["build_job"] == "fake-build"
+    # Build job counted: same scale as dispatch.progress / suite_drained.
+    assert fields["jobs"] == 2
+    assert fields["suite"] == "tests.yaml"
+    # ...and it really reached the console at default verbosity.
+    printed = " ".join(result.output.split())
+    assert "dispatch: tests.yaml → build job fake-build, sim jobs fake-1" in printed
+
+
+def test_a_zero_test_suite_announces_nothing(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Nothing was queued, so there are no ids and no wait to explain."""
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-s", "100", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [event for event, _ in order if event == "dispatch.suite_submitted"] == []
+
+
+def test_randtest_announces_its_seed_fanout_before_waiting(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    _spy_on_wait(monkeypatch, recording_backend, order)
+
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    names = [event for event, _ in order]
+    assert names.index("dispatch.suite_submitted") < names.index("wait_all")
+    (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
+    # One id per submitted seed job, exactly as the fake handed them out.
+    assert fields["job_ids"] == ["fake-1", "fake-2", "fake-3"]
+    assert len(recording_backend.submitted) == 3
+    # ...plus the build job, so the announced count is the drained count.
+    assert fields["jobs"] == 3 + (1 if fields.get("build_job") else 0)
+
+
+# ------------------------------------------------- #405: retry at collect
+
+
+LICENSE_BANNER = "Queuing for License... (Licensed number of users already reached)\n"
+
+
+class _RetryBackend(_FakeBackend):
+    """A fleet whose jobs die the way a license-queue kill dies.
+
+    Each submitted job writes the sim's own capture (with or without the
+    queue banner) and then either leaves no envelope — reported by
+    ``collect_telemetry`` as a scheduler ``TIMEOUT``, which is exactly the
+    #405 shape — or, from ``passes_on_attempt`` onward, writes a PASS.
+    """
+
+    def __init__(
+        self,
+        *,
+        banner=True,
+        passes_on_attempt=None,
+        state="TIMEOUT",
+        capture=True,
+        build_result=True,
+        cpu_telemetry=None,
+    ):
+        super().__init__(write_results=False)
+        # Reserved-vs-used numbers folded into every job's row, so a retry
+        # fleet can also exercise reservation advice (#505 review).
+        self.cpu_telemetry = cpu_telemetry or {}
+        self.banner = banner
+        self.passes_on_attempt = passes_on_attempt
+        self.state = state
+        # `capture` False: the job never ran, so it wrote no output at all
+        # — the shape of a sim whose build job failed underneath it.
+        self.capture = capture
+        # A real `rb _build-job` always writes its result file (that is how
+        # the head maps a compile failure to a CompileFail); `build_result`
+        # False is the build job that died before writing one.
+        self.build_result = build_result
+        self.attempts: dict[str, int] = {}
+        self.delays: list[float] = []
+        self.log_paths: list = []
+        self.states: dict[str, str] = {}
+        self.wait_calls = 0
+
+    def submit_build(self, spec, *, dependency=None):
+        # A real build job always writes its result file; the head now takes
+        # its absence as "the gate never opened" (#405 review).
+        if self.build_result:
+            write_build_result_json(spec.result_json, built=[], failed=[])
+        return super().submit_build(spec, dependency=dependency)
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        self.submitted.append(spec)
+        self.dependencies.append(dependency)
+        self.delays.append(delay_sec)
+        self.log_paths.append(spec.log_path)
+        attempt = self.attempts.get(spec.test_name, 0) + 1
+        self.attempts[spec.test_name] = attempt
+        job_id = f"fake-{len(self.submitted)}"
+
+        # Where the sim's own output lands — per run for a seed fan-out,
+        # which is also the granularity classification reads it back at.
+        if self.capture:
+            artefacts = Path(spec.suite_dir) / "artefacts" / spec.test_name
+            if spec.run_id is not None:
+                artefacts = artefacts / f"run-{spec.run_id:04d}"
+            artefacts.mkdir(parents=True, exist_ok=True)
+            (artefacts / "test.log").write_text(
+                LICENSE_BANNER if self.banner else "sim started\nrunning...\n"
+            )
+
+        if self.passes_on_attempt is not None and attempt >= self.passes_on_attempt:
+            write_result_json(
+                spec.result_json,
+                test_name=spec.test_name,
+                run_id=spec.run_id,
+                results=TestPassResults(name=spec.test_name + "/results"),
+                run_token=read_plan_token(spec.plan_path) if spec.plan_path else None,
+            )
+            self.states[job_id] = "COMPLETED"
+        else:
+            self.states[job_id] = self.state
+        return JobHandle(job_id=job_id, spec=spec)
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        return [self.submit(spec, dependency=dependency) for spec in specs]
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        self.wait_calls += 1
+        super().wait_all(handles, extra_wait=extra_wait)
+
+    def collect_telemetry(self, handles):
+        self.telemetry_queries.append([h.job_id for h in handles])
+        return {
+            h.job_id: {**self.cpu_telemetry, "state": self.states.get(h.job_id)}
+            for h in handles
+        }
+
+
+def _backend_factory(backend):
+    """Stand in for `create_dispatch_backend`, the way a real one behaves.
+
+    `SlurmDispatchBackend.__init__` keeps the `sbatch_args` it was built
+    with, and right-sizing reads a job's cpu-request overrides off the
+    backend rather than off whichever `cfg-dispatch` is current (#505
+    review). A fake that ignores `cfg` would hide exactly that wiring.
+    """
+
+    def factory(name, cfg, *, config_path=None):
+        backend.effective_sbatch_args = list(getattr(cfg, "sbatch_args", None) or [])
+        # ...and the file they came from, which the real factory records
+        # beside them so an `sbatch-args` edit hint can name it (#527).
+        backend.effective_sbatch_args_path = config_path
+        return backend if name not in (None, "local") else None
+
+    return factory
+
+
+def _use_backend(monkeypatch: pytest.MonkeyPatch, backend):
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "create_dispatch_backend",
+        _backend_factory(backend),
+    )
+    return backend
+
+
+def _enable_retry(project: Path, *, attempts=2, backoff=5, cap=20, jitter=0.0):
+    """Write a deterministic retry budget (jitter off keeps delays exact)."""
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n"
+        + "  retry:\n"
+        + f"    attempts: {attempts}\n"
+        + f"    backoff-sec: {backoff}\n"
+        + f"    backoff-max-sec: {cap}\n"
+        + f"    jitter: {jitter}\n"
+        + "    classifiers: [license-queue]\n"
+    )
+
+
+def _rows(result):
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    return {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+
+
+def test_license_queue_kill_is_retried_and_the_retry_can_pass(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _rows(result)["basic"]["result"] == "PASS"
+    # Two submissions of the same test, and the retry waited on its own.
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+    assert backend.wait_calls == 2
+    # First submission unheld; the retry held for the first backoff step.
+    assert backend.delays == [0.0, 5.0]
+
+
+def test_retry_emits_a_console_event_naming_attempt_delay_and_classifier(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # A green run that needed two attempts must not read like one that
+    # needed none — and rb CLI events are only visible in the output.
+    assert "retrying basic" in result.output
+    assert "license-queue" in result.output
+    assert "attempt 1 of 2" in result.output
+
+
+def test_a_hung_test_is_not_retried(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same TIMEOUT, no queue banner: the reservation was simply used up."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(banner=False))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+    assert "retrying basic" not in result.output
+
+
+def test_a_failed_job_is_not_retried_even_with_the_banner(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """FAILED is the job's own outcome, not the scheduler taking it away."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(state="FAILED"))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_exhausted_budget_fails_and_says_how_many_attempts(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A vanished job never scores green, however many attempts it got."""
+    _enable_retry(minimal_project, attempts=2)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    row = _rows(result)["basic"]
+    assert row["result"] == "FAIL"
+    assert "after 3 attempts" in row["desc"]
+    # One initial submission plus the two the budget allows; the delays
+    # double, and the retries carry no build dependency (the build job has
+    # long since left the queue).
+    assert len(backend.submitted) == 3
+    assert backend.delays == [0.0, 5.0, 10.0]
+    assert backend.dependencies[1:] == [None, None]
+
+
+def test_backoff_is_capped(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project, attempts=3, backoff=5, cap=8)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    assert backend.delays == [0.0, 5.0, 8.0, 8.0]
+    # Each attempt's log names its own attempt, not every attempt before it.
+    assert [Path(p).name for p in backend.log_paths] == [
+        "fake-single.log",
+        "fake-single-retry1.log",
+        "fake-single-retry2.log",
+        "fake-single-retry3.log",
+    ]
+
+
+def test_each_attempt_keeps_its_own_scheduler_log(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The first attempt's banner is the evidence for the retry — keep it."""
+    _enable_retry(minimal_project, attempts=1)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    first, retried = backend.log_paths
+    assert Path(first).name == "fake-single.log"
+    assert Path(retried).name == "fake-single-retry1.log"
+    # The envelope path is the one contract the job and the head share, so
+    # it must NOT move between attempts.
+    assert backend.submitted[0].result_json == backend.submitted[1].result_json
+
+
+def test_without_a_retry_block_a_license_queue_kill_still_fails_once(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Default off: identical behaviour to before #405."""
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert len(backend.submitted) == 1
+    assert backend.wait_calls == 1
+    # No attempt count anywhere in the row: with retry off there is nothing
+    # to count, and "after N attempts" must not appear.
+    desc = _rows(result)["basic"]["desc"]
+    assert "attempt" not in desc, desc
+
+
+def test_randtest_seeds_retry_independently(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Retry is per (test, run_id), so one queued seed does not resubmit all."""
+    _enable_retry(minimal_project, attempts=1)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(["--machine", "randtest", "basic", "2", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    # Two seeds, each retried once.
+    assert [spec.run_id for spec in backend.submitted] == [1, 2, 1, 2]
+    assert backend.delays == [0.0, 0.0, 5.0, 5.0]
+
+
+class _PoolRetryBackend(_RetryBackend):
+    """A backend shaped exactly like ``local-parallel``: no scheduler at all.
+
+    ``scheduled`` is False and ``collect_telemetry`` is empty by design, so
+    there is no scheduler state for the classifier to read. If retry
+    required one, it could never fire here (#405 review).
+    """
+
+    name = "fake-pool"
+    scheduled = False
+
+    def collect_telemetry(self, handles):
+        return {}
+
+
+def test_retry_fires_on_a_backend_with_no_scheduler_state(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _PoolRetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert _rows(result)["basic"]["result"] == "PASS"
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+    assert backend.delays == [0.0, 5.0]
+
+
+def test_a_pool_backend_still_needs_the_banner_to_retry(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No scheduler state to require does not mean no evidence required."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _PoolRetryBackend(banner=False))
+
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "local-parallel"]
+    )
+    assert result.exit_code == 1, result.output
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_the_retry_wait_allows_for_the_backoff_it_imposed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """max-wait must not be spent on the hold the head itself asked for.
+
+    A held job is outstanding for the whole backoff, so the retry round's
+    deadline is widened by that delay; otherwise a max-wait shorter than
+    the backoff would trip on every retry before the job could start.
+    """
+    _enable_retry(minimal_project, attempts=1, backoff=5, cap=20)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # The first wait carries no allowance; the retry wait carries its delay.
+    assert backend.extra_waits == [0.0, 5.0]
+
+
+def test_a_job_whose_build_job_never_succeeded_is_not_retried(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """It never launched, so there is no attempt to retry (#405 review).
+
+    The build job dies without writing its result; every sim it gated is
+    cancelled (`afterok`) or skipped by the pool and writes nothing at all.
+    A banner left in `artefacts/basic/test.log` by an earlier run must not
+    make the head resubmit that sim — which it would do *ungated*, running
+    a job the head deliberately skipped.
+    """
+    _mark_stub_builder_verilator(minimal_project)  # so a build job is submitted
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch, _PoolRetryBackend(capture=False, build_result=False)
+    )
+    artefacts = minimal_project / "artefacts" / "basic"
+    artefacts.mkdir(parents=True, exist_ok=True)
+    (artefacts / "test.log").write_text(LICENSE_BANNER)
+
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+    # ...and the one submission there was kept its build gate.
+    assert backend.dependencies == ["fake-build"]
+
+
+def test_a_stale_capture_from_an_earlier_run_is_not_evidence(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`artefacts/<test>/test.log` is never cleaned between runs.
+
+    This attempt wrote nothing; the banner on disk predates its
+    submission, so it is a previous run's and cannot justify a retry.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(capture=False))
+    artefacts = minimal_project / "artefacts" / "basic"
+    artefacts.mkdir(parents=True, exist_ok=True)
+    stale = artefacts / "test.log"
+    stale.write_text(LICENSE_BANNER)
+    two_days_ago = time.time() - 2 * 86400
+    os.utime(stale, (two_days_ago, two_days_ago))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_a_sim_that_got_its_seat_and_then_hung_is_not_retried(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Banner, then real simulator output, then the reservation ran out.
+
+    The common case, not a corner: most sims that print the banner do get a
+    seat. Retrying this one would re-run a genuine hang.
+    """
+    _enable_retry(minimal_project)
+
+    class _SeatGrantedThenHung(_RetryBackend):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            handle = super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+            artefacts = Path(spec.suite_dir) / "artefacts" / spec.test_name
+            (artefacts / "test.log").write_text(
+                LICENSE_BANNER + "....\nVCS Simulation Report\nrunning...\n"
+            )
+            return handle
+
+    backend = _use_backend(monkeypatch, _SeatGrantedThenHung())
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+    assert "retrying basic" not in result.output
+
+
+class _UnsubmittableRetryBackend(_RetryBackend):
+    """Accepts the first fan-out, refuses every retry — a flaky ``sbatch``."""
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        if delay_sec:
+            raise FatalRtlBuddyError("sbatch: error: Batch job submission failed")
+        return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+
+def test_a_failed_resubmission_keeps_the_results_already_collected(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry is a second chance, never a way to lose a scored regression.
+
+    The rows for the pass are already written and already say the job
+    produced no result, so a refusing scheduler degrades to those rather
+    than aborting the command with no summary and no machine payload.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _UnsubmittableRetryBackend())
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    # The payload still exists, and the row is the honest one.
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert backend.cancelled  # this attempt's jobs were taken down
+
+
+def test_an_abandoned_retry_says_so_on_the_console(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    _use_backend(monkeypatch, _UnsubmittableRetryBackend())
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    assert "giving up on retry attempt 1" in result.output
+    assert "keeping the results already collected" in result.output
+
+
+def test_a_head_side_bug_in_the_retry_path_is_not_swallowed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The degrade-to-collected contract covers cluster weather, not bugs.
+
+    A refusing scheduler is survivable; a TypeError from rtl-buddy's own
+    head-side code is a defect, and burying it in `dispatch.retry_abandoned`
+    would hide the whole feature failing to launch anything.
+    """
+    _enable_retry(minimal_project)
+
+    class _BuggyRetryBackend(_RetryBackend):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            if delay_sec:
+                raise TypeError("submit() got an unexpected keyword argument")
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    _use_backend(monkeypatch, _BuggyRetryBackend())
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert isinstance(result.exception, TypeError), result.output
+    assert "giving up on retry attempt" not in result.output
+
+
+# ------------------------------------------- #440: single-test dispatch
+
+
+def test_single_test_dispatch_submits_one_build_and_one_gated_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test <name> --dispatch` is the regression plan narrowed to one test.
+
+    The point of #440: one build job, one sim job gated on it, and the
+    result collected from the job's envelope — no new machinery, and no
+    throwaway one-suite reg_config to author.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.dependencies == ["fake-build"]
+    assert fake_backend.waited
+    assert not fake_backend.cancelled
+
+    # Dispatch implies share_build; the sim job carries a reservation and
+    # a single unnumbered run.
+    assert rb.share_build is True
+    (spec,) = fake_backend.submitted
+    assert spec.share_build is True
+    assert spec.run_id is None
+    assert spec.resources.time is not None
+    assert spec.result_json.is_file()
+    # ...and the run was scored from that envelope, not from a local run.
+    assert "PASS" in result.output
+
+
+def test_multiple_test_dispatch_uses_one_build_and_selected_jobs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(["test", "extra", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in fake_backend.submitted] == ["extra", "basic"]
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.dependencies == ["fake-build", "fake-build"]
+    assert rb.share_build is True
+    assert [
+        cfg.get_name() for cfg in read_plan_configs(fake_backend.submitted[0].plan_path)
+    ] == [
+        "extra",
+        "basic",
+    ]
+
+
+def test_single_test_dispatch_keeps_the_test_commands_builder_mode(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test` defaults the builder mode to `debug`, `rb regression` to
+    `reg`. Dispatch must carry the *command's* default into its jobs, or a
+    dispatched `rb test` would compile with different opts than a local one.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted[0].builder_mode == "debug"
+    assert fake_backend.build_submitted[0].builder_mode == "debug"
+
+
+def test_single_test_dispatch_narrows_the_plan_to_the_named_test(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test` applies no level filter, so an un-narrowed plan would sweep
+    the whole suite — the exact cost the issue calls out."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "extra", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in fake_backend.submitted] == ["extra"]
+    (spec,) = fake_backend.submitted
+    assert [cfg.get_name() for cfg in read_plan_configs(spec.plan_path)] == ["extra"]
+
+
+def test_unnamed_test_dispatch_covers_the_suite(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """No test name selects the suite, dispatched or not — the same
+    selection the in-process path makes."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic", "extra"]
+
+
+def test_single_test_dispatch_respects_levels_and_share_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The level options `rb test` already carries compose with dispatch."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(
+        ["test", "--reg-level", "0", "--share-build", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # "extra" is reglvl 5 — filtered out before the plan, as in-process.
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert rb.share_build is True
+
+
+def test_test_without_dispatch_keeps_the_in_process_path(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """No `--dispatch`, no `cfg-dispatch`: byte-identical to before #440 —
+    nothing is submitted and the stubbed TestRunner runs in-process."""
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, rb = _invoke(["test", "basic"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+    assert fake_backend.build_submitted == []
+    assert stub_build_runner.inits, "expected an in-process TestRunner"
+    assert rb.share_build is False
+
+
+def test_explicit_dispatch_local_keeps_the_in_process_path(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["test", "basic", "--dispatch", "local"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+
+
+def test_single_test_dispatch_missing_result_is_dispatch_fail(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    fake_backend.write_results = False
+    result, _ = _invoke(["--machine", "test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    row = _rows(result)["basic"]
+    assert row["result"] == "FAIL"
+    assert "produced no result" in row["desc"]
+
+
+def test_single_test_dispatch_rejects_early_stop(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A stop before POST is not expressible per job, on `rb test` either."""
+    result, _ = _invoke(
+        ["--early-stop", "comp", "test", "basic", "--dispatch", "slurm"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cannot be combined with dispatch (--dispatch slurm)" in str(
+        result.exception
+    )
+    assert "run without --dispatch" in str(result.exception)
+    assert fake_backend.submitted == []
+
+
+def test_jobs_on_test_is_validated_against_the_backend(minimal_project: Path):
+    """`-j` must mean something on `rb test` too, or be rejected (#360)."""
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm", "-j", "4"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)
+
+
+def test_jobs_on_test_without_dispatch_is_rejected_not_dropped(
+    minimal_project: Path,
+):
+    """`rb test` never reads `cfg-dispatch.backend`, so a bare `-j` sizes a
+    pool that will not exist — reject it rather than drop it (#360)."""
+    result, _ = _invoke(["test", "basic", "-j", "4"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "the backend is local" in str(result.exception)
+
+
+def test_dispatch_flags_are_validated_before_the_list_short_circuit(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`--list` exits without running anything, so a dispatch flag beside it
+    is unusable — and an unusable flag is rejected, never dropped (#360)."""
+    result, _ = _invoke(["test", "--list", "-j", "4"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "the backend is local" in str(result.exception)
+
+    result, _ = _invoke(["test", "--list", "--dispatch", "slurm"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--list cannot be combined with --dispatch slurm" in str(result.exception)
+    assert fake_backend.submitted == []
+
+    # `--dispatch local` is the in-process default spelled out: no conflict.
+    result, _ = _invoke(["test", "--list", "--dispatch", "local"])
+    assert result.exit_code == 0, result.output
+    assert "basic" in result.output
+
+
+def test_an_unknown_backend_is_rejected_before_the_list_message(
+    minimal_project: Path,
+):
+    """A typo'd backend must not be quoted back as though it existed.
+
+    `--list cannot be combined with --dispatch slrum` vouches for `slrum`;
+    the name is checked first so the answer names the real choices
+    (#440 review).
+    """
+    result, _ = _invoke(["test", "--list", "--dispatch", "slrum"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    message = str(result.exception)
+    assert "unknown dispatch backend 'slrum'" in message
+    assert "--list cannot be combined" not in message
+
+
+def test_cfg_dispatch_backend_does_not_apply_to_test(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """Dispatching `rb test` is opt-in per invocation (#440 review).
+
+    `rb regression` and `rb randtest` default their backend from
+    `cfg-dispatch.backend`; `rb test` deliberately does not. It is the local
+    iteration command, and a project that set `backend: slurm` for its
+    regressions must not find single-test runs queueing after an upgrade —
+    nor be told to drop a `--dispatch` flag it never passed.
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+    _mark_stub_builder_verilator(minimal_project)
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+
+    result, rb = _invoke(["test", "basic"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+    assert fake_backend.build_submitted == []
+    assert stub_build_runner.inits, "expected an in-process TestRunner"
+    assert rb.share_build is False
+
+
+def test_cfg_dispatch_backend_leaves_early_stop_on_test_alone(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The corollary: `rb test --early-stop` keeps working under a project
+    that configured a cluster backend, instead of failing with advice to
+    drop a `--dispatch` flag the command line never carried."""
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+    result, _ = _invoke(["--early-stop", "comp", "test", "basic"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+
+
+def test_cfg_dispatch_settings_still_configure_an_opted_in_test_run(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Only `backend` is ignored: once `--dispatch` opts in, the rest of the
+    `cfg-dispatch` block configures the run as it does everywhere else."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        "  backend: slurm\n"
+        '  resources:\n    cpus: 3\n    mem: 7G\n    time: "00:20:00"\n',
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    (spec,) = fake_backend.submitted
+    assert (spec.resources.cpus, spec.resources.mem) == (3, "7G")
+
+
+def test_cfg_dispatch_backend_early_stop_error_names_the_config(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """On the commands that *do* read the config, the rejection has to name
+    it: "run without --dispatch" is unactionable when no flag was passed."""
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+    result, _ = _invoke(["--early-stop", "comp", "regression", "-c", "regression.yaml"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cfg-dispatch.backend: fake" in str(result.exception)
+    assert "pass --dispatch local" in str(result.exception)
+    assert fake_backend.submitted == []
+
+
+def test_single_test_dispatch_without_a_shareable_builder_has_no_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One test whose builder cannot share a build gets no build job (#358).
+
+    `rb test` plans one row per entry, so nothing fans out in-job: the lone
+    sim job compiles inside its own allocation and is ungated — the shape
+    the "one build job, one gated sim job" summary does *not* describe.
+    """
+    # No `_mark_stub_builder_verilator`: the fixture's inferred "echo"
+    # family has no shared-build support.
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert fake_backend.dependencies == [None]
+
+
+@pytest.mark.parametrize(
+    "flag, expected_mode",
+    [("-n", SeedMode.NEW), ("-l", SeedMode.REPLAY)],
+)
+def test_seed_selection_travels_to_the_dispatched_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    flag: str,
+    expected_mode: SeedMode,
+):
+    """`-n` / `-l` are `rb test` options that only the job can act on, so
+    they have to reach it as its `--seed-mode` (documented contract)."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", flag, "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    (spec,) = fake_backend.submitted
+    assert spec.seed_mode == expected_mode
+    # One unnumbered run either way: `rb test` never fans out over seeds.
+    assert spec.run_id is None
+    assert spec.replay_run_id is None
+
+
+def test_an_interrupted_single_test_wait_cancels_its_jobs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Ctrl-C on the head must not leave the build and sim jobs running
+    after it exits and releases the tree lock (#361)."""
+
+    class _InterruptBackend(_FakeBackend):
+        def wait_all(self, handles, *, extra_wait=0.0):
+            self.waited = True
+            raise KeyboardInterrupt
+
+        def cancel_all(self, handles):
+            self.cancelled = [handle.job_id for handle in handles]
+
+    backend = _InterruptBackend()
+    _use_backend(monkeypatch, backend)
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    # The interrupt is reported as the conventional 128+SIGINT exit...
+    assert result.exit_code == 130, result.output
+    # ...and both jobs were cancelled on the way out, build included.
+    assert backend.cancelled == ["fake-build", "fake-1"]
+
+
+def test_single_test_dispatch_announces_its_job_before_waiting(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    _spy_on_wait(monkeypatch, fake_backend, order)
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    names = [event for event, _ in order]
+    assert names.index("dispatch.suite_submitted") < names.index("wait_all")
+    (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
+    assert fields["job_ids"] == ["fake-1"]
+    assert fields["build_job"] == "fake-build"
+    assert fields["jobs"] == 2
+    assert fields["suite"] == "tests.yaml"
+
+
+def test_single_test_machine_payload_carries_reservation_advice(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 15, "timelimit_s": 3600}
+        }
+    )
+    _use_backend(monkeypatch, backend)
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["--machine", "test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (time_a,) = [a for a in advice if a["resource"] == "time"]
+    assert time_a["direction"] == "reduce"
+
+
+def test_non_dispatched_test_payload_has_no_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    """The key is absent, not empty, when nothing was dispatched — same
+    contract the regression payload keeps."""
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["--machine", "test", "basic"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    assert "reservation_advice" not in json.loads(payload_line)["payload"]
+
+
+def test_a_retry_re_snapshots_the_cpu_overrides_it_was_submitted_with(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry is a fresh sbatch from a possibly different environment.
+
+    The first attempt went out with nothing overriding cpus, so the row
+    recorded the resolved 1 as the request. Between then and the retry a
+    later suite's in-process sweep hook exported `SBATCH_NTASKS=4`, and
+    `_resubmit_retryable` submits into that environment — so the retry
+    really did ask for four cpus, and it is the retry's telemetry the
+    analysis reads. Keeping the first attempt's metadata would judge it
+    against a request of 1, which the `cpus > 1` guard drops, silently
+    losing valid advice (#505 review).
+
+    The first `wait_all` is that window: it runs after the first attempt is
+    submitted and before it is collected and resubmitted.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _RetryBackend(
+            passes_on_attempt=2,
+            cpu_telemetry={
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+            },
+        ),
+    )
+
+    real_wait_all = backend.wait_all
+
+    def wait_all_then_export(handles, **kwargs):
+        os.environ["SBATCH_NTASKS"] = "4"
+        return real_wait_all(handles, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_export)
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # The retry really was submitted, and into the changed environment.
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"  # the retry's request, not the first attempt's 1
+    assert cpus["edit_hint"]["path"] == "env"
+    assert (
+        "`SBATCH_NTASKS=4` multiplies this job's cpu request"
+        in (cpus["edit_hint"]["note"])
+    )
+
+
+@pytest.mark.parametrize("fail_at", ["submit", "wait"])
+def test_an_abandoned_retry_leaves_the_first_attempts_cpu_metadata(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_at: str,
+):
+    """Metadata must describe the attempt whose telemetry sits beside it.
+
+    The ambient `SBATCH_NTASKS` changes before the retry, but the retry is
+    then refused by `sbatch` — or its wait fails. The head deliberately
+    keeps the first attempt's results and telemetry after those cluster
+    failures, so the row must keep the first attempt's reservation too.
+    Rewriting it up front paired that telemetry with an attempt that never
+    ran, picking the wrong cpu denominator and naming an override that was
+    never in force for it (#505 review).
+
+    With the first attempt's metadata the resolved request is 1 cpu, which
+    the `cpus > 1` guard drops — so a cpus row appearing at all is the bug.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _RetryBackend(
+            cpu_telemetry={
+                "elapsed_s": 100,
+                "timelimit_s": 3600,
+                "alloc_cpus": 4,
+                "req_cpus": 4,
+                "total_cpu_s": 100.0,  # 0.25 efficiency
+            },
+        ),
+    )
+
+    real_wait_all = backend.wait_all
+    real_submit = backend.submit
+
+    def wait_all_then_export(handles, **kwargs):
+        # The window a later suite's in-process sweep hook would run in.
+        os.environ["SBATCH_NTASKS"] = "4"
+        if fail_at == "wait" and backend.wait_calls >= 1:
+            raise FatalRtlBuddyError("max-wait elapsed on the retry round")
+        return real_wait_all(handles, **kwargs)
+
+    def submit_or_refuse(spec, **kwargs):
+        if fail_at == "submit" and backend.attempts.get(spec.test_name):
+            raise FatalRtlBuddyError("sbatch: error: QOSMaxSubmitJobPerUserLimit")
+        return real_submit(spec, **kwargs)
+
+    monkeypatch.setattr(backend, "wait_all", wait_all_then_export)
+    monkeypatch.setattr(backend, "submit", submit_or_refuse)
+    monkeypatch.delenv("SBATCH_NTASKS", raising=False)
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    # The retry was abandoned, not the run: the first attempt's rows stand.
+    assert "retry_abandoned" in result.output or "abandoned" in result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    # The first attempt asked for the resolved 1 cpu with nothing overriding
+    # it, and a one-cpu reservation has no cpus advice to give.
+    assert [a for a in advice if a["resource"] == "cpus"] == []
+
+
+def _use_backend_with_fixed_args(
+    monkeypatch, backend, sbatch_args, *, args_config_path=None
+):
+    """A backend built from a DIFFERENT config than the suite's.
+
+    The real shape: `_resolve_dispatch_backend` runs once, before the suite
+    loop, off the orchestration `root_config.yaml`; `root_cfg` is then
+    rebuilt for any suite that walks up to a different one. The backend
+    keeps the arguments it was constructed with, whatever the current
+    suite's `cfg-dispatch` says.
+
+    `args_config_path` is the orchestration config those arguments came
+    from — the file an edit hint about them has to name, and a different
+    file from the suite's own root in exactly this scenario (#527). The
+    `config_path` the head hands the factory is dropped for the same reason
+    `cfg` is: this fake stands for a backend built somewhere else.
+    """
+
+    def factory(name, cfg, *, config_path=None):
+        backend.effective_sbatch_args = list(sbatch_args)
+        backend.effective_sbatch_args_path = args_config_path
+        return backend if name not in (None, "local") else None
+
+    monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", factory)
+    return backend
+
+
+def test_an_override_only_the_backend_carries_is_still_found(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The suite's `cfg-dispatch` is not what `sbatch` received.
+
+    In a multi-root regression the backend is built once from the
+    orchestration config while `root_cfg` is rebuilt per suite, so the
+    suite's `sbatch-args` can be empty while the backend really appends
+    `--ntasks=4`. Scanning the suite's config misses that override, records
+    the generated per-task cpus as the whole-job request, and the `cpus > 1`
+    guard then drops advice the run genuinely deserved (#505 review).
+    """
+    backend = _use_backend_with_fixed_args(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 4,
+                    "req_cpus": 4,  # 4 tasks x the generated 1 cpu
+                    "total_cpu_s": 100.0,  # 0.25 efficiency against those 4
+                }
+            }
+        ),
+        ["--ntasks=4"],
+    )
+    assert backend is not None
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["reserved"] == "4"
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert (
+        "`--ntasks=4` multiplies this job's cpu request" in (cpus["edit_hint"]["note"])
+    )
+
+
+def test_the_override_hint_names_the_config_the_backend_was_built_from(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The machine hint has to be appliable where the override lives (#527).
+
+    Same multi-root shape as above: the backend carries the orchestration
+    config's `sbatch-args`, and the suite walked up to another root. The
+    override is found from the backend, so the `file` beside it must come
+    from the backend too — pointing at the suite's root_config.yaml would
+    have an agent edit a `cfg-dispatch` nothing submits with, leaving the
+    override in place and the advice to recur.
+    """
+    orchestration_cfg = "/proj/orchestration/root_config.yaml"
+    backend = _use_backend_with_fixed_args(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 8,
+                    "req_cpus": 8,
+                    "total_cpu_s": 200.0,  # 0.25 efficiency against those 8
+                }
+            }
+        ),
+        ["--cpus-per-task=8"],
+        args_config_path=orchestration_cfg,
+    )
+    assert backend is not None
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus["edit_hint"]["file"] == orchestration_cfg
+    # ...and not the root this suite resolved, which holds no sbatch-args.
+    assert str(minimal_project) not in cpus["edit_hint"]["file"]
+
+
+def test_a_single_root_run_hints_at_its_own_root_config(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary case is unchanged: one root, and it is the one named.
+
+    The head hands the factory the config it built the backend from, so a
+    run whose suites all share that root still gets an absolute path to it
+    (#527).
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n"
+        + "  sbatch-args: [--cpus-per-task=8]\n"
+    )
+    backend = _use_backend(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 8,
+                    "req_cpus": 8,
+                    "total_cpu_s": 200.0,
+                }
+            }
+        ),
+    )
+    assert backend is not None
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    assert cpus["edit_hint"]["path"] == "cfg-dispatch.sbatch-args"
+    assert cpus["edit_hint"]["file"] == str(root_cfg)
+
+
+def test_a_suite_override_the_backend_never_had_makes_no_false_hint(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The mirror case: the suite's config claims what sbatch never got.
+
+    Reading it would name `sbatch-args` as the thing to edit for a run
+    submitted without it — an edit hint pointing at an argument that was
+    never in force, which is the unappliable advice #505 exists to remove.
+    """
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n"
+        + "  resources: {cpus: 4}\n"
+        + "  sbatch-args: [--ntasks=4]\n"
+    )
+    _use_backend_with_fixed_args(
+        monkeypatch,
+        _RecordingBackend(
+            telemetry={
+                "fake-1": {
+                    "state": "COMPLETED",
+                    "elapsed_s": 100,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                    "alloc_cpus": 4,
+                    "req_cpus": 4,  # just the generated 4; no task multiplier
+                    "total_cpu_s": 100.0,  # 0.25 efficiency
+                }
+            }
+        ),
+        [],  # ...but this backend appends nothing
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (cpus,) = [a for a in advice if a["resource"] == "cpus"]
+    # The YAML field really does govern this run, so that is what to edit.
+    assert cpus["edit_hint"]["path"] == "tests[name=basic].resources.cpus"
+    assert "note" not in cpus["edit_hint"]
+
+
+# ------------------- the shared-binary audit (#535)
+
+
+def _stamped_row(test_name, sha, simv, build_dir=None):
+    results = TestPassResults(name=f"{test_name}/results")
+    results.results["build_stamp"] = {"fingerprint_sha": sha, "simv": simv}
+    if build_dir is not None:
+        results.results["build_stamp"]["build_dir"] = build_dir
+    return {"test_name": test_name, "randmode_i": None, "results": results}
+
+
+def _mismatch_events(caplog):
+    return [
+        record.rtl_fields
+        for record in caplog.records
+        if getattr(record, "rtl_event", None) == "dispatch.binary_mismatch"
+    ]
+
+
+def test_the_collect_audit_warns_when_one_key_produced_two_binaries(caplog):
+    """One compile key is one binary; anything else is a substitution (#535).
+
+    Every run gated on a build job validated the same stamp, so agreeing
+    digests with disagreeing executables mean somebody rebuilt the shared
+    directory while its neighbours were reusing it. Reporting only — the
+    runs are already scored against whatever they ran, and the point is
+    that the substitution stops being invisible.
+    """
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1", ["/b/simv", 11, 2], "/b"),
+        _stamped_row("gamma", "k2", ["/c/simv", 10, 1], "/c"),
+        # Nothing to say: a run with no shared build at all.
+        {
+            "test_name": "delta",
+            "randmode_i": None,
+            "results": TestPassResults(name="delta/results"),
+        },
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == "/b"
+    assert events[0]["fingerprints"] == 1
+    assert events[0]["binaries"] == 2
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
+def test_the_collect_audit_still_groups_cache_mode_runs(caplog):
+    """A persistent cache root moves the shared directory; it does not change
+    what the audit keys on (#542).
+
+    ``build_dir`` is still the ``obj_dir_<key>`` directory — now under
+    ``<root>/<suite-namespace>/`` — and the ``simv`` entry is compared as a
+    whole, so the relative spelling cache mode may give it is no more and no
+    less comparable than the absolute one. Agreeing runs stay silent;
+    genuinely different binaries under one cache directory still warn.
+    """
+    import logging as _logging
+
+    cached = "/nfs/rb-cache/verif__blk/obj_dir_abc"
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(
+            [
+                _stamped_row("alpha", "k1", ["simv", 10, 1], cached),
+                _stamped_row("beta", "k1", ["simv", 10, 1], cached),
+            ]
+        )
+    assert _mismatch_events(caplog) == []
+
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(
+            [
+                _stamped_row("alpha", "k1", ["simv", 10, 1], cached),
+                _stamped_row("beta", "k1", ["simv", 11, 2], cached),
+            ]
+        )
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == cached
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
+def test_the_collect_audit_groups_by_the_shared_directory_not_the_digest(caplog):
+    """The rebuild this audit exists to catch — an input edited mid-run and
+    recompiled into the same directory — changes the inputs' digest along
+    with the binary. Keyed on the digest, the two runs would fall into two
+    groups of one and the substitution would be invisible; the directory
+    is the compile key and does not move."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1-edited", ["/b/simv", 11, 2], "/b"),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == "/b"
+    assert events[0]["fingerprints"] == 2
+    assert events[0]["binaries"] == 2
+    assert events[0]["tests"] == ["alpha", "beta"]
+
+
+def test_the_collect_audit_falls_back_to_the_digest_for_an_older_stamp(caplog):
+    """An envelope from a worker that predates ``build_dir`` still groups on
+    what it has."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1]),
+        _stamped_row("beta", "k1", ["/b/simv", 11, 2]),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["build_dir"] == "k1"
+
+
+def test_the_collect_audit_is_silent_when_every_run_named_one_binary(caplog):
+    """The healthy fan-out must say nothing, or the warning is worthless."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", "k1", ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1", ["/b/simv", 10, 1], "/b"),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    assert not _mismatch_events(caplog)
+
+
+def test_the_collect_audit_skips_a_malformed_stamp_identity(caplog):
+    """Reporting only, so a JSON-valid but oddly shaped identity — a list
+    where a path or digest belongs — is a run with nothing to say, not a
+    ``TypeError`` after every job has already been scored."""
+    import logging as _logging
+
+    rows = [
+        _stamped_row("alpha", [], ["/b/simv", 10, 1], "/b"),
+        _stamped_row("beta", "k1", ["/b/simv", 10, 1], []),
+        _stamped_row("gamma", "k1", ["/b/simv", 11, 2], "/b"),
+        _stamped_row("delta", "k1", ["/b/simv", 12, 3], "/b"),
+    ]
+    with caplog.at_level(_logging.WARNING):
+        RtlBuddy._audit_shared_binaries(rows)
+    events = _mismatch_events(caplog)
+    assert len(events) == 1
+    assert events[0]["tests"] == ["delta", "gamma"]
+
+
+# ------------------------------ the head's gates manifest (#548)
+
+
+class _ReleasingBackend(_FakeBackend):
+    """A fake that answers to the one backend name the head gates on.
+
+    The flag is not "a fake backend" but "a backend whose pending jobs can
+    be released", which today is Slurm alone — so the fixture has to claim
+    the name to see the manifest at all.
+    """
+
+    name = "slurm"
+    # What `SlurmDispatchBackend._sbatch_args_dependency()` would answer: a
+    # dependency the site put in `sbatch-args`, which sbatch appends AFTER
+    # the generated `--dependency=afterok` and therefore resolves to — the
+    # sim job's effective gate, and not ours to clear (#548).
+    configured_dependency = None
+    # ...and an exported `$SBATCH_DEPENDENCY`, which sbatch documents as
+    # the default for `-d` and a command-line option overrides. Every gated
+    # submission carries one, so this never gates the job.
+    env_dependency = None
+
+    def _sbatch_args_dependency(self):
+        return self.configured_dependency
+
+    def _configured_dependency(self):
+        return self.configured_dependency or self.env_dependency
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        return [self.submit(spec, dependency=dependency) for spec in specs]
+
+
+def _log_records(log_path: Path) -> list[dict]:
+    """Every record in a machine-mode rtl_buddy log, fields included."""
+    if not log_path.exists():
+        return []
+    return [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+
+
+def _gates_manifest(project: Path) -> dict:
+    paths = list(project.glob("artefacts/.dispatch/gates-*.json"))
+    assert len(paths) == 1, [str(path) for path in paths]
+    return json.loads(paths[0].read_text())
+
+
+def test_head_records_every_submitted_job_against_its_plan_index(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The manifest is the build job's only way to name a key's jobs (#548).
+
+    The plan index is the shared name: the build job knows its configs by
+    position in the plan manifest, and the head knows which job it gave
+    each of them.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    manifest = _gates_manifest(minimal_project)
+    assert manifest["schema_version"] == 1
+    # Same index space as the plan beside it, and the same order.
+    plans = list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))
+    planned = [test["name"] for test in json.loads(plans[0].read_text())["tests"]]
+    assert [entry["test"] for entry in manifest["entries"]] == planned
+    assert [entry["index"] for entry in manifest["entries"]] == list(
+        range(len(planned))
+    )
+    assert [entry["job_id"] for entry in manifest["entries"]] == [
+        "fake-1",
+        "fake-2",
+    ]
+    # And the token the build job checks the manifest's identity with, so a
+    # manifest an earlier head left at this pid's path is refused.
+    assert manifest["run_token"] == json.loads(plans[0].read_text())["run_token"]
+
+    # The build job is told where to read it, beside its own envelope.
+    spec = backend.build_submitted[0]
+    assert spec.gates_json is not None
+    assert Path(spec.gates_json).parent == Path(spec.result_json).parent
+
+    # The gate itself is untouched: every sim still carries the afterok that
+    # reaps the fan-out if the build job dies (#548 keeps it deliberately).
+    assert backend.dependencies == ["fake-build", "fake-build"]
+
+
+def test_head_writes_no_gates_manifest_for_a_backend_that_cannot_release(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`local-parallel` has no pending queue to clear, so it gets no
+    manifest and its build job's argv is unchanged."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted[0].gates_json is None
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+
+def test_head_writes_no_gates_manifest_without_a_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No build job, nothing to release from: a suite whose tests each
+    compile in their own job is ungated already (#358)."""
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted == []
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+
+
+def test_a_gates_manifest_that_cannot_be_written_does_not_fail_the_run(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The manifest is an optimization on top of a gate that is already
+    correct, so losing it must cost the run its early start and nothing
+    else — above all not the fleet that is already submitted."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(rtl_buddy_module, "write_gates", _boom)
+    result, _rb = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.cancelled is False
+    assert len(backend.submitted) == 2
+
+
+def test_a_configured_dependency_turns_early_release_off_for_the_suite(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--dependency=singleton` in sbatch-args is the job's real gate.
+
+    It is appended after the generated `afterok`, and
+    `scontrol update JobId=<id> Dependency=` clears an expression whole
+    rather than one clause of it — so releasing a key would drop the
+    site's own serialisation (a licensed simulator, a staging job). There
+    is no partial answer, so the suite gets no early release at all
+    (#548 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.configured_dependency = "singleton"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    # --machine so the head's own log is JSON lines and the event below is
+    # readable as a record rather than as rendered text.
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    # No manifest, no --gates: the build job never even probes for scontrol.
+    assert backend.build_submitted[0].gates_json is None
+    assert not list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    # ...and the run is otherwise untouched: every sim still submitted and
+    # still gated on the build job.
+    assert len(backend.submitted) == 2
+    assert backend.dependencies == ["fake-build", "fake-build"]
+
+    skipped = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.gates_skipped"
+    ]
+    assert len(skipped) == 1, skipped
+    assert skipped[0]["dependency"] == "singleton"
+    assert "early release disabled" in skipped[0]["reason"]
+    assert "sbatch-args" in skipped[0]["reason"]
+
+
+def test_no_configured_dependency_leaves_early_release_on(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ordinary case: nothing configured, so nothing is given up."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted[0].gates_json is not None
+    assert list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    assert not [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.gates_skipped"
+    ]
+
+
+def test_the_gates_skipped_event_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "dispatch.gates_skipped",
+        {
+            "suite_dir": "/w/verif/blk",
+            "dependency": "singleton",
+            "reason": "early release disabled: sbatch-args/SBATCH_DEPENDENCY "
+            "configures a dependency (singleton) that a release would clear",
+        },
+    )
+    assert "/w/verif/blk" in message and "singleton" in message
+    assert "waits for its build job" in message
+    assert "dispatch gates_skipped" not in message
+
+
+def test_a_partial_build_envelope_is_used_for_what_it_names_only(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build job that released a key and then died (#548).
+
+    Its envelope exists — it is rewritten per compile key so a released
+    simulation can read its own verdict — but it stops at the key the job
+    reached. `basic` really compiled and its jobs really ran, so its row
+    is the build job's verdict; `extra` was never compiled and its job was
+    cancelled with the build, which is the same story as no envelope at
+    all. The head must not read the file's mere existence as "the build
+    finished".
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _PartialBuild(_FakeBackend):
+        def __init__(self):
+            super().__init__(write_results=False)  # no sim envelope appears
+
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(
+                spec.result_json,
+                built=[],
+                failed=["basic"],
+                builds=[
+                    {
+                        "test": "basic",
+                        "builder": "verilator",
+                        "returncode": 1,
+                        "error_tail": ["%Error: Exiting due to 1 error(s)"],
+                    }
+                ],
+                partial=True,
+            )
+            return super().submit_build(spec, dependency=dependency)
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    # The record it DOES hold is used, exactly as a complete one would be.
+    assert "compile failed in build job" in rows["basic"]["desc"]
+    # The test it never reached falls back to the missing-result story.
+    assert "produced no result" in rows["extra"]["desc"]
+
+    partial = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.build_result_partial"
+    ]
+    assert len(partial) == 1, partial
+    assert partial[0]["decided"] == 1
+    assert partial[0]["planned"] == 2
+
+
+def test_a_partial_build_envelope_does_not_feed_reservation_advice(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Its records are a fraction of the compiles the reservation paid for.
+
+    Advising a smaller compile block from them would shrink it towards a
+    build job that died rather than towards one that finished (#548).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _PartialBuild(_FakeBackend):
+        def submit_build(self, spec, *, dependency=None):
+            write_build_result_json(
+                spec.result_json,
+                built=["basic"],
+                failed=[],
+                builds=[{"test": "basic", "builder": "verilator", "duration_sec": 2.0}],
+                partial=True,
+            )
+            return super().submit_build(spec, dependency=dependency)
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    states = []
+    original = rtl_buddy_module.RtlBuddy._dispatch_collect
+
+    def _spy(self, backend_arg, state, *args, **kwargs):
+        out = original(self, backend_arg, state, *args, **kwargs)
+        states.append(state)
+        return out
+
+    monkeypatch.setattr(rtl_buddy_module.RtlBuddy, "_dispatch_collect", _spy)
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert states and states[0]["build_compile_work"] is None
+
+
+def test_the_partial_envelope_events_have_dedicated_human_messages():
+    from rtl_buddy.logging_utils import _human_message
+
+    head = _human_message(
+        "dispatch.build_result_partial",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+        },
+    )
+    assert "1234" in head and "/w/verif/blk" in head and "did not finish" in head
+    assert "dispatch build_result_partial" not in head
+
+    job = _human_message(
+        "build_job.partial_result_failed",
+        {
+            "path": "/w/.dispatch/build-result-7.json",
+            "error": "[Errno 28] No space left on device",
+        },
+    )
+    assert "build-result-7.json" in job and "No space left" in job
+    assert "build_job partial_result_failed" not in job
+
+
+def test_a_partial_envelope_counts_configs_not_result_rows(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "1 of 100 planned" for one config over a hundred runs (#548 review).
+
+    The build job compiles CONFIGS — one per distinct test name — while
+    `suite_results` holds one row per (test, run_id) plus every skipped
+    test. Counting rows makes a wide seed fan-out look like a build job
+    that reached almost nothing.
+    """
+
+    class _PartialBuild(_RecordingBackend):
+        def submit_build(self, spec, *, dependency=None):
+            handle = _FakeBackend.submit_build(self, spec)
+            write_build_result_json(
+                spec.result_json,
+                built=["basic"],
+                failed=[],
+                builds=[{"test": "basic", "builder": "verilator"}],
+                partial=True,
+            )
+            return handle
+
+    backend = _PartialBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["--machine", "randtest", "basic", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # One config, five runs.
+    assert [spec.run_id for spec in backend.submitted] == [1, 2, 3, 4, 5]
+
+    partial = [
+        record
+        for record in _log_records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "dispatch.build_result_partial"
+    ]
+    # Once per suite, whatever the fan-out, and in configs on both sides.
+    assert len(partial) == 1, partial
+    assert partial[0]["decided"] == 1
+    assert partial[0]["planned"] == 1
+
+
+def test_an_exported_dependency_does_not_turn_early_release_off(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`$SBATCH_DEPENDENCY` is a default, not a gate, on a gated job.
+
+    sbatch documents the export as the default for `-d`, and a command-line
+    option overrides it — every job gated on a build job carries a
+    generated `--dependency=afterok`, so the export never holds it back.
+    Clearing that dependency therefore drops nothing the site configured,
+    and the suite keeps its early release. Composing still treats the two
+    alike (#507); only "what will actually hold this job" tells them
+    apart (#548 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.env_dependency = "afterok:9"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.build_submitted[0].gates_json is not None
+    assert list(minimal_project.glob("artefacts/.dispatch/gates-*.json"))
+    records = _log_records(minimal_project / "rtl_buddy.log")
+    assert not [r for r in records if r.get("event") == "dispatch.gates_skipped"]
+    # ...but a reader who set the export and expected it to hold is told.
+    overridden = [
+        r for r in records if r.get("event") == "dispatch.env_dependency_overridden"
+    ]
+    assert len(overridden) == 1, overridden
+    assert overridden[0]["dependency"] == "afterok:9"
+
+
+def test_sbatch_args_wins_over_an_export_when_both_are_set(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The command-line half decides, as it does for sbatch itself."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _ReleasingBackend()
+    backend.configured_dependency = "singleton"
+    backend.env_dependency = "afterok:9"
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.build_submitted[0].gates_json is None
+    records = _log_records(minimal_project / "rtl_buddy.log")
+    skipped = [r for r in records if r.get("event") == "dispatch.gates_skipped"]
+    assert [r["dependency"] for r in skipped] == ["singleton"]
+    # One answer, not two: the export is not also reported as ignored.
+    assert not [
+        r for r in records if r.get("event") == "dispatch.env_dependency_overridden"
+    ]
+
+
+class _PartialEnvelopeBackend(_RecordingBackend):
+    """A build job that leaves a partial envelope naming only `basic`.
+
+    ``build_state`` is what the backend reports for it, which is the only
+    thing that distinguishes a job that DIED mid-compile from one that
+    finished and lost the write completing its result (#548 review).
+    ``via`` chooses which half of the backend answers: ``"telemetry"`` is
+    the Slurm shape (an sacct row the head already fetched),
+    ``"outcome"`` the local-parallel one (no accounting at all, so the
+    head has to ask `build_outcome` directly).
+    """
+
+    def __init__(self, build_state, via="telemetry"):
+        super().__init__(write_results=False)  # no sim envelope appears
+        self._build_state = build_state
+        if via == "telemetry":
+            self.telemetry = {"fake-build": {"state": build_state, "elapsed_s": 5}}
+        else:
+            self.telemetry = {}
+
+    def build_outcome(self, handle):
+        return self._build_state
+
+    def submit_build(self, spec, *, dependency=None):
+        handle = _FakeBackend.submit_build(self, spec)
+        write_build_result_json(
+            spec.result_json,
+            built=["basic"],
+            failed=[],
+            builds=[{"test": "basic", "builder": "verilator", "duration_sec": 2.0}],
+            partial=True,
+        )
+        return handle
+
+
+def _run_partial_envelope(
+    minimal_project, monkeypatch, build_state, *, retry=False, via="telemetry"
+):
+    _mark_stub_builder_verilator(minimal_project)
+    if retry:
+        # The gate only shows through the retry classifier, which is the
+        # one consumer of `build_succeeded`.
+        _enable_retry(minimal_project)
+    backend = _PartialEnvelopeBackend(build_state, via=via)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    states = []
+    original = rtl_buddy_module.RtlBuddy._dispatch_collect
+
+    def _spy(self, backend_arg, state, *args, **kwargs):
+        out = original(self, backend_arg, state, *args, **kwargs)
+        states.append(state)
+        return out
+
+    monkeypatch.setattr(rtl_buddy_module.RtlBuddy, "_dispatch_collect", _spy)
+    gates = {}
+    real_classify = rtl_buddy_module.classify_missing_result
+
+    def _classify(spec, sched_state, **kwargs):
+        gates[spec.test_name] = kwargs.get("build_succeeded")
+        return real_classify(spec, sched_state, **kwargs)
+
+    monkeypatch.setattr(rtl_buddy_module, "classify_missing_result", _classify)
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    return result, states, _log_records(minimal_project / "rtl_buddy.log"), gates
+
+
+def test_a_partial_envelope_from_a_killed_build_job_closes_the_unnamed_gates(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The conservative reading, and the one an unknown state keeps.
+
+    A build job the scheduler killed never reached the tests its envelope
+    does not name: their jobs were cancelled behind it, so nothing in
+    their artefacts is this attempt's evidence and a retry would resubmit
+    them with no gate at all (#405).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "TIMEOUT", retry=True
+    )
+    assert result.exit_code == 1, result.output
+
+    # `basic` is named, so its gate opened; `extra` is not, so it stayed
+    # shut and its missing result can never be retried.
+    assert gates == {"basic": True, "extra": False}, gates
+
+    partial = [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    assert len(partial) == 1, partial
+    assert partial[0]["scheduler_state"] == "TIMEOUT"
+    assert not [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    # `extra`'s gate stayed shut, so its missing result is not retryable.
+    assert states[0]["build_compile_work"] is None
+
+
+def test_a_partial_envelope_from_a_completed_build_job_is_a_lost_final_write(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """COMPLETED means it reached every test; only the last write was lost.
+
+    Reading that as "never compiled" would refuse the ordinary retry
+    classification to a fleet with nothing wrong with it. The advice stays
+    suppressed either way — the records are still a fraction of the
+    compiles the reservation paid for (#548 review).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "COMPLETED", retry=True
+    )
+    assert result.exit_code == 1, result.output
+
+    # Every planned test's gate is open: the build job reached them all, so
+    # a missing result is an ordinary missing result and classifies as one.
+    assert gates == {"basic": True, "extra": True}, gates
+
+    lost = [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    assert len(lost) == 1, lost
+    assert lost[0]["decided"] == 1 and lost[0]["planned"] == 2
+    assert not [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    # Advice is still dropped: the records are a fraction of the compiles.
+    assert states[0]["build_compile_work"] is None
+
+
+def test_the_final_write_lost_event_has_a_dedicated_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message(
+        "dispatch.build_result_final_write_lost",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+        },
+    )
+    assert "1234" in message and "/w/verif/blk" in message
+    assert "finished" in message and "lost" in message
+    assert "dispatch build_result_final_write_lost" not in message
+
+    killed = _human_message(
+        "dispatch.build_result_partial",
+        {
+            "suite_dir": "/w/verif/blk",
+            "job_id": "1234",
+            "decided": 1,
+            "planned": 4,
+            "scheduler_state": "TIMEOUT",
+        },
+    )
+    assert "TIMEOUT" in killed and "did not finish" in killed
+
+    overridden = _human_message(
+        "dispatch.env_dependency_overridden",
+        {"suite_dir": "/w/verif/blk", "dependency": "afterok:9"},
+    )
+    assert "SBATCH_DEPENDENCY" in overridden and "afterok:9" in overridden
+    assert "sbatch-args" in overridden
+    assert "dispatch env_dependency_overridden" not in overridden
+
+
+def test_a_backend_without_accounting_still_tells_the_two_readings_apart(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`local-parallel` has no telemetry, and must not lose the distinction.
+
+    `LocalProcessBackend.collect_telemetry()` returns `{}` by design — a
+    bare host reserves nothing, so there is nothing to compare against —
+    so a reading taken from the sacct state alone would call every partial
+    envelope a dead build job there, shut the gates of every config the
+    last snapshot missed, and refuse valid missing-result retries on a run
+    that was fine. The pool knows the build process's exit status; the
+    head asks for it through `build_outcome` (#548 review).
+    """
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "COMPLETED", retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+
+    lost = [
+        r for r in records if r.get("event") == "dispatch.build_result_final_write_lost"
+    ]
+    assert len(lost) == 1, lost
+    assert gates == {"basic": True, "extra": True}, gates
+    assert states[0]["build_compile_work"] is None
+
+
+def test_a_backend_without_accounting_keeps_the_conservative_reading_on_failure(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A build process that exited nonzero never reached the rest."""
+    result, states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, "FAILED", retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+
+    partial = [r for r in records if r.get("event") == "dispatch.build_result_partial"]
+    assert len(partial) == 1, partial
+    assert partial[0]["scheduler_state"] == "FAILED"
+    assert gates == {"basic": True, "extra": False}, gates
+
+
+def test_a_backend_that_cannot_say_keeps_the_conservative_reading(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`None` from both halves is "unknown", and unknown stays cautious."""
+    result, _states, records, gates = _run_partial_envelope(
+        minimal_project, monkeypatch, None, retry=True, via="outcome"
+    )
+    assert result.exit_code == 1, result.output
+    assert [
+        r["event"]
+        for r in records
+        if r.get("event", "").startswith("dispatch.build_result")
+    ] == ["dispatch.build_result_partial"]
+    assert gates == {"basic": True, "extra": False}, gates
+
+
+class _OrphanBackend(_ReleasingBackend):
+    """A scheduler-backed fake that can be told what is still queued.
+
+    ``live`` is the set of job ids the "scheduler" still holds, which is
+    the one thing the head asks a backend about an interrupted run: the
+    manifest supplies the ids, the backend says which of them are real.
+    """
+
+    def __init__(self, live=(), cancel_works=True, **kwargs):
+        super().__init__(**kwargs)
+        self.live = set(live)
+        self.probed = []
+        self.probe_timeouts = []
+        self.cancelled_handles = []
+        # Where the head told each array to keep its manifest and scripts.
+        self.array_dirs = []
+        # `cancel_works` False is the `scancel` that did not take — a
+        # refused command, an unreachable cluster — which `cancel_all`
+        # cannot report because it is best effort by contract.
+        self.cancel_works = cancel_works
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        self.array_dirs.append(Path(array_dir))
+        return super().submit_array(
+            specs,
+            array_dir=array_dir,
+            max_parallel=max_parallel,
+            dependency=dependency,
+        )
+
+    def live_job_ids(self, handles, *, timeout_s=None):
+        self.probed.append([handle.job_id for handle in handles])
+        self.probe_timeouts.append(timeout_s)
+        return {handle.job_id for handle in handles if handle.job_id in self.live}
+
+    def cancel_all(self, handles):
+        self.cancelled_handles.append([handle.job_id for handle in handles])
+        if self.cancel_works:
+            self.live -= {handle.job_id for handle in handles if handle is not None}
+        super().cancel_all(handles)
+
+
+class _PoolBackend(_ReleasingBackend):
+    """A fake whose jobs are the head's own children (`local-parallel`)."""
+
+    name = "local-parallel"
+    scheduled = False
+
+
+def _run_manifests(project: Path) -> list[Path]:
+    return sorted(project.glob("artefacts/.dispatch/run-*.json"))
+
+
+def _run_manifest(project: Path) -> dict:
+    paths = _run_manifests(project)
+    assert len(paths) == 1, [str(path) for path in paths]
+    return json.loads(paths[0].read_text())
+
+
+def _orphan_the_run(project: Path) -> tuple[Path, dict]:
+    """Rewind this project's manifest to what a killed head leaves behind.
+
+    Only the status changes. Both runs of these tests are this one process,
+    so they share a pid — and that is exactly the case the token-keyed
+    manifest name exists for: the second run neither overwrites this file
+    nor mistakes it for one of its own, because the run token is per
+    invocation and the pid is not.
+    """
+    paths = _run_manifests(project)
+    assert len(paths) == 1, [str(path) for path in paths]
+    payload = json.loads(paths[0].read_text())
+    payload["status"] = "running"
+    paths[0].write_text(json.dumps(payload))
+    return paths[0], payload
+
+
+def _all_job_ids(payload) -> list[str]:
+    ids = [entry["job_id"] for entry in payload["pending"]]
+    # Both compile jobs, where the compile was split (#593): an orphan's
+    # verilate job is as much a survivor as its build job.
+    for key in ("build", "verilate"):
+        if payload.get(key) is not None:
+            ids.append(payload[key]["job_id"])
+    return ids
+
+
+def _dispatched_regression(argv=()):
+    """One dispatched regression, with the artefact-tree lock handed back.
+
+    These tests invoke `rb` twice in one process. The tree lock is released
+    when the RtlBuddy that took it is collected, and the second invocation
+    would otherwise refuse to start because the first one's object is still
+    alive on the stack.
+    """
+    result, rb = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+            *argv,
+        ]
+    )
+    rb._artifact_locks.release_all()
+    return result, rb
+
+
+def _console_text(result) -> str:
+    """The console output with its line breaks taken out.
+
+    Rich wraps a warning to the terminal width, so a phrase in the message
+    is split at whatever column the run happened to reach. Collapsing the
+    whitespace asserts on the words rather than on the wrapping.
+    """
+    return " ".join(result.output.split())
+
+
+def _logged_events(project: Path, event: str) -> list[dict]:
+    """Every occurrence of one event in the project's head logs.
+
+    Only usable for an event logged by the LAST thing a suite does: the
+    head re-anchors (and rewrites) the suite's file log before collecting,
+    so a warning from the submit phase is no longer there afterwards.
+    """
+    found = []
+    for log in sorted(project.rglob("rtl_buddy.log")):
+        for line in log.read_text().splitlines():
+            if not line.strip().startswith("{"):
+                continue
+            record = json.loads(line)
+            if record.get("event") == event:
+                found.append(record)
+    return found
+
+
+def _fatal_text(result) -> str:
+    """The message of a fatal raised out of `rb.app`.
+
+    `_invoke` drives the Typer app directly rather than `RtlBuddy.run()`,
+    which is what renders a FatalRtlBuddyError to the console — so the text
+    lives on the exception, not in the captured output.
+    """
+    assert result.exception is not None, result.output
+    return str(result.exception)
+
+
+def test_head_records_its_whole_fleet_in_a_run_manifest(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The record a dead head leaves for the next one (#521).
+
+    Job ids live only in the head's memory and in INFO events, so a killed
+    head's fleet is unreachable. The manifest is the on-disk half: the ids,
+    the specs to rebuild their handles, and the run token their envelopes
+    are stamped with.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+
+    manifest = _run_manifest(minimal_project)
+    assert manifest["schema_version"] == 1
+    assert manifest["backend"] == "slurm"
+    assert manifest["pid"] == os.getpid()
+    # A collected run is settled: the next invocation never probes it.
+    assert manifest["status"] == "collected"
+
+    plans = list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))
+    plan = json.loads(plans[0].read_text())
+    assert manifest["run_token"] == plan["run_token"]
+    assert manifest["plan"] == str(plans[0])
+    assert Path(manifest["suite_config"]).name == "tests.yaml"
+
+    # Every submitted row, against the row index the collector fills in.
+    assert [entry["job_id"] for entry in manifest["pending"]] == ["fake-1", "fake-2"]
+    assert [entry["row"] for entry in manifest["pending"]] == [0, 1]
+    assert manifest["build"]["job_id"] == "fake-build"
+    assert manifest["build"]["spec"]["kind"] == "build"
+    # The sim spec is complete enough to rebuild the handle a collector
+    # needs — above all the envelope path and the plan it was planned from.
+    spec = manifest["pending"][0]["spec"]
+    assert spec["kind"] == "test"
+    assert spec["result_json"].endswith(".json")
+    assert spec["plan_path"] == str(plans[0])
+    assert [row["test_name"] for row in manifest["rows"]] == [
+        entry["spec"]["test_name"] for entry in manifest["pending"]
+    ]
+    # Placeholders and live result objects alike stay out of the record.
+    assert all("results" not in row for row in manifest["rows"])
+    assert manifest["submitted_at"] >= manifest["started_at"]
+
+
+def test_head_marks_the_run_manifest_cancelled_when_it_takes_the_fleet_down(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A cancelled fleet must not read as an orphan on the next run (#521).
+
+    The head that cancels knows more than any later probe can: the jobs are
+    gone because it said so. Leaving the manifest at `running` would make
+    the next invocation query the scheduler about them and — while the
+    records were still in the queue — offer to adopt a dead run.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _FailingWait(_OrphanBackend):
+        def wait_all(self, handles, *, extra_wait=0.0):
+            raise RuntimeError("controller unreachable")
+
+    backend = _FailingWait()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code != 0
+    assert backend.cancelled
+    assert _run_manifest(minimal_project)["status"] == "cancelled"
+
+
+def test_head_writes_no_run_manifest_for_jobs_that_die_with_it(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`local-parallel` runs its jobs as this process's children, so an
+    interrupted run of it leaves nothing to find and nothing to record."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _PoolBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert not _run_manifests(minimal_project)
+
+
+def test_discovery_skips_this_runs_own_token_and_a_settled_manifest(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two things are never orphans: a manifest carrying THIS run's token,
+    and one whose run already ended.
+
+    The token is what excludes a head's own record, not the pid. A
+    regression writes one manifest per suite under one token, so the token
+    is exactly the scope that must be skipped — while a pid says nothing,
+    since the OS hands it out again.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []  # nothing to probe on a first run
+
+    dispatch_root = minimal_project / "artefacts" / ".dispatch"
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    token = payload["run_token"]
+    # Its own token: not an orphan, however live its jobs look.
+    assert discover_run_manifests(dispatch_root, run_token=token) == []
+    # Anybody else's: found, even though the pid is this very process's.
+    found = discover_run_manifests(dispatch_root, run_token="some-other-run")
+    assert [path for path, _payload in found] == [manifest_path]
+    assert payload["pid"] == os.getpid()
+
+    # ...and a settled manifest is never put to the scheduler at all.
+    payload["status"] = "collected"
+    manifest_path.write_text(json.dumps(payload))
+    assert discover_run_manifests(dispatch_root, run_token="some-other-run") == []
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []
+
+
+def test_a_reused_pid_neither_hides_nor_overwrites_an_orphan(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A pid is not a name (#521 review).
+
+    After a reboot a head can carry the pid of the very run whose fleet is
+    still queued. Keying the manifest on the pid alone would put the new
+    run's record on top of the old one's — destroying the only route back
+    to a live fleet — and excluding by pid would hide it first. Both runs
+    here share this process's pid, so this is that case exactly.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    assert payload["pid"] == os.getpid()
+    backend.live = set(_all_job_ids(payload))
+
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    # Found, not hidden by the shared pid...
+    assert "still queued or running" in _console_text(result)
+    # ...and still on disk beside the second run's own record.
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+    paths = _run_manifests(minimal_project)
+    assert len(paths) == 2, [str(path) for path in paths]
+    tokens = {json.loads(path.read_text())["run_token"] for path in paths}
+    assert len(tokens) == 2
+    # The token is in the filename, which is what keeps them apart.
+    assert {path.name for path in paths} == {
+        f"run-{os.getpid()}-{json.loads(path.read_text())['run_token'][:8]}.json"
+        for path in paths
+    }
+    assert manifest_path.name.endswith(f"{payload['run_token'][:8]}.json")
+
+
+def test_discovery_retires_a_manifest_whose_jobs_have_all_finished(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head killed AFTER its fleet finished leaves a manifest with
+    nothing behind it; it is marked stale so it is probed exactly once."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, _payload = _orphan_the_run(minimal_project)
+
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed, "the manifest was never put to the backend"
+    assert json.loads(manifest_path.read_text())["status"] == "stale"
+    # Nothing was found, so this run behaved exactly as it always has.
+    assert "still queued or running" not in result.output
+
+
+def test_warn_names_the_orphaned_jobs_and_submits_anyway(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The default: the jobs are named, the run proceeds unchanged (#521)."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    orphan_ids = _all_job_ids(payload)
+    backend.live = set(orphan_ids)
+    submitted_before = len(backend.submitted)
+
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    console = _console_text(result)
+    assert "still queued or running" in console
+    for job_id in orphan_ids:
+        assert job_id in console
+    assert "--orphans adopt" in console
+    assert "--orphans cancel" in console
+    # A fresh fleet went out beside the orphan, as it always did.
+    assert len(backend.submitted) > submitted_before
+    assert backend.cancelled_handles == []
+    # Untouched: `warn` reports, it does not decide.
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_cancel_scancels_the_orphaned_fleet_then_submits_a_fresh_one(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--orphans cancel` takes the old fleet down BEFORE this one goes out,
+    so the two never compete for the same nodes."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    orphan_ids = _all_job_ids(payload)
+    backend.live = set(orphan_ids)
+    submitted_before = len(backend.submitted)
+
+    result, _rb = _dispatched_regression(["--orphans", "cancel"])
+    assert result.exit_code == 0, result.output
+    # Exactly the orphan's handles, rebuilt from its manifest.
+    assert len(backend.cancelled_handles) == 1
+    assert sorted(backend.cancelled_handles[0]) == sorted(orphan_ids)
+    assert json.loads(manifest_path.read_text())["status"] == "cancelled"
+    assert len(backend.submitted) > submitted_before
+    console = _console_text(result)
+    # Four: two sim jobs plus the compile's two chained halves (#593).
+    assert "cancelled 4 job(s) left by an earlier run" in console
+    for job_id in orphan_ids:
+        assert job_id in console
+
+
+def test_adopt_collects_the_orphaned_fleet_and_submits_nothing(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`--orphans adopt` is the whole point of the manifest (#521).
+
+    The adopted run collects by the ORPHAN's run token, which is what its
+    jobs stamped their envelopes with — so the check that nothing was
+    submitted and the check that every row scored are the same check.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+    builds_before = list(backend.build_submitted)
+
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+            "--orphans",
+            "adopt",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert backend.submitted == submitted_before
+    assert backend.build_submitted == builds_before
+    # No second plan either: the adopted jobs read the one their own head
+    # wrote, and this head's pid names no run.
+    assert len(list(minimal_project.glob("artefacts/.dispatch/plan-*.json"))) == 1
+
+    envelope = json.loads(
+        [line for line in result.output.splitlines() if line.startswith("{")][-1]
+    )
+    results = {row["name"]: row["result"] for row in envelope["payload"]["results"]}
+    assert set(results.values()) == {"PASS"}, results
+    assert json.loads(manifest_path.read_text())["status"] == "collected"
+    adopted = _logged_events(minimal_project, "dispatch.orphans_adopted")
+    assert len(adopted) == 1, adopted
+    assert adopted[0]["run_token"] == payload["run_token"]
+    assert adopted[0]["build_job"] == payload["build"]["job_id"]
+
+
+def test_adopt_refuses_a_fleet_that_ran_a_different_test_set(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Adopting a fleet planned from other tests would score this run
+    against results it never asked for, so it is fatal and says what
+    differs."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    # Rewrite the record so it names a test this invocation does not plan.
+    payload["rows"][0]["test_name"] = "some_other_test"
+    manifest_path.write_text(json.dumps(payload))
+
+    submitted_before = list(backend.submitted)
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "cannot adopt" in message
+    assert "some_other_test" in message
+    assert "--orphans cancel" in message
+    assert backend.submitted == submitted_before  # nothing new went out
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_refuses_a_fleet_planned_with_different_plusdefines(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same test names, different simulation (#521 review).
+
+    Test names and run ids are not the run: a changed plusdefine compiles a
+    different design, and adopting across it would report the orphan's
+    results under this invocation's configuration. The orphan's own plan
+    manifest — the one its jobs are executing — is what the fresh expansion
+    is held against, so the refusal can name the field.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+
+    # The first `plusdefines:` in the fixture belongs to `basic`.
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "    plusdefines:\n", "    plusdefines:\n      WIDTH: 8\n", 1
+        )
+    )
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "cannot adopt" in message
+    # The row identities still match, so only the plan comparison can
+    # catch this — and it names the test and the field that moved.
+    assert "'basic'" in message
+    assert "'pd'" in message
+    assert "WIDTH" in message
+    assert backend.submitted == submitted_before
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_refuses_a_fleet_planned_with_a_different_master_seed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A re-run that pins a different master seed is a different run: its
+    tests would simulate seeds the queued jobs were never given."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt", "--master-seed", "77"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "master seed" in message
+    assert "77" in message
+    assert backend.submitted == submitted_before
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_refuses_an_unreadable_plan_rather_than_guessing(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The plan is the evidence; without it there is nothing to match on,
+    and "adopt anyway" is the outcome the comparison exists to prevent."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    Path(payload["plan"]).unlink()
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    assert "cannot be read" in _fatal_text(result)
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_cancel_refuses_to_submit_beside_a_fleet_it_could_not_take_down(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`cancel_all` is best effort, so `cancel` has to verify (#521 review).
+
+    A refused `scancel`, or a `squeue` that cannot be reached (which
+    reports the recorded ids live), must stop the run: retiring the
+    manifest and submitting a second fleet beside one still holding the
+    cluster is the exact outcome this policy exists to prevent.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend(cancel_works=False)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    # No grace period: the first re-probe is the verdict, so the test does
+    # not sit through the wait the real path allows a COMPLETING job.
+    monkeypatch.setattr(RtlBuddy, "ORPHAN_CANCEL_WAIT_S", 0.0)
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    orphan_ids = _all_job_ids(payload)
+    backend.live = set(orphan_ids)
+    submitted_before = list(backend.submitted)
+
+    result, _rb = _dispatched_regression(["--orphans", "cancel"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "could not take down" in message
+    for job_id in orphan_ids:
+        assert job_id in message
+    assert "--orphans adopt" in message
+    # Nothing submitted, and the record still says the fleet is out there.
+    assert backend.submitted == submitted_before
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+    console = _console_text(result)
+    assert "after scancel" in console
+
+
+def test_a_record_for_another_config_is_not_this_suites_orphan(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The scan spans a suite's whole `.dispatch/` tree, so what it finds
+    has to be filtered by the config that wrote it.
+
+    Co-located configs share that tree — a regression namespaces them, a
+    plain `rb test` does not — so the search has to look everywhere under
+    it and then keep only this suite's own records. A neighbour's fleet is
+    not this suite's to report, cancel or adopt.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    payload["suite_config"] = str(minimal_project / "other-tests.yaml")
+    manifest_path.write_text(json.dumps(payload))
+
+    # Not ours: nothing is probed, nothing is reported...
+    result, _rb = _dispatched_regression()
+    assert result.exit_code == 0, result.output
+    assert backend.probed == []
+    assert "still queued or running" not in _console_text(result)
+    # ...and there is nothing here for this suite to adopt.
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    assert "found no interrupted run" in _fatal_text(result)
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_refuses_to_choose_between_two_orphaned_runs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two interrupted runs with live jobs have no right answer: adopting
+    one silently abandons the other's fleet."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    second = manifest_path.with_name("run-999999.json")
+    twin = dict(payload, pid=999999, run_token="a-second-run")
+    second.write_text(json.dumps(twin))
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "found 2 interrupted runs" in message
+    assert "--orphans cancel" in message
+
+
+def test_adopt_refuses_a_backend_whose_jobs_died_with_their_head(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Nothing survives a `local-parallel` head, so `adopt` there is a
+    request that cannot be honoured — and running the suite instead is not
+    what was asked for."""
+    _mark_stub_builder_verilator(minimal_project)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(_PoolBackend())
+    )
+    result, _rb = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "local-parallel",
+            "--orphans",
+            "adopt",
+        ]
+    )
+    assert result.exit_code != 0
+    assert "nothing to adopt" in _fatal_text(result)
+    assert "--dispatch slurm" in _fatal_text(result)
+
+
+def test_an_unknown_orphans_policy_is_rejected(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, _rb = _dispatched_regression(["--orphans", "collect"])
+    assert result.exit_code != 0
+    assert "--orphans must be one of" in _fatal_text(result)
+
+
+class _ManifestWatchingRetryBackend(_RetryBackend):
+    """A retry fleet that reads the run manifest at every ``wait_all``.
+
+    The wait is where a head spends the round, so it is where a killed
+    head is killed — and therefore the moment at which the manifest has to
+    already name the jobs the scheduler is running.
+    """
+
+    name = "slurm"
+
+    def __init__(self, project, **kwargs):
+        super().__init__(**kwargs)
+        self._project = project
+        self.pending_at_wait = []
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        paths = sorted(self._project.glob("artefacts/.dispatch/run-*.json"))
+        self.pending_at_wait.append(
+            [entry["job_id"] for entry in json.loads(paths[0].read_text())["pending"]]
+            if paths
+            else None
+        )
+        super().wait_all(handles, extra_wait=extra_wait)
+
+
+def test_a_retry_round_is_recorded_before_the_head_waits_on_it(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head killed mid-retry must leave an adoptable record (#521 review).
+
+    `_resubmit_retryable` blocks until the round drains, so writing the
+    manifest after it returns would describe the retry only once the retry
+    was over — and a head killed during it would leave a record naming the
+    previous attempt's jobs, ids the scheduler has forgotten, while the
+    ones it is actually running appear in no record at all.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch,
+        _ManifestWatchingRetryBackend(minimal_project, passes_on_attempt=2),
+    )
+
+    result, _rb = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _rows(result)["basic"]["result"] == "PASS"
+    # Two rounds, and each was already in the manifest when its wait began.
+    assert backend.wait_calls == 2
+    assert backend.pending_at_wait == [["fake-1"], ["fake-2"]]
+    manifest = _run_manifest(minimal_project)
+    assert [entry["job_id"] for entry in manifest["pending"]] == ["fake-2"]
+    assert manifest["status"] == "collected"
+
+
+def test_a_recorded_job_spec_rebuilds_exactly(tmp_path: Path):
+    """The manifest has to survive JSON: paths, enums and the nested
+    reservation all come back as the types a collector uses."""
+    from rtl_buddy.dispatch.run_manifest import decode_spec, encode_spec
+
+    spec = SimJobSpec(
+        test_name="basic",
+        suite_dir=str(tmp_path),
+        test_config_path=str(tmp_path / "tests.yaml"),
+        result_json=tmp_path / "result.json",
+        run_id=3,
+        seed_mode=SeedMode.NEW,
+        master_seed=99,
+        resolved_seed=7,
+        expect_prebuilt=True,
+        build_result_json=tmp_path / "build-result.json",
+        log_path=tmp_path / "slurm.log",
+        plan_path=tmp_path / "plan.json",
+    )
+    assert decode_spec(encode_spec(spec)) == spec
+
+    build = rtl_buddy_module.BuildJobSpec(
+        suite_dir=str(tmp_path),
+        test_config_path=str(tmp_path / "tests.yaml"),
+        parallel=3,
+        rebuild=True,
+        plan_path=tmp_path / "plan.json",
+        result_json=tmp_path / "build-result.json",
+        gates_json=tmp_path / "gates.json",
+    )
+    assert decode_spec(encode_spec(build)) == build
+
+
+def test_a_manifest_from_another_version_is_skipped_not_fatal(tmp_path: Path):
+    """A run that has submitted nothing must not be refused because of a
+    file a neighbouring rtl_buddy wrote."""
+    from rtl_buddy.dispatch.run_manifest import load_run_manifest
+
+    (tmp_path / "run-1.json").write_text(json.dumps({"schema_version": 99}))
+    (tmp_path / "run-2.json").write_text("{ not json")
+    payload, reason = load_run_manifest(tmp_path / "run-1.json")
+    assert payload is None and "schema_version" in reason
+    assert discover_run_manifests(tmp_path, run_token="t") == []
+
+
+# ------------------ round-5: the record while the fan-out is still going
+
+
+class _DyingBackend(_OrphanBackend):
+    """A head killed mid-fan-out: raises at the Nth array submission.
+
+    The raise stands in for the SIGKILL. What matters is that it happens
+    *after* the scheduler accepted the submissions before it — those jobs
+    are running, and the record on disk is the only thing that can name
+    them afterwards.
+    """
+
+    def __init__(self, die_on_array=1, **kwargs):
+        super().__init__(**kwargs)
+        self.die_on_array = die_on_array
+        self.arrays = 0
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        self.arrays += 1
+        if self.arrays >= self.die_on_array:
+            raise RuntimeError(f"head died before array {self.arrays}")
+        return super().submit_array(
+            specs,
+            array_dir=array_dir,
+            max_parallel=max_parallel,
+            dependency=dependency,
+        )
+
+
+def _split_resource_groups(project: Path):
+    """Give `extra` its own reservation, so the suite fans out as two arrays."""
+    tests_yaml = project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n", "  - name: extra\n    resources:\n      mem: 8G\n", 1
+        )
+    )
+
+
+def test_a_head_killed_after_its_build_job_still_records_it(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The record opens before the first submission, not after the last.
+
+    A build job is accepted seconds before the first array; writing the
+    manifest only once the whole suite was out left that window — the one
+    where a head has a running job and nothing on disk says so — completely
+    uncovered (#521 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _DyingBackend(die_on_array=1)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code != 0
+
+    manifest = _run_manifest(minimal_project)
+    assert manifest["status"] == "submitting"
+    assert manifest["build"]["job_id"] == "fake-build"
+    # Exactly what was accepted: the build job, and no array.
+    assert manifest["pending"] == []
+    assert manifest["submitted_at"] is None
+    # ...and the rows are already there, so the record is readable.
+    assert [row["test_name"] for row in manifest["rows"]] == ["basic", "extra"]
+
+
+def test_a_head_killed_mid_fan_out_records_the_arrays_it_placed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """One accepted array is a running array, whether or not the next one
+    was ever submitted — so it is recorded as it is accepted."""
+    _mark_stub_builder_verilator(minimal_project)
+    _split_resource_groups(minimal_project)
+    backend = _DyingBackend(die_on_array=2)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code != 0
+
+    manifest = _run_manifest(minimal_project)
+    assert manifest["status"] == "submitting"
+    assert manifest["build"]["job_id"] == "fake-build"
+    # The first group's element, and only it.
+    assert [entry["job_id"] for entry in manifest["pending"]] == ["fake-1"]
+    assert [entry["row"] for entry in manifest["pending"]] == [0]
+
+
+def test_an_incomplete_record_is_an_orphan_to_cancel_but_never_to_adopt(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`submitting` is live, not settled — and not collectable.
+
+    Its ids have to be cancellable, because they are real jobs. They must
+    not be adoptable, because the rows the head never got to submit would
+    score as "produced no result" for jobs that were never launched.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _DyingBackend(die_on_array=1)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code != 0
+    manifest_path = _run_manifests(minimal_project)[0]
+    payload = json.loads(manifest_path.read_text())
+    assert payload["status"] == "submitting"
+    backend.live = {"fake-build"}
+
+    # adopt: refused, and it says which policy does deal with it.
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "still submitting" in message
+    assert "--orphans cancel" in message
+    assert json.loads(manifest_path.read_text())["status"] == "submitting"
+
+    # cancel: treated exactly like `running`.
+    backend.arrays = 0
+    backend.die_on_array = 99
+    backend.cancelled_handles = []
+    result, _rb = _dispatched_regression(["--orphans", "cancel"])
+    assert result.exit_code == 0, result.output
+    # Both halves of the compile it had placed, in manifest order (#593).
+    assert backend.cancelled_handles == [["fake-verilate", "fake-build"]]
+    assert json.loads(manifest_path.read_text())["status"] == "cancelled"
+
+
+def test_per_run_files_are_named_for_the_run_and_not_just_the_pid(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Every file one head writes for its own jobs carries its run token.
+
+    The plan, the build envelope and the gates map are read by the workers
+    of the run that wrote them. Keyed on the pid alone, a pid-reused head
+    would write its plan over the one an orphan's jobs are still reading —
+    and its token over the token those jobs stamp their envelopes with
+    (#521 review).
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+
+    dispatch_root = minimal_project / "artefacts" / ".dispatch"
+    plans = list(dispatch_root.glob("plan-*.json"))
+    assert len(plans) == 1, [str(path) for path in plans]
+    token = json.loads(plans[0].read_text())["run_token"]
+    tag = token[:8]
+    assert plans[0].name == f"plan-{os.getpid()}-{tag}.json"
+    found = list(dispatch_root.glob("run-*.json"))
+    assert [path.name for path in found] == [f"run-{os.getpid()}-{tag}.json"]
+    # The build envelope, the scheduler log and the gates map are written by
+    # the jobs (or by a scheduler this fake does not have), so what can be
+    # asserted here is the head's choice of path — which is the thing a
+    # pid-reused head would collide on.
+    build_spec = json.loads(found[0].read_text())["build"]["spec"]
+    assert Path(build_spec["result_json"]).name == (
+        f"build-result-{os.getpid()}-{tag}.json"
+    )
+    assert Path(build_spec["log_path"]).name == f"build-{os.getpid()}-{tag}.log"
+    assert Path(build_spec["gates_json"]).name == f"gates-{os.getpid()}-{tag}.json"
+    # ...and the array scratch directory the elements read at exec time.
+    assert [path.name for path in backend.array_dirs] == [
+        f"array-{os.getpid()}-{tag}-001"
+    ]
+
+
+def test_adopt_refuses_a_fleet_submitted_with_a_different_builder_mode(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Invocation options never reach the plan (#521 review).
+
+    `--builder-mode`, `--builder`, `--extra-sim-timeout`, the shared-build
+    root and `--rebuild` are carried on the job specs, so two runs can plan
+    identically and still compile and simulate differently. Adopting across
+    one would report the orphan's results as this invocation's.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+    recorded_mode = payload["build"]["spec"]["builder_mode"]
+
+    result, rb = _invoke(
+        [
+            "--builder-mode",
+            "debug",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "-l",
+            "5",
+            "--dispatch",
+            "slurm",
+            "--orphans",
+            "adopt",
+        ]
+    )
+    rb._artifact_locks.release_all()
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "builder_mode" in message
+    assert repr(recorded_mode) in message
+    assert "'debug'" in message
+    assert backend.submitted == submitted_before
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_a_teardown_that_failed_to_cancel_leaves_the_record_running(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The head's own `cancel_all` is best effort too (#521 review).
+
+    Marking the record `cancelled` on the strength of having *asked* is how
+    a fleet that survived the request becomes invisible: settled on disk,
+    running on the cluster, and skipped by the next run's probe.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _FailingWait(_OrphanBackend):
+        def wait_all(self, handles, *, extra_wait=0.0):
+            raise RuntimeError("controller unreachable")
+
+    backend = _FailingWait(live={"fake-build", "fake-1", "fake-2"}, cancel_works=False)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    monkeypatch.setattr(RtlBuddy, "ORPHAN_CANCEL_WAIT_S", 0.0)
+
+    result, _rb = _dispatched_regression()
+    assert result.exit_code != 0
+    assert backend.cancelled
+    # The jobs outlived the request, so the record still points at them.
+    assert _run_manifest(minimal_project)["status"] == "running"
+    assert "after scancel" in _console_text(result)
+
+
+def test_a_teardown_that_cancelled_cleanly_retires_the_record(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """...and when the cancellation did take, the record says so, so the
+    next run never probes the scheduler for jobs that are gone."""
+    _mark_stub_builder_verilator(minimal_project)
+
+    class _FailingWait(_OrphanBackend):
+        def wait_all(self, handles, *, extra_wait=0.0):
+            raise RuntimeError("controller unreachable")
+
+    backend = _FailingWait(live={"fake-build", "fake-1", "fake-2"})
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _dispatched_regression()
+    assert result.exit_code != 0
+    assert _run_manifest(minimal_project)["status"] == "cancelled"
+
+
+def _namespaced_run_manifests(project: Path) -> dict[str, Path]:
+    """Each co-located suite's run manifest, keyed by its config filename."""
+    found = {}
+    for path in sorted(project.glob("artefacts/.dispatch/*/run-*.json")):
+        payload = json.loads(path.read_text())
+        found[Path(payload["suite_config"]).name] = path
+    return found
+
+
+def test_one_suites_adopt_failure_never_cancels_another_suites_orphan(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A regression adopts per suite, and its teardown is fleet-wide.
+
+    Before #521's review the first suite's adopted handles went straight
+    into `all_handles`, so the second suite's refusal reached the outer
+    `cancel_all` and destroyed a fleet this invocation had not launched and
+    could no longer collect — the run failed AND took the results with it.
+    Handles a run inherited are not its to cancel until the fleet-wide wait
+    has begun.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _write_colocated_suites(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+
+    manifests = _namespaced_run_manifests(minimal_project)
+    assert set(manifests) == {"tests.yaml", "other-tests.yaml"}, manifests
+    live = set()
+    for path in manifests.values():
+        payload = json.loads(path.read_text())
+        payload["status"] = "running"
+        path.write_text(json.dumps(payload))
+        live |= set(_all_job_ids(payload))
+    backend.live = live
+    submitted_before = list(backend.submitted)
+    builds_before = list(backend.build_submitted)
+
+    # Break only the SECOND suite's identity, so the first adopts cleanly
+    # and the run then fails on the one after it.
+    second = manifests["other-tests.yaml"]
+    payload = json.loads(second.read_text())
+    payload["rows"][0]["test_name"] = "a_test_this_run_does_not_plan"
+    second.write_text(json.dumps(payload))
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    assert "a_test_this_run_does_not_plan" in _fatal_text(result)
+    # No handle was cancelled — above all not the fleet the first suite had
+    # just adopted — and nothing was submitted beside either of them.
+    assert [ids for ids in backend.cancelled_handles if ids] == []
+    assert backend.submitted == submitted_before
+    assert backend.build_submitted == builds_before
+    # Both records still point at live fleets, so the run can be retried.
+    for path in manifests.values():
+        assert json.loads(path.read_text())["status"] == "running"
+
+
+# ------------------ round-6: what else an adoption has to match
+
+
+def _set_dispatch_resources(project: Path, **fields):
+    """Give this project a `cfg-dispatch.resources` block."""
+    root_cfg = project / "root_config.yaml"
+    body = "".join(f"    {key}: {value}\n" for key, value in fields.items())
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  resources:\n" + body)
+
+
+def test_adopt_refuses_a_fleet_reserved_under_a_different_cfg_dispatch(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The resolved reservation is per-run configuration, not plan (#580).
+
+    A test that inherits `cfg-dispatch.resources` carries no reservation of
+    its own anywhere in the plan, so raising `time` after an orphan hit the
+    old limit changes nothing the plan comparison can see. Adopting would
+    then hand back the scheduler TIMEOUT from the *old* limit as this run's
+    verdict — the very failure the edit was made to fix.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _set_dispatch_resources(minimal_project, cpus=2, time='"00:30:00"')
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+    assert payload["pending"][0]["spec"]["resources"]["time"] == "00:30:00"
+
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text().replace('"00:30:00"', '"02:00:00"'))
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "resources.time" in message
+    assert "'00:30:00'" in message
+    assert "'02:00:00'" in message
+    assert backend.submitted == submitted_before
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+
+def test_adopt_accepts_a_fleet_whose_reservation_is_unchanged(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """...and the same config still adopts, so the check is a comparison
+    and not a blanket refusal."""
+    _mark_stub_builder_verilator(minimal_project)
+    _set_dispatch_resources(minimal_project, cpus=2, time='"00:30:00"')
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    submitted_before = list(backend.submitted)
+
+    result, _rb = _dispatched_regression(["--orphans", "adopt"])
+    assert result.exit_code == 0, result.output
+    assert backend.submitted == submitted_before
+    assert json.loads(manifest_path.read_text())["status"] == "collected"
+
+
+def test_adopt_reads_the_shared_build_root_the_jobs_were_given(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`""` (an explicit disable) and `None` (nothing asked) are different
+    instructions to a job, and the check has to compare the one the specs
+    actually carry (#580 review).
+
+    Comparing the head's *resolved* root instead collapsed them: repeating
+    the same `--shared-build-root ''` was refused, and adopting a fleet
+    that had a cache with a run that disables it was accepted.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+
+    def _regression(*extra):
+        result, rb = _invoke(
+            [
+                "regression",
+                "-c",
+                "regression.yaml",
+                "-l",
+                "5",
+                "--dispatch",
+                "slurm",
+                *extra,
+            ]
+        )
+        rb._artifact_locks.release_all()
+        return result
+
+    # An orphan submitted with the cache explicitly OFF.
+    assert _regression("--shared-build-root", "").exit_code == 0
+    manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    # That is what the jobs were told, and `None` would have said nothing.
+    assert payload["build"]["spec"]["shared_build_root"] == ""
+
+    # Saying nothing is NOT the same instruction, so it is refused.
+    result = _regression("--orphans", "adopt")
+    assert result.exit_code != 0
+    message = _fatal_text(result)
+    assert "shared_build_root" in message
+    assert json.loads(manifest_path.read_text())["status"] == "running"
+
+    # Repeating the same disable is, so it adopts.
+    result = _regression("--shared-build-root", "", "--orphans", "adopt")
+    assert result.exit_code == 0, result.output
+    assert json.loads(manifest_path.read_text())["status"] == "collected"
+
+
+def test_a_plain_test_run_finds_a_namespaced_regressions_orphan(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Discovery searches the suite's `.dispatch/` tree, not one directory.
+
+    A regression whose suite configs share a directory namespaces each
+    suite's files below `.dispatch/`; a plain `rb test` on either config
+    writes to `.dispatch/` itself. Scanning only the directory this
+    invocation computes therefore found nothing, and the run submitted
+    beside a live fleet (#580 review). The suite config recorded in each
+    manifest is what keeps the widened scan to this suite's own records.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _write_colocated_suites(minimal_project)
+    backend = _OrphanBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    assert _dispatched_regression()[0].exit_code == 0
+
+    manifests = _namespaced_run_manifests(minimal_project)
+    assert set(manifests) == {"tests.yaml", "other-tests.yaml"}, manifests
+    mine, theirs = manifests["tests.yaml"], manifests["other-tests.yaml"]
+    for path in manifests.values():
+        payload = json.loads(path.read_text())
+        payload["status"] = "running"
+        path.write_text(json.dumps(payload))
+    ours = json.loads(mine.read_text())
+    backend.live = set(_all_job_ids(ours))
+
+    result, rb = _invoke(
+        ["test", "-c", "tests.yaml", "--dispatch", "slurm", "--orphans", "cancel"]
+    )
+    rb._artifact_locks.release_all()
+    assert result.exit_code == 0, result.output
+    # Found from the namespaced directory `rb test` does not write to...
+    assert len(backend.cancelled_handles) >= 1
+    assert sorted(backend.cancelled_handles[0]) == sorted(_all_job_ids(ours))
+    assert json.loads(mine.read_text())["status"] == "cancelled"
+    # ...and the neighbouring config's record was neither probed nor touched.
+    assert json.loads(theirs.read_text())["status"] == "running"
+
+
+def test_the_cancel_probe_is_bounded_by_the_grace_it_has_left(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each re-probe carries a deadline, so a wedged controller cannot hold
+    the grace period open past its own length (#580 review)."""
+    _mark_stub_builder_verilator(minimal_project)
+    backend = _OrphanBackend(cancel_works=False)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    monkeypatch.setattr(RtlBuddy, "ORPHAN_CANCEL_WAIT_S", 0.0)
+    assert _dispatched_regression()[0].exit_code == 0
+    _manifest_path, payload = _orphan_the_run(minimal_project)
+    backend.live = set(_all_job_ids(payload))
+    backend.probe_timeouts = []
+
+    result, _rb = _dispatched_regression(["--orphans", "cancel"])
+    assert result.exit_code != 0
+    # Discovery asks without a deadline; the cancellation check always with
+    # one, and never longer than one poll interval when the grace is spent.
+    assert backend.probe_timeouts[0] is None
+    assert backend.probe_timeouts[-1] == RtlBuddy.ORPHAN_CANCEL_POLL_S
+
+
+# ------------------------------------------- #593: the split compile
+
+
+class _SplittingBackend(_RecordingBackend):
+    """A recording fake answering to the one backend name the split needs.
+
+    Chaining a second job behind the first is a scheduler's job, so the head
+    only splits for Slurm — which means a fake that wants to see the split
+    has to claim that name, exactly as ``_ReleasingBackend`` does for the
+    per-key release.
+    """
+
+    name = "slurm"
+
+
+def _splitting_run(monkeypatch, project, argv=(), **kwargs):
+    _mark_stub_builder_verilator(project)
+    backend = _SplittingBackend(**kwargs)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+            *argv,
+        ]
+    )
+    return backend, result
+
+
+def test_a_verilate_job_is_chained_in_front_of_the_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The whole feature: two reservations, in order, and the fan-out still
+    waiting on the build job alone (#593)."""
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    assert [spec.phase for spec in backend.verilate_submitted] == ["verilate"]
+    assert [spec.phase for spec in backend.build_submitted] == ["build"]
+    # The verilate job goes out first, ungated; the build job waits on it.
+    assert backend.build_dependencies == [None, "fake-verilate"]
+    # Sims keep their `afterok` on the build job, and only on it: a
+    # simulation released by the verilation would find no executable.
+    assert {call["dependency"] for call in backend.array_calls} == {"fake-build"}
+
+
+def test_the_verilate_job_owns_its_own_envelope_log_and_gate(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Mirrors the build job's naming, so the halves never overwrite each
+    other — and carries no gates manifest, because there is no build for a
+    released simulation to find."""
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    (verilate,) = backend.verilate_submitted
+    (build,) = backend.build_submitted
+    assert Path(verilate.result_json).name.startswith("verilate-result-")
+    assert Path(verilate.log_path).name.startswith("verilate-")
+    assert verilate.gates_json is None
+    # The build job's own names are untouched.
+    assert Path(build.result_json).name.startswith("build-result-")
+    assert build.gates_json is not None
+
+
+def test_a_non_verilator_suite_is_not_split(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The split rewrites the Verilator front end off the compile line, so
+    it is offered only where that line is Verilator's."""
+    _set_stub_builder_family(minimal_project, "vcs")
+    backend = _SplittingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", _backend_factory(backend)
+    )
+    result, _rb = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.verilate_submitted == []
+    assert [spec.phase for spec in backend.build_submitted] == ["full"]
+    assert backend.build_dependencies == [None]
+
+
+def test_split_verilate_false_keeps_the_single_build_job(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The escape hatch: one job, and an argv byte-identical to before."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n  compile:\n    cpus: 4\n    split-verilate: false\n",
+    )
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    assert backend.verilate_submitted == []
+    assert [spec.phase for spec in backend.build_submitted] == ["full"]
+
+
+def test_a_suite_may_turn_the_split_off_for_itself(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        "compile:\n  split-verilate: false\n" + tests_yaml.read_text()
+    )
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+    assert backend.verilate_submitted == []
+
+
+def test_the_verilate_job_is_reserved_from_its_own_block(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`compile.cpus` sizes the make; the verilation is single-threaded and
+    takes `compile.verilate` — mem and time inherited where unstated."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n'
+        "    verilate:\n      mem: 32G\n",
+    )
+    backend, result = _splitting_run(monkeypatch, minimal_project)
+    assert result.exit_code == 0, result.output
+
+    (verilate,) = backend.verilate_submitted
+    (build,) = backend.build_submitted
+    assert (verilate.resources.cpus, verilate.resources.mem) == (2, "32G")
+    assert verilate.resources.time == "02:00:00"
+    assert (build.resources.cpus, build.resources.mem) == (4, "8G")
+
+
+def test_collect_attaches_telemetry_to_both_halves_of_the_compile(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two jobs, two sacct rows, two envelopes — and one query for both."""
+    backend, result = _splitting_run(
+        monkeypatch,
+        minimal_project,
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600},
+            "fake-build": {"state": "COMPLETED", "elapsed_s": 30, "timelimit_s": 7200},
+            "fake-verilate": {
+                "state": "COMPLETED",
+                "elapsed_s": 70,
+                "timelimit_s": 7200,
+            },
+        },
+        build_result={"built": ["basic"], "failed": [], "builds": []},
+    )
+    assert result.exit_code == 0, result.output
+
+    assert backend.telemetry_queries[0][:2] == ["fake-verilate", "fake-build"]
+    (verilate,) = backend.verilate_submitted
+    envelope = json.loads(Path(verilate.result_json).read_text())
+    assert envelope["telemetry"]["elapsed_s"] == 70
+
+
+def test_both_halves_of_the_compile_get_a_reservation_advice_row(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each job's wall clock is its own to size, so each gets its own row."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 4\n    mem: 8G\n    time: "02:00:00"\n',
+    )
+    compiled = [
+        {
+            "test": "basic",
+            "builder": "hook-chosen-builder",
+            "duration_sec": 42.5,
+            "reused": False,
+            "group": "obj_dir_cafe",
+        }
+    ]
+    backend, result = _splitting_run(
+        monkeypatch,
+        minimal_project,
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600},
+            "fake-build": {"state": "COMPLETED", "elapsed_s": 60, "timelimit_s": 7200},
+            "fake-verilate": {
+                "state": "COMPLETED",
+                "elapsed_s": 60,
+                "timelimit_s": 7200,
+            },
+        },
+        build_result={"built": ["basic"], "failed": [], "builds": compiled},
+    )
+    assert result.exit_code == 0, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    rows = {entry["phase"]: entry for entry in advice if entry["resource"] == "time"}
+    assert rows["compile"]["test"] == "(build job)"
+    assert rows["compile"]["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert rows["verilate"]["test"] == "(verilate job)"
+    # Written at the key that governs the verilate job, not at the one it
+    # merely inherits from.
+    assert rows["verilate"]["edit_hint"]["path"] == "cfg-dispatch.compile.verilate.time"
+
+
+def test_a_cancelled_fan_out_names_the_verilate_jobs_log(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A fan-out reaped by `kill-on-invalid-dep` never had a build job run,
+    so the log that says why is the verilate job's (#593)."""
+    backend, result = _splitting_run(monkeypatch, minimal_project, write_results=False)
+    assert result.exit_code != 0
+
+    (verilate,) = backend.verilate_submitted
+    assert str(verilate.log_path) in result.output.replace("\n", "")
+
+
+def test_a_plusarg_override_reaches_the_plan_and_every_sim_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test --plusarg` has to survive dispatch (#552).
+
+    The head expands once and writes the plan its jobs rebuild their configs
+    from, so the merged plusargs must be IN that plan — and the spec carries
+    them as well, both so the job records this run's overrides in its own
+    envelope and so a name missing from the plan still applies them.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "test",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--dispatch",
+            "slurm",
+            "--plusarg",
+            "mutate=1",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+
+    spec = fake_backend.submitted[0]
+    assert spec.plusarg_overrides == {"mutate": "1"}
+    planned = read_plan_config(spec.plan_path, "basic")
+    assert planned.get_plusargs() == {"mutate": "1"}
+    # The build job compiles the plan's configs, so its PRE hook sees the
+    # same merged view without a flag of its own.
+    assert fake_backend.build_submitted[0].plan_path == spec.plan_path
+
+
+def test_a_dispatched_run_without_the_flag_plans_no_overrides(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", "-c", "tests.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted[0].plusarg_overrides == {}
+    assert (
+        read_plan_config(fake_backend.submitted[0].plan_path, "basic").get_plusargs()
+        is None
+    )

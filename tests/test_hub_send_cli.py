@@ -254,6 +254,147 @@ def test_send_open_rejects_bad_spec(threaded_hub: _ThreadedHub, discovery_root: 
     assert "expected file:line" in result.output.lower()
 
 
+def test_send_graph_focus_caches_the_node(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """``rb hub send graph-focus`` (#382) drives the hub's graph pane.
+
+    Asserted against the hub's cache rather than a connected pane
+    because the cache is what makes the verb useful before the browser
+    tab exists — the focus is replayed to the pane on registration.
+    """
+
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["graph-focus", "test:verif/fifo#smoke"])
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.graph_focus  # noqa: SLF001
+    assert cached is not None
+    assert cached.node == "test:verif/fifo#smoke"
+
+
+def test_send_graph_focus_rejects_blank_node(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["graph-focus", "   "])
+    assert result.exit_code != 0
+    assert "non-empty" in result.output.lower()
+
+
+def test_send_cov_focus_caches_the_focus(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """``rb hub send cov-focus`` (rtl-buddy/rtl_buddy#400) drives the
+    coverage pane, and the cache is what makes it useful before the tab
+    exists — the focus is replayed to the pane on registration."""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        send_app,
+        ["cov-focus", "file:design/blk.sv", "--metric", "branch", "--line", "42"],
+    )
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.cov_focus  # noqa: SLF001
+    assert cached is not None
+    assert cached.target == "file:design/blk.sv"
+    assert cached.metric == "branch"
+    assert cached.line == 42
+    assert cached.item is None
+
+
+def test_send_cov_focus_defaults_omit_the_hints(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """The wire schema is ``additionalProperties: false`` with no
+    nullable hints, so an unset option must be absent rather than null —
+    a null would be rejected by the encoder, not by the hub."""
+
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["cov-focus", "module:blk"])
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.cov_focus  # noqa: SLF001
+    assert cached.payload() == {"target": "module:blk"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["cov-focus", "   "],
+        ["cov-focus", "module:blk", "--metric", "statement"],
+        ["cov-focus", "module:blk", "--line", "0"],
+        ["cov-focus", "module:blk", "--item", " "],
+    ],
+)
+def test_send_cov_focus_rejects_bad_arguments(
+    threaded_hub: _ThreadedHub, discovery_root: Path, argv: list[str]
+):
+    """Rejected in the CLI, where the message can name the flag, rather
+    than at the encoder, where it names a JSON pointer."""
+
+    result = CliRunner().invoke(send_app, argv)
+    assert result.exit_code != 0
+
+
+def test_send_phys_focus_caches_the_focus(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """``rb hub send phys-focus`` (rtl-buddy/rtl_buddy#558) drives the
+    synth+power pane, and the cache is what makes it useful before the
+    tab exists — the focus is replayed to the pane on registration."""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        send_app,
+        ["phys-focus", "module:alu", "--metric", "area"],
+    )
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.phys_focus  # noqa: SLF001
+    assert cached is not None
+    assert cached.target == "module:alu"
+    assert cached.metric == "area"
+
+
+def test_send_phys_focus_defaults_omit_the_hint(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """Same additionalProperties:false rule as ``cov-focus``: an unset
+    ``--metric`` is absent on the wire, not null."""
+
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["phys-focus", "instance:u_cpu/u_alu"])
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.phys_focus  # noqa: SLF001
+    assert cached.payload() == {"target": "instance:u_cpu/u_alu"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["phys-focus", "   "],
+        ["phys-focus", "module:alu", "--metric", "switching"],
+        ["phys-focus", "module:alu", "--metric", "line"],
+    ],
+)
+def test_send_phys_focus_rejects_bad_arguments(
+    threaded_hub: _ThreadedHub, discovery_root: Path, argv: list[str]
+):
+    """Rejected in the CLI, where the message can name the flag.
+
+    ``switching`` is the trap worth pinning: it is a real column of the
+    model and of this pane's instance table, and it is deliberately NOT
+    a focus metric — the wire enum offers ``dynamic`` (internal +
+    switching) instead.
+    """
+
+    result = CliRunner().invoke(send_app, argv)
+    assert result.exit_code != 0
+
+
 def test_send_diagnose_pushes_items(threaded_hub: _ThreadedHub, discovery_root: Path):
     runner = CliRunner()
     result = runner.invoke(

@@ -168,7 +168,7 @@ def test_vlog_cov_collect_passes_source_roots_to_metric_parsing(monkeypatch, tmp
         cov, "_write_lcov", lambda raw_path, lcov_path, source_roots=None: False
     )
 
-    def _fake_parse(raw_path, metric_name, source_roots=None):
+    def _fake_parse(raw_path, metric_name, source_roots=None, **kwargs):
         captured.append((metric_name, list(source_roots)))
         return None
 
@@ -287,6 +287,9 @@ def test_vlog_sim_post_passes_suite_work_dir_as_coverage_source_root(
     sim.test_name = "basic"
     sim.root_cfg = DummyRootCfg(tmp_path)
     sim.run_id = None
+    # No `--run-tag` here, set explicitly because this sim is built with
+    # `__new__` and so never ran `__init__` (#541).
+    sim.run_tag = None
     sim.vlog_post = None
     sim.suite_work_dir = str(tmp_path / "verif" / "sandbox")
     sim._coverage_enabled = lambda: True

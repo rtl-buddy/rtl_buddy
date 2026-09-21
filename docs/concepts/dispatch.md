@@ -1,0 +1,505 @@
+---
+description: Run tests concurrently on one host or Slurm, configure resources and retries, and diagnose dispatched builds and jobs.
+---
+
+# Parallel dispatch
+
+Dispatch runs `test`, `randtest`, or regression work in parallel after planning the run and sharing compilations where possible.
+
+```bash
+rb regression --dispatch local-parallel
+rb regression --dispatch slurm
+rb randtest my_test 500 --dispatch slurm
+rb test smoke reset_error --dispatch slurm
+rb test --filter '^smoke_' --dispatch slurm
+```
+
+| Backend | Execution | Concurrency | Resource enforcement | Usage advice |
+|---|---|---|---|---|
+| `local` | Current process | 1 | None | None |
+| `local-parallel` | Subprocesses on this host | `--jobs` or `cfg-dispatch.jobs` | No | No |
+| `slurm` | Cluster jobs | Per-array throttle | Yes | From `sacct` |
+
+`local` is the default. `rb test` uses dispatch only when `--dispatch` is given explicitly; it does not inherit `cfg-dispatch.backend`. Other dispatch settings still apply after a backend is selected.
+
+`rb test` accepts the same explicit-name list or regex filter locally and under dispatch, creating one simulation job per selected test. See [Run tests](tests.md#run-tests) for selection order and validation.
+
+Dispatch cannot be combined with `--early-stop`. It implies [`--share-build`](tests.md#sharing-compiled-builds-across-tests), expands sweep hooks once on the head, and skips the per-tree lock in worker jobs.
+
+## Run on one host
+
+`local-parallel` uses one global subprocess pool across all suites and resource groups:
+
+```bash
+rb regression --dispatch local-parallel       # min(4, CPU count)
+rb regression --dispatch local-parallel -j 8
+rb randtest my_test 20 --dispatch local-parallel -j 4
+```
+
+The default is `min(4, CPU count)`. Build jobs are prioritized because they unblock their suite. A simulation starts only after its build exits 0; a failed build prevents dependent simulations from starting and makes them dispatch failures.
+
+CPU, memory, and time reservations are not enforced locally. A non-default reservation logs `dispatch.reservations_ignored`; choose `--jobs` for the memory demand of the heaviest concurrent tests. Local runs also produce no reservation advice.
+
+Use `Ctrl-C` to stop the head and its process groups. `SIGKILL` prevents cleanup and may leave child processes running.
+
+## Meet the Slurm requirements
+
+Before using `--dispatch slurm`, provide:
+
+- `sbatch`, `squeue`, `sacct`, and `scancel` on the submit host, and `scontrol` for the `MaxArraySize` probe below. Run `rb tool-check --explain slurm`.
+- A shared filesystem exposing the project, artefacts, and Python environment at identical absolute paths on submit and compute hosts.
+- The project's Python environment on compute hosts; workers run `sys.executable -m rtl_buddy`.
+
+The submit process only plans, submits, waits, and collects. Compilation and simulation run on compute nodes.
+
+## Understand build and simulation jobs
+
+For each suite, dispatch:
+
+1. Writes a plan and, when needed, submits one build job — two chained jobs where [verilation is split off](#split-verilation-from-the-c-build).
+2. Builds each unique compile key. Compile keys fingerprint sources, flags, defines, and the resolved builder.
+3. Groups simulations with identical resolved resources into Slurm arrays and gates them with `afterok` on the build.
+4. Collects each worker's `result.json` into the normal summary and exit status.
+
+The build job compiles one key at a time by default. `compile.parallel` — `cfg-dispatch.compile.parallel`, or the suite's own where it sets one — raises that to N distinct builds compiled concurrently inside the same job. Concurrency is over distinct compile keys, never over tests: configs sharing a key are compiled once, by whichever of them the job reaches first, and the rest adopt that build. Two builders writing one build directory is corruption, so a group's members are never in flight together. Adoption compares the leader's build against the dependencies it reported consuming, not against the whole fingerprint, because members of a group already share a `run.f`, a command line and a builder by construction; the only thing that can differ is a file that moved during the job, and one always does on a cold tree (each config's own `preproc` output, created after the previous config was fingerprinted). An adoption also rewrites the stamp's directory listing to what the tree now holds, so the simulation jobs gated on the build — which run after every config's `preproc` and validate that listing by name — reuse it rather than rejecting a stamp that still describes the leader's cold view. A config whose *consumed* input differs is a different matter: one compile key is one binary, so rather than recompile and let the last writer decide what both tests simulate, the job reports `build_job.group_input_drift` and fails that config. Give it its own compile key, or fix the hook that rewrites the input per test. Builders that report no dependencies (VCS, Icarus) cannot be narrowed this way and fall back to the full stamp comparison. Configs whose resolved `builder-simv` output is one file — an absolute pin, or a relative spelling whose `..` escapes the per-test workspace — are grouped the same way even though their compile directories differ, because the executable they write is one path. A config whose compile fails is still reported per test, and the job still exits 0 so its `afterok` dependents run.
+
+Preprocessing hooks always run serially, and their position relative to compilation depends on `parallel`. At the default `parallel: 1` the job runs `preproc` and then the compile for one config before touching the next, so a hook that regenerates a shared input cannot overwrite what an earlier config is about to compile. Above 1 the compile key is only knowable after that config's `preproc` has run, so every hook runs first and the builders then overlap: raising `parallel` requires that no config's `preproc` mutate another config's inputs. Simulation jobs already require this — each `rb _test-job` re-runs its own `preproc` concurrently on its own node.
+
+Arrays group by resource tuple, not compile key. Tests may share a compiled executable while using different arrays, or share an array while using different builds. `max-jobs-per-array` is a `%N` throttle on each array; total concurrency can approach the throttle multiplied by the number of arrays.
+
+A group larger than the cluster's Slurm `MaxArraySize` is not a legal array, so it is submitted as several. rtl_buddy reads `MaxArraySize` once per run from `scontrol show config`, or from `cfg-dispatch.max-array-size` when that is set, and slices the group into arrays of at most `MaxArraySize - 1` elements — Slurm's largest task index is one below the limit, and rtl_buddy's array elements are numbered from 1. A cluster that also sets `SchedulerParameters=max_array_tasks=N` caps how many tasks one array may hold at all, which can be well below `MaxArraySize` and is reported separately by `scontrol`; the slice size is the smaller of the two, `min(max_array_tasks, MaxArraySize - 1)`, because that parameter is an inclusive count of tasks while `MaxArraySize` is an exclusive index bound. The two ceilings layer independently: `cfg-dispatch.max-array-size` overrides the probed `MaxArraySize`, `cfg-dispatch.max-array-tasks` overrides the probed `max_array_tasks`, and whichever field is left unset still comes from the probe. Pinning only `max-array-size` therefore keeps the cluster's task cap in force instead of hiding it; the probe is skipped entirely only when both are pinned, or when no single cluster can be asked. Either ceiling alone is enough to slice: a site that can state only its task cap — no `scontrol` on the submit host, or a multi-cluster selection — gets arrays of `max-array-tasks` elements even though `MaxArraySize` is unknown. Each slice is its own array with its own manifest and logs under `slice-N/` in the run's dispatch directory, its job name carries a `/N` suffix, and every slice waits on the same build job. The handles are collected as one logical group, so the summary, cancellation, and the reservation advice are unchanged by the split. `max-jobs-per-array` throttles each slice, so a split group's peak concurrency is the throttle multiplied by the number of slices. The probe follows the cluster the jobs go to: when `sbatch-args` selects another one (`-M name`, `-Mname`, `--clusters=name`, or `--clusters name`, last occurrence winning as it does at submit), `scontrol` is asked with the same `-M name`, because an unqualified probe would read the local cluster's limit and submit against a different one. `SBATCH_CLUSTERS` in the environment selects a cluster the same way and is read when the probe runs; `sbatch-args` wins over it, matching Slurm's own precedence. Every job records the cluster that accepted it — `sbatch --parsable` answers `jobid;cluster` for a remote submission, and the selection stands in when it answers with the id alone — because a job id only means anything on its own cluster. Polling, cancellation and accounting are then issued there: one `squeue -M <cluster>` per cluster while the fleet drains — an unqualified poll cannot see a remote slice, and a job it cannot see reads as drained, so collection would start while that slice was still queued — one `scancel -M <cluster>` per cluster the fleet reached (a `--clusters=a,b` group can be spread over both, and the cleanup after a failed slice must reach the slices already queued), and one `sacct -M <cluster>` per cluster as well — accounting rows carry no cluster of their own, so a combined query could not be split back apart and two jobs sharing a number would have their rows merged. Telemetry, the outstanding set and per-suite membership are therefore keyed by job id for a local or single-cluster run, as they always were, and by `<cluster>:<job id>` for a job accepted elsewhere — two clusters can issue the same number, and one entry for both would drop a queued job from the count and report its suite finished early. That key is internal: a `max-wait` failure splits it again and hands you a command Slurm accepts, `squeue -M alpha -j '77_[1-2]'`, with `jobs`, `clusters` and `queries` as separate fields on `dispatch.max_wait_exceeded`. A single-cluster site sees the same bare commands as before. A selection naming more than one cluster — a comma-separated list, or the reserved `all` — is left unknown on purpose: Slurm picks which cluster runs the job at submit, so no single `MaxArraySize` applies, and `scontrol -M all show config` answers with one config block per cluster. Pin `cfg-dispatch.max-array-size` there, or `max-array-tasks` alone if that is the ceiling you know. A resolved limit is recorded at debug level as `dispatch.max_array_size`, with the `cluster` probed, both ceilings (`max_array_size` and `max_array_tasks`) beside the `max_elements` that governed, and `source: config` or `source: scontrol` naming where the **governing** value came from — with the two ceilings on different layers, that is the one that produced the smaller slice. `max_array_tasks` is reported on every path where a cap is known, configured or probed; like every unset field in rtl_buddy's log events it is omitted when none is known, so read its absence as "no task cap known". Only when NEITHER ceiling is known — nothing configured and nothing probed — is the group submitted whole, and an oversized one is then refused by sbatch; `dispatch.max_array_size_unknown` records that in the run log, and the sbatch failure repeats the hint so the fix is on the console that failed the run. An array refused despite being within every limit the probe could see says so too, naming the slice size it used and pointing at whichever ceiling produced it — `cfg-dispatch.max-array-tasks` when the task cap was binding, `cfg-dispatch.max-array-size` otherwise — as the knob to lower. A cluster can enforce a ceiling it does not report, and shrinking the index bound to work around a task cap would state a `MaxArraySize` the cluster does not have. A group that fits in one array is submitted exactly as before, with no `slice-N/` level.
+
+Verilator, VCS, and Icarus can place outputs in a shared compile-key directory. Other builders, and builders with an absolute `builder-simv`, keep the build under the test artefact directory:
+
+- Without shared-capable tests or seed fan-out, no separate build job is submitted; each simulation job compiles in its own directory.
+- A fanned-out test still gets a build job to prevent concurrent compiles into the same test directory. Workers use the stamp left by that job.
+- A job that compiles **for itself** — one whose builder cannot share a build, so no build job covers it — uses the field-wise maximum of its simulation and compile reservations.
+
+A job gated on a build job keeps its **simulation** reservation. The compile block is not folded into it: that would inflate every gated job in the fan-out, and change which jobs share an array, to pay for a compile that normally does not happen there. What a gated job does when the build's stamp fails to validate depends on why:
+
+- The build job recorded this test's **builder** as having run and exited non-zero **on the same inputs** — the per-build record carries its exit status, and the record's input fingerprint matches the one this job just derived. That fingerprint follows the same content rule the stamp does, so a source whose bytes are unchanged still matches after a `touch`, a re-checkout, or a hook that regenerated it identically — only a real edit counts as "the inputs moved". The job does not recompile. A deterministic compile error fails the same way again, and it would fail under the simulation reservation, so a large elaboration is killed for memory and the summary reports that kill instead of the design error. The row reports the build job's exit status and error lines, and `compile.log` is left as the build job wrote it.
+- The build job recorded this test as **built**. The binary the whole fan-out was gated on is in the shared directory, so the stamp is disagreeing with a build that exists. The job does not recompile: it would run at simulation size, into the directory every sibling element is queued on, and the memory kill that usually follows would replace the reason with `%Error: Verilator threw signal 9`. The row instead reports what the stamp check found, and `compile.build_stamp_rejected` says the same thing in the job's log. It also says whether this job's compile inputs hash to the digest the build job recorded: a different digest means this node is not looking at the build job's compile, which is usually a `preproc` generating different bytes here or an edit that landed mid-run. A **missing** stamp is this outcome too, not a reason to build: the envelope is consulted after the stamp check whatever the check found, so an absent stamp beside a real executable declines exactly as a stale one does.
+- The build job recorded this test as built **with `stamp_written: false`** — the compile succeeded and only the stamp write failed (a read-only or full filesystem under the shared build directory; the build job logged `compile.stamp_write_failed` with the error). Same outcome, its own reason: the row names the write rather than sending you to look for a build that is sitting in the directory. Give that filesystem room and permissions, and re-run.
+A declining job leaves the shared directory exactly as the build job left it — the stamp included. Only a compile that is about to run in that directory removes the stamp describing what was there, so one element's drift cannot cascade: its same-key siblings still validate the same stamp and reuse the same binary, and a later run still reuses it rather than rebuilding from scratch.
+
+- Nothing built this config and nothing proved it cannot be built — the envelope names it in neither list (a crashed or cancelled build job), or names it failed **without** a builder exit status (a preproc or filelist error, a crashed worker: the simulation job re-runs its own preproc, so those can pass here), or the **inputs changed** since the failed build (the fingerprints differ, so the recorded failure may not reproduce), or there is no readable envelope at all. The job recompiles, at its **simulation** size, and writes the transcript to `compile.retry.log` in its **run's** artifact directory (`run-NNNN/` under the test directory, or the test directory itself for a single run) — the retry is one run's recompile, and sibling runs of a fanned-out test share the test directory, so a test-scoped file would be one run's story overwritten and advertised by every sibling. The build job's `compile.log` is never touched. `cfg-dispatch.compile` does not size this path — it sizes only the build job (and the self-compiling jobs above) — so a suite that relies on this recovery for heavy builds must size the applicable simulation reservation (the test or testbench `resources:`, or `cfg-dispatch.resources`) for compilation; better, fix whatever drifts the inputs so the stamp validates and no gated job compiles at all. Read `compile.prebuilt_stamp_invalid` in the job's log to see that the retry happened and what it says drifted.
+
+A compile that reuses an existing build says so. `compile.build_reused` names the reused directory and the age of its stamp — once per build directory per process on the console (every reuse still lands in the log file), which on a local run is your terminal and under dispatch is the job's own log — and the test's `compile.log` carries the same breadcrumb, naming the command a rebuild would run. Under dispatch a gated job that reuses writes that breadcrumb into the build job's `compile.log`, keeping the build's own transcript below it; a gated *retry* never writes there at all, which is why it has its own file. A run that compiled nothing is now visible as such instead of only as a missing file. What a stamp validates against is content: every tracked input under the project root is compared by hash, so a `preproc` hook that regenerates a file byte-for-byte reuses the build, while any real edit invalidates it even on a node whose cached `stat` still describes the file as it was.
+
+Every run records which build it simulated, and the head cross-checks them at collect. A run's result envelope carries a `build_stamp` block naming the shared build directory its stamp lives in (`build_dir`, the compile key), the digest of the inputs that stamp recorded (`fingerprint_sha`), and the executable the run launched (`simv`, stated at launch rather than at the stamp check, so a binary replaced between the two is reported as what ran); the build job's envelope records the same digest beside each config it built, read from the stamp as it stands once every config on that key is done. Runs of one `build_dir` that do not all name the same executable get `dispatch.binary_mismatch` on the console, along with how many distinct input digests they stamped — the audit groups on the directory rather than the digest because a mid-run edit that provoked the rebuild also changes the digest: one of them rebuilt the shared directory instead of reusing it, so its neighbours may have simulated a binary that was replaced under them. It is a warning rather than a verdict, since the runs are already scored against whatever they ran.
+
+`--rebuild` compiles even where the stamp validates. It forces at most one rebuild per build directory per invocation, so a suite whose tests share a compile key still compiles once and `compile.rebuild_forced` reports it once. Under dispatch it rides the build job, which is the single writer of the shared directory; gated simulation jobs never carry it, because a whole array forced to compile would land in that one directory at once. A suite that submits no build job — every test compiling in its own directory — passes it to the simulation jobs instead, and a retried job carries whatever its first attempt held. `--rebuild` says nothing about sharing: it neither implies nor suppresses `--share-build`.
+
+At most one build job of a given identity runs at a time per cluster, guaranteed by Slurm. Each build job is named after the suite whose shared-build tree it writes — `rb-build-<hash>` over the suite directory, and `rb-verilate-<hash>` over the same hash for the verilate job of a split suite — and submitted with `--dependency=singleton`, which defers a job until every previously launched job of the same name and owner has terminated. This is the interrupted-run case: a client that was Ctrl-C'd leaves its build job on the cluster, and the re-run's build job would otherwise Verilate into the same `artefacts/.shared-builds/obj_dir_<key>` beside it. Instead it waits for the orphan to finish — holding no allocation while it waits — then revalidates the stamp under the build lock and reuses that build if the inputs are unchanged; `--rebuild`, an edit, or a different builder makes it compile, which is the same decision any other run would make. The scheduler evaluates the clause itself, so there is no window between deciding and submitting, and no dependence on the submit host being able to query the queue. Alongside it the head asks `squeue` for its own jobs of that name in any state that still holds a record — including `STOPPED`, whose job keeps its CPUs, the held ones (`REQUEUE_HOLD`, `RESV_DEL_HOLD`, `SPECIAL_EXIT`), and the retained results `PREEMPTED` and `REVOKED`, which the drain poll leaves out but which are still worth naming here — since a predecessor stuck in one of them is the one whose id you most need — purely to name them: when it finds any, `dispatch.build_job_deduped` reports the wait and the ids on the console. That probe is informational — if it is unavailable or comes back empty, the line is absent and the guarantee is unchanged (`dispatch.build_dedup_unavailable` records the reason at DEBUG). A probe that fails is not retried for the rest of the run, so a wedged `squeue` costs one timeout rather than one per suite; a squeue too old to know one of those state names is asked once more without the state filter, falling back to its own default of pending, running and completing. It follows a `-M` / `--clusters` in `sbatch-args` to the cluster the build job is submitted to, and stands down entirely when several clusters are named, since Slurm picks one at submit and a job id from the wrong queue would be meaningless.
+
+The identity is coarser than a compile key, deliberately: it is the suite directory alone, because that is the unit which owns `artefacts/.shared-builds/`. Compile keys fingerprint sources, flags and defines, and are only knowable after a config's `preproc` has run, inside the job — so the head names jobs by what it *can* see, and it leaves out everything finer than the tree. Not the planned tests: `rb regression` over a suite and `rb test alpha` inside it compile the same key into the same directory, and separating them would leave exactly the "interrupt a regression, re-run one test" case racing. Not the builder mode or `--builder` override either: two modes whose `compile-time` options are identical and differ only in `run-time` resolve to the same `obj_dir_<key>`, so a `-M debug` run and a `-M reg` run would otherwise build into one directory at once. Two runs of one suite therefore share a name whether or not they compile the same thing, and a false match costs queue latency — the second job waits, finds the stamp stale, and rebuilds — never a wrong build. A different suite, owning a different shared tree, never adopts the wait. A `--dependency` of your own is composed with rather than replaced (`afterok:7,singleton`) — from `sbatch-args` (the last one you give, since that is the one Slurm obeys, in any spelling sbatch resolves — `-d`, `--dependency`, or an unambiguous abbreviation such as `--depend`) or, when `sbatch-args` names none, from an exported `SBATCH_DEPENDENCY`, which sbatch treats as the default for `-d` and which a command-line option overrides. The environment is read at submission. The exception is an expression using the any-of separator `?`: Slurm permits one separator per expression, so composing there would make sbatch reject the submission, and the dedup stands down instead (`dispatch.build_dedup_unavailable`, DEBUG), leaving your gate exactly as it was and the build lock to do the work. If a build job stays `PENDING` after `dispatch.build_job_deduped`, look at the job it is waiting for before doing anything to it — `squeue -j <ids> -O JobID,State,Reason` on the ids that warning names (or `squeue --name=<job name>` to find them), or `scontrol show job <id>` for the full record. A predecessor that is `RUNNING`, or `PENDING` for an ordinary capacity reason such as `Resources` or `Priority`, is the serialisation doing its job: the wait ends when that build does, and cancelling it would throw away the build this run is about to reuse along with the simulation jobs gated on it. `scancel` is for a predecessor that is not going to finish — held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or simply an abandoned run you no longer want — since nothing times such a job out by default. A `--job-name` of your own does not apply to the build job at all — the generated name is emitted after `sbatch-args` precisely so it cannot be taken, since a custom name shared by every suite would serialise unrelated builds against each other. One bound on the guarantee is federation-shaped. A federation resolves `singleton` across its clusters, but a site that sets `DependencyParameters=disable_remote_singleton` fulfils it on the submitting cluster only — so two invocations routed to different clusters of such a federation, sharing this suite's filesystem, are not serialised against each other. Pin one cluster with `-M` in `sbatch-args` if you need the dedup there, or rely on the shared build directory's `flock`, which holds wherever the filesystem honours it (see [known issues](../known-issues.md)). A multi-cluster selection logs the caveat once per run at DEBUG. The `local-parallel` backend needs none of this: its jobs are processes on one host, where the build lock already serialises them.
+
+A job whose only gate is `singleton` carries no `--kill-on-invalid-dep`: `singleton` waits for terminations and can never become unsatisfiable. That is the verilate job, and the build job of an unsplit suite. A configured `afterok` composed into either still can, exactly as it could before. A split suite's build job gates on its verilate job with `afterok`, so it carries `--kill-on-invalid-dep=yes` like any other dependent; for that job the flag is appended after `sbatch-args`, like its `--dependency` and `--job-name`, so a `--kill-on-invalid-dep=no` there applies to simulation jobs only.
+
+When a build job exists, every dependent is submitted with `--kill-on-invalid-dep=yes`. A failed build therefore removes jobs that could never satisfy `afterok`; collection also cancels any `DependencyNeverSatisfied` remnants. A user-supplied `--kill-on-invalid-dep=no` in `sbatch-args` overrides the default.
+
+### Split verilation from the C++ build
+
+Verilation is single-threaded; the C++ build that follows it is not. One job sized for the build therefore holds its cores idle for the whole elaboration, which on a large design is the longer half. Under `--dispatch slurm`, a suite whose builds use the Verilator family runs the two as chained jobs:
+
+| Job | Reservation | Work |
+|---|---|---|
+| `rb-verilate-<hash>` | `compile.verilate` | Emits C++ sources and the Makefile under `--Mdir`, and builds nothing |
+| `rb-build-<hash>` | `compile` | Compiles and links what the verilate job emitted |
+
+The build job is submitted with `--dependency=afterok:<verilate job id>,singleton` and `--kill-on-invalid-dep=yes`, and both jobs carry the `singleton` dedup over the same 12-hex suite-directory hash. Simulation arrays are gated on the build job, and everything they do with its stamp, its envelope and its early release is unchanged. `dispatch.verilate_submitted` reports the submission with the same fields as `dispatch.build_submitted`.
+
+Verilator's own options do the split, so the compile line keeps its meaning in both phases. `--binary` is `--main --exe --build --timing` and `--build` has no `--no-` form, so the verilate job rewrites `--binary` to `--exe --main --timing`. `--build` is exactly `$MAKE -C <Mdir> -f <prefix>.mk -j N <MAKEFLAGS>` and `--no-verilate` runs only that step, so the build job adds `--no-verilate` and `-MAKEFLAGS`, `--build-jobs`, `-CFLAGS` and `--quiet-build` still do what they say. Every Verilator release rtl_buddy accepts lists `--no-verilate` in `--help`; the build job still probes for it and falls back to a full build where a pinned older binary lacks it.
+
+The verilate job writes `.rb-verilate.json` in each build directory — the compile fingerprint, a status of `ok` or `failed`, and the transcript path. It writes no build stamp and releases no simulation gate, and it always exits 0, so a failed verilation still lets the build job run and report it. Its own events are `compile.verilate_reused` for a key whose marker already vouches for these inputs, `compile.verilate_failed` when the build job declines a key the verilate job failed, and `compile.verilate_marker_write_failed` when the marker could not be written, which costs that key a fallback build and nothing else. Per compile key the build job then:
+
+- builds with `--no-verilate` where the marker's fingerprint matches and its status is `ok`;
+- records the key as failed against the verilate transcript where the status is `failed`, without compiling it again;
+- verilates and builds the key itself where the marker is missing or stale, or where the Verilator does not support `--no-verilate`, logging `compile.build_phase_fallback` at WARNING with the `test` and a `reason` of `marker-missing`, `marker-stale`, or `no-verilate-unsupported`.
+
+It then stamps the build and releases gates exactly as an unsplit build job does, so a fallback costs the verilate job's reservation and nothing else.
+
+Compile keys, fingerprints and build directories are identical across the phases and identical to an unsplit run, so sharing, `compile.parallel`, `--rebuild`, adoption and early release all behave as they do without the split. `compile.parallel` applies to each phase separately: N verilations in flight in the verilate job, N C++ builds in the build job.
+
+Set `compile.split-verilate: false` — at `cfg-dispatch.compile`, or on a suite's own `compile:` block — to run one build job instead. The `local-parallel` backend never splits: its builds are processes on one host, holding no reservation to release.
+
+### Start simulations as their compile key finishes
+
+Every simulation job of a suite is gated on that suite's one build job, so a suite with three compile keys and `compile.parallel: 2` would hold a key that finished in the first minute until the slowest key in the plan was done. The build job therefore releases each key as it lands: once a key has compiled and its stamp is on disk, the build job clears the dependency of exactly that key's simulation jobs with `scontrol update JobId=<id> Dependency=`, and they start while the other keys are still compiling. It logs one `dispatch.key_released` per key, naming the tests and job ids.
+
+The `afterok` gate is not replaced, only cleared per key. Every job is still submitted with it, and with `--kill-on-invalid-dep=yes`, so a build job that dies mid-compile still reaps every job it had not released.
+
+A released job is outside that net, deliberately. Clearing its dependency also removes what `--kill-on-invalid-dep` acts on, so an element still pending when the build job later dies on another key — held by the array's `%N` throttle, or by priority — runs anyway rather than being reaped with its siblings. That is the right outcome: its own key is built and stamped, it validates that stamp and simulates the binary the build job left for it, and what happened to an unrelated compile key afterwards says nothing about its result. An interrupted or failed head still cancels it, since `cancel_all` cancels by job id and not by dependency.
+
+What is *not* released:
+
+- A key whose compile **failed**. Its jobs keep the gate, start after the build job, read the build record and decline the recompile exactly as before.
+- A key whose compile succeeded but left **no stamp** (`stamp_written: false`). There is nothing for the simulation job to validate early.
+- A key whose build record could not be written — the envelope above is what a released job reads to learn the build exists, so without it the release would send that job into the recompile the record exists to prevent. Logged as `dispatch.release_skipped`.
+- Every job of a suite whose `cfg-dispatch.sbatch-args` carries a `--dependency=…` of its own. That expression is appended after the generated `afterok`, so Slurm resolves the repeated option to it and it is the job's effective gate; `Dependency=` clears an expression whole rather than one clause of it, so a release would drop the site's own serialisation (`--dependency=singleton` around a licensed simulator, for instance). The head writes no gates file for such a suite and logs `dispatch.gates_skipped` once. An exported `SBATCH_DEPENDENCY` is not this case — sbatch treats it as the default for `-d`, which the generated option overrides, so it never gates the job and early release stays on (`dispatch.env_dependency_overridden` says so). Put the expression in `sbatch-args` if it is meant to hold these jobs.
+- Every job, when there is no `scontrol` on the PATH of the **compute node** running the build job — that is where the release is issued from, not the submit host. It is an optional Slurm binary; without it the build job logs `dispatch.release_unavailable` once and the run behaves as it did before this existed.
+
+A released simulation reads `build-result-<pid>.json` the moment its own stamp fails to validate, so the build job writes that file as it goes rather than once at the end: after each compile key it rewrites the envelope with everything decided so far, marked `"partial": true`, and the write at the end drops the mark. Without it a released job would find no verdict for itself, read that as inconclusive, and recompile into the shared directory its siblings are pointed at. A `partial` envelope left by a build job that did not end successfully — the scheduler's state under Slurm, the build process's exit status under `local-parallel` — means the job did not finish: the head uses the records it holds but treats a test it does not name exactly as it treats a missing envelope, and says so with `dispatch.build_result_partial`. One left by a job that did end successfully means the opposite — every test was compiled and only the write that drops the mark was lost — so every gate opens and a missing simulation result is classified as an ordinary one (`dispatch.build_result_final_write_lost`). Either way the build job's compile-reservation advice is dropped, since its records cover only part of what the reservation paid for.
+
+The head writes the plan-index-to-job-id map the build job needs to `artefacts/.dispatch/gates-<pid>.json`, immediately after the last submission of the suite — the build job is submitted first, so it polls for that file (up to two minutes) at its first release and logs `dispatch.gates_unavailable` if it never appears. Each entry records the cluster that issued its job id, so a `--clusters=a,b` fan-out is released one `scontrol -M <cluster>` batch per cluster. A release the scheduler refuses is a `dispatch.release_failed` warning and nothing more: those jobs start when the build job ends. One key's whole release shares a 60-second budget, and a timeout or an unusable `scontrol` ends it and turns early release off for the rest of the build job — the warning says how many jobs were not attempted. A per-id refusal does not: an unknown job id says nothing about the next one.
+
+A released array element honours the array's `%N` throttle from `cfg-dispatch.max-jobs-per-array` like any other element, so the release changes when an element becomes eligible, not how many of them run at once. Retried jobs are never released — they are submitted after collection, when the build job is long gone. `--dispatch local-parallel` has no pending queue to clear and is unchanged: its gate is still "the build job exited 0".
+
+### Interrupted runs: warn, cancel, adopt
+
+A head that is killed — Ctrl-C too late to cancel, a dropped SSH session, a login node reboot — takes every job ID it held with it, but the fleet keeps running. Before its first submission the head therefore opens `artefacts/.dispatch/run-<pid>-<token>.json` — the run token, the suite config, the plan and the planned rows, with `status: "submitting"` — and grows it as each submission is accepted: the verilate job where a split suite has one, the build job, then each array. The window that matters opens at the first `sbatch`, not at the last one, so a head killed between its build job and its final array still leaves a record naming exactly the jobs that were accepted. After the last submission the status becomes `running` and the record is complete. A retry round re-points the `pending` job IDs before it is waited on, so a head killed during one still leaves a record naming the jobs the scheduler is running.
+
+Every per-run file under `.dispatch/` carries the run token beside the PID for the same reason — `plan-<pid>-<token>.json`, `build-result-<pid>-<token>.json`, `build-<pid>-<token>.log`, `gates-<pid>-<token>.json`, the `array-<pid>-<token>-<n>/` scratch directories and the run record. The OS reuses PIDs, so after a reboot a new head can carry the PID of a run whose fleet is still queued; a PID-keyed name would have it write its plan over the one those jobs are still reading, and its record over the only route back to them. Its `status` starts at `running` and is rewritten to `collected` when the run collects its results, or `cancelled` when the head takes the fleet down on the way out. A manifest left at `running` is what an interrupted run leaves behind.
+
+On start, every `--dispatch slurm` run scans the suite's whole `artefacts/.dispatch/` tree — the root and the namespaced directories beneath it, since a regression with co-located suite configs writes into a namespace and a plain `rb test` writes into the root — for manifests still marked `running` whose `suite_config` is this suite's and whose run token is not this invocation's, and asks `squeue` whether any of their jobs are still there. A `squeue` that cannot answer reports those jobs live rather than gone, so a broken probe errs towards leaving them alone. A manifest with nothing left in the queue is marked `stale` and never probed again. One with live jobs is an *orphan*, and `--orphans` (or `cfg-dispatch.orphans`) decides what happens to it. An incomplete record (`submitting`) counts as live for `warn` and `cancel` — those IDs are real jobs — but can never be adopted, because the rows its head never submitted would score as missing results for jobs that were never launched:
+
+| Policy | Effect |
+|---|---|
+| `warn` (default) | Logs `dispatch.orphans_found` with the manifest, the run token and the live job IDs, then submits a fresh fleet exactly as before. The orphan keeps running. |
+| `cancel` | `scancel`s the orphan's jobs and re-probes until the queue no longer holds them, marks its manifest `cancelled` (`dispatch.orphans_cancelled`), then submits a fresh fleet. If they are still there after 30 seconds — a refused `scancel`, an unreachable controller — nothing is submitted: the run fails with `dispatch.orphans_cancel_failed` naming the IDs to cancel by hand. |
+| `adopt` | Submits nothing. Waits on the orphan's jobs, collects their result envelopes, and marks its manifest `collected` (`dispatch.orphans_adopted`). |
+
+`adopt` requires exactly one orphan whose recorded run matches this invocation: the same test config, the same backend, the same expanded tests and run IDs in the same order, the same *plan*, and the same invocation options. The plan check compares the orphan's own `plan-<pid>.json` entry by entry against this invocation's fresh expansion — plusargs, plusdefines, the resolved testbench, hook paths, per-test `resources:`, the builder, and the resolved seed with the master seed behind it — because test names alone are not the run: a changed plusdefine or a different `--master-seed` simulates something else. Anything that differs is a fatal error naming the test and the field, because adopting across it would report the orphan's results under this run's configuration. The options check covers what the plan does not carry: `--builder-mode`, `--builder`, `--extra-sim-timeout`, the shared-build root as forwarded to the jobs and `--rebuild` reach them on their specs, and so does each job's **resolved reservation** — a test that inherits `cfg-dispatch.resources` carries no `resources:` of its own anywhere in the plan, so raising its `time` after an orphan hit the old limit would otherwise adopt that orphan and return the scheduler timeout from the old limit as the verdict. A re-run that changes any of them is refused rather than collecting a fleet built, reserved and run under different instructions. One consequence: a run whose seeds are drawn fresh each time (`rb randtest` with new seeds) plans different seeds on every invocation and can never be adopted. Two orphans with live jobs are fatal too — choosing one would silently abandon the other's fleet. The adopted jobs' envelopes are accepted by the orphan's run token, the same identity check a live head makes, so a stale envelope from an older run is still rejected.
+
+Identity comes from the manifest and never from scheduler job names: two runs of one suite submit the same build-job name (that is what the shared-build dedup serialises on), so a name-keyed search could adopt or cancel someone else's fleet.
+
+`--orphans` is inert off a scheduler. `local-parallel` runs its jobs as the head's own children and `local` runs them in the head itself, so an interrupted run of either leaves nothing behind; `--orphans adopt` there is a fatal error rather than a silent full re-run.
+
+A missing result from a scheduler kill, worker crash, or dependency failure is a failed row, not a dropped test. A compile failure for one compile key does not stop unrelated keys; the affected tests report that compile's exit status and error lines, and their simulation jobs do not repeat it.
+
+## Configure dispatch
+
+Set defaults in `root_config.yaml`:
+
+```yaml
+cfg-dispatch:
+  backend: slurm
+  jobs: 4
+  resources:
+    cpus: 2
+    mem: 4G
+    time: "01:00:00"
+  compile:
+    cpus: 8
+    mem: 16G
+    time: "02:00:00"
+    parallel: 4          # distinct builds compiled at once in the build job;
+                         # the head reserves up to cpus x parallel (32 here,
+                         # capped at the planned test count) and leaves mem
+                         # and time exactly as written
+    split-verilate: true # Verilator suites verilate in their own Slurm job
+    verilate:            # that job's reservation; mem and time inherit the
+      cpus: 2            # compile values above
+  sbatch-args:
+    - --partition=verif
+    - --account=chip
+  max-jobs-per-array: 200
+  max-array-size: 1001   # the cluster's Slurm MaxArraySize; omit it to read
+                         # the value from `scontrol show config`
+  poll-interval: 10
+  progress-interval: 60
+  max-wait: 7200
+  retry:
+    attempts: 2
+    backoff-sec: 60
+    backoff-max-sec: 600
+    jitter: 0.5
+    classifiers: [license-queue]
+  rightsize:
+    report: true
+    over-threshold: 0.5
+    near-limit: 0.9
+    margin: 1.5
+```
+
+`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array, and `max-array-size` controls how large one array may be before the group is split. See [YAML formats](../reference/yaml.md#root_configyaml) for defaults and validation.
+
+Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.
+
+## Set per-test resources
+
+Reservations resolve field by field in this order: test, testbench, `cfg-dispatch.resources`, built-in defaults.
+
+```yaml
+testbenches:
+  - name: axi_tb
+    resources: {cpus: 2, mem: 8G, time: "00:30:00"}
+
+tests:
+  - name: axi_smoke
+  - name: axi_soak
+    resources: {mem: 24G, time: "04:00:00"}
+```
+
+Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
+
+## Set compile resources per suite and testbench
+
+`cfg-dispatch.compile` is one reservation for every suite's build job, so a repo with one large top-level testbench and many leaf-cell benches sizes them all for the largest. A suite that differs states its own reservation at the **top level of its `tests.yaml`**, in the same `{cpus, mem, time}` shape:
+
+```yaml
+rtl-buddy-filetype: test_config
+
+compile:
+  mem: 48G          # this suite's verilation only; cpus and time inherited
+  parallel: 1       # ...and how many of its builds run at once
+
+testbenches:
+  - name: soc_tb
+    ...
+```
+
+The compile reservation resolves field by field in this order: testbench `compile`, suite `compile`, `cfg-dispatch.compile`, `cfg-dispatch.resources`, built-in defaults. A field an outer layer omits inherits, so the example above keeps the cluster-wide `cpus: 8` and `time: "02:00:00"` and moves only memory and concurrency. The block sizes the suite's build job, and — for a builder that cannot share a build — the compile half of the field-wise maximum that sizes each simulation job.
+
+Where [verilation is split off](#split-verilation-from-the-c-build) the block sizes two jobs. A `compile.verilate` sub-block of `{cpus, mem, time}` sizes the verilate job and layers over the same three layers field by field; `compile` itself then sizes the C++ build job alone. `compile.verilate.cpus` defaults to 2 because verilation is single-threaded, and its `mem` and `time` inherit the resolved `compile` values, so a suite that states nothing reserves the verilate job as the single build job was reserved, at two cpus. `compile.split-verilate` belongs to `cfg-dispatch.compile` or the suite block, like `parallel`, and is rejected in a testbench block.
+
+A testbench states its own `compile:` when the suite's entries verilate at different scales — the same top level at two geometries, say, where the small one takes four minutes and 6 GB and the product one takes two hours and 130 GB:
+
+```yaml
+compile:
+  mem: 8G           # the small geometry, which most pull requests run
+
+testbenches:
+  - name: tb_chip_small
+    filelist: [...]
+  - name: tb_chip_t1
+    filelist: [...]
+    compile:
+      mem: 256G
+      time: "06:00:00"
+```
+
+A testbench block takes the same `{cpus, mem, time}` shape and wins over the suite block field by field, in both directions — it may lower a field as well as raise one. Writing `parallel` there is an error: it is how many builds the one build job runs at once, so it belongs to the suite block or to `cfg-dispatch`.
+
+**The two blocks mean different things, and the build job's reservation is where that shows.** A suite-level `compile:` describes the **whole job** — the allocation you watch in `squeue` — and nothing below it may take the reservation under that figure. A testbench `compile:` describes **one build**, so the suite's build job aggregates them over the testbenches the plan actually selected tests from, then floors the result at the whole-job value:
+
+| Field | Over the planned builds' blocks | Then |
+|---|---|---|
+| `cpus` | the largest single block's | floored at the suite-resolved value, then × `compile.parallel` as always |
+| `mem` | the sum of the largest `min(parallel, n)` per-build figures — the builds that can be in flight together each hold their own peak | floored at the suite-resolved value |
+| `time` | the makespan of the build job's own work queue: each build goes to whichever of the `parallel` workers frees up first, in plan order, and the job ends when the last worker does | floored at the suite-resolved value |
+
+Each phase aggregates its own fields by those rules over the same set of distinct builds: the verilate job over the `compile.verilate` blocks, the build job over the `compile` blocks.
+
+At `parallel: 1` that makespan is the serial total; with a worker per build it is the longest build. In between it is a real schedule, not `ceil(sum / parallel)` — 30, 30 and 20 minutes over two workers finish in **50**, not 40, and a reservation sized from the lower figure times the job out mid-compile.
+
+The unit of the aggregation is one **build**, not one testbench: the build job groups on the compile directory a config resolves to after `preproc`, so two selected tests on one testbench that differ in `plusdefines`, `builder`, `model` or `assertions` compile separately and each hold their own peak. rtl_buddy counts one reservation per distinct `(testbench, plusdefines, builder, model, assertions)` among the planned tests — `assertions: true` puts Verilator's `--assert` flags into the compile command, so it splits the key like the rest. Two kinds of test are counted individually instead: one whose builder cannot share a build, which compiles into its own artefact directory, and one that declares a `preproc:` hook, whose plusdefines the hook may still change after this count is taken — a test with a preprocessing hook is assumed to produce its own compile. It cannot see the real compile key from the submit host, so where two such configs happen to resolve to the same key the job is reserved for a build it does not run — an over-count, which is the safe direction.
+
+A config whose builder **cannot share a build** is counted per test, because it compiles into its own artefact directory: the build job runs `preproc` and compile for the whole plan, self-compiling configs included, and two of those are two builds however alike they are. Each field of a testbench `compile:` block must be greater than zero — a negative `mem` would be subtracted from the sum, and both are rejected when the suite loads.
+
+A testbench with no `compile:` of its own enters no `cpus` or `time` sum; it is covered by the whole-job value, so a suite of five plain benches under `time: "00:30:00"` still reserves thirty minutes. `mem` is the exception, and only once some build *has* stated its own: memory is the one field where two builds genuinely need their peaks at the same moment, so every other planned build then contributes the figure the whole-job value implies for one build. A 256G testbench sharing a slot with an unannotated build under `compile: {mem: 8G, parallel: 2}` reserves 264G, not 256G. `time` differs because an unannotated build's wall clock is unknown and the whole-job figure already describes the queue they run in. A suite that states no per-testbench `mem` at all is untouched: there `compile.mem` keeps the meaning this page has always asked for — the whole job at `parallel` concurrent builds. Only planned tests count either: a run that selects nothing from `tb_chip_t1` reserves the suite's `8G`, which is what stops a pull request fencing off memory for a build it never runs.
+
+Reservation advice names the entry whose block supplied the winning field, as `testbenches[name=tb_chip_t1].compile.mem`. Two shapes have no such entry to name, and both withhold the `reduce` row rather than aim it somewhere inapplicable, recording the reason and the paths in `rightsize.build_advice_withheld`:
+
+- the value is a **sum of several builds** (`compile-aggregate`) — the suggestion is a whole-job figure, and writing it into one contributor's key would leave the total where it was;
+- two sources produce it **independently** (`compile-origin-tied`) — two builds at the same figure, one that merely reaches the whole-job floor, or two of the `parallel` workers finishing at the same makespan, where lowering either alone moves nothing.
+
+`raise` advice is unaffected by both: moving any one source up moves a maximum, and a sum with it. Where the field is a sum, though, the `suggested` value is translated into the named contributor's **own** new value rather than the whole-job figure — writing a 135-minute target into the 60-minute half of a 30 + 60 reservation would re-aggregate to 165, so the advice says `01:45:00` instead, and the machine event carries the whole-job figure as `suggested_total` beside the `aggregate_delta` that was added. For `time` the proposed value is then **scheduled** rather than predicted: one key can be several builds, and raising it can push a later copy behind a neighbour it used to run beside, so the queue absorbs part of the raise. rtl_buddy re-runs the same `parallel`-worker schedule on the proposed edit and closes the remaining gap until the makespan clears the target — advice that re-timed-out after being applied would be worse than none. A simulation job that compiles for itself is sized from its own testbench's block alone, never from the aggregate.
+
+`parallel` layers the same way, over `cfg-dispatch.compile.parallel`, and must be at least 1. The build job is per suite, so a suite that compiles one key writes `parallel: 1` and its build job reserves `cpus` instead of `cpus` × the cluster-wide value — on a busy partition that is the difference between starting and queueing. A suite that says nothing keeps inheriting the cluster-wide value. Sizing it against the partition's widest node is the writer's job at either level, since only `cpus` is scaled for you. The build job's `Compiling N distinct build(s)` line names whichever key governed it, so the log says which file to edit; where the planned-config cap lowered the value it quotes what the file holds and reports the cap separately, rather than attributing the capped number to the key. `parallel` is still meaningless in a per-test or per-testbench `resources:` block, where unknown keys are dropped silently; in a testbench `compile:` block it is rejected at load instead, because there the key reads as if it meant something.
+
+The block is a scheduling fact only. It is not part of the compile fingerprint, so adding or changing it never invalidates a shared build stamp.
+
+Size the **suite-level** `compile.time` for the longest batch the build job runs, not for one build (a testbench block states one build and is queued for you). With `compile.parallel: N` the suite's unique compile keys are compiled N at a time, so the job's wall clock is the makespan of a work queue N workers deep: each worker takes the next unbuilt key as it frees up, and the job ends when the last one finishes. `ceil(distinct builds / N)` times the slowest build is a safe upper bound to size against, and it is close to the real figure only when the builds take similar times; a mix of one long build and several short ones finishes nearer the long one alone. At the default `parallel: 1` it is the serial total of every key.
+
+Size the **suite-level** `compile.mem` for `parallel` concurrent builds while no testbench states its own: the head scales only the `cpus` reservation, and N elaborations need roughly N times the memory. Once any testbench block does state one, the figure switches meaning — it is then read as one build's peak, for each build that declared none, and the head adds them up; write it per build from that point on. Size it from elaboration, not simulation. Large generated structures can make elaboration the memory peak; Slurm reports `OUT_OF_MEMORY`, while local runs may show `Killed`, SIGKILL, or exit 137. Raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`.
+
+Where the split applies, the two phases want opposite sizes and `compile.verilate` is where the elaboration figures go. Verilation holds the peak RSS of the whole compile, so an `OUT_OF_MEMORY` on a large design is a `compile.verilate.mem` edit; its `cpus` can stay at the default. The build job is the other way round: its memory is one compiler process at a time, so a `compile.mem` sized for elaboration can come down once `compile.verilate.mem` carries that peak, and its `cpus` is the field that matters — size it at the Verilator `-j` or `--build-jobs` in `builder-opts.<mode>.compile-time` times `compile.parallel`.
+
+VCS license wait under `-licqueue` counts against the Slurm time limit. Give `compile.time` queue headroom; `compile.license_queued` records only completed builds that waited. N concurrent elaborations hold up to N licenses at once, so raising `parallel` multiplies license pressure and can convert compute time into queue time; keep it at or below what the site's license pool can serve.
+
+Dispatch requests `--acctg-freq=task=1` unless `sbatch-args` already supplies it. Keep fine-grained accounting if you want useful memory advice for short jobs.
+
+<a id="retrying-a-license-queue-kill"></a>
+
+## Retry license-queue timeouts
+
+Retry is disabled until `retry.attempts` is nonzero. It applies to simulation jobs only and retries a missing result only when evidence identifies a VCS license wait:
+
+- Slurm state is `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED`; `FAILED` and `CANCELLED` are not retried.
+- Captured output ends in license-queue banner content after the last `-licqueue` marker.
+- The suite build job succeeded, so the shared-build stamp is available.
+
+For `local-parallel`, queue evidence is sufficient because there is no scheduler state. Build jobs are never retried.
+
+Delay for retry number `n` is `min(backoff-max-sec, backoff-sec * 2^(n-1))`, multiplied by jitter. Slurm holds retries with `--begin`; local-parallel holds them outside the worker pool. User `sbatch-args` occur last, so a user `--begin` overrides retry backoff. Two flags are exceptions, both on the build job and for the same reason — the shared-build dedup must not be droppable by accident. Its `--dependency` is emitted after `sbatch-args` and carries the configured expression (the *last* one, since that is the one Slurm obeys), and its `--job-name` is emitted after them too, because that name is what `--dependency=singleton` serialises on. So `sbatch-args` cannot rename the build job; a `--job-name` / `-J` there still renames simulation jobs.
+
+`max-wait` bounds each collection round, not the total run, and excludes the requested backoff. An exhausted retry remains a failure. A retry submission failure logs `dispatch.retry_abandoned` and preserves the already-scored run.
+
+Each retry gets a scheduler log named `slurm-<tag>-retry<N>.log`. Test capture files are reused and truncated by the next attempt; `dispatch.retry` and `dispatch.result_missing` in `rtl_buddy.log` are the durable reason trail.
+
+Scheduler-side license gating with Slurm `Licenses=` and `--licenses=<name>:1` is preferable when available because jobs wait without consuming an allocation.
+
+<a id="watching-a-run"></a>
+
+## Monitor and stop a run
+
+At normal verbosity dispatch prints:
+
+- suite submission lines with build and simulation job IDs;
+- progress when counts change and at `progress-interval` heartbeats;
+- a line when each suite drains;
+- a warning with outstanding IDs when `max-wait` expires.
+
+Set `progress-interval: 0` to suppress console progress; events remain in the head log. On timeout or interrupt, the head cancels the outstanding fleet and then re-probes the queue before retiring its run record: if the jobs survived the `scancel`, the record stays `running` and `dispatch.orphans_cancel_failed` names them, so the next run can still find them. Each of those re-probes carries what is left of the grace period as its own `squeue` timeout, so an unresponsive controller cannot hold the check open past it — a query that runs out of time says nothing about the jobs and they are treated as still live.
+
+The poll that decides a fleet has drained asks `squeue` for every state in which a job is still alive — `PENDING` through the held `REQUEUE_HOLD`, `RESV_DEL_HOLD` and `SPECIAL_EXIT`, and `STOPPED`, whose job keeps its CPUs — because a state missing from that filter makes a live job invisible: the wait would return while it was still queued, the collector would score its absent envelope as a failure, and nothing would cancel it. Two states squeue lists as non-terminal are deliberately **out** of it, `PREEMPTED` and `REVOKED`: both are results whose record Slurm keeps until it is purged, so waiting on one would delay collection and the license-queue retry for as long as the site's purge takes, and under a finite `max-wait` fail a run whose jobs had all ended. A preempted job is where the collector expects it — retry treats `PREEMPTED` as an allocation lost, beside `TIMEOUT` and `NODE_FAIL`, and re-submits it — and a preemption configured to requeue moves the job on to `REQUEUED`, which the filter does ask for, so only a terminally preempted job drains. A revoked record is a federation sibling whose job started on another cluster and will never progress here. The build-job dedup probe asks for those two as well, since naming a predecessor whose record is still in the queue costs nothing there; the two filters are derived from one list — the probe's set is the drain set plus the retained results — so they cannot drift apart. A `squeue` too old to know one of those names refuses the query and says which name it refuses; rtl_buddy drops that one and asks again (`dispatch.wait_states_narrowed`, DEBUG), since a state its Slurm does not have is a state no job can be in. Only a refusal that names nothing drops the filter entirely, leaving squeue's own narrower default of pending, running and completing — logged as a WARNING (`dispatch.wait_states_unfiltered`), because a job held in another state can then be reported finished early. Both are remembered for **that cluster** alone, and both events name it: a federation can run several Slurm versions, and applying one cluster's rejection to the rest would poll a newer cluster with a filter too narrow to see its own held job. A poll that fails for any other reason — a controller timeout, an unreachable cluster — is not an answer about the jobs at all: they stay outstanding, `dispatch.wait_poll_failed` records it (WARNING the first time per cluster, DEBUG after, so a wedged `squeue` cannot fill the console), and the next poll asks again, so a `squeue` that never answers ends in the `max-wait` failure rather than in a silent early collection. `Invalid job id specified` is the one error that does mean completion: it is what squeue answers once every one of those ids has aged out of the queue.
+
+Logs are separated by process:
+
+| Process | rtl_buddy log | Related files |
+|---|---|---|
+| Head | `<suite>/rtl_buddy.log` | Console output |
+| Simulation | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` or `local-parallel-<tag>.log` |
+| Verilate | `artefacts/.dispatch/verilate-rtl_buddy-<pid>.log` | `verilate-result-<pid>.json`, `verilate-<pid>.log` |
+| Build | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log`, `gates-<pid>.json` |
+| Run record | — | `artefacts/.dispatch/run-<pid>-<token>.json` (the submitted fleet and its status; see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)) |
+
+Every `<pid>` in that table is followed by the run's own token (`plan-<pid>-<token>.json`, `build-result-<pid>-<token>.json`, `build-<pid>-<token>.log`, `gates-<pid>-<token>.json`), so a reused PID cannot collide with a run whose jobs are still reading those files.
+
+`<tag>` is the run ID or `single`; `<pid>` is the head process ID. Failure descriptions point to the relevant worker and scheduler logs.
+
+When a dispatched regression lists multiple test configs from the same
+directory, each config gets a stable namespace below `.dispatch`, for example
+`artefacts/.dispatch/tests-7a91c2d4e6f8/`. Its plan, build files, array
+manifests, scripts, and scheduler logs use that directory; test configs whose
+directory is not shared keep the flat layout in the table. The namespace is a
+filesystem-safe config stem plus a hash of the resolved config path.
+
+Per-test outputs remain `artefacts/<test>/`. If two co-located configs expand
+tests onto the same per-test directory, the regression exits before submitting
+any jobs. Rename one test or put the configs in separate directories.
+
+Under `--run-tag <name>` every path in that table moves one level down, into
+`artefacts/.runs/<name>/`, and the head's own log moves with it —
+`artefacts/.runs/<name>/rtl_buddy.log` rather than `<suite>/rtl_buddy.log`, so
+two concurrent heads in one suite cannot truncate each other's record. The tag
+travels in each job's argv, so head and job derive the same paths; the shared
+build directory is keyed on the compile fingerprint and is deliberately *not*
+namespaced, so two tagged runs that compile the same thing reuse one build. See
+[Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
+
+Two tagged Slurm runs of one suite still serialise their **build** jobs: the
+`--dependency=singleton` rendezvous is keyed on the suite directory, which is
+what owns the shared build tree. Their simulation fan-outs overlap normally.
+
+`build-result-<pid>.json` carries the build job's `built` and `failed` test names and a `builds` list with one record per planned config: `test`, `builder`, `duration_sec`, `reused`, and `group` (the suite-relative path of the output the compile writes — the shared `artefacts/.shared-builds/obj_dir_<key>` directory, or an unshared build's own executable). Equal `group` values identify one single-writer output: a shared compile, or several configs pinned to one executable by `builder-simv:`. Where sharing is unsupported every test's output is its own, so distinct `group` values there say nothing about the compile keys. A config that never reached a builder still gets a record, with null timings. A record for a build that **succeeded** — compiled, reused, or adopted from a same-key sibling — also carries `fingerprint_sha`, the digest of the inputs its stamp recorded, taken over the same content-decides comparison the stamp uses, so a byte-identical input matches whatever its timestamp says; a gated simulation job whose stamp check fails compares its own digest against it to report whether the disagreement is over the same inputs. A record for a build whose compile succeeded but whose **stamp could not be written** also carries `stamp_written: false`; the field is absent otherwise, which is what every envelope written before it existed means too. A gated simulation job reads it as "built", declining its own recompile exactly as it does for a stamp that failed to validate, and reports the write rather than the stamp. A record for a build that **failed** carries up to four more fields: `returncode` (the builder's exit status), `fingerprint_sha` (the same digest, of the inputs that compile failed on), `error_tail` (the last non-blank lines of its transcript, or the worker's exception when no builder ran) and `transcript` (suite-relative). `returncode` plus a `fingerprint_sha` matching its own inputs is what a gated simulation job requires before declining its own recompile — a failure recorded without a returncode never reached a builder, and one whose fingerprint differs was a different compile, so both still get the retry — and `error_tail` is what puts the real compile error in the run summary. At collect the head folds the build job's own `sacct` row into the same file under `telemetry`, and copies each test's compile record into that test's `result-<tag>.json`, where [`rb graph results`](graph.md#results-overlay) surfaces it. Both are best-effort: an envelope written by an older build job simply has no `builds` key, and an annotation that cannot be written leaves the result itself untouched.
+
+`verilate-result-<pid>.json` mirrors that envelope for the verilate job of a split suite, recording what it verilated. The build job reads the per-build-directory `.rb-verilate.json` marker rather than this file, so an envelope that could not be written costs no more than the head's view of that phase.
+
+## Apply reservation advice
+
+After a Slurm run, rtl_buddy compares reservations with `sacct` usage and prints a Reservation Advice table. Machine output returns findings in `payload.reservation_advice`. It never edits configuration.
+
+Advice is calculated per test using the peak across runs in this invocation:
+
+- utilization below `over-threshold` suggests a reduction;
+- utilization above `near-limit`, `TIMEOUT`, or `OUT_OF_MEMORY` suggests an increase;
+- suggestions use peak times `margin`, with floors of 5 minutes and 128 MiB;
+- time advice is limited to Verilator because VCS license wait distorts elapsed time;
+- memory advice is suppressed when the longest run is shorter than the accounting sample interval, except that an out-of-memory state still suggests an increase;
+- `phase` is `sim`, `compile+sim`, or `compile` and `edit_hint` identifies the configuration field that actually controlled the allocation;
+- CPU efficiency is measured against the cpus the job **requested**, not the cpus the scheduler handed out (`AllocCPUS`).
+
+`over-threshold` and `near-limit` bound the utilization band a reservation is left alone in, so a test inside it produces no finding. On a run where nearly every test fits, `reduce` findings are the bulk of the table, and a lower `over-threshold` shortens that list: `over-threshold: 0.3` reports only tests that used under a third of what they asked for. Neither threshold suppresses a `raise` from a scheduler `TIMEOUT` or `OUT_OF_MEMORY` kill, which is always reported. Findings are listed `raise` first — in the table, in the `rightsize.advice` events, and in `payload.reservation_advice` — because under-reservation costs failed work while over-reservation only wastes a slot.
+
+The suite's build job gets one row of its own, named `(build job)` with `phase: compile`. It suggests `time` in both directions and `cpus` only downwards, because low CPU efficiency there means build slots idled rather than that more were needed. Its `cpus` suggestion is per build, and it appears only for a job that ran one build at a time: with the resolved `compile.parallel` above 1 the job's CPU efficiency also carries idle slots in the tail, which no accounting field separates from a compile that under-used its own CPUs, so the row is withheld with reason `parallel-utilization-ambiguous` rather than advising a reduction that could starve the longest compile. Size `compile.parallel` against the suite's distinct compile keys first, then read the `cpus` row from a `parallel: 1` run. `time` advice is unaffected — concurrent builds take the wall clock of the longest, not of their sum. A `reduce` is withheld when nothing actually compiled (every build reused its stamp), when the head has no per-build records to judge by — `no-build-records`, which covers both a job that left no envelope at all and one whose envelope carries no `builds` list (an older build job, or one whose telemetry could not be serialised) — or when it finished inside one accounting interval; `rightsize.build_advice_withheld` records which, along with how many records it saw and how many seconds of them were real compiling. Without that guard a re-run of an unchanged suite would advise a limit the next real RTL change times out against, cancelling the fan-out behind it.
+
+A suite that [splits verilation off](#split-verilation-from-the-c-build) gets a second row, `(verilate job)` with `phase: verilate`, read the same way; the `(build job)` row then describes the C++ build job alone.
+
+### Requested cpus versus allocated cpus
+
+A partition with `SelectTypeParameters=NONE` on nodes with `ThreadsPerCore=2` allocates whole cores, so a job submitted with `--cpus-per-task=1` is charged two: `sacct` reports `ReqCPUS=1` and `AllocCPUS=2`. Measured against the allocation a single-threaded simulation can never exceed 0.5 efficiency, and the default `over-threshold: 0.5` would fire on every such test, advising a reduction to the `cpus: 1` the `tests.yaml` already holds — advice no edit can retire.
+
+Efficiency is therefore taken against the request, which is what a `resources.cpus` or `compile.cpus` edit actually moves, and a `reduce` is emitted only when the suggestion is strictly below it. The denominator is the reservation rtl_buddy itself resolved and submitted as `--cpus-per-task` — the request by construction, so it holds on a site whose Slurm also normalises `ReqCPUS` to the rounded figure. Where that is unavailable the fallbacks are `ReqCPUS`, then `AllocCPUS`.
+
+One case withdraws the first of those. `cfg-dispatch.sbatch-args` is appended **after** the generated reservation flags and therefore overrides them, so an argument there — not the resolved reservation — decides what the jobs request. `ReqCPUS` is *tasks × cpus-per-task*, so two families qualify:
+
+| | Options | |
+| --- | --- | --- |
+| the cpu count | `-c` / `--cpus-per-task` | states the request |
+| task and node counts | `-n` / `--ntasks`, `--ntasks-per-node`, `-N` / `--nodes` | raise it |
+
+`--ntasks-per-node` is in the second family because sbatch documents it as a *request* when `--ntasks` is absent ("request that ntasks be invoked on each node … meant to be used with the `--nodes` option"), so `--nodes=2 --ntasks-per-node=4` asks for eight tasks. It degrades to a per-node maximum when `--ntasks` is also given — and that option is in the set too, so the pair is caught either way.
+
+The same applies to the **environment**. `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` are sbatch's documented input variables for those options, and they reach sbatch because the dispatched submit inherits the head's environment — `SBATCH_NTASKS=4` beside the generated `--cpus-per-task=2` requests eight cpus. rtl_buddy reads them at submit time and treats them exactly like the equivalent `sbatch-args` entry. It does **not** sanitize the environment: a site that exports these means them. Command line beats environment, which is sbatch's own precedence, so a variable whose option is already written in `sbatch-args` is not reported — the job did not run with it. An unset or blank variable is not an override at all.
+
+`SBATCH_CPUS_PER_TASK` is the one that looks like it should count and does not, for the same reason as `--cpus-per-gpu`: every submit path states `--cpus-per-task` on the command line, which beats the variable, so it can never take effect.
+
+The `sbatch-args` half is read from the **backend**, not from the suite's `cfg-dispatch`. The backend is instantiated once, from the orchestration `root_config.yaml`, before the suite loop; `root_cfg` is then rebuilt for any suite that walks up to a different one. In a regression spanning project roots the two lists therefore differ, and only the backend's is what `sbatch` receives — so reading the suite's would miss an override the backend really appends, or invent one it does not. The generated reservation flags stay suite-derived, since they come from that suite's own resolved `resources:`; it is the verbatim passthrough that belongs to the backend.
+
+The environment is read **once per suite, before that suite submits anything**, and the result is carried through to its analysis. A regression plans every suite before submitting any, and submits every suite before collecting any, and a sweep hook is `exec()`d in the head process, so a later suite's hook can set or unset `SBATCH_*` in between; the head therefore snapshots the environment right after each suite's own planning and submits that suite from the snapshot, and re-reading it at analysis would judge an earlier suite's jobs by a later suite's environment. Both the per-test rows and the `(build job)` row use that one snapshot, so the two halves of a suite's advice always describe the same submission.
+
+A **retry** is a fresh `sbatch` from whatever environment the process holds by then, and it is the retry's telemetry the analysis reads — so each resubmission re-reads the overrides for the rows it resubmits. The new values are applied only once that round has been accepted and waited on: a refused `sbatch` or a failed wait leaves the head holding the previous attempt's results and telemetry, which must not be paired with the reservation of an attempt that never ran. Where a round is abandoned the rows keep describing the attempt that produced their numbers.
+
+Retries are also per run, so a test whose seeds did not all retry can end up with runs submitted under different requests. Efficiency is the peak across every run, and one `Reserved` and one `Field` cannot describe two reservations, so the `cpus` row for such a test is **withheld** and `rightsize.cpus_advice_withheld` records it with reason `mixed-cpu-requests` — the same answer `parallel-utilization-ambiguous` gives the build job. `mem` and `time` advice is unaffected, since no cpu argument moves those reservations.
+
+One **combination** counts even though neither half does alone. sbatch documents a second mode for `--ntasks-per-gpu`: "specify the GPUs wanted (e.g. via `--gpus` or `--gres`) without specifying `--ntasks`, and the total task count will be automatically determined". So a GPU count (`--gpus` / `-G`, `--gpus-per-node`, `--gpus-per-socket`, or a `--gres` that asks for gpus) together with `--ntasks-per-gpu`, and no `--ntasks` anywhere, derives *gpus × ntasks-per-gpu* tasks — a task-count override exactly like `--ntasks`. Both halves may come from `sbatch-args` or from `SBATCH_*`, and the advice names the pair, since neither argument alone caused it. With `--ntasks` present the derivation runs the other way (it sets the GPU count instead) and `--ntasks` is already an override, so the pair is not reported.
+
+All spellings are recognised (`--ntasks=4`, `--ntasks 4`, `-n 4`, `-n4`). Within **one** option the last occurrence is the one reported, because that is the one sbatch obeys, and the short and long spellings are the same option — `[-c 4, --cpus-per-task=8]` is one argument written twice, not two. **Across** options there is no winner at all: each distinct option is reported, because they combine rather than supersede one another.
+
+The set is deliberately narrow, because a false positive is not free — it discards a request rtl_buddy knows, retargets the edit hint away from the field that really governs, and disables the compile floor. Four near misses are excluded:
+
+- `--exclusive` and `--overcommit` change what is *allocated*, not what is requested, so `ReqCPUS` still describes the reservation.
+- `--threads-per-core` and `-B` / `--extra-node-info` are **node-selection constraints**: they restrict which nodes and hardware threads may be used, while the generated `--cpus-per-task` still states the request. rtl_buddy therefore still knows it, and keeps using it.
+- `--ntasks-per-core` and `--ntasks-per-socket` are **placement maxima** ("request the maximum ntasks be invoked on each core/socket … meant to be used with the `--ntasks` option"): they cap where the tasks `--ntasks` asked for may land, and a lone one requests nothing. The `--ntasks` they accompany is in the set, so a real task-count change is still caught.
+- `--cpus-per-gpu` is documented as mutually exclusive with `--cpus-per-task`, which every dispatched job carries, so sbatch rejects the pair. A job submitted that way never runs, and there is nothing to right-size. `--ntasks-per-gpu` is left out of the table on its own, since alone it caps placement without requesting anything — but it is not ignored: see below.
+
+Where such an argument or variable is present rtl_buddy records no request for that run's rows or its build job, so the analysis falls back to `ReqCPUS`; a DEBUG line (`rightsize request_from_scheduler`) names what was responsible.
+
+The `edit_hint` follows. An override masks every cpus field the layering could name, so applying a hint that named one would leave the next job's reservation exactly where it was and the finding would return — the same non-retiring advice this whole rule exists to stop. While an override is in force, a `cpus` finding's `edit_hint.path` is `cfg-dispatch.sbatch-args` (with `file` pointing at the `root_config.yaml` the **backend** was built from — the same file those arguments were read from, which in a regression spanning project roots is the orchestration config rather than the suite's own root) and its `note` says which field was superseded, for example:
+
+```
+sbatch-args `--cpus-per-task=4` sets this job's cpu request, superseding
+tests[name=wr_single].resources.cpus; change it there. Suggested value is
+the whole-job cpu count.
+```
+
+`suggested` is always the whole-job cpu count, but only one shape of override can be handed it: **exactly one `--cpus-per-task`**, as above. The other two shapes cannot, and the note says so rather than giving advice that would not apply.
+
+A lone task or node count is not a cpu count — writing 3 into `--ntasks` asks for three tasks, not three cpus — and it does not supersede the per-task field either: the generated `--cpus-per-task` is still in force, so both are levers and the note names both:
+
+```
+`--ntasks=4` multiplies this job's cpu request: the generated --cpus-per-task
+from tests[name=wr_single].resources.cpus still applies, so the request is 8
+per task x 4 tasks. Suggested value is the whole-job cpu count — lower
+tests[name=wr_single].resources.cpus, the task count in sbatch-args, or both;
+no single one of them takes it.
+```
+
+The `8 per task x 4 tasks` clause is an observation — the scheduler's own request over the flag the head submitted — and is omitted when that division is not exact.
+
+Where several arguments are present they combine by sbatch's own precedence, which the note does **not** attempt to reproduce — with `--ntasks=8 --nodes=2 --ntasks-per-node=4 --cpus-per-task=2` the request is 16, not the product of all four, because `--ntasks` wins and `--ntasks-per-node` degrades to a maximum. The note names them and leaves the arithmetic to the reader, who is the only party that knows which one should shrink:
+
+```
+sbatch-args supersedes tests[name=wr_single].resources.cpus: `--ntasks=4` and
+`--cpus-per-task=2` set this job's cpu request together. Suggested value is
+the whole-job cpu count — decompose it across them per sbatch's own
+precedence; no single one of them takes it.
+```
+
+An override that came only from the environment names no file at all: its `edit_hint.path` is `env` and there is no `file` key, because a variable lives in nothing an agent can edit. Where an `sbatch-args` entry is also in play the hint keeps pointing there — the command line is what can defeat the variable — and the note names both.
+
+A **direct** cpu override also disables the **compile cpus floor**. That floor exists because a job compiling inside itself is allocated `max(sim, compile)`, so no reduction can take it below the compile side — but a `--cpus-per-task` in `sbatch-args` replaces that generated flag, and sbatch never sees the max. Left in place it clamps every suggestion up to the floor and then discards it for not being below the request, so a genuinely over-reserved run reports nothing at all.
+
+A task or node count does **not** disable it. `--ntasks=2` leaves `--cpus-per-task=8` exactly where it was and asks for two tasks of it, so the floor still holds and the advice may not suggest below it: even one task costs 8 cpus, so a whole-job suggestion of 3 could never be reached and the finding would recur every run. The floor is kept *unscaled* rather than multiplied by the tasks observed — the task count is one of the two levers the advice offers, so 8 really is reachable, by dropping to a single task, and flooring at 8 × 2 would suppress every reduction there is.
+
+The `mem` and `time` floors are untouched throughout, since no cpu argument supersedes them.
+
+Only `cpus` is retargeted: none of these arguments supersedes a `mem` or `time` field, so those findings keep naming the reservation that governs them.
+
+`mem` and `time` advice never had this exposure: both are already measured against `ReqMem` and `TimelimitRaw`, which `sacct` reports from the allocation the override actually produced, so no override can put a stale number in their denominators.
+
+`Reserved` in the table and `reserved` in `payload.reservation_advice` are that requested figure. Where the scheduler gave out more, the allocated number rides along: the table shows `4 (8 allocated)` and the finding carries an `allocated` field, so `squeue` and `sacct` still reconcile. `allocated` is present on **every** finding for a stable key set, and is null except on a `cpus` row whose allocation differs from its request.
+
+Wherever a row's `edit_hint` names the compile reservation, it names whichever file holds the value that won. A field the suite's own `compile` block set is reported as `compile.<field>` in that suite's `tests.yaml`; every other compile field is reported as `cfg-dispatch.compile.<field>` in `root_config.yaml`. Both forms can appear in one run — a suite that overrides only `mem` gets suite-level advice for `mem` and root-level advice for `time`. Verilate-phase fields carry the sub-block in the path, so the three spellings are `cfg-dispatch.compile.verilate.<field>`, `compile.verilate.<field>`, and `testbenches[name=X].compile.verilate.<field>`.
+
+This applies to the `(build job)` row and to any `compile+sim` row alike. A builder that compiles inside its own simulation job produces no build job at all, so the compile reservation only ever appears there, inside the field-wise maximum; a `raise` after `OUT_OF_MEMORY` on a field the suite set points at the suite, because raising `cfg-dispatch.compile.mem` would leave the suite's value in force and the same advice would return on the next run. Fields the test's own `resources` governs are unaffected and still name `tests[name=…].resources.<field>`.
+
+Advice records the run count and regression level; do not use a smoke run to shrink a nightly reservation. Apply the provided `edit_hint`, rerun, and confirm the finding clears. Disable reports with `rightsize: {report: false}`. Without `sacct` accounting, dispatch completes but emits no advice.
+
+To inspect accounting manually, query step rows without `sacct -X`:
+
+```bash
+sacct -j <jobid> --format=JobID,Elapsed,MaxRSS
+```

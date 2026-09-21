@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +31,86 @@ from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 
 logger = logging.getLogger(__name__)
+
+#: ``rtl-buddy-view --version`` prints ``rtl-buddy-view <version>``.
+#: Unlike ``tool_manifest``'s probe this keeps the **whole** version
+#: token, dev suffix included: the manifest only needs to compare
+#: ``X.Y.Z`` against a floor, but a per-feature gate has to tell an
+#: editable ``0.3.1.dev1+g<sha>`` build (which may well carry the
+#: feature) apart from a released ``0.3.1`` (which cannot).
+_VIEW_VERSION_RE = re.compile(r"rtl-buddy-view\s+(\S+)")
+
+#: Seconds to wait for the version probe. A viewer that cannot answer
+#: ``--version`` promptly is treated as unprobeable, not as a failure.
+_VERSION_PROBE_TIMEOUT = 30
+
+#: First ``rtl-buddy-sch`` release carrying ``--block-diagram``
+#: (rtl-buddy-sch#160, epic rtl-buddy-sch#163). The flag is *unreleased*
+#: at the time this wrapper learned to forward it, so this floor names
+#: the release it is expected to land in rather than one that exists —
+#: rtl_buddy declares no version pin on the viewer, and vendoring an
+#: unreleased peer is not an option. Until that release ships, passing
+#: ``--block-diagram`` reaches an older viewer and comes back as an
+#: unknown-option failure, which :meth:`RtlBuddyView.run` turns into the
+#: message naming this version.
+VIEW_BLOCK_DIAGRAM_MIN_VERSION = "0.8.0"
+
+#: What an argument parser says about a flag it has never heard of.
+#: Click/Typer (the viewer's parser) emits "No such option"; the other
+#: two cover argparse and a plain getopt, so a future parser swap on the
+#: viewer side doesn't silently turn the friendly error back into a raw
+#: exit code. Matched case-insensitively against whitespace-collapsed
+#: stderr, because Rich wraps its error panel.
+_UNKNOWN_OPTION_MARKERS = (
+    "no such option",
+    "unrecognized argument",
+    "unknown option",
+)
+
+
+def resolve_view_executable(executable: str = "rtl-buddy-view") -> str:
+    """The path the viewer will actually be invoked as.
+
+    Bare names (no path separator) prefer the binary sitting next to
+    ``sys.executable`` — rb is routinely invoked by absolute venv path
+    with no activation, where PATH knows nothing about the venv but the
+    viewer installed beside this interpreter is exactly the one that
+    belongs to it. Falls back to the name unchanged (PATH semantics).
+    Explicit paths pass through untouched. Every caller that talks to
+    the viewer must resolve through here, or the version that lands in
+    the build fingerprint can describe a different binary than the one
+    that ran.
+    """
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        return executable
+    sibling = Path(sys.executable).parent / executable
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return executable
+
+
+def probe_view_version(executable: str = "rtl-buddy-view") -> str | None:
+    """Full version string reported by ``<executable> --version``.
+
+    ``None`` when the binary is missing, too old to know the flag, or
+    prints something unrecognizable. Callers must treat ``None`` as
+    "unknown", never as "too old" — a pre-0.2.1 viewer has no
+    ``--version`` at all, and refusing to run on that basis would be a
+    guess where the subsequent invocation's exit code is the real answer.
+    """
+    try:
+        proc = subprocess.run(
+            [resolve_view_executable(executable), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_VERSION_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    match = _VIEW_VERSION_RE.search((proc.stdout or "") + (proc.stderr or ""))
+    return match.group(1) if match else None
 
 
 def _is_non_source_filelist_line(line: str) -> bool:
@@ -43,7 +125,7 @@ def _is_non_source_filelist_line(line: str) -> bool:
     layout.
     """
     s = line.strip()
-    if s.startswith("+incdir+") or s.startswith("+libext+"):
+    if s.startswith(("+incdir+", "+libext+", "+define+")):
         return True
     # ``-y <dir>`` / ``-v <file>`` use a space (or tab) separator.
     for prefix in ("-y", "-v"):
@@ -84,6 +166,7 @@ class RtlBuddyView:
         rdc_annotations: str | None = None,
         axi_perf_annotations: str | None = None,
         clock_legend: bool = False,
+        block_diagram: bool = False,
         executable: str = "rtl-buddy-view",
         test_cfg: TestConfig | None = None,
         test_suite_dir: str | None = None,
@@ -104,6 +187,12 @@ class RtlBuddyView:
         # ``--overlay axi-perf=PATH`` form.
         self.axi_perf_annotations = axi_perf_annotations
         self.clock_legend = clock_legend
+        # Dot-only alternate rendering (rtl-buddy-sch#160): sibling
+        # dataflow — cluster nesting plus net-labeled directed edges —
+        # in place of the hierarchy dump. Forwarded only when set, so an
+        # ``rb hier`` that doesn't ask for it keeps a byte-identical CLI
+        # against viewers that predate the flag.
+        self.block_diagram = block_diagram
         self.executable = executable
         # Optional test that pins the TB top + TB filelist for the
         # TB-rooted view (#99 / 6b). When set, the generated filelist
@@ -124,6 +213,13 @@ class RtlBuddyView:
         # exist``. ``None`` falls back to cwd, the legacy behaviour for
         # callers that run from the suite dir.
         self.test_suite_dir = test_suite_dir
+
+        # Set by callers that need the viewer's answer as a value rather
+        # than on the terminal (``RtlBuddyViewQuery(capture=True)``, used
+        # by ``rb mcp``). ``run()`` fills :attr:`stdout` / :attr:`stderr`.
+        self.capture = False
+        self.stdout: str | None = None
+        self.stderr: str | None = None
 
         artefact_root = Path(suite_dir) / "artefacts" / "hier" / model_cfg.name
         if test_cfg is not None:
@@ -149,6 +245,17 @@ class RtlBuddyView:
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "hier.log")
+
+    def _extra_filelist(self) -> list[str] | None:
+        """Filelist lines merged on top of the model's, or None.
+
+        The base class merges the test's testbench filelist; subclasses
+        with another source of extra HDL (a formal run's ``properties:``
+        files, say) override this instead of re-implementing the merge.
+        """
+        if self.test_cfg is not None:
+            return self.test_cfg.tb.get_filelist()
+        return None
 
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
@@ -176,12 +283,11 @@ class RtlBuddyView:
         # works on absolute source paths and does not need include
         # directories — the TB's compile-time options are not relevant
         # to its CST walk.
+        extra = self._extra_filelist()
         test_filelist = None
-        if self.test_cfg is not None:
+        if extra is not None:
             test_filelist = [
-                line
-                for line in self.test_cfg.tb.get_filelist()
-                if not _is_non_source_filelist_line(line)
+                line for line in extra if not _is_non_source_filelist_line(line)
             ]
         vlog_fl.write_output(
             output_filepath=fl_path,
@@ -197,7 +303,7 @@ class RtlBuddyView:
         cmd = [
             self.executable,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--filelist",
             fl_path,
             "--format",
@@ -236,7 +342,78 @@ class RtlBuddyView:
             cmd += ["--overlay", f"axi-perf={self.axi_perf_annotations}"]
         if self.clock_legend:
             cmd += ["--clock-legend"]
+        if self.block_diagram:
+            cmd += ["--block-diagram"]
         return cmd
+
+    def _captured_stderr(self, log_path: str, cmd_echo: str) -> str:
+        """The viewer's stderr for this run, as text.
+
+        ``capture`` mode holds it in memory; otherwise it was written to
+        the log file, which is closed by the time this is called. Empty
+        when the subclass streams stderr straight to the terminal
+        (nothing was captured to read back) or the log can't be read.
+
+        ``cmd_echo`` — the ``$ <cmd>`` line :meth:`run` writes as the
+        log's first line — is stripped back off. It repeats the whole
+        command line, *including* every flag we passed, so leaving it in
+        makes any search for a flag name in "what the viewer said" match
+        unconditionally: an old viewer rejecting some other new option
+        would be misdiagnosed as rejecting this one.
+        """
+        if self.capture:
+            return self.stderr or ""
+        if self._stream_stderr:
+            return ""
+        try:
+            text = Path(log_path).read_text()
+        except OSError:  # pragma: no cover - unreadable log is not the story
+            return ""
+        return text.removeprefix(cmd_echo)
+
+    def _check_block_diagram_supported(self, log_path: str, cmd_echo: str) -> None:
+        """Re-raise an unknown-``--block-diagram`` exit as a clear error.
+
+        The flag is newer than every released viewer at the time it was
+        wired up here, so the common failure is a perfectly healthy
+        install that simply predates it. Left alone that surfaces as a
+        bare non-zero exit with the parser's complaint buried in
+        ``hier.log`` — the user sees ``rb hier`` fail and nothing about
+        why. Version is probed only on this path: a pre-emptive gate
+        would refuse to run on a dev/editable viewer that does carry the
+        feature, which is the same reason ``check_view_supports_graph``
+        treats the invocation's exit code as the real answer.
+        """
+        text = " ".join(self._captured_stderr(log_path, cmd_echo).split()).lower()
+        if "--block-diagram" not in text:
+            return
+        if not any(marker in text for marker in _UNKNOWN_OPTION_MARKERS):
+            return
+        version = probe_view_version(self.executable)
+        installed = (
+            f"the installed viewer is {version}"
+            if version
+            else "the installed viewer predates it"
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            f"{self._event_name}.tool_too_old",
+            model=self.model_cfg.name,
+            option="--block-diagram",
+            required=VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+            installed=version,
+        )
+        raise FatalRtlBuddyError(
+            f"hier: --block-diagram needs rtl-buddy-sch >= "
+            f"{VIEW_BLOCK_DIAGRAM_MIN_VERSION} (rtl-buddy-sch#160), but "
+            f"{installed}. Upgrade the renderer, or drop --block-diagram "
+            f"to render the hierarchy instead:\n"
+            f"    pip uninstall -y rtl-buddy-view && "
+            f'pip install -U "rtl-buddy-sch >= '
+            f'{VIEW_BLOCK_DIAGRAM_MIN_VERSION}"\n'
+            f"The renderer's own message is in {log_path}."
+        )
 
     def run(self) -> int:
         # Resolve the viewer up-front. Bare names (no '/') go through
@@ -251,11 +428,15 @@ class RtlBuddyView:
                     f"hier: rtl-buddy-view not found or not executable: "
                     f"{self.executable}"
                 )
-        elif shutil.which(self.executable) is None:
-            raise FatalRtlBuddyError(
-                f"hier: '{self.executable}' not found on PATH; install rtl-buddy-view "
-                f"into the active venv or pass --tool to point at the binary"
-            )
+        else:
+            self.executable = resolve_view_executable(self.executable)
+            if os.sep not in self.executable and shutil.which(self.executable) is None:
+                raise FatalRtlBuddyError(
+                    f"hier: '{self.executable}' not found on PATH or next to "
+                    f"{sys.executable}; install rtl-buddy-sch into the active "
+                    f"venv (the dist that ships this executable) or pass "
+                    f"--tool to point at the binary"
+                )
 
         if self.cdc_annotations is not None and not os.path.isfile(
             self.cdc_annotations
@@ -281,6 +462,10 @@ class RtlBuddyView:
         fl_path = self._write_filelist()
         cmd = self._build_cmd(fl_path)
         log_path = self._log_path()
+        # The log's first line is the invocation, for reproducing a run
+        # by hand. Kept as a value so anything reading the log back can
+        # subtract it and be left with only what the viewer said.
+        cmd_echo = "$ " + " ".join(cmd) + "\n"
 
         with task_status(f"Running {self._status_label} {self.model_cfg.name}"):
             log_event(
@@ -292,7 +477,7 @@ class RtlBuddyView:
                 **self._event_fields(),
             )
             with open(log_path, "w") as logf:
-                logf.write("$ " + " ".join(cmd) + "\n")
+                logf.write(cmd_echo)
                 logf.flush()
                 # Let the renderer's stdout pass through to the user's
                 # terminal when --output is not used; capture stderr in
@@ -300,13 +485,34 @@ class RtlBuddyView:
                 # instead — a lookup miss ("instance path ... not
                 # found") is an interactive answer, not a diagnostic to
                 # bury in a log file.
-                stdout = subprocess.DEVNULL if self.output is not None else None
-                proc = run_managed_process(
-                    cmd,
-                    stdout=stdout,
-                    stderr=None if self._stream_stderr else logf,
-                    cwd=self.artefact_dir,
-                )
+                #
+                # ``capture`` overrides both: an in-process caller (the
+                # MCP server) needs the answer as a string, and under a
+                # stdio transport a passed-through stdout would be
+                # written straight into the JSON-RPC stream.
+                if self.capture:
+                    proc = run_managed_process(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        cwd=self.artefact_dir,
+                    )
+                    self.stdout = proc.stdout or ""
+                    self.stderr = proc.stderr or ""
+                    logf.write(self.stderr)
+                else:
+                    stdout = subprocess.DEVNULL if self.output is not None else None
+                    proc = run_managed_process(
+                        cmd,
+                        stdout=stdout,
+                        stderr=None if self._stream_stderr else logf,
+                        cwd=self.artefact_dir,
+                    )
+
+        if self.block_diagram and proc.returncode != 0:
+            # Only on the failure path, and only when we asked for the
+            # new flag: a healthy render must not pay for a version probe.
+            self._check_block_diagram_supported(log_path, cmd_echo)
 
         log_event(
             logger,
@@ -316,6 +522,182 @@ class RtlBuddyView:
             returncode=proc.returncode,
         )
         return proc.returncode
+
+
+class RtlBuddyViewGraph(RtlBuddyView):
+    """Generates a filelist + invokes ``rtl-buddy-view graph``.
+
+    The **design tier** of the knowledge graph (rtl_buddy#375 /
+    rtl-buddy-view#126): module / instance / port / parameter /
+    interface / modport nodes written as node-link JSON, plus the
+    viewer's own ``graph-meta.json`` provenance sidecar beside it.
+
+    Shares ``rb hier``'s ``artefacts/hier/<model>/hier.f`` — the input
+    to a graph export is exactly the input to a render, so generating a
+    second filelist would only create a way for the two to disagree.
+    The viewer's stdout is suppressed (we always pass ``--output``) and
+    its stderr is captured to ``graph.log`` next to the filelist.
+
+    With ``test_cfg`` set the export is **TB-rooted** (#377 follow-up):
+    the parent's DUT+TB filelist merge runs, the artefact dir keys on
+    ``(model, tb)`` exactly as ``rb hier --view tb`` does, and
+    ``--tb-top`` is passed alongside ``--top`` so the viewer elaborates
+    from the testbench and records the DUT name in
+    ``graph.design.dut_top``. Module ids are ``module:<name>`` either
+    way, which is what welds the TB export's DUT subtree onto the
+    DUT-rooted export at merge time.
+
+    With ``run_top`` set the export is **run-rooted** (#385): the same
+    shape as a TB export, for a formal/synth/cdc run whose ``top:``
+    module only elaborates inside the flow's own filelist (an fpv
+    checker module living in a ``properties:`` file, say).
+    ``run_filelist`` is merged on top of the model filelist exactly as a
+    testbench's would be, ``--tb-top`` carries the run's top with
+    ``--top`` staying the DUT, and the artefact dir keys on
+    ``run_key`` under ``artefacts/hier/<model>/run/``. Mutually
+    exclusive with ``test_cfg`` — a run has no testbench.
+    """
+
+    _event_name = "graph_design"
+    _status_label = "graph export"
+    _stream_stderr = False
+
+    def __init__(
+        self,
+        name: str,
+        model_cfg: ModelConfig,
+        *,
+        suite_dir: str,
+        output: str,
+        project_root: str,
+        frontend: str | None = None,
+        executable: str = "rtl-buddy-view",
+        test_cfg: TestConfig | None = None,
+        test_suite_dir: str | None = None,
+        run_top: str | None = None,
+        run_filelist: list[str] | None = None,
+        run_key: str | None = None,
+    ):
+        super().__init__(
+            name,
+            model_cfg,
+            suite_dir=suite_dir,
+            output=output,
+            frontend=frontend,
+            executable=executable,
+            test_cfg=test_cfg,
+            test_suite_dir=test_suite_dir,
+        )
+        self.project_root = project_root
+        self.run_top = run_top
+        self.run_filelist = run_filelist
+        if run_key is not None:
+            # Run-rooted exports get their own filelist cache, keyed the
+            # way TB exports key on (model, tb): the flow's extra sources
+            # make the filelist differ from the plain `rb hier` one.
+            artefact_root = (
+                Path(suite_dir) / "artefacts" / "hier" / model_cfg.name / run_key
+            )
+            artefact_root.mkdir(parents=True, exist_ok=True)
+            self.artefact_dir = str(artefact_root)
+
+    def tb_top(self) -> str | None:
+        """The ``--tb-top`` this export will elaborate from, or None.
+
+        Same convention as :class:`RtlBuddyView`: the testbench's
+        explicit ``toplevel:`` when it has one, else its config name
+        (which is the TB's top module name by project convention). A
+        run-rooted export's ``run_top`` plays the same role. The viewer
+        auto-corrects a hint that names no real module, so the
+        elaborated answer is read back off the export rather than
+        trusted from here.
+        """
+        if self.run_top is not None:
+            return self.run_top
+        if self.test_cfg is None:
+            return None
+        return self.test_cfg.tb.toplevel or self.test_cfg.tb.name
+
+    def _extra_filelist(self) -> list[str] | None:
+        if self.run_filelist is not None:
+            return self.run_filelist
+        return super()._extra_filelist()
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "graph.log")
+
+    def log_path(self) -> str:
+        """Where the viewer's stderr lands, for citing in a failure report.
+
+        ``rb graph build`` records this in ``graph-meta.json`` when a
+        model fails to export, so the public accessor exists rather than
+        having the orchestrator reach for ``_log_path``.
+        """
+        return self._log_path()
+
+    def _event_fields(self) -> dict[str, object]:
+        return {"output": self.output}
+
+    def write_filelist(self) -> str:
+        """Generate the filelist without invoking the viewer.
+
+        ``rb graph build`` hashes the model's sources *before* deciding
+        whether an export is needed at all, and the filelist is where
+        that source list comes from. Writing it is cheap (no parse), and
+        :meth:`run` regenerates it identically, so calling this first
+        costs nothing and keeps the no-op check honest.
+        """
+        return self._write_filelist()
+
+    def source_files(self) -> list[str]:
+        """Absolute source paths in the generated filelist.
+
+        The filelist is written with ``strip=True``, so every non-empty,
+        non-comment line is a bare path — relative ones resolve against
+        the filelist's own directory, which is how the viewer reads them.
+        """
+        fl_path = self._filelist_path()
+        files: list[str] = []
+        try:
+            lines = Path(fl_path).read_text().splitlines()
+        except OSError:
+            return files
+        base = os.path.dirname(fl_path)
+        for line in lines:
+            entry = line.strip()
+            if not entry or entry.startswith("//") or entry.startswith("#"):
+                continue
+            files.append(os.path.abspath(os.path.join(base, entry)))
+        return files
+
+    def meta_path(self) -> str:
+        """Where the viewer writes its provenance sidecar for ``--output``."""
+        out = Path(self.output)
+        return str(out.with_name(f"{out.stem}-meta.json"))
+
+    def _build_cmd(self, fl_path: str) -> list[str]:
+        cmd = [
+            self.executable,
+            "graph",
+            "--filelist",
+            fl_path,
+            "--top",
+            self.model_cfg.get_top(),
+            "--output",
+            str(self.output),
+            "--project-root",
+            self.project_root,
+        ]
+        tb_top = self.tb_top()
+        if tb_top is not None:
+            # ``--tb-top`` roots the export at the testbench; ``--top``
+            # stays the DUT so the viewer can record which subtree is
+            # the design under test. Both names land in
+            # ``graph.design``.
+            cmd += ["--tb-top", tb_top]
+        if self.frontend is not None:
+            cmd += ["--frontend", self.frontend]
+        return cmd
 
 
 _QUERY_VERBS = (
@@ -356,6 +738,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
         context: int | None = None,
         line_numbers: bool = True,
         executable: str = "rtl-buddy-view",
+        capture: bool = False,
     ):
         super().__init__(
             name,
@@ -364,6 +747,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
             frontend=frontend,
             executable=executable,
         )
+        self.capture = capture
         if verb not in _QUERY_VERBS:
             raise FatalRtlBuddyError(
                 f"hier-query: unknown verb {verb!r}; "
@@ -391,7 +775,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
             self.verb,
             self.arg,
             "--top",
-            self.model_cfg.name,
+            self.model_cfg.get_top(),
             "--filelist",
             fl_path,
         ]

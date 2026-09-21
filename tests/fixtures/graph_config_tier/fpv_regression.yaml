@@ -1,0 +1,7 @@
+# Fixture for tests/test_graph_config_tier.py — the formal flow.
+# There is deliberately no fpga_regression.yaml: a missing file is not
+# an error, it is a project that does not do that flow.
+rtl-buddy-filetype: fpv_reg_config
+
+fpv-configs:
+  - "fpv/blk_a/fpv.yaml"

@@ -19,6 +19,7 @@ from typing import Literal
 from .model import ModelConfig, ModelConfigLoader
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -45,21 +46,36 @@ class CdcToolOptsFile:
 @serde
 class CdcToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
     opts: CdcToolOptsFile = field(default_factory=CdcToolOptsFile)
 
 
 class CdcToolConfig:
     """One entry from ``cfg-cdc-tools`` in ``root_config.yaml``."""
 
-    def __init__(self, cfg: CdcToolConfigFile):
+    def __init__(self, cfg: CdcToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
+        # Directory relative `tool:` candidates are existence-tested
+        # against: the one holding root_config.yaml, never the process
+        # cwd (rb is routinely invoked from a suite directory).
+        self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            base_dir=self._base_dir,
+            block="cfg-cdc-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
 
     def get_opts(self, overrides: dict | None = None) -> CdcToolOpts:
         sync_depth = self._cfg.opts.sync_depth
@@ -92,6 +108,10 @@ class CdcConfigFile:
     # can add frontends without an rtl_buddy release. Unknown values
     # are rejected by the analyzer's own arg parser.
     frontend: str | None = None
+    # Parse all model sources as one compilation unit. This supports filelists
+    # that deliberately share preprocessor macros across source files.
+    # Forwarded via ``--single-unit`` (rtl-buddy-cdc#277).
+    single_unit: bool = False
     # Modules to treat as black boxes: each is forwarded as-is via a
     # repeated ``--blackbox <module>`` to the analyzer (rtl-buddy-cdc#259),
     # stubbing out that module's internals during elaboration. Like
@@ -132,6 +152,7 @@ class CdcConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             frontend=self.frontend,
+            single_unit=self.single_unit,
             blackbox=self.blackbox,
             recognized_syncs=list(self.recognized_syncs),
             xfail=self.xfail,
@@ -150,6 +171,7 @@ class CdcConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     frontend: str | None = None
+    single_unit: bool = False
     blackbox: list[str] = dc_field(default_factory=list)
     recognized_syncs: list[str] = dc_field(default_factory=list)
     xfail: bool = False
@@ -177,7 +199,13 @@ class CdcConfig:
         return self.model
 
     def get_top(self) -> str:
-        return self.model.name
+        """The module this run elaborates — the model's root module.
+
+        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
+        ``top:`` override (#479) reaches this flow too; without the
+        override it is still the model name.
+        """
+        return self.model.get_top()
 
     def get_constraints(self) -> str:
         return self.constraints

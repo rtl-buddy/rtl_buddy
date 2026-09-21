@@ -1,55 +1,71 @@
 ---
-description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+description: Auto-generated CLI reference for documented rtl-buddy commands and their options.
 ---
 
 # CLI Reference
 
 This page is auto-generated from `rtl-buddy --help` output.
-Run `python scripts/gen_cli_reference.py` from the repo root to regenerate it.
+Run `uv run python scripts/gen_cli_reference.py` from the repo root to regenerate it.
 
 <!-- AUTO-GENERATED: do not edit below this line manually -->
 
 ## rtl-buddy
 
 ```text
-Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...                                           
-                                                                                        
+Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --debug               -D                                     Print rtl_buddy debug   │
-│                                                              details to console      │
-│ --verbose             -v                                     Print execution details │
-│                                                              to console              │
-│ --machine                                                    Emit machine-oriented   │
-│                                                              logs and plain console  │
-│                                                              output                  │
-│ --color                   --no-color                         Logs without ANSI color │
-│                                                              codes                   │
-│                                                              [default: color]        │
-│ --builder-mode        -M                TEXT                 Override default        │
-│                                                              builder_mode            │
-│ --builder             -B                TEXT                 Override platform       │
-│                                                              default builder         │
-│ --early-stop          -E                [pre|comp|sim|post]  Run step to stop early  │
-│                                                              at                      │
-│ --version                                                    Prints version          │
-│ --install-completion                                         Install completion for  │
-│                                                              the current shell.      │
-│ --show-completion                                            Show completion for the │
-│                                                              current shell, to copy  │
-│                                                              it or customize the     │
-│                                                              installation.           │
-│ --help                                                       Show this message and   │
-│                                                              exit.                   │
+│ --debug                -D                                      Print rtl_buddy debug │
+│                                                                details to console    │
+│ --verbose              -v                                      Print execution       │
+│                                                                details to console    │
+│ --machine                                                      Emit machine-oriented │
+│                                                                logs and plain        │
+│                                                                console output        │
+│ --print-failures-only                                          Hide PASS, SKIP, and  │
+│                                                                XFAIL rows from       │
+│                                                                console summaries     │
+│ --color                    --no-color                          Logs without ANSI     │
+│                                                                color codes           │
+│                                                                [default: color]      │
+│ --builder-mode         -M                TEXT                  Override default      │
+│                                                                builder_mode          │
+│ --builder              -B                TEXT                  Override platform     │
+│                                                                default builder       │
+│ --extra-sim-timeout                      INTEGER RANGE [x>=0]  Seconds to add to     │
+│                                                                every test's          │
+│                                                                sim_timeout,          │
+│                                                                overriding the        │
+│                                                                builder's             │
+│                                                                extra-sim-timeout     │
+│ --early-stop           -E                [pre|comp|sim|post]   Run step to stop      │
+│                                                                early at              │
+│ --version                                                      Prints version        │
+│ --install-completion                                           Install completion    │
+│                                                                for the current       │
+│                                                                shell.                │
+│ --show-completion                                              Show completion for   │
+│                                                                the current shell, to │
+│                                                                copy it or customize  │
+│                                                                the installation.     │
+│ --help                                                         Show this message and │
+│                                                                exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
 │ test               run a simple test                                                 │
 │ randtest           repeat a test with multiple random seeds                          │
 │ regression         run rtl regression                                                │
+│ elab               elaborate a model with pyslang                                    │
+│ elab-regression    run named model elaboration profiles                              │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
 │                    subtree, instances-of, port-connections, source-snippet); JSON on │
 │                    stdout                                                            │
+│ mcp                serve the design knowledge graph, test status, coverage, physical │
+│                    metrics, hierarchy queries and — with a hub running — the live    │
+│                    session over the Model Context Protocol (stdio); needs the 'mcp'  │
+│                    extra                                                             │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
@@ -63,11 +79,14 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ fpga               run FPGA implementation (synth + place + route)                   │
 │ fpga-regression    run FPGA implementation regression                                │
 │ saif               convert FST/VCD trace to SAIF v2.0                                │
-│ cdc                run CDC lint                                                      │
-│ cdc-regression     run CDC lint regression                                           │
+│ lint               run style lint (verible)                                          │
+│ lint-regression    run style lint regression                                         │
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │
+│ graph              build the design knowledge graph                                  │
+│ cov                query coverage artefacts already on disk                          │
+│ phys               query physical artefacts already on disk                          │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ mut                mutation testing                                                  │
@@ -82,18 +101,20 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 ## test
 
 ```text
-Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
-                                                                                        
- run a simple test                                                                      
-                                                                                        
+Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
+
+ run a simple test
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│   test_name      [TEST_NAME]  name of test [default: (run all tests)]                │
+│   test_name      [TEST_NAME]...  names of tests [default: (run all tests)]           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --test-config                  -c      TEXT     test_config.yaml to use              │
 │                                                 [default: tests.yaml]                │
 │ --list                                          list tests in the selected           │
 │                                                 test-config and exit                 │
+│ --filter                               TEXT     case-sensitive Python regex matched  │
+│                                                 against configured test names        │
 │ --coverage-merge                                merge coverage across selected       │
 │                                                 tests; uses raw merge for            │
 │                                                 summary/html and info-process for    │
@@ -115,11 +136,47 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for each selected test               │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --shared-build-root                    TEXT     persistent directory the shared      │
+│                                                 builds are cached under, so the      │
+│                                                 cache survives a workspace wipe      │
+│                                                 [default: (cfg-rtl-reg               │
+│                                                 shared-build-root, else in-tree)]    │
+│ --rebuild                                       recompile even when a valid build    │
+│                                                 already exists (implies nothing      │
+│                                                 about --share-build)                 │
 │ --reg-level                            INTEGER  regression level to stop at          │
 │ --start-level                          INTEGER  regression level to start at         │
+│ --dispatch                             TEXT     execution backend for the test run   │
+│                                                 (local, local-parallel, slurm);      │
+│                                                 opt-in per run —                     │
+│                                                 cfg-dispatch.backend does not        │
+│                                                 redirect rb test                     │
+│                                                 [default: (local)]                   │
+│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+│                                                 local-parallel                       │
+│                                                 [default: (cfg-dispatch jobs, else   │
+│                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
+│ --plusarg                              TEXT     add or override one runtime plusarg  │
+│                                                 for this run (KEY=VALUE, or bare KEY │
+│                                                 for a valueless +KEY); repeatable,   │
+│                                                 wins over the test's plusargs: and,  │
+│                                                 among repeats, the last one wins     │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suite     │
+│                                                 gets its own tree, its own tree lock │
+│                                                 and its own log; shared builds stay  │
+│                                                 shared                               │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -127,28 +184,50 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]
 ## randtest
 
 ```text
-Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]                                
-                                                                                        
- repeat a test with multiple random seeds                                               
-                                                                                        
+Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
+
+ repeat a test with multiple random seeds
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    test_name      TEXT       name of test [default: (run all tests)] [required]    │
 │      rnd_cnt        [RND_CNT]  number of random iterations to test [default: 2]      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
-│ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
-│ --help                          Show this message and exit.                          │
+│ --test-config        -c      TEXT     test_config.yaml to use [default: tests.yaml]  │
+│ --rnd-rpt            -r      INTEGER  repeat iteration number from previous run      │
+│ --rebuild                             recompile even when a valid build already      │
+│                                       exists (implies nothing about --share-build)   │
+│ --shared-build-root          TEXT     persistent directory the shared builds are     │
+│                                       cached under, so the cache survives a          │
+│                                       workspace wipe                                 │
+│                                       [default: (cfg-rtl-reg shared-build-root, else │
+│                                       in-tree)]                                      │
+│ --dispatch                   TEXT     execution backend for the seed fan-out (local, │
+│                                       local-parallel, slurm)                         │
+│                                       [default: (cfg-dispatch backend, else local)]  │
+│ --jobs               -j      INTEGER  concurrent jobs for --dispatch local-parallel  │
+│                                       [default: (cfg-dispatch jobs, else min(4, cpu  │
+│                                       count))]                                       │
+│ --orphans                    TEXT     what to do about an interrupted run's jobs     │
+│                                       that are still queued or running (warn,        │
+│                                       cancel, adopt)                                 │
+│                                       [default: (cfg-dispatch orphans, else warn)]   │
+│ --run-tag                    TEXT     namespace this run's artefact tree under       │
+│                                       artefacts/.runs/<tag>/ so a concurrent run of  │
+│                                       the same suite gets its own tree, its own tree │
+│                                       lock and its own log; shared builds stay       │
+│                                       shared                                         │
+│ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## regression
 
 ```text
-Usage: rtl-buddy regression [OPTIONS]                                                  
-                                                                                        
- run rtl regression                                                                     
-                                                                                        
+Usage: rtl-buddy regression [OPTIONS]
+
+ run rtl regression
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config                   -c      TEXT     path to regressions.yaml             │
 │                                                 [default: (Use ./regression.yaml if  │
@@ -158,6 +237,8 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 [default: 0]                         │
 │ --start-level                  -s      INTEGER  regression level to start at         │
 │                                                 [default: 0]                         │
+│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
+│                                                 for every selected test              │
 │ --coverage-merge                                merge coverage across regression     │
 │                                                 tests; uses raw merge for            │
 │                                                 summary/html and info-process for    │
@@ -181,17 +262,84 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --shared-build-root                    TEXT     persistent directory the shared      │
+│                                                 builds are cached under, so the      │
+│                                                 cache survives a workspace wipe      │
+│                                                 [default: (cfg-rtl-reg               │
+│                                                 shared-build-root, else in-tree)]    │
+│ --rebuild                                       recompile even when a valid build    │
+│                                                 already exists (implies nothing      │
+│                                                 about --share-build)                 │
+│ --dispatch                             TEXT     execution backend for test runs      │
+│                                                 (local, local-parallel, slurm)       │
+│                                                 [default: (cfg-dispatch backend,     │
+│                                                 else local)]                         │
+│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+│                                                 local-parallel                       │
+│                                                 [default: (cfg-dispatch jobs, else   │
+│                                                 min(4, cpu count))]                  │
+│ --orphans                              TEXT     what to do about an interrupted      │
+│                                                 run's jobs that are still queued or  │
+│                                                 running (warn, cancel, adopt)        │
+│                                                 [default: (cfg-dispatch orphans,     │
+│                                                 else warn)]                          │
+│ --run-tag                              TEXT     namespace this run's artefact tree   │
+│                                                 under artefacts/.runs/<tag>/ so a    │
+│                                                 concurrent run of the same suites    │
+│                                                 gets its own trees, its own tree     │
+│                                                 locks and its own logs; shared       │
+│                                                 builds stay shared                   │
 │ --help                                          Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## elab
+
+```text
+Usage: rtl-buddy elab [OPTIONS] [MODEL_NAME]
+
+ elaborate a model with pyslang
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   model_name      [MODEL_NAME]  model to elaborate; required unless --list is used   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --models-config  -c      TEXT     models.yaml to use [default: models.yaml]          │
+│ --profile                TEXT     named elaboration profile                          │
+│ --list                            list models and named profiles, then exit          │
+│ --dispatch               TEXT     execution backend (local, local-parallel, slurm)   │
+│ --jobs           -j      INTEGER  local-parallel process count                       │
+│ --help                            Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## elab-regression
+
+```text
+Usage: rtl-buddy elab-regression [OPTIONS]
+
+ run named model elaboration profiles
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT                  elab_regression.yaml to use              │
+│                                             [default: (Use ./elab_regression.yaml if │
+│                                             present, otherwise root_config.yaml      │
+│                                             elab-reg-cfg-path)]                      │
+│ --reg-level   -l      INTEGER RANGE [x>=0]  regression level to stop at [default: 0] │
+│ --dispatch            TEXT                  execution backend (local,                │
+│                                             local-parallel, slurm)                   │
+│ --jobs        -j      INTEGER               local-parallel process count             │
+│ --help                                      Show this message and exit.              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## filelist
 
 ```text
-Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]                           
-                                                                                        
- generate filelists using models.yaml                                                   
-                                                                                        
+Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]
+
+ generate filelists using models.yaml
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    model_name       TEXT           name of model [required]                        │
 │      output_path      [OUTPUT_PATH]  Output filename [default: run.f]                │
@@ -209,10 +357,10 @@ Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]
 ## hier
 
 ```text
-Usage: rtl-buddy hier [OPTIONS] NAME                                                   
-                                                                                        
- render module hierarchy via rtl-buddy-view                                             
-                                                                                        
+Usage: rtl-buddy hier [OPTIONS] NAME
+
+ render module hierarchy via rtl-buddy-view
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  with --view dut (default): model name from models.yaml; with    │
 │                      --view tb: test name from tests.yaml (the test pins both the    │
@@ -232,11 +380,13 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 │                                  [default: tree]                                     │
 │ --output           -o      TEXT  write renderer output to file instead of stdout     │
 │ --frontend                 TEXT  parser frontend (verible|slang)                     │
-│ --cdc-annotations          TEXT  clock-domain map JSON from `rtl-buddy-cdc           │
-│                                  --emit-domain-map`                                  │
-│ --rdc-annotations          TEXT  reset-domain map JSON from `rtl-buddy-cdc           │
+│ --rdc-annotations          TEXT  reset-domain map JSON from `analysis-tool           │
 │                                  --emit-reset-domain-map`                            │
 │ --clock-legend                   dot format only: emit a side legend of clock colors │
+│ --block-diagram                  dot format only: render sibling dataflow as a block │
+│                                  diagram (cluster nesting + net-labeled edges)       │
+│                                  instead of the hierarchy dump; requires             │
+│                                  rtl-buddy-sch >= 0.8.0                              │
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
 │                                  [default: rtl-buddy-view]                           │
 │ --help                           Show this message and exit.                         │
@@ -246,11 +396,11 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 ## hier-query
 
 ```text
-Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG                                    
-                                                                                        
- query the module hierarchy via rtl-buddy-view (find-module, subtree, instances-of,     
- port-connections, source-snippet); JSON on stdout                                      
-                                                                                        
+Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG
+
+ query the module hierarchy via rtl-buddy-view (find-module, subtree, instances-of,
+ port-connections, source-snippet); JSON on stdout
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  model name from models.yaml [required]                          │
 │ *    verb      TEXT  query verb: find-module, subtree, instances-of,                 │
@@ -279,19 +429,45 @@ Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## mcp
+
+```text
+Usage: rtl-buddy mcp [OPTIONS]
+
+ serve the design knowledge graph, test status, coverage, physical metrics, hierarchy
+ queries and — with a hub running — the live session over the Model Context Protocol
+ (stdio); needs the 'mcp' extra
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --graph             TEXT  graph.json to serve (default <project                      │
+│                           root>/artefacts/graph)                                     │
+│ --overlay           TEXT  results-overlay.json to join                               │
+│ --root              TEXT  project root to serve; default is discovered from cwd,     │
+│                           which is what an agent host's spawn gives you              │
+│ --design-dir        TEXT  directory searched for models.yaml                         │
+│ --frontend          TEXT  viewer parser frontend (verible|slang)                     │
+│ --tool              TEXT  path to the rtl-buddy-view binary                          │
+│                           [default: rtl-buddy-view]                                  │
+│ --list-tools              print the tool schemas and exit instead of serving         │
+│ --help                    Show this message and exit.                                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## wave
 
 ```text
-Usage: rtl-buddy wave [OPTIONS] TEST_NAME                                              
-                                                                                        
- open waveform viewer for a test                                                        
-                                                                                        
+Usage: rtl-buddy wave [OPTIONS] TEST_NAME
+
+ open waveform viewer for a test
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    test_name      TEXT  name of test to open waveform for [required]               │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --test-config     -c      TEXT  tests.yaml to use [default: tests.yaml]              │
-│ --surfer                  TEXT  cfg-surfer entry name [default: surfer-default]      │
+│ --surfer                  TEXT  cfg-surfer entry name (default: the active           │
+│                                 platform's cfg-platforms surfer routing, else        │
+│                                 surfer-default)                                      │
 │ --resim                         force re-run of debug sim even if FST exists         │
 │ --focused-signal                annotate only the signal selected via Go to          │
 │                                 declaration; default annotates all signals in scope  │
@@ -302,16 +478,17 @@ Usage: rtl-buddy wave [OPTIONS] TEST_NAME
 ## wave-fpv
 
 ```text
-Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME                                         
-                                                                                        
- open SymbiYosys counterexample VCD for a failed FPV verification                       
-                                                                                        
+Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME
+
+ open SymbiYosys counterexample VCD for a failed FPV verification
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    verif_name      TEXT  name of FPV verification to open CEX for [required]       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
-│ --surfer              TEXT  cfg-surfer entry name [default: surfer-default]          │
+│ --surfer              TEXT  cfg-surfer entry name (default: the active platform's    │
+│                             cfg-platforms surfer routing, else surfer-default)       │
 │ --help                      Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -319,10 +496,10 @@ Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME
 ## nvim-install
 
 ```text
-Usage: rtl-buddy nvim-install [OPTIONS]                                                
-                                                                                        
- install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)        
-                                                                                        
+Usage: rtl-buddy nvim-install [OPTIONS]
+
+ install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --force               remove any existing install and re-clone                       │
 │ --update              sync an existing install to the pinned revision                │
@@ -337,10 +514,10 @@ Usage: rtl-buddy nvim-install [OPTIONS]
 ## synth
 
 ```text
-Usage: rtl-buddy synth [OPTIONS] [SYNTH_NAME]                                          
-                                                                                        
- run synthesis                                                                          
-                                                                                        
+Usage: rtl-buddy synth [OPTIONS] [SYNTH_NAME]
+
+ run synthesis
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   synth_name      [SYNTH_NAME]  name of synthesis to run                             │
 │                                 [default: (run all syntheses)]                       │
@@ -357,13 +534,14 @@ Usage: rtl-buddy synth [OPTIONS] [SYNTH_NAME]
 ## synth-regression
 
 ```text
-Usage: rtl-buddy synth-regression [OPTIONS]                                            
-                                                                                        
- run synthesis regression                                                               
-                                                                                        
+Usage: rtl-buddy synth-regression [OPTIONS]
+
+ run synthesis regression
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config  -c      TEXT     path to synth_regression.yaml                         │
-│                                [default: (Use ./synth_regression.yaml if present)]   │
+│                                [default: (Use ./synth_regression.yaml if present,    │
+│                                otherwise root_config.yaml synth-reg-cfg-path)]       │
 │ --reg-level   -l      INTEGER  synthesis regression level to stop at [default: 0]    │
 │ --effort              TEXT     override synthesis effort (must match                 │
 │                                cfg-synth-efforts entry)                              │
@@ -374,10 +552,10 @@ Usage: rtl-buddy synth-regression [OPTIONS]
 ## pnr
 
 ```text
-Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]                                              
-                                                                                        
- run place-and-route                                                                    
-                                                                                        
+Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
+
+ run place-and-route
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   pnr_name      [PNR_NAME]  name of pnr run                                          │
 │                             [default: (run all entries in the suite)]                │
@@ -397,10 +575,10 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 ## power
 
 ```text
-Usage: rtl-buddy power [OPTIONS] [POWER_NAME]                                          
-                                                                                        
- run power analysis                                                                     
-                                                                                        
+Usage: rtl-buddy power [OPTIONS] [POWER_NAME]
+
+ run power analysis
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   power_name      [POWER_NAME]  name of power run                                    │
 │                                 [default: (run all entries in the suite)]            │
@@ -417,14 +595,57 @@ Usage: rtl-buddy power [OPTIONS] [POWER_NAME]
 ## power-regression
 
 ```text
-Usage: rtl-buddy power-regression [OPTIONS]                                            
-                                                                                        
- run power analysis regression                                                          
-                                                                                        
+Usage: rtl-buddy power-regression [OPTIONS]
+
+ run power analysis regression
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config  -c      TEXT     path to power_regression.yaml                         │
-│                                [default: (Use ./power_regression.yaml if present)]   │
+│                                [default: (Use ./power_regression.yaml if present,    │
+│                                otherwise root_config.yaml power-reg-cfg-path)]       │
 │ --reg-level   -l      INTEGER  power regression level to stop at [default: 0]        │
+│ --help                         Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## fpga
+
+```text
+Usage: rtl-buddy fpga [OPTIONS] [FPGA_NAME]
+
+ run FPGA implementation (synth + place + route)
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   fpga_name      [FPGA_NAME]  name of fpga run                                       │
+│                               [default: (run all entries in the suite)]              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --fpga-config  -c      TEXT     fpga.yaml to use [default: fpga.yaml]                │
+│ --list                          list fpga runs in the selected config and exit       │
+│ --reg-level    -l      INTEGER  run only entries with reglvl at or below this value  │
+│                                 [default: 0]                                         │
+│ --bitstream                     generate a bitstream after route (write_bitstream);  │
+│                                 off by default — a smoke/timing run doesn't need     │
+│                                 bitgen                                               │
+│ --help                          Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## fpga-regression
+
+```text
+Usage: rtl-buddy fpga-regression [OPTIONS]
+
+ run FPGA implementation regression
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT     path to fpga_regression.yaml                          │
+│                                [default: (Use ./fpga_regression.yaml if present,     │
+│                                otherwise root_config.yaml fpga-reg-cfg-path)]        │
+│ --reg-level   -l      INTEGER  FPGA regression level to stop at [default: 0]         │
+│ --bitstream                    generate bitstreams after route (write_bitstream);    │
+│                                off by default — a smoke/timing regression doesn't    │
+│                                need bitgen                                           │
 │ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -432,10 +653,10 @@ Usage: rtl-buddy power-regression [OPTIONS]
 ## saif
 
 ```text
-Usage: rtl-buddy saif [OPTIONS] TRACE OUTPUT                                           
-                                                                                        
- convert FST/VCD trace to SAIF v2.0                                                     
-                                                                                        
+Usage: rtl-buddy saif [OPTIONS] TRACE OUTPUT
+
+ convert FST/VCD trace to SAIF v2.0
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    trace       TEXT  path to input FST or VCD trace [required]                     │
 │ *    output      TEXT  path to write SAIF v2.0 file [required]                       │
@@ -445,50 +666,35 @@ Usage: rtl-buddy saif [OPTIONS] TRACE OUTPUT
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-## cdc
+## lint
 
 ```text
-Usage: rtl-buddy cdc [OPTIONS] [CDC_NAME]                                              
-                                                                                        
- run CDC lint                                                                           
-                                                                                        
+Usage: rtl-buddy lint [OPTIONS] [LINT_NAME]
+
+ run style lint (verible)
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│   cdc_name      [CDC_NAME]  name of CDC analysis to run                              │
-│                             [default: (run all analyses)]                            │
+│   lint_name      [LINT_NAME]  name of lint check to run [default: (run all checks)]  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --cdc-config        -c      TEXT       cdc.yaml to use [default: cdc.yaml]           │
-│ --list                                 list analyses in the selected config and exit │
-│ --emit-constraints                     generate scoped CDC timing exceptions from    │
-│                                        the verified crossing set instead of linting  │
-│ --format                    [sdc|xdc]  constraint dialect for --emit-constraints     │
-│                                        [default: xdc]                                │
-│ --scoped                               --emit-constraints: emit IP-relative          │
-│                                        (SCOPED_TO_REF) constraints, omitting         │
-│                                        top-level clock defs/groups                   │
-│ --output            -o      TEXT       --emit-constraints: write to this file        │
-│                                        (default: stdout)                             │
-│ --check-xdc                 FILE       audit a Vivado XDC's CDC exceptions against   │
-│                                        the verified crossing set instead of linting  │
-│ --recognize-sync            REGEX      --check-xdc: instance-path regex for a        │
-│                                        synchronizer the analyzer did not recognize   │
-│                                        (e.g. a blackboxed xpm_cdc_*); repeatable.    │
-│                                        Adds to cdc.yaml's recognized-syncs           │
-│ --help                                 Show this message and exit.                   │
+│ --lint-config  -c      TEXT  lint.yaml to use [default: lint.yaml]                   │
+│ --list                       list checks in the selected config and exit             │
+│ --help                       Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-## cdc-regression
+## lint-regression
 
 ```text
-Usage: rtl-buddy cdc-regression [OPTIONS]                                              
-                                                                                        
- run CDC lint regression                                                                
-                                                                                        
+Usage: rtl-buddy lint-regression [OPTIONS]
+
+ run style lint regression
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --reg-config  -c      TEXT     path to cdc_regression.yaml                           │
-│                                [default: (Use ./cdc_regression.yaml if present)]     │
-│ --reg-level   -l      INTEGER  CDC regression level to stop at [default: 0]          │
+│ --reg-config  -c      TEXT     path to lint_regression.yaml                          │
+│                                [default: (Use ./lint_regression.yaml if present,     │
+│                                otherwise root_config.yaml lint-reg-cfg-path)]        │
+│ --reg-level   -l      INTEGER  lint regression level to stop at [default: 0]         │
 │ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -496,10 +702,10 @@ Usage: rtl-buddy cdc-regression [OPTIONS]
 ## fpv
 
 ```text
-Usage: rtl-buddy fpv [OPTIONS] [FPV_NAME]                                              
-                                                                                        
- run formal property verification                                                       
-                                                                                        
+Usage: rtl-buddy fpv [OPTIONS] [FPV_NAME]
+
+ run formal property verification
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   fpv_name      [FPV_NAME]  name of FPV verification to run                          │
 │                             [default: (run all verifications)]                       │
@@ -514,13 +720,14 @@ Usage: rtl-buddy fpv [OPTIONS] [FPV_NAME]
 ## fpv-regression
 
 ```text
-Usage: rtl-buddy fpv-regression [OPTIONS]                                              
-                                                                                        
- run FPV regression                                                                     
-                                                                                        
+Usage: rtl-buddy fpv-regression [OPTIONS]
+
+ run FPV regression
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config  -c      TEXT     path to fpv_regression.yaml                           │
-│                                [default: (Use ./fpv_regression.yaml if present)]     │
+│                                [default: (Use ./fpv_regression.yaml if present,      │
+│                                otherwise root_config.yaml fpv-reg-cfg-path)]         │
 │ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
 │ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -529,10 +736,10 @@ Usage: rtl-buddy fpv-regression [OPTIONS]
 ## tool-check
 
 ```text
-Usage: rtl-buddy tool-check [OPTIONS]                                                  
-                                                                                        
- check installed tool dependencies and subcommand readiness                             
-                                                                                        
+Usage: rtl-buddy tool-check [OPTIONS]
+
+ check installed tool dependencies and subcommand readiness
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --format                                       TEXT  text | json [default: text]     │
 │ --required-for                                 TEXT  check only what `rb             │
@@ -552,13 +759,392 @@ Usage: rtl-buddy tool-check [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## graph
+
+```text
+Usage: rtl-buddy graph [OPTIONS] COMMAND [ARGS]...
+
+ build the design knowledge graph
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ build    extract every tier and merge them into artefacts/graph/graph.json           │
+│ results  refresh artefacts/graph/results-overlay.json — last status, seed and        │
+│          artefact paths per test node; graph.json is not touched                     │
+│ query    keyword search over graph.json with neighbourhood expansion and the results │
+│          overlay joined in                                                           │
+│ path     shortest chain of edges between two graph nodes                             │
+│ explain  one node's attributes, every edge on it, and its last result                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph build
+
+```text
+Usage: rtl-buddy graph build [OPTIONS]
+
+ extract every tier and merge them into artefacts/graph/graph.json
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --model                                               TEXT  model name to export in  │
+│                                                             the design tier;         │
+│                                                             repeatable. Default:     │
+│                                                             every model declared     │
+│                                                             under --design-dir       │
+│ --regression           -c                             TEXT  regression.yaml whose    │
+│                                                             suites pin the models to │
+│                                                             export (mutually         │
+│                                                             exclusive with --model)  │
+│ --spec-dir                                            TEXT  directory searched for   │
+│                                                             specs.yaml               │
+│ --verif-dir                                           TEXT  directory searched for   │
+│                                                             tests.yaml               │
+│ --design-dir                                          TEXT  directory searched for   │
+│                                                             models.yaml              │
+│ --out-dir              -o                             TEXT  output directory         │
+│                                                             (default: <project       │
+│                                                             root>/artefacts/graph)   │
+│ --frontend                                            TEXT  viewer parser frontend   │
+│                                                             (verible|slang)          │
+│ --design                   --no-design                      run the rtl-buddy-view   │
+│                                                             design tier (default on) │
+│                                                             [default: design]        │
+│ --tb                       --no-tb                          also export each         │
+│                                                             testbench's own          │
+│                                                             hierarchy, rooted at its │
+│                                                             toplevel: (default on;   │
+│                                                             --no-tb is DUT-only)     │
+│                                                             [default: tb]            │
+│ --flow-tops                --no-flow-tops                   also export each         │
+│                                                             formal/synth/cdc run's   │
+│                                                             top over the flow's own  │
+│                                                             filelist when it is not  │
+│                                                             the model top (default   │
+│                                                             on)                      │
+│                                                             [default: flow-tops]     │
+│ --bind                     --no-bind                        run the post-merge       │
+│                                                             binding stage that ties  │
+│                                                             cocotb tests to the DUT  │
+│                                                             hierarchy (default on)   │
+│                                                             [default: bind]          │
+│ --extract                  --no-extract                     run the binding tier     │
+│                                                             when the extractor       │
+│                                                             (rtl-buddy-graph-extrac… │
+│                                                             is installed             │
+│                                                             [default: extract]       │
+│ --extract-cross-check      --no-extract-cross-che…          cross-check the internal │
+│                                                             merge against the        │
+│                                                             extractor's              │
+│                                                             `merge-graphs` when it   │
+│                                                             is installed             │
+│                                                             [default:                │
+│                                                             extract-cross-check]     │
+│ --force                                                     rebuild even when no     │
+│                                                             input changed            │
+│ --strict                                                    exit non-zero on any     │
+│                                                             per-item failure, not    │
+│                                                             just a dead tier         │
+│ --tool                                                TEXT  path to the              │
+│                                                             rtl-buddy-view binary    │
+│                                                             [default:                │
+│                                                             rtl-buddy-view]          │
+│ --help                                                      Show this message and    │
+│                                                             exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph results
+
+```text
+Usage: rtl-buddy graph results [OPTIONS]
+
+ refresh artefacts/graph/results-overlay.json — last status, seed and artefact paths
+ per test node; graph.json is not touched
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --verif-dir             TEXT  directory searched for tests.yaml                      │
+│ --out-dir       -o      TEXT  output directory (default: <project                    │
+│                               root>/artefacts/graph)                                 │
+│ --graph                 TEXT  graph.json to cross-check ids against (default:        │
+│                               <out-dir>/graph.json); read, never written             │
+│ --strict                      exit non-zero when an envelope could not be read, a    │
+│                               test node has no result, or a result matches no node   │
+│ --coverage              TEXT  coverage source to join onto the graph's ids: 'auto'   │
+│                               (cov_dir/manifest.json, then the per-test coverage.dat │
+│                               databases this scan finds), 'model' (the manifest      │
+│                               only), 'none', or a path to a merged LCOV .info file;  │
+│                               nothing is re-run                                      │
+│                               [default: auto]                                        │
+│ --no-coverage                 skip the coverage join (same as --coverage none)       │
+│ --cov-dir               TEXT  coverage artefact directory to join from (default: the │
+│                               newest cov_dir/ under the project)                     │
+│ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
+│                               discovery                                              │
+│ --run-tag               TEXT  convert one --run-tag run's results: scan              │
+│                               artefacts/.runs/<tag>/ in every suite and write that   │
+│                               run's overlay under artefacts/.runs/<tag>/graph/       │
+│                               (graph.json is still read from artefacts/graph/)       │
+│ --help                        Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph query
+
+```text
+Usage: rtl-buddy graph query [OPTIONS] QUESTION
+
+ keyword search over graph.json with neighbourhood expansion and the results overlay
+ joined in
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    question      TEXT  what to look for — an identifier or a plain question, e.g.  │
+│                          "A-COV-1" or "which tests exercise blk_a"                   │
+│                          [required]                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --type                             TEXT     restrict to one node type (module, test, │
+│                                             coverage_item, ...)                      │
+│ --tier                             TEXT     restrict to one tier                     │
+│                                             (design|config|binding)                  │
+│ --limit                            INTEGER  maximum matches to report [default: 10]  │
+│ --depth                            INTEGER  hops of neighbourhood expansion around   │
+│                                             each match (0 disables; maximum 3)       │
+│                                             [default: 1]                             │
+│ --max-neighbors                    INTEGER  neighbours reported per match; anything  │
+│                                             beyond is counted in neighbors_truncated │
+│                                             rather than dropped silently             │
+│                                             [default: 25]                            │
+│ --results          --no-results             join the regression-results overlay onto │
+│                                             every node                               │
+│                                             [default: results]                       │
+│ --expand                                    full node summaries for every neighbour  │
+│                                             instead of the lean id/label/type        │
+│                                             references                               │
+│ --graph                            TEXT     graph.json to query (default <project    │
+│                                             root>/artefacts/graph)                   │
+│ --overlay                          TEXT     results-overlay.json to join (default:   │
+│                                             beside graph.json)                       │
+│ --help                                      Show this message and exit.              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph path
+
+```text
+Usage: rtl-buddy graph path [OPTIONS] SOURCE TARGET
+
+ shortest chain of edges between two graph nodes
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    source      TEXT  start node id, or a bare unambiguous name [required]          │
+│ *    target      TEXT  end node id, or a bare unambiguous name [required]            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --directed     --undirected             follow edge direction; undirected by default │
+│                                         because edge direction encodes role, not     │
+│                                         reachability                                 │
+│                                         [default: undirected]                        │
+│ --max-paths                    INTEGER  shortest paths to report [default: 3]        │
+│ --results      --no-results             join the regression-results overlay onto     │
+│                                         every node                                   │
+│                                         [default: results]                           │
+│ --graph                        TEXT     graph.json to query                          │
+│ --overlay                      TEXT     results-overlay.json to join                 │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph explain
+
+```text
+Usage: rtl-buddy graph explain [OPTIONS] NODE
+
+ one node's attributes, every edge on it, and its last result
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    node      TEXT  node id, or a bare unambiguous name [required]                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --results    --no-results          join the regression-results overlay onto every    │
+│                                    node                                              │
+│                                    [default: results]                                │
+│ --expand                           full node summaries for every edge peer instead   │
+│                                    of the lean id/label/type references              │
+│ --graph                      TEXT  graph.json to query                               │
+│ --overlay                    TEXT  results-overlay.json to join                      │
+│ --help                             Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## cov
+
+```text
+Usage: rtl-buddy cov [OPTIONS] COMMAND [ARGS]...
+
+ query coverage artefacts already on disk
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ summary  run-level and per-test scalars, coldest files first                         │
+│ module   per-file, per-point coverage for one module's sources                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## cov summary
+
+```text
+Usage: rtl-buddy cov summary [OPTIONS]
+
+ run-level and per-test scalars, coldest files first
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER  files to report, coldest first (0 for all) [default: 20]  │
+│ --cov-dir         TEXT     coverage artefact directory to read                       │
+│                            [default: (newest cov_dir under the project root)]        │
+│ --manifest        TEXT     manifest.json to read directly                            │
+│ --help                     Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## cov module
+
+```text
+Usage: rtl-buddy cov module [OPTIONS] MODULE
+
+ per-file, per-point coverage for one module's sources
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    module      TEXT  module name as the coverage model records it [required]       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --cold        --all             list only the points with no hits [default: cold]    │
+│ --limit                INTEGER  points to list per metric (0 for all) [default: 20]  │
+│ --cov-dir              TEXT     coverage artefact directory to read                  │
+│                                 [default: (newest cov_dir under the project root)]   │
+│ --manifest             TEXT     manifest.json to read directly                       │
+│ --help                          Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys
+
+```text
+Usage: rtl-buddy phys [OPTIONS] COMMAND [ARGS]...
+
+ query physical artefacts already on disk
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ runs      every run with physical artefacts under the project, newest first          │
+│ summary   the run's totals, its heaviest modules and its hottest instances           │
+│ module    one module's cells and area, and the instances of it with power            │
+│ instance  one instance's power, or the rolled-up subtree under its path              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys runs
+
+```text
+Usage: rtl-buddy phys runs [OPTIONS]
+
+ every run with physical artefacts under the project, newest first
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER RANGE [x>=0]  runs to list, newest first (0 for all);         │
+│                                      truncates the --machine payload too             │
+│                                      [default: 20]                                   │
+│ --help                               Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys summary
+
+```text
+Usage: rtl-buddy phys summary [OPTIONS]
+
+ the run's totals, its heaviest modules and its hottest instances
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit                  INTEGER RANGE [x>=0]  rows per ranking, heaviest/hottest    │
+│                                                first (0 for all); truncates the      │
+│                                                --machine payload too                 │
+│                                                [default: 10]                         │
+│ --modules-limit          N|none                rows in the modules ranking,          │
+│                                                overriding --limit (0 for all, 'none' │
+│                                                for no rows)                          │
+│                                                [default: (--limit)]                  │
+│ --instances-limit        N|none                rows in the instances ranking,        │
+│                                                overriding --limit (0 for all, 'none' │
+│                                                for no rows)                          │
+│                                                [default: (--limit)]                  │
+│ --phys-dir               TEXT                  artefact directory holding            │
+│                                                phys-manifest.json                    │
+│                                                [default: (newest phys-manifest.json  │
+│                                                under the project root)]              │
+│ --manifest               TEXT                  phys-manifest.json to read directly   │
+│ --help                                         Show this message and exit.           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys module
+
+```text
+Usage: rtl-buddy phys module [OPTIONS] MODULE
+
+ one module's cells and area, and the instances of it with power
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    module      TEXT  module or liberty cell as the model records it [required]     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  instances to list, hottest first (0 for      │
+│                                         all); truncates the --machine payload too    │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## phys instance
+
+```text
+Usage: rtl-buddy phys instance [OPTIONS] PATH
+
+ one instance's power, or the rolled-up subtree under its path
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    path      TEXT  instance path, exact or the root of a subtree [required]        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER RANGE [x>=0]  hottest children to list (0 for all);        │
+│                                         truncates the --machine payload too          │
+│                                         [default: 10]                                │
+│ --phys-dir        TEXT                  artefact directory holding                   │
+│                                         phys-manifest.json                           │
+│                                         [default: (newest phys-manifest.json under   │
+│                                         the project root)]                           │
+│ --manifest        TEXT                  phys-manifest.json to read directly          │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## axi-profile
 
 ```text
-Usage: rtl-buddy axi-profile [OPTIONS] COMMAND [ARGS]...                               
-                                                                                        
- profile AXI interconnect performance via rtl-buddy-axi-profiler                        
-                                                                                        
+Usage: rtl-buddy axi-profile [OPTIONS] COMMAND [ARGS]...
+
+ profile AXI interconnect performance via rtl-buddy-axi-profiler
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -573,10 +1159,10 @@ Usage: rtl-buddy axi-profile [OPTIONS] COMMAND [ARGS]...
 ## axi-profile run
 
 ```text
-Usage: rtl-buddy axi-profile run [OPTIONS] TEST_NAME                                   
-                                                                                        
- ingest a test's FST and emit per-test axi-perf.json                                    
-                                                                                        
+Usage: rtl-buddy axi-profile run [OPTIONS] TEST_NAME
+
+ ingest a test's FST and emit per-test axi-perf.json
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    test_name      TEXT  test from tests.yaml [required]                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -605,10 +1191,10 @@ Usage: rtl-buddy axi-profile run [OPTIONS] TEST_NAME
 ## axi-profile discover
 
 ```text
-Usage: rtl-buddy axi-profile discover [OPTIONS] MODEL_NAME                             
-                                                                                        
- parse RTL to (re)generate the model's axi-bundles.yaml manifest                        
-                                                                                        
+Usage: rtl-buddy axi-profile discover [OPTIONS] MODEL_NAME
+
+ parse RTL to (re)generate the model's axi-bundles.yaml manifest
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    model_name      TEXT  model from models.yaml [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -628,10 +1214,10 @@ Usage: rtl-buddy axi-profile discover [OPTIONS] MODEL_NAME
 ## axi-profile gen-monitor
 
 ```text
-Usage: rtl-buddy axi-profile gen-monitor [OPTIONS] MODEL_NAME                          
-                                                                                        
- emit the SV bind-style AXI monitor for the model's testbench                           
-                                                                                        
+Usage: rtl-buddy axi-profile gen-monitor [OPTIONS] MODEL_NAME
+
+ emit the SV bind-style AXI monitor for the model's testbench
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    model_name      TEXT  model from models.yaml [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -653,10 +1239,10 @@ Usage: rtl-buddy axi-profile gen-monitor [OPTIONS] MODEL_NAME
 ## axi-profile notebook
 
 ```text
-Usage: rtl-buddy axi-profile notebook [OPTIONS] TEST_NAME                              
-                                                                                        
- launch the packaged marimo notebook against a test's per-txn parquet                   
-                                                                                        
+Usage: rtl-buddy axi-profile notebook [OPTIONS] TEST_NAME
+
+ launch the packaged marimo notebook against a test's per-txn parquet
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    test_name      TEXT  test from tests.yaml [required]                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -665,17 +1251,12 @@ Usage: rtl-buddy axi-profile notebook [OPTIONS] TEST_NAME
 │ --port                         INTEGER  TCP port for marimo's edit server (default:  │
 │                                         OS-assigned)                                 │
 │ --foreground       --daemon             Run marimo in the foreground (default).      │
-│                                         --daemon is accepted but currently falls     │
-│                                         back to foreground; background detach is a   │
-│                                         follow-up.                                   │
+│                                         --daemon is accepted for compatibility and   │
+│                                         also runs in the foreground.                 │
 │                                         [default: foreground]                        │
-│ --headless                              Forward `--headless --no-token` to marimo.   │
-│                                         Used by the hub-initiated 'Open in marimo'   │
-│                                         flow (Phase 2 of the marimo umbrella) — the  │
-│                                         SPA opens the URL itself, so marimo          │
-│                                         shouldn't auto-pop a browser and the auth    │
-│                                         token is disabled for the loopback-only      │
-│                                         handoff.                                     │
+│ --headless                              Forward `--headless --no-token` to marimo    │
+│                                         for hub launches. The hub opens the URL, and │
+│                                         the handoff is loopback-only.                │
 │ --marimo                       TEXT     path to the marimo binary (default: 'marimo' │
 │                                         on PATH)                                     │
 │                                         [default: marimo]                            │
@@ -686,10 +1267,10 @@ Usage: rtl-buddy axi-profile notebook [OPTIONS] TEST_NAME
 ## verible
 
 ```text
-Usage: rtl-buddy verible [OPTIONS] COMMAND [ARGS]...                                   
-                                                                                        
- verible commands                                                                       
-                                                                                        
+Usage: rtl-buddy verible [OPTIONS] COMMAND [ARGS]...
+
+ verible commands
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -706,25 +1287,34 @@ Usage: rtl-buddy verible [OPTIONS] COMMAND [ARGS]...
 ## verible lint
 
 ```text
-Usage: rtl-buddy verible lint [OPTIONS] [VERIBLE_ARGS]...                              
-                                                                                        
- run verible-verilog-lint                                                               
-                                                                                        
+Usage: rtl-buddy verible lint [OPTIONS] [VERIBLE_ARGS]...
+
+ run verible-verilog-lint
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   verible_args      [VERIBLE_ARGS]...                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                          │
+│ --model          TEXT  Model name from models.yaml whose filelist supplies the files │
+│                        to visit (repeatable). Bare source entries only: -v/-y        │
+│                        library files and +incdir+/+define+/+libext+ directives are   │
+│                        dropped, then the cfg-verible `exclude` globs and --exclude   │
+│                        filter the rest.                                              │
+│ --exclude        TEXT  Glob of project-root-relative paths dropped from --model      │
+│                        expansion (repeatable, fnmatch semantics: * also crosses      │
+│                        directory separators). Adds to the cfg-verible `exclude`      │
+│                        list.                                                         │
+│ --help                 Show this message and exit.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## verible syntax
 
 ```text
-Usage: rtl-buddy verible syntax [OPTIONS] [VERIBLE_ARGS]...                            
-                                                                                        
- run verible-verilog-syntax                                                             
-                                                                                        
+Usage: rtl-buddy verible syntax [OPTIONS] [VERIBLE_ARGS]...
+
+ run verible-verilog-syntax
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   verible_args      [VERIBLE_ARGS]...                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -736,25 +1326,34 @@ Usage: rtl-buddy verible syntax [OPTIONS] [VERIBLE_ARGS]...
 ## verible format
 
 ```text
-Usage: rtl-buddy verible format [OPTIONS] [VERIBLE_ARGS]...                            
-                                                                                        
- run verible-verilog-format                                                             
-                                                                                        
+Usage: rtl-buddy verible format [OPTIONS] [VERIBLE_ARGS]...
+
+ run verible-verilog-format
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   verible_args      [VERIBLE_ARGS]...                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                          │
+│ --model          TEXT  Model name from models.yaml whose filelist supplies the files │
+│                        to visit (repeatable). Bare source entries only: -v/-y        │
+│                        library files and +incdir+/+define+/+libext+ directives are   │
+│                        dropped, then the cfg-verible `exclude` globs and --exclude   │
+│                        filter the rest.                                              │
+│ --exclude        TEXT  Glob of project-root-relative paths dropped from --model      │
+│                        expansion (repeatable, fnmatch semantics: * also crosses      │
+│                        directory separators). Adds to the cfg-verible `exclude`      │
+│                        list.                                                         │
+│ --help                 Show this message and exit.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## verible preprocessor
 
 ```text
-Usage: rtl-buddy verible preprocessor [OPTIONS] [VERIBLE_ARGS]...                      
-                                                                                        
- run verible-verilog-preprocessor                                                       
-                                                                                        
+Usage: rtl-buddy verible preprocessor [OPTIONS] [VERIBLE_ARGS]...
+
+ run verible-verilog-preprocessor
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   verible_args      [VERIBLE_ARGS]...                                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -766,11 +1365,11 @@ Usage: rtl-buddy verible preprocessor [OPTIONS] [VERIBLE_ARGS]...
 ## verible filelist
 
 ```text
-Usage: rtl-buddy verible filelist [OPTIONS]                                            
-                                                                                        
- generate verible.filelist from models.yaml so verible-verilog-ls can resolve           
- cross-file symbols                                                                     
-                                                                                        
+Usage: rtl-buddy verible filelist [OPTIONS]
+
+ generate verible.filelist from models.yaml so verible-verilog-ls can resolve
+ cross-file symbols
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --model           TEXT  Model name(s) to include. May be repeated. Default: union of │
 │                         every model declared in any models.yaml under the project    │
@@ -784,10 +1383,10 @@ Usage: rtl-buddy verible filelist [OPTIONS]
 ## mut
 
 ```text
-Usage: rtl-buddy mut [OPTIONS] COMMAND [ARGS]...                                       
-                                                                                        
- mutation testing                                                                       
-                                                                                        
+Usage: rtl-buddy mut [OPTIONS] COMMAND [ARGS]...
+
+ mutation testing
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -801,10 +1400,10 @@ Usage: rtl-buddy mut [OPTIONS] COMMAND [ARGS]...
 ## mut list
 
 ```text
-Usage: rtl-buddy mut list [OPTIONS]                                                    
-                                                                                        
- enumerate mutation candidate sites without mutating                                    
-                                                                                        
+Usage: rtl-buddy mut list [OPTIONS]
+
+ enumerate mutation candidate sites without mutating
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --mut-config  -c      TEXT  mut.yaml to use [default: mut.yaml]                      │
 │ --help                      Show this message and exit.                              │
@@ -814,10 +1413,10 @@ Usage: rtl-buddy mut list [OPTIONS]
 ## mut run
 
 ```text
-Usage: rtl-buddy mut run [OPTIONS]                                                     
-                                                                                        
- generate mutants, score against an FPV proof, report                                   
-                                                                                        
+Usage: rtl-buddy mut run [OPTIONS]
+
+ generate mutants, score against an FPV proof, report
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --mut-config  -c      TEXT  mut.yaml to use [default: mut.yaml]                      │
 │ --help                      Show this message and exit.                              │
@@ -827,10 +1426,10 @@ Usage: rtl-buddy mut run [OPTIONS]
 ## mut score
 
 ```text
-Usage: rtl-buddy mut score [OPTIONS] REPORT                                            
-                                                                                        
- recompute mutation score from a saved report                                           
-                                                                                        
+Usage: rtl-buddy mut score [OPTIONS] REPORT
+
+ recompute mutation score from a saved report
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    report      TEXT  path to a mut_report.json from a previous run [required]      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -842,10 +1441,10 @@ Usage: rtl-buddy mut score [OPTIONS] REPORT
 ## hub
 
 ```text
-Usage: rtl-buddy hub [OPTIONS] COMMAND [ARGS]...                                       
-                                                                                        
- manage the rtl-buddy-hub daemon                                                        
-                                                                                        
+Usage: rtl-buddy hub [OPTIONS] COMMAND [ARGS]...
+
+ manage the rtl-buddy-hub daemon
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -865,13 +1464,20 @@ Usage: rtl-buddy hub [OPTIONS] COMMAND [ARGS]...
 ## hub start
 
 ```text
-Usage: rtl-buddy hub start [OPTIONS]                                                   
-                                                                                        
- start the rtl-buddy-hub daemon for this project                                        
-                                                                                        
+Usage: rtl-buddy hub start [OPTIONS]
+
+ start the rtl-buddy-hub daemon for this project
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --foreground       --daemon                                    Run in the foreground │
-│                                                                (default).            │
+│                                                                (default). --daemon   │
+│                                                                detaches the hub into │
+│                                                                its own session,      │
+│                                                                redirects its output  │
+│                                                                to hub.log, and       │
+│                                                                returns as soon as    │
+│                                                                .rtl-buddy/hub.json   │
+│                                                                is published.         │
 │                                                                [default: foreground] │
 │ --serve-viewer     --no-serve-viewer                           Also serve the viewer │
 │                                                                HTTP+WebSocket layer  │
@@ -927,15 +1533,11 @@ Usage: rtl-buddy hub start [OPTIONS]
 │ --model                                 TEXT                   Generate view.json on │
 │                                                                hub start for this    │
 │                                                                model name (looked up │
-│                                                                in models.yaml).      │
-│                                                                Replaces the legacy   │
-│                                                                workflow of running   │
-│                                                                `rb hier <model>      │
-│                                                                --format json -o      │
-│                                                                .rtl-buddy/view.json` │
-│                                                                manually before each  │
-│                                                                hub start. When unset │
-│                                                                the hub falls back to │
+│                                                                in models.yaml),      │
+│                                                                avoiding a separate   │
+│                                                                `rb hier` invocation. │
+│                                                                When unset the hub    │
+│                                                                falls back to         │
 │                                                                .view_json from       │
 │                                                                hub.toml. Requires    │
 │                                                                --serve-viewer.       │
@@ -977,10 +1579,10 @@ Usage: rtl-buddy hub start [OPTIONS]
 ## hub stop
 
 ```text
-Usage: rtl-buddy hub stop [OPTIONS]                                                    
-                                                                                        
- ask the running hub to shut down                                                       
-                                                                                        
+Usage: rtl-buddy hub stop [OPTIONS]
+
+ ask the running hub to shut down
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -989,10 +1591,10 @@ Usage: rtl-buddy hub stop [OPTIONS]
 ## hub status
 
 ```text
-Usage: rtl-buddy hub status [OPTIONS]                                                  
-                                                                                        
- print the running hub's discovery record                                               
-                                                                                        
+Usage: rtl-buddy hub status [OPTIONS]
+
+ print the running hub's discovery record
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1001,10 +1603,10 @@ Usage: rtl-buddy hub status [OPTIONS]
 ## hub log
 
 ```text
-Usage: rtl-buddy hub log [OPTIONS]                                                     
-                                                                                        
- tail the hub log                                                                       
-                                                                                        
+Usage: rtl-buddy hub log [OPTIONS]
+
+ tail the hub log
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --lines  -n                 INTEGER  Trailing lines to print before following.       │
 │                                      [default: 50]                                   │
@@ -1016,10 +1618,10 @@ Usage: rtl-buddy hub log [OPTIONS]
 ## hub install-launchagent
 
 ```text
-Usage: rtl-buddy hub install-launchagent [OPTIONS]                                     
-                                                                                        
- install the macOS LaunchAgent so the hub auto-starts at login                          
-                                                                                        
+Usage: rtl-buddy hub install-launchagent [OPTIONS]
+
+ install the macOS LaunchAgent so the hub auto-starts at login
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1028,10 +1630,10 @@ Usage: rtl-buddy hub install-launchagent [OPTIONS]
 ## hub uninstall-launchagent
 
 ```text
-Usage: rtl-buddy hub uninstall-launchagent [OPTIONS]                                   
-                                                                                        
- remove the macOS LaunchAgent                                                           
-                                                                                        
+Usage: rtl-buddy hub uninstall-launchagent [OPTIONS]
+
+ remove the macOS LaunchAgent
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1040,10 +1642,10 @@ Usage: rtl-buddy hub uninstall-launchagent [OPTIONS]
 ## hub config
 
 ```text
-Usage: rtl-buddy hub config [OPTIONS] COMMAND [ARGS]...                                
-                                                                                        
- hub.toml utilities                                                                     
-                                                                                        
+Usage: rtl-buddy hub config [OPTIONS] COMMAND [ARGS]...
+
+ hub.toml utilities
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1055,10 +1657,10 @@ Usage: rtl-buddy hub config [OPTIONS] COMMAND [ARGS]...
 ## hub config validate
 
 ```text
-Usage: rtl-buddy hub config validate [OPTIONS]                                         
-                                                                                        
- schema-check .rtl-buddy/hub.toml                                                       
-                                                                                        
+Usage: rtl-buddy hub config validate [OPTIONS]
+
+ schema-check .rtl-buddy/hub.toml
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --path        PATH  Override the default project hub.toml path.                      │
 │ --help              Show this message and exit.                                      │
@@ -1068,10 +1670,10 @@ Usage: rtl-buddy hub config validate [OPTIONS]
 ## hub send
 
 ```text
-Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...                                  
-                                                                                        
- One-shot peer for the running rtl-buddy-hub. Connects as origin=cli.                   
-                                                                                        
+Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
+
+ One-shot peer for the running rtl-buddy-hub. Connects as origin=cli.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1081,6 +1683,32 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ cursor         Broadcast cursor_time_changed{t_fs}.                                  │
 │ scope          Broadcast scope_changed{wave_scope}.                                  │
 │ open           Broadcast source_focused{file, line, col}.                            │
+│ graph-focus    Broadcast graph_focus{node} — point the hub's design knowledge graph  │
+│                pane (http://127.0.0.1:<http_port>/gph) at one node of                │
+│                artefacts/graph/graph.json. NODE is a graph node id: 'module:fifo',   │
+│                'inst:top/top.u_fifo', 'test:verif/dma#smoke',                        │
+│                'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and │
+│                docs/concepts/graph.md lists. The hub caches the focus and replays it │
+│                to the pane on connect, so sending this before the browser tab is     │
+│                open works.                                                           │
+│ cov-focus      Broadcast cov_focus{target} — point the hub's coverage pane           │
+│                (http://127.0.0.1:<http_port>/cov) at one target of the run's         │
+│                coverage model. TARGET is prefixed: 'file:design/blk.sv',             │
+│                'module:blk', or 'test:verif/blk#basic'; an unprefixed string is read │
+│                as a file path. --metric foregrounds one coverage kind, --line        │
+│                scrolls a file target to a line, and --item names a                   │
+│                branch/toggle/expression bin or an SVA cover point. The hub caches    │
+│                the focus and replays it to the pane on connect, so sending this      │
+│                before the browser tab is open works.                                 │
+│ phys-focus     Broadcast phys_focus{target} — point the hub's synth+power pane       │
+│                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
+│                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
+│                'module:alu'; an unprefixed string is read as an instance path.       │
+│                --metric foregrounds one physical metric. The graph pane (/gph)       │
+│                follows the same message: it turns its heat overlay on and highlights │
+│                the module the target belongs to. The hub caches the focus and        │
+│                replays it to both on connect, so sending this before the browser     │
+│                tabs are open works.                                                  │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │
@@ -1107,16 +1735,16 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                ID. Exactly one of --to / --before is required.                       │
 │ wave-comment   Add comment rows (named dividers) to surfer's view. Returns the new   │
 │                item ids. Maps to WCP add_dividers.                                   │
-│ view-pan       Ask the view peer (SPA) to pan/center on INSTANCE_PATH.               │
+│ view-pan       Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.     │
 │ overlay        Flip an overlay's enabled state on the SPA. Built-in NAMES are        │
 │                'clock', 'reset', 'axi-perf', 'wave'; an unknown name is a no-op. Use │
 │                --on / --off (default --on). Useful for agents or scripted demos that │
 │                want to direct the user's attention to a specific overlay layer       │
 │                without a UI click.                                                   │
-│ capture        Ask the view peer (SPA) to snapshot the current graph and write it to │
-│                --out. Graph-only — surrounding panels are not captured. Useful for   │
-│                agents that want to look at what the user is seeing without a browser │
-│                screenshot tool.                                                      │
+│ capture        Ask the schematic (rtl-buddy-sch) to snapshot the current graph and   │
+│                write it to --out. Graph-only — surrounding panels are not captured.  │
+│                Useful for agents that want to look at what the user is seeing        │
+│                without a browser screenshot tool.                                    │
 │ open-source    Ask the src peer (nvim) to open FILE at line+col.                     │
 │ resolve        resolve coordinates via the hub's view.json + tb_prefix mapping       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1125,10 +1753,10 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 ## hub send select
 
 ```text
-Usage: rtl-buddy hub send select [OPTIONS] INSTANCE_PATH                               
-                                                                                        
- Broadcast selection_changed{instance_path}.                                            
-                                                                                        
+Usage: rtl-buddy hub send select [OPTIONS] INSTANCE_PATH
+
+ Broadcast selection_changed{instance_path}.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    instance_path      TEXT  view.json instance_path, e.g. top.u_fifo.u_wr_ptr      │
 │                               [required]                                             │
@@ -1141,10 +1769,10 @@ Usage: rtl-buddy hub send select [OPTIONS] INSTANCE_PATH
 ## hub send signal
 
 ```text
-Usage: rtl-buddy hub send signal [OPTIONS] SIGNAL                                      
-                                                                                        
- Broadcast signal_selected{signal, wave_scope}.                                         
-                                                                                        
+Usage: rtl-buddy hub send signal [OPTIONS] SIGNAL
+
+ Broadcast signal_selected{signal, wave_scope}.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    signal      TEXT  signal name, e.g. wr_ptr_q [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1158,10 +1786,10 @@ Usage: rtl-buddy hub send signal [OPTIONS] SIGNAL
 ## hub send cursor
 
 ```text
-Usage: rtl-buddy hub send cursor [OPTIONS] T_FS                                        
-                                                                                        
- Broadcast cursor_time_changed{t_fs}.                                                   
-                                                                                        
+Usage: rtl-buddy hub send cursor [OPTIONS] T_FS
+
+ Broadcast cursor_time_changed{t_fs}.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    t_fs      INTEGER  cursor time in femtoseconds (decimal integer) [required]     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1173,10 +1801,10 @@ Usage: rtl-buddy hub send cursor [OPTIONS] T_FS
 ## hub send scope
 
 ```text
-Usage: rtl-buddy hub send scope [OPTIONS] WAVE_SCOPE                                   
-                                                                                        
- Broadcast scope_changed{wave_scope}.                                                   
-                                                                                        
+Usage: rtl-buddy hub send scope [OPTIONS] WAVE_SCOPE
+
+ Broadcast scope_changed{wave_scope}.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    wave_scope      TEXT  surfer/VCD scope, e.g. tb.dut.u_fifo [required]           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1188,10 +1816,10 @@ Usage: rtl-buddy hub send scope [OPTIONS] WAVE_SCOPE
 ## hub send open
 
 ```text
-Usage: rtl-buddy hub send open [OPTIONS] SPEC                                          
-                                                                                        
- Broadcast source_focused{file, line, col}.                                             
-                                                                                        
+Usage: rtl-buddy hub send open [OPTIONS] SPEC
+
+ Broadcast source_focused{file, line, col}.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    spec      TEXT  file:line[:col], e.g. design/dma/dma.sv:42:7 [required]         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1200,19 +1828,88 @@ Usage: rtl-buddy hub send open [OPTIONS] SPEC
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## hub send graph-focus
+
+```text
+Usage: rtl-buddy hub send graph-focus [OPTIONS] NODE
+
+ Broadcast graph_focus{node} — point the hub's design knowledge graph pane
+ (http://127.0.0.1:<http_port>/gph) at one node of artefacts/graph/graph.json. NODE is
+ a graph node id: 'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke',
+ 'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and
+ docs/concepts/graph.md lists. The hub caches the focus and replays it to the pane on
+ connect, so sending this before the browser tab is open works.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    node      TEXT  graph node id, e.g. test:verif/dma#smoke [required]             │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send cov-focus
+
+```text
+Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
+
+ Broadcast cov_focus{target} — point the hub's coverage pane
+ (http://127.0.0.1:<http_port>/cov) at one target of the run's coverage model. TARGET
+ is prefixed: 'file:design/blk.sv', 'module:blk', or 'test:verif/blk#basic'; an
+ unprefixed string is read as a file path. --metric foregrounds one coverage kind,
+ --line scrolls a file target to a line, and --item names a branch/toggle/expression
+ bin or an SVA cover point. The hub caches the focus and replays it to the pane on
+ connect, so sending this before the browser tab is open works.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  coverage target, e.g. module:blk or design/blk.sv [required]  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --metric        TEXT                  line|branch|toggle|expression|cover — which    │
+│                                       kind to foreground.                            │
+│ --line          INTEGER RANGE [x>=1]  1-based source line to scroll to.              │
+│ --item          TEXT                  Point within the target: a                     │
+│                                       branch/toggle/expression bin name as /cov.json │
+│                                       spells it, or an SVA cover point name.         │
+│ --help                                Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send phys-focus
+
+```text
+Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
+
+ Broadcast phys_focus{target} — point the hub's synth+power pane
+ (http://127.0.0.1:<http_port>/phy) at one target of the run's physical model. TARGET
+ is prefixed: 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is read as
+ an instance path. --metric foregrounds one physical metric. The graph pane (/gph)
+ follows the same message: it turns its heat overlay on and highlights the module the
+ target belongs to. The hub caches the focus and replays it to both on connect, so
+ sending this before the browser tabs are open works.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  physical target, e.g. module:alu or u_cpu/u_alu [required]    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --metric        TEXT  cells|area|leakage|dynamic|total — which metric to foreground. │
+│ --help                Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## hub send diagnose
 
 ```text
-Usage: rtl-buddy hub send diagnose [OPTIONS] SOURCE [ITEMS]...                         
-                                                                                        
- Push a diagnostics_set bundle for SOURCE. Each ITEM is                                 
- <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set (clears any      
- cached diagnostics from SOURCE). Use --instance to attach a view.json instance_path    
- hint that consumers (the SPA's on-canvas badge layer in particular) use as a fast path 
- instead of the file+line resolver.                                                     
-                                                                                        
+Usage: rtl-buddy hub send diagnose [OPTIONS] SOURCE [ITEMS]...
+
+ Push a diagnostics_set bundle for SOURCE. Each ITEM is
+ <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set (clears any
+ cached diagnostics from SOURCE). Use --instance to attach a view.json instance_path
+ hint that consumers (the SPA's on-canvas badge layer in particular) use as a fast path
+ instead of the file+line resolver.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│ *    source      TEXT        producer key (e.g. 'rtl-buddy-cdc', 'claude-analysis'); │
+│ *    source      TEXT        producer key (e.g. 'analysis-tool', 'claude-analysis'); │
 │                              latest-writer-wins per source on the hub's cache        │
 │                              [required]                                              │
 │      items       [ITEMS]...  <file>:<line>:<sev>:<code>:<msg> ...                    │
@@ -1231,10 +1928,10 @@ Usage: rtl-buddy hub send diagnose [OPTIONS] SOURCE [ITEMS]...
 ## hub send state
 
 ```text
-Usage: rtl-buddy hub send state [OPTIONS]                                              
-                                                                                        
- Snapshot the hub's cached state (active model, selection, cursor, scope, peers).       
-                                                                                        
+Usage: rtl-buddy hub send state [OPTIONS]
+
+ Snapshot the hub's cached state (active model, selection, cursor, scope, peers).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1243,10 +1940,10 @@ Usage: rtl-buddy hub send state [OPTIONS]
 ## hub send wave-add
 
 ```text
-Usage: rtl-buddy hub send wave-add [OPTIONS] VARIABLES...                              
-                                                                                        
- Ask the wave peer (surfer) to add one or more signals to the view.                     
-                                                                                        
+Usage: rtl-buddy hub send wave-add [OPTIONS] VARIABLES...
+
+ Ask the wave peer (surfer) to add one or more signals to the view.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    variables      VARIABLES...  fully-scoped variable names, e.g.                  │
 │                                   tb.dut.u_fifo.wr_ptr_q                             │
@@ -1260,10 +1957,10 @@ Usage: rtl-buddy hub send wave-add [OPTIONS] VARIABLES...
 ## hub send wave-cursor
 
 ```text
-Usage: rtl-buddy hub send wave-cursor [OPTIONS] T_FS                                   
-                                                                                        
- Ask the wave peer (surfer) to move its cursor to T_FS.                                 
-                                                                                        
+Usage: rtl-buddy hub send wave-cursor [OPTIONS] T_FS
+
+ Ask the wave peer (surfer) to move its cursor to T_FS.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    t_fs      INTEGER  cursor time in femtoseconds (decimal integer) [required]     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1275,11 +1972,11 @@ Usage: rtl-buddy hub send wave-cursor [OPTIONS] T_FS
 ## hub send wave-scope
 
 ```text
-Usage: rtl-buddy hub send wave-scope [OPTIONS] WAVE_SCOPE                              
-                                                                                        
- Ask the wave peer (surfer) to switch its active scope without populating the variable  
- panel (maps to WCP set_scope).                                                         
-                                                                                        
+Usage: rtl-buddy hub send wave-scope [OPTIONS] WAVE_SCOPE
+
+ Ask the wave peer (surfer) to switch its active scope without populating the variable
+ panel (maps to WCP set_scope).
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    wave_scope      TEXT  surfer/VCD scope [required]                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1291,10 +1988,10 @@ Usage: rtl-buddy hub send wave-scope [OPTIONS] WAVE_SCOPE
 ## hub send wave-pan
 
 ```text
-Usage: rtl-buddy hub send wave-pan [OPTIONS] T_FS                                      
-                                                                                        
- Pan surfer's viewport to center on T_FS (zoom unchanged). Maps to WCP set_viewport_to. 
-                                                                                        
+Usage: rtl-buddy hub send wave-pan [OPTIONS] T_FS
+
+ Pan surfer's viewport to center on T_FS (zoom unchanged). Maps to WCP set_viewport_to.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    t_fs      INTEGER  center time in femtoseconds [required]                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1306,10 +2003,10 @@ Usage: rtl-buddy hub send wave-pan [OPTIONS] T_FS
 ## hub send wave-zoom
 
 ```text
-Usage: rtl-buddy hub send wave-zoom [OPTIONS] START_FS END_FS                          
-                                                                                        
- Zoom + pan surfer to fit [START_FS, END_FS]. Maps to WCP set_viewport_range.           
-                                                                                        
+Usage: rtl-buddy hub send wave-zoom [OPTIONS] START_FS END_FS
+
+ Zoom + pan surfer to fit [START_FS, END_FS]. Maps to WCP set_viewport_range.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    start_fs      INTEGER  range start in femtoseconds [required]                   │
 │ *    end_fs        INTEGER  range end in femtoseconds [required]                     │
@@ -1322,10 +2019,10 @@ Usage: rtl-buddy hub send wave-zoom [OPTIONS] START_FS END_FS
 ## hub send wave-zoom-fit
 
 ```text
-Usage: rtl-buddy hub send wave-zoom-fit [OPTIONS]                                      
-                                                                                        
- Zoom surfer out to fit the whole waveform. Maps to WCP zoom_to_fit.                    
-                                                                                        
+Usage: rtl-buddy hub send wave-zoom-fit [OPTIONS]
+
+ Zoom surfer out to fit the whole waveform. Maps to WCP zoom_to_fit.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1334,11 +2031,11 @@ Usage: rtl-buddy hub send wave-zoom-fit [OPTIONS]
 ## hub send wave-items
 
 ```text
-Usage: rtl-buddy hub send wave-items [OPTIONS]                                         
-                                                                                        
- List the items currently in surfer's wave view (id, type, name). Maps to WCP           
- get_item_list + get_item_info.                                                         
-                                                                                        
+Usage: rtl-buddy hub send wave-items [OPTIONS]
+
+ List the items currently in surfer's wave view (id, type, name). Maps to WCP
+ get_item_list + get_item_info.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1347,11 +2044,11 @@ Usage: rtl-buddy hub send wave-items [OPTIONS]
 ## hub send wave-remove
 
 ```text
-Usage: rtl-buddy hub send wave-remove [OPTIONS] IDS...                                 
-                                                                                        
- Ask the wave peer (surfer) to remove items by id. IDs come from wave-add / wave-items. 
- Reports removed vs not_found.                                                          
-                                                                                        
+Usage: rtl-buddy hub send wave-remove [OPTIONS] IDS...
+
+ Ask the wave peer (surfer) to remove items by id. IDs come from wave-add / wave-items.
+ Reports removed vs not_found.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    ids      IDS...  DisplayedItemRef ids to remove, e.g. 3 5 7 [required]          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1363,12 +2060,12 @@ Usage: rtl-buddy hub send wave-remove [OPTIONS] IDS...
 ## hub send wave-move
 
 ```text
-Usage: rtl-buddy hub send wave-move [OPTIONS] IDS...                                   
-                                                                                        
- Reorder items in surfer's view. Move the given IDS (in the order listed) so the block  
- starts at --to INDEX, or just before --before ID. Exactly one of --to / --before is    
- required.                                                                              
-                                                                                        
+Usage: rtl-buddy hub send wave-move [OPTIONS] IDS...
+
+ Reorder items in surfer's view. Move the given IDS (in the order listed) so the block
+ starts at --to INDEX, or just before --before ID. Exactly one of --to / --before is
+ required.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    ids      IDS...  DisplayedItemRef ids to move, e.g. 5 6 [required]              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1383,11 +2080,11 @@ Usage: rtl-buddy hub send wave-move [OPTIONS] IDS...
 ## hub send wave-comment
 
 ```text
-Usage: rtl-buddy hub send wave-comment [OPTIONS] TEXTS...                              
-                                                                                        
- Add comment rows (named dividers) to surfer's view. Returns the new item ids. Maps to  
- WCP add_dividers.                                                                      
-                                                                                        
+Usage: rtl-buddy hub send wave-comment [OPTIONS] TEXTS...
+
+ Add comment rows (named dividers) to surfer's view. Returns the new item ids. Maps to
+ WCP add_dividers.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    texts      TEXTS...  comment labels, one divider per entry [required]           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1401,10 +2098,10 @@ Usage: rtl-buddy hub send wave-comment [OPTIONS] TEXTS...
 ## hub send view-pan
 
 ```text
-Usage: rtl-buddy hub send view-pan [OPTIONS] INSTANCE_PATH                             
-                                                                                        
- Ask the view peer (SPA) to pan/center on INSTANCE_PATH.                                
-                                                                                        
+Usage: rtl-buddy hub send view-pan [OPTIONS] INSTANCE_PATH
+
+ Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    instance_path      TEXT  view.json instance_path [required]                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1416,13 +2113,13 @@ Usage: rtl-buddy hub send view-pan [OPTIONS] INSTANCE_PATH
 ## hub send overlay
 
 ```text
-Usage: rtl-buddy hub send overlay [OPTIONS] NAME                                       
-                                                                                        
- Flip an overlay's enabled state on the SPA. Built-in NAMES are 'clock', 'reset',       
- 'axi-perf', 'wave'; an unknown name is a no-op. Use --on / --off (default --on).       
- Useful for agents or scripted demos that want to direct the user's attention to a      
- specific overlay layer without a UI click.                                             
-                                                                                        
+Usage: rtl-buddy hub send overlay [OPTIONS] NAME
+
+ Flip an overlay's enabled state on the SPA. Built-in NAMES are 'clock', 'reset',
+ 'axi-perf', 'wave'; an unknown name is a no-op. Use --on / --off (default --on).
+ Useful for agents or scripted demos that want to direct the user's attention to a
+ specific overlay layer without a UI click.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  overlay name [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1435,12 +2132,12 @@ Usage: rtl-buddy hub send overlay [OPTIONS] NAME
 ## hub send capture
 
 ```text
-Usage: rtl-buddy hub send capture [OPTIONS]                                            
-                                                                                        
- Ask the view peer (SPA) to snapshot the current graph and write it to --out.           
- Graph-only — surrounding panels are not captured. Useful for agents that want to look  
- at what the user is seeing without a browser screenshot tool.                          
-                                                                                        
+Usage: rtl-buddy hub send capture [OPTIONS]
+
+ Ask the schematic (rtl-buddy-sch) to snapshot the current graph and write it to --out.
+ Graph-only — surrounding panels are not captured. Useful for agents that want to look
+ at what the user is seeing without a browser screenshot tool.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ *  --out      -o      PATH                         Destination file. Extension       │
 │                                                    determines format if --format     │
@@ -1462,10 +2159,10 @@ Usage: rtl-buddy hub send capture [OPTIONS]
 ## hub send open-source
 
 ```text
-Usage: rtl-buddy hub send open-source [OPTIONS] SPEC                                   
-                                                                                        
- Ask the src peer (nvim) to open FILE at line+col.                                      
-                                                                                        
+Usage: rtl-buddy hub send open-source [OPTIONS] SPEC
+
+ Ask the src peer (nvim) to open FILE at line+col.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    spec      TEXT  file:line[:col], e.g. design/dma/dma.sv:42:7 [required]         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1477,10 +2174,10 @@ Usage: rtl-buddy hub send open-source [OPTIONS] SPEC
 ## hub send resolve
 
 ```text
-Usage: rtl-buddy hub send resolve [OPTIONS] COMMAND [ARGS]...                          
-                                                                                        
- resolve coordinates via the hub's view.json + tb_prefix mapping                        
-                                                                                        
+Usage: rtl-buddy hub send resolve [OPTIONS] COMMAND [ARGS]...
+
+ resolve coordinates via the hub's view.json + tb_prefix mapping
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1494,10 +2191,10 @@ Usage: rtl-buddy hub send resolve [OPTIONS] COMMAND [ARGS]...
 ## hub send resolve view-to-wave
 
 ```text
-Usage: rtl-buddy hub send resolve view-to-wave [OPTIONS] INSTANCE_PATH                 
-                                                                                        
- instance_path → wave_scope                                                             
-                                                                                        
+Usage: rtl-buddy hub send resolve view-to-wave [OPTIONS] INSTANCE_PATH
+
+ instance_path → wave_scope
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    instance_path      TEXT  view.json instance_path [required]                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1509,10 +2206,10 @@ Usage: rtl-buddy hub send resolve view-to-wave [OPTIONS] INSTANCE_PATH
 ## hub send resolve wave-to-view
 
 ```text
-Usage: rtl-buddy hub send resolve wave-to-view [OPTIONS] WAVE_SCOPE                    
-                                                                                        
- wave_scope → instance_path                                                             
-                                                                                        
+Usage: rtl-buddy hub send resolve wave-to-view [OPTIONS] WAVE_SCOPE
+
+ wave_scope → instance_path
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    wave_scope      TEXT  surfer/VCD wave_scope [required]                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1524,10 +2221,10 @@ Usage: rtl-buddy hub send resolve wave-to-view [OPTIONS] WAVE_SCOPE
 ## hub send resolve signal-to-view
 
 ```text
-Usage: rtl-buddy hub send resolve signal-to-view [OPTIONS] SIGNAL                      
-                                                                                        
- signal + wave_scope → driver instance_path(s) and driven port                          
-                                                                                        
+Usage: rtl-buddy hub send resolve signal-to-view [OPTIONS] SIGNAL
+
+ signal + wave_scope → driver instance_path(s) and driven port
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    signal      TEXT  signal name (e.g. wr_ptr_q) [required]                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1540,19 +2237,20 @@ Usage: rtl-buddy hub send resolve signal-to-view [OPTIONS] SIGNAL
 ## skill
 
 ```text
-Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...                                     
-                                                                                        
- manage the rtl_buddy agent skill                                                       
-                                                                                        
+Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
+
+ manage the rtl_buddy agent skill
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-│ install          Install the bundled rtl_buddy skill.                                │
-│ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
-│ status           Report whether the skill is installed and whether it matches the    │
-│                  current package version.                                            │
-│ view             Print the bundled rtl_buddy skill to stdout.                        │
+│ install          Install the bundled rtl_buddy skill family.                         │
+│ uninstall        Remove installed rtl_buddy skill-family files from the selected     │
+│                  scope.                                                              │
+│ status           Report whether each skill is installed and matches the package      │
+│                  version.                                                            │
+│ view             Print the primary bundled rtl_buddy skill to stdout.                │
 │ print-gitignore  Print the gitignore lines for project-level skill installs.         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1560,23 +2258,25 @@ Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
 ## skill install
 
 ```text
-Usage: rtl-buddy skill install [OPTIONS]                                               
-                                                                                        
- Install the bundled rtl_buddy skill.                                                   
-                                                                                        
- Default scope is user-level (`~/.claude/skills/rtl_buddy/` and                         
- `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the                     
- discovered project root instead; project-level copies take precedence                  
- over user-level when both exist. Use `--dir PATH` to write a single                    
- `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
- layout entirely.                                                                       
-                                                                                        
+Usage: rtl-buddy skill install [OPTIONS]
+
+ Install the bundled rtl_buddy skill family.
+
+ Default scope is user-level (`~/.claude/skills/rtl-buddy/` and
+ `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the
+ discovered project root instead; project-level copies take precedence
+ over user-level when both exist. Use `--dir PATH` to write the family as
+ sibling directories under PATH, bypassing the `.claude`/`.agents` layout.
+
+ A marked sibling `rtl_buddy/` directory is removed to prevent a stale
+ duplicate of the primary skill.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --project                   install into the discovered project root instead of the  │
 │                             user home                                                │
 │ --root                PATH  explicit target root (implies project-level layout)      │
-│ --dir                 PATH  write a single flat target at <DIR>/rtl_buddy/SKILL.md,  │
-│                             bypassing the .claude/.agents/.codex layout              │
+│ --dir                 PATH  write the skill family directly under <DIR>/, bypassing  │
+│                             the .claude/.agents/.codex layout                        │
 │ --no-claude                 skip writing the Claude Code target                      │
 │ --no-codex                  skip writing the Codex target                            │
 │ --no-gitignore              skip updating .gitignore on project-level installs       │
@@ -1589,10 +2289,13 @@ Usage: rtl-buddy skill install [OPTIONS]
 ## skill uninstall
 
 ```text
-Usage: rtl-buddy skill uninstall [OPTIONS]                                             
-                                                                                        
- Remove the installed rtl_buddy skill files from the selected scope.                    
-                                                                                        
+Usage: rtl-buddy skill uninstall [OPTIONS]
+
+ Remove installed rtl_buddy skill-family files from the selected scope.
+
+ Removes both the `rtl-buddy` directory and a marked sibling `rtl_buddy`
+ directory.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --project                uninstall from the discovered project root instead of the   │
 │                          user home                                                   │
@@ -1606,11 +2309,10 @@ Usage: rtl-buddy skill uninstall [OPTIONS]
 ## skill status
 
 ```text
-Usage: rtl-buddy skill status [OPTIONS]                                                
-                                                                                        
- Report whether the skill is installed and whether it matches the current package       
- version.                                                                               
-                                                                                        
+Usage: rtl-buddy skill status [OPTIONS]
+
+ Report whether each skill is installed and matches the package version.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --project              report status for the discovered project root instead of the  │
 │                        user home                                                     │
@@ -1622,10 +2324,10 @@ Usage: rtl-buddy skill status [OPTIONS]
 ## skill view
 
 ```text
-Usage: rtl-buddy skill view [OPTIONS]                                                  
-                                                                                        
- Print the bundled rtl_buddy skill to stdout.                                           
-                                                                                        
+Usage: rtl-buddy skill view [OPTIONS]
+
+ Print the primary bundled rtl_buddy skill to stdout.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1634,10 +2336,10 @@ Usage: rtl-buddy skill view [OPTIONS]
 ## skill print-gitignore
 
 ```text
-Usage: rtl-buddy skill print-gitignore [OPTIONS]                                       
-                                                                                        
- Print the gitignore lines for project-level skill installs.                            
-                                                                                        
+Usage: rtl-buddy skill print-gitignore [OPTIONS]
+
+ Print the gitignore lines for project-level skill installs.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1646,10 +2348,10 @@ Usage: rtl-buddy skill print-gitignore [OPTIONS]
 ## docs
 
 ```text
-Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...                                      
-                                                                                        
- browse bundled documentation                                                           
-                                                                                        
+Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...
+
+ browse bundled documentation
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1662,10 +2364,10 @@ Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...
 ## docs list
 
 ```text
-Usage: rtl-buddy docs list [OPTIONS]                                                   
-                                                                                        
- list bundled documentation pages                                                       
-                                                                                        
+Usage: rtl-buddy docs list [OPTIONS]
+
+ list bundled documentation pages
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1674,10 +2376,10 @@ Usage: rtl-buddy docs list [OPTIONS]
 ## docs show
 
 ```text
-Usage: rtl-buddy docs show [OPTIONS] SLUG                                              
-                                                                                        
- show a bundled documentation page                                                      
-                                                                                        
+Usage: rtl-buddy docs show [OPTIONS] SLUG
+
+ show a bundled documentation page
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    slug      TEXT  MkDocs path slug or slug#section-anchor, for example            │
 │                      concepts/root-config or agents#local-docs-access                │
@@ -1691,10 +2393,10 @@ Usage: rtl-buddy docs show [OPTIONS] SLUG
 ## spec
 
 ```text
-Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...                                      
-                                                                                        
- spec traceability commands                                                             
-                                                                                        
+Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...
+
+ spec traceability commands
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1708,10 +2410,10 @@ Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...
 ## spec list
 
 ```text
-Usage: rtl-buddy spec list [OPTIONS]                                                   
-                                                                                        
- list all spec blocks discovered in the project                                         
-                                                                                        
+Usage: rtl-buddy spec list [OPTIONS]
+
+ list all spec blocks discovered in the project
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --spec-dir        TEXT  Directory to search for specs.yaml files                     │
 │ --help                  Show this message and exit.                                  │
@@ -1721,10 +2423,10 @@ Usage: rtl-buddy spec list [OPTIONS]
 ## spec check-design
 
 ```text
-Usage: rtl-buddy spec check-design [OPTIONS]                                           
-                                                                                        
- show which spec blocks have design models referencing them                             
-                                                                                        
+Usage: rtl-buddy spec check-design [OPTIONS]
+
+ show which spec blocks have design models referencing them
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --spec-dir          TEXT  Directory to search for specs.yaml files                   │
 │ --design-dir        TEXT  Directory to search for models.yaml files                  │
@@ -1736,14 +2438,319 @@ Usage: rtl-buddy spec check-design [OPTIONS]
 ## spec check-coverage
 
 ```text
-Usage: rtl-buddy spec check-coverage [OPTIONS]                                         
-                                                                                        
- show which spec coverage items are addressed by tests                                  
-                                                                                        
+Usage: rtl-buddy spec check-coverage [OPTIONS]
+
+ show which spec coverage items are addressed by tests
+
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --spec-dir         TEXT  Directory to search for specs.yaml files                    │
 │ --verif-dir        TEXT  Directory to search for tests.yaml files                    │
 │ --block            TEXT  Only include spec blocks with this name; may be repeated    │
 │ --help                   Show this message and exit.                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr
+
+```text
+Usage: rtl-buddy xplr [OPTIONS] COMMAND [ARGS]...
+
+ design-space exploration experiment ledger (agent-facing)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --root        TEXT  anchor project-root discovery at this path instead of the        │
+│                     current directory (root_config.yaml/.git are resolved from       │
+│                     here). Group-level: place it between 'xplr' and the subcommand,  │
+│                     e.g. `rb xplr --root <project> list`. For driving a ledger from  │
+│                     outside its project checkout                                     │
+│ --help              Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ register        open a new experiment: pin the current git ref, record the           │
+│                 agent-declared knob manifest, return its experiment id               │
+│ attach-outcome  attach flow-declared outcome metrics to an experiment                │
+│                 (pending/running -> success|failed)                                  │
+│ list            list experiments in the ledger (one summary row each)                │
+│ show            show one experiment's full record                                    │
+│ diff            pairwise experiment diff: knob delta, direction-aware outcome delta, │
+│                 and the git diff between the pinned sources                          │
+│ frontier        curate the Pareto frontier (non-dominated set) over the declared     │
+│                 numeric outcome metrics; dominated, infeasible (routed=false), and   │
+│                 excluded experiments are reported alongside                          │
+│ knob-effect     per-knob effect history: every experiment that declared the knob,    │
+│                 with metric deltas vs its parent when available                      │
+│ materialize     check the experiment's pinned sha out into its own git worktree      │
+│                 (isolated build dir; disposable — the branch is the durable          │
+│                 artifact). Idempotent                                                │
+│ release         remove the experiment's worktree (worktree remove + prune); the exp  │
+│                 branch and the ledger record are kept                                │
+│ gc              reclaim experiment disk space, non-interactively: evict heavy        │
+│                 artifacts + worktrees per policy (default keep-frontier never        │
+│                 touches Pareto-frontier members or their lineage); record.json and   │
+│                 the pinned sha always survive, so evicted experiments can be         │
+│                 re-materialized                                                      │
+│ mock            synthetic DSE backend with known optima (dev/CI harness)             │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr register
+
+```text
+Usage: rtl-buddy xplr register [OPTIONS]
+
+ open a new experiment: pin the current git ref, record the agent-declared knob
+ manifest, return its experiment id
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --json            TEXT  JSON manifest file, or '-' for stdin: {knobs: [{name, from,  │
+│                         to, rationale?, layer?}], hypothesis?, parent?,              │
+│                         config_snapshot?, source?: {git_sha?, branch?, diff_from?},  │
+│                         provenance?: {tools?, agent?}}                               │
+│ --baseline        TEXT  git ref to record as source.diff_from (the RTL-diff          │
+│                         baseline). Default: the parent experiment's pinned sha when  │
+│                         'parent' is given, else HEAD before any snapshot             │
+│ --help                  Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr attach-outcome
+
+```text
+Usage: rtl-buddy xplr attach-outcome [OPTIONS] EXP
+
+ attach flow-declared outcome metrics to an experiment (pending/running ->
+ success|failed)
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    exp_id      EXP  experiment id, e.g. exp-0001 [required]                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ *  --json         TEXT  JSON outcome file, or '-' for stdin: {status:                │
+│                         'success'|'failed', metrics?, metric_meta?, artifacts?,      │
+│                         provenance?: {tools?, reused_state?}}                        │
+│                         [required]                                                   │
+│    --force              overwrite an outcome that is already terminal                │
+│                         (success/failed)                                             │
+│    --help               Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr list
+
+```text
+Usage: rtl-buddy xplr list [OPTIONS]
+
+ list experiments in the ledger (one summary row each)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --status        TEXT  only experiments with this outcome status                      │
+│                       (pending|running|success|failed)                               │
+│ --help                Show this message and exit.                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr show
+
+```text
+Usage: rtl-buddy xplr show [OPTIONS] EXP
+
+ show one experiment's full record
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    exp_id      EXP  experiment id, e.g. exp-0001 [required]                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr diff
+
+```text
+Usage: rtl-buddy xplr diff [OPTIONS] EXP_A EXP_B
+
+ pairwise experiment diff: knob delta, direction-aware outcome delta, and the git diff
+ between the pinned sources
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    exp_a      TEXT  first experiment id [required]                                 │
+│ *    exp_b      TEXT  second experiment id [required]                                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --patch          include the full git diff patch between the pinned sources (not     │
+│                  just --stat)                                                        │
+│ --help           Show this message and exit.                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr frontier
+
+```text
+Usage: rtl-buddy xplr frontier [OPTIONS]
+
+ curate the Pareto frontier (non-dominated set) over the declared numeric outcome
+ metrics; dominated, infeasible (routed=false), and excluded experiments are reported
+ alongside
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --metrics        TEXT  override/declare dominance directions: 'name:min,name2:max'   │
+│                        (record-level metric_meta otherwise)                          │
+│ --prefer         TEXT  scalar preference to sort the frontier (never drops           │
+│                        non-dominated points): comma/plus-separated weight*metric,    │
+│                        e.g. '0.7*lut_pct+0.3*delay_ns'; lower score = better after   │
+│                        direction normalization                                       │
+│ --help                 Show this message and exit.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr knob-effect
+
+```text
+Usage: rtl-buddy xplr knob-effect [OPTIONS] KNOB
+
+ per-knob effect history: every experiment that declared the knob, with metric deltas
+ vs its parent when available
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    name      KNOB  knob name, e.g. synth.target_freq_mhz [required]                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr materialize
+
+```text
+Usage: rtl-buddy xplr materialize [OPTIONS] EXP
+
+ check the experiment's pinned sha out into its own git worktree (isolated build dir;
+ disposable — the branch is the durable artifact). Idempotent
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    exp_id      EXP  experiment id, e.g. exp-0001 [required]                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --path        TEXT  worktree location (default: <worktree-root>/<exp>/,              │
+│                     worktree-root from cfg-xplr, under artefacts/ — keep it          │
+│                     gitignored)                                                      │
+│ --help              Show this message and exit.                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr release
+
+```text
+Usage: rtl-buddy xplr release [OPTIONS] EXP
+
+ remove the experiment's worktree (worktree remove + prune); the exp branch and the
+ ledger record are kept
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    exp_id      EXP  experiment id, e.g. exp-0001 [required]                        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr gc
+
+```text
+Usage: rtl-buddy xplr gc [OPTIONS]
+
+ reclaim experiment disk space, non-interactively: evict heavy artifacts + worktrees
+ per policy (default keep-frontier never touches Pareto-frontier members or their
+ lineage); record.json and the pinned sha always survive, so evicted experiments can be
+ re-materialized
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --dry-run                 report what would be evicted without touching anything     │
+│ --policy           TEXT   eviction policy for this run: keep-frontier (default;      │
+│                           frontier members + lineage are never evicted) |            │
+│                           oldest-first | manual (list candidates, evict nothing)     │
+│ --target-gb        FLOAT  gc down to this usage (default: cfg-xplr                   │
+│                           disk-high-watermark-gb)                                    │
+│ --help                    Show this message and exit.                                │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr mock
+
+```text
+Usage: rtl-buddy xplr mock [OPTIONS] COMMAND [ARGS]...
+
+ synthetic DSE backend with known optima (dev/CI harness)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ info   list scenarios: knob specs, metric_meta, cost model, and the analytic ground  │
+│        truth (optimum / Pareto front)                                                │
+│ run    evaluate one knob vector; with --register, record it as a ledger experiment   │
+│        with the outcome attached in one step                                         │
+│ score  score the ledger's mockflow experiments against the ground truth: regret      │
+│        (single-objective) or hypervolume + distance-to-front (multi-objective)       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr mock info
+
+```text
+Usage: rtl-buddy xplr mock info [OPTIONS]
+
+ list scenarios: knob specs, metric_meta, cost model, and the analytic ground truth
+ (optimum / Pareto front)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --scenario        TEXT  show one scenario only (rastrigin|zdt1)                      │
+│ --help                  Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr mock run
+
+```text
+Usage: rtl-buddy xplr mock run [OPTIONS]
+
+ evaluate one knob vector; with --register, record it as a ledger experiment with the
+ outcome attached in one step
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ *  --scenario             TEXT     scenario name (rastrigin|zdt1) [required]         │
+│    --json                 TEXT     JSON knob-value object {name: value}, or '-' for  │
+│                                    stdin; omitted knobs take their scenario defaults │
+│    --seed                 INTEGER  noise seed (irrelevant when --noise is 0)         │
+│                                    [default: 0]                                      │
+│    --noise                FLOAT    stddev of seeded Gaussian noise added to the      │
+│                                    objective metrics (simulated run-to-run variance; │
+│                                    default 0 = exact)                                │
+│                                    [default: 0.0]                                    │
+│    --register                      register a ledger experiment AND attach the       │
+│                                    outcome in one step (knobs recorded as            │
+│                                    from=scenario default)                            │
+│    --source-sha           TEXT     with --register: record this sha verbatim as      │
+│                                    source.git_sha (the agent-declared pin path; no   │
+│                                    dirty bit). The escape hatch for sandboxes where  │
+│                                    the project root is not a git repository          │
+│    --source-branch        TEXT     with --source-sha: optional source.branch label,  │
+│                                    recorded verbatim                                 │
+│    --help                          Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## xplr mock score
+
+```text
+Usage: rtl-buddy xplr mock score [OPTIONS]
+
+ score the ledger's mockflow experiments against the ground truth: regret
+ (single-objective) or hypervolume + distance-to-front (multi-objective)
+
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --scenario        TEXT  score one scenario only (default: every scenario with        │
+│                         mockflow experiments in the ledger)                          │
+│ --help                  Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -1,0 +1,24 @@
+{
+  "name": "rtl-buddy-docs",
+  "private": true,
+  "scripts": {
+    "docs:prepare": "uv run python scripts/export_agent_docs.py",
+    "start": "npm run docs:prepare && docusaurus start",
+    "build": "npm run docs:prepare && docusaurus build",
+    "build:all": "uv run python scripts/build_versioned_docs.py",
+    "serve": "docusaurus serve",
+    "clear": "docusaurus clear"
+  },
+  "dependencies": {
+    "@docusaurus/core": "3.10.2",
+    "@docusaurus/preset-classic": "3.10.2",
+    "@mdx-js/react": "^3.0.0",
+    "clsx": "^2.1.1",
+    "prism-react-renderer": "^2.4.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}

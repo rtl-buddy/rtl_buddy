@@ -1,5 +1,424 @@
+import hashlib
+import json
+import os
+import uuid
+from fnmatch import fnmatch
 from pathlib import Path
+from typing import Iterable
 import re
+
+from ..errors import FatalRtlBuddyError
+
+#: The suite-relative directory every rtl_buddy artefact tree is written
+#: into. Named here rather than spelled out at each use so consumers that
+#: must *recognise* rtl_buddy's own output — the shared-build stamp's
+#: directory listings, for one (#478) — derive it from the same place the
+#: writers do.
+ARTIFACT_DIRNAME = "artefacts"
+
+#: Holds the compile-key-named shared build directories, under
+#: :data:`ARTIFACT_DIRNAME`.
+SHARED_BUILDS_DIRNAME = ".shared-builds"
+
+#: Holds one subdirectory per ``--run-tag``, under :data:`ARTIFACT_DIRNAME`
+#: (#541). A tagged run's whole artefact tree — its per-test directories,
+#: its tree lock, its dispatch outputs and its results overlay — moves below
+#: ``artefacts/.runs/<tag>/``, so two runs of one suite that name different
+#: tags take different locks and never meet in a path.
+#:
+#: A *dot* directory, and one level of indirection rather than
+#: ``artefacts/<tag>/`` directly, because the artefact tree's own readers
+#: already agree on what a dot name means: ``_is_test_dir`` in
+#: :mod:`rtl_buddy.graph.results` skips them, :func:`clear_managed_outputs`
+#: never descends into one, and the ``+incdir+`` walk prunes the tree
+#: wholesale. Put a tag beside the per-test directories and a suite with a
+#: test named after the tag has one directory meaning two things — and an
+#: untagged ``rb graph results`` would report the tag as a test that ran.
+RUNS_DIRNAME = ".runs"
+
+#: What a ``--run-tag`` may contain: one safe path segment. The character
+#: class alone forbids ``/``, ``\`` and every other separator, so no
+#: accepted tag can address anything outside :data:`RUNS_DIRNAME`; the
+#: explicit checks in :func:`validate_run_tag` cover the values that are
+#: *inside* the class and still not a directory anyone means.
+RUN_TAG_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+
+#: Longest accepted tag. A namespace, not a sentence — and a component that
+#: fits well inside every filesystem's per-name limit with the per-test and
+#: ``run-NNNN`` components that nest below it.
+RUN_TAG_MAX_LEN = 64
+
+#: Every simulator build directory rtl_buddy names starts with this, both
+#: the per-test ``obj_dir_<test>`` and the shared ``obj_dir_<key>``.
+BUILD_DIR_PREFIX = "obj_dir"
+
+#: The per-run result envelope the in-process runner writes into a test's
+#: artefact directory. Named here for the same reason as the directories
+#: above: it is an rtl_buddy *output*, and the shared-build stamp has to be
+#: able to tell one of those from a generated input (#478).
+RESULT_JSON_NAME = "result.json"
+
+#: The compile stamp a simulator build writes beside its build directory —
+#: directly into ``artefacts/<test>/`` for an unshared build. Defined here
+#: rather than in :mod:`.vlog_sim` (which imports it from here) so that the
+#: protected set below and the stamp's writer cannot drift apart.
+SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+
+#: The graph tier's durable exports, in ``artefacts/graph/``. Defined here
+#: rather than in :mod:`rtl_buddy.graph` (which imports them from here)
+#: because this module is the bottom of the import graph — everything that
+#: names an artefact depends on it, so nothing can be imported *into* it.
+GRAPH_JSON_NAME = "graph.json"
+GRAPH_META_NAME = "graph-meta.json"
+RESULTS_OVERLAY_NAME = "results-overlay.json"
+
+#: `rb cov`'s durable outputs, written side by side in the coverage
+#: directory (``artefacts/cov_dir/`` by default).
+COV_MANIFEST_NAME = "manifest.json"
+COV_MODEL_NAME = "coverage-model.json"
+
+#: The physical-metrics model and its discovery contract (#558), written into
+#: the *producing run's* artefact directory — ``artefacts/<synth-run>/`` for
+#: `rb synth`, ``artefacts/<power-run>/`` for `rb power`. Unlike coverage there
+#: is no dedicated directory to find them in, so the manifest is prefixed
+#: rather than sharing the bare ``manifest.json`` above: discovery matches on
+#: the filename, and a coverage directory a user has pointed at a synth run's
+#: artefact dir must not be read as a physical one.
+PHYS_MANIFEST_NAME = "phys-manifest.json"
+PHYS_MODEL_NAME = "phys-model.json"
+
+#: The mutex a physical-metrics publisher holds while it reads, merges and
+#: rewrites that pair (#560). Co-named `rb synth` and `rb power` runs publish
+#: into one artefact directory and each writes *both* documents, so the
+#: read-merge-write has to be one writer at a time or two publishes can
+#: interleave into a pair that drops a half. Named here with the documents it
+#: guards, and protected below for the same reason they are.
+PHYS_PUBLISH_LOCK_NAME = "phys-publish.lock"
+
+#: `rb xplr`'s per-experiment ledger record and its git provenance sidecar,
+#: in ``artefacts/xplr/<exp-id>/``.
+XPLR_RECORD_NAME = "record.json"
+XPLR_WORKTREE_SIDECAR_NAME = "worktree.json"
+
+#: A dispatched job's envelope and log, written into
+#: ``<test>/dispatch/`` (per test) and ``artefacts/.dispatch/`` (per head)
+#: — see :mod:`rtl_buddy.dispatch.argv`. fnmatch patterns, because both
+#: carry a per-job tag.
+DISPATCH_OUTPUT_PATTERNS = (
+    "result-*.json",
+    "build-result-*.json",
+    "rtl_buddy-*.log",
+    "build-rtl_buddy-*.log",
+)
+
+#: rtl_buddy's *own* bookkeeping, as fnmatch patterns. These share an
+#: artefact directory with the tool outputs but are not tool outputs, and
+#: nothing that clears by suffix may remove them. It matters because an
+#: artefact directory is keyed on a run's *name* and names are not required
+#: to be unique across commands: an `rb fpga` run and a simulation test
+#: called the same thing land in the same `artefacts/<name>/`, where the
+#: FPGA backend's `.json` suffix would otherwise match the test's durable
+#: `result.json` (#469). Enforced inside :func:`clear_managed_outputs`
+#: rather than left to each caller's ``keep``, because a caller that
+#: forgets is precisely the bug.
+#: The fixed-name durable outputs the *other* commands write into
+#: ``artefacts/<name>/`` and read back later. An artefact directory is keyed
+#: on a run's name and names need not be unique across commands, so a CDC
+#: analysis and an FPGA run called the same thing share one directory — where
+#: the FPGA backend's ``.json`` suffix clear would otherwise eat ``cdc.json``
+#: and the domain maps (#469). Listed here, not at each call site, because a
+#: suffix clear cannot tell whose file it is looking at.
+#:
+#: Only *fixed* names belong here. Every flow clears its own fixed-name
+#: outputs through :func:`clear_stale_artefacts`, which does not consult this
+#: set, so protecting them costs an owner nothing; the outputs a flow does
+#: clear by suffix are all named after its design's top and so cannot be
+#: spelled as constants anyway. ``tests/test_vlog_sim_paths.py`` pins both
+#: halves of that: every name below is one a flow really writes, and none of
+#: them is one a flow clears by suffix.
+SIBLING_OUTPUT_NAMES = (
+    # rb test's build cache (tools/vlog_sim.py). An unshared build writes it
+    # straight into `artefacts/<test>/`, so a co-named FPGA run's `.json`
+    # clear would silently invalidate the cache and force a recompile.
+    SHARED_BUILD_STAMP_NAME,
+    # rb cdc, open analyzer (tools/cdc_rtl_buddy.py)
+    "cdc.json",
+    "cdc.txt",
+    "domain_map.json",
+    "reset_map.json",
+    # rb cdc, Vivado backend (tools/cdc_vivado.py)
+    "cdc.rpt",
+    # rb power (tools/power_openroad.py)
+    "power.rpt",
+    # The run's private copy of the upstream netlist, hashed and handed to
+    # OpenROAD so the provenance the model records is of the bytes the
+    # analysis actually read (#560). A `.v` here shares a directory with a
+    # co-named run whose suffix clear would otherwise take it mid-analysis.
+    "power_netlist.v",
+    # The per-instance half of the same run (#558). The `.cells` sidecar is
+    # the instance -> liberty-cell map `report_power` does not print.
+    "power_instances.rpt",
+    "power_instances.cells",
+    # rb pnr's design-independent reports (tools/pnr_openroad.py)
+    "route.drc.rpt",
+    "timing.rpt",
+    # rb synth (tools/synth_yosys.py, tools/synth_openroad.py)
+    "synth_netlist.v",
+    "synth.rtlil",
+    # Yosys' machine-readable per-module `stat -json` dump, the source of the
+    # phys model's module rows (#558). A co-named FPGA run's `.json` clear
+    # would otherwise take it.
+    "synth_stat.json",
+    # rb axi-profile (tools/axi_profile_rtl_buddy.py). Lives in its own
+    # `artefacts/axi/<name>/` subtree today, so nothing can reach it — listed
+    # so that stays true if a flow ever globs `.json` there.
+    "axi-perf.json",
+    # rb graph (graph/). These sit *directly* in `artefacts/graph/`, so an
+    # FPGA run named `graph` shares the directory and the `.json` suffix
+    # clear would take all three.
+    GRAPH_JSON_NAME,
+    GRAPH_META_NAME,
+    RESULTS_OVERLAY_NAME,
+    # rb cov (cov/). Both sit directly in the coverage directory, which is
+    # `artefacts/cov_dir/` by default but is user-supplied — so a run can be
+    # named into the same directory.
+    COV_MANIFEST_NAME,
+    COV_MODEL_NAME,
+    # rb synth / rb power (phys/). These land *directly* in the producing
+    # run's `artefacts/<name>/`, which is the same directory a co-named FPGA
+    # run clears by `.json` — the case COV_MODEL_NAME above only risks when a
+    # user points cov_dir at one, and this one hits by construction.
+    PHYS_MANIFEST_NAME,
+    PHYS_MODEL_NAME,
+    PHYS_PUBLISH_LOCK_NAME,
+    # rb xplr (xplr/). One level deeper than any artefact dir a flow clears,
+    # in `artefacts/xplr/<exp-id>/`, and the scan never recurses — listed for
+    # the same reason as axi-perf.json, so that stays true if the layout
+    # changes.
+    XPLR_RECORD_NAME,
+    XPLR_WORKTREE_SIDECAR_NAME,
+)
+
+#: Everything :func:`clear_managed_outputs` must never remove: rtl_buddy's own
+#: bookkeeping plus the sibling commands' durable outputs above.
+PROTECTED_OUTPUT_PATTERNS = (
+    RESULT_JSON_NAME,
+    *DISPATCH_OUTPUT_PATTERNS,
+    *SIBLING_OUTPUT_NAMES,
+)
+
+#: Where a flow records the output names it has claimed in an artefact
+#: directory. A dotfile with none of the managed suffixes, so no suffix clear
+#: can ever match it.
+OWNED_LEDGER_NAME = ".rb-owned"
+
+#: The suffix every atomic write in rtl_buddy gives the intermediate file it
+#: renames into place. Named once so the writers and the readers that must
+#: *recognise* a half-written output — the shared-build stamp's directory
+#: listings, above all — cannot drift apart (#613).
+ATOMIC_TMP_SUFFIX = ".tmp"
+
+
+def atomic_tmp_name(name) -> str:
+    """The temporary name an atomic write to ``name`` goes through.
+
+    ``<name>.<pid>.<uuid4 hex>.tmp``: the pid so a stray file names the
+    process that leaked it, the random half so no two writers — separate
+    processes (the elements of a dispatched Slurm array all writing one
+    suite's ``test.log`` symlink) or threads of one process — ever collide
+    on the intermediate name. The caller renames it over ``name`` with
+    :func:`os.replace`, which is a single atomic rename, so every reader
+    sees one complete version or the other (#363).
+
+    Every managed output's writer builds its temp name here, and
+    :func:`atomic_tmp_patterns` derives the matching exclusion from the same
+    shape — the point of #613, where ``test.log.<pid>.<uuid>.tmp`` appearing
+    in a suite directory that was on the include path read as a changed
+    compile input and refused an otherwise valid shared build.
+    """
+    return f"{name}.{os.getpid()}.{uuid.uuid4().hex}{ATOMIC_TMP_SUFFIX}"
+
+
+def atomic_tmp_patterns(pattern: str) -> tuple[str, ...]:
+    """fnmatch patterns for the in-flight forms of the output ``pattern``.
+
+    Two, because a managed output can be mid-write under either shape: the
+    unique one :func:`atomic_tmp_name` builds, and the plain
+    ``<name>.tmp`` a single-writer helper uses.
+
+    Deliberately anchored to the output name rather than being a blanket
+    ``*.tmp``: a project is free to `` `include "defs.tmp" `` and a file
+    called that is an ordinary compile input whose edit must still move the
+    fingerprint. Only ``<managed output>.tmp`` and
+    ``<managed output>.<something>.tmp`` are rtl_buddy's own (#613).
+    """
+    return (
+        f"{pattern}{ATOMIC_TMP_SUFFIX}",
+        f"{pattern}.*{ATOMIC_TMP_SUFFIX}",
+    )
+
+
+def project_relative(path, project_root) -> str | None:
+    """POSIX path relative to the project root, or the path unchanged.
+
+    The spelling rule every manifest's paths keep, so one of them can be
+    read back after the tree has moved, been archived, or been attached
+    to a CI artefact. A path outside the project (an artefact directory
+    on a scratch filesystem, say) is kept verbatim rather than turned
+    into a ``../..`` chain nothing can join on.
+
+    The comparison is made on the *logical* paths first — absolute-ised
+    but with no symlink resolved — and only falls back to the resolved
+    pair. A suite whose ``artefacts/`` is a link to scratch storage is an
+    ordinary setup, the same one the discovery walks follow
+    (:func:`rtl_buddy.fs_walk.may_follow_link`) and the filelist writer
+    is pinned against, and resolving both operands would put the scratch
+    path on both sides of the ``relative_to``, match nothing, and write
+    the manifest full of absolute host paths. The project-relative rule
+    is about the tree the project is read through, not about where the
+    bytes live. Resolving is still worth a second try, for the reverse
+    arrangement: a path handed in through a link that the project root is
+    *not* reached through.
+
+    Lives here, the bottom of the import graph, because both manifest
+    writers keep the same rule and the coverage one kept a resolve-both
+    copy of it — which is exactly the bug above, for exactly the layout
+    its own discovery walk goes out of its way to follow
+    (rtl-buddy/rtl_buddy#564). Re-exported from
+    :mod:`rtl_buddy.phys.manifest` and :mod:`rtl_buddy.cov.manifest`,
+    where consumers already look.
+    """
+    if path is None:
+        return None
+    logical = Path(os.path.abspath(path))
+    logical_root = Path(os.path.abspath(project_root))
+    try:
+        return logical.relative_to(logical_root).as_posix()
+    except ValueError:
+        pass
+    try:
+        return Path(path).resolve().relative_to(Path(project_root).resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+#: What marks a project root, walking up from an artefact directory. Same
+#: two markers :func:`rtl_buddy.config.root.discover_project_root` uses,
+#: in the same order.
+ROOT_MARKERS = ("root_config.yaml", ".git")
+
+
+def project_root_or_none(artefact_dir) -> str | None:
+    """The project root above ``artefact_dir``, or ``None`` if it is in none.
+
+    A marker walk, not :func:`rtl_buddy.config.root.discover_project_root`,
+    close as the two are: that one logs at ERROR before falling back, and
+    an artefact directory outside a project is not an error *here* — it is
+    a manifest whose paths are bare filenames, which is still joinable and
+    still worth writing.
+
+    Both spellings are tried, logical first, for the reason
+    :func:`project_relative` gives: an ``artefacts/`` symlinked to scratch
+    resolves out of the project entirely, and a walk that started there
+    would find no root and hand every path back absolute. The resolved
+    walk is the fallback, so a directory reached through a link from
+    outside the project still finds the root it really sits under.
+    """
+    logical = Path(os.path.abspath(artefact_dir))
+    for start in (logical, Path(artefact_dir).resolve()):
+        for candidate in (start, *start.parents):
+            if any((candidate / marker).exists() for marker in ROOT_MARKERS):
+                return str(candidate)
+    return None
+
+
+def joins_back(root, artefact_dir_rel: str, artefact_dir_abs) -> bool:
+    """Whether ``root / artefact_dir_rel`` is the directory in question.
+
+    The check that turns a manifest's component count (see each
+    manifest module's ``project_root_for``) into an answer that can be
+    wrong out loud rather than quietly. Compared on the *resolved* paths,
+    because the whole point is that the two spellings may differ by a
+    link.
+    """
+    joined = os.path.join(str(root), artefact_dir_rel)
+    return os.path.realpath(joined) == os.path.realpath(artefact_dir_abs)
+
+
+def read_owned_ledger(artefact_dir: str | Path, flow: str) -> set[str]:
+    """Return the output names ``flow`` has previously claimed here.
+
+    Ownership has to be *durable*, not re-derived from the current config.
+    A flow names its outputs after the design's top, so deriving the
+    always-clear set from today's ``get_top()`` covers only today's names:
+    change a run's top from ``graph`` to something else and the old
+    ``graph.json`` matches a sibling's protected name again, surviving every
+    clear from then on (#469). The ledger remembers what was written, so a
+    renamed top's leftovers stay clearable.
+
+    A claim is a one-shot licence to clear, not a permanent title: once the
+    leftover has been removed the name is retired, so a sibling that later
+    writes its own file at that path is not treated as this flow's history.
+
+    It is keyed by *flow*, because an artefact directory is keyed on a run's
+    name and names are not unique across commands: a P&R run and an FPGA run
+    called the same thing share one directory and therefore one ledger. A
+    flat list would let the FPGA cleanup inherit P&R's claim on
+    ``<design>.routed.odb`` and delete it outright — an always-clear entry
+    bypasses the caller's suffix filter, so it would go even though
+    ``.routed.odb`` is none of the FPGA suffixes, and the reverse invocation
+    would do the same to the FPGA outputs. A flow only ever sees its own
+    claim.
+
+    A missing, unreadable or unrecognised ledger is simply an empty claim —
+    a first run, a directory written by an rtl_buddy that predates this, or
+    the flat-list format this ledger briefly used before it was namespaced
+    (never released, so it is ignored rather than migrated: guessing which
+    flow those names belonged to is exactly the mistake being fixed).
+    """
+    mapping = _read_owned_ledger_mapping(artefact_dir)
+    return set(mapping.get(flow, ()))
+
+
+def _read_owned_ledger_mapping(artefact_dir: str | Path) -> dict[str, list[str]]:
+    """Return the whole ``{flow: [names]}`` ledger, or ``{}``."""
+    path = Path(artefact_dir) / OWNED_LEDGER_NAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        flow: [n for n in names if isinstance(n, str)]
+        for flow, names in raw.items()
+        if isinstance(flow, str) and isinstance(names, list)
+    }
+
+
+def write_owned_ledger(
+    artefact_dir: str | Path, flow: str, names: Iterable[str]
+) -> None:
+    """Record ``names`` as owned by ``flow`` in this directory.
+
+    Only ``flow``'s entry is replaced; every other flow's claim on the same
+    directory is preserved, so two commands sharing a name do not overwrite
+    each other's ownership.
+
+    Best-effort: a directory we cannot write is not worth failing a run over,
+    since the only cost is that a future rename leaves a file behind — the
+    same behaviour as before the ledger existed.
+    """
+    path = Path(artefact_dir) / OWNED_LEDGER_NAME
+    mapping = _read_owned_ledger_mapping(artefact_dir)
+    mapping[flow] = sorted(set(names))
+    try:
+        path.write_text(
+            json.dumps({k: mapping[k] for k in sorted(mapping)}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def sanitize_artifact_component(name: str) -> str:
@@ -9,14 +428,71 @@ def sanitize_artifact_component(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
 
 
+def validate_run_tag(run_tag: str | None) -> str | None:
+    """Return ``run_tag`` unchanged, or raise; ``None`` passes through (#541).
+
+    A tag names a *directory*, so it is validated rather than sanitized:
+    two tags that differ only in a rejected character would otherwise map
+    to one tree, which is precisely the collision ``--run-tag`` exists to
+    prevent. The caller that typed the tag is the one that can fix it.
+
+    Validated once, at the CLI boundary, and then threaded — a head and the
+    jobs it dispatches must agree on the tree, and a value re-checked (or
+    re-spelled) at every use is a value that can drift.
+    """
+    if run_tag is None:
+        return None
+    tag = str(run_tag)
+    if not tag:
+        raise FatalRtlBuddyError("--run-tag cannot be empty")
+    if len(tag) > RUN_TAG_MAX_LEN:
+        raise FatalRtlBuddyError(
+            f"--run-tag {tag!r} is longer than {RUN_TAG_MAX_LEN} characters"
+        )
+    if not RUN_TAG_PATTERN.fullmatch(tag):
+        raise FatalRtlBuddyError(
+            f"--run-tag {tag!r} is not a safe path segment: use only "
+            "letters, digits, '.', '_' and '-'"
+        )
+    if set(tag) == {"."}:
+        # Inside the character class and still not a directory anyone means:
+        # '.' and '..' address the parent tree rather than a namespace under
+        # it, and '...' is a name no one typed on purpose.
+        raise FatalRtlBuddyError(f"--run-tag {tag!r} is not a directory name")
+    return tag
+
+
+def run_artifact_root(suite_dir: str | Path, run_tag: str | None = None) -> Path:
+    """The artefact tree one invocation writes into (#541).
+
+    ``<suite>/artefacts`` without a tag — today's layout, byte for byte —
+    and ``<suite>/artefacts/.runs/<tag>`` with one. Everything that is
+    per-run hangs off this: the per-test directories, the tree lock, the
+    head's dispatch outputs, the results overlay.
+
+    Deliberately NOT where :func:`shared_build_dir` lives. A shared build is
+    keyed on the compile fingerprint (toolchain included), so two tagged
+    runs that compile the same thing *should* share one ``obj_dir`` and two
+    that do not already key apart; duplicating the build tree per tag would
+    turn the namespace into a recompile.
+    """
+    root = Path(suite_dir) / ARTIFACT_DIRNAME
+    if run_tag is None:
+        return root
+    return root / RUNS_DIRNAME / validate_run_tag(run_tag)
+
+
 def test_artifact_dir(
-    suite_dir: str | Path, test_name: str, run_id: int | None = None
+    suite_dir: str | Path,
+    test_name: str,
+    run_id: int | None = None,
+    run_tag: str | None = None,
 ) -> Path:
     """
     Return the per-test artifact directory rooted under the suite directory.
     """
-    artifact_dir = (
-        Path(suite_dir) / "artefacts" / sanitize_artifact_component(test_name)
+    artifact_dir = run_artifact_root(suite_dir, run_tag) / sanitize_artifact_component(
+        test_name
     )
     if run_id is not None:
         artifact_dir /= f"run-{run_id:04d}"
@@ -27,18 +503,281 @@ def test_build_dir_name(test_name: str) -> str:
     """
     Return the simulator build directory name for a test.
     """
-    return f"obj_dir_{sanitize_artifact_component(test_name)}"
+    return f"{BUILD_DIR_PREFIX}_{sanitize_artifact_component(test_name)}"
 
 
-def shared_build_dir(suite_dir: str | Path, compile_key: str) -> Path:
+#: What :func:`shared_build_namespace` calls a suite that IS the project
+#: root, where the relative path has no components at all.
+_ROOT_SUITE_NAMESPACE = "_root"
+
+
+def shared_build_namespace(suite_dir: str | Path, project_root: str | Path) -> str:
+    """The per-suite directory name a persistent build cache root holds (#542).
+
+    The suite directory spelled relative to the project root with ``/``
+    replaced by ``__`` (``verif/demo_tiny_alu`` -> ``verif__demo_tiny_alu``),
+    so one cache root can serve every suite of a project without two of them
+    meeting in one directory.
+
+    Deliberately says nothing about *which checkout* the suite came from:
+    the whole point of the cache is that two workspaces of one project — a
+    per-PR Jenkins workspace, a developer's ``git worktree`` — reuse each
+    other's builds, and a namespace carrying the checkout path would give
+    each of them a private tree that a workspace wipe then throws away. What
+    keeps two checkouts on *different content* apart is the compile key,
+    which is content-addressed in this mode, not the namespace.
+
+    A suite outside the project root (or one whose root cannot be spelled,
+    on Windows across drives) has no relative name to use, so it falls back
+    to a digest of its absolute path: unique, stable, and not shared with
+    any other suite.
+    """
+    suite = os.path.realpath(str(suite_dir))
+    root = os.path.realpath(str(project_root)) if project_root else None
+    if root is not None:
+        try:
+            relative = os.path.relpath(suite, root)
+        except ValueError:
+            # Different drives on Windows: there is no relative spelling.
+            relative = os.pardir
+        if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
+            parts = [part for part in Path(relative).parts if part != os.curdir]
+            return (
+                "__".join(sanitize_artifact_component(part) for part in parts)
+                or _ROOT_SUITE_NAMESPACE
+            )
+    return hashlib.sha256(suite.encode("utf-8")).hexdigest()[:12]
+
+
+def shared_build_dir(
+    suite_dir: str | Path,
+    compile_key: str,
+    *,
+    cache_root: str | Path | None = None,
+    project_root: str | Path | None = None,
+) -> Path:
     """
     Return the compile-input-keyed build directory shared by all tests in a
     suite whose compile inputs hash to ``compile_key``.
 
     Lives under a dot-directory so it can never collide with a per-test
     artifact directory derived from a test name.
+
+    ``cache_root`` moves that directory out of the suite's artefact tree and
+    into a persistent cache (#542), under a per-suite namespace so several
+    suites — and several checkouts — can share one root. The in-tree default
+    is what every project without a configured root keeps, byte for byte.
     """
-    return Path(suite_dir) / "artefacts" / ".shared-builds" / f"obj_dir_{compile_key}"
+    if cache_root is not None:
+        return (
+            Path(cache_root)
+            / shared_build_namespace(suite_dir, project_root)
+            / f"{BUILD_DIR_PREFIX}_{compile_key}"
+        )
+    return (
+        Path(suite_dir)
+        / ARTIFACT_DIRNAME
+        / SHARED_BUILDS_DIRNAME
+        / f"{BUILD_DIR_PREFIX}_{compile_key}"
+    )
+
+
+def clear_stale_artefacts(
+    paths: Iterable[str | Path | None], *, owner: str
+) -> list[str]:
+    """Delete a tool's outputs *before* invoking the tool that writes them.
+
+    Every tool flow in rtl_buddy runs a subprocess and then reads its
+    outputs back off fixed paths in the run's artefact directory. An exit
+    code cannot separate "ran clean and produced nothing to report" from
+    "crashed before writing" — rtl-buddy-cdc's exit 1 means "rule
+    violations found", so a crash that happens to exit 1 walks straight
+    past the returncode gate. When an earlier run's report is still lying
+    in the artefact dir, that stale file is parsed and its numbers are
+    reported as the current result (#469).
+
+    Clearing the outputs first makes presence proof of authorship: what
+    exists afterwards was written by this invocation, and what is absent
+    takes the flow's existing "not produced" path — which is the honest
+    answer and already points the user at the log.
+
+    Logs are deliberately *not* passed here: each flow either truncates
+    its own log (``open(path, "w")``) or hands the path to a tool that
+    does, and the log is the one artefact worth keeping if the tool dies
+    before it can write anything else.
+
+    **Call this early.** Clearing just before the subprocess is not enough:
+    a rerun that fails on any path *before* the tool — a filelist error, an
+    unresolvable config, a gate that returns early — leaves the previous
+    run's outputs exactly where the next reader looks. Two placements are
+    correct, and which one applies depends on who reads the artefact:
+
+    - Outputs a **later command** consumes (the synthesis netlists that
+      ``rb pnr`` / ``rb power`` resolve; pnr's DEF and ODB) must be cleared
+      as the *first* action of ``run()``, ahead of every validation and
+      tool-availability check. A missing tool still means no fresh netlist,
+      and the downstream command must not silently use the old one.
+    - Outputs only read back within the same ``run()`` (the CDC, FPGA and
+      power reports, the bitstream) are cleared immediately *after* the
+      tool-availability skip and before all other work. A box that lacks
+      the tool provably never ran it, so it has no business deleting what a
+      box that has the tool produced; every other exit path clears.
+
+    Args:
+      paths: the outputs this invocation is expected to (re)write.
+        Entries that do not exist are ignored, and ``None`` entries are
+        skipped so callers can splice in conditional artefacts.
+      owner: the run/analysis name, used in the error message.
+
+    Returns:
+      The paths that actually existed, in the order given — for logging.
+
+    Raises:
+      FatalRtlBuddyError: an existing artefact could not be removed.
+        Running on would risk reporting a previous run's numbers, so this
+        fails loudly instead.
+    """
+    removed: list[str] = []
+    for entry in paths:
+        if entry is None:
+            continue
+        path = Path(entry)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            raise FatalRtlBuddyError(
+                f"{owner}: could not remove the previous run's artefact {path}: {e}"
+            ) from e
+        removed.append(str(path))
+    return removed
+
+
+def clear_managed_outputs(
+    artefact_dir: str | Path,
+    suffixes: Iterable[str],
+    *,
+    owner: str,
+    own: Iterable[str] = (),
+    own_flow: str | None = None,
+    keep: Iterable[str] = (),
+) -> list[str]:
+    """Clear a run's outputs by *suffix* rather than by exact name.
+
+    :func:`clear_stale_artefacts` can only remove paths it can name, and
+    several flows name their outputs after the design's top module —
+    ``<top>.bit``, ``<design>.routed.odb``. Editing a run's ``model:`` or
+    ``top:`` therefore renamed the outputs and left the previous top's
+    files behind in the same directory, still at the fixed paths a later
+    command or a later edit-back would resolve (#469).
+
+    Matching on the suffix instead makes the clear independent of the top,
+    which is safe here because an artefact directory belongs to exactly one
+    run: everything in it was put there by that run, so anything carrying a
+    suffix this flow manages is by definition this flow's own output. Only
+    the directory itself is scanned — never recursively, so a nested
+    workdir a tool owns is untouched.
+
+    Args:
+      artefact_dir: the run's artefact directory. A missing directory is
+        not an error; there is simply nothing to clear. One that exists but
+        cannot be listed *is* an error — see ``Raises``.
+      suffixes: the filename suffixes this flow writes (``".bit"``,
+        ``".routed.odb"``). Include the dot. Match a *log* suffix here and
+        you defeat the log exemption, so don't.
+      owner: the run/analysis name, for the error message.
+      own: exact filenames this flow is about to write, or has just
+        written. These are cleared unconditionally, ahead of the protected
+        patterns — a flow always owns its own outputs no matter what they
+        are called. Unioned with the names ``own_flow`` claimed here on
+        previous runs (:func:`read_owned_ledger`) and persisted back, so
+        renaming a run's top does not strand the previous top's outputs
+        behind a sibling's protected name.
+      own_flow: identity of the producing flow, e.g. ``"fpga-openxc7"``.
+        Required to use the ledger — claims are namespaced by flow because
+        a P&R run and an FPGA run sharing a name share one artefact
+        directory, and neither may inherit the other's claim. Without it
+        ``own`` applies to this call only and no claim is recorded. The
+        claim recorded is this run's ``own``, so a name inherited from the
+        ledger is retired once the leftover it named has been cleared. Without it a design whose top module is `graph`,
+        `manifest` or `record` produced a `<top>.json` netlist matching a
+        *sibling's* protected name, so the flow could not clear its own
+        output: a failed rerun left the previous netlist published, and a
+        Yosys run that exited 0 without writing handed that stale JSON
+        straight to nextpnr (#469).
+      keep: exact filenames to leave alone even when they match — for a
+        fixed-name artefact that happens to share a managed suffix.
+        rtl_buddy's own envelopes (:data:`PROTECTED_OUTPUT_PATTERNS`) are
+        always kept and need not be listed here. ``own`` wins over both.
+
+    Every matching entry is handed to :func:`clear_stale_artefacts`,
+    including ones that are not regular files. A *directory* sitting where
+    an output belongs (``<top>.bit/``) is exactly the case that must not be
+    skipped: something has to be removed before the tool can write there,
+    and quietly ignoring it would let the run read a neighbouring stale file
+    or report success against a path it never wrote. Unlinking a directory
+    fails, so it takes the documented fatal path and the user is told which
+    path to deal with — this never recurses or removes a tree. A dangling
+    symlink unlinks cleanly, which is the right outcome: the link is the
+    stale artefact.
+
+    Returns:
+      The paths removed, sorted, for logging.
+
+    Raises:
+      FatalRtlBuddyError: the directory could not be listed, or an existing
+        artefact could not be removed. Either way some stale output may
+        still be in place, so this fails loudly rather than running on.
+    """
+    directory = Path(artefact_dir)
+    suffixes = tuple(suffixes)
+    declared = set(own)
+    # Everything *this flow* has claimed here, not just what the current
+    # config names — and never another flow's claim on the same directory.
+    own = declared | (
+        read_owned_ledger(directory, own_flow) if own_flow is not None else set()
+    )
+    keep = set(keep) - own
+    try:
+        entries = sorted(directory.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError as e:
+        # A directory that cannot be listed is *not* the same as an empty
+        # one: any stale output in it survives and is read back as this
+        # run's result. Fail the same way an undeletable artefact does.
+        raise FatalRtlBuddyError(
+            f"{owner}: could not list the previous run's artefacts in {directory}: {e}"
+        ) from e
+
+    def _doomed(name: str) -> bool:
+        # This flow's own outputs go regardless of what they are named:
+        # ownership is established by the caller, not guessed from the name.
+        if name in own:
+            return True
+        if name in keep:
+            return False
+        return name.endswith(suffixes) and not any(
+            fnmatch(name, pat) for pat in PROTECTED_OUTPUT_PATTERNS
+        )
+
+    removed = clear_stale_artefacts(
+        [entry for entry in entries if _doomed(entry.name)], owner=owner
+    )
+    if declared and own_flow is not None:
+        # Only a caller that actually declares ownership updates the claim;
+        # one that passes no `own` is not speaking for this directory.
+        #
+        # The new claim is exactly what this run is about to write — *not*
+        # the union that was just used to clear. A historical name is
+        # remembered only so the leftover it refers to can be cleared once;
+        # the clear above has now done that, so the claim is retired. Keeping
+        # the union instead would mean an FPGA run once topped `graph` owned
+        # `graph.json` forever, and would delete the file `rb graph` later
+        # wrote at its own protected path (#469).
+        write_owned_ledger(directory, own_flow, declared)
+    return removed
 
 
 test_artifact_dir.__test__ = False

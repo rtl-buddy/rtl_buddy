@@ -10,8 +10,9 @@ on:
       - 'pytest.ini'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+  # No `branches:` filter — stacked PRs are based on their predecessor's
+  # branch, not on main, and a base filter would silently skip their checks.
   pull_request:
-    branches: [main]
     paths:
       - '.github/workflows/test.yml'
       - 'pyproject.toml'
@@ -32,7 +33,11 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Install test dependencies
-        run: uv sync --group test
+        # --extra graph-extract installs the bundled binding-tier
+        # extractor (from PyPI since rtl-buddy-graph-extract 0.1.0), so
+        # the extractor subprocess path and the merge-graphs cross-check
+        # run for real here instead of being skip-if-missing everywhere.
+        run: uv sync --group test --extra graph-extract
 
       - name: Run pytest with coverage
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml

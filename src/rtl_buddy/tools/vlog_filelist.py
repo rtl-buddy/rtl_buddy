@@ -7,13 +7,92 @@
 vlog_filelist module handles verilog filelist processing for rtl-buddy
 """
 
+import contextlib
 import logging
 
 logger = logging.getLogger(__name__)
 from ..errors import FilelistError
 from ..logging_utils import log_event
+from .artifact_paths import atomic_tmp_name
+import fnmatch
+import os
 import os.path
 import re
+
+
+# `+define+NAME[=VALUE]` — a preprocessor define, not a path. Kept as its
+# own option so `_process` skips the path resolution / existence check every
+# other entry goes through, and so the marker survives into the generated
+# filelist for the consumers that act on it (`rb fpv`, and any simulator
+# reading the filelist with `-f`).
+_DEFINE_PREFIX = "+define+"
+
+# Options whose value is a real filesystem path and is therefore pinned to
+# its resolved absolute spelling under ``absolute_sources``: explicit
+# sources (bare / ``-v``) and search directories (``+incdir+`` / ``-y``).
+# ``+libext+`` (a suffix list) and ``+define+`` (handled earlier) are not
+# paths, and ``-F`` cannot appear here because ``absolute_sources`` callers
+# always unroll.
+_ABSOLUTE_UNDER_PIN = (None, "-v ", "+incdir+", "-y ")
+
+
+def _quote_filelist_path(path: str) -> str:
+    """Quote a generated path when a filelist parser would split it."""
+    if not any(char.isspace() for char in path) and '"' not in path:
+        return path
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def incdirs_from_filelist(fl_path: str) -> list[str]:
+    """``+incdir+`` directories of a generated filelist, in order, deduplicated.
+
+    Each directory resolves against the filelist that declares it, matching
+    how its source entries resolve. The flows that read a generated filelist
+    back for a tool with no ``-f`` support (synth, cdc, fpga, hub) pass these
+    through as the tool's include-path option.
+    """
+    fl_dir = os.path.dirname(os.path.abspath(fl_path))
+    incdirs: list[str] = []
+    try:
+        with open(fl_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return incdirs
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("+incdir+"):
+            continue
+        for entry in line[len("+incdir+") :].split("+"):
+            if not entry:
+                continue
+            inc = os.path.normpath(os.path.join(fl_dir, entry))
+            if inc not in incdirs:
+                incdirs.append(inc)
+    return incdirs
+
+
+def apply_exclude_globs(
+    files: list[str], patterns: list[str], project_root: str
+) -> tuple[list[str], int]:
+    """Filter absolute source paths through exclude globs.
+
+    The one exclusion semantics every verible flow shares (``rb verible
+    lint/format --model`` and the lint flow's checks): fnmatch against
+    the project-root-relative path with ``/`` separators, where ``*``
+    also crosses directory boundaries. Returns ``(kept, excluded_count)``
+    with order preserved.
+    """
+    if not patterns:
+        return list(files), 0
+    kept: list[str] = []
+    excluded = 0
+    for path in files:
+        rel = os.path.relpath(path, project_root).replace(os.sep, "/")
+        if any(fnmatch.fnmatch(rel, pat) for pat in patterns):
+            excluded += 1
+            continue
+        kept.append(path)
+    return kept, excluded
 
 
 class VlogFilelist:
@@ -63,8 +142,9 @@ class VlogFilelist:
           |                         # OR
           (\+(?:
             incdir|									# '+incdir+'
-            libext									# '+libext+'
-					)\+))             
+            libext|									# '+libext+'
+            define									# '+define+'
+					)\+))
         ?                           # group 1 optional, so path only works
         (.*)                        # group 3: the path part (required)
         $""",
@@ -82,7 +162,7 @@ class VlogFilelist:
                 )
 
             # Determine which style matched, return (option, path)
-            if m.group(2):  # +incdir+, +libext+
+            if m.group(2):  # +incdir+, +libext+, +define+
                 line_option = m.group(2)
                 line_path = m.group(3)
             elif m.group(1):  # -v, -F, -f, -y
@@ -128,6 +208,22 @@ class VlogFilelist:
             elif line_option == "+libext+":  # +libext+ isn't actually a path
                 libexts.update(line_path.split("+"))
 
+            elif line_option == _DEFINE_PREFIX:
+                # A preprocessor define is not a path: it never gets joined
+                # against the filelist's directory and never gets an
+                # existence check. The multi-define form `+define+A+B=C` is
+                # split here (verilator / VCS filelist semantics) so
+                # downstream consumers only ever see one NAME[=VALUE] per
+                # entry; a define VALUE therefore cannot itself contain `+`.
+                # Note also that `line_path` has already been through
+                # `os.path.expandvars()` above — right for a path entry,
+                # and inherited here — so `+define+CFG=$HOME` takes the
+                # caller's environment and a filelist cannot define the
+                # literal token `$FOO`.
+                for one in line_path.split("+"):
+                    if one:
+                        entries.append((one, _DEFINE_PREFIX))
+
             else:  # Base case. Handles -v, source lines, and -F if not unroll
                 out_path = os.path.join(prefix_parent, line_path)
                 entries.append((out_path, line_option))
@@ -139,14 +235,67 @@ class VlogFilelist:
         return entries
 
     def _process(
-        self, entries, output_dir, flatten=False, strip=False, deduplicate=False
+        self,
+        entries,
+        output_dir,
+        flatten=False,
+        strip=False,
+        deduplicate=False,
+        absolute_sources=False,
     ):
-        """Do flatten, strip, and deduplicate after all lines are collected at the top level."""
+        """Do flatten, strip, and deduplicate after all lines are collected at the top level.
+
+        Every entry arrives from :meth:`_extract` already resolved against
+        the filelist that declared it, so a nested ``-F``'s ``+incdir+.``
+        means the nested filelist's directory. Without ``absolute_sources``
+        entries are re-spelled relative to ``output_dir``, which is only
+        correct for a consumer that resolves them against the generated
+        filelist's own location.
+
+        ``absolute_sources`` pins every path-valued entry — explicit sources
+        (bare and ``-v``) and search directories (``+incdir+`` and ``-y``) —
+        to its resolved absolute path, quoted when it contains whitespace,
+        so no consumer's cwd can reinterpret it. ``+libext+`` is a suffix
+        list, not a path, and is emitted verbatim. Order, and therefore
+        search precedence, is untouched. ``flatten`` wins over it (a
+        basename cannot be pinned).
+
+        Two limits on the pin. A ``+incdir+`` whose resolved path contains
+        ``+`` cannot be pinned at all and falls back to the relative
+        spelling (see below). And the quoting that carries whitespace was
+        validated against Verilator's ``-f`` parser only — Icarus's does
+        not strip double quotes, and VCS's is unverified — so a checkout
+        path with whitespace remains unsupported for those simulators.
+        """
         output_dir = os.path.abspath(output_dir)
+        project_root = self._project_root(output_dir)
+        escaped: list[str] = []
+        unpinnable: list[str] = []
         out_lines = []
         for line_path, line_option in entries:
+            if line_option == _DEFINE_PREFIX:
+                # `strip` means "emit bare source paths" — the mode the
+                # rtl-buddy-view consumers (`rb hier`, `rb hier-query`,
+                # `rb graph build`, `rb axi-profile`) write for, since they
+                # hand the file straight to a subprocess that opens every
+                # line as a path. A define is not a path and has no bare
+                # spelling, so it is dropped rather than emitted as either
+                # `+define+FOO` (which that parser cannot read) or `FOO`
+                # (which it would try to open). Consumers that *want* the
+                # defines read the filelist back themselves and never pass
+                # `strip`.
+                if strip:
+                    continue
+                # Otherwise verbatim: no path resolution, no flatten
+                # (basename would eat a `/` in a value), and no strip (a
+                # bare `NAME=VALUE` line reads as a source path to every
+                # downstream filelist parser).
+                line = f"{_DEFINE_PREFIX}{line_path}\n"
+                if not (deduplicate and line in out_lines):
+                    out_lines.append(line)
+                continue
             resolved_line_path = os.path.normpath(os.path.join(output_dir, line_path))
-            line_path = os.path.relpath(
+            relative_line_path = os.path.relpath(
                 resolved_line_path, start=output_dir
             )  # simplifies path relative to the filelist location
             # File or dir exists check
@@ -154,19 +303,67 @@ class VlogFilelist:
                 if not os.path.isdir(resolved_line_path):
                     self._fail(
                         "filelist.directory_missing",
-                        f"{line_path} is not a directory",
-                        path=line_path,
+                        f"{relative_line_path} is not a directory",
+                        path=relative_line_path,
                     )
             elif line_option != "+libext+":
                 if not os.path.isfile(resolved_line_path):
                     self._fail(
                         "filelist.source_missing",
-                        f"{line_path} file does not exist",
-                        path=line_path,
+                        f"{relative_line_path} file does not exist",
+                        path=relative_line_path,
                     )
 
+            # Escape check: a resolved path outside the project root that
+            # still exists is the false-green trap — the sim compiles that
+            # out-of-tree file, not any copy inside the working tree. This
+            # bites hardest in a nested git worktree, whose parent (the main
+            # checkout) always has a same-named file to satisfy the exists
+            # check above. Warn, don't fail: a cross-repo source can be
+            # legitimate, so the user decides.
+            if (
+                project_root is not None
+                and line_option != "+libext+"
+                and self._escapes(resolved_line_path, project_root)
+            ):
+                escaped.append(resolved_line_path)
+
             if flatten:
-                line_path = os.path.basename(line_path)
+                line_path = os.path.basename(relative_line_path)
+            elif absolute_sources and line_option in _ABSOLUTE_UNDER_PIN:
+                # Verilator searches explicit relative source names through
+                # user +incdir+/-y directories before its cwd fallback. A
+                # climbing source path can therefore compose with an incdir
+                # and select a same-named file outside a nested worktree
+                # (#457). Search directories are pinned for the mirror-image
+                # reason (#474): every entry here is already resolved against
+                # the filelist that DECLARED it, but a relative spelling is
+                # re-resolved by the builder against its own cwd — `-f`
+                # is cwd-relative for verilator, VCS and Icarus alike — so
+                # `+incdir+.` in a nested `-F` reached the consuming suite's
+                # directory instead of the design's. That directory usually
+                # exists, so the `isdir` check passes and the compile either
+                # fails far from the cause or silently preprocesses a
+                # same-named header from the wrong tree. Pinning keeps
+                # precedence (that is order, not spelling) intact.
+                if line_option == "+incdir+" and "+" in resolved_line_path:
+                    # `+incdir+` has no spelling for a path containing `+`:
+                    # `+incdir+a+b` is the two directories `a` and `b` by
+                    # convention, and quoting does not rescue it (checked
+                    # against Verilator's `-f` parser, which splits the
+                    # quoted form the same way). Keep the relative spelling
+                    # — the `+` normally sits in an ancestor the two paths
+                    # share, so the relative one often has none — and say
+                    # so, because a silently split include path is the
+                    # exact failure this change exists to remove. `-y` is
+                    # unaffected: its argument is a separate token.
+                    if resolved_line_path not in unpinnable:
+                        unpinnable.append(resolved_line_path)
+                    line_path = relative_line_path
+                else:
+                    line_path = _quote_filelist_path(resolved_line_path)
+            else:
+                line_path = relative_line_path
 
             if strip:
                 line_option = ""
@@ -180,7 +377,49 @@ class VlogFilelist:
             # logger.debug(f'Post-proc: "{line_option}{line_path}"')
             out_lines.append(line)
 
+        if escaped:
+            log_event(
+                logger,
+                logging.WARNING,
+                "filelist.path_escapes_root",
+                count=len(escaped),
+                root=project_root,
+                paths=", ".join(escaped),
+            )
+        if unpinnable:
+            log_event(
+                logger,
+                logging.WARNING,
+                "filelist.incdir_unrepresentable",
+                count=len(unpinnable),
+                paths=", ".join(unpinnable),
+            )
+
         return out_lines
+
+    @staticmethod
+    def _project_root(output_dir: str) -> str | None:
+        """Project root the generated filelist lives under, or None.
+
+        Anchored on ``output_dir`` (where ``run.f`` is written) rather than
+        cwd so the boundary follows the artefact location. Returns None when
+        no real root (root_config.yaml / .git) is found — without a genuine
+        boundary the escape check would false-positive on every ordinary
+        ``../src/x.sv`` entry, so it is skipped.
+        """
+        from ..config.root import discover_project_root
+        from ..errors import FatalRtlBuddyError
+
+        try:
+            return str(discover_project_root(start_dir=output_dir))
+        except FatalRtlBuddyError:
+            return None
+
+    @staticmethod
+    def _escapes(resolved_path: str, project_root: str) -> bool:
+        """True when ``resolved_path`` falls outside ``project_root``."""
+        rel = os.path.relpath(resolved_path, project_root)
+        return rel == os.pardir or rel.startswith(os.pardir + os.sep)
 
     def write_output(
         self,
@@ -191,7 +430,17 @@ class VlogFilelist:
         deduplicate=False,
         test_filelist=None,
         suite_dir=None,
+        absolute_sources=False,
     ):
+        """Write the processed filelist.
+
+        This is the seam every consumer flow calls (``rb test``, ``rb hier``,
+        ``rb graph build``, synth, FPV, ``rb axi-profile``, ``rb verible
+        filelist``). ``absolute_sources`` (default off; only the simulation
+        flow opts in) pins bare/``-v`` sources and ``+incdir+``/``-y``
+        search directories to absolute paths — see :meth:`_process` for the
+        exact contract.
+        """
         if output_filepath is None:
             output_filepath = self.output_path
         log_event(logger, logging.DEBUG, "filelist.write_start", output=output_filepath)
@@ -224,15 +473,118 @@ class VlogFilelist:
             flatten=flatten,
             strip=strip,
             deduplicate=deduplicate,
+            absolute_sources=absolute_sources,
         )
 
-        with open(output_filepath, "w") as f:
-            f.write("// rtl-buddy generated model filelist\n")
-            f.writelines(lines)
-            log_event(
-                logger, logging.INFO, "filelist.write_done", output=output_filepath
-            )
+        # Atomic replace, not truncate-in-place: `run.f` lives at
+        # artefacts/<test>/run.f — per TEST, not per run — so every element
+        # of a dispatched array for the same test rewrites the same path
+        # concurrently. `open(..., "w")` truncates immediately, and
+        # share-build reads the file straight back to fingerprint the
+        # compile inputs, so a reader landing inside another writer's window
+        # saw an empty filelist, hashed it to a different compile key, and
+        # recompiled instead of reusing the shared build. Writers all emit
+        # identical content, so a temp-then-os.replace makes every reader
+        # see one complete version or the other. Same reasoning as
+        # `vlog_sim.force_symlink` (#363).
+        tmp_path = atomic_tmp_name(output_filepath)
+        try:
+            with open(tmp_path, "w") as f:
+                f.write("// rtl-buddy generated model filelist\n")
+                f.writelines(lines)
+            os.replace(tmp_path, output_filepath)
+        except BaseException:
+            # Never leave a temp filelist behind for the builder to trip on.
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        log_event(logger, logging.INFO, "filelist.write_done", output=output_filepath)
         return
+
+    def write_elab_output(self, elab_cfg, output_filepath) -> int:
+        """Write one absolute, unrolled filelist for a model elaboration.
+
+        Returns the number of explicit source and ``-v`` entries. Library
+        directory discovery may cause slang to parse additional sources; the
+        worker reports that final count separately.
+        """
+        model = elab_cfg.model
+        entries = []
+        profile = elab_cfg.profile
+        anchor = os.path.abspath(model.get_model_path())
+        if profile is not None:
+            entries.extend(
+                (elab_cfg.resolve_profile_path(path), "+incdir+")
+                for path in profile.include_dirs
+            )
+            entries.extend(self._extract(profile.prepend_sources, True, anchor))
+        entries.extend(self._extract(model.get_filelist(), True, anchor))
+        if profile is not None:
+            entries.extend(self._extract(profile.append_sources, True, anchor))
+            overridden_defines = set(profile.defines)
+            entries = [
+                (path, option)
+                for path, option in entries
+                if not (
+                    option == _DEFINE_PREFIX
+                    and path.partition("=")[0] in overridden_defines
+                )
+            ]
+            entries.extend(
+                (
+                    name
+                    if value is None
+                    else f"{name}={'1' if value is True else '0' if value is False else value}",
+                    _DEFINE_PREFIX,
+                )
+                for name, value in profile.defines.items()
+            )
+
+        lines = self._process(
+            entries,
+            output_dir=os.path.dirname(output_filepath) or ".",
+            absolute_sources=True,
+        )
+        os.makedirs(os.path.dirname(output_filepath) or ".", exist_ok=True)
+        tmp_path = atomic_tmp_name(output_filepath)
+        try:
+            with open(tmp_path, "w") as file:
+                file.write("// rtl-buddy generated elaboration filelist\n")
+                file.writelines(lines)
+            os.replace(tmp_path, output_filepath)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        log_event(logger, logging.INFO, "elab.filelist_written", output=output_filepath)
+        return sum(option in (None, "-v ") for _, option in entries)
+
+    def extract_source_files(self, model_cfg):
+        """Bare source entries of a model's filelist, ``-F`` chains unrolled.
+
+        The set of files the model *owns*: library entries (``-v`` /
+        ``-y``) and directives (``+incdir+`` / ``+define+`` /
+        ``+libext+``) are dropped -- they name files the model merely
+        uses, and search/preprocessor state that means nothing to a
+        per-file tool. This is the expansion behind
+        ``rb verible lint/format --model``. Paths come back absolute and
+        normalized, in filelist order, deduplicated.
+        """
+        entries = self._extract(
+            model_cfg.get_filelist(),
+            unroll=True,
+            fpath=os.path.abspath(model_cfg.get_model_path()),
+        )
+        out: list[str] = []
+        seen: set[str] = set()
+        for path, option in entries:
+            if option is not None:
+                continue
+            norm = os.path.normpath(path)
+            if norm not in seen:
+                seen.add(norm)
+                out.append(norm)
+        return out
 
     def write_verible_filelist(self, model_cfgs, output_filepath=None):
         """Generate a verible.filelist from one or more ModelConfigs.
@@ -273,7 +625,9 @@ class VlogFilelist:
             )
 
         filtered = [
-            (path, opt) for path, opt in entries if opt is None or opt == "+incdir+"
+            (path, opt)
+            for path, opt in entries
+            if opt is None or opt in ("+incdir+", _DEFINE_PREFIX)
         ]
         lines = self._process(
             filtered,

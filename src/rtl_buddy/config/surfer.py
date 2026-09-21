@@ -10,6 +10,7 @@ import pprint
 from dataclasses import dataclass
 from serde import serde, field
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,9 @@ class SurferConfig:
     Attributes:
       name (str): Unique identifier.
       path (str): Surfer executable path or bare name (resolved via PATH).
+        Already expanded and candidate-resolved by
+        :func:`~rtl_buddy.config.toolpath.resolve_tool_path`, so the YAML
+        may spell it as a ``${VAR}``-bearing string or a candidate list.
       wcp_port (int): TCP port rtl-buddy listens on; Surfer connects with --wcp-initiate.
       editor_cmd (str): Editor command template; %f = file path, %l = line number.
       editor_terminal (str): Terminal emulator for terminal editors ("iterm2", "terminal", or "").
@@ -75,7 +79,7 @@ class SurferConfig:
 @serde
 class SurferConfigFile:
     name: str
-    path: str = "surfer"
+    path: str | list[str] = "surfer"
     wcp_port: int = field(
         rename="wcp-port", default=0
     )  # 0 = OS auto-assigns a free port
@@ -85,9 +89,16 @@ class SurferConfigFile:
     ctrl_sock: str = field(rename="ctrl-sock", default="")
 
     def initialise(self, root_cfg_path: str) -> SurferConfig:
+        path = resolve_tool_path(
+            self.path,
+            base_dir=os.path.dirname(root_cfg_path),
+            block="cfg-surfer",
+            name=self.name,
+            field="path",
+        )
         cfg = SurferConfig(
             name=self.name,
-            path=self.path,
+            path=path,
             wcp_port=self.wcp_port,
             editor_cmd=self.editor_cmd,
             editor_terminal=self.editor_terminal,
@@ -96,17 +107,17 @@ class SurferConfigFile:
             root_cfg_path=root_cfg_path,
             available=False,
         )
-        if os.sep in self.path or self.path.startswith("."):
-            exe = os.path.join(os.path.dirname(root_cfg_path), self.path)
+        if os.sep in path or path.startswith("."):
+            exe = os.path.join(os.path.dirname(root_cfg_path), path)
             cfg.available = os.path.isfile(exe) and os.access(exe, os.X_OK)
         else:
-            cfg.available = shutil.which(self.path) is not None
+            cfg.available = shutil.which(path) is not None
         if not cfg.available:
             log_event(
                 logger,
                 logging.DEBUG,
                 "surfer.path_missing",
                 name=cfg.name,
-                path=self.path,
+                path=path,
             )
         return cfg

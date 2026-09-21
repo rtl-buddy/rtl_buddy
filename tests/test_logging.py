@@ -1,9 +1,11 @@
+import contextlib
 import json
 import io
 import logging
 import os
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 
 import click
@@ -11,7 +13,12 @@ import pytest
 
 from rtl_buddy.config.verible import VeribleConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError, FilelistError
-from rtl_buddy.logging_utils import log_event, render_summary, setup_logging
+from rtl_buddy.logging_utils import (
+    log_event,
+    render_summary,
+    set_print_failures_only,
+    setup_logging,
+)
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.verible import Verible
 from rtl_buddy.tools.vlog_filelist import VlogFilelist
@@ -76,6 +83,50 @@ def test_machine_log_event_is_jsonl(tmp_path):
     assert payload["message"] == "basic #0001: compile started"
 
 
+def test_human_toplevel_conflict_names_both_tops(tmp_path):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
+
+    log_event(
+        logger,
+        logging.WARNING,
+        "compile.toplevel_conflict",
+        test="basic",
+        simulator="verilator",
+        flag="--top-module",
+        toplevel="tb_top",
+        configured="spare_top",
+    )
+
+    file_text = log_path.read_text()
+    assert "--top-module spare_top" in file_text
+    assert "tb_top" in file_text
+
+
+def test_human_toplevel_conflict_without_a_value_says_so(tmp_path):
+    # A bare configured flag (trailing `--top`, or one followed by another
+    # option) has no module to name; the line must not read "None".
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
+
+    log_event(
+        logger,
+        logging.WARNING,
+        "compile.toplevel_conflict",
+        test="basic",
+        simulator="verilator",
+        flag="--top",
+        toplevel="tb_top",
+        configured=None,
+    )
+
+    file_text = log_path.read_text()
+    assert "--top with no value" in file_text
+    assert "None" not in file_text
+
+
 def test_human_sim_failure_message_lists_artifacts(tmp_path):
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
@@ -121,6 +172,215 @@ def test_render_summary_logs_plain_text_once(tmp_path, capsys):
     assert "Test Results Summary" in file_text
     assert "Builder: vcs" in file_text
     assert "basic" in file_text
+
+
+_VERDICT_COLUMNS = [
+    ("test_name", "Test"),
+    ("result", "Result"),
+    ("desc", "Description"),
+]
+
+_VERDICT_ROWS = [
+    {"test_name": "row_pass", "result": "PASS", "desc": "ok"},
+    {"test_name": "row_skip", "result": "SKIP", "desc": "-"},
+    {"test_name": "row_xfail", "result": "XFAIL", "desc": "-"},
+    {"test_name": "row_fail", "result": "FAIL", "desc": "bad"},
+    {"test_name": "row_na", "result": "NA", "desc": "-"},
+    {"test_name": "row_xpass", "result": "XPASS", "desc": "-"},
+]
+
+_TALLY = "Results: 1 PASS, 1 FAIL, 1 XFAIL, 1 XPASS, 1 SKIP, 1 NA (6 total)"
+
+
+def _render_verdict_summary(logger, columns=None, rows=None):
+    render_summary(
+        title="Test Results Summary",
+        columns=_VERDICT_COLUMNS if columns is None else columns,
+        rows=_VERDICT_ROWS if rows is None else rows,
+        logger=logger,
+        metadata=["Builder: vcs"],
+    )
+
+
+def test_print_failures_only_hides_passing_rows_in_human_mode(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    set_print_failures_only(True)
+
+    _render_verdict_summary(logging.getLogger("rtl_buddy.tests"))
+
+    stderr = capsys.readouterr().err
+    for hidden in ("row_pass", "row_skip", "row_xfail"):
+        assert hidden not in stderr
+    for shown in ("row_fail", "row_na", "row_xpass"):
+        assert shown in stderr
+    assert "Results:" in stderr
+
+    file_text = log_path.read_text()
+    for name in (row["test_name"] for row in _VERDICT_ROWS):
+        assert name in file_text
+    assert _TALLY in file_text
+
+
+def test_summary_tally_is_rendered_without_the_filter(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+
+    _render_verdict_summary(logging.getLogger("rtl_buddy.tests"))
+
+    stderr = capsys.readouterr().err
+    for name in (row["test_name"] for row in _VERDICT_ROWS):
+        assert name in stderr
+    assert "Results:" in stderr
+    assert _TALLY in log_path.read_text()
+
+
+def test_summary_tally_follows_the_rows(tmp_path, capsys):
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+
+    _render_verdict_summary(logging.getLogger("rtl_buddy.tests"))
+
+    lines = [line for line in log_path.read_text().splitlines() if line.strip()]
+    assert lines[-1].endswith(_TALLY)
+    assert "row_xpass" in lines[-2]
+
+
+def test_print_failures_only_hiding_every_row_keeps_headers(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    _render_verdict_summary(
+        logging.getLogger("rtl_buddy.tests"),
+        rows=[{"test_name": "row_pass", "result": "PASS", "desc": "ok"}],
+    )
+
+    stderr = capsys.readouterr().err
+    assert "row_pass" not in stderr
+    assert "Description" in stderr
+    assert "Results:" in stderr
+
+
+def test_summary_without_verdict_column_is_not_filtered(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Filelist Summary",
+        columns=[("name", "Name"), ("files", "Files")],
+        rows=[{"name": "core", "files": "3"}],
+        logger=logging.getLogger("rtl_buddy.tests"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "core" in stderr
+    assert "Results:" not in stderr
+
+
+def test_status_column_without_verdict_values_has_no_tally(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Models",
+        columns=[("block", "Block"), ("status", "Has Model")],
+        rows=[{"block": "alu", "status": "yes"}, {"block": "fpu", "status": "no"}],
+        logger=logging.getLogger("rtl_buddy.tests"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "alu" in stderr and "fpu" in stderr
+    assert "Results:" not in stderr
+
+
+def test_mutation_summary_is_left_alone(tmp_path, capsys):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    set_print_failures_only(True)
+
+    render_summary(
+        title="Mutation Testing Results",
+        columns=[("mutant", "Mutant"), ("outcome", "Outcome"), ("verdict", "Verdict")],
+        rows=[
+            {"mutant": "m1", "outcome": "KILLED", "verdict": "sim=FAIL"},
+            {"mutant": "m2", "outcome": "SURVIVED", "verdict": "sim=PASS"},
+        ],
+        logger=logging.getLogger("rtl_buddy.tests"),
+    )
+
+    stderr = capsys.readouterr().err
+    assert "m1" in stderr and "m2" in stderr
+    assert "Results:" not in stderr
+
+
+def test_root_callback_accepts_print_failures_only(minimal_project):
+    from typer.testing import CliRunner
+
+    from rtl_buddy import logging_utils
+
+    rb = RtlBuddy(name="test_cli")
+    result = CliRunner().invoke(rb.app, ["--print-failures-only", "test", "--list"])
+
+    assert result.exit_code == 0, result.output
+    assert logging_utils.print_failures_only()
+
+
+def test_render_summary_escapes_user_data_in_the_rich_table(
+    tmp_path, monkeypatch, capsys
+):
+    """Data is data, not Rich markup (#520).
+
+    A rightsize edit hint reads `tests[name=alpha].resources.cpus`, and Rich
+    parses `[name=alpha]` as a style tag and drops it — the human table then
+    hides which test the hint names while `--machine` shows it in full.
+    """
+    monkeypatch.setenv("COLUMNS", "400")  # keep the row on one line
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
+
+    render_summary(
+        title="Reservation Advice [reserved vs used]",
+        columns=[("field", "Field"), ("test", "Test")],
+        rows=[{"field": "tests[name=alpha].resources.cpus", "test": "t[0]"}],
+        logger=logger,
+        metadata=["apply by editing tests[name=alpha]"],
+    )
+
+    stderr = capsys.readouterr().err
+    assert "tests[name=alpha].resources.cpus" in stderr
+    assert "t[0]" in stderr
+    assert "Reservation Advice [reserved vs used]" in stderr
+    assert "apply by editing tests[name=alpha]" in stderr
+    # The escape is Rich's own: it must not leak into what the user reads.
+    assert "\\[" not in stderr
+
+
+def test_render_summary_keeps_brackets_on_the_machine_console(tmp_path, capsys):
+    """The machine path echoes plain lines through Rich too (#520).
+
+    The JSON event carries the raw strings; the console echo beside it must
+    not quietly disagree with them, and must not carry escape backslashes.
+    """
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests.machine")
+
+    render_summary(
+        title="Reservation Advice",
+        columns=[("field", "Field")],
+        rows=[{"field": "tests[name=alpha].resources.cpus"}],
+        logger=logger,
+    )
+
+    stderr = capsys.readouterr().err
+    assert "tests[name=alpha].resources.cpus" in stderr
+    assert "\\[" not in stderr
+
+    events = [
+        json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
+    ]
+    summary = [e for e in events if e.get("event") == "summary"]
+    assert summary[0]["rows"] == [{"field": "tests[name=alpha].resources.cpus"}]
 
 
 def test_display_path_prefers_relative_shorter_path():
@@ -200,6 +460,121 @@ def test_show_git_rev_is_best_effort(monkeypatch):
     rb.show_git_rev()
 
 
+def test_git_metadata_status_takes_no_optional_locks(monkeypatch):
+    """#581: reading status must not take .git/index.lock."""
+    rb = RtlBuddy(name="rtl_buddy")
+    seen = []
+
+    def _record(argv, *args, **kwargs):
+        seen.append(argv)
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.subprocess.run", _record)
+    rb._collect_git_status()
+
+    status = [argv for argv in seen if "status" in argv]
+    assert status, f"expected a git status call, got {seen}"
+    for argv in status:
+        assert "--no-optional-locks" in argv, argv
+        # must precede the subcommand
+        assert argv.index("--no-optional-locks") < argv.index("status"), argv
+
+
+def test_git_metadata_survives_no_optional_locks(tmp_path):
+    """The flag must not change the reported branch/commit/counts."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
+
+    def git(*args):
+        subprocess.run(
+            ["git", *args], cwd=repo, env=env, check=True, capture_output=True
+        )
+
+    git("init", "-q", "-b", "main")
+    (repo / "tracked.txt").write_text("one\n")
+    git("add", "tracked.txt")
+    git("commit", "-qm", "initial")
+    # one unstaged, one staged
+    (repo / "tracked.txt").write_text("two\n")
+    (repo / "added.txt").write_text("new\n")
+    git("add", "added.txt")
+
+    rb = RtlBuddy(name="rtl_buddy")
+    cwd = os.getcwd()
+    os.chdir(repo)
+    try:
+        status = rb._collect_git_status()
+    finally:
+        os.chdir(cwd)
+
+    assert status is not None
+    assert status["branch"] == "main"
+    assert status["commit"]
+    assert status["modified"] == 1, status
+    assert status["staged"] == 1, status
+    assert not (repo / ".git" / "index.lock").exists()
+
+
+def test_git_metadata_pins_the_project_root(tmp_path, monkeypatch):
+    """#581: git metadata describes the project, not the inherited cwd."""
+    project = tmp_path / "project"
+    project.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    rb = RtlBuddy(name="rtl_buddy")
+    rb.root_cfg = SimpleNamespace(get_project_rootdir=lambda: str(project))
+
+    seen = []
+
+    def _record(argv, *args, **kwargs):
+        seen.append(kwargs.get("cwd"))
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.subprocess.run", _record)
+    monkeypatch.chdir(elsewhere)
+    rb._collect_git_status()
+
+    assert seen and all(cwd == str(project) for cwd in seen), seen
+
+
+def test_git_metadata_root_resolves_once_per_invocation(tmp_path, monkeypatch):
+    """Banner and machine envelope must not disagree about the root."""
+    first = tmp_path / "first"
+    first.mkdir()
+    second = tmp_path / "second"
+    second.mkdir()
+
+    rb = RtlBuddy(name="rtl_buddy")
+    rb.root_cfg = SimpleNamespace(get_project_rootdir=lambda: str(first))
+    assert rb._project_root_for_git() == str(first)
+
+    # A later root_cfg rebuild (cross-root regression) must not move it.
+    rb.root_cfg = SimpleNamespace(get_project_rootdir=lambda: str(second))
+    assert rb._project_root_for_git() == str(first)
+
+
+def test_git_metadata_root_falls_back_to_inherited_cwd(tmp_path):
+    """No root_cfg: inherit the cwd and let git walk up, as before."""
+    rb = RtlBuddy(name="rtl_buddy")
+    assert rb._project_root_for_git() is None
+
+
+def test_git_metadata_root_resolution_is_silent(caplog):
+    """Resolving must not log; machine mode parses stdout as JSON."""
+    rb = RtlBuddy(name="rtl_buddy")
+    with caplog.at_level(logging.DEBUG):
+        rb._project_root_for_git()
+    assert caplog.records == []
+
+
 def test_root_options_ignores_forwarded_help_args_after_double_dash(monkeypatch):
     rb = RtlBuddy(name="rtl_buddy")
     fake_ctx = SimpleNamespace(resilient_parsing=False, invoked_subcommand="verible")
@@ -265,6 +640,62 @@ def test_vlog_filelist_entries_are_relative_to_output_dir(tmp_path):
     assert "../../design/rtl.sv" in file_text
 
 
+def test_vlog_filelist_write_is_atomic_for_concurrent_writers(tmp_path):
+    """Concurrent writers of one run.f must never expose a truncated file.
+
+    `artefacts/<test>/run.f` is per TEST, so every element of a dispatched
+    array for the same test rewrites it at once — and share-build reads it
+    straight back to fingerprint the compile. A reader that lands inside a
+    truncate window hashes an empty filelist to a different compile key and
+    recompiles instead of reusing the shared build (#358).
+    """
+    import threading
+
+    model_dir = tmp_path / "design"
+    model_dir.mkdir()
+    model_path = model_dir / "models.yaml"
+    (model_dir / "rtl.sv").write_text("module rtl;\nendmodule\n")
+    model_path.write_text("models: []\n")
+    model_cfg = DummyModelCfg(model_path, ["rtl.sv\n"])
+
+    output_path = tmp_path / "artefacts" / "basic" / "run.f"
+    output_path.parent.mkdir(parents=True)
+
+    def write_once():
+        VlogFilelist(
+            name="rtl_buddy/vlog_filelist",
+            model_cfg=model_cfg,
+            output_path=output_path,
+        ).write_output()
+
+    seen = []
+    stop = threading.Event()
+
+    def read_until_stopped():
+        while not stop.is_set():
+            try:
+                seen.append(output_path.read_text())
+            except FileNotFoundError:
+                pass
+
+    write_once()  # a complete file exists before any reader looks
+    reader = threading.Thread(target=read_until_stopped)
+    reader.start()
+    try:
+        for _ in range(60):
+            write_once()
+    finally:
+        stop.set()
+        reader.join()
+
+    # Every observation is a whole file, never a truncated one.
+    assert seen, "reader never observed the filelist"
+    assert all("../../design/rtl.sv" in text for text in seen)
+    assert not any(text == "" for text in seen)
+    # No temp files left behind for the builder to trip on.
+    assert [p.name for p in output_path.parent.iterdir()] == ["run.f"]
+
+
 def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
     model_dir = tmp_path / "design"
     nested_dir = model_dir / "rtl"
@@ -289,7 +720,11 @@ def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
     assert "../../design/rtl/rtl.sv" in file_text
 
 
-def test_verible_path_missing_is_debug_only(tmp_path):
+def test_verible_path_missing_is_debug_only(tmp_path, monkeypatch):
+    # A host with verible on PATH would take the #439 fallback (available,
+    # WARNING) instead of the missing-everywhere path this test asserts —
+    # stub the lookup so the test does not depend on what is installed.
+    monkeypatch.setattr("rtl_buddy.config.verible.shutil.which", lambda _n: None)
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
     cfg = VeribleConfigFile(name="verible", path="missing/verible", extra_args={})
@@ -324,3 +759,150 @@ def test_verible_stdout_is_preserved_verbatim(monkeypatch):
     assert verible.do_exe("verible-verilog-format", []) == 0
     assert stdout.getvalue() == "module x;  \nassign y = z;\n"
     assert stderr.getvalue() == ""
+
+
+# ------------------------------------- #435: console-visible INFO events
+
+
+def _attach_caplog(caplog):
+    """Re-attach caplog's handler, which setup_logging() clears."""
+    logging.getLogger().addHandler(caplog.handler)
+    caplog.set_level(logging.DEBUG)
+
+
+def test_log_console_event_prints_once_at_default_verbosity(tmp_path, capsys, caplog):
+    """The event a CI console must see, without being logged as a warning.
+
+    The console handler sits at WARNING by default, so a plain INFO event
+    reaches the log file and nothing else — which is how a dispatched
+    regression stayed silent for half an hour (#435).
+    """
+    from rtl_buddy.logging_utils import log_console_event
+
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    _attach_caplog(caplog)
+
+    log_console_event(
+        logging.getLogger("rtl_buddy.tests"),
+        logging.INFO,
+        "dispatch.progress",
+        backend="slurm",
+        remaining=3,
+        total=8,
+        elapsed_s=12,
+    )
+
+    stderr = " ".join(capsys.readouterr().err.split())
+    assert stderr.count("3/8 jobs remaining") == 1
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ]
+    assert record.levelno == logging.INFO
+    assert "3/8 jobs remaining" in log_path.read_text()
+
+
+def test_log_console_event_prints_in_machine_mode_too(tmp_path, capsys, caplog):
+    """An agent's transcript needs the liveness line for the reason CI does.
+
+    Machine mode's console is the same WARNING-gated stream rendering the
+    human message (the JSON Lines are the file log's), so the line is
+    printed there as well; the JSONL record still carries the event.
+    """
+    from rtl_buddy.logging_utils import log_console_event
+
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+    _attach_caplog(caplog)
+
+    log_console_event(
+        logging.getLogger("rtl_buddy.tests"),
+        logging.INFO,
+        "dispatch.progress",
+        backend="slurm",
+        remaining=3,
+        total=8,
+        elapsed_s=12,
+    )
+
+    stderr = " ".join(capsys.readouterr().err.split())
+    assert stderr.count("3/8 jobs remaining") == 1
+    (line,) = [
+        json.loads(text)
+        for text in log_path.read_text().splitlines()
+        if '"dispatch.progress"' in text
+    ]
+    assert (line["event"], line["remaining"], line["total"]) == (
+        "dispatch.progress",
+        3,
+        8,
+    )
+
+
+def test_log_console_event_is_not_printed_twice_under_verbose(tmp_path, capsys):
+    """`-v` already shows INFO: the direct print must stand down."""
+    from rtl_buddy.logging_utils import log_console_event
+
+    setup_logging(verbose=True, color=False, log_path=tmp_path / "rtl_buddy.log")
+    log_console_event(
+        logging.getLogger("rtl_buddy.tests"),
+        logging.INFO,
+        "dispatch.progress",
+        backend="slurm",
+        remaining=3,
+        total=8,
+        elapsed_s=12,
+    )
+    stderr = " ".join(capsys.readouterr().err.split())
+    assert stderr.count("3/8 jobs remaining") == 1
+
+
+def test_task_status_does_not_start_a_live_display_off_the_main_thread(
+    tmp_path, monkeypatch
+):
+    """Rich allows one Live per console; a second raises LiveError (#495).
+
+    The build job compiles distinct builds on worker threads, so the check
+    lives in ``task_status`` rather than at its call sites — every threaded
+    caller inherits it, and a worker announces its phase the way a
+    non-terminal run already does.
+    """
+    from rtl_buddy import logging_utils
+
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    # Pretend we are on a terminal, which is the only case that would try
+    # to open a Live display at all.
+    monkeypatch.setattr(logging_utils, "_should_use_rich_console", lambda: True)
+
+    def exploding_status(*args, **kwargs):
+        raise AssertionError("task_status opened a Rich Live off the main thread")
+
+    monkeypatch.setattr(
+        logging_utils.get_stderr_console(), "status", exploding_status, raising=False
+    )
+
+    seen = []
+
+    def worker():
+        try:
+            with logging_utils.task_status("Compiling worker_test") as status:
+                seen.append(status)
+        except BaseException as exc:  # surfaced below, not swallowed
+            seen.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=10)
+    assert seen == [None], seen
+
+    # The main thread still gets its spinner.
+    calls = []
+    monkeypatch.setattr(
+        logging_utils.get_stderr_console(),
+        "status",
+        lambda *a, **k: calls.append((a, k)) or contextlib.nullcontext(),
+        raising=False,
+    )
+    with logging_utils.task_status("Compiling main"):
+        pass
+    assert len(calls) == 1

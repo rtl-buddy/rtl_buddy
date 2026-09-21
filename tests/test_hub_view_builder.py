@@ -361,3 +361,183 @@ def test_build_view_json_rejects_unparseable_schema(tmp_path, monkeypatch):
     )
     with pytest.raises(FatalRtlBuddyError, match=r"schema_version unparseable"):
         view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+
+def test_build_view_json_clears_the_cache_before_domain_map_generation(
+    tmp_path, monkeypatch
+):
+    """`view.json` lives in the persistent cache and `viewer_http` serves
+    whatever is at that path with a 200. A rebuild that dies in
+    `build_domain_map` must therefore not leave the previous build's view for
+    the SPA to keep serving (#469)."""
+    from rtl_buddy.hub import cdc_builder
+
+    model = _model(tmp_path)
+    stale = view_builder.view_json_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "name": "stale build"}')
+
+    def _boom(**kwargs):
+        raise FatalRtlBuddyError("cdc analysis 'demo_cdc': SDC not found")
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", _boom)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+
+    with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_view_json_clears_the_cache_before_resolving_the_viewer(
+    tmp_path, monkeypatch
+):
+    """Same for the other pre-run raise: no viewer on PATH must not leave the
+    previous build's view.json being served (#469)."""
+    from rtl_buddy.hub import cdc_builder
+
+    model = _model(tmp_path)
+    stale = view_builder.view_json_path(tmp_path, "demo")
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"schema_version": "1.0", "name": "stale build"}')
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: None)
+
+    with pytest.raises(FatalRtlBuddyError):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=model)
+
+    assert not stale.exists()
+
+
+def test_build_view_json_removes_a_view_the_renderer_wrote_then_failed(
+    tmp_path, monkeypatch
+):
+    """rtl-buddy-view can write `out_path` and *then* exit non-zero. The hub
+    remembers the failure, but `_serve_active_view_json` tests the file before
+    it consults that memory — so a half-built view left on disk is served with
+    a 200. It has to go (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesThenFails:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+            (Path(self.artefact_dir) / "hier.log").write_text("$ rtl-buddy-view ...\n")
+
+        def run(self) -> int:
+            out_path.write_text('{"schema_version": "1.0", "name": "half built"}')
+            return 7
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesThenFails)
+
+    with pytest.raises(FatalRtlBuddyError, match=r"hier\.log"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()
+
+
+def test_build_view_json_removes_a_view_that_fails_schema_validation(
+    tmp_path, monkeypatch
+):
+    """A view.json rejected for its schema major must not stay on disk to be
+    served anyway (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesFutureSchema:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out_path.write_text('{"schema_version": "99.0", "name": "too new"}')
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesFutureSchema)
+
+    with pytest.raises(FatalRtlBuddyError, match="schema major"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()
+
+
+def test_build_view_json_removes_an_unreadable_view(tmp_path, monkeypatch):
+    """Same for a view.json that is not parseable JSON at all (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesGarbage:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out_path.write_text("{ not json")
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesGarbage)
+
+    with pytest.raises(FatalRtlBuddyError, match="unreadable view.json"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()
+
+
+def test_build_view_json_removes_a_view_whose_top_level_is_not_an_object(
+    tmp_path, monkeypatch
+):
+    """An exit-0 renderer can write valid JSON whose top level is a list. The
+    validator dereferenced it with `.get`, raising `AttributeError` rather
+    than `FatalRtlBuddyError`, so the old handler did not clear it and
+    `_serve_active_view_json` served the rejected file with a 200 (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesAList:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out_path.write_text("[]")
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesAList)
+
+    with pytest.raises(FatalRtlBuddyError, match="not an object"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()
+
+
+def test_build_view_json_removes_the_view_on_any_validator_exception(
+    tmp_path, monkeypatch
+):
+    """The cleanup catches every exception, not just `FatalRtlBuddyError`: the
+    validator dereferences the parsed JSON, so a shape it does not anticipate
+    must not leave the file at the active cache path (#469)."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    out_path = view_builder.view_json_path(tmp_path, "demo")
+
+    class WritesFine:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out_path.write_text('{"schema_version": "1.0"}')
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", WritesFine)
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("a shape the validator did not anticipate")
+
+    monkeypatch.setattr(view_builder, "_assert_view_schema_supported", _boom)
+
+    with pytest.raises(RuntimeError):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+    assert not out_path.exists()

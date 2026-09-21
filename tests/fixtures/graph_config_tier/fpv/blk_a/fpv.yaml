@@ -1,0 +1,12 @@
+# Fixture for tests/test_graph_config_tier.py
+rtl-buddy-filetype: fpv_config
+
+verifications:
+  - name: "blk_a_safety"
+    desc: "Bounded proof that blk_a never overflows"
+    model: "blk_a"
+    model_path: "../../design/blk_a/models.yaml"
+    tool: "sby"
+    properties:
+      - "blk_a_props.sv"
+    reglvl: 0

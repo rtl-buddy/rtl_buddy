@@ -64,6 +64,93 @@ class WaveScope:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphFocus:
+    """Last broadcast ``graph_focus`` payload + its origin.
+
+    Cached for the same reason a selection is: ``rb hub send graph-focus``
+    is most useful *before* the pane is open ("show me this node"), and
+    the replay on registration is what makes that ordering work — the
+    pane opens already focused instead of dropping the event that
+    preceded it.
+    """
+
+    node: str
+    origin: Origin
+
+
+@dataclass(frozen=True, slots=True)
+class CovFocus:
+    """Last broadcast ``cov_focus`` payload + its origin.
+
+    Cached for the same reason :class:`GraphFocus` is: ``rb hub send
+    cov-focus`` is at its most useful *before* the tab is open ("show me
+    what is cold in this block"), and the replay on registration is what
+    makes that ordering work.
+
+    The three optional narrowing hints ride along rather than being
+    dropped, so a replayed focus lands on the same line and metric the
+    original did — a replay that kept only ``target`` would silently
+    downgrade "this branch, on line 84" to "this file".
+    """
+
+    target: str
+    origin: Origin
+    metric: Optional[str] = None
+    line: Optional[int] = None
+    item: Optional[str] = None
+
+    def payload(self) -> dict[str, Any]:
+        """The on-wire payload, with unset hints omitted.
+
+        The schema is ``additionalProperties: false`` and every hint is
+        optional, so ``None`` has to be absent rather than null.
+        """
+
+        out: dict[str, Any] = {"target": self.target}
+        if self.metric is not None:
+            out["metric"] = self.metric
+        if self.line is not None:
+            out["line"] = self.line
+        if self.item is not None:
+            out["item"] = self.item
+        return out
+
+
+@dataclass(frozen=True, slots=True)
+class PhysFocus:
+    """Last broadcast ``phys_focus`` payload + its origin.
+
+    Cached for the same reason :class:`CovFocus` is: ``rb hub send
+    phys-focus`` is at its most useful *before* the tab is open ("show
+    me what owns the area in this block"), and the replay on
+    registration is what makes that ordering work.
+
+    One optional narrowing hint rather than coverage's three: an area or
+    power figure has no line and no bin, so ``metric`` — which of
+    cells/area/leakage/dynamic/total to foreground — is the only thing
+    left to say about a target. It rides along on the replay rather than
+    being dropped, or a replayed focus would silently downgrade "this
+    module, on leakage" to "this module".
+    """
+
+    target: str
+    origin: Origin
+    metric: Optional[str] = None
+
+    def payload(self) -> dict[str, Any]:
+        """The on-wire payload, with an unset metric omitted.
+
+        The schema is ``additionalProperties: false`` and ``metric`` is
+        optional, so ``None`` has to be absent rather than null.
+        """
+
+        out: dict[str, Any] = {"target": self.target}
+        if self.metric is not None:
+            out["metric"] = self.metric
+        return out
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticsBundle:
     """Last ``diagnostics_set`` payload for one producer ``source``.
 
@@ -91,6 +178,9 @@ class HubState:
     signal_selection: Optional[SignalSelection] = None
     cursor_time: Optional[CursorTime] = None
     wave_scope: Optional[WaveScope] = None
+    graph_focus: Optional[GraphFocus] = None
+    cov_focus: Optional[CovFocus] = None
+    phys_focus: Optional[PhysFocus] = None
     diagnostics: dict[str, DiagnosticsBundle] = field(default_factory=dict)
 
     registered_clients: set[Origin] = field(default_factory=set)
@@ -113,6 +203,9 @@ class HubState:
         self.signal_selection = None
         self.cursor_time = None
         self.wave_scope = None
+        self.graph_focus = None
+        self.cov_focus = None
+        self.phys_focus = None
         self.diagnostics = {}
 
 
@@ -121,6 +214,9 @@ __all__ = [
     "SignalSelection",
     "CursorTime",
     "WaveScope",
+    "GraphFocus",
+    "CovFocus",
+    "PhysFocus",
     "DiagnosticsBundle",
     "HubState",
 ]

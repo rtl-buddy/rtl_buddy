@@ -14,20 +14,47 @@ import functools
 import json
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from .vlog_filelist import VlogFilelist
+from .artifact_paths import clear_stale_artefacts
+from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from ..config.cdc import CdcConfig, CdcToolConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
-from ..runner.cdc_results import CdcFailResults, CdcPassResults, CdcResults
+from ..runner.cdc_results import (
+    CdcFailResults,
+    CdcPassResults,
+    CdcResults,
+    CdcSkipResults,
+)
 
 
-_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
+
+
+def warn_unsupported_incdirs(analysis: str, fl_path: str) -> None:
+    """rtl-buddy-cdc takes plain source paths and has no include-path option,
+    so a filelist ``+incdir+`` cannot reach it. Say so rather than narrowing
+    the `` `include `` search path silently (#519); the analyzer's own
+    ``Cannot find include file`` error then has a cause on the log."""
+    incdirs = incdirs_from_filelist(fl_path)
+    if not incdirs:
+        return
+    log_event(
+        logger,
+        logging.WARNING,
+        "cdc.filelist_incdirs_unsupported",
+        analysis=analysis,
+        incdirs=incdirs,
+        count=len(incdirs),
+    )
+
+
 _FILELIST_SOURCE_PREFIX = "-v "
 
 
@@ -53,6 +80,21 @@ def _lint_supports_project_root(executable: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return "--project-root" in (proc.stdout + proc.stderr)
+
+
+@functools.lru_cache(maxsize=None)
+def _lint_supports_single_unit(executable: str) -> bool:
+    """Whether ``<executable> lint`` accepts ``--single-unit`` (#277)."""
+    try:
+        proc = subprocess.run(
+            [executable, "lint", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "--single-unit" in (proc.stdout + proc.stderr)
 
 
 class RtlBuddyCdc:
@@ -154,25 +196,125 @@ class RtlBuddyCdc:
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
 
+    def _clear_stale_outputs(self) -> list[str]:
+        """Delete the analyzer-written artefacts before invoking it.
+
+        Exit 1 is rtl-buddy-cdc's "rule violations found" code, so a crash
+        that exits 1 passes the returncode gate below and the fixed-path
+        read then picks up whatever ``cdc.json`` the artefact dir already
+        held (#469). ``cdc.log`` is not cleared here because :meth:`_run`
+        truncates it (mode ``"w"``) on the first of the two invocations.
+
+        The domain maps go whether or not this invocation asked for them.
+        They are written only under ``emit_maps``, but they are read back by
+        ``rb cdc --emit-constraints`` and ``--check-xdc`` off a fixed path, so
+        an ordinary run that leaves an earlier constraint-generation run's
+        maps in place lets those commands answer from a design state this
+        analysis never confirmed — the same reasoning that makes the FPGA
+        backends clear a bitstream they were not asked to build.
+        """
+        return clear_stale_artefacts(
+            [
+                self._report_path("json"),
+                self._report_path("txt"),
+                self._domain_map_path(),
+                self._reset_map_path(),
+            ],
+            owner=self.cdc_cfg.get_name(),
+        )
+
+    def _fail_after_analyzer(self, desc: str) -> CdcFailResults:
+        """Fail a run that has already invoked the analyzer, publishing nothing.
+
+        rtl-buddy-cdc writes its report and maps before it finishes, so an
+        unsupported exit code or an unparsable report can arrive with a
+        half-written ``cdc.json`` — or a complete one from the *text* pass —
+        on disk, at the fixed path ``read_report`` and ``read_emitted_maps``
+        consult after ``run`` returns (#469). Every post-analyzer failure
+        return goes through here.
+        """
+        self._clear_stale_outputs()
+        # No violation count came back, so the FAIL is the analyzer's, not
+        # the design's, and an xfail marker does not excuse it (#553).
+        return CdcFailResults(
+            name=self.cdc_cfg.get_name(), violations=0, desc=desc, fail_stage="tool"
+        )
+
     # --- run ----------------------------------------------------------------
 
     def run(self) -> CdcResults:
-        fl_path = self._write_filelist()
-        sources = self._source_files_from_filelist(fl_path)
-        if not sources:
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: filelist {fl_path} produced no sources"
+        # Configuration is validated first, before the availability check
+        # below: a broken analysis is broken on every machine, and reporting
+        # it as "analyzer not installed" on a box that merely lacks the tool
+        # would send the user after the wrong problem. These all raise — and
+        # a config error is a *failed run*, so it clears on the way out
+        # rather than leaving the previous run's reports to be read (#469).
+        try:
+            fl_path = self._write_filelist()
+            sources = self._source_files_from_filelist(fl_path)
+            if not sources:
+                raise FatalRtlBuddyError(
+                    f"{self.cdc_cfg.get_name()}: filelist {fl_path} produced no sources"
+                )
+
+            sdc_path = self.cdc_cfg.get_constraints()
+            if not os.path.isfile(sdc_path):
+                raise FatalRtlBuddyError(
+                    f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
+                )
+            waivers_path = self.cdc_cfg.get_waivers()
+            if waivers_path is not None and not os.path.isfile(waivers_path):
+                raise FatalRtlBuddyError(
+                    f"{self.cdc_cfg.get_name()}: waivers file not found: {waivers_path}"
+                )
+        except Exception:
+            # Deliberately every exception, not a list of the ones we expect.
+            # This caught `FatalRtlBuddyError` alone, and `_write_filelist`
+            # raises `FilelistError` — a *sibling* under `RtlBuddyError`, not
+            # a subclass — so a rerun after a source file disappeared kept the
+            # previous run's reports (#469). Enumerating exception types is
+            # what went wrong; the rule is simply that a run which fails
+            # before the analyzer publishes nothing, whatever it failed on.
+            # Re-raised immediately, so this masks nothing.
+            self._clear_stale_outputs()
+            raise
+
+        executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
+        if not shutil.which(executable):
+            # Ahead of the clear, mirroring the Vivado backend: a box without
+            # the analyzer never ran it, so it must not delete the reports a
+            # box that has it produced. Without this the clear happened first
+            # and `run_managed_process` then raised out of Popen, losing them
+            # (#469).
+            log_event(
+                logger,
+                logging.WARNING,
+                "cdc.no_analyzer",
+                analysis=self.cdc_cfg.get_name(),
+                exe=executable,
+            )
+            return CdcSkipResults(
+                name=self.cdc_cfg.get_name(),
+                desc=(
+                    f"{executable!r} not found — run "
+                    "`rb tool-check --explain rtl-buddy-cdc` for install "
+                    "instructions"
+                ),
             )
 
-        sdc_path = self.cdc_cfg.get_constraints()
-        if not os.path.isfile(sdc_path):
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
-            )
-        waivers_path = self.cdc_cfg.get_waivers()
-        if waivers_path is not None and not os.path.isfile(waivers_path):
-            raise FatalRtlBuddyError(
-                f"{self.cdc_cfg.get_name()}: waivers file not found: {waivers_path}"
+        warn_unsupported_incdirs(self.cdc_cfg.get_name(), fl_path)
+
+        # Everything past the skip is a run of this analysis, however it ends,
+        # so the previous run's reports go now rather than being left to be
+        # read as this run's (#469).
+        stale = self._clear_stale_outputs()
+        if stale:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cdc.stale_artefacts_removed",
+                analysis=self.cdc_cfg.get_name(),
+                paths=stale,
             )
 
         # Always emit JSON so we can parse violation counts; also keep a
@@ -181,10 +323,17 @@ class RtlBuddyCdc:
         text_report = self._report_path("txt")
         log_path = self._log_path()
 
-        executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
         opts = self.tool_cfg.get_opts(
             self.cdc_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
+
+        if self.cdc_cfg.single_unit and not _lint_supports_single_unit(executable):
+            raise FatalRtlBuddyError(
+                "CDC analysis "
+                f"'{self.cdc_cfg.get_name()}' sets single_unit: true, but "
+                f"'{executable} lint --help' does not advertise --single-unit; "
+                "install an rtl-buddy-cdc build containing rtl-buddy-cdc#277"
+            )
 
         # Anchor the analyzer's relative path args (chiefly any in
         # ``extra_args`` — `--yosys-plugin` / `--emit-*`) to the cdc.yaml
@@ -223,6 +372,8 @@ class RtlBuddyCdc:
                 cmd += ["--sync-depth", str(opts.sync_depth)]
             if self.cdc_cfg.frontend is not None:
                 cmd += ["--frontend", self.cdc_cfg.frontend]
+            if self.cdc_cfg.single_unit:
+                cmd.append("--single-unit")
             for module in self.cdc_cfg.blackbox:
                 # Repeated `--blackbox <module>` (rtl-buddy-cdc#259). An
                 # empty list adds nothing.
@@ -265,36 +416,42 @@ class RtlBuddyCdc:
         # (typically 2 = elaboration failure) is a hard fail.
         for proc in (text_proc, json_proc):
             if proc.returncode not in (0, 1):
-                return CdcFailResults(
-                    name=self.cdc_cfg.get_name(),
-                    violations=0,
-                    desc=(
-                        f"rtl-buddy-cdc exited with code {proc.returncode} "
-                        f"(see {log_path})"
-                    ),
+                return self._fail_after_analyzer(
+                    f"rtl-buddy-cdc exited with code {proc.returncode} (see {log_path})"
                 )
 
         if not os.path.isfile(json_report):
-            return CdcFailResults(
-                name=self.cdc_cfg.get_name(),
-                violations=0,
-                desc=f"no JSON report produced (see {log_path})",
+            # The *text* pass may still have written `cdc.txt` and the maps.
+            # A run that reports failure publishes none of it: `--emit-
+            # constraints` reads those maps back off a fixed path.
+            return self._fail_after_analyzer(
+                f"no JSON report produced (see {log_path})"
             )
 
         try:
             payload = json.loads(Path(json_report).read_text())
-        except json.JSONDecodeError as e:
-            return CdcFailResults(
-                name=self.cdc_cfg.get_name(),
-                violations=0,
-                desc=f"could not parse JSON report: {e}",
-            )
-
-        summary = payload.get("summary", {})
-        violations = int(summary.get("violations", 0))
-        suppressed = int(summary.get("suppressed", 0))
-        crossings = summary.get("crossings")
-        crossings = int(crossings) if crossings is not None else None
+            # Shape validation belongs *inside* the guard, not after it.
+            # `json.loads` succeeding only says the bytes were valid JSON: a
+            # top-level list, or a non-numeric `summary.violations`, parses
+            # fine and then raises on `.get` or `int()`. Outside the guard
+            # that escaped `_fail_after_analyzer` entirely, so the command
+            # died with the report it had just rejected still on disk (#469).
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"expected a JSON object at the top level, got "
+                    f"{type(payload).__name__}"
+                )
+            summary = payload.get("summary", {})
+            if not isinstance(summary, dict):
+                raise ValueError(
+                    f"expected an object for 'summary', got {type(summary).__name__}"
+                )
+            violations = int(summary.get("violations", 0))
+            suppressed = int(summary.get("suppressed", 0))
+            crossings = summary.get("crossings")
+            crossings = int(crossings) if crossings is not None else None
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError) as e:
+            return self._fail_after_analyzer(f"could not parse JSON report: {e}")
 
         # Best-effort hub publish. When a hub is running for this
         # project, push the violations as a `diagnostics_set` event so

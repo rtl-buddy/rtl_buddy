@@ -51,9 +51,12 @@ from .protocol import (
 )
 from .resolver import Resolver
 from .state import (
+    CovFocus,
     CursorTime,
     DiagnosticsBundle,
+    GraphFocus,
     HubState,
+    PhysFocus,
     Selection,
     SignalSelection,
     WaveScope,
@@ -72,6 +75,9 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "source_focused",
         "diagnostics_set",
         "wave_values_changed",
+        "graph_focus",
+        "cov_focus",
+        "phys_focus",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.
@@ -589,6 +595,24 @@ class HubServer:
                 self.state.wave_scope = WaveScope(
                     wave_scope=env.payload["wave_scope"], origin=env.origin
                 )
+            elif env.type == "graph_focus":
+                self.state.graph_focus = GraphFocus(
+                    node=env.payload["node"], origin=env.origin
+                )
+            elif env.type == "cov_focus":
+                self.state.cov_focus = CovFocus(
+                    target=env.payload["target"],
+                    origin=env.origin,
+                    metric=env.payload.get("metric"),
+                    line=env.payload.get("line"),
+                    item=env.payload.get("item"),
+                )
+            elif env.type == "phys_focus":
+                self.state.phys_focus = PhysFocus(
+                    target=env.payload["target"],
+                    origin=env.origin,
+                    metric=env.payload.get("metric"),
+                )
             elif env.type == "diagnostics_set":
                 source = env.payload["source"]
                 items = tuple(env.payload["items"])
@@ -997,6 +1021,42 @@ class HubServer:
                 ),
             )
 
+        if s.graph_focus is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.graph_focus.origin,
+                    kind=Kind.EVENT,
+                    type="graph_focus",
+                    id=new_id(),
+                    payload={"node": s.graph_focus.node},
+                ),
+            )
+
+        if s.cov_focus is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.cov_focus.origin,
+                    kind=Kind.EVENT,
+                    type="cov_focus",
+                    id=new_id(),
+                    payload=s.cov_focus.payload(),
+                ),
+            )
+
+        if s.phys_focus is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.phys_focus.origin,
+                    kind=Kind.EVENT,
+                    type="phys_focus",
+                    id=new_id(),
+                    payload=s.phys_focus.payload(),
+                ),
+            )
+
         for source, bundle in self.state.diagnostics.items():
             await self._safe_send(
                 conn,
@@ -1067,11 +1127,19 @@ class HubServer:
             conn.close()
             return
 
-        registered = self._registry.pop(conn.origin, None)
+        registered = self._registry.get(conn.origin)
         if registered is not conn:
-            # Already cleaned up by a prior bye / disconnect.
+            # This connection no longer owns its origin slot — either a
+            # prior bye/disconnect cleaned it up, or a takeover replaced
+            # it and the slot now belongs to the NEWER connection. Leave
+            # the registry alone: the old pop-first-check-later shape
+            # deregistered the takeover winner as collateral (the evicted
+            # socket's close always lands after the winner registers), so
+            # every takeover left the surviving tab a silent zombie —
+            # off the broadcast list, invisible to later takeover hellos.
             conn.close()
             return
+        self._registry.pop(conn.origin, None)
 
         self.state.registered_clients = set(self._registry.keys())
         log_event(

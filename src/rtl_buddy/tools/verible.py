@@ -57,9 +57,7 @@ class Verible:
         return result.returncode
 
     def do_lint(self, verible_args):
-        args = self.cfg.get_extra_args("lint")
-        args += verible_args
-        return self.do_exe("verible-verilog-lint", args)
+        return self.do_exe("verible-verilog-lint", verible_args)
 
     def do_obfuscate(self, verible_args):
         assert False, "not supported yet"
@@ -76,7 +74,12 @@ class Verible:
         return self.do_exe("verible-verilog-format", verible_args)
 
     def do_cmd(self, cmd, verible_args):
-        # logger.info(cmd)
+        # Configured per-command extra_args always lead, so CLI arguments
+        # can override them (later gflags occurrences win). Applied here,
+        # uniformly, for every dispatched command -- historically only
+        # `lint` honoured its extra_args and a configured
+        # `extra_args: {format: [...]}` block was silently ignored.
+        verible_args = self.cfg.get_extra_args(cmd) + verible_args
         if cmd == "lint":
             return self.do_lint(verible_args)
         elif cmd == "obfuscate":

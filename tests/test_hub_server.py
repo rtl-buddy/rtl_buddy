@@ -236,6 +236,67 @@ async def test_takeover_kicks_existing_registration(server: HubServer):
         await new_view.close()
 
 
+async def test_takeover_winner_survives_the_evicted_sockets_cleanup(
+    server: HubServer,
+):
+    """The evicted socket's close lands AFTER the winner registers, so
+    its ``_cleanup_connection`` runs while the origin slot belongs to
+    the newer connection. The winner's registration must survive that
+    cleanup: it keeps receiving broadcasts, and a later takeover still
+    finds it in the slot and supersedes it properly.
+
+    Regression: the cleanup used to pop the slot by ORIGIN before
+    identity-checking, deregistering the winner as collateral — the
+    surviving tab became a silent zombie (no broadcasts, no replays,
+    and a third tab's takeover hello saw an empty slot, so the zombie
+    never even learned it had been replaced).
+    """
+    src = await MockClient.connect(server.host, server.port)
+    old_view = await MockClient.connect(server.host, server.port)
+    new_view = await MockClient.connect(server.host, server.port)
+    third_view = await MockClient.connect(server.host, server.port)
+    try:
+        await src.hello(Origin.SRC)
+        await old_view.hello(Origin.VIEW)
+        await src.recv_until("peer_joined")
+
+        welcome = await new_view.hello(Origin.VIEW, takeover=True)
+        assert welcome.type == "welcome"
+
+        # Let the evicted socket fully die — EOF means the server-side
+        # handler (and its cleanup) has run, which is the moment the
+        # old bug destroyed the winner's registration.
+        kick = await old_view.recv()
+        assert kick.payload["code"] == "superseded"
+        trailing = await asyncio.wait_for(old_view.reader.readline(), timeout=1.0)
+        assert trailing == b""
+
+        # (a) The winner is still on the broadcast list.
+        await src.send(
+            Envelope(
+                origin=Origin.SRC,
+                kind=Kind.EVENT,
+                type="selection_changed",
+                id=new_id(),
+                payload={"instance_path": "top.u_alive"},
+            )
+        )
+        seen = await new_view.recv_until("selection_changed")
+        assert seen.payload["instance_path"] == "top.u_alive"
+
+        # (b) A later takeover still finds the winner in the slot: it
+        # is superseded — not silently orphaned.
+        welcome3 = await third_view.hello(Origin.VIEW, takeover=True)
+        assert welcome3.type == "welcome"
+        kicked = await new_view.recv_until("error")
+        assert kicked.payload["code"] == "superseded"
+    finally:
+        await src.close()
+        await old_view.close()
+        await new_view.close()
+        await third_view.close()
+
+
 async def test_takeover_without_existing_registration_is_a_normal_hello(
     server: HubServer,
 ):
