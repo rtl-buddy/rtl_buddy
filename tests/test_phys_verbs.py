@@ -25,6 +25,7 @@ fails in CI with the break landing mid-phrase (#570).
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 from pathlib import Path
@@ -394,7 +395,10 @@ def test_phys_summary_rejects_a_per_ranking_limit_it_cannot_read(phys_project, b
     )
 
     assert result.exit_code == 2, result.output
-    assert "instances-limit" in _flat(result.output)
+    # The usage error is click's own rendering, which colours the flag
+    # name piecewise when the console is forced to colour (as CI's is).
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "instances-limit" in _flat(plain)
 
 
 def test_phys_summary_without_the_overrides_is_unchanged(phys_project):
