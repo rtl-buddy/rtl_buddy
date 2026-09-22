@@ -45,17 +45,21 @@ jobs:
         # extractor (from PyPI since rtl-buddy-graph-extract 0.1.0), so
         # the extractor subprocess path and the merge-graphs cross-check
         # run for real here instead of being skip-if-missing everywhere.
-        run: uv sync --group test --extra graph-extract
+        #
+        # --managed-python (#641): without it uv picks the runner's
+        # /usr/bin/python3, which ships without _tkinter, and the whole
+        # `tcl` half of the parametrised constraint-reader tests skips
+        # silently. python-build-standalone bundles Tcl/Tk.
+        run: uv sync --managed-python --python 3.12 --group test --extra graph-extract
 
-      # Which SDC/XDC reader backend this job exercises (#641). uv's
-      # managed Python bundles Tcl/Tk, so the interp backend runs here;
-      # the tokenizer fallback is what a Python without _tkinter gets,
-      # and both are covered by the parametrised reader tests.
+      # Which SDC/XDC reader backend this job exercises (#641). This
+      # must print `tcl (...)`; `tokenizer` means the interpreter above
+      # lost _tkinter and the interp tests are being skipped.
       - name: Report the constraint reader backend
-        run: uv run python -c "from rtl_buddy.tool_manifest import constraint_reader_description as d; print('constraint reader:', d())"
+        run: uv run --managed-python --python 3.12 python -c "from rtl_buddy.tool_manifest import constraint_reader_description as d; print('constraint reader:', d())"
 
       - name: Run pytest with coverage
-        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+        run: uv run --managed-python --python 3.12 pytest --cov --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage XML
         if: always()
