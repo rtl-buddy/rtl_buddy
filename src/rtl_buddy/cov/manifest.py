@@ -22,6 +22,25 @@ Rules the file keeps:
 * **One per ``cov_dir``.** ``cov_dir`` is the run's coverage artefact
   directory; the manifest is its index, rewritten whole on each run.
 
+A **failed merge** is stated, not implied (#638). Under ``merge_mode:
+"raw"``, ``merged.raw`` is the path to the merged database when
+``verilator_coverage --write`` succeeded and ``null`` when it was asked
+for and produced nothing — the mode says it was requested, so ``null``
+there is a failure and not an absence. That inference is now unnecessary:
+``merge_failed`` is the explicit fact and ``failed_metrics`` names what it
+cost (``toggle``, ``expression`` and ``functional`` come only from the
+merged database; an LCOV ``.info`` cannot represent them).
+
+``totals`` is deliberately **left intact** when that happens. It is built
+from the per-test databases by :mod:`rtl_buddy.cov.model`, not from the
+merged one, so it is a real measurement of exactly what it says and
+blanking a metric there would destroy data the run did produce. What a
+failed merge costs is the *merged summary* number — the one the console
+prints — so the failure is reported beside ``totals`` rather than written
+into it. A consumer that needs one number per metric keeps reading
+``totals``; a consumer comparing it against the console summary reads
+``merge_failed`` first.
+
 Schema (``schema_version`` 1)::
 
     {
@@ -33,6 +52,8 @@ Schema (``schema_version`` 1)::
       "builder": "verilator",
       "simulator_family": "verilator",
       "merge_mode": "raw"|"info_process"|null,
+      "merge_failed": false,             # true: the requested merge died
+      "failed_metrics": [],              # e.g. ["toggle", "expression"]
       "cov_dir": "artefacts/cov_dir",
       "model": "artefacts/cov_dir/coverage-model.json",
       "totals": {"line": {"found": .., "hit": .., "ratio": ..}, ...},
@@ -96,6 +117,8 @@ def build_manifest(
     builder: str | None = None,
     simulator_family: str | None = None,
     merge_mode: str | None = None,
+    merge_failed: bool = False,
+    failed_metrics=None,
     model_path=None,
     totals: dict | None = None,
     merged: dict | None = None,
@@ -122,6 +145,10 @@ def build_manifest(
         "builder": builder,
         "simulator_family": simulator_family,
         "merge_mode": merge_mode,
+        # Always written, both of them: a consumer must never have to read
+        # the absence of a key as "the merge was fine" (#638).
+        "merge_failed": bool(merge_failed),
+        "failed_metrics": list(failed_metrics or []),
         "cov_dir": rel(cov_dir),
         "model": rel(model_path),
         "totals": totals,

@@ -1419,6 +1419,37 @@ class RtlBuddy:
                 "executed test; ensure the selected builder supports coverage instrumentation"
             )
 
+    def _coverage_merge_exit_code(self, coverage_payload) -> int:
+        """1 when a requested coverage merge failed (#638), else 0.
+
+        The sibling of ``_guard_coverage_requested``: #334 refused to exit 0
+        on a coverage request that produced *nothing*, and a request that
+        produced *half* deserves the same answer. A merge whose tool was
+        killed leaves the metrics it alone carried unmeasured while line and
+        branch still report normally, so the run used to succeed with a
+        summary that reads almost complete — which is the number that gets
+        believed weeks later.
+
+        Not a ``FatalRtlBuddyError``, for two reasons. It must not preempt
+        anything the run already produced: the caller invokes this *after*
+        the results are recorded, the side-cars refreshed and the manifest
+        written, so the artefacts survive and the machine envelope still
+        carries every result row. And the fatal path replaces the envelope
+        with an ``error`` payload, which would cost a consumer the results
+        and the ``coverage`` block — the same loss of evidence in a
+        different place. So it folds into the ordinary run status: exit 1,
+        "a tool flow failed", which is what happened.
+        """
+        if not coverage_payload or not coverage_payload.get("merge_failed"):
+            return 0
+        log_event(
+            logger,
+            logging.ERROR,
+            "coverage.merge.degraded",
+            failed_metrics=list(coverage_payload.get("failed_metrics") or []),
+        )
+        return 1
+
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
 
@@ -2072,6 +2103,9 @@ class RtlBuddy:
             command="test",
         )
         metadata.extend(cov_metadata)
+        # After build_metadata: the manifest and the model are on disk, so a
+        # failed merge costs the run its exit code and nothing else (#638).
+        exit_code |= self._coverage_merge_exit_code(coverage_payload)
         self._refresh_result_side_cars(suite_results)
         # Render in both modes: in machine mode this emits the "summary" log
         # event (and plain text to stderr), leaving stdout for the envelope.
@@ -4177,13 +4211,16 @@ class RtlBuddy:
         without any `--coverage-merge*` flag, so gating only on `merged` would
         drop them. So does `artefacts` (#399): a run with no merge flag still
         writes a model and a manifest, and the paths to them are the whole
-        point of the block.
+        point of the block. So does `merge_failed` (#638): a merge that died
+        before it wrote anything is the one case where the block would
+        otherwise be empty precisely when it matters most.
         """
         if coverage and (
             coverage.get("merged")
             or coverage.get("dir_summary")
             or coverage.get("covers")
             or coverage.get("artefacts")
+            or coverage.get("merge_failed")
         ):
             return coverage
         return None
@@ -8198,7 +8235,12 @@ class RtlBuddy:
         # each payload, so seed the run-level cover points here to keep them in
         # the envelope either way. Key omitted when there are none, so "absent"
         # keeps meaning "not collected" on every surface.
-        coverage_payload = {"merged": None, "dir_summary": []}
+        coverage_payload = {
+            "merged": None,
+            "dir_summary": [],
+            "merge_failed": False,
+            "failed_metrics": [],
+        }
         seed_covers = self.coverage.collect_cover_records(all_suite_results)
         if seed_covers:
             coverage_payload["covers"] = seed_covers
@@ -8248,6 +8290,8 @@ class RtlBuddy:
                 command="regression",
             )
             metadata.extend(cov_metadata)
+        # Same rule as `test`, applied once the artefacts are written (#638).
+        exit_code |= self._coverage_merge_exit_code(coverage_payload)
 
         self._refresh_result_side_cars(all_suite_results)
         # Render in both modes: in machine mode this emits the "summary" log

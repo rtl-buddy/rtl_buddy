@@ -350,6 +350,8 @@ class CoverageReporter:
         datasets=None,
         descriptions=None,
         coverview=None,
+        merge_failed=False,
+        failed_metrics=None,
     ):
         """Write the coverage model and manifest, returning the artefacts block.
 
@@ -396,6 +398,8 @@ class CoverageReporter:
             builder=builder_cfg.get_name(),
             simulator_family=simulator_family,
             merge_mode=merge_mode,
+            merge_failed=merge_failed,
+            failed_metrics=failed_metrics,
             model_path=model_path,
             totals=model["totals"],
             merged=merged,
@@ -407,6 +411,8 @@ class CoverageReporter:
         manifest_path = manifest_mod.write_manifest(manifest, cov_dir)
         return {
             "manifest": manifest_mod.project_relative(manifest_path, project_root),
+            "merge_failed": manifest["merge_failed"],
+            "failed_metrics": list(manifest["failed_metrics"]),
             "cov_dir": manifest["cov_dir"],
             "model": manifest["model"],
             "merged_info": manifest["merged"]["info"],
@@ -864,9 +870,22 @@ class CoverageReporter:
         indexes them and the structured model beside it. Written on every run
         that produced coverage at all, including one with no merge flag — the
         display lines used to be the only record of where anything landed.
+
+        ``coverage["merge_failed"]`` and ``coverage["failed_metrics"]`` are
+        always present (#638). They are false/empty on a healthy run and on a
+        run that asked for no merge; they are true and populated when a
+        requested merge died, and the metrics they name read ``FAIL`` in the
+        display lines instead of ``UNSP``. They are explicit keys rather than
+        something to infer from a null metric, because a null metric already
+        means "never instrumented" everywhere else.
         """
         metadata = []
-        coverage = {"merged": None, "dir_summary": []}
+        coverage = {
+            "merged": None,
+            "dir_summary": [],
+            "merge_failed": False,
+            "failed_metrics": [],
+        }
         covers = self.collect_cover_records(suite_results)
         if covers:
             coverage["covers"] = covers
@@ -884,6 +903,26 @@ class CoverageReporter:
             merged_paths["raw"] = merged_cov.merged_path
             merged_paths["html_dir"] = merged_cov.html_dir
 
+        def record_merge_failure(merged_cov):
+            """Carry a dead raw merge onto the payload and the console.
+
+            The display line is the reader's half of the fix: the summary
+            table now prints `FAIL` for the metrics the merge alone carried,
+            and this says, once, underneath, what failed and where to look.
+            Without it `FAIL` is as unexplained as `UNSP` was.
+            """
+            if not merged_cov.merge_failed:
+                return
+            failed = list(merged_cov.failed_metrics or [])
+            coverage["merge_failed"] = True
+            coverage["failed_metrics"] = failed
+            lost = ", ".join(failed) if failed else "no metric"
+            metadata.append(
+                "Coverage merge FAILED: verilator_coverage --write wrote no merged "
+                f"database, so {lost} read FAIL (measurement lost), not UNSP "
+                "(not instrumented) — see the coverage.merge.failed event"
+            )
+
         if coverage_merge_raw:
             merged_cov = self.merge(
                 suite_results,
@@ -896,6 +935,7 @@ class CoverageReporter:
                 record_merged(merged_cov)
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
                 coverage["merged"] = self._metrics_payload(merged_cov)
+                record_merge_failure(merged_cov)
                 if merged_cov.lcov_path is not None:
                     metadata.append(f"Merged LCOV: {merged_cov.lcov_path}")
                     records = self._dir_summary_records(
@@ -951,6 +991,7 @@ class CoverageReporter:
                 record_merged(merged_cov)
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
                 coverage["merged"] = self._metrics_payload(merged_cov)
+                record_merge_failure(merged_cov)
                 if merged_cov.lcov_path is not None:
                     metadata.append(f"Merged LCOV: {merged_cov.lcov_path}")
                     if not coverage_coverview:
@@ -1093,6 +1134,8 @@ class CoverageReporter:
             datasets=dataset_files,
             descriptions=description_files,
             coverview=coverview_paths,
+            merge_failed=coverage["merge_failed"],
+            failed_metrics=coverage["failed_metrics"],
         )
         if artefacts is not None:
             coverage["artefacts"] = artefacts

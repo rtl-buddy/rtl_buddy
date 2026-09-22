@@ -369,7 +369,15 @@ def test_build_metadata_without_coverage_returns_empty_payload(tmp_path):
     )
     # `covers` is omitted, not null, when no user points were recorded — so
     # "absent means not collected" holds on the run level as well as the rows.
-    assert coverage == {"merged": None, "dir_summary": []}
+    # `merge_failed`/`failed_metrics` behave the opposite way on purpose
+    # (#638): a merge verdict is always stated, so a consumer never reads a
+    # missing key as "the merge was fine".
+    assert coverage == {
+        "merged": None,
+        "dir_summary": [],
+        "merge_failed": False,
+        "failed_metrics": [],
+    }
     assert metadata == []
 
 

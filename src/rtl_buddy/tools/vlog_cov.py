@@ -28,12 +28,31 @@ from ..logging_utils import log_event
 from .artifact_paths import sanitize_artifact_component
 
 
-def _fmt_cov(value):
+#: Display token for a metric this flow never measured — not instrumented,
+#: or not representable in the artefact the number came from.
+COV_UNSUPPORTED_TOKEN = "UNSP"
+
+#: Display token for a metric whose measurement was *attempted and lost*:
+#: the tool run that was its only source failed (#638). Same four
+#: characters as `UNSP` so the `L/B/T/F` cells keep their width, and a
+#: different word because the two mean opposite things — one says "there
+#: was nothing to measure", the other "there was, and the number is gone".
+COV_FAILED_TOKEN = "FAIL"
+
+#: Scalar metrics `CoverageMetrics` carries, in report order.
+METRIC_NAMES = ("line", "branch", "toggle", "expression", "functional")
+
+
+def _fmt_cov(value, failed=False):
     """
     Format a normalized coverage value for summary output.
+
+    ``failed`` marks a metric whose measurement failed rather than one that
+    was never supported, so a reader of the one-line summary can tell a lost
+    number from an absent one.
     """
     if value is None:
-        return "UNSP"
+        return COV_FAILED_TOKEN if failed else COV_UNSUPPORTED_TOKEN
     return f"{max(0.0, min(1.0, value)):.2f}"
 
 
@@ -106,6 +125,17 @@ class CoverageMetrics:
     merged_path: str | None = None
     lcov_path: str | None = None
     html_dir: str | None = None
+    #: True when a merge was attempted and the tool that would have
+    #: produced the merged database failed (#638). The metrics that had no
+    #: other source are then *lost*, not unsupported.
+    merge_failed: bool = False
+    #: Names of the metrics that failure cost, from :data:`METRIC_NAMES`.
+    #: Empty/None means every reported metric stands on its own source.
+    failed_metrics: list[str] | None = None
+
+    def is_failed(self, metric):
+        """Whether ``metric`` has no value *because* its measurement failed."""
+        return self.failed_metrics is not None and metric in self.failed_metrics
 
     def summary_str(self):
         """
@@ -115,17 +145,27 @@ class CoverageMetrics:
         summary-table cell and a display contract, and expression detail
         belongs in the structured payload (`to_dict`) and the coverage
         model, where a consumer can act on it.
+
+        A metric named in `failed_metrics` prints `FAIL` instead of `UNSP`:
+        both are four characters, so the cells keep their width, and the
+        two cases stop sharing one token (#638).
         """
         return (
-            f"L:{_fmt_cov(self.line)} "
-            f"B:{_fmt_cov(self.branch)} "
-            f"T:{_fmt_cov(self.toggle)} "
-            f"F:{_fmt_cov(self.functional)}"
+            f"L:{_fmt_cov(self.line, self.is_failed('line'))} "
+            f"B:{_fmt_cov(self.branch, self.is_failed('branch'))} "
+            f"T:{_fmt_cov(self.toggle, self.is_failed('toggle'))} "
+            f"F:{_fmt_cov(self.functional, self.is_failed('functional'))}"
         )
 
     def to_dict(self):
         """
         Serialize the metrics into the result-dict shape used by rtl-buddy.
+
+        ``merge_failed`` and ``failed_metrics`` are always present so a
+        consumer never has to read the absence of a key as a verdict: a
+        null metric with its name in ``failed_metrics`` is a measurement
+        that died, and a null metric outside that list was never
+        instrumented.
         """
         return {
             "line": self.line,
@@ -139,6 +179,10 @@ class CoverageMetrics:
             "merged_path": self.merged_path,
             "lcov_path": self.lcov_path,
             "html_dir": self.html_dir,
+            "merge_failed": self.merge_failed,
+            "failed_metrics": (
+                [] if self.failed_metrics is None else list(self.failed_metrics)
+            ),
         }
 
 
@@ -748,6 +792,23 @@ class VlogCov:
     ):
         """
         Merge multiple raw coverage databases and return aggregate coverage metrics.
+
+        Two different things can go wrong here and they must not report the
+        same way (#638):
+
+        * ``verilator_coverage --write`` fails — the merged database is the
+          only source for toggle, expression and functional, so those
+          numbers are *lost*. The returned metrics say so through
+          ``merge_failed`` / ``failed_metrics``, and print ``FAIL`` rather
+          than ``UNSP``. Line and branch survive this, because they are read
+          from the per-test LCOV exports the merge did not touch.
+        * the merge succeeds and a metric is simply absent — never
+          instrumented, or not representable in the artefact it was read
+          from. That stays ``UNSP``.
+
+        Returns None when nothing was measured **and** nothing failed: a
+        failed merge always returns metrics, because "the merge died" is the
+        one fact a caller must not have to infer from an absence.
         """
         if not self.is_supported():
             return None
@@ -875,12 +936,30 @@ class VlogCov:
             metrics.functional = self._parse_verilator_metric(
                 merged_path, "functional", source_roots=source_roots
             )
+        else:
+            # Which metrics did losing the merged database actually cost?
+            # Toggle, expression and functional always: an LCOV `.info`
+            # cannot represent them, so the merged `.dat` was their only
+            # source. Line and branch only when the LCOV route produced no
+            # merged `.info` either — a merged `.info` that parses to None
+            # genuinely records no point of that kind, which is `UNSP` and
+            # must not be dressed up as a failure.
+            metrics.merge_failed = True
+            merge_only = {"toggle", "expression", "functional"}
+            if metrics.lcov_path is None:
+                merge_only |= {"line", "branch"}
+            metrics.failed_metrics = [
+                name
+                for name in METRIC_NAMES
+                if name in merge_only and getattr(metrics, name) is None
+            ]
 
         if (
             metrics.line is None
             and metrics.branch is None
             and metrics.toggle is None
             and metrics.functional is None
+            and not metrics.merge_failed
         ):
             return None
 
