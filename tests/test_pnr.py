@@ -2307,7 +2307,8 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
     # that legalization cannot absorb fails there — with a named cell —
     # rather than as a router mystery.
     last_dp = len(pre_route) - 1 - pre_route[::-1].index("detailed_placement")
-    assert "check_placement" in pre_route[last_dp + 1 :]
+    # `-verbose` is what names the cell (#639).
+    assert "check_placement -verbose" in pre_route[last_dp + 1 :]
 
 
 def test_pnr_template_packs_macros_by_their_own_size():

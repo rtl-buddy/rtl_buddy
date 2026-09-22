@@ -21,8 +21,12 @@ PART_A = ("part_a", 98.94, 98.94)
 PART_B = ("part_b", 89.47, 89.47)
 
 DBU_PER_MICRON = 1000
-# What `flow.tcl.template` passes: the 0.005 um manufacturing grid.
-GRID = 5
+# What `flow.tcl.template` passes: the standard-cell site grid as
+# {site_width row_height}. The packing tests use a fine one so their
+# expected coordinates read straight off the halo arithmetic; the row-grid
+# tests below use sky130hd's real site.
+GRID = "{5 5}"
+SKY130HD_SITE = (0.46, 2.72)
 
 
 def _embedded_interpreter():
@@ -87,11 +91,11 @@ def _run(body: str) -> str:
     return _tcl_eval(source + "\n" + body + "\n")
 
 
-def _place(macros, core_w, core_h, halo_um, origin_um=0.0):
+def _place(macros, core_w, core_h, halo_um, origin_um=0.0, grid=GRID):
     """Run the packer and return {name: (x_um, y_um)}, or None for no fit."""
     body = (
         f"set p [rb::macro_pack::place {_core(core_w, core_h, origin_um)} "
-        f"{{{_macro_list(macros)}}} {_um(halo_um)} {GRID}]\n"
+        f"{{{_macro_list(macros)}}} {_um(halo_um)} {grid}]\n"
         "set result {}\n"
         "dict for {name xy} $p { lappend result [list $name {*}$xy] }"
     )
@@ -217,14 +221,66 @@ def test_a_larger_halo_can_push_a_macro_into_the_next_row():
     assert len({y for _, y in loose.values()}) == 2
 
 
-def test_origins_are_snapped_to_the_placement_grid():
+def _site_grid(site=SKY130HD_SITE) -> str:
+    width, height = site
+    return f"{{{_um(width)} {_um(height)}}}"
+
+
+def _on_grid(value_um: float, pitch_um: float, origin_um: float) -> bool:
+    steps = (value_um - origin_um) / pitch_um
+    return math.isclose(steps, round(steps), abs_tol=1e-6)
+
+
+def test_origins_are_snapped_to_the_site_grid_from_the_core_corner():
+    """Rows start at the core's lower-left corner, so that — not zero — is
+    where the site grid is counted from; the y pitch is the row height and
+    the x pitch the site width."""
     macros = [("odd", 100.003, 100.007), PART_A]
-    placement = _place(macros, 400.0, 400.0, 3.3331, origin_um=0.1237)
+    origin = 20.0
+    placement = _place(
+        macros, 400.0, 400.0, 3.3331, origin_um=origin, grid=_site_grid()
+    )
 
     assert placement is not None
+    site_w, row_h = SKY130HD_SITE
     for name, (x, y) in placement.items():
-        assert math.isclose(round(x * 1000) % GRID, 0.0, abs_tol=1e-9), name
-        assert math.isclose(round(y * 1000) % GRID, 0.0, abs_tol=1e-9), name
+        assert _on_grid(x, site_w, origin), name
+        assert _on_grid(y, row_h, origin), name
+        assert x >= origin + 3.3331 and y >= origin + 3.3331, name
+
+
+def test_issue_639_second_shelf_lands_on_a_row_boundary():
+    """The regression in #639: two OpenRAM 1 kB SRAMs on sky130hd at a 20 um
+    core margin and halo. The second shelf used to start at 457.5 um, 0.42 um
+    under the row boundary at 457.92 um; the detailed placer's padding check
+    rounded the macro up to that row and scanned the row above the macro's
+    top edge as the macro's own, failing DPL-0011 on one macro.
+    """
+    macros = [("sram_a", *SRAM[1:]), ("sram_b", *SRAM[1:])]
+    origin, halo = 20.0, 20.0
+    # Wide enough for one SRAM per shelf, not for two side by side.
+    placement = _place(macros, 960.0, 960.0, halo, origin_um=origin, grid=_site_grid())
+
+    assert placement is not None
+    site_w, row_h = SKY130HD_SITE
+    ys = sorted(y for _, y in placement.values())
+    assert len(ys) == 2, "the two SRAMs must stack, one per shelf"
+    # Row 8 (20 + 8 * 2.72 = 41.76 um) is the first row that clears the
+    # 20 um halo; the shelf above it, 41.76 + 397.5 + 20 = 459.26 um, snaps
+    # up to row 162.
+    assert math.isclose(ys[0], origin + 8 * row_h, abs_tol=1e-9)
+    assert math.isclose(ys[1], origin + 162 * row_h, abs_tol=1e-9)
+    for name, (x, y) in placement.items():
+        assert _on_grid(x, site_w, origin), name
+        assert _on_grid(y, row_h, origin), name
+    # Snapping up only ever widens a channel.
+    assert ys[1] - (ys[0] + SRAM[2]) >= halo
+
+
+def test_a_unit_grid_leaves_origins_alone():
+    placement = _place([("odd", 100.003, 100.007)], 400.0, 400.0, 3.333, grid="{1 1}")
+
+    assert placement == {"odd": (3.333, 3.333)}
 
 
 def test_equal_size_macros_are_placed_in_rows_left_to_right():

@@ -64,7 +64,12 @@ if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
 {{ macro_pack_procs }}
 puts ">>> Macro placement"
 set block [ord::get_db_block]
-set manuf_grid_dbu [expr {int([ord::microns_to_dbu 0.005])}]
+# Macro origins snap to the standard-cell site grid from the core corner:
+# the detailed placer's padding check rounds a macro to its nearest row,
+# so a bottom edge between two rows can fail DPL-0011 after legalization
+# (#639). Every row initialize_floorplan made shares one site.
+set site_obj [[lindex [$block getRows] 0] getSite]
+set site_grid_dbu [list [$site_obj getWidth] [$site_obj getHeight]]
 set dbu_per_micron [expr {int([ord::microns_to_dbu 1.0])}]
 set macros {}
 foreach inst [$block getInsts] {
@@ -80,7 +85,7 @@ if {[llength $macros] > 0} {
   }
   set placement [rb::macro_pack::solve \
       [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \
-      $footprints $halo_dbu $manuf_grid_dbu $dbu_per_micron]
+      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron]
   foreach inst $macros {
     lassign [dict get $placement [$inst getName]] x y
     $inst setLocation $x $y
@@ -118,7 +123,9 @@ repair_timing -hold
 # and dies with DRT-0073 (#591).
 puts ">>> Detail placement (legalize repair cells)"
 detailed_placement
-check_placement
+# -verbose names every failing instance; the count alone (DPL-0011 and
+# friends) leaves nothing to act on (#639).
+check_placement -verbose
 
 puts ">>> Global route"
 set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
