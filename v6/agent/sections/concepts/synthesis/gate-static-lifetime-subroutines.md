@@ -17,8 +17,9 @@ cfg-synth-tools:
   - name: yosys
     tool: yosys
     opts:
-      static-functions: error      # error | warn | allow
-      conflicting-drivers: error   # error | allow
+      static-functions: error        # error | warn | allow
+      conflicting-drivers: error     # error | allow
+      unresolved-interfaces: warn    # error | warn | allow
 ```
 
 `static-functions` defaults to `error` with `frontend: slang`, which

@@ -27,6 +27,7 @@ runs:
 | `synth` | Required | Upstream synthesis entry |
 | `synth-path` | Required | Upstream `synth.yaml`, relative to `pnr.yaml` |
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
+| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced after floorplan/tracks and immediately before pin placement. A missing file fails the run |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |

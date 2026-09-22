@@ -947,6 +947,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/configure-the-physical-platform.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#tune-the-process-dependent-steps",
+          "slug": "tune-the-process-dependent-steps",
+          "title": "Tune the process-dependent steps",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#constrain-boundary-pins",
+          "slug": "constrain-boundary-pins",
+          "title": "Constrain boundary pins",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/constrain-boundary-pins.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#run-pr",
           "slug": "run-pr",
           "title": "Run P&R",
@@ -996,6 +1008,18 @@
           "slug": "define-power-runs",
           "title": "Define power runs",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/power/define-power-runs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#give-hard-macros-a-library",
+          "slug": "give-hard-macros-a-library",
+          "title": "Give hard macros a library",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/power/give-hard-macros-a-library.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#read-the-unpowered-cell-warning",
+          "slug": "read-the-unpowered-cell-warning",
+          "title": "Read the unpowered-cell warning",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/power/read-the-unpowered-cell-warning.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/power/#select-activity",
@@ -1269,6 +1293,12 @@
           "slug": "gate-conflicting-drivers",
           "title": "Gate conflicting drivers",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/gate-conflicting-drivers.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#gate-unbound-interface-instances",
+          "slug": "gate-unbound-interface-instances",
+          "title": "Gate unbound interface instances",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/gate-unbound-interface-instances.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#select-an-effort",
@@ -2112,6 +2142,12 @@
           "slug": "static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend",
           "title": "Static-lifetime functions corrupt the netlist under the slang frontend",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#readverilog-drops-an-interface-instances-own-port-connections",
+          "slug": "readverilog-drops-an-interface-instances-own-port-connections",
+          "title": "read_verilog drops an interface instance's own port connections",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/readverilog-drops-an-interface-instances-own-port-connections.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#unknown-synthesis-overrides-are-ignored-after-a-warning",

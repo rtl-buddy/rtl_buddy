@@ -255,6 +255,14 @@ The scan evaluates `` `ifdef `` against exactly the macros Yosys receives: the g
 
 The scan is a tokenizer with a definedness-only preprocessor, and it is imperfect in both directions. It misses declarations produced by macros (macro bodies are skipped at their `` `define ``), the contents of `-y` library directories, and headers whose `` `include `` cannot be resolved (logged at DEBUG). It can also report spuriously, because `` `if `` expressions are not evaluated and scope nesting is tracked by keyword pairing rather than parsed. Add Verible's `explicit-function-lifetime` rule through `rb lint` and `cfg-verible` to cover testbench and non-synthesisable sources. See [Synthesis](concepts/synthesis.md#gate-static-lifetime-subroutines).
 
+## read_verilog drops an interface instance's own port connections
+
+Yosys's `read_verilog` cannot bind a SystemVerilog interface *instance* to the interface port of a child module. It falls back to deriving a per-child `<child>$interfaces$<interface>` module whose ports are the interface's members, wires them in the parent through implicitly declared `<instance>.<member>` wires, warns ``Could not find interface instance for `<inst>' in `<module>'`` and exits 0. The members survive; the interface instance's own port connections do not, so `bus_if b (.clk(clk));` leaves `\b.clk` undriven and every flop clocked from it in the subtree loses its clock — silently, with plausible area and timing numbers.
+
+The same elaboration also emits `Identifier `\<inst>.<member>' is implicitly declared` for each member, and, where a child slices a member, ``Range select [n:m] out of bounds on signal `\<inst>.<member>'``. Those two come from a throwaway elaboration of the child *before* its interface ports are derived, and the derived module carries the correct widths and slices — they are noise, not the defect, and are not gated.
+
+`unresolved-interfaces` gates the binding warning itself: `warn` (the default) logs one `synth.unresolved_interface` per instance, `error` fails the run and drops the netlist, `allow` skips the scan. The default is not `error` because the fallback produces a correct netlist whenever the interface has no ports of its own, or none the subtree reads. `frontend: slang` binds the instance properly and emits neither the warning nor the disconnect; it cannot, however, represent an interface port on the *synthesis top* itself, so a top with one still needs a flat-port wrapper. See [Synthesis](concepts/synthesis.md#gate-unbound-interface-instances).
+
 ## Unknown synthesis overrides are ignored after a warning
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs `synth_tool_config.unknown_override` and the run uses the default. A non-mapping override block or a non-boolean `single_unit` or `best_effort_hierarchy` is fatal. See [Synthesis](concepts/synthesis.md).

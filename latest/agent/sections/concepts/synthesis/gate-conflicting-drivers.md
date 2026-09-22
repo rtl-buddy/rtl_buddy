@@ -13,8 +13,8 @@ Those are not counted: a warning whose drivers are all `$tribuf` / `$_TBUF_`
 cells and module ports is a working design, and only a warning with at least
 one other driver — a flop, a process action — fails the run.
 
-Both gates apply to the Yosys elaboration stage, which the `yosys` and
-`openroad` backends share. An unrecognized value for either option is fatal.
+All three gates apply to the Yosys elaboration stage, which the `yosys` and
+`openroad` backends share. An unrecognized value for any of them is fatal.
 
 ### Upgrading
 
