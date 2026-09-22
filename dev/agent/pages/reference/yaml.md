@@ -111,6 +111,7 @@ cfg-synth-tools:
       best-effort-hierarchy: false
       static-functions: error
       conflicting-drivers: error
+      unresolved-interfaces: warn
 
 cfg-pdks:
   - name: sky130hd
@@ -144,7 +145,7 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, and `conflicting-drivers`. OpenROAD additionally accepts `strategy` |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD additionally accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding`, `dont-use-cells`, and `pdn-config`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
 | `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, and `placement.density` / `placement.padding` |
@@ -166,14 +167,15 @@ A `placement:` block on a P&R platform overrides its PDK's field by field: the p
 
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only and must be booleans; `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design relying on `(* keep_hierarchy *)` for mapping needs. In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`; unknown keys warn and are ignored, while a non-mapping override or wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
-`static-functions` and `conflicting-drivers` are correctness gates on the Yosys elaboration stage, which both the `yosys` and the `openroad` backend use. Omit either option to take its default:
+`static-functions`, `conflicting-drivers`, and `unresolved-interfaces` are correctness gates on the Yosys elaboration stage, which both the `yosys` and the `openroad` backend use. Omit an option to take its default:
 
 | Option | Values | Default | Behavior |
 |---|---|---|---|
 | `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Before Yosys starts, scans the filelist's sources and the headers they `` `include ``, for `function`/`task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`; `warn` logs one warning per finding and records `static_function_findings` in the result envelope and machine output; `allow` skips the scan |
 | `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run when the log contains Yosys `multiple conflicting drivers` warnings, reporting the count and the log path. Warnings whose drivers are all tristate buffers and module ports are a working multi-driver bus and are not counted |
+| `unresolved-interfaces` | `error`, `warn`, `allow` | `warn` | After Yosys exits, reports each ``Could not find interface instance for `<inst>' in `<module>'`` warning, de-duplicated across the repeated `hierarchy` passes. `read_verilog` cannot bind an interface instance to a child's interface port and falls back to per-child `<child>$interfaces$<interface>` modules, which drops the instance's own port connections — an interface carrying `clk` or `rst_n` leaves them undriven. `warn` logs one `synth.unresolved_interface` per instance and records `unresolved_interfaces` in the result envelope and machine output; `error` fails the run and drops the netlist; `allow` skips the scan. `frontend: slang` binds the instance and never emits the warning |
 
-The scan resolves `` `include `` against the including file's directory and then the filelist's `+incdir+` entries, and evaluates `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` against exactly the macros Yosys is given: the filelist's `+define+` entries, then the run's `defines:` (which win on conflict), plus what the selected frontend predefines — `SYNTHESIS` and `YOSYS` for `read_verilog`, `SYNTHESIS` and slang's built-ins for `read_slang`. A bare `+define+X` takes the frontend's meaning of a valueless macro (empty under `read_verilog`, `1` under slang). A run whose `defines:` override a filelist entry logs one `synth.filelist_defines_overridden` warning naming both values. The macro table follows `single-unit`: reset per source by default, shared across sources when slang reads them as one compilation unit. `` `undefineall `` follows the frontend too — slang re-applies the command-line macros, `read_verilog` does not. An unrecognized value for either option is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
+The scan resolves `` `include `` against the including file's directory and then the filelist's `+incdir+` entries, and evaluates `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` against exactly the macros Yosys is given: the filelist's `+define+` entries, then the run's `defines:` (which win on conflict), plus what the selected frontend predefines — `SYNTHESIS` and `YOSYS` for `read_verilog`, `SYNTHESIS` and slang's built-ins for `read_slang`. A bare `+define+X` takes the frontend's meaning of a valueless macro (empty under `read_verilog`, `1` under slang). A run whose `defines:` override a filelist entry logs one `synth.filelist_defines_overridden` warning naming both values. The macro table follows `single-unit`: reset per source by default, shared across sources when slang reads them as one compilation unit. `` `undefineall `` follows the frontend too — slang re-applies the command-line macros, `read_verilog` does not. An unrecognized value for any of these options is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
 
 ### FPGA tools and platforms
 

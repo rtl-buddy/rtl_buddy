@@ -1277,6 +1277,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/gate-conflicting-drivers.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-unbound-interface-instances",
+          "slug": "gate-unbound-interface-instances",
+          "title": "Gate unbound interface instances",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/gate-unbound-interface-instances.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#select-an-effort",
           "slug": "select-an-effort",
           "title": "Select an effort",
@@ -2118,6 +2124,12 @@
           "slug": "static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend",
           "title": "Static-lifetime functions corrupt the netlist under the slang frontend",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/static-lifetime-functions-corrupt-the-netlist-under-the-slang-frontend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#readverilog-drops-an-interface-instances-own-port-connections",
+          "slug": "readverilog-drops-an-interface-instances-own-port-connections",
+          "title": "read_verilog drops an interface instance's own port connections",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/readverilog-drops-an-interface-instances-own-port-connections.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#unknown-synthesis-overrides-are-ignored-after-a-warning",
