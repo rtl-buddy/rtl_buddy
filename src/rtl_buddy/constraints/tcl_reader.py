@@ -662,7 +662,14 @@ def read_commands(
     unset variable, a resource limit). Falling back rather than returning
     nothing matters: a constraint file Tcl will not run is still a file
     whose ``create_clock`` lines ABC needs.
+
+    Line endings are normalised first: a Windows-authored file ends a
+    ``\\``-continued line with ``\\\r\n``, which neither backend
+    treats as a continuation (Tcl sees a backslash-escaped ``\r`` and
+    then a newline), so the continued command silently lost its
+    arguments.
     """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     if select_backend() == TCL_BACKEND:
         try:
             commands = _read_with_tcl(text, interest=interest, source=source)

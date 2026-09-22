@@ -192,6 +192,21 @@ def test_continuation_is_one_command_reported_at_its_first_line(constraint_backe
     assert cmd.raw == "create_clock -name clk -period 10.0 [get_ports clk]"
 
 
+def test_crlf_continuation_keeps_its_arguments(constraint_backend):
+    # A Windows-authored file: the continued line ends in "\\\r\n". Before
+    # normalisation both backends dropped everything after the backslash.
+    text = "# head\r\ncreate_clock -name clk \\\r\n  -period 10.0 [get_ports clk]\r\n"
+    [cmd] = _read(text, backend=constraint_backend)
+    assert _canon(cmd.words[3]) == ("10.0",)
+    assert cmd.line == 2
+    assert cmd.raw == "create_clock -name clk -period 10.0 [get_ports clk]"
+
+
+def test_crlf_lines_number_like_lf(constraint_backend):
+    text = "create_clock -name a -period 1\r\n\r\ncreate_clock -name b -period 2\r\n"
+    assert [c.line for c in _read(text, backend=constraint_backend)] == [1, 3]
+
+
 def test_line_number_after_a_continued_command_stays_correct(constraint_backend):
     text = "create_clock -name a \\\n  -period 1\ncreate_clock -name b -period 2\n"
     assert [c.line for c in _read(text, backend=constraint_backend)] == [1, 3]
