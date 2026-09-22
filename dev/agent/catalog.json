@@ -1004,6 +1004,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/define-power-runs.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#give-hard-macros-a-library",
+          "slug": "give-hard-macros-a-library",
+          "title": "Give hard macros a library",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/give-hard-macros-a-library.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#read-the-unpowered-cell-warning",
+          "slug": "read-the-unpowered-cell-warning",
+          "title": "Read the unpowered-cell warning",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/read-the-unpowered-cell-warning.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#select-activity",
           "slug": "select-activity",
           "title": "Select activity",

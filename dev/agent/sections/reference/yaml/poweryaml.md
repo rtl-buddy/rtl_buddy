@@ -30,6 +30,7 @@ runs:
 | `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory this run publishes `phys-model.json` into |
 | `constraints` | Required for synth source | SDC path; for P&R source defaults to routed SDC |
 | `platform` | Required | `cfg-pnr-platforms` entry |
+| `lib-paths` | Optional | Extra macro Liberty, relative to `power.yaml`, appended after what the referenced run declares |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF/VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
@@ -37,5 +38,7 @@ runs:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
+
+Hard-macro Liberty is inherited from the run this one reads: a `pnr` source takes the P&R entry's `lib-paths`, a `synth` source takes the synthesis entry's `lib-paths` and `lef-paths`. `lib-paths` here adds to that list rather than replacing it, and a configured file that is not on disk fails the run before OpenROAD starts. See [Give hard macros a library](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#give-hard-macros-a-library).
 
 P&R source reads the routed ODB and estimates parasitics from global routing; synthesis source reads the generated netlist. Without `phys-run` the physical model is published into this run's own `artefacts/<name>/`, so it merges with a synthesis' half only when both runs write there; `phys-run` names the synthesis run to publish beside instead and is a run name, never a path. See [Power Analysis](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/) and [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#pair-the-model-with-a-synthesis-run).
