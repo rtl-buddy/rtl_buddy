@@ -15,7 +15,9 @@ from .synth_yosys import (
     library_fingerprint,
     elaboration_fingerprint,
     emit_frontend_read_cmds,
+    describe_unresolved_interfaces,
     find_conflicting_driver_warnings,
+    find_unresolved_interface_warnings,
     lifetime_scan_inputs,
     parse_area_um2,
     parse_gate_count,
@@ -32,6 +34,7 @@ from ..config.synth import (
     default_effort_config,
     resolve_conflicting_drivers_mode,
     resolve_static_functions_mode,
+    resolve_unresolved_interfaces_mode,
 )
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
@@ -91,6 +94,7 @@ class OpenRoadSynth:
         # `_hash_constraints`. `None` before the run and with no SDC.
         self._constraints_sha256: str | None = None
         self.static_function_findings = 0
+        self.unresolved_interfaces = 0
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -319,11 +323,12 @@ class OpenRoadSynth:
             )
             return None, False, None
 
-        # Same two gates as the Yosys backend: stage 1 elaborates with the same
-        # frontend, so it carries the same hazard.
+        # Same gates as the Yosys backend: stage 1 elaborates with the same
+        # frontend, so it carries the same hazards.
         opts = self._resolve_yosys_opts()
         static_mode = resolve_static_functions_mode(opts)
         conflicting_mode = resolve_conflicting_drivers_mode(opts)
+        interfaces_mode = resolve_unresolved_interfaces_mode(opts)
         findings = self._scan_static_lifetimes(fl_path, opts)
         self.static_function_findings = len(findings)
         if findings:
@@ -417,6 +422,48 @@ class OpenRoadSynth:
                     f"warning(s) in {log_path}"
                 ),
             )
+
+        if interfaces_mode != "allow":
+            unbound = find_unresolved_interface_warnings(log_text)
+            self.unresolved_interfaces = len(unbound)
+            if unbound and interfaces_mode == "error":
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth.unresolved_interfaces",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    count=len(unbound),
+                    instances=[
+                        f"{module}.{inst}"
+                        for inst, module in unbound[:MAX_EVENT_FINDINGS]
+                    ],
+                    truncated=max(0, len(unbound) - MAX_EVENT_FINDINGS),
+                    log=log_path,
+                )
+                # Same reason as the conflicting-driver gate above: stage 1 has
+                # already written a netlist, and this one is missing the
+                # interface instances' own port connections.
+                self._clear_stale_netlists()
+                return (
+                    None,
+                    False,
+                    (
+                        f"{len(unbound)} unbound interface instance(s): "
+                        f"{describe_unresolved_interfaces(unbound)}"
+                    ),
+                )
+            for inst, module in unbound:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.unresolved_interface",
+                    synth=self.synth_cfg.get_name(),
+                    frontend=opts.frontend,
+                    instance=inst,
+                    module=module,
+                    log=log_path,
+                )
 
         return self._parse_gate_count(log_text, self.synth_cfg.get_top()), True, None
 
@@ -760,6 +807,7 @@ class OpenRoadSynth:
             wns_ps=wns_ps,
             tns_ps=tns_ps,
             static_function_findings=self.static_function_findings or None,
+            unresolved_interfaces=self.unresolved_interfaces or None,
             phys_model=phys_model,
         )
 
