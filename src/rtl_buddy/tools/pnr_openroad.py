@@ -27,6 +27,10 @@ from .artifact_paths import (
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
+# Pure-Tcl macro packer, substituted into the flow ahead of the macro
+# placement stage. It lives in its own file so it can be unit tested under a
+# bare Tcl interpreter without an OpenROAD database (#626).
+_MACRO_PACK_FILE = "macro_pack.tcl"
 
 # Every non-log file `flow.tcl.template` writes under `$OUT_DIR`, as
 # `{design}`-templated basenames. Kept here rather than spelled out at the
@@ -381,6 +385,9 @@ class OpenRoadPnr:
     def _load_template(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_TEMPLATE_FILE).read_text()
 
+    def _load_macro_pack(self) -> str:
+        return files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PACK_FILE).read_text()
+
     def _write_script(self, platform, fp) -> str:
         pdk = platform.get_pdk()
         netlist = self._resolve_netlist_path()
@@ -449,6 +456,8 @@ class OpenRoadPnr:
             "cts_root_buf": cts_root_buf,
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
+            "macro_halo": f"{platform.get_placement_macro_halo():g}",
+            "macro_pack_procs": self._load_macro_pack(),
             "dont_use_block": dont_use_block,
             "pdn_block": pdn_block,
             "cts_clustering_option": (
@@ -1607,10 +1616,24 @@ class OpenRoadPnr:
             result = subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
+                stderr=subprocess.PIPE,
+                text=True,
                 check=False,
                 env=env,
             )
+
+        # OpenROAD's `-log` records what it writes to stdout. A Tcl error
+        # — the macro packer refusing a floorplan, say — goes to stderr
+        # instead, and used to be discarded with stdout, leaving a failed
+        # run whose only explanation was an exit code. Append it to the
+        # log so the diagnostic survives the run (#626).
+        stderr_text = (result.stderr or "").strip()
+        if stderr_text:
+            try:
+                with open(log_path, "a") as log_file:
+                    log_file.write(stderr_text + "\n")
+            except OSError:
+                pass
 
         if result.returncode != 0:
             log_event(
@@ -1621,9 +1644,13 @@ class OpenRoadPnr:
                 returncode=result.returncode,
                 log=log_path,
             )
-            return self._fail_after_openroad(
-                f"OpenROAD exited with code {result.returncode}"
-            )
+            # The first stderr line is the one that names what went wrong;
+            # the rest of a multi-line diagnostic stays in the log.
+            first_line = next((ln for ln in stderr_text.splitlines() if ln.strip()), "")
+            desc = f"OpenROAD exited with code {result.returncode}"
+            if first_line:
+                desc = f"{desc}: {first_line.strip()}"
+            return self._fail_after_openroad(desc)
 
         try:
             log_text = Path(log_path).read_text()

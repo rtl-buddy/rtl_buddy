@@ -33,17 +33,31 @@ class PdkPinLayersFile:
 DEFAULT_PLACEMENT_DENSITY = 0.7
 DEFAULT_PLACEMENT_PADDING = 1
 
+#: Minimum channel, in microns, the macro packer keeps between two macros and
+#: between a macro and each core edge (#626). It has to be wide enough for
+#: `pdngen` to repair the channel, or the run dies at PDN-0179 with a
+#: placement that was otherwise legal. What a repair needs is two straps and
+#: the spacing between them, inside whatever halo the PDN's own macro grid
+#: reserves: on sky130hd (the ORFS values the project template uses) that is
+#: met4/met5 straps 1.6 um wide whose default spacing is half the 27.14 um
+#: pitch less the width, ~11.97 um, plus 2 um of macro-grid halo on each side
+#: — about 19.2 um. 20 um clears that, and a 12 um channel measurably does
+#: not. Nangate45 ships no `pdn-config`, so there the halo is placement cost
+#: only: ~14 standard-cell rows at its 1.4 um site height.
+DEFAULT_PLACEMENT_MACRO_HALO = 20.0
+
 
 @serde
 class PlacementFile:
-    """Global-placement tuning, as written in YAML.
+    """Global-placement and macro-placement tuning, as written in YAML.
 
-    Both fields are `None` when unset, which is what lets a P&R platform
-    override one of them and inherit the other from the PDK.
+    Every field is `None` when unset, which is what lets a P&R platform
+    override one of them and inherit the others from the PDK.
     """
 
     density: float | None = None
     padding: int | None = None
+    macro_halo: float | None = field(rename="macro-halo", default=None)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -71,7 +85,14 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
             raise FatalRtlBuddyError(
                 f"{where}: placement.padding must be >= 0, got {padding}"
             )
-    return PlacementFile(density=density, padding=padding)
+    macro_halo = placement.macro_halo
+    if macro_halo is not None:
+        macro_halo = float(macro_halo)
+        if macro_halo < 0.0:
+            raise FatalRtlBuddyError(
+                f"{where}: placement.macro-halo must be >= 0, got {macro_halo}"
+            )
+    return PlacementFile(density=density, padding=padding, macro_halo=macro_halo)
 
 
 def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
@@ -219,6 +240,10 @@ class PdkConfig:
     def get_placement_padding(self) -> int | None:
         """Configured global-placement cell padding, or `None` when unset."""
         return self._placement.padding
+
+    def get_placement_macro_halo(self) -> float | None:
+        """Configured macro halo in microns, or `None` when unset."""
+        return self._placement.macro_halo
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)
