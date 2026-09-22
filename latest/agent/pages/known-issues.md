@@ -14,9 +14,19 @@ rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes, repor
 
 rtl-buddy-cdc takes plain source paths and has no include-path option, so a filelist `+incdir+` cannot reach it from `rb cdc` or from the hub's domain-map build; every other non-simulation flow forwards them (Yosys `-I`, Vivado `-include_dirs`). The run logs `cdc.filelist_incdirs_unsupported` naming the directories, and a header that resolves only through one of them fails in the analyzer with `Cannot find include file`. Until the analyzer grows the option, spell the `` `include `` relative to the including file or run the `vivado` cdc tool.
 
+## Coverage totals are per elaboration by default
+
+Verilator keys every coverage point by the module it elaborated, so a suite whose compile keys build the same RTL under different defines scores each source point once per parameterisation, and a key that exercises none of a block leaves that block's copy dark. `rb cov summary`, `--coverage-dir-summary` and the merged totals all report that figure, and a block reported short on branch coverage can be at 100% once the copies are collapsed. Read `source_totals` — `rb cov summary`'s `run (source)` row, `rb cov summary --by-source`, or `--coverage-source-summary` on `test`/`regression` — when the question is what the suite covered. `--coverage-dir-summary` has no collapsed form: it is parsed from LCOV, which has already folded the elaborations. See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
+
 ## Coverage uses the platform builder
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Use `--builder <name>` for the run or make that builder the platform default. See [YAML Formats](reference/yaml.md).
+
+## Coverage merging runs in the submitting process, with no timeout
+
+`verilator_coverage --write`, the coverage model build, and the per-test LCOV exports all run in the process that invoked `rb`, including under `--dispatch slurm` where every simulation ran on a compute node. On a large run this step is not small — a few hundred inputs can peak in the gigabytes — so a shared submit host with a per-user memory cap can kill it. There is no timeout on the merge either: a merge that hangs hangs the run.
+
+A merge killed this way reports `FAIL` for toggle, expression, and functional coverage, records `merge_failed` in the manifest and the machine envelope, and exits 1; see [Read a failed merge](concepts/coverage.md#read-a-failed-merge). To avoid it, run the coverage-producing command itself on a compute node (for example, submit `rb regression --coverage-merge` as one job) rather than merging on the submit host.
 
 ## Verilator randomized runs may not reproduce
 
@@ -137,7 +147,13 @@ The limit is read from `scontrol show config` once per cluster per run, before t
 
 ## Quote dispatch time values
 
-YAML 1.1 parses an unquoted value such as `time: 4:00:00` as an integer. rtl_buddy rejects it rather than submit a 10-day Slurm reservation. Use `time: "4:00:00"` or a quoted minute count everywhere `resources:` appears.
+YAML 1.1 parses an unquoted value such as `time: 4:00:00` as an integer. rtl_buddy rejects it rather than submit a 10-day Slurm reservation. Use `time: "4:00:00"` or a quoted minute count everywhere `resources:` appears, `modes:` blocks included.
+
+## An unknown key in a `resources:` block is dropped silently
+
+A key a `resources:` block does not define is discarded at load with no warning, so a misspelled or not-yet-supported field reserves nothing and reads as if it had. `parallel` and `split-verilate` are the documented cases — both are job-wide and meaningless there — but a typo such as `memory:` behaves the same way. Check a new reservation against [YAML formats](reference/yaml.md#parallel-dispatch), and confirm it took effect from the `Reserved` column of the run's reservation advice or from the job's own `--mem`/`--time`.
+
+Two places are strict instead, because there silence would be worse: a testbench `compile:` block rejects `parallel` and `split-verilate`, and a `modes:` block rejects every key it does not define. A release that predates `modes:` drops the whole block this way, which is the shape this quirk covers — after adding one, confirm once that the mode's reservation is what the job was submitted with.
 
 ## Dispatch build jobs cover the whole suite
 

@@ -135,6 +135,10 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 may be repeated                      │
 │ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
 │                                                 directory prefixes, one per line     │
+│ --coverage-source-summary                       append run coverage scored per       │
+│                                                 source point (covered when any       │
+│                                                 elaboration hit it), beside the      │
+│                                                 per-elaboration figure               │
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │
@@ -261,6 +265,10 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 may be repeated                      │
 │ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
 │                                                 directory prefixes, one per line     │
+│ --coverage-source-summary                       append run coverage scored per       │
+│                                                 source point (covered when any       │
+│                                                 elaboration hit it), beside the      │
+│                                                 per-elaboration figure               │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
@@ -1052,11 +1060,14 @@ Usage: rtl-buddy cov summary [OPTIONS]
  run-level and per-test scalars, coldest files first
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --limit           INTEGER  files to report, coldest first (0 for all) [default: 20]  │
-│ --cov-dir         TEXT     coverage artefact directory to read                       │
-│                            [default: (newest cov_dir under the project root)]        │
-│ --manifest        TEXT     manifest.json to read directly                            │
-│ --help                     Show this message and exit.                               │
+│ --limit            INTEGER  files to report, coldest first (0 for all) [default: 20] │
+│ --cov-dir          TEXT     coverage artefact directory to read                      │
+│                             [default: (newest cov_dir under the project root)]       │
+│ --manifest         TEXT     manifest.json to read directly                           │
+│ --by-source                 report the coldest files per source point (covered when  │
+│                             any elaboration hit it) instead of per elaboration; same │
+│                             files, same order                                        │
+│ --help                      Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

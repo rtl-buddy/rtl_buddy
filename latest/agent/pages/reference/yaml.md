@@ -249,8 +249,13 @@ cfg-tools:
 cfg-dispatch:
   backend: slurm
   jobs: 4
-  resources: {cpus: 2, mem: 4G, time: "01:00:00"}
-  compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4, split-verilate: true, verilate: {cpus: 2}}
+  resources:
+    cpus: 2
+    mem: 4G
+    time: "01:00:00"
+    modes:
+      cov: {mem: 32G, time: "02:00:00"}
+  compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4, split-verilate: true, verilate: {cpus: 2}, modes: {cov: {mem: 48G}}}
   sbatch-args: [--partition=verif]
   max-jobs-per-array: 200
   max-array-size: 1001
@@ -279,6 +284,8 @@ cfg-dispatch:
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
 | `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
+| `resources.modes` | Unset; `{<builder mode>: {cpus, mem, time}}`, applied over the fully resolved base value for the run's `--builder-mode`, least specific layer first, so any mode block beats every base field (`test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`). Available on every reservation block: this one, `compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`. Omitted fields and unnamed modes inherit, so a mode no block names reserves the base value. Mode names are free text — your `cfg-rtl-builder.builder-opts` keys — but must be strings, so quote `on`/`no`/`yes`. Fields go through the same validators as the base ones, including the quoted-`time` rule. `parallel`, `split-verilate`, a nested `modes:`, and any unknown key are rejected at load, unlike an unknown key beside them in `resources:`; this block reaches the compile reservation too, since `resources` is its least specific layer |
+| `compile.modes` | Unset; `resources.modes` plus a `verilate` sub-block, so `compile.modes.<mode>.verilate.{cpus,mem,time}` sizes the verilate job of a split suite under that mode. Any `verilate` key beats any `compile` key and, within each, any mode block beats every base field. A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields. `modes:` is rejected inside `compile.verilate` — write `compile.modes.<mode>.verilate` — and on an elaboration profile's `resources`, which resolves without a builder mode. Not part of the compile fingerprint |
 | `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. Where verilation is split into its own Slurm job it sizes the C++ build job alone and `compile.verilate` sizes the other. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field, `parallel` and `split-verilate` included. Those two blocks are the only ones that take `parallel` or `split-verilate`; both keys are meaningless in a per-test or per-testbench `resources:` block and are discarded there |
 | `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Overridden by a suite's own `compile.parallel` where that suite sets one. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
 | `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded; `mem` and `time` default to the resolved `compile` values. Layers field by field over the same three layers as the rest of `compile`, including a testbench's own `compile.verilate`, and is aggregated over a suite's distinct builds by the same rules. Ignored where the split does not apply |
@@ -469,7 +476,7 @@ Top-level fields:
 | `testbenches` | Required | Testbench definitions |
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
-| `compile` | Optional | This suite's **whole-job** dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, and a `verilate` sub-block of `{cpus, mem, time}` sizing the verilate job where the split applies. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`, and overridden per build by a testbench's own `compile`; an omitted field inherits, and neither build-phase job is ever reserved below this. Sizes the suite's build jobs, and the compile half of a simulation job that compiles for itself. `split-verilate: false` runs one build job instead. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
+| `compile` | Optional | This suite's **whole-job** dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block of `{cpus, mem, time}` sizing the verilate job where the split applies, and a [`modes`](#parallel-dispatch) sub-block sizing all of those per builder mode. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`, and overridden per build by a testbench's own `compile`; an omitted field inherits, and neither build-phase job is ever reserved below this. Sizes the suite's build jobs, and the compile half of a simulation job that compiles for itself. `split-verilate: false` runs one build job instead. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
 
 Testbench fields:
 
@@ -477,8 +484,8 @@ Testbench fields:
 |---|---|---|
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
-| `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`; inherited by tests |
-| `compile` | Optional | This testbench's **per-build** dispatch compile reservation: `cpus`, `mem`, quoted `time`, and a `verilate` sub-block of the same three fields. Layered field by field over the suite's top-level `compile`, which is layered over `cfg-dispatch.compile`; an omitted field inherits. The suite's build job aggregates these over the builds its plan will run — largest `cpus`, summed `mem` over the `parallel` builds that overlap, and a `time` equal to the makespan of a `parallel`-worker queue — then floors the result at the suite-level whole-job value. One reservation per distinct `(testbench, plusdefines, builder, model, assertions)` among the planned tests, and per test for a builder that cannot share a build or a test with a `preproc:` hook; a testbench with no block enters no `cpus`/`time` sum, but once any build states its own `mem` the others contribute the whole-job figure to the memory overlap. Every field must be greater than zero. A simulation job that compiles for itself uses its own testbench's value. Each phase of a split build aggregates its own field set the same way. `parallel` and `split-verilate` are rejected here: both are job-wide |
+| `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](#parallel-dispatch) sub-block of the same three fields per builder mode; inherited by tests |
+| `compile` | Optional | This testbench's **per-build** dispatch compile reservation: `cpus`, `mem`, quoted `time`, a `verilate` sub-block of the same three fields, and a [`modes`](#parallel-dispatch) sub-block sizing them per builder mode. Layered field by field over the suite's top-level `compile`, which is layered over `cfg-dispatch.compile`; an omitted field inherits. The suite's build job aggregates these over the builds its plan will run — largest `cpus`, summed `mem` over the `parallel` builds that overlap, and a `time` equal to the makespan of a `parallel`-worker queue — then floors the result at the suite-level whole-job value. One reservation per distinct `(testbench, plusdefines, builder, model, assertions)` among the planned tests, and per test for a builder that cannot share a build or a test with a `preproc:` hook; a testbench with no block enters no `cpus`/`time` sum, but once any build states its own `mem` the others contribute the whole-job figure to the memory overlap. Every field must be greater than zero. A simulation job that compiles for itself uses its own testbench's value. Each phase of a split build aggregates its own field set the same way. `parallel` and `split-verilate` are rejected here, and inside any `modes` block: both are job-wide |
 | `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Passed to the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Not defaulted to `name` |
 | `cocotb.module` | Required for cocotb | Python module name or list passed as `COCOTB_TEST_MODULES` |
 
@@ -503,7 +510,7 @@ Test fields:
 | `preproc.path` | Optional | Precompile hook path |
 | `postproc.path` | Accepted, not executed | Custom postprocessing is unavailable |
 | `covers` | Optional list | Specification coverage IDs; no simulation effect |
-| `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time` |
+| `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#parallel-dispatch) sub-block sizes it per builder mode and is the most specific such layer |
 | `assertions` | Default false | Enables Verilator `--assert` and user coverage; other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 

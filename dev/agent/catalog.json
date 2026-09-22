@@ -224,6 +224,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/merge-and-export-results.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#per-elaboration-vs-source-point-figures",
+          "slug": "per-elaboration-vs-source-point-figures",
+          "title": "Per-elaboration vs source-point figures",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/per-elaboration-vs-source-point-figures.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#inspect-cover-property-hits",
           "slug": "inspect-cover-property-hits",
           "title": "Inspect cover-property hits",
@@ -285,6 +291,12 @@
           "slug": "set-per-test-resources",
           "title": "Set per-test resources",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/set-per-test-resources.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#size-a-reservation-per-builder-mode",
+          "slug": "size-a-reservation-per-builder-mode",
+          "title": "Size a reservation per builder mode",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/size-a-reservation-per-builder-mode.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#set-compile-resources-per-suite-and-testbench",
@@ -1970,10 +1982,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rtl-buddy-cdc-cannot-take-a-filelist-incdir.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-totals-are-per-elaboration-by-default",
+          "slug": "coverage-totals-are-per-elaboration-by-default",
+          "title": "Coverage totals are per elaboration by default",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-totals-are-per-elaboration-by-default.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-uses-the-platform-builder",
           "slug": "coverage-uses-the-platform-builder",
           "title": "Coverage uses the platform builder",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-uses-the-platform-builder.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-merging-runs-in-the-submitting-process-with-no-timeout",
+          "slug": "coverage-merging-runs-in-the-submitting-process-with-no-timeout",
+          "title": "Coverage merging runs in the submitting process, with no timeout",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-merging-runs-in-the-submitting-process-with-no-timeout.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#verilator-randomized-runs-may-not-reproduce",
@@ -2082,6 +2106,12 @@
           "slug": "quote-dispatch-time-values",
           "title": "Quote dispatch time values",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/quote-dispatch-time-values.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unknown-key-in-a-resources-block-is-dropped-silently",
+          "slug": "an-unknown-key-in-a-resources-block-is-dropped-silently",
+          "title": "An unknown key in a `resources:` block is dropped silently",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-unknown-key-in-a-resources-block-is-dropped-silently.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#dispatch-build-jobs-cover-the-whole-suite",

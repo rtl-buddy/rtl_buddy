@@ -1,0 +1,5 @@
+## An unknown key in a `resources:` block is dropped silently
+
+A key a `resources:` block does not define is discarded at load with no warning, so a misspelled or not-yet-supported field reserves nothing and reads as if it had. `parallel` and `split-verilate` are the documented cases — both are job-wide and meaningless there — but a typo such as `memory:` behaves the same way. Check a new reservation against [YAML formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#parallel-dispatch), and confirm it took effect from the `Reserved` column of the run's reservation advice or from the job's own `--mem`/`--time`.
+
+Two places are strict instead, because there silence would be worse: a testbench `compile:` block rejects `parallel` and `split-verilate`, and a `modes:` block rejects every key it does not define. A release that predates `modes:` drops the whole block this way, which is the shape this quirk covers — after adding one, confirm once that the mode's reservation is what the job was submitted with.

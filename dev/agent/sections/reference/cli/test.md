@@ -33,6 +33,10 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                 may be repeated                      │
 │ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
 │                                                 directory prefixes, one per line     │
+│ --coverage-source-summary                       append run coverage scored per       │
+│                                                 source point (covered when any       │
+│                                                 elaboration hit it), beside the      │
+│                                                 per-elaboration figure               │
 │ --rnd-new                      -n               use a randomly generated seed        │
 │                                                 instead of root config seed          │
 │ --rnd-last                     -l               reuse last generated seed            │

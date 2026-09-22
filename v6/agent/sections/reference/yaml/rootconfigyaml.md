@@ -234,8 +234,13 @@ cfg-tools:
 cfg-dispatch:
   backend: slurm
   jobs: 4
-  resources: {cpus: 2, mem: 4G, time: "01:00:00"}
-  compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4, split-verilate: true, verilate: {cpus: 2}}
+  resources:
+    cpus: 2
+    mem: 4G
+    time: "01:00:00"
+    modes:
+      cov: {mem: 32G, time: "02:00:00"}
+  compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4, split-verilate: true, verilate: {cpus: 2}, modes: {cov: {mem: 48G}}}
   sbatch-args: [--partition=verif]
   max-jobs-per-array: 200
   max-array-size: 1001
@@ -264,6 +269,8 @@ cfg-dispatch:
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
 | `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
+| `resources.modes` | Unset; `{<builder mode>: {cpus, mem, time}}`, applied over the fully resolved base value for the run's `--builder-mode`, least specific layer first, so any mode block beats every base field (`test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`). Available on every reservation block: this one, `compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`. Omitted fields and unnamed modes inherit, so a mode no block names reserves the base value. Mode names are free text — your `cfg-rtl-builder.builder-opts` keys — but must be strings, so quote `on`/`no`/`yes`. Fields go through the same validators as the base ones, including the quoted-`time` rule. `parallel`, `split-verilate`, a nested `modes:`, and any unknown key are rejected at load, unlike an unknown key beside them in `resources:`; this block reaches the compile reservation too, since `resources` is its least specific layer |
+| `compile.modes` | Unset; `resources.modes` plus a `verilate` sub-block, so `compile.modes.<mode>.verilate.{cpus,mem,time}` sizes the verilate job of a split suite under that mode. Any `verilate` key beats any `compile` key and, within each, any mode block beats every base field. A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields. `modes:` is rejected inside `compile.verilate` — write `compile.modes.<mode>.verilate` — and on an elaboration profile's `resources`, which resolves without a builder mode. Not part of the compile fingerprint |
 | `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. Where verilation is split into its own Slurm job it sizes the C++ build job alone and `compile.verilate` sizes the other. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field, `parallel` and `split-verilate` included. Those two blocks are the only ones that take `parallel` or `split-verilate`; both keys are meaningless in a per-test or per-testbench `resources:` block and are discarded there |
 | `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Overridden by a suite's own `compile.parallel` where that suite sets one. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
 | `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded; `mem` and `time` default to the resolved `compile` values. Layers field by field over the same three layers as the rest of `compile`, including a testbench's own `compile.verilate`, and is aggregated over a suite's distinct builds by the same rules. Ignored where the split does not apply |

@@ -45,4 +45,4 @@ cfg-dispatch:
 
 `jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array, and `max-array-size` controls how large one array may be before the group is split. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#root_configyaml) for defaults and validation.
 
-Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations.
+Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations, and in every [`modes:`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#size-a-reservation-per-builder-mode) block.

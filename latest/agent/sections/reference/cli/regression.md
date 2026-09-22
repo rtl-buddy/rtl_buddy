@@ -36,6 +36,10 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 may be repeated                      │
 │ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
 │                                                 directory prefixes, one per line     │
+│ --coverage-source-summary                       append run coverage scored per       │
+│                                                 source point (covered when any       │
+│                                                 elaboration hit it), beside the      │
+│                                                 per-elaboration figure               │
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │

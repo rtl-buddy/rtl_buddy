@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Coverage | RTL Buddy</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Coverage | RTL Buddy"><meta data-rh="true" name="description" content="Collect Verilator coverage, merge and export results, and inspect saved coverage by file, module, point, and test."><meta data-rh="true" property="og:description" content="Collect Verilator coverage, merge and export results, and inspect saved coverage by file, module, point, and test."><link data-rh="true" rel="icon" href="/rtl_buddy/dev/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/" hreflang="en"><link data-rh="true" rel="alternate" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Coverage","item":"https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage"}]}</script><link rel="stylesheet" href="/rtl_buddy/dev/assets/css/styles.075370ab.css">
-<script src="/rtl_buddy/dev/assets/js/runtime~main.99b56f88.js" defer="defer"></script>
-<script src="/rtl_buddy/dev/assets/js/main.ae50bb26.js" defer="defer"></script>
+<script src="/rtl_buddy/dev/assets/js/runtime~main.82e4e547.js" defer="defer"></script>
+<script src="/rtl_buddy/dev/assets/js/main.1c11cd3a.js" defer="defer"></script>
 </head>
 <body>
 <svg style="display: none;"><defs>
@@ -51,39 +51,171 @@
 <div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb </span><span class="token parameter variable" style="color:#36acaa">-M</span><span class="token plain"> cov regression --coverage-merge --coverage-html</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb </span><span class="token parameter variable" style="color:#36acaa">-M</span><span class="token plain"> cov regression --coverage-merge --coverage-coverview</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb </span><span class="token parameter variable" style="color:#36acaa">-M</span><span class="token plain"> cov regression --coverage-coverview --coverage-per-test</span><br></div></code></pre></div></div>
 <p>HTML requires <code>use-lcov: true</code> and <code>genhtml</code>; diagnose it with <code>rb tool-check --explain lcov</code>. Output is written to <code>coverage_merge.html</code> under the command root.</p>
 <p>Coverview is an optional archive export for CI or handoff. Use <code>rb cov</code> or the hub coverage pane for interactive inspection; Coverview rendering depends on external <code>info-process</code> and compatible Coverview tooling.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="read-a-failed-merge">Read a failed merge<a href="#read-a-failed-merge" class="hash-link" aria-label="Direct link to Read a failed merge" title="Direct link to Read a failed merge" translate="no">​</a></h3>
+<p>The one-line summary uses two different tokens for a missing number:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Token</th><th>Meaning</th></tr></thead><tbody><tr><td><code>UNSP</code></td><td>The metric was never measured: not instrumented, or not representable in the artefact the number was read from. An LCOV <code>.info</code> carries no toggle, expression, or functional coverage.</td></tr><tr><td><code>FAIL</code></td><td>The metric was measured and the measurement was lost: the tool run that was its only source failed.</td></tr></tbody></table>
+<p><code>verilator_coverage --write</code> is the only source for toggle, expression, and functional coverage under <code>--coverage-merge</code> and <code>--coverage-merge-raw</code>. When it fails — killed by the environment, out of memory, or exiting non-zero — the per-test LCOV exports still succeed, so line and branch report normally and the rest reads <code>FAIL</code>:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">Merged Coverage: L:0.92 B:0.95 T:FAIL F:FAIL</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">Coverage merge FAILED: verilator_coverage --write wrote no merged database, so toggle, expression, functional read FAIL (measurement lost), not UNSP (not instrumented) — see the coverage.merge.failed event</span><br></div></code></pre></div></div>
+<p>The run then <strong>exits 1</strong>. Results, side-cars, the coverage model, and the manifest are all written first, so nothing the run produced is lost; only the status reports that the requested measurement is incomplete. <code>coverage.merge.failed</code> carries the tool&#x27;s return code and output, and <code>coverage.merge.degraded</code> records the escalation.</p>
+<p>Machine and artefact consumers read the same fact explicitly:</p>
+<ul>
+<li class=""><code>payload.coverage.merge_failed</code> (bool) and <code>payload.coverage.failed_metrics</code> (metric names) on <code>test</code> and <code>regression</code>;</li>
+<li class=""><code>merge_failed</code> and <code>failed_metrics</code> at the top level of <code>cov_dir/manifest.json</code>, and in the <code>payload.coverage.artefacts</code> block beside it;</li>
+<li class=""><code>merge_failed</code> and <code>failed_metrics</code> on <code>rb cov summary</code> and <code>rb cov module</code> payloads.</li>
+</ul>
+<p>Both keys are always present, so an absent key never means &quot;the merge was fine&quot;. Under <code>merge_mode: &quot;raw&quot;</code>, <code>merged.raw</code> is also <code>null</code> when the merge produced nothing — a signal a consumer can still use, but no longer has to infer.</p>
+<p>Manifest <code>totals</code> is deliberately unchanged by a failed merge. It is computed from the per-test databases rather than the merged one, so it remains a real measurement of what those databases hold; blanking a metric there would discard data the run did produce. A failed merge costs the <em>merged summary</em> number, which is why the verdict sits beside <code>totals</code> instead of inside it. Compare <code>merge_failed</code> before comparing manifest totals against a console summary.</p>
 <p>Add directory rollups with repeatable repo-relative prefixes or a file containing one prefix per line:</p>
 <div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb </span><span class="token parameter variable" style="color:#36acaa">-M</span><span class="token plain"> cov regression --coverage-merge </span><span class="token punctuation" style="color:#393A34">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  --coverage-dir-summary src/core </span><span class="token punctuation" style="color:#393A34">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  --coverage-dir-summary src/mem</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb </span><span class="token parameter variable" style="color:#36acaa">-M</span><span class="token plain"> cov regression --coverage-merge </span><span class="token punctuation" style="color:#393A34">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">  --coverage-dir-summary-file coverage_dirs.txt</span><br></div></code></pre></div></div>
+<p>Add the run&#x27;s source-point figures with <code>--coverage-source-summary</code>:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb </span><span class="token parameter variable" style="color:#36acaa">-M</span><span class="token plain"> cov regression --coverage-merge --coverage-source-summary</span><br></div></code></pre></div></div>
 <p>See the <a class="" href="/rtl_buddy/dev/reference/cli/">CLI reference</a> for the complete option set.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="per-elaboration-vs-source-point-figures">Per-elaboration vs source-point figures<a href="#per-elaboration-vs-source-point-figures" class="hash-link" aria-label="Direct link to Per-elaboration vs source-point figures" title="Direct link to Per-elaboration vs source-point figures" translate="no">​</a></h2>
+<p>Verilator keys every coverage point by the module it <strong>elaborated</strong>, so one
+source point is recorded once per parameterisation. A suite whose compile keys
+build the same RTL under different defines therefore scores each point several
+times, and a key that exercises none of a block leaves that block&#x27;s copy dark
+whatever the rest of the suite did. On a seven-key suite the difference is not
+marginal:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Metric</th><th>Source points</th><th>Per elaboration</th></tr></thead><tbody><tr><td>line</td><td>355/399 (89.0%)</td><td>760/924 (82.3%)</td></tr><tr><td>branch</td><td>351/374 (93.9%)</td><td>792/954 (83.0%)</td></tr><tr><td>toggle</td><td>140715/145692 (96.6%)</td><td>290437/313312 (92.7%)</td></tr></tbody></table>
+<p>Both figures are reported, because they answer different questions:</p>
+<ul>
+<li class=""><strong>Per elaboration</strong> (<code>totals</code>) — &quot;is this point covered in every build&quot;, the
+figure to use when one compile key is what you care about.</li>
+<li class=""><strong>Source point</strong> (<code>source_totals</code>) — &quot;is this point covered by the suite&quot;,
+which is how a closure target is normally stated. A point is covered when
+<strong>any</strong> elaboration hit it.</li>
+</ul>
+<p>The source identity is <code>(file, metric, line, column, point description)</code> — the
+raw record&#x27;s <code>f</code>, <code>t</code>, <code>l</code>, <code>n</code> and <code>o</code>. Only the elaborated module is dropped;
+the column stays because <code>n</code> is a column in the source text and so is the same
+number in every elaboration, while dropping it would fold one line&#x27;s toggle bits
+(or an expression&#x27;s terms) into a single point. Hit counts are summed, <code>found</code>
+counts distinct collapsed points, and <code>hit</code> counts those with any hits at all.
+Collapsing never rounds up: a point no elaboration hit stays a miss.</p>
+<p>The table above counts every record the suite&#x27;s databases hold. rtl_buddy&#x27;s own
+line figure is narrower than that: the model keys a line point on the line alone
+within a file, because a line is hit or it is not, so a file&#x27;s and the run&#x27;s line
+figures have always been collapsed. <code>rb cov summary</code>&#x27;s <code>run</code> and <code>run (source)</code>
+rows therefore agree on <code>line</code> and differ on branch, toggle, expression and
+cover. A per-test row still counts one line record per elaboration, as the
+simulator wrote it, and its own <code>source_totals</code> collapses them.</p>
+<p>Where each figure is reported:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Surface</th><th>Figure</th></tr></thead><tbody><tr><td><code>rb cov summary</code></td><td><code>run</code> and <code>run (source)</code> rows; <code>--by-source</code> reports the coldest files collapsed</td></tr><tr><td><code>rb --machine cov summary</code>, <code>rb mcp</code> <code>cov_summary</code></td><td><code>source_totals</code> beside <code>totals</code>, per run, per test and per file</td></tr><tr><td><code>test</code> / <code>regression</code> <code>--coverage-source-summary</code></td><td><code>Coverage source points &lt;metric&gt;:</code> lines and <code>coverage.source_summary</code></td></tr><tr><td><code>cov_dir/manifest.json</code></td><td><code>source_totals</code> beside <code>totals</code></td></tr><tr><td><code>cov_dir/coverage-model.json</code></td><td><code>source_totals</code> beside <code>totals</code>, per run, per test and per file</td></tr><tr><td><code>--coverage-dir-summary</code></td><td>per elaboration only</td></tr></tbody></table>
+<p>The two summaries read different inputs. The directory summary is parsed from
+the merged or typed LCOV <code>.info</code>, which has already folded elaborations together
+by file and line and dropped every point name, so the collapsed figure cannot be
+recovered from it. The source summary is computed from the coverage model, that
+is from the per-test raw <code>.dat</code> databases, the only input that records the
+elaborated module per point. A run with no raw database at all (an <code>.info</code>-only
+fallback) records no module anywhere, so its two figures are equal — and its
+per-test line row no longer differs either. Requesting the summary from a run
+that produced no model at all reports <code>Coverage source points: unavailable (no coverage model)</code> instead of zeros.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="inspect-cover-property-hits">Inspect cover-property hits<a href="#inspect-cover-property-hits" class="hash-link" aria-label="Direct link to Inspect cover-property hits" title="Direct link to Inspect cover-property hits" translate="no">​</a></h2>
 <p>For Verilator, machine output includes each labeled user cover point as <code>{name, file, line, module, hits}</code> on the test result and in the run-level aggregate. This data comes from per-test <code>coverage.dat</code> and does not require a merge flag.</p>
 <p>Verilator folds repeated instances of one point within a module. rtl_buddy then combines tests by <code>(file, line, name, module)</code>. The module remains part of the identity so the same included property compiled into different modules is not mistaken for one covered point.</p>
 <p>Other simulator families omit the field. Omitted means not collected, not zero coverage.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="use-saved-coverage-artefacts">Use saved coverage artefacts<a href="#use-saved-coverage-artefacts" class="hash-link" aria-label="Direct link to Use saved coverage artefacts" title="Direct link to Use saved coverage artefacts" translate="no">​</a></h2>
 <p>Every run that produces coverage writes <code>&lt;command root&gt;/cov_dir/manifest.json</code>, even without merging. The manifest records the run context, totals, tests, and paths to raw, merged, HTML, dataset, description, Coverview, and model artefacts.</p>
-<p>Manifest path fields are POSIX project-relative paths when possible. Stable output blocks remain present and use <code>null</code> for artefacts that were not produced. <code>merge_mode</code> is <code>raw</code>, <code>info_process</code>, or <code>null</code>.</p>
+<p>Manifest path fields are POSIX project-relative paths when possible. Stable output blocks remain present and use <code>null</code> for artefacts that were not produced. <code>merge_mode</code> is <code>raw</code>, <code>info_process</code>, or <code>null</code>. <code>merge_failed</code> and <code>failed_metrics</code> state whether a requested merge survived; see <a href="#read-a-failed-merge" class="">Read a failed merge</a>. <code>source_totals</code> sits beside <code>totals</code> and is <code>null</code> for a manifest whose model carried no such figure.</p>
 <p><code>cov_dir/coverage-model.json</code> stores the actionable detail:</p>
 <ul>
-<li class="">totals and counts by metric;</li>
+<li class="">totals and counts by metric, per elaboration (<code>totals</code>) and per source point (<code>source_totals</code>);</li>
 <li class="">files and their modules;</li>
 <li class="">line, branch, toggle, expression, and cover points;</li>
 <li class="">hit counts attributed to each test.</li>
 </ul>
-<p>Paths are project-relative. Line points are keyed by line; other points use line, column, name, and module because several may share a source line.</p>
+<p>Paths are project-relative. Line points are keyed by line; other points use line, column, name, and module because several may share a source line. Both totals blocks ride on the run, on each test and on each file; <code>source_totals</code> is the same points keyed without the module. Adding a key does not bump <code>schema_version</code>, so a reader of an older document sees <code>source_totals</code> absent, never wrong — and consumers omit the key rather than substituting <code>totals</code>.</p>
 <p>Toggle, expression, and labeled cover detail comes from raw Verilator databases. If a raw database is unavailable, the model can fall back to LCOV info for unnamed line and branch data only.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="query-saved-coverage-with-rb-cov">Query saved coverage with <code>rb cov</code><a href="#query-saved-coverage-with-rb-cov" class="hash-link" aria-label="Direct link to query-saved-coverage-with-rb-cov" title="Direct link to query-saved-coverage-with-rb-cov" translate="no">​</a></h2>
 <p><code>rb cov</code> reads existing artefacts and writes nothing. Without <code>--cov-dir</code>, it selects the newest <code>cov_dir/manifest.json</code> under the project root.</p>
-<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary </span><span class="token parameter variable" style="color:#36acaa">--limit</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov module blk</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov module blk </span><span class="token parameter variable" style="color:#36acaa">--all</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary --cov-dir verif/blk/cov_dir</span><br></div></code></pre></div></div>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary </span><span class="token parameter variable" style="color:#36acaa">--limit</span><span class="token plain"> </span><span class="token number" style="color:#36acaa">0</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov module blk</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov module blk </span><span class="token parameter variable" style="color:#36acaa">--all</span><span class="token plain"></span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary --cov-dir verif/blk/cov_dir</span><br></div><div class="token-line" style="color:#393A34"><span class="token plain">rb cov summary --by-source</span><br></div></code></pre></div></div>
 <ul>
-<li class=""><code>summary</code> reports run and test totals plus the coldest files. <code>--limit 0</code> shows all files.</li>
-<li class=""><code>module</code> reports points for exactly the recorded module. <code>--all</code> includes hit points as well as misses.</li>
+<li class=""><code>summary</code> reports run and test totals plus the coldest files. <code>--limit 0</code> shows all files. The totals table carries a <code>run</code> row and a <code>run (source)</code> row; <code>--by-source</code> reports the coldest files by source point instead of per elaboration, listing the same files in the same order.</li>
+<li class=""><code>module</code> reports points for exactly the recorded module. <code>--all</code> includes hit points as well as misses. Module figures are per elaboration by definition — a model module <em>is</em> one elaboration.</li>
 </ul>
 <p>An unknown module exits 2 and reports close candidates. A file shared by modules is filtered to the requested module&#x27;s points.</p>
-<p>Machine payloads include the manifest, run metadata, totals, artefact paths, and verb-specific file, module, test, and point data. The same artefact block is included in machine output from the producing <code>test</code> or <code>regression</code> command.</p>
+<p>Machine payloads include the manifest, run metadata, totals, artefact paths, and verb-specific file, module, test, and point data. <code>--by-source</code> changes no payload: the machine payload carries both totals blocks either way. The same artefact block is included in machine output from the producing <code>test</code> or <code>regression</code> command.</p>
 <p><code>rb mcp</code> exposes the same query builders as <code>cov_summary</code> and <code>cov_module</code>. They read files directly and do not require a running hub. See <a class="" href="/rtl_buddy/dev/concepts/graph/#the-mcp-server">The MCP server</a>.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="inspect-coverage-in-the-hub">Inspect coverage in the hub<a href="#inspect-coverage-in-the-hub" class="hash-link" aria-label="Direct link to Inspect coverage in the hub" title="Direct link to Inspect coverage in the hub" translate="no">​</a></h2>
 <p>Start the viewer service and open <code>/cov</code>:</p>
 <div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#393A34;--prism-background-color:#f6f8fa"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#393A34;background-color:#f6f8fa"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#393A34"><span class="token plain">rb hub start --serve-viewer</span><br></div></code></pre></div></div>
-<p>The pane shows totals, metric-ranked files, source annotations, individual points, and per-test attribution from the same model used by <code>rb cov</code>. Line selections can focus source and schematic views; module selections can focus the graph. See <a class="" href="/rtl_buddy/dev/concepts/hub/#coverage-pane">Coverage pane</a>.</p>
-<p>After <code>rb graph results</code>, the design graph also correlates declared <code>covers:</code> relationships with observed coverage and reports exercised, declared-only, and observed-but-undeclared items. See <a class="" href="/rtl_buddy/dev/concepts/graph/#coverage-on-the-graph">Coverage on the graph</a>.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/rtl-buddy/rtl_buddy/edit/main/docs/concepts/coverage.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"><span class="theme-last-updated">Last updated<!-- --> on <b><time datetime="2026-08-25T07:39:49.000Z" itemprop="dateModified">Aug 25, 2026</time></b> by <b>Xie Jiacheng</b></span></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/rtl_buddy/dev/concepts/expected-failures/"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Expected Failures</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/rtl_buddy/dev/concepts/plugins/"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Test plugins</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#enable-coverage" class="table-of-contents__link toc-highlight">Enable coverage</a></li><li><a href="#merge-and-export-results" class="table-of-contents__link toc-highlight">Merge and export results</a></li><li><a href="#inspect-cover-property-hits" class="table-of-contents__link toc-highlight">Inspect cover-property hits</a></li><li><a href="#use-saved-coverage-artefacts" class="table-of-contents__link toc-highlight">Use saved coverage artefacts</a></li><li><a href="#query-saved-coverage-with-rb-cov" class="table-of-contents__link toc-highlight">Query saved coverage with <code>rb cov</code></a></li><li><a href="#inspect-coverage-in-the-hub" class="table-of-contents__link toc-highlight">Inspect coverage in the hub</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Documentation</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/quickstart/">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/reference/cli/">CLI Reference</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/agents/#local-docs-access">Agent access</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Project</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://pypi.org/project/rtl-buddy/" target="_blank" rel="noopener noreferrer" class="footer__link-item">PyPI<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">For agents</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/llms.txt" target="_blank" rel="noopener noreferrer" class="footer__link-item">llms.txt<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="footer__link-item">Catalog JSON<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026 RTL Buddy contributors.</div></div></div></footer></div>
+<p>The pane shows totals, metric-ranked files, source annotations, individual points, and per-test attribution from the same model used by <code>rb cov</code>. Its figures are per elaboration; the run&#x27;s source-point percentages are in the header tooltip. Line selections can focus source and schematic views; module selections can focus the graph. See <a class="" href="/rtl_buddy/dev/concepts/hub/#coverage-pane">Coverage pane</a>.</p>
+<p>After <code>rb graph results</code>, the design graph also correlates declared <code>covers:</code> relationships with observed coverage and reports exercised, declared-only, and observed-but-undeclared items. See <a class="" href="/rtl_buddy/dev/concepts/graph/#coverage-on-the-graph">Coverage on the graph</a>.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/rtl-buddy/rtl_buddy/edit/main/docs/concepts/coverage.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/rtl_buddy/dev/concepts/expected-failures/"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Expected Failures</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/rtl_buddy/dev/concepts/plugins/"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Test plugins</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#enable-coverage" class="table-of-contents__link toc-highlight">Enable coverage</a></li><li><a href="#merge-and-export-results" class="table-of-contents__link toc-highlight">Merge and export results</a><ul><li><a href="#read-a-failed-merge" class="table-of-contents__link toc-highlight">Read a failed merge</a></li></ul></li><li><a href="#per-elaboration-vs-source-point-figures" class="table-of-contents__link toc-highlight">Per-elaboration vs source-point figures</a></li><li><a href="#inspect-cover-property-hits" class="table-of-contents__link toc-highlight">Inspect cover-property hits</a></li><li><a href="#use-saved-coverage-artefacts" class="table-of-contents__link toc-highlight">Use saved coverage artefacts</a></li><li><a href="#query-saved-coverage-with-rb-cov" class="table-of-contents__link toc-highlight">Query saved coverage with <code>rb cov</code></a></li><li><a href="#inspect-coverage-in-the-hub" class="table-of-contents__link toc-highlight">Inspect coverage in the hub</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Documentation</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/quickstart/">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/reference/cli/">CLI Reference</a></li><li class="footer__item"><a class="footer__link-item" href="/rtl_buddy/dev/agents/#local-docs-access">Agent access</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Project</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/rtl-buddy/rtl_buddy" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://pypi.org/project/rtl-buddy/" target="_blank" rel="noopener noreferrer" class="footer__link-item">PyPI<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">For agents</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/llms.txt" target="_blank" rel="noopener noreferrer" class="footer__link-item">llms.txt<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li><li class="footer__item"><a href="https://rtl-buddy.github.io/rtl_buddy/dev/agent/catalog.json" target="_blank" rel="noopener noreferrer" class="footer__link-item">Catalog JSON<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Copyright © 2026 RTL Buddy contributors.</div></div></div></footer></div>
 </body>
 </html>
