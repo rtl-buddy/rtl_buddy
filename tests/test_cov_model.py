@@ -26,6 +26,7 @@ from rtl_buddy.cov.model import (
     build_model,
     cover_records,
     load_model,
+    source_totals,
     write_model,
 )
 from rtl_buddy.cov.query import artefacts_block, load_context
@@ -177,6 +178,170 @@ def test_per_test_totals_are_that_test_only(tmp_path):
 
     assert by_name["basic"]["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
     assert by_name["random"]["totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
+
+
+def _two_elaboration_model(tmp_path):
+    """One source file elaborated twice, as a multi-key suite records it.
+
+    Verilator keys every point on the module it *elaborated*, and
+    mangles the parameterisation into the name — one source module
+    compiled two ways is ``blk__W13`` and ``blk__Wc``. The branch, the
+    toggle bit and the cover property below are therefore recorded
+    twice, and the second copy is exercised by neither test: the shape
+    #637 is about.
+    """
+    root, suite = _project(tmp_path)
+    records = []
+    for module, hits in (("blk__W13", 4), ("blk__Wc", 0)):
+        records.extend(
+            [
+                _dat_record(
+                    file="../../../design/blk.sv",
+                    line=5,
+                    type_="line",
+                    name="",
+                    module=module,
+                    hits=hits,
+                ),
+                _dat_record(
+                    file="../../../design/blk.sv",
+                    line=7,
+                    type_="branch",
+                    name="if",
+                    module=module,
+                    col=3,
+                    hits=hits,
+                ),
+                _dat_record(
+                    file="../../../design/blk.sv",
+                    line=2,
+                    type_="toggle",
+                    name="q[0]",
+                    module=module,
+                    col=9,
+                    hits=0,
+                ),
+                _dat_record(
+                    file="../../../design/blk.sv",
+                    line=9,
+                    type_="user",
+                    name="BLK_WRITE",
+                    module=module,
+                    hits=hits,
+                ),
+            ]
+        )
+    raw = _write_dat(suite / "artefacts" / "basic" / "coverage.dat", records)
+    return (
+        root,
+        suite,
+        build_model(
+            [
+                TestArtefacts(
+                    name="basic",
+                    raw=raw,
+                    suite="verif/blk/tests.yaml",
+                    source_roots=(str(suite / "artefacts" / "basic"), str(suite)),
+                )
+            ],
+            project_root=root,
+            simulator="verilator",
+        ),
+    )
+
+
+def test_source_totals_score_a_point_hit_by_any_elaboration(tmp_path):
+    """The two figures, on the same records (#637).
+
+    Per elaboration the branch is two points and one of them is cold —
+    the reading that had blocks reported short when the suite had in
+    fact covered them. Collapsed on ``(file, line, column, name)`` it is
+    one point, and hit.
+    """
+    _root, _suite, model = _two_elaboration_model(tmp_path)
+    (file_row,) = model["files"]
+
+    assert file_row["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert file_row["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    assert model["totals"]["branch"] == file_row["totals"]["branch"]
+    assert model["source_totals"]["branch"] == file_row["source_totals"]["branch"]
+    # Same for the cover property compiled into both elaborations.
+    assert file_row["totals"]["cover"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert file_row["source_totals"]["cover"] == {"found": 1, "hit": 1, "ratio": 1.0}
+
+
+def test_source_totals_keep_a_point_no_elaboration_hit_dark(tmp_path):
+    """Collapsing is not rounding up: the toggle bit neither elaboration
+    toggled is one point and still a miss."""
+    _root, _suite, model = _two_elaboration_model(tmp_path)
+    (file_row,) = model["files"]
+
+    assert file_row["totals"]["toggle"] == {"found": 2, "hit": 0, "ratio": 0.0}
+    assert file_row["source_totals"]["toggle"] == {"found": 1, "hit": 0, "ratio": 0.0}
+
+
+def test_line_points_already_fold_per_file_so_both_figures_agree(tmp_path):
+    """Line points carry no module in their identity, so the *file* figure
+    has always been collapsed; the per-elaboration count is what a test row
+    and Verilator's own report show. Documented rather than changed."""
+    _root, _suite, model = _two_elaboration_model(tmp_path)
+    (file_row,) = model["files"]
+    (test_row,) = model["tests"]
+
+    assert file_row["totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    assert file_row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    # The per-test row counts one record per elaboration, as the simulator
+    # wrote them; its source row collapses them.
+    assert test_row["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert test_row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    assert test_row["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert test_row["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
+
+
+def test_source_totals_equal_totals_on_an_info_only_model(tmp_path):
+    """An LCOV-derived model records no module at all, so the two readings
+    are the same numbers — degraded gracefully, not refused."""
+    root, suite = _project(tmp_path)
+    info = suite / "artefacts" / "basic" / "coverage.info"
+    info.write_text(
+        "SF:design/blk.sv\nDA:1,3\nDA:2,0\nBRDA:1,0,0,2\nBRDA:1,0,1,-\nend_of_record\n"
+    )
+
+    model = build_model(
+        [TestArtefacts(name="basic", info=str(info))],
+        project_root=root,
+        simulator="verilator",
+    )
+
+    assert model["source_totals"] == model["totals"]
+    (file_row,) = model["files"]
+    assert file_row["source_totals"] == file_row["totals"]
+    (test_row,) = model["tests"]
+    assert test_row["source_totals"] == test_row["totals"]
+
+
+def test_manifest_carries_the_source_totals_beside_the_totals(tmp_path):
+    """The manifest is the discovery contract; the second figure is a key
+    on it, not a re-read of the model."""
+    root, suite, model = _two_elaboration_model(tmp_path)
+
+    manifest = build_manifest(
+        project_root=root,
+        cov_dir=suite / "cov_dir",
+        command="regression",
+        totals=model["totals"],
+        source_totals=source_totals(model),
+    )
+
+    assert manifest["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert manifest["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    # Absent figure is null, never a copy of the other one.
+    assert (
+        build_manifest(project_root=root, cov_dir=suite / "cov_dir", command="test")[
+            "source_totals"
+        ]
+        is None
+    )
 
 
 def test_info_fallback_when_a_test_has_no_raw_database(tmp_path):

@@ -1394,6 +1394,7 @@ class RtlBuddy:
         coverage_coverview,
         coverage_dir_summary,
         coverage_dir_summary_file,
+        coverage_source_summary=False,
     ):
         """Fail loud (#334) when a coverage output flag was requested but no
         executed (non-skipped) test produced raw coverage data — otherwise the
@@ -1407,6 +1408,10 @@ class RtlBuddy:
             or coverage_coverview
             or coverage_dir_summary
             or coverage_dir_summary_file
+            # A source-point summary (#637) is a coverage output like any
+            # other: it is computed from the model the raw databases
+            # build, so a run that produced none cannot print it.
+            or coverage_source_summary
         )
         if (
             exit_code == 0
@@ -1735,6 +1740,13 @@ class RtlBuddy:
                 help="file containing repo-relative directory prefixes, one per line",
             ),
         ] = None,
+        coverage_source_summary: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-source-summary",
+                help="append run coverage scored per source point (covered when any elaboration hit it), beside the per-elaboration figure",
+            ),
+        ] = False,
         rnd_new: Annotated[
             bool,
             typer.Option(
@@ -2074,6 +2086,7 @@ class RtlBuddy:
             coverage_coverview=coverage_coverview,
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
+            coverage_source_summary=coverage_source_summary,
         )
         metadata = [self._builder_metadata_line(self.suite_cfg, test_selection)]
         if master_seed is not None:
@@ -2100,6 +2113,7 @@ class RtlBuddy:
             coverage_merge_info_process=coverage_merge_info_process,
             source_roots=[str(ctx.command_root)],
             dir_summary_paths=dir_summary_paths,
+            source_summary=coverage_source_summary,
             command="test",
         )
         metadata.extend(cov_metadata)
@@ -4213,7 +4227,9 @@ class RtlBuddy:
         writes a model and a manifest, and the paths to them are the whole
         point of the block. So does `merge_failed` (#638): a merge that died
         before it wrote anything is the one case where the block would
-        otherwise be empty precisely when it matters most.
+        otherwise be empty precisely when it matters most. And so does
+        `source_summary` (#637), which is likewise produced with no merge
+        flag at all.
         """
         if coverage and (
             coverage.get("merged")
@@ -4221,6 +4237,7 @@ class RtlBuddy:
             or coverage.get("covers")
             or coverage.get("artefacts")
             or coverage.get("merge_failed")
+            or coverage.get("source_summary")
         ):
             return coverage
         return None
@@ -7808,6 +7825,13 @@ class RtlBuddy:
                 help="file containing repo-relative directory prefixes, one per line",
             ),
         ] = None,
+        coverage_source_summary: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-source-summary",
+                help="append run coverage scored per source point (covered when any elaboration hit it), beside the per-elaboration figure",
+            ),
+        ] = False,
         share_build: Annotated[
             bool,
             typer.Option(
@@ -8230,6 +8254,7 @@ class RtlBuddy:
             coverage_coverview=coverage_coverview,
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
+            coverage_source_summary=coverage_source_summary,
         )
         # The per-suite HTML branch below builds metadata per suite and drops
         # each payload, so seed the run-level cover points here to keep them in
@@ -8266,6 +8291,7 @@ class RtlBuddy:
                     coverage_merge_info_process=coverage_merge_info_process,
                     source_roots=[reg_result["test_suite_path"]],
                     dir_summary_paths=dir_summary_paths,
+                    source_summary=coverage_source_summary,
                     command="regression",
                 )
                 metadata.extend(cov_metadata)
@@ -8287,6 +8313,7 @@ class RtlBuddy:
                 coverage_merge_info_process=coverage_merge_info_process,
                 source_roots=regression_source_roots,
                 dir_summary_paths=dir_summary_paths,
+                source_summary=coverage_source_summary,
                 command="regression",
             )
             metadata.extend(cov_metadata)
@@ -9688,6 +9715,13 @@ class RtlBuddy:
             str | None,
             typer.Option("--manifest", help="manifest.json to read directly"),
         ] = None,
+        by_source: Annotated[
+            bool,
+            typer.Option(
+                "--by-source",
+                help="report the coldest files per source point (covered when any elaboration hit it) instead of per elaboration; same files, same order",
+            ),
+        ] = False,
     ):
         """
         report a run's coverage from its artefacts: run-level and per-test
@@ -9709,10 +9743,29 @@ class RtlBuddy:
             stream="stdout",
             markup=False,
         )
+        # Two run rows, not two tables: the reader's question is the
+        # difference between the figures, and the `run` row keeps its
+        # name and its meaning (#637). The source row is absent for a
+        # model written before the figure existed.
+        run_rows = [self._cov_totals_row("run", payload["totals"])]
+        if payload.get("source_totals"):
+            run_rows.append(
+                self._cov_totals_row("run (source)", payload["source_totals"])
+            )
+        elif by_source:
+            # Asked for a figure this model does not carry. Said once,
+            # rather than leaving a table of dashes to explain itself.
+            emit_console_text(
+                "cov: this run's model carries no source-point figures; "
+                "re-run the coverage command to write them",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
         render_summary(
             title="Coverage — Totals",
             columns=self._cov_totals_columns(),
-            rows=[self._cov_totals_row("run", payload["totals"])]
+            rows=run_rows
             + [
                 self._cov_totals_row(row["name"], row["totals"])
                 for row in payload["tests"]
@@ -9720,11 +9773,16 @@ class RtlBuddy:
             logger=logger,
         )
         if payload["files"]:
+            totals_key = "source_totals" if by_source else "totals"
             render_summary(
-                title="Coverage — Coldest Files",
+                title=(
+                    "Coverage — Coldest Files (source points)"
+                    if by_source
+                    else "Coverage — Coldest Files"
+                ),
                 columns=self._cov_totals_columns(),
                 rows=[
-                    self._cov_totals_row(row["path"], row["totals"])
+                    self._cov_totals_row(row["path"], row.get(totals_key))
                     for row in payload["files"]
                 ],
                 logger=logger,

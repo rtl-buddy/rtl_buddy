@@ -25,7 +25,7 @@ from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from . import manifest as manifest_mod
-from .model import cover_records, load_model
+from .model import cover_records, load_model, source_totals
 from .raw import METRICS
 
 #: Bumped when a payload's shape changes incompatibly. Rides on every
@@ -180,11 +180,18 @@ def _run_block(ctx: CovContext) -> dict:
 
 
 def _file_summary(file_row: dict) -> dict:
-    return {
+    summary = {
         "path": file_row["path"],
         "modules": file_row.get("modules", []),
         "totals": file_row.get("totals", {}),
     }
+    # Points collapsed *within* the file are exactly this file's source
+    # figure, so the cheap key is the right one (#637). Omitted for a
+    # model written before it existed.
+    collapsed = source_totals(file_row)
+    if collapsed is not None:
+        summary["source_totals"] = collapsed
+    return summary
 
 
 def coldest_first(file_rows, limit=None):
@@ -201,6 +208,12 @@ def coldest_first(file_rows, limit=None):
     first" would be one too many. The pane applies this same rule to
     whichever metric its picker has selected; on ``line`` the two agree
     exactly.
+
+    The ranking is the per-elaboration line figure, and that is also the
+    source-point one: a file's line points are keyed on the line alone,
+    so collapsing the elaborations cannot change a line count (#637).
+    ``rb cov summary --by-source`` therefore reports the same files in
+    the same order, with the collapsed numbers in the cells.
     """
 
     def sort_key(row):
@@ -237,27 +250,45 @@ def _payload_around_files(ctx: CovContext, files: list) -> dict:
         {
             "totals": model.get("totals", {}),
             "counts": model.get("counts", {}),
-            "tests": [
-                {
-                    "name": row.get("name"),
-                    "suite": row.get("suite"),
-                    "totals": row.get("totals", {}),
-                }
-                for row in model.get("tests", [])
-            ],
+            "tests": [_test_summary(row) for row in model.get("tests", [])],
             "files": files,
             "modules": sorted((model.get("modules") or {}).keys()),
             "artefacts": artefacts_block(ctx),
         }
     )
+    # Next to `totals`, never instead of it: the two answer different
+    # questions ("covered in every build" vs "covered by the suite") and
+    # both are reported (#637). Absent on a pre-#637 model.
+    collapsed = source_totals(model)
+    if collapsed is not None:
+        payload["source_totals"] = collapsed
     covers = cover_records(model)
     if covers:
         payload["covers"] = covers
     return payload
 
 
+def _test_summary(test_row: dict) -> dict:
+    summary = {
+        "name": test_row.get("name"),
+        "suite": test_row.get("suite"),
+        "totals": test_row.get("totals", {}),
+    }
+    collapsed = source_totals(test_row)
+    if collapsed is not None:
+        summary["source_totals"] = collapsed
+    return summary
+
+
 def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict:
-    """Run-level scalars, per-test scalars and the coldest files."""
+    """Run-level scalars, per-test scalars and the coldest files.
+
+    Every scope carries both figures — ``totals`` per elaboration and
+    ``source_totals`` collapsed on the source point — so a consumer
+    choosing between them needs no second request and no flag.
+    ``rb cov summary --by-source`` is a rendering choice over this one
+    payload.
+    """
     return _payload_around_files(
         ctx,
         [

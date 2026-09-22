@@ -16,6 +16,7 @@ from rtl_buddy.cov.raw import (
     module_from_page,
     parse_raw_records,
     point_key,
+    source_point_key,
 )
 
 
@@ -145,3 +146,27 @@ def test_line_points_key_on_the_line_alone_others_on_the_full_identity():
 
     assert point_key(line_record) == (7,)
     assert point_key(toggle_record) == (7, 1, "q[0]", "a")
+
+
+def test_source_point_key_drops_only_the_elaborated_module():
+    """The #637 identity: `(file, type, line, point description)`, with the
+    column kept because `n` is a column in the *source* and so is the same
+    number in every elaboration of it — dropping it would fold one line's
+    toggle bits together."""
+    line_record = {"metric": LINE, "line": 7, "column": 1, "name": None, "module": "a"}
+    toggle_a = {
+        "metric": TOGGLE,
+        "line": 7,
+        "column": 1,
+        "name": "q[0]",
+        "module": "blk__W13",
+    }
+    toggle_b = dict(toggle_a, module="blk__Wc")
+    other_bit = dict(toggle_a, column=9, name="q[1]")
+
+    assert source_point_key(line_record) == point_key(line_record) == (7,)
+    # Two elaborations of one source point, one identity.
+    assert source_point_key(toggle_a) == source_point_key(toggle_b) == (7, 1, "q[0]")
+    assert point_key(toggle_a) != point_key(toggle_b)
+    # Two bits on one line stay two points.
+    assert source_point_key(other_bit) != source_point_key(toggle_a)

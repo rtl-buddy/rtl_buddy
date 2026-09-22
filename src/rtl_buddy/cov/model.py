@@ -27,6 +27,15 @@ inverse, "what would I lose by dropping this test".
 path via the one resolver in :mod:`rtl_buddy.cov.source_paths`, so a
 model stays meaningful when the run directory is gone.
 
+**Two totals, one set of points.** ``totals`` counts points with the
+elaborated module in their identity, the figure every artefact has
+always reported; ``source_totals`` counts them again with ``module``
+dropped, so a point is found once per *source* location and hit when any
+elaboration hit it (#637). Both ride on the run, on each test and on
+each file. See :func:`~rtl_buddy.cov.raw.source_point_key` for the exact
+identity and ``docs/concepts/coverage.md`` for which question each
+answers.
+
 The model is written to ``cov_dir/coverage-model.json`` and pointed at
 by ``cov_dir/manifest.json``.
 """
@@ -39,10 +48,20 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from .raw import BRANCH, COVER, LINE, METRICS, parse_raw_records, point_key
+from .raw import (
+    BRANCH,
+    COVER,
+    LINE,
+    METRICS,
+    parse_raw_records,
+    point_key,
+    source_point_key,
+)
 from .source_paths import SourcePathResolver
 
-#: Bumped when the document's shape changes incompatibly.
+#: Bumped when the document's shape changes incompatibly. Adding a key
+#: is not incompatible — ``source_totals`` (#637) arrived at version 1,
+#: and a reader of an older document sees it absent, never wrong.
 MODEL_SCHEMA_VERSION = 1
 
 #: Filename inside ``cov_dir``.
@@ -87,6 +106,22 @@ class _Point:
         self.hits += hits
         if test is not None:
             self.tests[test] = self.tests.get(test, 0) + hits
+
+    def source_key(self, metric: str) -> tuple:
+        """This point's source identity — :func:`source_point_key`'s tuple.
+
+        Derived from the stored fields rather than from a record, so the
+        source figure is a regrouping of the points the model already
+        holds and cannot drift from them.
+        """
+        return source_point_key(
+            {
+                "metric": metric,
+                "line": self.line,
+                "column": self.column,
+                "name": self.name,
+            }
+        )
 
     def as_dict(self, metric: str) -> dict:
         point = {"line": self.line, "hits": self.hits}
@@ -134,6 +169,25 @@ def _empty_totals() -> dict:
     return {metric: _totals_entry(0, 0) for metric in METRICS}
 
 
+def _totals_from_hits(hits_by_id: dict) -> dict:
+    """Totals over ``{(path, metric, key): summed hits}``.
+
+    Found is one per distinct id, hit is one per id with any hits at
+    all — the collapsed reading, for whatever set of ids the caller
+    grouped.
+    """
+    totals = _empty_totals()
+    for (_path, metric, _key), hits in hits_by_id.items():
+        bucket = totals[metric]
+        bucket["found"] += 1
+        if hits > 0:
+            bucket["hit"] += 1
+    for metric in METRICS:
+        bucket = totals[metric]
+        bucket["ratio"] = _ratio(bucket["found"], bucket["hit"])
+    return totals
+
+
 def _sum_totals(target: dict, source: dict) -> None:
     for metric in METRICS:
         entry = source[metric]
@@ -172,6 +226,10 @@ def build_model(
         if records is None:
             continue
         totals = _empty_totals()
+        # This test's points collapsed on their source identity, so its
+        # own row carries both figures: one record per elaboration in
+        # `totals`, one per source location here.
+        source_hits: dict[tuple, int] = {}
         for path, metric, record in records:
             entry = files.get(path)
             if entry is None:
@@ -181,6 +239,10 @@ def build_model(
             bucket["found"] += 1
             if record.get("hits", 0) > 0:
                 bucket["hit"] += 1
+            source_id = (path, metric, source_point_key(record))
+            source_hits[source_id] = source_hits.get(source_id, 0) + record.get(
+                "hits", 0
+            )
         for metric in METRICS:
             bucket = totals[metric]
             bucket["ratio"] = _ratio(bucket["found"], bucket["hit"])
@@ -191,6 +253,7 @@ def build_model(
                 "raw": _relative(artefacts.raw, project_root),
                 "info": _relative(artefacts.info, project_root),
                 "totals": totals,
+                "source_totals": _totals_from_hits(source_hits),
             }
         )
 
@@ -205,11 +268,15 @@ def build_model(
 
     file_rows = []
     totals = _empty_totals()
+    # Summable across files because the source identity is scoped to one
+    # file: no collapsed point spans two of them.
+    run_source_totals = _empty_totals()
     modules: dict[str, set[str]] = {}
     for path in sorted(files):
         entry = files[path]
         row = _file_row(entry)
         _sum_totals(totals, row["totals"])
+        _sum_totals(run_source_totals, row["source_totals"])
         file_rows.append(row)
         for module in entry.modules:
             modules.setdefault(module, set()).add(path)
@@ -219,6 +286,7 @@ def build_model(
         "generator": _generator(),
         "simulator": simulator,
         "totals": totals,
+        "source_totals": run_source_totals,
         "counts": {
             "files": len(file_rows),
             "tests": len(test_rows),
@@ -235,17 +303,27 @@ def _file_row(entry: _FileEntry) -> dict:
         "path": entry.path,
         "modules": sorted(entry.modules),
         "totals": _empty_totals(),
+        "source_totals": _empty_totals(),
     }
     for metric in METRICS:
-        points = [
-            point.as_dict(metric)
-            for _, point in sorted(
-                entry.points[metric].items(), key=lambda item: _sort_key(item[0])
-            )
-        ]
+        ordered = sorted(
+            entry.points[metric].items(), key=lambda item: _sort_key(item[0])
+        )
+        points = [point.as_dict(metric) for _, point in ordered]
         row[metric] = points
         row["totals"][metric] = _totals_entry(
             len(points), sum(1 for point in points if point["hits"] > 0)
+        )
+        # The same points regrouped without the module, hits summed: a
+        # point the run elaborated twice is found once and hit if either
+        # copy was hit. On an ``.info``-only model no point carries a
+        # module at all, so the two figures are the same numbers.
+        collapsed: dict[tuple, int] = {}
+        for _, point in ordered:
+            key = point.source_key(metric)
+            collapsed[key] = collapsed.get(key, 0) + point.hits
+        row["source_totals"][metric] = _totals_entry(
+            len(collapsed), sum(1 for hits in collapsed.values() if hits > 0)
         )
     return row
 
@@ -383,6 +461,19 @@ def load_model(path) -> dict:
     """Read a model document back."""
     with open(path, "r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def source_totals(row: dict) -> dict | None:
+    """A model, test row or file row's source-collapsed totals, or None.
+
+    None means the document predates #637, not that nothing was
+    covered — the figure cannot be recomputed from a written model
+    because the module is gone from its line points. Consumers omit the
+    key rather than substituting ``totals``, so "absent" never reads as
+    "the two figures agree".
+    """
+    totals = row.get("source_totals")
+    return totals or None
 
 
 def cover_points(model: dict) -> list[dict]:

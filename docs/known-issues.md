@@ -14,6 +14,10 @@ rtl-buddy-cdc 0.3.x treats `xpm_cdc_*` instances as dual-clock blackboxes, repor
 
 rtl-buddy-cdc takes plain source paths and has no include-path option, so a filelist `+incdir+` cannot reach it from `rb cdc` or from the hub's domain-map build; every other non-simulation flow forwards them (Yosys `-I`, Vivado `-include_dirs`). The run logs `cdc.filelist_incdirs_unsupported` naming the directories, and a header that resolves only through one of them fails in the analyzer with `Cannot find include file`. Until the analyzer grows the option, spell the `` `include `` relative to the including file or run the `vivado` cdc tool.
 
+## Coverage totals are per elaboration by default
+
+Verilator keys every coverage point by the module it elaborated, so a suite whose compile keys build the same RTL under different defines scores each source point once per parameterisation, and a key that exercises none of a block leaves that block's copy dark. `rb cov summary`, `--coverage-dir-summary` and the merged totals all report that figure, and a block reported short on branch coverage can be at 100% once the copies are collapsed. Read `source_totals` — `rb cov summary`'s `run (source)` row, `rb cov summary --by-source`, or `--coverage-source-summary` on `test`/`regression` — when the question is what the suite covered. `--coverage-dir-summary` has no collapsed form: it is parsed from LCOV, which has already folded the elaborations. See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
+
 ## Coverage uses the platform builder
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Use `--builder <name>` for the run or make that builder the platform default. See [YAML Formats](reference/yaml.md).

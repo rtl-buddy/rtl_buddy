@@ -140,6 +140,54 @@ def test_summary_reports_totals_tests_and_artefact_paths(project):
     assert payload["artefacts"]["model"] == "verif/blk/cov_dir/coverage-model.json"
 
 
+def test_summary_carries_both_figures_at_every_scope(project):
+    """`source_totals` rides beside `totals` on the run, each test and each
+    file (#637), so a consumer picking the "covered by the suite" reading
+    needs no second request. This run elaborates each module once, so the
+    two figures agree — which is the property that makes them comparable."""
+    payload = summary_payload(load_context(project))
+
+    assert payload["source_totals"]["line"] == payload["totals"]["line"]
+    assert payload["tests"][0]["source_totals"]["line"] == {
+        "found": 3,
+        "hit": 2,
+        "ratio": 2 / 3,
+    }
+    blk = next(row for row in payload["files"] if row["path"] == "design/blk.sv")
+    assert blk["source_totals"]["toggle"] == blk["totals"]["toggle"]
+
+
+def test_source_totals_are_omitted_for_a_model_that_has_none(project):
+    """A model written before #637 cannot have the figure recomputed from
+    it — the module is gone from its line points — so the key is absent
+    rather than a copy of the other figure."""
+    ctx = load_context(project)
+    ctx.model.pop("source_totals")
+    for row in ctx.model["tests"] + ctx.model["files"]:
+        row.pop("source_totals")
+
+    payload = summary_payload(ctx)
+
+    assert "source_totals" not in payload
+    assert "source_totals" not in payload["tests"][0]
+    assert "source_totals" not in payload["files"][0]
+    assert payload["totals"]["line"] == {"found": 3, "hit": 2, "ratio": 2 / 3}
+
+
+def test_coldest_order_is_the_same_under_either_figure(project):
+    """A file's line points are keyed on the line alone, so collapsing the
+    elaborations cannot change a line count — and the coldest-first ranking
+    is a line ratio. `--by-source` therefore reports the same files in the
+    same order, with collapsed numbers in the cells."""
+    rows = load_context(project).model["files"]
+
+    assert [row["path"] for row in coldest_first(rows)] == [
+        "design/blk.sv",
+        "design/other.sv",
+    ]
+    assert all(row["source_totals"]["line"] == row["totals"]["line"] for row in rows)
+
+
 def test_summary_lists_the_coldest_files_first(project):
     payload = summary_payload(load_context(project))
 
