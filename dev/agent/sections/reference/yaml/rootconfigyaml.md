@@ -109,7 +109,7 @@ cfg-pdks:
       - pdk/sky130hd/gds/sky130_fd_sc_hd.gds
       - pdk/sky130hd/gds/sky130_fd_sc_hd_fill.gds
     klayout-tech: pdk/sky130hd/sky130hd.lyt
-    placement: {density: 0.55, padding: 2}
+    placement: {density: 0.55, padding: 2, macro-halo: 30.0}
     dont-use-cells: ["*_lp__*", "sky130_fd_sc_hd__probe*"]
     pdn-config: pdk/sky130hd/pdn.tcl
 
@@ -131,19 +131,20 @@ cfg-pnr-platforms:
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD additionally accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding`, `dont-use-cells`, and `pdn-config`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding` / `placement.macro-halo`, `dont-use-cells`, and `pdn-config`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
-| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, and `placement.density` / `placement.padding` |
+| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, and `placement.density` / `placement.padding` / `placement.macro-halo` |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. Built-in default is `standard`. Precedence is per-run override, effort, tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-The process-dependent P&R keys are all optional, and a config that omits them generates exactly the flow it generated before they existed:
+The process-dependent P&R keys are all optional, and a config that omits them gets the behaviour the flow had before they existed:
 
 | Key | Where | Behavior |
 |---|---|---|
 | `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, `> 0` and `<= 1`. Default `0.7` |
 | `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
+| `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns kept between two macros and between a macro and each core edge by the macro packer, a non-negative distance. Default `20.0`, which is what `pdngen` needs to repair a channel on sky130hd |
 | `dont-use-cells` | `cfg-pdks` | Cell names or patterns, one per list entry, excluded by both synthesis and P&R. Empty by default |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid; P&R sources it and calls `pdngen`. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list of them. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
