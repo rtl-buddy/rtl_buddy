@@ -57,6 +57,7 @@ Schema (``schema_version`` 1)::
       "cov_dir": "artefacts/cov_dir",
       "model": "artefacts/cov_dir/coverage-model.json",
       "totals": {"line": {"found": .., "hit": .., "ratio": ..}, ...},
+      "source_totals": {...}|null,     # same shape, module dropped (#637)
       "merged": {"info": .., "raw": .., "desc": .., "html_dir": ..},
       "datasets": {"line": .., "branch": .., "toggle": .., "expression": ..},
       "descriptions": {"line": .., "branch": .., "toggle": .., "expression": ..},
@@ -121,6 +122,7 @@ def build_manifest(
     failed_metrics=None,
     model_path=None,
     totals: dict | None = None,
+    source_totals: dict | None = None,
     merged: dict | None = None,
     datasets: dict | None = None,
     descriptions: dict | None = None,
@@ -152,6 +154,10 @@ def build_manifest(
         "cov_dir": rel(cov_dir),
         "model": rel(model_path),
         "totals": totals,
+        # The same run scored with the elaborated module dropped from a
+        # point's identity (#637) — null when the model carried no such
+        # figure. Beside `totals`, not instead of it.
+        "source_totals": source_totals,
         "merged": {
             "info": rel(merged.get("info")),
             "raw": rel(merged.get("raw")),

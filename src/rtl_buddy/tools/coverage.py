@@ -10,6 +10,7 @@ import os
 
 from ..cov import manifest as manifest_mod
 from ..cov import model as model_mod
+from ..cov.raw import METRICS as cov_metrics
 from .coverview import CoverviewPacker
 from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 
@@ -263,6 +264,66 @@ class CoverageReporter:
             )
         return records
 
+    # ------------------------------------------------------------------
+    # source-point summary (#637)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _source_summary_record(model):
+        """Both run-level figures, or None when the model has neither.
+
+        ``{"source_totals": {...}, "totals": {...}}`` — the run scored
+        once per *source* point (covered when any elaboration hit it) and
+        once per elaborated point, in the model's
+        ``{found, hit, ratio}`` shape per metric.
+
+        Derived from the coverage **model**, i.e. from the per-test raw
+        ``.dat`` databases, which are the only input that records the
+        elaborated module per point. That is a different input from the
+        directory summary's, which reads the merged/typed LCOV
+        ``.info`` — LCOV has already folded the elaborations together by
+        file and line and dropped every point name, so the collapsed
+        figure cannot be recovered from it. On a run with no raw
+        database at all (an ``.info``-only fallback) no point carries a
+        module, so the two figures this returns are simply equal.
+        """
+        collapsed = model_mod.source_totals(model or {})
+        if collapsed is None:
+            return None
+        return {"source_totals": collapsed, "totals": model.get("totals") or {}}
+
+    @staticmethod
+    def _source_summary_lines(record):
+        """Format a source-summary record into one display line per metric.
+
+        ``Coverage source points <metric>: <hit>/<found> (NN.N%)
+        [per elaboration <hit>/<found> (NN.N%)]`` — both figures on the
+        line, because the number that matters to a reader is usually the
+        difference between them. Metrics no point was recorded for are
+        skipped: "0/0" is not a coverage hole.
+        """
+        if not record:
+            return []
+
+        def fmt(entry):
+            found = (entry or {}).get("found") or 0
+            hit = (entry or {}).get("hit") or 0
+            if found == 0:
+                return None
+            return f"{hit}/{found} ({hit / found * 100:.1f}%)"
+
+        lines = []
+        collapsed = record.get("source_totals") or {}
+        per_elab = record.get("totals") or {}
+        for metric in cov_metrics:
+            source_cell = fmt(collapsed.get(metric))
+            if source_cell is None:
+                continue
+            elab_cell = fmt(per_elab.get(metric))
+            suffix = "" if elab_cell is None else f" [per elaboration {elab_cell}]"
+            lines.append(f"Coverage source points {metric}: {source_cell}{suffix}")
+        return lines
+
     def _dir_summary_metadata(self, lcov_path, dir_summary_paths):
         """Summary lines for repo-relative directory prefixes from an LCOV file."""
         return self._dir_summary_lines(
@@ -337,6 +398,47 @@ class CoverageReporter:
             )
         return rows
 
+    def build_run_model(
+        self,
+        suite_results,
+        *,
+        outdir,
+        suite_name,
+        source_roots=None,
+        merged_info=None,
+    ):
+        """The structured coverage model for a run, or None.
+
+        None when the run produced no coverage at all, and also when
+        artefacts were named but none of them parsed into a single point
+        — a simulator with no coverage support, or databases that have
+        since been cleaned. The test list alone does not redeem it: a
+        test whose `.info` exists but holds no `DA:`/`BRDA:` record still
+        earns a `tests` entry, and no file means no coverage point
+        whatever that list says.
+
+        Split out of `write_artefacts` so one build serves both the
+        artefacts it writes and the source-point summary (#637) reported
+        beside them; the model is the only input that carries the
+        elaborated module per point, which is what the collapsed figure
+        is defined against.
+        """
+        tests = self._test_artefacts(
+            suite_results,
+            outdir=outdir,
+            suite_name=suite_name,
+            source_roots=source_roots,
+        )
+        if len(tests) == 0:
+            return None
+        model = model_mod.build_model(
+            tests,
+            project_root=self.root_cfg.get_project_rootdir(),
+            simulator=self.root_cfg.get_rtl_builder_cfg().get_simulator_family(),
+            merged_info=merged_info,
+        )
+        return model if model["files"] else None
+
     def write_artefacts(
         self,
         suite_results,
@@ -352,43 +454,32 @@ class CoverageReporter:
         coverview=None,
         merge_failed=False,
         failed_metrics=None,
+        model=None,
     ):
         """Write the coverage model and manifest, returning the artefacts block.
 
         Returns None when the run produced no coverage at all — there is
         nothing to index, and an empty manifest would advertise coverage
-        that does not exist.
+        that does not exist. ``model`` reuses an already-built model (see
+        :meth:`build_run_model`) rather than parsing every database twice.
         """
-        tests = self._test_artefacts(
-            suite_results,
-            outdir=outdir,
-            suite_name=suite_name,
-            source_roots=source_roots,
-        )
-        if len(tests) == 0:
-            return None
-
         project_root = self.root_cfg.get_project_rootdir()
         builder_cfg = self.root_cfg.get_rtl_builder_cfg()
         simulator_family = builder_cfg.get_simulator_family()
-        cov_dir = self._cov_dir(outdir)
         merged = merged or {}
 
-        model = model_mod.build_model(
-            tests,
-            project_root=project_root,
-            simulator=simulator_family,
-            merged_info=merged.get("info"),
-        )
-        if not model["files"]:
-            # Artefacts were named but none of them parsed into a single
-            # point — a simulator with no coverage support, or databases
-            # that have since been cleaned. A manifest here would
-            # advertise coverage that cannot be read. The test list alone
-            # does not redeem it: a test whose `.info` exists but holds no
-            # `DA:`/`BRDA:` record still earns a `tests` entry, and no file
-            # means no coverage point whatever that list says.
+        if model is None:
+            model = self.build_run_model(
+                suite_results,
+                outdir=outdir,
+                suite_name=suite_name,
+                source_roots=source_roots,
+                merged_info=merged.get("info"),
+            )
+        if model is None:
             return None
+
+        cov_dir = self._cov_dir(outdir)
         model_path = model_mod.write_model(model, cov_dir)
         manifest = manifest_mod.build_manifest(
             project_root=project_root,
@@ -402,6 +493,7 @@ class CoverageReporter:
             failed_metrics=failed_metrics,
             model_path=model_path,
             totals=model["totals"],
+            source_totals=model_mod.source_totals(model),
             merged=merged,
             datasets=datasets,
             descriptions=descriptions,
@@ -849,6 +941,7 @@ class CoverageReporter:
         coverage_merge_info_process=False,
         source_roots=None,
         dir_summary_paths=None,
+        source_summary=False,
         command="regression",
     ):
         """
@@ -878,6 +971,13 @@ class CoverageReporter:
         display lines instead of ``UNSP``. They are explicit keys rather than
         something to infer from a null metric, because a null metric already
         means "never instrumented" everywhere else.
+
+        ``source_summary=True`` adds ``coverage["source_summary"]``
+        (#637): the run scored per source point *and* per elaboration,
+        from the coverage model rather than from LCOV — see
+        :meth:`_source_summary_record`. The key is omitted when the
+        summary was not asked for, so "absent" keeps meaning "not
+        collected" here too.
         """
         metadata = []
         coverage = {
@@ -1123,6 +1223,16 @@ class CoverageReporter:
                         f"Coverage Coverview {test_name_i}: {coverview_zip}"
                     )
 
+        # One model build for both the artefacts and the source-point
+        # summary; `merged_info` is read only when no test produced a
+        # point of its own, exactly as before.
+        model = self.build_run_model(
+            suite_results,
+            outdir=outdir,
+            suite_name=suite_name,
+            source_roots=source_roots,
+            merged_info=merged_paths["info"],
+        )
         artefacts = self.write_artefacts(
             suite_results,
             outdir=outdir,
@@ -1136,8 +1246,23 @@ class CoverageReporter:
             coverview=coverview_paths,
             merge_failed=coverage["merge_failed"],
             failed_metrics=coverage["failed_metrics"],
+            model=model,
         )
         if artefacts is not None:
             coverage["artefacts"] = artefacts
             metadata.append(f"Coverage manifest: {artefacts['manifest']}")
+        if source_summary:
+            record = self._source_summary_record(model)
+            if record is None:
+                # Requested and unanswerable: the run left no model to
+                # collapse. Said out loud rather than reported as zero
+                # coverage or as agreement with the other figure.
+                # (See the guard in `_guard_coverage_requested`: a run
+                # that produced no coverage at all fails before here.)
+                metadata.append(
+                    "Coverage source points: unavailable (no coverage model)"
+                )
+            else:
+                coverage["source_summary"] = record
+                metadata.extend(self._source_summary_lines(record))
         return metadata, coverage

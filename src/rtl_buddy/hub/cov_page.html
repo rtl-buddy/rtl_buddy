@@ -986,7 +986,25 @@
     });
     if (p.simulator) { parts.push(p.simulator); }
     els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
-    els.counts.title = p.manifest ? 'from ' + p.manifest : '';
+    // The header's percentages are per elaboration, like every figure in
+    // this pane. The source-point figure — one point per source
+    // location, covered when any elaboration hit it (#637) — rides in
+    // the tooltip: the pane's tables are all per-elaboration and a
+    // second number in the header would not say which was which.
+    var hint = p.manifest ? 'from ' + p.manifest : '';
+    var collapsed = p.source_totals;
+    if (collapsed) {
+      var srcParts = [];
+      METRICS.forEach(function (metric) {
+        var s = collapsed[metric];
+        if (!s || !s.found) { return; }
+        srcParts.push(METRIC_INITIAL[metric] + ' ' + pct(s.ratio));
+      });
+      if (srcParts.length) {
+        hint += (hint ? '\n' : '') + 'source points: ' + srcParts.join(' · ');
+      }
+    }
+    els.counts.title = hint;
   }
 
   function initialMetric(payload) {

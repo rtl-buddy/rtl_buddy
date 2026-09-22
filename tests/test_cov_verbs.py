@@ -225,6 +225,110 @@ def test_toggle_and_expression_detail_survive_per_signal(project):
     assert blk["totals"]["expression"] == {"found": 1, "hit": 1, "ratio": 1.0}
 
 
+def _elaborated_twice(project: Path):
+    """The `extra` test's database, re-elaborating `blk.sv` a second way.
+
+    A multi-key suite's shape: `blk` and `blk__W13` over one file, with
+    the second elaboration's branch and toggle never exercised.
+    """
+    suite = project / "verif" / "blk"
+    _write_raw(
+        suite / "artefacts" / "extra" / "coverage.dat",
+        _dat_record(
+            file="../../../design/blk.sv",
+            line=2,
+            type_="line",
+            name="",
+            module="blk",
+            hits=7,
+        )
+        + _dat_record(
+            file="../../../design/blk.sv",
+            line=3,
+            type_="branch",
+            name="if",
+            module="blk",
+            col=5,
+            hits=2,
+        )
+        + _dat_record(
+            file="../../../design/blk.sv",
+            line=3,
+            type_="branch",
+            name="if",
+            module="blk__W13",
+            col=5,
+            hits=0,
+        ),
+    )
+
+
+def test_source_summary_reports_both_figures_and_lands_in_the_manifest(project):
+    """#637 end to end through the reporter: the branch elaborated twice is
+    two points one of which is cold per elaboration, and one covered point
+    per source location. Both figures reach the machine payload, the display
+    lines and the manifest."""
+    _elaborated_twice(project)
+
+    _, metadata, coverage = _build_artefacts(project, source_summary=True)
+
+    record = coverage["source_summary"]
+    assert record["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert record["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    assert (
+        "Coverage source points branch: 1/1 (100.0%) [per elaboration 1/2 (50.0%)]"
+        in metadata
+    )
+    manifest = json.loads(
+        (project / "verif" / "blk" / "cov_dir" / MANIFEST_FILENAME).read_text()
+    )
+    assert manifest["totals"]["branch"] == record["totals"]["branch"]
+    assert manifest["source_totals"]["branch"] == record["source_totals"]["branch"]
+
+
+def test_source_summary_is_omitted_unless_asked_for(project):
+    """The manifest key is unconditional — it is a fact about the run — but
+    the payload block and the display lines follow the flag, so "absent"
+    keeps meaning "not collected"."""
+    _, metadata, coverage = _build_artefacts(project)
+
+    assert "source_summary" not in coverage
+    assert not [line for line in metadata if "source points" in line]
+    manifest = json.loads(
+        (project / "verif" / "blk" / "cov_dir" / MANIFEST_FILENAME).read_text()
+    )
+    assert manifest["source_totals"]["line"]["found"] == 3
+
+
+def test_source_summary_says_so_when_there_is_no_model(tmp_path):
+    """Requested and unanswerable: a run with no coverage model reports the
+    absence rather than zeros, which would read as a coverage hole."""
+    reporter = CoverageReporter(_RootCfg(tmp_path))
+    suite_results = [
+        {
+            "test_name": "ghost",
+            "results": TestResults(
+                name="ghost",
+                results={
+                    "result": "PASS",
+                    "desc": "ok",
+                    "coverage": {"raw_paths": [str(tmp_path / "gone.dat")]},
+                },
+            ),
+        }
+    ]
+
+    metadata, coverage = reporter.build_metadata(
+        suite_results,
+        outdir=str(tmp_path),
+        suite_name="suite",
+        source_summary=True,
+    )
+
+    assert "source_summary" not in coverage
+    assert "Coverage source points: unavailable (no coverage model)" in metadata
+
+
 def test_manifest_is_not_written_when_nothing_parsed(tmp_path):
     """A named database that yields no point must not advertise coverage."""
     reporter = CoverageReporter(_RootCfg(tmp_path))
@@ -366,6 +470,21 @@ def test_cov_summary_reads_the_newest_manifest(cov_project):
     assert payload["covers"][0]["name"] == "BLK_WRITE"
 
 
+def test_cov_summary_machine_payload_carries_the_source_figure(cov_project):
+    """The payload the MCP `cov_summary` tool wraps verbatim (#637)."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["--machine", "cov", "summary"])
+
+    payload = _machine(result)["payload"]
+    # Each module is elaborated once here, so the two figures agree —
+    # they are computed from the same points either way.
+    assert payload["source_totals"]["line"] == payload["totals"]["line"]
+    assert payload["source_totals"]["toggle"] == {"found": 1, "hit": 0, "ratio": 0.0}
+    assert "source_totals" in payload["tests"][0]
+    assert "source_totals" in payload["files"][0]
+
+
 def test_cov_summary_renders_without_machine_mode(cov_project):
     runner, rb = _runner()
 
@@ -373,6 +492,20 @@ def test_cov_summary_renders_without_machine_mode(cov_project):
 
     assert result.exit_code == 0, result.output
     assert "verif/blk/cov_dir/manifest.json" in result.output
+    # Both run rows, so the reader sees the difference rather than one
+    # number whose scoring rule is invisible.
+    assert "run (source)" in result.output
+
+
+def test_cov_summary_by_source_reports_the_collapsed_file_figures(cov_project):
+    """`--by-source` is a rendering choice over the one payload: same files,
+    same order, collapsed numbers in the cells."""
+    runner, rb = _runner()
+
+    result = runner.invoke(rb.app, ["cov", "summary", "--by-source"])
+
+    assert result.exit_code == 0, result.output
+    assert "Coldest Files (source points)" in result.output
 
 
 def test_cov_module_reports_points_and_their_tests(cov_project):

@@ -164,6 +164,11 @@ def point_key(record: dict) -> tuple:
     several toggle points share a line (one per bit), several branch
     arms share a line, and one cover property compiled into two modules
     is two points, not one.
+
+    This is the **per-elaboration** identity: ``module`` is in it, so a
+    point elaborated under two parameterisations is two points and a
+    copy no key exercised stays dark.
+    :func:`source_point_key` is the other reading.
     """
     if record["metric"] == LINE:
         return (record["line"],)
@@ -172,4 +177,30 @@ def point_key(record: dict) -> tuple:
         record["column"],
         record["name"],
         record["module"],
+    )
+
+
+def source_point_key(record: dict) -> tuple:
+    """Identity of a coverage point **in the source** (#637).
+
+    :func:`point_key` without ``module``: ``(line,)`` for line
+    coverage, ``(line, column, name)`` for everything else. Two
+    elaborations of one source point therefore collapse into one point
+    whose hits are summed, which is what "covered by the suite" means —
+    a point is covered when *any* elaboration hit it. The hierarchy
+    (``h``) is not in either identity; Verilator has already folded
+    instances together before writing the record.
+
+    ``column`` stays in: ``n`` is the column in the *source text*, so it
+    is the same number in every elaboration of that text, and dropping
+    it would fold one line's toggle bits (or an expression's terms)
+    into a single point. What separates the two readings is exactly the
+    elaborated module name and nothing else.
+    """
+    if record["metric"] == LINE:
+        return (record["line"],)
+    return (
+        record["line"],
+        record["column"],
+        record["name"],
     )
