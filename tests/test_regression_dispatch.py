@@ -8023,3 +8023,60 @@ def test_a_dispatched_run_without_the_flag_plans_no_overrides(
         read_plan_config(fake_backend.submitted[0].plan_path, "basic").get_plusargs()
         is None
     )
+
+
+def _write_mode_reservations(project: Path):
+    """Size this suite's sim and compile reservations per builder mode (#634)."""
+    tests_yaml = project / "tests.yaml"
+    tests_yaml.write_text(
+        "compile:\n"
+        "  mem: 8G\n"
+        "  modes:\n"
+        "    cov: {mem: 96G}\n"
+        + tests_yaml.read_text().replace(
+            "  - name: tb_basic\n",
+            "  - name: tb_basic\n"
+            "    resources:\n"
+            "      mem: 1G\n"
+            '      time: "00:15:00"\n'
+            "      modes:\n"
+            '        cov: {mem: 16G, time: "00:30:00"}\n',
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "mode,sim_mem,sim_time,build_mem",
+    [
+        # `-M reg` is `rb regression`'s own default, so it is also what an
+        # invocation with no -M reserves: the base figures, unchanged.
+        ("reg", "1G", "00:15:00", "8G"),
+        # ...and a coverage run reserves what its `modes.cov` blocks ask
+        # for, on the sim jobs and on the build job alike.
+        ("cov", "16G", "00:30:00", "96G"),
+    ],
+)
+def test_the_dispatched_plan_reserves_the_modes_figures(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    mode,
+    sim_mem,
+    sim_time,
+    build_mem,
+):
+    _mark_stub_builder_verilator(minimal_project)
+    _write_mode_reservations(minimal_project)
+    # `-M` is a global option, so it precedes the subcommand.
+    result, _ = _invoke(
+        ["-M", mode, "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    sim = fake_backend.submitted[0]
+    # The mode the job runs in, and the reservation resolved for it: both
+    # come from the same value, so the compute node cannot run a coverage
+    # build inside a regression-sized allocation.
+    assert sim.builder_mode == mode
+    assert (sim.resources.mem, sim.resources.time) == (sim_mem, sim_time)
+    # ...and the suite's one build job, which compiles in that mode too.
+    assert fake_backend.build_submitted[0].resources.mem == build_mem

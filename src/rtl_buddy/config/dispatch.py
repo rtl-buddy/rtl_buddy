@@ -46,6 +46,45 @@ Per-test reservation overrides use the same ``resources`` shape in
 tests.yaml at testbench and test level; :func:`resolve_resources` layers
 them field-by-field (test over testbench over ``cfg-dispatch`` defaults).
 
+A reservation also depends on the builder mode the job runs under: an
+instrumented ``-M cov`` build carries per-point counters through the whole
+design and a ``-M debug`` one dumps waves, so the same simulation that fits
+in 1 GB under ``-M reg`` can need an order of magnitude more and about
+twice the wall clock. Every reservation block therefore takes a ``modes:``
+sub-block (#634):
+
+.. code-block:: yaml
+
+    resources:
+      cpus: 1
+      mem: 1G
+      time: "00:15:00"
+      modes:
+        cov: {mem: 16G, time: "00:30:00"}
+        debug: {mem: 4G}
+
+**Precedence.** The base value resolves exactly as it always has — most
+specific layer wins, field by field — and the ``modes:`` block of the run's
+mode is then layered OVER that result, least specific layer first. So for
+one field, under mode ``m``::
+
+    test.modes[m] > testbench.modes[m] > cfg-dispatch.modes[m]
+        > test > testbench > cfg-dispatch > built-in default
+
+Any mode block beats every base field, which is what makes the feature
+usable: a suite-wide ``modes.cov.mem`` is not silently undone by one test's
+base ``mem``. A run whose mode names no block resolves byte-identically to
+every release before this one, and ``modes:`` is a scheduling fact only —
+it never reaches a compile fingerprint or a shared-build key.
+
+A mode block carries the reservation fields alone (``cpus``, ``mem``,
+``time``, plus ``verilate`` inside a ``compile:`` block). ``parallel``,
+``split-verilate``, a nested ``modes:`` and any unknown key are rejected at
+load rather than dropped, because a silently dropped reservation is how
+this was missed in the first place. Mode NAMES are free text: they are the
+project's own ``cfg-rtl-builder.builder-opts`` keys, so nothing here can
+know which ones exist.
+
 The compile phase has the same escape hatch one level up, at the top of
 tests.yaml — the dispatched build job is per suite, so the suite is the
 right owner (#497):
@@ -69,6 +108,8 @@ right owner (#497):
 field-by-field over ``cfg-dispatch.compile`` over ``cfg-dispatch.resources``,
 with a testbench's own ``compile:`` block the most specific layer of all
 (#551); :func:`compile_parallel` layers ``parallel`` the same way (#547).
+Each of those layers takes its own ``modes:`` sub-block, applied over the
+resolved compile value in the same order (#634).
 The build job is per suite, so a suite that compiles one key says
 ``parallel: 1`` and reserves ``cpus`` rather than ``cpus x`` the
 cluster-wide value.
@@ -134,11 +175,20 @@ class DispatchResourcesFile:
     sexagesimal resolver — which turns an unquoted ``4:00:00`` into the
     integer ``14400`` — is caught at validation with a clear message
     rather than silently sent to Slurm as 14400 minutes (10 days).
+
+    ``modes`` holds the per-builder-mode overrides (#634), kept as the raw
+    mapping the file wrote rather than a typed sub-class: the keys are the
+    project's own builder modes, and a plain dict is what keeps this block
+    JSON-safe for the dispatch plan manifest. It is validated — mapping
+    shape, mode names, field names, and the same ``mem``/``time`` rules the
+    base fields obey — by :func:`validate_modes_block` at load, and read
+    back by :func:`mode_override` where a reservation is resolved.
     """
 
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
+    modes: dict | None = None
 
 
 @serde
@@ -161,11 +211,18 @@ class CompileVerilateFile:
     keeping the shapes apart is what stops ``parallel`` or
     ``split-verilate`` from being documented onto a block that cannot
     honour them.
+
+    ``modes`` is accepted by the schema only to be REFUSED (#634): the
+    per-mode override of a verilate reservation is
+    ``compile.modes.<mode>.verilate``, so a ``modes:`` written inside
+    ``verilate:`` would be dropped silently and reserve the base figure for
+    an instrumented build.
     """
 
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
+    modes: dict | None = None
 
 
 @serde
@@ -196,6 +253,11 @@ class DispatchCompileFile:
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
+    # Per-builder-mode reservation overrides (#634), layered over the
+    # resolved compile value. A mode block here may carry `verilate:`, and
+    # may not carry `parallel` or `split-verilate` — those size the one
+    # build job per suite whatever mode it compiles in.
+    modes: dict | None = None
     # Distinct builds (unique compile keys) the dispatched build job may
     # Verilate concurrently (#495). A suite with 8 plusdefines sets held
     # its whole sim fan-out behind 8 serial ~1.1-core compiles inside one
@@ -236,7 +298,231 @@ def _validate_mem(value):
     return str(value)
 
 
-def validate_resources_block(res):
+# The keys a `modes.<mode>` block may carry (#634). The reservation and
+# nothing else: `parallel` and `split-verilate` describe the one build job
+# per suite, which is one job whatever mode it compiles in, and a nested
+# `modes:` would be a mode of a mode. All three are rejected rather than
+# ignored — the whole point of the block is that a dropped reservation is
+# not noticed until a job is OOM-killed.
+_MODE_FIELDS = ("cpus", "mem", "time")
+_MODE_JOB_WIDE_KEYS = ("parallel", "split-verilate", "split_verilate")
+
+
+@dataclass
+class ModeOverride:
+    """One validated ``modes.<mode>`` block, ready to layer (#634).
+
+    Shaped like the reservation blocks it overrides — ``cpus``/``mem``/
+    ``time``, plus ``verilate`` where it came from a ``compile:`` block —
+    so the layering loops treat it as one more layer rather than as a
+    special case. ``None`` in a field means "this mode said nothing", which
+    leaves the resolved base value standing.
+    """
+
+    cpus: int | None = None
+    mem: str | None = None
+    time: str | None = None
+    verilate: CompileVerilateFile | None = None
+
+
+def _validate_mode_entry(block, *, where, compile_block, allow_verilate):
+    """Validate one ``modes.<mode>`` block; return a normalised raw dict.
+
+    A plain dict out, not a dataclass: the validated block is stored back
+    onto its owner and travels through the dispatch plan manifest, which is
+    JSON.
+
+    Strict about its keys, unlike the base reservation fields around it.
+    That is not an inconsistency to be tidied away later: the base shape has
+    been loaded leniently by every release so far and tightening it would
+    reject configs that work, while a ``modes:`` block has no such history —
+    and a typo in one is a reservation that silently keeps the base figure.
+    """
+    if not isinstance(block, dict):
+        allowed = ", ".join(_MODE_FIELDS + (("verilate",) if allow_verilate else ()))
+        raise FatalRtlBuddyError(
+            f"{where} must be a mapping of reservation fields ({allowed}); got "
+            f"{block!r}. Write it as {where.rsplit('.', 1)[-1]}: "
+            '{mem: 16G, time: "00:30:00"}.'
+        )
+    allowed = set(_MODE_FIELDS) | ({"verilate"} if allow_verilate else set())
+    for key in block:
+        if key in allowed:
+            continue
+        if key == "modes":
+            raise FatalRtlBuddyError(
+                f"{where}: modes is not accepted inside a mode block; a "
+                "builder mode has no sub-modes."
+            )
+        if key in _MODE_JOB_WIDE_KEYS:
+            raise FatalRtlBuddyError(
+                f"{where}: {key} is not accepted in a mode block; it sizes "
+                "the one build job per suite, which is one job whatever mode "
+                "it compiles in. Set it beside the modes: block (suite "
+                "compile, or cfg-dispatch.compile)."
+            )
+        if key == "verilate":
+            raise FatalRtlBuddyError(
+                f"{where}: verilate is only accepted in a compile mode block, "
+                "not in a resources one."
+            )
+        raise FatalRtlBuddyError(
+            f"{where}: unknown key {key!r}; a mode block carries only "
+            f"{', '.join(sorted(allowed))}."
+        )
+    validate_cpus = _validate_compile_cpus if compile_block else _passthrough_cpus
+    validate_mem = _validate_compile_mem if compile_block else _validate_mem
+    validate_time = _validate_compile_time if compile_block else _validate_time
+    try:
+        validated = {
+            "cpus": validate_cpus(block.get("cpus")),
+            "mem": validate_mem(block.get("mem")),
+            "time": validate_time(block.get("time")),
+        }
+        if allow_verilate and block.get("verilate") is not None:
+            validated["verilate"] = _validate_mode_entry(
+                block["verilate"],
+                where=f"{where}.verilate",
+                compile_block=True,
+                allow_verilate=False,
+            )
+    except FatalRtlBuddyError as e:
+        # Prefixed with the mode, so the message names the block to edit as
+        # well as the trap it fell into (the field validators word the trap).
+        raise FatalRtlBuddyError(f"{where}: {e}") from e
+    # Stated keys only: an absent field and an explicit null both mean
+    # "inherit", and dropping them keeps the round trip small and the
+    # provenance honest about what the block actually says.
+    return {key: value for key, value in validated.items() if value is not None}
+
+
+def _passthrough_cpus(value):
+    """``cpus`` for a non-compile block: unvalidated, exactly as today."""
+    return value
+
+
+def validate_modes_block(modes, *, where="", compile_block=False, allow_verilate=False):
+    """Validate a raw ``modes:`` mapping; return a normalised copy (#634).
+
+    The single home for the ``modes:`` shape, called wherever a reservation
+    block is validated at load. ``compile_block`` holds the fields to the
+    stricter compile rules (an addable ``mem``, a non-zero ``time``) that
+    the build job's aggregation depends on, and ``allow_verilate`` permits
+    the ``verilate:`` sub-block a ``compile:`` layer may carry.
+
+    Mode names are accepted as free text — they are the project's own
+    ``cfg-rtl-builder.builder-opts`` keys, so no list here could be right —
+    but they must be strings: PyYAML is a YAML 1.1 parser, so an unquoted
+    mode called ``on`` or ``no`` arrives as a boolean and would never match
+    the ``-M`` value the run carries.
+
+    ``None`` in, ``None`` out.
+    """
+    if modes is None:
+        return None
+    if not isinstance(modes, dict):
+        raise FatalRtlBuddyError(
+            f"{where}modes must be a mapping of builder mode to a reservation "
+            f'block, for example modes: {{cov: {{mem: 16G, time: "00:30:00"}}}} '
+            f"(got {type(modes).__name__})."
+        )
+    validated = {}
+    for name, block in modes.items():
+        if not isinstance(name, str):
+            raise FatalRtlBuddyError(
+                f"{where}modes: mode name {name!r} is not a string; a builder "
+                "mode is a cfg-rtl-builder builder-opts key. Quote it — YAML "
+                "1.1 reads an unquoted on/off/yes/no as a boolean."
+            )
+        validated[name] = _validate_mode_entry(
+            block,
+            where=f"{where}modes.{name}",
+            compile_block=compile_block,
+            allow_verilate=allow_verilate,
+        )
+    return validated
+
+
+def mode_override(block, builder_mode, *, compile_block=False) -> ModeOverride | None:
+    """One block's ``modes.<builder_mode>`` override, or ``None`` (#634).
+
+    ``None`` whenever there is nothing to layer: no block, no ``modes:``, no
+    builder mode in hand, or no entry for this mode — which is why a run in
+    a mode nothing mentions resolves exactly as it did before #634.
+
+    Validated here as well as at load, and deliberately so: the per-test and
+    per-testbench ``resources:`` blocks are raw serde by design (see
+    :func:`resolve_resources`), and a block rebuilt from a dispatch plan or
+    handed in by a caller of this module must not be able to smuggle an
+    unreadable ``mem`` into a reservation. Validation is idempotent, so a
+    block that came through :func:`validate_modes_block` pays only the
+    re-check.
+    """
+    if builder_mode is None or block is None:
+        return None
+    modes = getattr(block, "modes", None)
+    if not modes:
+        return None
+    validated = validate_modes_block(
+        modes,
+        compile_block=compile_block,
+        allow_verilate=compile_block,
+    )
+    entry = validated.get(builder_mode)
+    if not entry:
+        return None
+    verilate = entry.get("verilate")
+    return ModeOverride(
+        cpus=entry.get("cpus"),
+        mem=entry.get("mem"),
+        time=entry.get("time"),
+        verilate=(
+            CompileVerilateFile(
+                cpus=verilate.get("cpus"),
+                mem=verilate.get("mem"),
+                time=verilate.get("time"),
+            )
+            if verilate
+            else None
+        ),
+    )
+
+
+def effective_compile_block(block, builder_mode=None):
+    """One ``compile:`` block with its ``modes.<mode>`` overrides folded in.
+
+    The PER-BUILD shape :func:`aggregate_compile_resources` and
+    :func:`verilate_build_block` combine, so the aggregation arithmetic
+    never has to know about modes: what it is handed is what this build
+    reserves in the mode the run is in (#634). The block itself where there
+    is nothing to fold, so an unmoded suite aggregates the very same object
+    it always did.
+    """
+    override = mode_override(block, builder_mode, compile_block=True)
+    if override is None:
+        return block
+
+    def pick(name):
+        own = getattr(override, name, None)
+        return own if own is not None else getattr(block, name, None)
+
+    base_verilate = getattr(block, "verilate", None)
+    verilate = override.verilate
+    if verilate is not None and base_verilate is not None:
+        verilate = CompileVerilateFile(
+            cpus=(verilate.cpus if verilate.cpus is not None else base_verilate.cpus),
+            mem=(verilate.mem if verilate.mem is not None else base_verilate.mem),
+            time=(verilate.time if verilate.time is not None else base_verilate.time),
+        )
+    return TestbenchCompileFile(
+        cpus=pick("cpus"),
+        mem=pick("mem"),
+        time=pick("time"),
+        verilate=verilate if verilate is not None else base_verilate,
+    )
+
+
+def validate_resources_block(res, *, allow_modes=False, where=""):
     """Validate a raw ``{cpus, mem, time}`` block; return a fresh copy.
 
     The public entry point for any *other* config file that carries a
@@ -245,14 +531,29 @@ def validate_resources_block(res):
     the integer 14400) is rejected in exactly one place, at load, rather
     than being re-derived by every loader that grows a reservation.
 
+    ``allow_modes`` says whether the owning config resolves this block
+    through a builder mode at all (#634). The default is ``False``, and an
+    elaboration profile is why: ``rb elab`` has its own resolver and no
+    builder mode, so a ``modes:`` written there could only ever be a block
+    that does nothing — which is precisely the silent drop #634 is about.
+    Rejected with a message saying so rather than accepted and ignored.
+
     ``None`` in, ``None`` out.
     """
     if res is None:
         return None
+    modes = getattr(res, "modes", None)
+    if modes is not None and not allow_modes:
+        raise FatalRtlBuddyError(
+            f"{where}modes is not accepted in this reservation block; it is "
+            "resolved without a builder mode, so a per-mode override here "
+            "would never take effect."
+        )
     return DispatchResourcesFile(
         cpus=res.cpus,
         mem=_validate_mem(res.mem),
         time=_validate_time(res.time),
+        modes=validate_modes_block(modes, where=where),
     )
 
 
@@ -326,10 +627,20 @@ def _validate_verilate_block(res):
     ``mem`` the sum cannot read or a zero ``time`` is as wrong here as
     there (#593).
 
+    A ``modes:`` here is refused (#634): the per-mode override of a verilate
+    reservation is ``compile.modes.<mode>.verilate``, one level up, so a
+    block written inside ``verilate:`` would be dropped in silence.
+
     ``None`` in, ``None`` out.
     """
     if res is None:
         return None
+    if getattr(res, "modes", None) is not None:
+        raise FatalRtlBuddyError(
+            "modes is not accepted inside a verilate block; write the "
+            "per-mode verilate reservation as "
+            "compile.modes.<mode>.verilate instead."
+        )
     return CompileVerilateFile(
         cpus=_validate_compile_cpus(res.cpus),
         mem=_validate_compile_mem(res.mem),
@@ -357,6 +668,9 @@ class TestbenchCompileFile:
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
+    # This build's per-builder-mode overrides (#634), layered over the
+    # resolved compile value after every base layer.
+    modes: dict | None = None
     # This build's verilate reservation (#593), layered the same way the
     # three fields above are.
     verilate: CompileVerilateFile | None = None
@@ -397,6 +711,12 @@ def validate_testbench_compile_block(res):
         mem=_validate_compile_mem(res.mem),
         time=_validate_compile_time(res.time),
         verilate=_validate_verilate_block(getattr(res, "verilate", None)),
+        modes=validate_modes_block(
+            getattr(res, "modes", None),
+            where="compile.",
+            compile_block=True,
+            allow_verilate=True,
+        ),
     )
 
 
@@ -430,6 +750,8 @@ class SuiteCompileFile:
     # ``None`` means "inherit cfg-dispatch.compile.parallel", which is the
     # whole difference from DispatchCompileFile — see the class docstring.
     parallel: int | None = None
+    # This suite's per-builder-mode overrides (#634).
+    modes: dict | None = None
     # This suite's verilate reservation (#593).
     verilate: CompileVerilateFile | None = None
     # ``None`` means "inherit cfg-dispatch.compile.split-verilate", for the
@@ -464,6 +786,12 @@ def validate_compile_block(res):
         parallel=parallel,
         verilate=_validate_verilate_block(getattr(res, "verilate", None)),
         split_verilate=getattr(res, "split_verilate", None),
+        modes=validate_modes_block(
+            getattr(res, "modes", None),
+            where="compile.",
+            compile_block=True,
+            allow_verilate=True,
+        ),
     )
 
 
@@ -665,6 +993,13 @@ class DispatchConfigFile:
                 cpus=res.cpus,
                 mem=_validate_mem(res.mem),
                 time=_validate_time(res.time),
+                # Per-builder-mode overrides, held to the same rules the
+                # base fields above are (#634). cfg-dispatch.resources is
+                # the least specific layer of both the sim and the compile
+                # reservation, so its mode block reaches both.
+                modes=validate_modes_block(
+                    getattr(res, "modes", None), where="cfg-dispatch.resources."
+                ),
             )
 
         def _validated_compile(res):
@@ -678,6 +1013,12 @@ class DispatchConfigFile:
                 parallel=res.parallel,
                 verilate=_validate_verilate_block(getattr(res, "verilate", None)),
                 split_verilate=getattr(res, "split_verilate", True),
+                modes=validate_modes_block(
+                    getattr(res, "modes", None),
+                    where="cfg-dispatch.compile.",
+                    compile_block=True,
+                    allow_verilate=True,
+                ),
             )
 
         if self.progress_interval < 0:
@@ -789,18 +1130,37 @@ class JobResources:
     time: str = DEFAULT_JOB_TIME
 
 
-def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
+def resolve_resources(
+    dispatch_cfg, test_cfg=None, *, builder_mode=None
+) -> JobResources:
     """Resolve a test's effective job reservation.
 
     Field-wise layering, most specific wins:
     test ``resources:`` > testbench ``resources:`` >
     ``cfg-dispatch.resources`` > built-in defaults.
+
+    ``builder_mode`` is the mode this job will run in — the ``-M`` value
+    after the command's own default has been applied, which is what travels
+    to the compute node as ``JobSpec.builder_mode``. Each layer's
+    ``modes.<builder_mode>`` block is then applied OVER that resolved
+    value, least specific first, so the full order per field is (#634)::
+
+        test.modes[m] > testbench.modes[m] > cfg-dispatch.modes[m]
+            > test > testbench > cfg-dispatch > default
+
+    Any mode block therefore beats every base field, not only the one on
+    its own layer: a coverage build is a different job from the same test
+    under ``-M reg``, and a suite-wide ``modes.cov.mem`` that one test's
+    base ``mem`` could undo would not be a reservation anyone could rely
+    on. ``None`` (or a mode no block names) resolves exactly as it did
+    before the key existed.
     """
-    resolved = JobResources()
-    layers = [dispatch_cfg.resources if dispatch_cfg is not None else None]
+    blocks = [dispatch_cfg.resources if dispatch_cfg is not None else None]
     if test_cfg is not None:
-        layers.append(getattr(test_cfg.get_testbench(), "resources", None))
-        layers.append(getattr(test_cfg, "resources", None))
+        blocks.append(getattr(test_cfg.get_testbench(), "resources", None))
+        blocks.append(getattr(test_cfg, "resources", None))
+    resolved = JobResources()
+    layers = list(blocks) + [mode_override(block, builder_mode) for block in blocks]
     for layer in layers:
         if layer is None:
             continue
@@ -813,6 +1173,40 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
     return resolved
+
+
+def mode_governed_fields(dispatch_cfg, test_cfg=None, *, builder_mode=None) -> dict:
+    """Which sim reservation fields a ``modes:`` block won, and whose (#634).
+
+    ``{field: builder_mode}`` for every field some layer's
+    ``modes.<builder_mode>`` block states, and ``{}`` for a run with no
+    mode block in play — so a suite that never writes the key produces no
+    entries at all.
+
+    Reservation advice reads it for the same reason
+    :func:`compile_resource_origins` exists: under ``-M cov`` a hint
+    naming ``resources.mem`` sends a reader to a value the mode block
+    overrides, the finding survives the edit, and it comes back every run.
+    The mode's own key is the one place an edit always lands, since a mode
+    layer beats every base field.
+
+    Only which field, not which LAYER: the advised key is the test's own,
+    which is the most specific mode layer there is, so it wins wherever
+    the current value came from.
+    """
+    blocks = [dispatch_cfg.resources if dispatch_cfg is not None else None]
+    if test_cfg is not None:
+        blocks.append(getattr(test_cfg.get_testbench(), "resources", None))
+        blocks.append(getattr(test_cfg, "resources", None))
+    governed = {}
+    for block in blocks:
+        override = mode_override(block, builder_mode)
+        if override is None:
+            continue
+        for name in _MODE_FIELDS:
+            if getattr(override, name) is not None:
+                governed[name] = builder_mode
+    return governed
 
 
 # sbatch options that change what a job REQUESTS in cpus, i.e. that can make
@@ -1319,7 +1713,7 @@ def combine_for_in_job_compile(
 
 
 def resolve_compile_resources(
-    dispatch_cfg, suite_compile=None, tb_compile=None
+    dispatch_cfg, suite_compile=None, tb_compile=None, *, builder_mode=None
 ) -> JobResources:
     """Resolve the compile reservation for ONE testbench.
 
@@ -1348,15 +1742,31 @@ def resolve_compile_resources(
     sim job and the right-sizing compile floor, and both of those are one
     serial build. :func:`compile_parallel` layers that key instead (#547).
 
+    ``builder_mode`` layers each block's ``modes.<builder_mode>`` over the
+    resolved value, least specific first, exactly as
+    :func:`resolve_resources` does (#634) — an instrumented build's
+    verilation peaks higher than the same sources under ``-M reg``, and it
+    is a distinct compile key, so it is entitled to its own figure. The
+    mode layers include ``cfg-dispatch.resources.modes``, because that
+    block is the least specific layer of the compile reservation too.
+
     Note this is a *scheduling* fact only: nothing here reaches the compile
     fingerprint or the shared-build key, so writing a ``compile:`` block
     never invalidates a stamp.
     """
     resolved = JobResources()
-    layers = []
+    # (block, is a compile block): the mode entries of a `compile:` layer
+    # are held to the stricter compile rules its base fields are, and
+    # `cfg-dispatch.resources` — which is a sim block that happens to be
+    # the compile's least specific layer — to its own lenient ones.
+    blocks = []
     if dispatch_cfg is not None:
-        layers += [dispatch_cfg.resources, dispatch_cfg.compile]
-    layers += [suite_compile, tb_compile]
+        blocks += [(dispatch_cfg.resources, False), (dispatch_cfg.compile, True)]
+    blocks += [(suite_compile, True), (tb_compile, True)]
+    layers = [block for block, _ in blocks] + [
+        mode_override(block, builder_mode, compile_block=is_compile)
+        for block, is_compile in blocks
+    ]
     for layer in layers:
         if layer is None:
             continue
@@ -1369,7 +1779,9 @@ def resolve_compile_resources(
     return resolved
 
 
-def compile_resource_origins(suite_compile, tb_compile=None) -> dict:
+def compile_resource_origins(
+    suite_compile, tb_compile=None, *, builder_mode=None
+) -> dict:
     """Which tests.yaml layer won each resolved compile field.
 
     ``{field: "suite"}`` for every field the suite block set and
@@ -1389,6 +1801,14 @@ def compile_resource_origins(suite_compile, tb_compile=None) -> dict:
     this job's reservation not at all. It has no testbench layer — one
     build job per suite runs every testbench's builds, so the concurrency
     cannot be a property of one of them.
+
+    A field won by a ``modes.<mode>`` block records the richer
+    ``{"origin", "key"}`` entry instead of the bare layer name, with the
+    key spelled ``modes.<mode>.<field>`` (#634) — advice naming
+    ``compile.mem`` where ``compile.modes.cov.mem`` governs this run would
+    send a reader to a value that moves the reservation not at all. Every
+    consumer already reads both shapes, and a suite with no mode block
+    produces the flat map byte for byte.
     """
     origins = {}
     for name in ("cpus", "mem", "time", "parallel"):
@@ -1397,6 +1817,16 @@ def compile_resource_origins(suite_compile, tb_compile=None) -> dict:
     for name in ("cpus", "mem", "time"):
         if getattr(tb_compile, name, None) is not None:
             origins[name] = "testbench"
+    # ...then the mode blocks, in the order resolve_compile_resources
+    # applies them: every mode layer beats every base field.
+    for block, origin in ((suite_compile, "suite"), (tb_compile, "testbench")):
+        override = mode_override(block, builder_mode, compile_block=True)
+        for name in ("cpus", "mem", "time"):
+            if getattr(override, name, None) is not None:
+                origins[name] = {
+                    "origin": origin,
+                    "key": f"modes.{builder_mode}.{name}",
+                }
     return origins
 
 
@@ -1409,8 +1839,26 @@ def _verilate_layers(dispatch_cfg, suite_compile=None, tb_compile=None):
     return layers
 
 
+def _verilate_mode_layers(
+    dispatch_cfg, suite_compile=None, tb_compile=None, builder_mode=None
+):
+    """The ``modes.<mode>.verilate`` blocks, least specific first (#634).
+
+    Applied after :func:`_verilate_layers`, so a per-mode verilate key
+    beats every base one — the same "mode over base" rule the compile and
+    sim reservations follow.
+    """
+    blocks = [getattr(dispatch_cfg, "compile", None), suite_compile, tb_compile]
+    return [
+        getattr(
+            mode_override(block, builder_mode, compile_block=True), "verilate", None
+        )
+        for block in blocks
+    ]
+
+
 def resolve_verilate_resources(
-    dispatch_cfg, suite_compile=None, tb_compile=None
+    dispatch_cfg, suite_compile=None, tb_compile=None, *, builder_mode=None
 ) -> JobResources:
     """Resolve the verilate reservation for ONE testbench (#593).
 
@@ -1430,18 +1878,30 @@ def resolve_verilate_resources(
     ``compile.cpus`` describes the ``make`` and would reserve cores this
     job cannot use. It starts at :data:`DEFAULT_VERILATE_CPUS` instead.
 
+    ``builder_mode`` reaches both stages (#634): stage 1 inherits a
+    mode-resolved ``compile`` reservation, which is what a suite that sizes
+    only ``compile.modes.cov.mem`` wants, and stage 2 then layers each
+    ``modes.<mode>.verilate`` block over the base ``verilate:`` ones. The
+    full order per field is therefore any ``verilate`` key over any
+    ``compile`` key, and within each of those any mode block over any base
+    field.
+
     A scheduling fact only, like the compile reservation: nothing here
     reaches the compile fingerprint or the shared-build key.
     """
     compile_resources = resolve_compile_resources(
-        dispatch_cfg, suite_compile, tb_compile
+        dispatch_cfg, suite_compile, tb_compile, builder_mode=builder_mode
     )
     resolved = JobResources(
         cpus=DEFAULT_VERILATE_CPUS,
         mem=compile_resources.mem,
         time=compile_resources.time,
     )
-    for layer in _verilate_layers(dispatch_cfg, suite_compile, tb_compile):
+    layers = _verilate_layers(dispatch_cfg, suite_compile, tb_compile)
+    layers += _verilate_mode_layers(
+        dispatch_cfg, suite_compile, tb_compile, builder_mode
+    )
+    for layer in layers:
         if layer is None:
             continue
         if layer.cpus is not None:
@@ -1453,7 +1913,9 @@ def resolve_verilate_resources(
     return resolved
 
 
-def verilate_resource_origins(suite_compile, tb_compile=None) -> dict:
+def verilate_resource_origins(
+    suite_compile, tb_compile=None, *, builder_mode=None
+) -> dict:
     """Which tests.yaml layer and which KEY won each verilate field (#593).
 
     :func:`compile_resource_origins`, with the key spelled out beside the
@@ -1467,23 +1929,52 @@ def verilate_resource_origins(suite_compile, tb_compile=None) -> dict:
 
     ``cpus`` has no ``compile:`` fallback, so only a ``verilate:`` block
     can appear for it.
+
+    Four stages under a ``builder_mode`` (#634), in the order
+    :func:`resolve_verilate_resources` applies them: the base ``compile``
+    fields, their mode blocks, the base ``verilate`` blocks, then their
+    mode blocks — so a key is spelled ``mem``, ``modes.cov.mem``,
+    ``verilate.mem`` or ``modes.cov.verilate.mem``, whichever actually
+    holds the winning value.
     """
     origins = {}
+    layers = ((suite_compile, "suite"), (tb_compile, "testbench"))
     # Stage 1: the compile fields the verilate reservation inherits.
-    for layer, origin in ((suite_compile, "suite"), (tb_compile, "testbench")):
+    for layer, origin in layers:
         for name in ("mem", "time"):
             if getattr(layer, name, None) is not None:
                 origins[name] = {"origin": origin, "key": name}
-    # Stage 2: the verilate blocks, which beat every compile layer.
-    for layer, origin in ((suite_compile, "suite"), (tb_compile, "testbench")):
+    # Stage 2: their mode blocks, which beat every base compile field.
+    overrides = {
+        origin: mode_override(layer, builder_mode, compile_block=True)
+        for layer, origin in layers
+    }
+    for _, origin in layers:
+        for name in ("mem", "time"):
+            if getattr(overrides[origin], name, None) is not None:
+                origins[name] = {
+                    "origin": origin,
+                    "key": f"modes.{builder_mode}.{name}",
+                }
+    # Stage 3: the verilate blocks, which beat every compile layer.
+    for layer, origin in layers:
         verilate = getattr(layer, "verilate", None)
         for name in ("cpus", "mem", "time"):
             if getattr(verilate, name, None) is not None:
                 origins[name] = {"origin": origin, "key": f"verilate.{name}"}
+    # Stage 4: ...and their mode blocks, which beat all of the above.
+    for _, origin in layers:
+        verilate = getattr(overrides[origin], "verilate", None)
+        for name in ("cpus", "mem", "time"):
+            if getattr(verilate, name, None) is not None:
+                origins[name] = {
+                    "origin": origin,
+                    "key": f"modes.{builder_mode}.verilate.{name}",
+                }
     return origins
 
 
-def verilate_build_block(tb_compile) -> DispatchResourcesFile:
+def verilate_build_block(tb_compile, *, builder_mode=None) -> DispatchResourcesFile:
     """One testbench's PER-BUILD verilate reservation, as it is stated (#593).
 
     The block :func:`aggregate_verilate_resources` combines, which is not
@@ -1494,7 +1985,12 @@ def verilate_build_block(tb_compile) -> DispatchResourcesFile:
     OOM-killed in the one phase that needs the memory.
 
     ``cpus`` has no such fallback; see :func:`resolve_verilate_resources`.
+
+    Read off the block with this run's ``modes.<mode>`` folded in (#634),
+    so an instrumented build is summed at its own figure and not at the
+    base one it would be OOM-killed on.
     """
+    tb_compile = effective_compile_block(tb_compile, builder_mode)
     verilate = getattr(tb_compile, "verilate", None)
 
     def stated(name):
@@ -1509,7 +2005,7 @@ def verilate_build_block(tb_compile) -> DispatchResourcesFile:
 
 
 def aggregate_verilate_resources(
-    dispatch_cfg, suite_compile=None, testbenches=(), parallel=1
+    dispatch_cfg, suite_compile=None, testbenches=(), parallel=1, *, builder_mode=None
 ) -> tuple[JobResources, dict]:
     """:func:`aggregate_compile_resources` for the verilate job (#593).
 
@@ -1520,26 +2016,49 @@ def aggregate_verilate_resources(
     :func:`resolve_verilate_resources`. Shared rather than restated so
     the two jobs of one compile can never disagree about how wide the
     suite is.
+
+    ``builder_mode`` reaches every part of that (#634): the per-build
+    blocks, the floor, and the key each source's value is spelled with.
     """
-    blocks = [(name, verilate_build_block(block)) for name, block in testbenches]
+    blocks = [
+        (name, verilate_build_block(block, builder_mode=builder_mode))
+        for name, block in testbenches
+    ]
     tb_blocks = {}
     for name, block in testbenches:
         tb_blocks.setdefault(name, block)
 
     def source_key(name, field_name):
-        # Which of the two spellings holds this source's value. Keyed on
+        # Which of the four spellings holds this source's value. Keyed on
         # the testbench NAME, which is enough: two planned builds of one
         # testbench read one block, so they carry one label.
-        if name is None or field_name == "cpus":
+        if name is None:
             return f"verilate.{field_name}"
-        own = getattr(getattr(tb_blocks.get(name), "verilate", None), field_name, None)
-        return f"verilate.{field_name}" if own is not None else field_name
+        block = tb_blocks.get(name)
+        override = mode_override(block, builder_mode, compile_block=True)
+        prefix = f"modes.{builder_mode}."
+        # The order verilate_build_block resolves them in: a mode verilate
+        # key, a base verilate key, a mode compile key, the base field.
+        if getattr(getattr(override, "verilate", None), field_name, None) is not None:
+            return f"{prefix}verilate.{field_name}"
+        if getattr(getattr(block, "verilate", None), field_name, None) is not None:
+            return f"verilate.{field_name}"
+        if field_name == "cpus":
+            # No `compile:` fallback for cpus, so nothing below can hold it.
+            return f"verilate.{field_name}"
+        if getattr(override, field_name, None) is not None:
+            return f"{prefix}{field_name}"
+        return field_name
 
     return _aggregate_resources(
-        resolve_verilate_resources(dispatch_cfg, suite_compile),
+        resolve_verilate_resources(
+            dispatch_cfg, suite_compile, builder_mode=builder_mode
+        ),
         blocks,
         parallel,
-        floor_origins=verilate_resource_origins(suite_compile),
+        floor_origins=verilate_resource_origins(
+            suite_compile, builder_mode=builder_mode
+        ),
         source_key=source_key,
     )
 
@@ -1594,7 +2113,7 @@ def greedy_schedule(durations, parallel):
 
 
 def aggregate_compile_resources(
-    dispatch_cfg, suite_compile=None, testbenches=(), parallel=1
+    dispatch_cfg, suite_compile=None, testbenches=(), parallel=1, *, builder_mode=None
 ) -> tuple[JobResources, dict]:
     """The build job's reservation over the testbenches it will compile (#551).
 
@@ -1677,15 +2196,26 @@ def aggregate_compile_resources(
     into one contributor of a sum leaves the total where it was (#551
     review).
 
+    ``builder_mode`` resolves each block's ``modes.<mode>`` before the
+    arithmetic (#634), so a suite compiling for coverage sums the coverage
+    figures and an unmoded run sums the objects it always did.
+
     Raises :class:`FatalRtlBuddyError` for a ``mem`` it cannot parse: the
     sum is taken in bytes, and a value silently dropped out of it would
     shrink the reservation.
     """
     return _aggregate_resources(
-        resolve_compile_resources(dispatch_cfg, suite_compile),
-        testbenches,
+        resolve_compile_resources(
+            dispatch_cfg, suite_compile, builder_mode=builder_mode
+        ),
+        [
+            (name, effective_compile_block(block, builder_mode))
+            for name, block in testbenches
+        ],
         parallel,
-        floor_origins=compile_resource_origins(suite_compile),
+        floor_origins=compile_resource_origins(
+            suite_compile, builder_mode=builder_mode
+        ),
     )
 
 

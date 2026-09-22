@@ -6,6 +6,7 @@ from serde import serde, field, from_dict, to_dict
 from .dispatch import (
     DispatchResourcesFile,
     TestbenchCompileFile,
+    validate_modes_block,
     validate_testbench_compile_block,
 )
 from .model import ModelConfig, ModelConfigLoader
@@ -93,6 +94,8 @@ class TestbenchConfig:
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
       resources (DispatchResourcesFile | None): default per-job reservation for
         dispatched runs of this testbench's tests (#351); tests override per field.
+        Its ``modes:`` sub-block overrides the resolved value per builder mode
+        (#634) and is validated here, at load, like the compile block below.
       compile (TestbenchCompileFile | None): this testbench's own PER-BUILD
         compile reservation (#551), layered over the suite's ``compile:``
         block the way that block layers over ``cfg-dispatch.compile``. For a
@@ -122,6 +125,17 @@ class TestbenchConfig:
         # raised here (#551).
         try:
             self.compile = validate_testbench_compile_block(self.compile)
+            # The `resources:` block's own per-mode overrides (#634). Only
+            # the `modes:` sub-block: the base fields here have been loaded
+            # leniently by every release so far (resolve_resources validates
+            # them as it applies them), and tightening them now would reject
+            # configs that run today. A mode block has no such history, and
+            # a typo in one is a reservation that silently stays at the base
+            # figure — which is the failure this key exists to remove.
+            if self.resources is not None:
+                self.resources.modes = validate_modes_block(
+                    self.resources.modes, where="resources."
+                )
         except FatalRtlBuddyError as e:
             raise FatalRtlBuddyError(f"testbench '{self.name}': {e}") from e
         if self.cocotb is not None and self.systemc is not None:
@@ -213,7 +227,8 @@ class TestConfig:
     assertions: bool = False
     # Per-test reservation override for dispatched runs (#351). Layered
     # field-wise over the testbench's `resources:` and the cfg-dispatch
-    # defaults by config.dispatch.resolve_resources().
+    # defaults by config.dispatch.resolve_resources(), which then layers
+    # every level's `modes.<builder mode>` block over the result (#634).
     resources: "DispatchResourcesFile | None" = None
     # Expected-fail markers (pytest-style xfail). A test is treated as
     # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
@@ -729,6 +744,15 @@ class TestConfigFile:
             raise FatalRtlBuddyError(
                 f"test {self.name!r}: sim-rand-seed-plusarg must not be empty"
             )
+        if self.resources is not None:
+            # Per-mode overrides, validated at load like the testbench's
+            # (see TestbenchConfig.__post_init__ for why only these).
+            try:
+                self.resources.modes = validate_modes_block(
+                    self.resources.modes, where="resources."
+                )
+            except FatalRtlBuddyError as e:
+                raise FatalRtlBuddyError(f"test {self.name!r}: {e}") from e
         tb = tbs[self.tb]
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
