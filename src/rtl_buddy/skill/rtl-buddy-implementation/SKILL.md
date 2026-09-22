@@ -33,6 +33,11 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 
 ## Synthesis correctness gates
 
+For block boundary planning, set `pnr.yaml`'s optional `pin-constraints` Tcl
+path relative to that YAML. It runs after floorplan/tracks, before `place_pins`.
+Do not place pin-region commands in SDC, which is read before the die exists.
+The default without the key remains unconstrained placement.
+
 `rb synth` (both backends) gates three silent-corruption shapes before
 reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
 shares one storage location per formal across call sites; the gate names each

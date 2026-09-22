@@ -711,11 +711,11 @@ def test_openroad_pnr_can_disable_cts_sink_clustering(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _render_flow(tmp_path, platform, suite_dir=None):
+def _render_flow(tmp_path, platform, suite_dir=None, **overrides):
     """The `pnr.tcl` this platform renders, as text."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
-    pnr_cfg = _make_pnr_cfg(tmp_path)
+    pnr_cfg = _make_pnr_cfg(tmp_path, **overrides)
     resolved_synth = MagicMock()
     resolved_synth.get_top.return_value = "demo_top"
     resolved_synth.get_name.return_value = "demo_synth"
@@ -727,6 +727,42 @@ def _render_flow(tmp_path, platform, suite_dir=None):
         root_cfg=MagicMock(),
     )
     return Path(backend._write_script(platform, pnr_cfg.get_floorplan())).read_text()
+
+
+def test_pin_constraints_resolve_against_suite(tmp_path):
+    from rtl_buddy.config.pnr import PnrConfigFile
+
+    cfg = PnrConfigFile(
+        name="pins",
+        desc="pins",
+        synth="demo",
+        synth_path="synth.yaml",
+        platform="pdk",
+        pin_constraints="pins/plan.tcl",
+    ).initialise(str(tmp_path))
+    assert cfg.pin_constraints == str(tmp_path / "pins/plan.tcl")
+
+
+def test_pin_constraints_follow_floorplan_and_precede_placement(tmp_path):
+    path = tmp_path / 'pins $[x] "test".tcl'
+    path.write_text("# constraints\n")
+    pdk = _make_pdk_cfg(tmp_path)
+    platform = PnrPlatformConfig(
+        PnrPlatformConfigFile(name="p", pdk="p"), lambda _: pdk
+    )
+    text = _render_flow(tmp_path, platform, pin_constraints=str(path))
+    source = text.index('source "')
+    assert text.index("make_tracks") < source < text.index("place_pins -hor_layers")
+    assert r"\$\[x\] \"test\".tcl" in text
+
+
+def test_pin_constraints_missing_file_fails(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    platform = PnrPlatformConfig(
+        PnrPlatformConfigFile(name="p", pdk="p"), lambda _: pdk
+    )
+    with pytest.raises(RuntimeError, match="pin-constraints file does not exist"):
+        _render_flow(tmp_path, platform, pin_constraints=str(tmp_path / "missing.tcl"))
 
 
 def test_pnr_flow_is_unchanged_when_no_new_key_is_set(tmp_path):

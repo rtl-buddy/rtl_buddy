@@ -86,6 +86,7 @@ class PnrConfigFile:
     synth: str = ""
     synth_path: str = field(rename="synth-path", default="")
     constraints: str | None = None
+    pin_constraints: str | None = field(rename="pin-constraints", default=None)
     platform: str = ""
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
@@ -152,6 +153,11 @@ class PnrConfigFile:
             synth_name=self.synth,
             synth_suite_path=synth_path_abs,
             constraints=constraints,
+            pin_constraints=(
+                os.path.abspath(os.path.join(config_dir, self.pin_constraints))
+                if self.pin_constraints is not None
+                else None
+            ),
             platform=self.platform,
             floorplan=PnrFloorplan(
                 utilization=self.floorplan.utilization,
@@ -182,6 +188,7 @@ class PnrConfig:
     floorplan: PnrFloorplan
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    pin_constraints: str | None = None
     lef_paths: list[str] = dc_field(default_factory=list)
     lib_paths: list[str] = dc_field(default_factory=list)
     gds_paths: list[str] = dc_field(default_factory=list)
