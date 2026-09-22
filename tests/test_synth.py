@@ -1,6 +1,7 @@
 """Tests for synthesis flow: config, Yosys backend, and filelist strip fix."""
 
 import hashlib
+import logging
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -1687,6 +1688,112 @@ def test_parse_clock_period_ps_no_clock_returns_none(tmp_path):
 def test_parse_clock_period_ps_missing_file_returns_none(tmp_path):
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(tmp_path / "missing.sdc")) is None
+
+
+# The shapes the old per-line regex mis-read as "no clock" (#642). Each one is
+# legal SDC; before the tokenizer they left abc running unconstrained.
+
+
+def test_parse_clock_period_ps_line_continuation(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -name clk \\\n    -period 10.0 [get_ports clk]\n")
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
+
+
+def test_parse_clock_period_ps_braced_value(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -name clk -period {10.0} [get_ports clk]\n")
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
+
+
+def test_parse_clock_period_ps_braced_value_with_trailing_comment(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "create_clock -name clk -period {10.0} [get_ports clk] # main clock\n"
+    )
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
+
+
+def test_parse_clock_period_ps_hash_inside_braces_is_not_a_comment(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -name clk#1 -period 10 [get_ports {clk#1}]\n")
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
+
+
+def test_parse_clock_period_ps_variable_warns_once_and_is_not_silence(tmp_path, caplog):
+    # `-period $p` cannot be evaluated without an interp. Saying so beats
+    # counting it as "no create_clock in the file".
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "set p 10\n"
+        "create_clock -name a -period $p [get_ports a]\n"
+        "create_clock -name b -period $p [get_ports b]\n"
+    )
+    ys = _make_yosys(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        assert ys._parse_clock_period_ps(str(sdc)) is None
+    unevaluated = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.sdc_period_unevaluated"
+    ]
+    # one per create_clock that needs evaluating ...
+    assert [r.rtl_fields["line"] for r in unevaluated] == [2, 3]
+    # ... but exactly one "this file uses Tcl we do not evaluate" per file
+    skipped = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "constraints.tokenizer_skipped"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].rtl_fields["source"] == str(sdc)
+
+
+def test_parse_clock_period_ps_expr_value_is_unevaluated(tmp_path, caplog):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -name clk -period [expr 20.0 / 2] [get_ports clk]\n")
+    ys = _make_yosys(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        assert ys._parse_clock_period_ps(str(sdc)) is None
+    [rec] = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.sdc_period_unevaluated"
+    ]
+    assert rec.rtl_fields["line"] == 1
+    assert "expr" in rec.rtl_fields["value"]
+
+
+def test_parse_clock_period_ps_mixes_evaluated_and_unevaluated(tmp_path, caplog):
+    # A readable clock alongside an unevaluated one still constrains abc.
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "create_clock -name a -period $p [get_ports a]\n"
+        "create_clock -name b -period 4.0 [get_ports b]\n"
+    )
+    ys = _make_yosys(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        assert ys._parse_clock_period_ps(str(sdc)) == 4000
+    # only one real period, so no multi-clock warning
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.sdc_multi_clock"
+    ]
+
+
+def test_parse_clock_period_ps_ignores_commented_out_clock(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "# create_clock -name old -period 1.0 [get_ports clk]\n"
+        "create_clock -name clk -period 10.0 [get_ports clk]\n"
+    )
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
 def test_write_script_lib_flow_with_sdc_adds_D_flag(tmp_path):

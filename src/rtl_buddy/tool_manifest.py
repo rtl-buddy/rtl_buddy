@@ -1551,6 +1551,17 @@ def _status_glyph(status: str) -> str:
     return status
 
 
+def constraint_reader_backend() -> str:
+    """Backend `rb` reads SDC/XDC constraint files through (#642).
+
+    Imported lazily so ``tool_manifest`` stays importable with nothing but the
+    stdlib available, which the packaging tests rely on.
+    """
+    from .constraints.tcl_reader import backend_name
+
+    return backend_name()
+
+
 def render_text(
     statuses: list[ToolStatus],
     subcommands: dict[str, dict],
@@ -1609,8 +1620,17 @@ def render_text(
             f"  {_status_glyph(info['status']):9} rb {sub:20} ({gloss_parts[0]}){opt}"
         )
 
+    # In-process readers whose backend can change under the same CLI (#642):
+    # a run's behaviour depends on which one answered, so tool-check names it
+    # alongside the external tools.
+    reader_lines = [
+        "\nIn-process readers",
+        "-" * 70,
+        f"  constraint reader: {constraint_reader_backend()}",
+    ]
+
     hint = "\nHint: `rb tool-check --explain <tool>` for install instructions."
-    return "\n".join([header, *rows, *sub_lines, hint])
+    return "\n".join([header, *rows, *sub_lines, *reader_lines, hint])
 
 
 def build_json_payload(
@@ -1656,7 +1676,11 @@ def build_json_payload(
             entry["optional_feature"] = True
         subs_out[sub] = entry
 
-    return {"tools": tools_out, "subcommands": subs_out}
+    return {
+        "tools": tools_out,
+        "subcommands": subs_out,
+        "readers": {"constraints": constraint_reader_backend()},
+    }
 
 
 def render_json(
