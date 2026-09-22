@@ -1,7 +1,7 @@
 import logging
 import os
 import pprint
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from typing import Literal
 
 from serde import field, serde
@@ -93,6 +93,14 @@ class PowerConfigFile:
     phys_run: str = field(rename="phys-run", default="")
     constraints: str | None = None
     platform: str = ""
+    # Liberty for hard macros, on top of whatever the referenced synth or
+    # pnr run already declares (#627). The platform corner characterises
+    # the standard cells and nothing else, so a macro reaching P&R through
+    # that run's `lib-paths` has no library here and reports exactly zero.
+    # Inheritance covers the ordinary case; this key is for a macro whose
+    # Liberty only the power analysis needs — a corner the upstream run
+    # was not routed against, say. Appended after the inherited list.
+    lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
@@ -191,6 +199,9 @@ class PowerConfigFile:
             pnr_suite_path=_resolve(self.pnr_path) if self.pnr_path else None,
             constraints=constraints,
             platform=self.platform,
+            lib_paths=[
+                os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
+            ],
             activity=activity,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
@@ -216,6 +227,9 @@ class PowerConfig:
     activity: PowerActivity
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    # Macro Liberty this run adds on top of what the referenced synth or
+    # pnr run declares, resolved against the `power.yaml` directory (#627).
+    lib_paths: list[str] = dc_field(default_factory=list)
     # Optional, so it sits with the defaults rather than beside the
     # `synth`/`synth-path` pair it is resolved against (#589).
     phys_run: str | None = None
@@ -279,6 +293,10 @@ class PowerConfig:
 
     def get_platform(self) -> str:
         return self.platform
+
+    def get_lib_paths(self) -> list[str]:
+        """This run's own macro Liberty, over the inherited list (#627)."""
+        return list(self.lib_paths)
 
     def get_activity(self) -> PowerActivity:
         return self.activity

@@ -687,6 +687,41 @@ def test_module_payload_sums_the_power_of_a_liberty_cells_instances(project):
     assert payload["power"]["leakage_uw"] == pytest.approx(0.579)
 
 
+def test_module_payload_sums_a_hard_macros_power(tmp_path):
+    """The roll-up is name-based, so a hard macro reaches a module total
+    exactly when its instance row carries the macro's Liberty cell in the
+    module column — which is what supplying that Liberty to `rb power`
+    buys (rtl-buddy/rtl_buddy#627). Before it, the macro was in the report
+    with four zero columns and the total said so.
+    """
+    root = tmp_path / "repo"
+    (root / ".git").mkdir(parents=True)
+    _write_run(
+        root,
+        "macro",
+        instances=[
+            *INSTANCE_ROWS,
+            {
+                "instance_path": "u_mem/u_sram",
+                "module": "sram_32x256",
+                "leakage_uw": 0.5,
+                "internal_uw": 40.0,
+                "switching_uw": 1.0,
+                "total_uw": 41.5,
+            },
+        ],
+    )
+
+    payload = module_payload(load_context(root), "sram_32x256")
+
+    assert payload["instance_count"] == 1
+    assert payload["power"]["total_uw"] == pytest.approx(41.5)
+    # And the whole-design ranking puts it where its watts belong.
+    assert hottest_instances(load_context(root).model, 1)[0]["instance_path"] == (
+        "u_mem/u_sram"
+    )
+
+
 def test_module_payload_lists_every_instance_by_default(project):
     """The finding (#561 review, Codex P2). No limit means the complete
     list, which is what the MCP tools -- who pass none -- were registered
