@@ -120,6 +120,17 @@ A Yosys run extracts `create_clock` periods from the SDC and supplies the shorte
 
 An OpenROAD run loads the complete SDC and reports actual worst and total negative slack. Use it for multi-clock timing decisions.
 
+### How the SDC is read
+
+`rb` reads SDC and XDC text with one of two backends, and `rb tool-check` names the active one under `In-process readers`:
+
+- `tcl` — a real Tcl interpreter (`tkinter.Tcl()` driving a `-safe` child interpreter), so `\` continuations, braces, nested `[get_pins [get_cells u]/C]` collections, `;` separators, `$variables` and `[expr ...]` all read the way Vivado and OpenSTA read them. The file is *evaluated*, but a safe interpreter has no `exec`, `open`, `file`, `socket`, `cd`, `glob` or `source`, so a constraint file cannot spawn a process or touch the filesystem, and a resource limit stops one that tries to loop forever. `source` includes are not followed: read the included file directly.
+- `tokenizer` — the fallback used when the running Python has no `_tkinter` (a Homebrew Python without `python-tk`, or a distro Python without `python3-tkinter`). It splits words correctly but evaluates nothing, so a `-period $p` or `-period [expr ...]` is reported as unevaluated rather than read as a number. Installing tkinter (`uv python install --managed-python`, `brew install python-tk@<X.Y>`, `dnf install python3-tkinter`) restores the interpreter backend.
+
+Everything the reader returns is *syntax*: `get_ports` / `get_cells` / `-filter` collections stay opaque names either way, because resolving them needs a linked netlist that OpenROAD and Vivado own.
+
+Set `RTL_BUDDY_CONSTRAINT_READER=tokenizer` to force the fallback, or `=tcl` to require the interpreter (which fails loudly on a Python that cannot import `_tkinter`, instead of quietly downgrading).
+
 ## SystemVerilog frontend
 
 Use yosys-slang when the built-in `read_verilog -sv` frontend cannot parse the design:

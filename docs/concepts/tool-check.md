@@ -28,6 +28,20 @@ A tool that declares optional binaries lists them under `Optional binaries (not 
 
 Aliases are accepted by `--explain` and runtime dependency checks. Output always uses the canonical tool name. For example, `rtl-buddy-sch` resolves to `rtl-buddy-view`; an unknown-name machine response includes the known names and alias mapping.
 
+## Check in-process readers
+
+Not every behavior that can change under the same `rb` install comes from an external binary. `rb tool-check` therefore ends with an `In-process readers` section:
+
+```text
+In-process readers
+----------------------------------------------------------------------
+  constraint reader: tcl (Tcl 9.0.3)
+```
+
+`constraint reader` is the backend SDC/XDC files are read with: `tcl` (a `tkinter.Tcl()` safe interpreter, with the Tcl version it found) or `tokenizer` (the stdlib-only word splitter used when this Python has no `_tkinter`). The difference is visible in results — the tokenizer does not evaluate `$variables` or `[expr ...]` — so a run that reads constraints reports which one answered. `RTL_BUDDY_CONSTRAINT_READER=tokenizer|tcl` pins it. See [How the SDC is read](synthesis.md#how-the-sdc-is-read).
+
+The JSON payload carries the same value as `readers.constraints`, without the Tcl version.
+
 ## Gate scripts and CI
 
 Exit behavior depends on the invocation:

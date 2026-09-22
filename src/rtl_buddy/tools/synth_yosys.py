@@ -838,10 +838,13 @@ class YosysSynth:
         ABC -D takes a single timing window; for multi-clock designs this is a
         workaround — the minimum period is used, which over-constrains slower domains.
 
-        Read through the Tcl word tokenizer (#642), not a per-line regex, so a
-        ``\\``-continued ``create_clock`` or a braced ``-period {10.0}`` is seen
-        rather than silently yielding "no clock" and an unconstrained ABC. A
-        ``-period`` whose value needs evaluation (``$p``, ``[expr …]``) is
+        Read through the constraint reader (#642, #641), not a per-line regex,
+        so a ``\\``-continued ``create_clock`` or a braced ``-period {10.0}``
+        is seen rather than silently yielding "no clock" and an unconstrained
+        ABC. With the ``tcl`` backend a ``-period $p`` or ``[expr …]`` is
+        evaluated like Vivado would; with the ``tokenizer`` fallback it is not,
+        and either way a value that does not resolve to a number (a design
+        query such as ``[get_property PERIOD]``, or any unevaluated Tcl) is
         reported as :data:`synth.sdc_period_unevaluated` and skipped — the
         caller's "no create_clock at all" warning would be misleading there.
         """

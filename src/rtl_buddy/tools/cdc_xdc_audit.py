@@ -133,11 +133,15 @@ def extract_cdc_constraints(
 ) -> XdcConstraints:
     """Read the CDC-relevant subset of an XDC/SDC into :class:`XdcConstraints`.
 
-    Reading goes through the Tcl word tokenizer (#642) rather than a regex per
-    physical line, so ``\\``-continued commands, braced values and nested
-    collections (``[get_pins [get_cells u_a]/C]``) are read the way Vivado
-    reads them. ``source`` only names the file in the one-per-file
-    ``constraints.tokenizer_skipped`` warning.
+    Reading goes through the constraint reader (#642, #641) rather than a
+    regex per physical line, so ``\\``-continued commands, braced values and
+    nested collections (``[get_pins [get_cells u_a]/C]``) are read the way
+    Vivado reads them. Which backend answered does not change what is
+    extracted — the ``tcl`` interp rebuilds a collection as
+    ``[get_cells u_a]``, exactly the word the tokenizer would have handed
+    over — except that the interp also evaluates ``$p`` / ``[expr …]``, so a
+    computed ``-period`` becomes a number instead of ``None``. ``source``
+    only names the file in the reader's per-file warnings.
     """
     commands, _backend = read_commands(xdc_text, interest=_INTEREST, source=source)
     xc = XdcConstraints()

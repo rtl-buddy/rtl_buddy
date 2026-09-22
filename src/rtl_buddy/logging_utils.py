@@ -1748,9 +1748,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "synth.sdc_period_unevaluated":
             return (
                 f"create_clock -period {fields.get('value')} in SDC "
-                f'"{fields.get("sdc")}" line {fields.get("line")} needs a Tcl '
-                "interpreter to evaluate; that clock is skipped for the abc "
-                "timing constraint"
+                f'"{fields.get("sdc")}" line {fields.get("line")} did not '
+                "evaluate to a number (the tokenizer backend evaluates no Tcl "
+                "at all; the interp cannot resolve a design query); that clock "
+                "is skipped for the abc timing constraint"
             )
         case "constraints.tokenizer_skipped":
             return (
@@ -1758,6 +1759,28 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'"{fields.get("command")}" uses Tcl the constraint reader does not '
                 f"evaluate ({', '.join(fields.get('features', []))}); commands that "
                 "depend on it may be read incompletely"
+            )
+        case "constraints.tcl_unavailable":
+            return (
+                "this Python cannot import _tkinter "
+                f"({fields.get('error')}), so SDC/XDC files are read with the "
+                "word tokenizer instead of a Tcl interpreter — $variables and "
+                "[expr] stay unevaluated. "
+                f"{'; '.join(fields.get('hints', []))}"
+            )
+        case "constraints.tcl_error":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"Tcl refused to evaluate it ({fields.get('message')}); falling "
+                "back to the word tokenizer, which does not evaluate "
+                "$variables or [expr]"
+            )
+        case "constraints.include_unsupported":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f"`source {fields.get('included')}` is not supported — the "
+                "constraint reader evaluates one file in a safe interpreter and "
+                "includes are not followed; read the included file directly"
             )
         case "synth.openroad.no_lef":
             return (

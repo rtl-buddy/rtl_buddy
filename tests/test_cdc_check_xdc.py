@@ -38,7 +38,7 @@ def _kinds(res):
 # --------------------------------------------------------------------------
 
 
-def test_extract_pulls_cdc_subset_and_ignores_io_placement():
+def test_extract_pulls_cdc_subset_and_ignores_io_placement(constraint_backend):
     xdc = """
     create_clock -name clk_a -period 8.0 [get_ports {clk_a}]
     create_clock -name clk_b -period 10.0 [get_ports {clk_b}]
@@ -63,7 +63,7 @@ def test_extract_pulls_cdc_subset_and_ignores_io_placement():
     assert "A1" not in xc.clocks
 
 
-def test_clock_groups_expands_all_cross_group_pairs():
+def test_clock_groups_expands_all_cross_group_pairs(constraint_backend):
     xc = extract_cdc_constraints(
         "set_clock_groups -asynchronous -group {clk_a clk_a2} -group {clk_b}"
     )
@@ -78,7 +78,7 @@ def test_clock_groups_expands_all_cross_group_pairs():
 # --------------------------------------------------------------------------
 
 
-def test_nested_collection_yields_the_instance_not_the_bracket_head():
+def test_nested_collection_yields_the_instance_not_the_bracket_head(constraint_backend):
     # was: from_cells == ["[get_cells", "u_a"] — the regex cut at the first `]`
     xc = extract_cdc_constraints(
         "set_false_path -from [get_pins [get_cells u_a]/C] -to [get_cells u_b]\n"
@@ -88,7 +88,7 @@ def test_nested_collection_yields_the_instance_not_the_bracket_head():
     assert fp.to_cells == ["u_b"]
 
 
-def test_hash_inside_braces_is_part_of_the_name():
+def test_hash_inside_braces_is_part_of_the_name(constraint_backend):
     # was: clock "clk", period None — `#` was treated as a comment start
     xc = extract_cdc_constraints(
         "create_clock -name clk#1 -period 10 [get_ports {clk#1}]\n"
@@ -96,7 +96,7 @@ def test_hash_inside_braces_is_part_of_the_name():
     assert xc.clocks == {"clk#1": 10.0}
 
 
-def test_continued_false_path_keeps_both_endpoints():
+def test_continued_false_path_keeps_both_endpoints(constraint_backend):
     # was: to_clocks == [] — the continuation was dropped, so the audit saw a
     # one-sided waiver and could miss a masked crossing
     xc = extract_cdc_constraints(
@@ -109,28 +109,28 @@ def test_continued_false_path_keeps_both_endpoints():
     assert fp.raw == "set_false_path -from [get_clocks clk_a] -to [get_clocks clk_b]"
 
 
-def test_braced_period_is_read():
+def test_braced_period_is_read(constraint_backend):
     xc = extract_cdc_constraints(
         "create_clock -name clk -period {10.0} [get_ports clk] # main\n"
     )
     assert xc.clocks == {"clk": 10.0}
 
 
-def test_clock_groups_mixes_brace_and_bracket_groups():
+def test_clock_groups_mixes_brace_and_bracket_groups(constraint_backend):
     xc = extract_cdc_constraints(
         "set_clock_groups -asynchronous -group {a b} -group [get_clocks c]\n"
     )
     assert xc.async_clock_pairs == {frozenset({"a", "c"}), frozenset({"b", "c"})}
 
 
-def test_continued_clock_groups_sees_every_group():
+def test_continued_clock_groups_sees_every_group(constraint_backend):
     xc = extract_cdc_constraints(
         "set_clock_groups -asynchronous \\\n  -group {clk_a} \\\n  -group {clk_b}\n"
     )
     assert frozenset({"clk_a", "clk_b"}) in xc.async_clock_pairs
 
 
-def test_commented_out_constraint_is_ignored():
+def test_commented_out_constraint_is_ignored(constraint_backend):
     xc = extract_cdc_constraints(
         "# set_false_path -from [get_clocks a] -to [get_clocks b]\n"
         "create_clock -name a -period 1 [get_ports a]\n"
@@ -139,7 +139,7 @@ def test_commented_out_constraint_is_ignored():
     assert xc.clocks == {"a": 1.0}
 
 
-def test_variable_period_warns_once_per_file(caplog):
+def test_variable_period_warns_once_per_file(tokenizer_backend, caplog):
     xdc = (
         "set p 10\n"
         "create_clock -name a -period $p [get_ports a]\n"
@@ -158,7 +158,25 @@ def test_variable_period_warns_once_per_file(caplog):
     assert skipped[0].rtl_fields["source"] == "v.xdc"
 
 
-def test_plain_xdc_does_not_warn(caplog):
+def test_variable_period_is_evaluated_under_the_interp(tcl_backend, caplog):
+    # The same file the tokenizer can only warn about: with an interp the
+    # period is a number, so the audit compares real periods (#641).
+    xdc = (
+        "set p 10\n"
+        "create_clock -name a -period $p [get_ports a]\n"
+        "create_clock -name b -period [expr {$p * 2}] [get_ports b]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        xc = extract_cdc_constraints(xdc, source="v.xdc")
+    assert xc.clocks == {"a": 10.0, "b": 20.0}
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "constraints.tokenizer_skipped"
+    ]
+
+
+def test_plain_xdc_does_not_warn(constraint_backend, caplog):
     xdc = (
         "create_clock -name clk -period 10 [get_ports clk]\n"
         "set_property IOSTANDARD LVCMOS18 [get_ports clk]\n"
@@ -172,7 +190,7 @@ def test_plain_xdc_does_not_warn(caplog):
     ]
 
 
-def test_continued_waiver_is_seen_as_two_sided_by_the_audit():
+def test_continued_waiver_is_seen_as_two_sided_by_the_audit(constraint_backend):
     # The dangerous direction: a continued -from/-to read as one-sided made a
     # correct waiver look missing (and could hide an over-waive).
     dm = json.loads((FIX / "cdc_bad_domain_map.json").read_text())

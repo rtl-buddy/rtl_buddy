@@ -47,6 +47,13 @@ jobs:
         # run for real here instead of being skip-if-missing everywhere.
         run: uv sync --group test --extra graph-extract
 
+      # Which SDC/XDC reader backend this job exercises (#641). uv's
+      # managed Python bundles Tcl/Tk, so the interp backend runs here;
+      # the tokenizer fallback is what a Python without _tkinter gets,
+      # and both are covered by the parametrised reader tests.
+      - name: Report the constraint reader backend
+        run: uv run python -c "from rtl_buddy.tool_manifest import constraint_reader_description as d; print('constraint reader:', d())"
+
       - name: Run pytest with coverage
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
 

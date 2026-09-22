@@ -1552,7 +1552,10 @@ def _status_glyph(status: str) -> str:
 
 
 def constraint_reader_backend() -> str:
-    """Backend `rb` reads SDC/XDC constraint files through (#642).
+    """Backend `rb` reads SDC/XDC constraint files through (#642, #641).
+
+    ``tcl`` (a ``tkinter.Tcl()`` safe interp) or ``tokenizer`` (the vendored
+    word splitter, used when this Python has no ``_tkinter``).
 
     Imported lazily so ``tool_manifest`` stays importable with nothing but the
     stdlib available, which the packaging tests rely on.
@@ -1560,6 +1563,13 @@ def constraint_reader_backend() -> str:
     from .constraints.tcl_reader import backend_name
 
     return backend_name()
+
+
+def constraint_reader_description() -> str:
+    """The same backend, plus the Tcl version behind it when there is one."""
+    from .constraints.tcl_reader import backend_description
+
+    return backend_description()
 
 
 def render_text(
@@ -1620,13 +1630,13 @@ def render_text(
             f"  {_status_glyph(info['status']):9} rb {sub:20} ({gloss_parts[0]}){opt}"
         )
 
-    # In-process readers whose backend can change under the same CLI (#642):
-    # a run's behaviour depends on which one answered, so tool-check names it
-    # alongside the external tools.
+    # In-process readers whose backend can change under the same CLI (#642,
+    # #641): a run's behaviour depends on which one answered, so tool-check
+    # names it — with its Tcl version — alongside the external tools.
     reader_lines = [
         "\nIn-process readers",
         "-" * 70,
-        f"  constraint reader: {constraint_reader_backend()}",
+        f"  constraint reader: {constraint_reader_description()}",
     ]
 
     hint = "\nHint: `rb tool-check --explain <tool>` for install instructions."
