@@ -369,6 +369,12 @@ def _aggregate(rows):
                 # bounds, and what the whole-job request decomposes into
                 # (#505 review).
                 "submitted_cpus_per_task": row.get("submitted_cpus_per_task"),
+                # Which sim fields this run's builder mode governed, from
+                # config.dispatch.mode_governed_fields (#634): a hint about
+                # one of them has to name the `modes:` key, since a base
+                # field the mode block overrides would not move the
+                # reservation and the finding would come back next run.
+                "resource_modes": row.get("resource_modes") or {},
                 # ...all three taken from the first row that carries
                 # telemetry. Set when a later row disagrees: a retry is
                 # submitted into whatever environment the process holds by
@@ -1244,6 +1250,14 @@ def analyze_suite_reservations(
             "phase": "compile+sim" if agg["compile_in_job"] else "sim",
         }
 
+        # The `resources:` key each field is written at: its own name, or
+        # the per-mode one where this run's builder mode governed it (#634).
+        row_modes = agg.get("resource_modes") or {}
+
+        def _resources_key(field):
+            mode = row_modes.get(field)
+            return f"modes.{mode}.{field}" if mode else field
+
         # The YAML field the override masks — named in the note so a reader
         # can see what was superseded, resolved by the same layering the
         # unmasked hint would have used.
@@ -1251,7 +1265,7 @@ def analyze_suite_reservations(
             row_origins, "cpus", testbench=row_testbench
         )
         if governed_by.get("cpus") != "compile":
-            masked_cpus_path = f"tests[name={test}].resources.cpus"
+            masked_cpus_path = f"tests[name={test}].resources.{_resources_key('cpus')}"
         elif compile_cpus_path and suite_config_path:
             masked_cpus_path = compile_cpus_path
         else:
@@ -1267,6 +1281,9 @@ def analyze_suite_reservations(
             _tasks=tasks,
             _origins=row_origins,
             _testbench=row_testbench,
+            # Bound like its neighbours, so the key a hint names is this
+            # row's even if the hint is rendered after the loop moves on.
+            _resources_key=_resources_key,
         ):
             # `cfg-dispatch.sbatch-args` is appended after the generated
             # reservation flags and wins, so an argument written there that
@@ -1325,7 +1342,9 @@ def analyze_suite_reservations(
                 }
             return {
                 "file": suite_config_path,
-                "path": f"tests[name={test}].resources.{resource_field}",
+                "path": (
+                    f"tests[name={test}].resources.{_resources_key(resource_field)}"
+                ),
             }
 
         killed_timeout = "TIMEOUT" in agg["states"]

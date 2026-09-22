@@ -131,3 +131,37 @@ def test_plan_rejects_invalid_seed_state(minimal_project: Path, source, seed):
     plan.write_text(json.dumps(payload))
     with pytest.raises(FatalRtlBuddyError, match="dispatch plan seed.*invalid"):
         read_plan_configs(plan)
+
+
+def test_mode_reservation_blocks_survive_the_round_trip(minimal_project: Path):
+    """`resources.modes` is JSON, so a sim job resolves what the head did.
+
+    The per-mode overrides (#634) live on the test and on its testbench,
+    and both travel in the plan manifest — a plain mapping rather than a
+    typed sub-block precisely so this stays JSON.
+    """
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        .replace(
+            "  - name: tb_basic\n",
+            "  - name: tb_basic\n    resources: {modes: {cov: {mem: 64G}}}\n",
+        )
+        .replace(
+            "  - name: basic\n",
+            '  - name: basic\n    resources: {modes: {cov: {time: "08:00:00"}}}\n',
+        )
+    )
+    configs = SuiteConfig(path=str(tests_yaml)).get_tests()
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs, "tok")
+
+    payload = json.loads(plan.read_text())
+    basic = next(t for t in payload["tests"] if t["name"] == "basic")
+    assert basic["resources"]["modes"] == {"cov": {"time": "08:00:00"}}
+    assert basic["tb"]["resources"]["modes"] == {"cov": {"mem": "64G"}}
+
+    from rtl_buddy.config.dispatch import resolve_resources
+
+    restored = read_plan_config(plan, "basic")
+    resolved = resolve_resources(None, restored, builder_mode="cov")
+    assert (resolved.mem, resolved.time) == ("64G", "08:00:00")

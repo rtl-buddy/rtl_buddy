@@ -28,9 +28,12 @@ from rtl_buddy.config.dispatch import (
     greedy_schedule,
     aggregate_compile_resources,
     mem_to_bytes,
+    mode_governed_fields,
     resolve_compile_resources,
     resolve_resources,
     resolve_verilate_resources,
+    validate_modes_block,
+    validate_resources_block,
     validate_testbench_compile_block,
     verilate_build_block,
     verilate_resource_origins,
@@ -1980,4 +1983,430 @@ def test_verilate_resource_origins_records_the_layer_and_the_key():
         "mem": {"origin": "suite", "key": "mem"},
         "time": {"origin": "suite", "key": "verilate.time"},
         "cpus": {"origin": "testbench", "key": "verilate.cpus"},
+    }
+
+
+# --- per-builder-mode reservation overrides (#634) ----------------------
+#
+# A test's reservation depends on the mode it runs under: an instrumented
+# `-M cov` build carries per-point counters through the whole design and a
+# `-M debug` one dumps waves, so the same simulation that fits in 1G under
+# `-M reg` needs an order of magnitude more. Every reservation block takes a
+# `modes:` sub-block, layered OVER the resolved base value.
+
+
+_MODE_CFG = DispatchConfigFile(
+    resources=DispatchResourcesFile(
+        cpus=1,
+        mem="1G",
+        time="00:15:00",
+        modes={"cov": {"mem": "16G", "time": "00:30:00"}, "debug": {"mem": "4G"}},
+    )
+)
+
+
+def test_a_run_in_an_unmentioned_mode_resolves_exactly_as_today():
+    """The key is inert unless the run's mode names a block."""
+    base = resolve_resources(_MODE_CFG, _Test())
+    assert base == JobResources(cpus=1, mem="1G", time="00:15:00")
+    # No mode in hand at all, and a mode no block mentions: both unchanged.
+    assert resolve_resources(_MODE_CFG, _Test(), builder_mode=None) == base
+    assert resolve_resources(_MODE_CFG, _Test(), builder_mode="reg") == base
+
+
+def test_a_mode_block_overrides_only_the_fields_it_states():
+    cov = resolve_resources(_MODE_CFG, _Test(), builder_mode="cov")
+    assert cov == JobResources(cpus=1, mem="16G", time="00:30:00")
+    # `debug` states mem alone, so cpus and time still resolve from the base.
+    debug = resolve_resources(_MODE_CFG, _Test(), builder_mode="debug")
+    assert debug == JobResources(cpus=1, mem="4G", time="00:15:00")
+
+
+def test_a_mode_block_layers_at_every_level():
+    """cfg-dispatch, testbench and test each contribute one field."""
+    test_cfg = _Test(
+        tb_resources=DispatchResourcesFile(modes={"cov": {"time": "02:00:00"}}),
+        resources=DispatchResourcesFile(modes={"cov": {"cpus": 4}}),
+    )
+    resolved = resolve_resources(_MODE_CFG, test_cfg, builder_mode="cov")
+    assert resolved == JobResources(cpus=4, mem="16G", time="02:00:00")
+
+
+def test_the_most_specific_mode_block_wins():
+    test_cfg = _Test(
+        tb_resources=DispatchResourcesFile(modes={"cov": {"mem": "32G"}}),
+        resources=DispatchResourcesFile(modes={"cov": {"mem": "64G"}}),
+    )
+    assert resolve_resources(_MODE_CFG, test_cfg, builder_mode="cov").mem == "64G"
+    # ...and without the test's own block the testbench's stands.
+    tb_only = _Test(tb_resources=DispatchResourcesFile(modes={"cov": {"mem": "32G"}}))
+    assert resolve_resources(_MODE_CFG, tb_only, builder_mode="cov").mem == "32G"
+
+
+def test_any_mode_block_beats_every_base_field():
+    """The layering rule: mode blocks resolve over the finished base value.
+
+    A per-test `mem` must not undo a suite-wide `modes.cov.mem` — a
+    coverage build is a different job from the same test under `-M reg`,
+    and a reservation one unrelated base field could silently take back
+    would not be one a project could rely on.
+    """
+    test_cfg = _Test(resources=DispatchResourcesFile(mem="2G", cpus=8))
+    resolved = resolve_resources(_MODE_CFG, test_cfg, builder_mode="cov")
+    assert resolved.mem == "16G"
+    # ...while a field no mode block states still takes the base value.
+    assert resolved.cpus == 8
+
+
+def test_a_mode_mem_from_the_yaml_is_validated_as_it_is_applied():
+    """Per-test blocks are raw serde, so the trap is caught on apply."""
+    test_cfg = _Test(resources=DispatchResourcesFile(modes={"cov": {"time": 14400}}))
+    with pytest.raises(FatalRtlBuddyError, match="sexagesimal"):
+        resolve_resources(None, test_cfg, builder_mode="cov")
+
+
+def test_tests_yaml_mode_blocks_load_and_resolve(minimal_project: Path):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        .replace(
+            "  - name: tb_basic\n",
+            "  - name: tb_basic\n"
+            "    resources:\n"
+            "      mem: 8G\n"
+            "      modes:\n"
+            "        cov: {mem: 64G}\n",
+        )
+        .replace(
+            "  - name: basic\n",
+            '  - name: basic\n    resources:\n      modes: {cov: {time: "08:00:00"}}\n',
+        )
+    )
+    basic = SuiteConfig(path=str(tests_yaml)).get_tests("basic")[0]
+    assert resolve_resources(DispatchConfigFile(), basic).mem == "8G"
+    cov = resolve_resources(DispatchConfigFile(), basic, builder_mode="cov")
+    assert (cov.mem, cov.time) == ("64G", "08:00:00")
+
+
+def test_root_config_parses_a_resources_mode_block(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n"
+        "  resources:\n"
+        "    mem: 1G\n"
+        "    modes:\n"
+        "      cov:\n"
+        "        mem: 16G\n"
+        '        time: "00:30:00"\n'
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.resources.modes == {"cov": {"mem": "16G", "time": "00:30:00"}}
+    assert resolve_resources(cfg, None, builder_mode="cov").mem == "16G"
+
+
+# --- the compile block's modes ------------------------------------------
+
+
+def test_compile_mode_blocks_layer_cfg_then_suite_then_testbench():
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(
+            cpus=8,
+            mem="16G",
+            time="02:00:00",
+            modes={"cov": {"cpus": 16, "mem": "64G", "time": "04:00:00"}},
+        )
+    ).initialise()
+    assert resolve_compile_resources(cfg, builder_mode="cov") == JobResources(
+        cpus=16, mem="64G", time="04:00:00"
+    )
+    suite = SuiteCompileFile(modes={"cov": {"mem": "96G"}})
+    assert resolve_compile_resources(cfg, suite, builder_mode="cov").mem == "96G"
+    tb = TbCompile(modes={"cov": {"mem": "256G"}})
+    assert resolve_compile_resources(cfg, suite, tb, builder_mode="cov").mem == "256G"
+    # ...and none of it moves the reservation of any other mode.
+    assert resolve_compile_resources(cfg, suite, tb, builder_mode="reg").mem == "16G"
+
+
+def test_a_compile_mode_block_beats_every_base_compile_field():
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(mem="16G", modes={"cov": {"mem": "64G"}})
+    ).initialise()
+    # The testbench's base `mem` is the most specific BASE layer, and the
+    # root's mode block still wins — as it does for the sim reservation.
+    tb = TbCompile(mem="32G")
+    assert resolve_compile_resources(cfg, None, tb, builder_mode="cov").mem == "64G"
+
+
+def test_a_cfg_dispatch_resources_mode_reaches_the_compile_reservation():
+    """`resources` is the compile's least specific layer, modes included."""
+    cfg = DispatchConfigFile(
+        resources=DispatchResourcesFile(mem="1G", modes={"cov": {"mem": "16G"}})
+    ).initialise()
+    assert resolve_compile_resources(cfg, builder_mode="cov").mem == "16G"
+
+
+def test_the_verilate_job_inherits_the_mode_compile_figures():
+    """Stage 1 of the verilate resolution is the MODE-resolved compile."""
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(
+            cpus=8, mem="16G", time="02:00:00", modes={"cov": {"mem": "64G"}}
+        )
+    ).initialise()
+    assert resolve_verilate_resources(cfg, builder_mode="cov") == JobResources(
+        cpus=DEFAULT_VERILATE_CPUS, mem="64G", time="02:00:00"
+    )
+
+
+def test_a_mode_verilate_block_beats_every_base_verilate_key():
+    cfg = DispatchConfigFile(
+        compile=DispatchCompileFile(
+            mem="16G",
+            verilate=Verilate(mem="32G"),
+            modes={"cov": {"verilate": {"mem": "128G", "cpus": 4}}},
+        )
+    ).initialise()
+    resolved = resolve_verilate_resources(cfg, builder_mode="cov")
+    assert (resolved.cpus, resolved.mem) == (4, "128G")
+    # The base verilate key still governs the modes that state none.
+    assert resolve_verilate_resources(cfg, builder_mode="reg").mem == "32G"
+
+
+def test_a_mode_verilate_key_beats_a_mode_compile_key():
+    """Any `verilate` key over any `compile` key, mode blocks included."""
+    suite = SuiteCompileFile(modes={"cov": {"mem": "96G", "verilate": {"mem": "192G"}}})
+    resolved = resolve_verilate_resources(_SPLIT_CFG, suite, builder_mode="cov")
+    assert resolved.mem == "192G"
+    # ...and the compile job itself keeps the compile figure.
+    assert resolve_compile_resources(_SPLIT_CFG, suite, builder_mode="cov").mem == "96G"
+
+
+def test_verilate_build_block_folds_the_mode_in():
+    block = TbCompile(
+        mem="96G",
+        verilate=Verilate(mem="128G"),
+        modes={"cov": {"mem": "256G", "verilate": {"mem": "512G"}}},
+    )
+    assert verilate_build_block(block).mem == "128G"
+    assert verilate_build_block(block, builder_mode="cov").mem == "512G"
+    # A mode block with no verilate key falls back to its own compile mem,
+    # exactly as the base block's verilate falls back to the base mem.
+    mem_only = TbCompile(mem="96G", modes={"cov": {"mem": "256G"}})
+    assert verilate_build_block(mem_only, builder_mode="cov").mem == "256G"
+
+
+def test_the_build_job_aggregates_the_mode_figures():
+    """The per-build sum is taken over what each build reserves in THIS mode."""
+    blocks = [
+        ("tb_small", TbCompile(mem="8G", modes={"cov": {"mem": "32G"}})),
+        ("tb_big", TbCompile(mem="96G", modes={"cov": {"mem": "256G"}})),
+    ]
+    reg, _ = aggregate_compile_resources(_SPLIT_CFG, None, blocks, parallel=2)
+    assert reg.mem == "104G"
+    cov, origins = aggregate_compile_resources(
+        _SPLIT_CFG, None, blocks, parallel=2, builder_mode="cov"
+    )
+    assert cov.mem == "288G"
+    assert origins["mem"]["aggregated"] is True
+
+
+def test_the_verilate_job_aggregates_the_mode_figures_and_names_their_key():
+    blocks = [
+        ("tb_big", TbCompile(modes={"cov": {"verilate": {"mem": "256G"}}})),
+    ]
+    resources, origins = aggregate_verilate_resources(
+        _SPLIT_CFG, None, blocks, parallel=1, builder_mode="cov"
+    )
+    assert resources.mem == "256G"
+    assert origins["mem"]["sources"] == [
+        {
+            "origin": "testbench",
+            "testbench": "tb_big",
+            "key": "modes.cov.verilate.mem",
+        }
+    ]
+
+
+def test_compile_origins_name_the_mode_key_that_governs():
+    """Advice must name `modes.cov.mem`, not the base key it overrode."""
+    suite = SuiteCompileFile(mem="48G", modes={"cov": {"mem": "96G"}})
+    assert compile_resource_origins(suite) == {"mem": "suite"}
+    assert compile_resource_origins(suite, builder_mode="cov") == {
+        "mem": {"origin": "suite", "key": "modes.cov.mem"}
+    }
+    tb = TbCompile(modes={"cov": {"time": "06:00:00"}})
+    assert compile_resource_origins(suite, tb, builder_mode="cov") == {
+        "mem": {"origin": "suite", "key": "modes.cov.mem"},
+        "time": {"origin": "testbench", "key": "modes.cov.time"},
+    }
+
+
+def test_verilate_origins_name_the_mode_key_at_the_right_depth():
+    suite = SuiteCompileFile(modes={"cov": {"mem": "96G"}})
+    tb = TbCompile(modes={"cov": {"verilate": {"cpus": 4}}})
+    assert verilate_resource_origins(suite, tb, builder_mode="cov") == {
+        "mem": {"origin": "suite", "key": "modes.cov.mem"},
+        "cpus": {"origin": "testbench", "key": "modes.cov.verilate.cpus"},
+    }
+
+
+def test_a_mode_block_is_not_part_of_the_compile_key_or_the_parallel_layer():
+    """`parallel`/`split-verilate` are job-wide, so modes cannot move them."""
+    suite = SuiteCompileFile(parallel=2, modes={"cov": {"mem": "96G"}})
+    assert compile_parallel(_SPLIT_CFG, suite) == 2
+    assert compile_split_verilate(_SPLIT_CFG, suite) is True
+
+
+# --- validation ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "modes,expected",
+    [
+        # The YAML 1.1 sexagesimal trap, inside a mode block.
+        ({"cov": {"time": 14400}}, "sexagesimal"),
+        ({"cov": {"time": "6 hours"}}, "not a valid Slurm time"),
+        # A scalar, a list and a null where a mapping belongs.
+        ({"cov": "16G"}, "must be a mapping of reservation fields"),
+        ({"cov": ["16G"]}, "must be a mapping of reservation fields"),
+        ({"cov": None}, "must be a mapping of reservation fields"),
+        # A mode of a mode, and a key that means nothing here.
+        ({"cov": {"modes": {"reg": {"mem": "1G"}}}}, "no sub-modes"),
+        ({"cov": {"memory": "16G"}}, "unknown key 'memory'"),
+        # `verilate` belongs to a compile block, not a sim reservation.
+        ({"cov": {"verilate": {"mem": "16G"}}}, "only accepted in a compile"),
+        # YAML 1.1 again: an unquoted `on:` mode name arrives as a boolean.
+        ({True: {"mem": "16G"}}, "is not a string"),
+    ],
+)
+def test_a_malformed_resources_mode_block_is_rejected(modes, expected):
+    with pytest.raises(FatalRtlBuddyError, match=expected):
+        DispatchConfigFile(resources=DispatchResourcesFile(modes=modes)).initialise()
+
+
+def test_a_non_mapping_modes_value_is_rejected():
+    """A list where the mapping belongs, for a block serde never typed.
+
+    From YAML the field's own `dict | None` annotation catches this at
+    load; the validator still says it, because a block rebuilt from a
+    dispatch plan or handed in by a caller of this module has not been
+    through that check.
+    """
+    with pytest.raises(FatalRtlBuddyError, match="modes must be a mapping"):
+        validate_modes_block(["cov"])
+
+
+def test_a_non_mapping_modes_value_fails_the_root_config_load(
+    minimal_project: Path,
+):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n"
+        "  resources:\n"
+        "    modes:\n"
+        "      - cov\n"
+    )
+    with pytest.raises(FatalRtlBuddyError):
+        RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+
+
+@pytest.mark.parametrize("key", ["parallel", "split-verilate"])
+def test_a_job_wide_key_in_a_compile_mode_block_is_rejected(key):
+    """The same refusal a testbench `compile:` block gives them (#551)."""
+    with pytest.raises(FatalRtlBuddyError, match=f"{key} is not accepted"):
+        validate_testbench_compile_block(TbCompile(modes={"cov": {key: 2}}))
+
+
+def test_an_unaddable_mem_in_a_compile_mode_block_is_rejected():
+    """The build job SUMS these, so the strict compile parse applies."""
+    with pytest.raises(FatalRtlBuddyError, match="not a value Slurm understands"):
+        validate_testbench_compile_block(TbCompile(modes={"cov": {"mem": "lots"}}))
+    with pytest.raises(FatalRtlBuddyError, match="greater than zero"):
+        validate_testbench_compile_block(TbCompile(modes={"cov": {"mem": "-8G"}}))
+
+
+def test_a_modes_block_inside_verilate_is_rejected():
+    """The per-mode verilate reservation is `modes.<mode>.verilate`."""
+    with pytest.raises(FatalRtlBuddyError, match="not accepted inside a verilate"):
+        validate_testbench_compile_block(
+            TbCompile(verilate=Verilate(modes={"cov": {"mem": "16G"}}))
+        )
+
+
+def test_an_elaboration_profile_rejects_modes():
+    """`rb elab` resolves without a builder mode, so a block there is inert."""
+    with pytest.raises(FatalRtlBuddyError, match="never take effect"):
+        validate_resources_block(DispatchResourcesFile(modes={"cov": {"mem": "16G"}}))
+    # ...while the blocks that ARE mode-resolved accept it.
+    validated = validate_resources_block(
+        DispatchResourcesFile(modes={"cov": {"mem": 4096}}), allow_modes=True
+    )
+    assert validated.modes == {"cov": {"mem": "4096"}}
+
+
+def test_a_bad_mode_block_fails_the_suite_load(minimal_project: Path, caplog):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: tb_basic\n",
+            "  - name: tb_basic\n"
+            "    resources:\n"
+            "      modes:\n"
+            "        cov: {time: 6:00:00}\n",
+        )
+    )
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(FatalRtlBuddyError):
+            SuiteConfig(path=str(tests_yaml))
+    assert "sexagesimal" in caplog.text
+    assert "modes.cov" in caplog.text
+
+
+def test_a_bad_test_level_mode_block_fails_the_suite_load(minimal_project: Path):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: basic\n",
+            "  - name: basic\n    resources: {modes: {cov: {cores: 4}}}\n",
+        )
+    )
+    with pytest.raises(FatalRtlBuddyError):
+        SuiteConfig(path=str(tests_yaml))
+
+
+def test_a_suite_compile_mode_block_loads_and_validates(minimal_project: Path):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        "compile:\n"
+        "  mem: 48G\n"
+        "  modes:\n"
+        "    cov:\n"
+        "      mem: 4096\n"
+        "      verilate: {mem: 8192}\n" + tests_yaml.read_text()
+    )
+    suite = SuiteConfig(path=str(tests_yaml))
+    # Normalised by the same validators the base fields go through.
+    assert suite.get_compile().modes == {
+        "cov": {"mem": "4096", "verilate": {"mem": "8192"}}
+    }
+    assert resolve_compile_resources(None, suite.get_compile()).mem == "48G"
+    assert (
+        resolve_compile_resources(None, suite.get_compile(), builder_mode="cov").mem
+        == "4096"
+    )
+
+
+def test_mode_governed_fields_reports_the_fields_a_mode_block_won():
+    """What reservation advice reads to name an appliable key (#634)."""
+    assert mode_governed_fields(_MODE_CFG, _Test()) == {}
+    assert mode_governed_fields(_MODE_CFG, _Test(), builder_mode="reg") == {}
+    assert mode_governed_fields(_MODE_CFG, _Test(), builder_mode="cov") == {
+        "mem": "cov",
+        "time": "cov",
+    }
+    # Every layer counts, since any of them beats the base fields.
+    test_cfg = _Test(resources=DispatchResourcesFile(modes={"cov": {"cpus": 4}}))
+    assert mode_governed_fields(_MODE_CFG, test_cfg, builder_mode="cov") == {
+        "cpus": "cov",
+        "mem": "cov",
+        "time": "cov",
     }

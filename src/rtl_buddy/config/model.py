@@ -360,7 +360,11 @@ def _validate_elaboration_profile(
                 f"{prefix} warning control {warning!r} is invalid; write the part "
                 "after '-W', for example 'all', 'no-unused' or 'error=unused'"
             )
-    profile.resources = validate_resources_block(profile.resources)
+    # `allow_modes` stays at its default: an elaboration reservation is
+    # resolved without a builder mode, so a `modes:` block here is refused
+    # rather than silently ignored (#634). Named by profile, like every
+    # other error this validator raises.
+    profile.resources = validate_resources_block(profile.resources, where=f"{prefix} ")
     if profile.resources is not None and profile.resources.cpus is not None:
         cpus = profile.resources.cpus
         if not isinstance(cpus, int) or isinstance(cpus, bool) or cpus < 1:

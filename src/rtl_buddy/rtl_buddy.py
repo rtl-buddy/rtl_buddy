@@ -100,6 +100,7 @@ from .config.dispatch import (
     compile_resource_origins,
     compile_split_verilate,
     aggregate_compile_resources,
+    mode_governed_fields,
     resolve_compile_resources,
     resolve_verilate_resources,
     resolve_resources,
@@ -5303,17 +5304,26 @@ class RtlBuddy:
         adoption never reaches the fan-out and still has to know what it
         *would* have asked the scheduler for. Names are unique after sweep
         expansion, so they key it.
+
+        The builder mode goes in with it (#634): a reservation can depend on
+        it, so an orphan planned under ``-M cov`` must not compare equal to
+        this invocation's ``-M reg`` fleet.
         """
         resolved = {}
         for entry in entries:
             cfg = entry["cfg"]
-            resources = resolve_resources(dispatch_cfg, cfg)
+            resources = resolve_resources(
+                dispatch_cfg, cfg, builder_mode=self.rtl_builder_mode
+            )
             if entry["compile_in_job"]:
                 entry_tb_compile = getattr(cfg.get_testbench(), "compile", None)
                 resources, _governed_by = combine_for_in_job_compile(
                     resources,
                     resolve_compile_resources(
-                        dispatch_cfg, suite_compile, entry_tb_compile
+                        dispatch_cfg,
+                        suite_compile,
+                        entry_tb_compile,
+                        builder_mode=self.rtl_builder_mode,
                     ),
                 )
             resolved[cfg.get_name()] = resources
@@ -5533,6 +5543,10 @@ class RtlBuddy:
             suite_compile,
             planned_builds,
             parallel=build_parallel,
+            # The mode this run compiles in: an instrumented build peaks
+            # higher than the same sources under `-M reg`, and each layer's
+            # `modes:` block says by how much (#634).
+            builder_mode=self.rtl_builder_mode,
         )
         # ...and the same aggregation over the verilate keys, for the job in
         # front of it (#593). Resolved unconditionally, even where the
@@ -5545,6 +5559,7 @@ class RtlBuddy:
             suite_compile,
             planned_builds,
             parallel=build_parallel,
+            builder_mode=self.rtl_builder_mode,
         )
 
         return (
@@ -5896,7 +5911,17 @@ class RtlBuddy:
         # name the two processes share for "this compile key's tests" (#548).
         for plan_index, entry in enumerate(entries):
             cfg = entry["cfg"]
-            resources = resolve_resources(dispatch_cfg, cfg)
+            # Resolved for the mode this fleet runs in — the same value the
+            # jobs carry as `builder_mode`, so a `-M cov` array reserves
+            # what the suite's `modes.cov` blocks ask for (#634).
+            resources = resolve_resources(
+                dispatch_cfg, cfg, builder_mode=self.rtl_builder_mode
+            )
+            # ...and which of its fields a `modes:` block supplied, for the
+            # reservation advice at the end of the run (#634).
+            mode_governed = mode_governed_fields(
+                dispatch_cfg, cfg, builder_mode=self.rtl_builder_mode
+            )
             if entry["compile_in_job"]:
                 # This test's OWN compile reservation, resolved per entry
                 # rather than once per suite: the job about to be sized
@@ -5907,7 +5932,10 @@ class RtlBuddy:
                 entry_tb = cfg.get_testbench()
                 entry_tb_compile = getattr(entry_tb, "compile", None)
                 compile_resources = resolve_compile_resources(
-                    dispatch_cfg, suite_compile, entry_tb_compile
+                    dispatch_cfg,
+                    suite_compile,
+                    entry_tb_compile,
+                    builder_mode=self.rtl_builder_mode,
                 )
                 # One allocation has to cover compile AND sim, so it is sized
                 # for the larger of the two per field; record which layer won
@@ -5921,7 +5949,9 @@ class RtlBuddy:
                 # because with a testbench layer the attribution is no longer
                 # one fact per suite.
                 entry_origins = compile_resource_origins(
-                    suite_compile, entry_tb_compile
+                    suite_compile,
+                    entry_tb_compile,
+                    builder_mode=self.rtl_builder_mode,
                 )
                 for idx, _ in entry["rows"]:
                     suite_results[idx]["governed_by"] = governed_by
@@ -5960,6 +5990,14 @@ class RtlBuddy:
                     per_task_cpus=resources.cpus,
                     overrides=cpus_request_args,
                 )
+                # ...and which fields this run's builder mode governed, so
+                # advice about one names `resources.modes.<mode>.<field>`
+                # rather than a base key the mode block overrides and that
+                # editing would therefore never retire (#634). Recorded
+                # only where a mode block is in play, so a suite that
+                # writes none produces the rows it always did.
+                if mode_governed:
+                    suite_results[idx]["resource_modes"] = mode_governed
             dispatch_dir = (
                 Path(
                     test_artifact_dir(suite_dir, cfg.get_name(), run_tag=self._run_tag)
@@ -6400,7 +6438,9 @@ class RtlBuddy:
         resources = (
             compile_resources
             if compile_resources is not None
-            else resolve_compile_resources(dispatch_cfg, suite_compile)
+            else resolve_compile_resources(
+                dispatch_cfg, suite_compile, builder_mode=self.rtl_builder_mode
+            )
         )
         resources = self._scaled_build_resources(resources, parallel)
         spec = BuildJobSpec(
@@ -7398,7 +7438,12 @@ class RtlBuddy:
         # finished run. Resolved once: both analyses attribute the same
         # reservation, and computing it twice invites them to disagree.
         suite_compile = (state or {}).get("suite_compile")
-        compile_origins = compile_resource_origins(suite_compile)
+        # Attributed for the mode this run reserved in, so an edit hint
+        # names `compile.modes.cov.mem` where that block governed rather
+        # than the base key it overrode (#634).
+        compile_origins = compile_resource_origins(
+            suite_compile, builder_mode=self.rtl_builder_mode
+        )
         findings = analyze_suite_reservations(
             suite_results,
             suite_display=suite_display,
@@ -7452,7 +7497,9 @@ class RtlBuddy:
                     # number for every suite that declares none.
                     (state or {}).get("build_compile_resources")
                     or resolve_compile_resources(
-                        self.root_cfg.get_dispatch_cfg(), suite_compile
+                        self.root_cfg.get_dispatch_cfg(),
+                        suite_compile,
+                        builder_mode=self.rtl_builder_mode,
                     ),
                     build_spec.parallel,
                     rightsize_cfg,
@@ -7519,7 +7566,9 @@ class RtlBuddy:
                     verilate_telemetry,
                     (state or {}).get("verilate_resources")
                     or resolve_verilate_resources(
-                        self.root_cfg.get_dispatch_cfg(), suite_compile
+                        self.root_cfg.get_dispatch_cfg(),
+                        suite_compile,
+                        builder_mode=self.rtl_builder_mode,
                     ),
                     state["verilate_handle"].spec.parallel,
                     rightsize_cfg,

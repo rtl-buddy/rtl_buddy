@@ -49,6 +49,7 @@ def _row(
     submitted_cpus_per_task=None,
     compile_origins=None,
     compile_testbench=None,
+    resource_modes=None,
 ):
     results = (
         TestPassResults(name=test + "/results")
@@ -75,6 +76,8 @@ def _row(
         # the testbench whose own `compile:` block did (#551).
         "compile_origins": compile_origins,
         "compile_testbench": compile_testbench,
+        # Which sim fields this run's builder mode governed (#634).
+        "resource_modes": resource_modes or {},
     }
 
 
@@ -3672,3 +3675,30 @@ def test_the_build_job_row_is_unchanged_by_the_verilate_keys():
     )
     (time_a,) = [f for f in findings if f.resource == "time"]
     assert time_a.edit_hint["path"] == "compile.time"
+
+
+def test_mode_governed_advice_names_the_mode_key():
+    """A `-M cov` field is edited at `resources.modes.cov.<field>` (#634).
+
+    Naming the base key would be advice that cannot retire: the mode block
+    overrides it, so the next run reserves the same figure and the finding
+    comes back.
+    """
+    telemetry = {
+        "state": "COMPLETED",
+        "elapsed_s": 1700,
+        "timelimit_s": 3600,
+        "req_mem_bytes": 24 * 2**30,
+        "max_rss_bytes": 3 * 2**30,
+    }
+    rows = [_row("t", telemetry, resource_modes={"mem": "cov"})]
+    findings = {f.resource: f for f in _analyze(rows)}
+    assert findings["mem"].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.modes.cov.mem",
+    }
+    # ...and a field the mode block did not state keeps the base key.
+    assert findings["time"].edit_hint["path"] == "tests[name=t].resources.time"
+    # A run with no mode block in play is unchanged.
+    plain = {f.resource: f for f in _analyze([_row("t", telemetry)])}
+    assert plain["mem"].edit_hint["path"] == "tests[name=t].resources.mem"

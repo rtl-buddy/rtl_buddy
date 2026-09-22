@@ -22,23 +22,22 @@ Dispatch implies shared builds. A simulation starts only after its compile-key
 build succeeds, so one failed or undersized build can block a whole group.
 One build job per suite compiles its distinct builds, `compile.parallel` of them
 at a time (default 1; a suite's `compile:` overrides cfg-dispatch's). Above 1 the
-job runs every config's `preproc` before any builder starts, so no hook may mutate
-another's inputs; at 1 it runs `preproc` then compile per config.
+job runs every config's `preproc` before any builder starts, so no hook may
+mutate another's inputs (at 1 it is `preproc` then compile, per config).
 Under slurm a Verilator suite splits that job in two: `rb-verilate-<hash>`
 (reserved from `compile.verilate`, emits C++ only), then `rb-build-<hash>` on
 `afterok` (reserved from `compile`, builds it with `--no-verilate`).
-`compile.parallel` applies per phase; keys and stamps are unchanged. An OOM in
-elaboration is a `compile.verilate.mem` edit.
+`compile.parallel` applies per phase; keys and stamps are unchanged.
 `compile.build_phase_fallback` (WARNING) means the build job verilated a key
 itself — marker missing or stale, or no `--no-verilate` in that Verilator —
 correct but unsplit. `compile.split-verilate: false` runs one job.
 An oversized group is split across arrays, each with its own manifest and logs
 under `slice-N/`, from the `MaxArraySize` in `scontrol show config`. Where the
 submit host cannot run it, set `cfg-dispatch.max-array-size` (and
-`max-array-tasks` where `SchedulerParameters=max_array_tasks` caps lower) or
-Slurm refuses the array (`Invalid job array specification`).
-`max-jobs-per-array` throttles each slice, so peak concurrency is that cap
-times the slice count.
+`max-array-tasks` where the cluster caps tasks-per-array lower) or Slurm
+refuses the array (`Invalid job array specification`).
+`max-jobs-per-array` throttles each slice, so peak concurrency is that cap x
+the slice count.
 Dispatched `test`, `randtest`, and `regression` keep their aggregate exit
 codes: 0 with no real failure, 1 when a job fails or its result envelope is
 missing, stale, or invalid, 2 for a fatal orchestration/configuration error.
@@ -56,9 +55,12 @@ compile: the job sums the overlapping ones, schedules their time over
 `parallel`, and floors at the suite value.
 
 - Slurm `OUT_OF_MEMORY`, or a local Verilator/compiler SIGKILL/`Killed`, means
-  raise the governing `mem`; raising `sim_timeout` cannot fix it.
+  raise the governing `mem` (elaboration: `compile.verilate.mem`), never
+  `sim_timeout`.
+- A `modes.<mode>` block on any of those layers sizes that mode alone and beats
+  every base field: a `-M cov` OOM is a `modes.cov.mem` edit.
 - Scheduler `TIMEOUT` means raise the governing job `time`; `Sim hit timeout`
-  inside a completed job points at the test's `sim_timeout`.
+  in a completed job points at the test's `sim_timeout`.
 - Under-reservation costs failed work: apply `raise` advice before `reduce`.
 - Size the suite `compile.mem`/`time` for the WHOLE job at `compile.parallel: N`
   — N concurrent elaborations, N at or below the site's VCS license pool. Only
@@ -88,11 +90,10 @@ compile: the job sums the overlapping ones, schedules their time over
   `SBATCH_NODES` are inherited by the submit and count like the matching
   `sbatch-args` entry (command line wins; the environment is never sanitized).
   `SBATCH_CPUS_PER_TASK` is NOT one — every submit states `--cpus-per-task`,
-  which beats it. The advice then falls back to `ReqCPUS`, DEBUG
-  `rightsize request_from_scheduler` names the arguments, and the `cpus`
+  which beats it. The advice then falls back to `ReqCPUS` and the `cpus`
   `edit_hint` points at `cfg-dispatch.sbatch-args` (`env` and no `file` for an
-  env-only override), naming the field it masks — edit the argument, not that
-  field. `mem` and `time` rows are unaffected.
+  env-only override), naming the field it masks — edit the argument, not the
+  field. `mem`/`time` rows are unaffected.
 - `suggested` is always the whole-job cpu count; only a single
   `-c`/`--cpus-per-task` can take it straight. A task or node count is not a
   cpu count, and several combine by sbatch's precedence — decompose it yourself.
