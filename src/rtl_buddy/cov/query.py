@@ -170,6 +170,12 @@ def _run_block(ctx: CovContext) -> dict:
         "builder": document.get("builder"),
         "simulator": document.get("simulator_family") or ctx.model.get("simulator"),
         "merge_mode": document.get("merge_mode"),
+        # Forwarded so the first-party manifest reader answers the question
+        # the manifest now states outright: did the merge this run asked for
+        # survive (#638)? `totals` below is per-test and stays honest either
+        # way, which is exactly why it cannot be the place a reader looks.
+        "merge_failed": bool(document.get("merge_failed")),
+        "failed_metrics": list(document.get("failed_metrics") or []),
     }
 
 

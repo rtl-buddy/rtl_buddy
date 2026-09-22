@@ -18,6 +18,12 @@ rtl-buddy-cdc takes plain source paths and has no include-path option, so a file
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Use `--builder <name>` for the run or make that builder the platform default. See [YAML Formats](reference/yaml.md).
 
+## Coverage merging runs in the submitting process, with no timeout
+
+`verilator_coverage --write`, the coverage model build, and the per-test LCOV exports all run in the process that invoked `rb`, including under `--dispatch slurm` where every simulation ran on a compute node. On a large run this step is not small — a few hundred inputs can peak in the gigabytes — so a shared submit host with a per-user memory cap can kill it. There is no timeout on the merge either: a merge that hangs hangs the run.
+
+A merge killed this way reports `FAIL` for toggle, expression, and functional coverage, records `merge_failed` in the manifest and the machine envelope, and exits 1; see [Read a failed merge](concepts/coverage.md#read-a-failed-merge). To avoid it, run the coverage-producing command itself on a compute node (for example, submit `rb regression --coverage-merge` as one job) rather than merging on the submit host.
+
 ## Verilator randomized runs may not reproduce
 
 Verilator can produce different behavior for the same random seed. Use VCS with `-xlrm hier_inst_seed` when reproducibility is required, and give instances stable explicit names.

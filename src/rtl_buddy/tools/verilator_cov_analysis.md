@@ -80,6 +80,10 @@ For `rtl_buddy` one-line summaries:
 - `T` comes from raw Verilator toggle coverage-point totals
 - `F` comes from raw Verilator user coverage-point totals
 - unsupported metrics print `UNSP`
+- a metric whose only source was a merge that failed prints `FAIL` (#638): `T`
+  and `F` come from the merged `.dat` alone, so a dead
+  `verilator_coverage --write` loses them while `L` and `B` still report from
+  the per-test LCOV exports
 
 This makes the one-line `L` and `B` values consistent with the LCOV HTML
 reports while keeping `T` and `F` available from the raw Verilator coverage

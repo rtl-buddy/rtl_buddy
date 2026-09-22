@@ -1923,6 +1923,23 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"tool_overrides.{fields.get('tool')} must be a mapping of option "
                 f"name to value, got {fields.get('got')}"
             )
+        case "coverage.merge.failed":
+            return (
+                "coverage merge failed: verilator_coverage --write exited "
+                f"{fields.get('returncode')} and wrote no "
+                f"{fields.get('merged_path')}; toggle, expression and "
+                "functional coverage have no other source and are reported "
+                "as FAIL, not UNSP"
+            )
+        case "coverage.merge.degraded":
+            failed = fields.get("failed_metrics") or []
+            lost = ", ".join(str(metric) for metric in failed) or "no metric"
+            return (
+                f"coverage merge produced no merged database, so {lost} was "
+                "not measured; the artefacts and every test result were "
+                "written, and the run exits 1 because the requested "
+                "measurement is incomplete"
+            )
         case "coverage.metric.failed":
             return (
                 f'coverage metric "{fields.get("metric")}" failed'
