@@ -14,14 +14,25 @@
 
 namespace eval rb::macro_pack {}
 
-# Round up to the next multiple of `grid`. Macro origins are snapped up, not
-# down, so snapping can only widen a channel and never eat into the halo of
-# the neighbour below or to the left.
-proc rb::macro_pack::snap_up {value grid} {
+# Round up to the next multiple of `grid` counted from `origin`. Macro
+# origins are snapped up, not down, so snapping can only widen a channel and
+# never eat into the halo of the neighbour below or to the left.
+#
+# The grid is the standard-cell site grid — the site width in x, the row
+# height in y — measured from the core's lower-left corner, where
+# `initialize_floorplan` starts its rows. A macro whose bottom sits between
+# two rows is legal for the overlap check, which snaps it down to the row it
+# straddles, but the detailed placer's padding check rounds it to the
+# *nearest* row and, when that is the row above, scans the row past the
+# macro's top edge — legally full of standard cells — as the macro's own and
+# reports a padding violation (DPL-0011) that no legalization can clear
+# (#639). Row-aligned origins make both views agree.
+proc rb::macro_pack::snap_up {value grid origin} {
     if {$grid <= 1} {
         return $value
     }
-    return [expr {int(ceil(double($value) / $grid)) * $grid}]
+    set offset [expr {$value - $origin}]
+    return [expr {$origin + int(ceil(double($offset) / $grid)) * $grid}]
 }
 
 # Tallest first, then widest, then by name. A total order, so the placement
@@ -45,14 +56,16 @@ proc rb::macro_pack::sort {macros} {
 # Pack `macros` — a list of {name width height} — into `core`, a list of
 # {x_min y_min x_max y_max}. `halo` is the minimum channel kept between two
 # macros and between a macro and every core edge; `grid` is the placement
-# grid every origin is snapped to.
+# grid every origin is snapped to, as {site_width row_height}, counted from
+# the core's lower-left corner.
 #
 # Returns a dict of name -> {x y}, or an empty result when the macros do not
 # fit. Callers pass a non-empty macro list.
 proc rb::macro_pack::place {core macros halo grid} {
     lassign $core x_min y_min x_max y_max
-    set left [snap_up [expr {$x_min + $halo}] $grid]
-    set bottom [snap_up [expr {$y_min + $halo}] $grid]
+    lassign $grid grid_x grid_y
+    set left [snap_up [expr {$x_min + $halo}] $grid_x $x_min]
+    set bottom [snap_up [expr {$y_min + $halo}] $grid_y $y_min]
     set right [expr {$x_max - $halo}]
     set top [expr {$y_max - $halo}]
 
@@ -62,13 +75,13 @@ proc rb::macro_pack::place {core macros halo grid} {
     set cursor $left
     foreach macro [sort $macros] {
         lassign $macro name width height
-        set x [snap_up $cursor $grid]
+        set x [snap_up $cursor $grid_x $x_min]
         # A macro that overruns the row starts the next one. The guard on
         # the row being non-empty keeps a macro too wide for the core from
         # opening an endless run of empty rows; it fails the fit check
         # below instead.
         if {$shelf_height > 0 && $x + $width > $right} {
-            set shelf_y [snap_up [expr {$shelf_y + $shelf_height + $halo}] $grid]
+            set shelf_y [snap_up [expr {$shelf_y + $shelf_height + $halo}] $grid_y $y_min]
             set shelf_height 0
             set x $left
         }
