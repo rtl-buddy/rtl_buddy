@@ -13,12 +13,14 @@ import fnmatch
 import hashlib
 import json
 import os
+import platform
 import random
 import re
 import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import logging
 import threading
 import types
@@ -300,6 +302,77 @@ def _probe_toolchain_version(exe_path, simulator_family, mtime_ns):
         version = lines[0].strip() if lines else None
     _TOOLCHAIN_VERSION_CACHE[key] = version
     return version
+
+
+# Which Verilator last compiled into a build directory, beside the objects it
+# made. Separate from the compile stamp because an unshared build without
+# `--share-build` has no stamp at all, and the question here is narrower:
+# not "may this build be reused?" but "may this make be incremental?".
+BUILD_TOOLCHAIN_MARKER_NAME = "rb-toolchain.json"
+
+# What a Verilator build directory holds that make treats as current: the
+# objects and archives, and the `-MMD` dependency files naming every header
+# each one was compiled against — by the absolute path of the toolchain that
+# compiled it. Everything else in there (the generated C++, `V<top>.mk`, the
+# stamp, the lock, the verilate marker) is rewritten by the next compile or
+# owned by rtl_buddy, and stays.
+_STALE_BUILD_OUTPUT_GLOBS = ("*.d", "*.o", "*.a")
+
+
+def _toolchain_marker_identity(toolchain) -> dict:
+    """The part of a toolchain fingerprint that decides the make is stale.
+
+    The *resolved* executable, its version and the host platform — not size
+    and mtime: reinstalling the same version is something make's own header
+    timestamps already handle, and scrubbing on it would make every `touch`
+    of the binary a full C++ rebuild. Resolved, because a laptop and the
+    cluster node sharing its checkout can both call theirs
+    `/usr/local/bin/verilator` at the same version while one is a symlink
+    into a tool tree the other has never heard of. Platform, because an
+    object file is only reusable on the machine type that compiled it.
+    """
+    exe = toolchain.get("exe")
+    return {
+        "exe": os.path.realpath(exe) if exe else exe,
+        "platform": f"{sys.platform}-{platform.machine()}",
+        "version": toolchain.get("version"),
+    }
+
+
+def _describe_marker_toolchain(identity):
+    """``<version> (<exe>, <platform>)`` — every field, since any one of them
+    can be the only thing that moved — or ``None`` for no record."""
+    if not identity:
+        return None
+    return (
+        f"{identity.get('version') or 'unknown version'} "
+        f"({identity.get('exe')}, {identity.get('platform') or 'unknown platform'})"
+    )
+
+
+def _scrub_stale_build_outputs(build_dir) -> int:
+    """Delete the make outputs a new toolchain must not inherit; return how many.
+
+    Verilator re-emits its C++ into the directory it finds, and the make it
+    runs includes the `*.d` files already there. Those name the headers the
+    PREVIOUS toolchain compiled against, so a Verilator that moved — another
+    install prefix, a checkout shared between a laptop and a cluster node —
+    fails with ``No rule to make target '<old>/include/verilated.cpp'``, and
+    one that moved without its old install vanishing links objects built
+    against the old runtime. Top level only: Verilator writes no subdirs.
+    Never raises; a file that will not go is left for make to trip on.
+    """
+    removed = 0
+    root = Path(build_dir)
+    for pattern in _STALE_BUILD_OUTPUT_GLOBS:
+        for path in root.glob(pattern):
+            try:
+                if path.is_file():
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 def _log_stale_stamp_toolchain(stored_inputs, current_inputs, *, test_name=None):
@@ -4460,6 +4533,71 @@ class VlogSim:
         self.last_compile_failure = {"returncode": 1, "transcript": transcript}
         return 1
 
+    def _prepare_build_dir_toolchain(self, plan, *, forced):
+        """Keep a Verilator build dir's make from outliving its toolchain.
+
+        Runs only where the front end is about to: the build half of a split
+        compile makes what its verilate job just emitted, and that job has
+        already been here. Scrubs the objects and dependency files (see
+        :func:`_scrub_stale_build_outputs`) when ``--rebuild`` forced this
+        compile — it promises a real rebuild, and is the escape hatch for
+        every staleness nothing here can see — or when the directory was
+        last compiled by another Verilator, or by an rtl_buddy that did not
+        record which. An ordinary source edit keeps its objects: that
+        incremental make is the point of compiling into the old directory.
+
+        Then records this toolchain, before the compile rather than after
+        it: whatever the builder leaves behind from here on, even a failed
+        or killed compile's half, was made by this one.
+        """
+        if not plan.is_verilator or self._skip_verilate:
+            return
+        # `--Mdir` is handed to a builder running in the compile work dir.
+        mdir = Path(plan.compile_work_dir) / plan.build_dir
+        marker = mdir / BUILD_TOOLCHAIN_MARKER_NAME
+        toolchain = (plan.fingerprint or {}).get("toolchain") or (
+            self._fingerprint_toolchain(self.rtl_builder_cfg.get_exe())
+        )
+        current = _toolchain_marker_identity(toolchain)
+        try:
+            recorded = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            recorded = None
+        if not isinstance(recorded, dict):
+            recorded = None
+        if forced:
+            reason = "rebuild"
+        elif recorded == current:
+            reason = None
+        elif recorded is None:
+            reason = "toolchain-unrecorded"
+        else:
+            reason = "toolchain-changed"
+        if reason is not None:
+            removed = _scrub_stale_build_outputs(mdir)
+            if removed:
+                # Console: the C++ build that follows is a full one, minutes
+                # where an incremental one took seconds, and says why.
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "compile.build_dir_scrubbed",
+                    test=self.test_name,
+                    build_path=str(mdir),
+                    removed=removed,
+                    reason=reason,
+                    was=_describe_marker_toolchain(recorded),
+                    now=_describe_marker_toolchain(current),
+                )
+        if recorded != current:
+            try:
+                mdir.mkdir(parents=True, exist_ok=True)
+                self._replace_text(marker, json.dumps(current, sort_keys=True))
+            except OSError:
+                # Best-effort: without it the next compile scrubs again, which
+                # costs a full C++ build and is never wrong.
+                pass
+
     def _rebuild_forced(self, build_dir, *, shared=True):
         """Does ``--rebuild`` override the stamp on ``build_dir`` right now?
 
@@ -5044,6 +5182,12 @@ class VlogSim:
                     self._record_compile(duration_sec=0.0, reused=True)
                     return 0
                 stale_stamp = Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME
+        elif plan.is_verilator:
+            # No stamp to distrust without --share-build: every run compiles.
+            # What `--rebuild` still owes it is a compile that is not
+            # incremental, which only a Verilator build dir can be told
+            # apart from (see _prepare_build_dir_toolchain).
+            forced = self._rebuild_forced(compile_work_dir, shared=False)
 
         # Where this key's stamp and verilate marker live: the shared build
         # directory when there is one, else beside the test's own compile
@@ -5154,6 +5298,7 @@ class VlogSim:
         # simv.
         if stale_stamp is not None:
             stale_stamp.unlink(missing_ok=True)
+        self._prepare_build_dir_toolchain(plan, forced=forced)
         log_event(
             logger,
             logging.INFO,

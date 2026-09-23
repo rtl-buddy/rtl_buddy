@@ -1114,6 +1114,21 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "compiling without it — concurrent rtl-buddy processes "
                 "populating this build directory are not serialised"
             )
+        case "compile.build_dir_scrubbed":
+            # Says why the C++ build that follows is a full one, not an
+            # incremental one: the objects were dropped, not the directory.
+            why = {
+                "rebuild": "--rebuild given",
+                "toolchain-changed": (
+                    f"built by {fields.get('was')}, now {fields.get('now')}"
+                ),
+                "toolchain-unrecorded": "no record of the Verilator that built it",
+            }.get(fields.get("reason"), fields.get("reason"))
+            return (
+                f"{target or 'compile'}: dropped {fields.get('removed')} stale "
+                f"object/dependency files from {fields.get('build_path')} "
+                f"({why}); the C++ build starts clean"
+            )
         case "compile.build_toolchain_changed":
             return (
                 f"{target or 'compile'}: the shared build was compiled by "

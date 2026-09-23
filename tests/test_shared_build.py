@@ -7931,3 +7931,278 @@ def test_a_compile_line_with_no_build_step_is_run_whole_by_the_verilate_phase(
     # build half.
     assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
     assert not (shared / _MARKER).exists()
+
+
+# --- a Verilator build dir must not outlive its toolchain --------------------
+#
+# Verilator re-emits its C++ into the directory it finds, and its make
+# includes the `*.d` files already there — which name the headers the
+# PREVIOUS toolchain compiled against, by absolute path. A checkout shared
+# between a laptop and a cluster node (or a Verilator reinstalled elsewhere)
+# then fails with `No rule to make target '<old>/include/verilated.cpp'`,
+# and `--rebuild` did nothing about it.
+
+
+def _install_listing_builder(monkeypatch, calls):
+    """The fake builder, plus what the `--Mdir` held when the builder ran."""
+    _install_fake_builder(monkeypatch, calls)
+    inner = vlog_sim_module.run_managed_process
+
+    def _listing_run(cmd, capture_output, text, cwd, env=None):
+        mdir = Path(cwd) / cmd[cmd.index("--Mdir") + 1]
+        seen = sorted(p.name for p in mdir.iterdir()) if mdir.is_dir() else []
+        result = inner(cmd, capture_output=capture_output, text=text, cwd=cwd, env=env)
+        calls[-1]["mdir_before"] = seen
+        return result
+
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _listing_run)
+
+
+def _plant_stale_objects(sim):
+    mdir = Path(sim._get_simv_path()).parent
+    mdir.mkdir(parents=True, exist_ok=True)
+    for name in ("verilated.d", "verilated.o", "Vtop__ALL.a"):
+        (mdir / name).write_text("/old/include/verilated.cpp\n")
+    return mdir
+
+
+def _toolchain_marker(sim):
+    return json.loads(
+        (
+            Path(sim._get_simv_path()).parent
+            / vlog_sim_module.BUILD_TOOLCHAIN_MARKER_NAME
+        ).read_text()
+    )
+
+
+_STALE = {"verilated.d", "verilated.o", "Vtop__ALL.a"}
+
+
+@pytest.mark.parametrize("share_build", [False, True])
+def test_an_upgraded_verilator_starts_its_make_clean(
+    tmp_path, monkeypatch, share_build
+):
+    """Same path, another Verilator behind it: the build dir is reused in
+    both modes, and its objects must not be. Unshared is the path that had
+    no stamp to notice anything."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.038 2025-07-08")
+
+    def _sim():
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe=str(exe),
+            share_build=share_build,
+        )
+
+    sim = _sim()
+    assert sim.compile() == 0
+    marker = _toolchain_marker(sim)
+    assert marker["exe"] == os.path.realpath(exe)
+    assert marker["version"] == "Verilator 5.038 2025-07-08"
+    assert marker["platform"]
+    _plant_stale_objects(sim)
+
+    _touch(exe, '#!/bin/sh\necho "Verilator 5.050 2026-09-01"\n')
+    again = _sim()
+    assert again.compile() == 0
+    assert len(calls) == 2
+    assert again._get_simv_path() == sim._get_simv_path()
+    assert not _STALE & set(calls[-1]["mdir_before"])
+    assert _toolchain_marker(again)["version"] == "Verilator 5.050 2026-09-01"
+
+
+def test_another_install_path_also_starts_clean(tmp_path, monkeypatch):
+    """The laptop/cluster case: the exe itself differs, unshared."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    mac = _fake_toolchain(tmp_path, "mac", "Verilator 5.050 2026-09-01")
+    node = _fake_toolchain(tmp_path, "node", "Verilator 5.050 2026-09-01")
+
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(mac), share_build=False
+    )
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    other = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(node), share_build=False
+    )
+    assert other.compile() == 0
+    assert not _STALE & set(calls[-1]["mdir_before"])
+    assert _toolchain_marker(other)["exe"] == os.path.realpath(node)
+
+
+def test_one_name_for_two_installs_still_starts_clean(tmp_path, monkeypatch):
+    """A laptop and a cluster node can both call theirs
+    `/usr/local/bin/verilator` at one version; on the laptop it is a symlink
+    into a tool tree. The name matches, the install does not."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    laptop = _fake_toolchain(tmp_path, "laptop", "Verilator 5.050 2026-09-01")
+    node = _fake_toolchain(tmp_path, "node", "Verilator 5.050 2026-09-01")
+    link = tmp_path / "bin" / "verilator"
+    link.parent.mkdir()
+    link.symlink_to(laptop)
+
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(link), share_build=False
+    )
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    link.unlink()
+    link.symlink_to(node)
+    again = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(link), share_build=False
+    )
+    assert again.compile() == 0
+    assert not _STALE & set(calls[-1]["mdir_before"])
+
+
+def test_another_platform_starts_clean(tmp_path, monkeypatch):
+    """Objects are only reusable on the machine type that compiled them."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.050 2026-09-01")
+
+    def _sim():
+        return _make_sim(
+            tmp_path, monkeypatch, test_name="test_a", exe=str(exe), share_build=False
+        )
+
+    sim = _sim()
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    monkeypatch.setattr(vlog_sim_module.platform, "machine", lambda: "riscv64")
+    assert _sim().compile() == 0
+    assert not _STALE & set(calls[-1]["mdir_before"])
+
+
+def test_an_unchanged_verilator_keeps_its_objects(tmp_path, monkeypatch):
+    """A source edit is what the incremental make is for: nothing scrubbed."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.050 2026-09-01")
+
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(exe), share_build=False
+    )
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    _write_source(tmp_path, "module top; wire w; endmodule\n")
+    again = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(exe), share_build=False
+    )
+    assert again.compile() == 0
+    assert _STALE <= set(calls[-1]["mdir_before"])
+
+
+@pytest.mark.parametrize("share_build", [False, True])
+def test_rebuild_starts_the_make_clean(tmp_path, monkeypatch, share_build):
+    """`--rebuild` promises a real rebuild, and without --share-build it
+    used to do nothing at all."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.050 2026-09-01")
+
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe=str(exe),
+        share_build=share_build,
+    )
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    vlog_sim_module._reset_rebuilt_dirs()
+    forced = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe=str(exe),
+        share_build=share_build,
+        rebuild=True,
+    )
+    assert forced.compile() == 0
+    assert len(calls) == 2
+    assert not _STALE & set(calls[-1]["mdir_before"])
+
+
+def test_a_build_dir_with_no_recorded_toolchain_starts_clean_once(
+    tmp_path, monkeypatch
+):
+    """An obj_dir from before the marker (or from a killed first compile)
+    cannot say what built it: one clean make, then incremental again."""
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.050 2026-09-01")
+
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(exe), share_build=False
+    )
+    _plant_stale_objects(sim)
+    assert sim.compile() == 0
+    assert not _STALE & set(calls[-1]["mdir_before"])
+
+    _plant_stale_objects(sim)
+    again = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(exe), share_build=False
+    )
+    assert again.compile() == 0
+    assert _STALE <= set(calls[-1]["mdir_before"])
+
+
+def test_the_build_half_of_a_split_compile_never_scrubs(tmp_path, monkeypatch):
+    """It makes what its verilate job just emitted; that job already
+    decided whether the directory starts clean."""
+    _write_source(tmp_path)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.050 2026-09-01")
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    plan = sim._compile_plan()
+    mdir = _plant_stale_objects(sim)
+    sim._skip_verilate = True
+    sim._prepare_build_dir_toolchain(plan, forced=True)
+    assert _STALE <= {p.name for p in mdir.iterdir()}
+    assert not (mdir / vlog_sim_module.BUILD_TOOLCHAIN_MARKER_NAME).exists()
+
+
+def test_a_scrub_explains_itself(tmp_path, monkeypatch, caplog):
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_listing_builder(monkeypatch, calls)
+    mac = _fake_toolchain(tmp_path, "mac", "Verilator 5.038 2025-07-08")
+    node = _fake_toolchain(tmp_path, "node", "Verilator 5.050 2026-09-01")
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe=str(mac), share_build=False
+    )
+    assert sim.compile() == 0
+    _plant_stale_objects(sim)
+    with caplog.at_level(_logging.INFO):
+        assert (
+            _make_sim(
+                tmp_path,
+                monkeypatch,
+                test_name="test_a",
+                exe=str(node),
+                share_build=False,
+            ).compile()
+            == 0
+        )
+    assert "dropped 3 stale object/dependency files" in caplog.text
+    assert f"built by Verilator 5.038 2025-07-08 ({os.path.realpath(mac)}, " in (
+        caplog.text
+    )
+    assert f"now Verilator 5.050 2026-09-01 ({os.path.realpath(node)}, " in (
+        caplog.text
+    )
