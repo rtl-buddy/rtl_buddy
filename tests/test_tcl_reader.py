@@ -18,11 +18,17 @@ kinds of test live here:
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
+import pathlib
+import subprocess
+import sys
 import time
 
 import pytest
 
+import rtl_buddy
 from rtl_buddy.constraints import tcl_reader
 from rtl_buddy.constraints.tcl_reader import (
     TclCommand,
@@ -84,15 +90,19 @@ def test_backend_name_follows_the_env_override(constraint_backend):
     assert read_commands("", interest=CLOCK)[1] == constraint_backend
 
 
-def test_the_interp_is_the_default_when_tkinter_imports(monkeypatch):
+def test_the_interp_is_the_default_when_a_worker_runs(monkeypatch):
     monkeypatch.delenv(tcl_reader.BACKEND_ENV, raising=False)
-    expected = "tcl" if tcl_reader.tkinter_available() else "tokenizer"
+    expected = "tcl" if tcl_reader.tcl_available() else "tokenizer"
     assert backend_name() == expected
 
 
-def test_missing_tkinter_falls_back_and_warns_once_per_process(monkeypatch, caplog):
+def test_an_unavailable_interp_falls_back_and_warns_once_per_process(
+    monkeypatch, caplog
+):
     monkeypatch.delenv(tcl_reader.BACKEND_ENV, raising=False)
-    monkeypatch.setattr(tcl_reader, "_TKINTER_ERROR", "No module named '_tkinter'")
+    monkeypatch.setattr(
+        tcl_reader, "_PROBE", tcl_reader._Probe("No module named '_tkinter'")
+    )
     monkeypatch.setattr(tcl_reader, "_UNAVAILABLE_LOGGED", False)
     with caplog.at_level(logging.WARNING):
         assert backend_name() == "tokenizer"
@@ -111,11 +121,13 @@ def test_missing_tkinter_falls_back_and_warns_once_per_process(monkeypatch, capl
     assert "dnf install python3-tkinter" in message
 
 
-def test_forcing_the_interp_without_tkinter_is_fatal(monkeypatch):
+def test_forcing_the_interp_without_one_is_fatal(monkeypatch):
     # A pinned backend that silently answers with the other one is not a
     # pin. Say so instead.
     monkeypatch.setenv(tcl_reader.BACKEND_ENV, "tcl")
-    monkeypatch.setattr(tcl_reader, "_TKINTER_ERROR", "No module named '_tkinter'")
+    monkeypatch.setattr(
+        tcl_reader, "_PROBE", tcl_reader._Probe("No module named '_tkinter'")
+    )
     with pytest.raises(FatalRtlBuddyError) as excinfo:
         backend_name()
     assert "brew install python-tk" in str(excinfo.value)
@@ -458,6 +470,178 @@ def test_an_idle_infinite_loop_hits_the_time_limit(tcl_backend, caplog, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# the worker process: the interp is out of process, and stays out (#641)
+# ---------------------------------------------------------------------------
+
+
+def test_reading_never_loads_tkinter_into_this_process(tcl_backend):
+    """The whole point of the worker.
+
+    ``_tkinter`` starts a Tcl notifier thread that never exits, and on
+    macOS a later ``subprocess.Popen`` from a process that has one can
+    wedge its forked child inside ``close()`` forever (reproduced: an
+    orphaned child of a pytest run sat there 9+ hours). So the reader may
+    evaluate Tcl, but this process must never load it.
+    """
+    cmds, used = read_commands(
+        "set p 10\ncreate_clock -name clk -period [expr {$p*2}]\n",
+        interest=CLOCK,
+        source="x.sdc",
+    )
+    assert used == "tcl"
+    assert cmds[0].words[3] == "20"  # it really was evaluated
+    assert backend_description().startswith("tcl (Tcl ")
+    assert "_tkinter" not in sys.modules
+
+
+def test_no_shipped_module_imports_tkinter_at_import_time():
+    # The worker imports it inside a function; nothing else may import it
+    # at all. A module-level import would load `_tkinter` into `rb` itself
+    # the moment the module is imported, which is the hazard above.
+    root = pathlib.Path(rtl_buddy.__file__).parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:  # module level only
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            if any(n.split(".")[0] in {"tkinter", "_tkinter"} for n in names):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []
+
+
+def test_the_worker_answers_one_json_request_on_stdout(tcl_backend):
+    # The protocol itself, driven the way `_read_with_tcl` drives it.
+    request = {
+        "text": "source inc.sdc\ncreate_clock -name clk -period {10.0}\n",
+        "interest": ["create_clock"],
+        "command_limit": 5000,
+        "time_limit_seconds": 5,
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", tcl_reader.WORKER_MODULE],
+        input=json.dumps(request),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=tcl_reader._worker_env(),
+    )
+    assert proc.returncode == 0, proc.stderr
+    response = json.loads(proc.stdout)
+    assert response["ok"] is True
+    assert response["patchlevel"].split(".")[0] in {"8", "9"}
+    assert response["commands"] == [
+        {
+            "name": "create_clock",
+            "words": ["-name", "clk", "-period", "10.0"],
+            "line": 2,
+        }
+    ]
+    assert response["warnings"] == [
+        {"kind": "include_unsupported", "line": 1, "included": "inc.sdc"}
+    ]
+
+
+def test_a_broken_request_is_reported_not_raised(tcl_backend):
+    proc = subprocess.run(
+        [sys.executable, "-m", tcl_reader.WORKER_MODULE],
+        input="{not json",
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=tcl_reader._worker_env(),
+    )
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["ok"] is False
+
+
+def test_a_worker_that_never_answers_is_killed_and_falls_back(
+    tcl_backend, caplog, monkeypatch
+):
+    # The interp's own time limit is the first line of defence; this is the
+    # second, for a worker that is wedged rather than looping. Raise the
+    # interp limit out of the way and shrink the worker's budget instead.
+    monkeypatch.setattr(tcl_reader, "TCL_TIME_LIMIT_SECONDS", 30)
+    monkeypatch.setattr(tcl_reader, "TCL_WORKER_GRACE_SECONDS", -29.5)
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING):
+        cmds, used = read_commands(
+            "create_clock -name a -period 1\nwhile 1 {}\n",
+            interest=CLOCK,
+            source="hang.sdc",
+        )
+    assert time.monotonic() - started < 20
+    assert used == "tokenizer"
+    assert [c.name for c in cmds] == ["create_clock"]
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "did not answer" in rec.rtl_fields["message"]
+
+
+def test_a_worker_that_crashes_falls_back(tcl_backend, caplog, monkeypatch):
+    monkeypatch.setattr(
+        tcl_reader,
+        "_worker_command",
+        lambda: [
+            sys.executable,
+            "-c",
+            "import sys; print('boom', file=sys.stderr); raise SystemExit(3)",
+        ],
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = read_commands(
+            "create_clock -name a -period 1\n", interest=CLOCK, source="crash.sdc"
+        )
+    assert used == "tokenizer"
+    assert [c.name for c in cmds] == ["create_clock"]
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "exited 3" in rec.rtl_fields["message"]
+    assert "boom" in rec.rtl_fields["message"]
+
+
+def test_garbage_on_the_workers_stdout_falls_back(tcl_backend, caplog, monkeypatch):
+    monkeypatch.setattr(
+        tcl_reader,
+        "_worker_command",
+        lambda: [sys.executable, "-c", "print('not the protocol')"],
+    )
+    with caplog.at_level(logging.WARNING):
+        cmds, used = read_commands(
+            "create_clock -name a -period 1\n", interest=CLOCK, source="junk.sdc"
+        )
+    assert used == "tokenizer"
+    assert [c.name for c in cmds] == ["create_clock"]
+    [rec] = _events(caplog, "constraints.tcl_error")
+    assert "not the protocol" in rec.rtl_fields["message"]
+
+
+def test_noise_before_the_answer_is_tolerated():
+    # A Tk build that prints a warning on startup must not cost us the file.
+    parsed = tcl_reader._parse_response(
+        'Warning: unable to load something\n{"ok": true, "commands": []}\n'
+    )
+    assert parsed == {"ok": True, "commands": []}
+    assert tcl_reader._parse_response("nothing json here") is None
+
+
+def test_a_worker_that_cannot_be_started_reads_as_unavailable(monkeypatch, caplog):
+    monkeypatch.delenv(tcl_reader.BACKEND_ENV, raising=False)
+    monkeypatch.setattr(tcl_reader, "_PROBE", None)
+    monkeypatch.setattr(tcl_reader, "_UNAVAILABLE_LOGGED", False)
+    monkeypatch.setattr(
+        tcl_reader, "_worker_command", lambda: ["/nonexistent/rb-tcl-worker"]
+    )
+    with caplog.at_level(logging.WARNING):
+        assert tcl_reader.tcl_available() is False
+        assert backend_name() == "tokenizer"
+    assert tcl_reader.tcl_patchlevel() is None
+    [rec] = _events(caplog, "constraints.tcl_unavailable")
+    assert "cannot run the Tcl reader worker" in rec.rtl_fields["error"]
+
+
+# ---------------------------------------------------------------------------
 # the tokenizer backend: literal words and the one-per-file warning
 # ---------------------------------------------------------------------------
 
@@ -576,8 +760,8 @@ def test_both_backends_read_the_same_constraints(fixture, monkeypatch):
     an ``[expr]`` is exactly where the two are *meant* to differ, and
     those differences are pinned in the backend-specific tests above.
     """
-    if not tcl_reader.tkinter_available():
-        pytest.skip("this Python has no _tkinter, so there is nothing to compare")
+    if not tcl_reader.tcl_available():
+        pytest.skip("no Tcl reader worker runs here, so there is nothing to compare")
     text = EQUIVALENT_FIXTURES[fixture]
     read = {}
     for backend in ("tcl", "tokenizer"):

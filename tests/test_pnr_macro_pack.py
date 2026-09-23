@@ -5,11 +5,17 @@ OpenROAD database, after the LEFs are read and the netlist linked. It is a
 separate file, free of OpenROAD commands, so these tests can drive it with a
 plain Tcl interpreter — `tclsh`, or the one CPython's `tkinter` embeds —
 instead of a full P&R run.
+
+Both run in a subprocess, never in this one: importing `_tkinter` starts a
+Tcl notifier thread that never exits, and on macOS a later fork+exec from
+such a process can wedge its child in `close()` forever (#641). That is
+also why the constraint reader has a worker process.
 """
 
 import math
 import shutil
 import subprocess
+import sys
 from importlib.resources import files
 
 import pytest
@@ -29,34 +35,39 @@ GRID = "{5 5}"
 SKY130HD_SITE = (0.46, 2.72)
 
 
-def _embedded_interpreter():
-    """CPython's embedded Tcl, or `None` when this build has none.
-
-    `tkinter.Tcl()` needs no display, but a CPython built without the
-    `_tkinter` extension — or with one whose Tcl library is missing — has to
-    fall back to the `tclsh` binary.
-    """
-    try:
-        import tkinter
-    except ImportError:  # pragma: no cover - depends on the build of CPython
-        return None
-    try:
-        return tkinter.Tcl()
-    except Exception:  # pragma: no cover - depends on the build of CPython
-        return None
+#: Runs the script `tkinter` embeds a Tcl interpreter for, in a child
+#: process, and writes the answer on stdout. A CPython built without the
+#: `_tkinter` extension — or with one whose Tcl library is missing — fails
+#: here and the `tclsh` binary is used instead.
+_EMBEDDED_DRIVER = """
+import sys
+try:
+    import tkinter
+    interp = tkinter.Tcl()
+except Exception:
+    raise SystemExit(9)  # no usable embedded Tcl; the caller tries tclsh
+sys.stdout.write(str(interp.eval(sys.stdin.read())))
+"""
 
 
 def _tcl_eval(script: str) -> str:
     """Run `script`, which must leave its answer in `result`, and return it.
 
     Prefers the interpreter `tkinter` embeds (no external binary needed),
-    falls back to `tclsh`, and skips when neither is available. The answer
-    travels in a variable rather than on stdout because only the `tclsh`
-    path has a stdout to read.
+    falls back to `tclsh`, and skips when neither is available. Both run
+    out of process, so the answer travels on stdout either way.
     """
-    interp = _embedded_interpreter()
-    if interp is not None:
-        return interp.eval(script + "\nset result")
+    embedded = subprocess.run(
+        [sys.executable, "-c", _EMBEDDED_DRIVER],
+        input=script + "\nset result\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if embedded.returncode == 0:
+        return embedded.stdout
+    if embedded.returncode != 9:  # pragma: no cover - a test bug, not a skip
+        raise AssertionError(embedded.stderr.strip())
     tclsh = shutil.which("tclsh")
     if tclsh is None:  # pragma: no cover - depends on the machine
         pytest.skip("no Tcl interpreter (tkinter or tclsh) available")

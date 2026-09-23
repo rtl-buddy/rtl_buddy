@@ -1554,8 +1554,9 @@ def _status_glyph(status: str) -> str:
 def constraint_reader_backend() -> str:
     """Backend `rb` reads SDC/XDC constraint files through (#642, #641).
 
-    ``tcl`` (a ``tkinter.Tcl()`` safe interp) or ``tokenizer`` (the vendored
-    word splitter, used when this Python has no ``_tkinter``).
+    ``tcl`` (a safe Tcl interp, run in a short-lived worker process — see
+    :mod:`rtl_buddy.constraints.tcl_worker`) or ``tokenizer`` (the vendored
+    word splitter, used when no such worker can start).
 
     Imported lazily so ``tool_manifest`` stays importable with nothing but the
     stdlib available, which the packaging tests rely on.

@@ -117,8 +117,8 @@ def _force_constraint_backend(monkeypatch: pytest.MonkeyPatch, backend: str) -> 
     """
     from rtl_buddy.constraints import tcl_reader
 
-    if backend == tcl_reader.TCL_BACKEND and not tcl_reader.tkinter_available():
-        pytest.skip("this Python has no _tkinter, so the Tcl interp backend is out")
+    if backend == tcl_reader.TCL_BACKEND and not tcl_reader.tcl_available():
+        pytest.skip("no Tcl reader worker runs here, so the interp backend is out")
     monkeypatch.setenv(tcl_reader.BACKEND_ENV, backend)
     return backend
 
@@ -127,16 +127,17 @@ def _force_constraint_backend(monkeypatch: pytest.MonkeyPatch, backend: str) -> 
 def constraint_backend(request, monkeypatch: pytest.MonkeyPatch) -> str:
     """Run the test once per constraint reader backend.
 
-    ``tcl`` is skipped on a Python without ``_tkinter`` (Homebrew python
-    without ``python-tk``, a distro python without ``python3-tkinter``),
-    which is exactly the host the ``tokenizer`` fallback exists for.
+    ``tcl`` is skipped where the worker process cannot start a Tcl
+    interpreter — a Python without ``_tkinter`` (Homebrew python without
+    ``python-tk``, a distro python without ``python3-tkinter``) — which is
+    exactly the host the ``tokenizer`` fallback exists for.
     """
     return _force_constraint_backend(monkeypatch, request.param)
 
 
 @pytest.fixture
 def tcl_backend(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Pin the Tcl safe-interp backend, skipping without ``_tkinter``."""
+    """Pin the Tcl safe-interp backend, skipping without a usable worker."""
     return _force_constraint_backend(monkeypatch, "tcl")
 
 

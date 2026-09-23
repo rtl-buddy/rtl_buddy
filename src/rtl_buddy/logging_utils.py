@@ -1762,7 +1762,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "constraints.tcl_unavailable":
             return (
-                "this Python cannot import _tkinter "
+                "no Tcl interpreter is reachable from this Python "
                 f"({fields.get('error')}), so SDC/XDC files are read with the "
                 "word tokenizer instead of a Tcl interpreter — $variables and "
                 "[expr] stay unevaluated. "
