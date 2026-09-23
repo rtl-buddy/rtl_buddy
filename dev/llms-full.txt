@@ -4569,6 +4569,8 @@ rb test smoke --share-build --rebuild   # compile it again anyway
 
 The test's `compile.log` records the same breadcrumb, with the command a rebuild would run. `--rebuild` forces one rebuild per build directory per invocation and says nothing about whether builds are shared; dropping `--share-build` does not force one under `--dispatch`, which implies it.
 
+A Verilator build directory also records which Verilator compiled into it (`rb-toolchain.json`: the resolved executable, its version, and the host platform), whether or not builds are shared. When the next compile would run under a different one — an upgrade, another install, or the same checkout built on a laptop and then on a cluster node — or under `--rebuild`, RTL Buddy deletes the directory's `*.o`, `*.d` and `*.a` first, so the C++ build starts clean instead of make following dependency files that name the old toolchain's headers (`No rule to make target '.../include/verilated.cpp'`). The console says so: `basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean`. An ordinary source edit keeps the objects and stays incremental. A directory from before this record starts clean once.
+
 Verilator, VCS, and Icarus support shared builds. An unsupported builder or an absolute `builder-simv` uses the test's own build directory and logs why cross-test sharing was declined. RTL Buddy overrides relative output-location options so the shared directory owns `simv`.
 
 ### Persistent build cache
