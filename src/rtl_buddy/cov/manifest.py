@@ -41,6 +41,12 @@ into it. A consumer that needs one number per metric keeps reading
 ``totals``; a consumer comparing it against the console summary reads
 ``merge_failed`` first.
 
+``model`` is ``null`` when the run was asked not to write one
+(``coverage_model: "none"``, #660). ``totals`` and ``source_totals`` are
+still written then: they come from the same pass over the per-test
+databases, and a consumer that reads only the manifest's figures must not
+lose them to a flag that exists to skip the per-point document.
+
 Schema (``schema_version`` 1)::
 
     {
@@ -55,7 +61,8 @@ Schema (``schema_version`` 1)::
       "merge_failed": false,             # true: the requested merge died
       "failed_metrics": [],              # e.g. ["toggle", "expression"]
       "cov_dir": "artefacts/cov_dir",
-      "model": "artefacts/cov_dir/coverage-model.json",
+      "coverage_model": "full"|"totals"|"none",  # --coverage-model (#660)
+      "model": "artefacts/cov_dir/coverage-model.json"|null,
       "totals": {"line": {"found": .., "hit": .., "ratio": ..}, ...},
       "source_totals": {...}|null,     # same shape, module dropped (#637)
       "merged": {"info": .., "raw": .., "desc": .., "html_dir": ..},
@@ -121,6 +128,7 @@ def build_manifest(
     merge_failed: bool = False,
     failed_metrics=None,
     model_path=None,
+    coverage_model: str = "full",
     totals: dict | None = None,
     source_totals: dict | None = None,
     merged: dict | None = None,
@@ -152,6 +160,7 @@ def build_manifest(
         "merge_failed": bool(merge_failed),
         "failed_metrics": list(failed_metrics or []),
         "cov_dir": rel(cov_dir),
+        "coverage_model": coverage_model,
         "model": rel(model_path),
         "totals": totals,
         # The same run scored with the elaborated module dropped from a

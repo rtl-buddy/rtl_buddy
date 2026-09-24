@@ -4,6 +4,7 @@ logger = logging.getLogger(__name__)
 import pprint
 
 from serde import serde, field
+import os
 import re
 
 from ..errors import FatalRtlBuddyError
@@ -13,6 +14,34 @@ from .toolpath import resolve_tool_path
 
 def process_opts(opts):
     return re.sub(r"\s+", " ", opts).split(" ")
+
+
+#: Set by rtl_buddy, never read from the caller's environment, when
+#: ``compile-time`` tokens are expanded: the one spelling of a project file
+#: that means the same thing from every compile working directory (#659).
+PROJECT_ROOT_VAR = "RTL_BUDDY_PROJECT_ROOT"
+
+_PROJECT_ROOT_VAR_RE = re.compile(
+    r"\$(?:\{%s\}|%s(?![A-Za-z0-9_]))" % ((PROJECT_ROOT_VAR,) * 2)
+)
+
+
+def expand_compile_opts(opts: list[str], project_root: str | None) -> list[str]:
+    """Expand ``${RTL_BUDDY_PROJECT_ROOT}``, ``$VAR`` and ``~`` in ``opts``.
+
+    The compile runs from the test's artefact directory, whose depth moves
+    under ``--run-tag``, so a relative path in ``compile-time`` names a
+    different file per layout (#659). Expanding here gives those tokens the
+    treatment filelist entries already get. An unset variable is left as
+    written (POSIX ``expandvars``), so a compiler that expands it itself
+    still can.
+    """
+    expanded = []
+    for opt in opts:
+        if project_root is not None:
+            opt = _PROJECT_ROOT_VAR_RE.sub(lambda _: project_root, opt)
+        expanded.append(os.path.expanduser(os.path.expandvars(opt)))
+    return expanded
 
 
 @serde

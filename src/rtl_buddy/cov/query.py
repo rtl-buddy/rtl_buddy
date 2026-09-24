@@ -97,7 +97,9 @@ def load_context(project_root, *, cov_dir=None, manifest=None) -> CovContext:
     A manifest with no model is an error rather than an empty answer:
     the model is written by the same code path that writes the manifest,
     so its absence means the artefacts were truncated, not that nothing
-    was covered.
+    was covered — unless the run was asked to skip it with
+    ``--coverage-model none`` (#660), which the manifest records and the
+    error names.
     """
     manifest_path = resolve_manifest_path(
         project_root, cov_dir=cov_dir, manifest=manifest
@@ -109,6 +111,12 @@ def load_context(project_root, *, cov_dir=None, manifest=None) -> CovContext:
 
     root = manifest_mod.project_root_for(manifest_path) or str(project_root)
     model_path = manifest_mod.resolve(manifest_path, document.get("model"))
+    if document.get("coverage_model") == "none":
+        raise CovQueryError(
+            f"cov: {manifest_path} was written with --coverage-model none and "
+            "has no coverage model; re-run without it (or with "
+            "--coverage-model totals) to query points"
+        )
     if model_path is None or not os.path.exists(model_path):
         raise CovQueryError(
             f"cov: {manifest_path} names no coverage model "

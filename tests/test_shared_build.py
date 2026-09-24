@@ -210,6 +210,7 @@ def _make_sim(
     rebuild=False,
     run_id=None,
     build_phase="full",
+    run_tag=None,
 ):
     monkeypatch.chdir(tmp_path)
     builder_cfg = DummyBuilderCfg(
@@ -233,6 +234,7 @@ def _make_sim(
         rebuild=rebuild,
         run_id=run_id,
         build_phase=build_phase,
+        run_tag=run_tag,
     )
 
 
@@ -5881,6 +5883,54 @@ def _cache_sim(checkout, monkeypatch, *, cache_root, test_name, compile_opts=Non
         shared_build_root=cache_root,
         compile_opts=compile_opts,
     )
+
+
+_ROOT_WAIVER_OPTS = ["--binary", "${RTL_BUDDY_PROJECT_ROOT}/rtl/waive.vlt"]
+
+
+@pytest.mark.parametrize("run_tag", [None, "demo"])
+def test_a_project_root_path_in_compile_opts_names_one_file_under_any_tag(
+    tmp_path, monkeypatch, run_tag
+):
+    """`${RTL_BUDDY_PROJECT_ROOT}` survives the deeper cwd `--run-tag` gives (#659)."""
+    _write_checkout(tmp_path)
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="t",
+        suite_dir=tmp_path / "verif" / "blk",
+        project_root=tmp_path,
+        model_path=tmp_path / "verif" / "blk" / "models.yaml",
+        filelist=["../../rtl/a.sv"],
+        compile_opts=_ROOT_WAIVER_OPTS,
+        run_tag=run_tag,
+    )
+    plan = sim._build_compile_plan()
+    waiver = str(tmp_path.resolve() / "rtl" / "waive.vlt")
+    assert waiver in plan.builder_opts
+    assert waiver in sim._compile_argv(plan, quiet=True)
+
+
+def test_a_project_root_path_in_compile_opts_keeps_the_cache_key_portable(
+    tmp_path, monkeypatch
+):
+    """Expanded to an absolute path, the token is still relativised in the key (#659)."""
+    cache = tmp_path / "cache"
+    keys = []
+    for name in ("wt-a", "wt-b"):
+        checkout = tmp_path / name
+        _write_checkout(checkout)
+        (checkout / "rtl" / "waive.vlt").write_text("`verilator_config\n")
+        sim = _cache_sim(
+            checkout,
+            monkeypatch,
+            cache_root=cache,
+            test_name="t",
+            compile_opts=_ROOT_WAIVER_OPTS,
+        )
+        keys.append(sim._build_compile_plan().fingerprint["cmd"])
+    assert "rtl/waive.vlt" in keys[0]
+    assert keys[0] == keys[1]
 
 
 def test_the_cache_namespace_is_the_suite_relative_to_the_project_root(tmp_path):

@@ -48,6 +48,7 @@ from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import GdsMode, PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
+from .cov import model as cov_model
 from .cov import query as cov_query_mod
 from .cov.raw import METRICS as cov_metrics
 from .docs_access import get_page, get_section, list_pages
@@ -1747,6 +1748,15 @@ class RtlBuddy:
                 help="append run coverage scored per source point (covered when any elaboration hit it), beside the per-elaboration figure",
             ),
         ] = False,
+        coverage_model: Annotated[
+            str,
+            typer.Option(
+                "--coverage-model",
+                help="coverage-model.json to write: full (per-test attribution per point), totals (points without attribution), or none (manifest and totals only)",
+                metavar="[full|totals|none]",
+                click_type=click.Choice(list(cov_model.MODEL_MODES)),
+            ),
+        ] = cov_model.MODEL_MODE_FULL,
         rnd_new: Annotated[
             bool,
             typer.Option(
@@ -2115,6 +2125,7 @@ class RtlBuddy:
             dir_summary_paths=dir_summary_paths,
             source_summary=coverage_source_summary,
             command="test",
+            model_mode=coverage_model,
         )
         metadata.extend(cov_metadata)
         # After build_metadata: the manifest and the model are on disk, so a
@@ -7832,6 +7843,15 @@ class RtlBuddy:
                 help="append run coverage scored per source point (covered when any elaboration hit it), beside the per-elaboration figure",
             ),
         ] = False,
+        coverage_model: Annotated[
+            str,
+            typer.Option(
+                "--coverage-model",
+                help="coverage-model.json to write: full (per-test attribution per point), totals (points without attribution), or none (manifest and totals only)",
+                metavar="[full|totals|none]",
+                click_type=click.Choice(list(cov_model.MODEL_MODES)),
+            ),
+        ] = cov_model.MODEL_MODE_FULL,
         share_build: Annotated[
             bool,
             typer.Option(
@@ -8293,6 +8313,7 @@ class RtlBuddy:
                     dir_summary_paths=dir_summary_paths,
                     source_summary=coverage_source_summary,
                     command="regression",
+                    model_mode=coverage_model,
                 )
                 metadata.extend(cov_metadata)
         else:
@@ -8315,6 +8336,7 @@ class RtlBuddy:
                 dir_summary_paths=dir_summary_paths,
                 source_summary=coverage_source_summary,
                 command="regression",
+                model_mode=coverage_model,
             )
             metadata.extend(cov_metadata)
         # Same rule as `test`, applied once the artefacts are written (#638).
