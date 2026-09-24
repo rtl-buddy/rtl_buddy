@@ -677,18 +677,36 @@ Other simulator families omit the field. Omitted means not collected, not zero c
 
 Every run that produces coverage writes `<command root>/cov_dir/manifest.json`, even without merging. The manifest records the run context, totals, tests, and paths to raw, merged, HTML, dataset, description, Coverview, and model artefacts.
 
-Manifest path fields are POSIX project-relative paths when possible. Stable output blocks remain present and use `null` for artefacts that were not produced. `merge_mode` is `raw`, `info_process`, or `null`. `merge_failed` and `failed_metrics` state whether a requested merge survived; see [Read a failed merge](#read-a-failed-merge). `source_totals` sits beside `totals` and is `null` for a manifest whose model carried no such figure.
+Manifest path fields are POSIX project-relative paths when possible. Stable output blocks remain present and use `null` for artefacts that were not produced. `merge_mode` is `raw`, `info_process`, or `null`. `merge_failed` and `failed_metrics` state whether a requested merge survived; see [Read a failed merge](#read-a-failed-merge). `source_totals` sits beside `totals` and is `null` for a manifest whose model carried no such figure. `coverage_model` records the `--coverage-model` value, and `model` is `null` under `none`; see [Skip the model when nothing will read it](#skip-the-model-when-nothing-will-read-it).
 
 `cov_dir/coverage-model.json` stores the actionable detail:
 
 - totals and counts by metric, per elaboration (`totals`) and per source point (`source_totals`);
 - files and their modules;
 - line, branch, toggle, expression, and cover points;
-- hit counts attributed to each test.
+- hit counts attributed to each test, unless the run used `--coverage-model totals`.
 
 Paths are project-relative. Line points are keyed by line; other points use line, column, name, and module because several may share a source line. Both totals blocks ride on the run, on each test and on each file; `source_totals` is the same points keyed without the module. Adding a key does not bump `schema_version`, so a reader of an older document sees `source_totals` absent, never wrong — and consumers omit the key rather than substituting `totals`.
 
 Toggle, expression, and labeled cover detail comes from raw Verilator databases. If a raw database is unavailable, the model can fall back to LCOV info for unnamed line and branch data only.
+
+### Skip the model when nothing will read it
+
+The per-test attribution grows with points × tests. For a large toggle-instrumented suite it can make the model most of a run's output and most of the time spent after dispatch. `--coverage-model` on `test` and `regression` chooses how much of the model to write:
+
+| Value | `coverage-model.json` | Manifest |
+|---|---|---|
+| `full` (default) | Every point with its per-test hit counts | `model` names the file |
+| `totals` | Every point and hit count, with no per-point `tests` map; `attribution: false` | `model` names the file |
+| `none` | Not written; a model left by an earlier run is removed | `model` is `null` |
+
+In every mode the manifest keeps `totals`, `source_totals` and the per-test rows, and records the choice in `coverage_model`. The console summary, merges, `--coverage-dir-summary` and `--coverage-source-summary` are unchanged, because they come from the same pass over the per-test databases. Use `none` for a CI job that records the suite figure and discards its artefacts:
+
+```bash
+rb -M cov regression --coverage-merge --coverage-model none
+```
+
+`rb cov` and the hub `/cov` pane need a model. Under `totals` they report points and totals with no attribution. Under `none` they exit with an error that names the flag.
 
 ## Query saved coverage with `rb cov`
 
@@ -1506,6 +1524,8 @@ rb graph results --run-tag icarus
 A tag must be a single safe path segment: letters, digits, `.`, `_`, and `-`, at most 64 characters. `.`, `..`, and anything containing a path separator are rejected before any directory is created. The directory is dot-prefixed (`.runs`) so a tag can never be confused with a test of the same name, and so every existing reader of the tree — the results-overlay scan, the `+incdir+` walk prune, the artefact clearers — keeps skipping it.
 
 Shared builds stay shared on purpose. A build directory is keyed on the compile fingerprint, including the toolchain executable, so two simulators already get separate `obj_dir`s and two tags that compile the same thing reuse one build instead of paying for it twice.
+
+The compile runs one directory deeper under a tag, so a relative path in a builder mode's `compile-time` opts names a different file with and without one. Spell a project file as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt` instead; see [Simulator builders](../reference/yaml.md#simulator-builders).
 
 Without `--run-tag` nothing moves. The flat layout, the lock path, the log location, and the result envelope bytes are exactly what they were.
 
@@ -5890,11 +5910,12 @@ Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#
 
 ## `--run-tag` covers the test flows, not every reader
 
-`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, the dispatch job commands, and `rb graph results`. Three consequences to plan around:
+`--run-tag` is accepted by `rb test`, `rb randtest`, `rb regression`, the dispatch job commands, and `rb graph results`. Consequences to plan around:
 
 - `rb wave`, `rb cov`, `rb phys`, and the other flow commands resolve the flat `artefacts/<test>/`. Open a tagged run's trace by its path, `artefacts/.runs/<tag>/<test>/dump.fst`.
 - The hub, the MCP server, and `rb graph query` read the untagged `artefacts/graph/results-overlay.json`. Publish one tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
 - Two tagged Slurm runs of one suite serialise their build jobs. The `--dependency=singleton` rendezvous is keyed on the suite directory, which owns the shared build tree; the simulation fan-outs still overlap.
+- A relative path in `builder-opts.<mode>.compile-time` resolves against the compile's working directory, which is one level deeper under a tag. Spell project files with `${RTL_BUDDY_PROJECT_ROOT}/...` so they resolve the same either way.
 - Merged coverage is not namespaced. `--coverage-merge*` writes `<command_root>/cov_dir/` whatever the tag, so two concurrent tagged runs that both merge would write one directory. Merge in one run only, or merge afterwards from each run's per-test `coverage.dat`.
 
 ## Tool flows delete their previous outputs before running
@@ -6425,79 +6446,106 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │   test_name      [TEST_NAME]...  names of tests [default: (run all tests)]           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --test-config                  -c      TEXT     test_config.yaml to use              │
-│                                                 [default: tests.yaml]                │
-│ --list                                          list tests in the selected           │
-│                                                 test-config and exit                 │
-│ --filter                               TEXT     case-sensitive Python regex matched  │
-│                                                 against configured test names        │
-│ --coverage-merge                                merge coverage across selected       │
-│                                                 tests; uses raw merge for            │
-│                                                 summary/html and info-process for    │
-│                                                 Coverview                            │
-│ --coverage-merge-raw                            use raw Verilator merge for merged   │
-│                                                 summary/html/Coverview               │
-│ --coverage-merge-info-process                   use info-process merge for merged    │
-│                                                 summary/Coverview; HTML merge is not │
-│                                                 supported                            │
-│ --coverage-html                                 generate merged LCOV HTML output in  │
-│                                                 coverage_merge.html                  │
-│ --coverage-coverview                            generate Coverview zip output from   │
-│                                                 coverage info                        │
-│ --coverage-dir-summary                 TEXT     append coverage summary lines for    │
-│                                                 repo-relative directory prefixes;    │
-│                                                 may be repeated                      │
-│ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
-│                                                 directory prefixes, one per line     │
-│ --coverage-source-summary                       append run coverage scored per       │
-│                                                 source point (covered when any       │
-│                                                 elaboration hit it), beside the      │
-│                                                 per-elaboration figure               │
-│ --rnd-new                      -n               use a randomly generated seed        │
-│                                                 instead of root config seed          │
-│ --rnd-last                     -l               reuse last generated seed            │
-│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
-│                                                 for each selected test               │
-│ --share-build                                   reuse one compiled simv across tests │
-│                                                 with identical compile inputs        │
-│                                                 (Verilator builders only)            │
-│ --shared-build-root                    TEXT     persistent directory the shared      │
-│                                                 builds are cached under, so the      │
-│                                                 cache survives a workspace wipe      │
-│                                                 [default: (cfg-rtl-reg               │
-│                                                 shared-build-root, else in-tree)]    │
-│ --rebuild                                       recompile even when a valid build    │
-│                                                 already exists (implies nothing      │
-│                                                 about --share-build)                 │
-│ --reg-level                            INTEGER  regression level to stop at          │
-│ --start-level                          INTEGER  regression level to start at         │
-│ --dispatch                             TEXT     execution backend for the test run   │
-│                                                 (local, local-parallel, slurm);      │
-│                                                 opt-in per run —                     │
-│                                                 cfg-dispatch.backend does not        │
-│                                                 redirect rb test                     │
-│                                                 [default: (local)]                   │
-│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
-│                                                 local-parallel                       │
-│                                                 [default: (cfg-dispatch jobs, else   │
-│                                                 min(4, cpu count))]                  │
-│ --orphans                              TEXT     what to do about an interrupted      │
-│                                                 run's jobs that are still queued or  │
-│                                                 running (warn, cancel, adopt)        │
-│                                                 [default: (cfg-dispatch orphans,     │
-│                                                 else warn)]                          │
-│ --plusarg                              TEXT     add or override one runtime plusarg  │
-│                                                 for this run (KEY=VALUE, or bare KEY │
-│                                                 for a valueless +KEY); repeatable,   │
-│                                                 wins over the test's plusargs: and,  │
-│                                                 among repeats, the last one wins     │
-│ --run-tag                              TEXT     namespace this run's artefact tree   │
-│                                                 under artefacts/.runs/<tag>/ so a    │
-│                                                 concurrent run of the same suite     │
-│                                                 gets its own tree, its own tree lock │
-│                                                 and its own log; shared builds stay  │
-│                                                 shared                               │
-│ --help                                          Show this message and exit.          │
+│ --test-config                -c      TEXT                test_config.yaml to use     │
+│                                                          [default: tests.yaml]       │
+│ --list                                                   list tests in the selected  │
+│                                                          test-config and exit        │
+│ --filter                             TEXT                case-sensitive Python regex │
+│                                                          matched against configured  │
+│                                                          test names                  │
+│ --coverage-merge                                         merge coverage across       │
+│                                                          selected tests; uses raw    │
+│                                                          merge for summary/html and  │
+│                                                          info-process for Coverview  │
+│ --coverage-merge-raw                                     use raw Verilator merge for │
+│                                                          merged                      │
+│                                                          summary/html/Coverview      │
+│ --coverage-merge-info-proc…                              use info-process merge for  │
+│                                                          merged summary/Coverview;   │
+│                                                          HTML merge is not supported │
+│ --coverage-html                                          generate merged LCOV HTML   │
+│                                                          output in                   │
+│                                                          coverage_merge.html         │
+│ --coverage-coverview                                     generate Coverview zip      │
+│                                                          output from coverage info   │
+│ --coverage-dir-summary               TEXT                append coverage summary     │
+│                                                          lines for repo-relative     │
+│                                                          directory prefixes; may be  │
+│                                                          repeated                    │
+│ --coverage-dir-summary-file          TEXT                file containing             │
+│                                                          repo-relative directory     │
+│                                                          prefixes, one per line      │
+│ --coverage-source-summary                                append run coverage scored  │
+│                                                          per source point (covered   │
+│                                                          when any elaboration hit    │
+│                                                          it), beside the             │
+│                                                          per-elaboration figure      │
+│ --coverage-model                     [full|totals|none]  coverage-model.json to      │
+│                                                          write: full (per-test       │
+│                                                          attribution per point),     │
+│                                                          totals (points without      │
+│                                                          attribution), or none       │
+│                                                          (manifest and totals only)  │
+│                                                          [default: full]             │
+│ --rnd-new                    -n                          use a randomly generated    │
+│                                                          seed instead of root config │
+│                                                          seed                        │
+│ --rnd-last                   -l                          reuse last generated seed   │
+│ --master-seed                        INTEGER             derive an exact, stable     │
+│                                                          runtime seed for each       │
+│                                                          selected test               │
+│ --share-build                                            reuse one compiled simv     │
+│                                                          across tests with identical │
+│                                                          compile inputs (Verilator   │
+│                                                          builders only)              │
+│ --shared-build-root                  TEXT                persistent directory the    │
+│                                                          shared builds are cached    │
+│                                                          under, so the cache         │
+│                                                          survives a workspace wipe   │
+│                                                          [default: (cfg-rtl-reg      │
+│                                                          shared-build-root, else     │
+│                                                          in-tree)]                   │
+│ --rebuild                                                recompile even when a valid │
+│                                                          build already exists        │
+│                                                          (implies nothing about      │
+│                                                          --share-build)              │
+│ --reg-level                          INTEGER             regression level to stop at │
+│ --start-level                        INTEGER             regression level to start   │
+│                                                          at                          │
+│ --dispatch                           TEXT                execution backend for the   │
+│                                                          test run (local,            │
+│                                                          local-parallel, slurm);     │
+│                                                          opt-in per run —            │
+│                                                          cfg-dispatch.backend does   │
+│                                                          not redirect rb test        │
+│                                                          [default: (local)]          │
+│ --jobs                       -j      INTEGER             concurrent jobs for         │
+│                                                          --dispatch local-parallel   │
+│                                                          [default: (cfg-dispatch     │
+│                                                          jobs, else min(4, cpu       │
+│                                                          count))]                    │
+│ --orphans                            TEXT                what to do about an         │
+│                                                          interrupted run's jobs that │
+│                                                          are still queued or running │
+│                                                          (warn, cancel, adopt)       │
+│                                                          [default: (cfg-dispatch     │
+│                                                          orphans, else warn)]        │
+│ --plusarg                            TEXT                add or override one runtime │
+│                                                          plusarg for this run        │
+│                                                          (KEY=VALUE, or bare KEY for │
+│                                                          a valueless +KEY);          │
+│                                                          repeatable, wins over the   │
+│                                                          test's plusargs: and, among │
+│                                                          repeats, the last one wins  │
+│ --run-tag                            TEXT                namespace this run's        │
+│                                                          artefact tree under         │
+│                                                          artefacts/.runs/<tag>/ so a │
+│                                                          concurrent run of the same  │
+│                                                          suite gets its own tree,    │
+│                                                          its own tree lock and its   │
+│                                                          own log; shared builds stay │
+│                                                          shared                      │
+│ --help                                                   Show this message and exit. │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6549,71 +6597,97 @@ Usage: rtl-buddy regression [OPTIONS]
  run rtl regression
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --reg-config                   -c      TEXT     path to regressions.yaml             │
-│                                                 [default: (Use ./regression.yaml if  │
-│                                                 present, otherwise root_config.yaml  │
-│                                                 reg-cfg-path)]                       │
-│ --reg-level                    -l      INTEGER  regression level to stop at          │
-│                                                 [default: 0]                         │
-│ --start-level                  -s      INTEGER  regression level to start at         │
-│                                                 [default: 0]                         │
-│ --master-seed                          INTEGER  derive an exact, stable runtime seed │
-│                                                 for every selected test              │
-│ --coverage-merge                                merge coverage across regression     │
-│                                                 tests; uses raw merge for            │
-│                                                 summary/html and info-process for    │
-│                                                 Coverview                            │
-│ --coverage-merge-raw                            use raw Verilator merge for merged   │
-│                                                 summary/html/Coverview               │
-│ --coverage-merge-info-process                   use info-process merge for merged    │
-│                                                 summary/Coverview; HTML merge is not │
-│                                                 supported                            │
-│ --coverage-html                                 generate merged LCOV HTML output in  │
-│                                                 coverage_merge.html                  │
-│ --coverage-coverview                            generate Coverview zip output from   │
-│                                                 coverage info                        │
-│ --coverage-per-test                             package one Coverview dataset per    │
-│                                                 test in regression mode              │
-│ --coverage-dir-summary                 TEXT     append coverage summary lines for    │
-│                                                 repo-relative directory prefixes;    │
-│                                                 may be repeated                      │
-│ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
-│                                                 directory prefixes, one per line     │
-│ --coverage-source-summary                       append run coverage scored per       │
-│                                                 source point (covered when any       │
-│                                                 elaboration hit it), beside the      │
-│                                                 per-elaboration figure               │
-│ --share-build                                   reuse one compiled simv across tests │
-│                                                 with identical compile inputs        │
-│                                                 (Verilator builders only)            │
-│ --shared-build-root                    TEXT     persistent directory the shared      │
-│                                                 builds are cached under, so the      │
-│                                                 cache survives a workspace wipe      │
-│                                                 [default: (cfg-rtl-reg               │
-│                                                 shared-build-root, else in-tree)]    │
-│ --rebuild                                       recompile even when a valid build    │
-│                                                 already exists (implies nothing      │
-│                                                 about --share-build)                 │
-│ --dispatch                             TEXT     execution backend for test runs      │
-│                                                 (local, local-parallel, slurm)       │
-│                                                 [default: (cfg-dispatch backend,     │
-│                                                 else local)]                         │
-│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
-│                                                 local-parallel                       │
-│                                                 [default: (cfg-dispatch jobs, else   │
-│                                                 min(4, cpu count))]                  │
-│ --orphans                              TEXT     what to do about an interrupted      │
-│                                                 run's jobs that are still queued or  │
-│                                                 running (warn, cancel, adopt)        │
-│                                                 [default: (cfg-dispatch orphans,     │
-│                                                 else warn)]                          │
-│ --run-tag                              TEXT     namespace this run's artefact tree   │
-│                                                 under artefacts/.runs/<tag>/ so a    │
-│                                                 concurrent run of the same suites    │
-│                                                 gets its own trees, its own tree     │
-│                                                 locks and its own logs; shared       │
-│                                                 builds stay shared                   │
-│ --help                                          Show this message and exit.          │
+│ --reg-config                 -c      TEXT                path to regressions.yaml    │
+│                                                          [default: (Use              │
+│                                                          ./regression.yaml if        │
+│                                                          present, otherwise          │
+│                                                          root_config.yaml            │
+│                                                          reg-cfg-path)]              │
+│ --reg-level                  -l      INTEGER             regression level to stop at │
+│                                                          [default: 0]                │
+│ --start-level                -s      INTEGER             regression level to start   │
+│                                                          at                          │
+│                                                          [default: 0]                │
+│ --master-seed                        INTEGER             derive an exact, stable     │
+│                                                          runtime seed for every      │
+│                                                          selected test               │
+│ --coverage-merge                                         merge coverage across       │
+│                                                          regression tests; uses raw  │
+│                                                          merge for summary/html and  │
+│                                                          info-process for Coverview  │
+│ --coverage-merge-raw                                     use raw Verilator merge for │
+│                                                          merged                      │
+│                                                          summary/html/Coverview      │
+│ --coverage-merge-info-proc…                              use info-process merge for  │
+│                                                          merged summary/Coverview;   │
+│                                                          HTML merge is not supported │
+│ --coverage-html                                          generate merged LCOV HTML   │
+│                                                          output in                   │
+│                                                          coverage_merge.html         │
+│ --coverage-coverview                                     generate Coverview zip      │
+│                                                          output from coverage info   │
+│ --coverage-per-test                                      package one Coverview       │
+│                                                          dataset per test in         │
+│                                                          regression mode             │
+│ --coverage-dir-summary               TEXT                append coverage summary     │
+│                                                          lines for repo-relative     │
+│                                                          directory prefixes; may be  │
+│                                                          repeated                    │
+│ --coverage-dir-summary-file          TEXT                file containing             │
+│                                                          repo-relative directory     │
+│                                                          prefixes, one per line      │
+│ --coverage-source-summary                                append run coverage scored  │
+│                                                          per source point (covered   │
+│                                                          when any elaboration hit    │
+│                                                          it), beside the             │
+│                                                          per-elaboration figure      │
+│ --coverage-model                     [full|totals|none]  coverage-model.json to      │
+│                                                          write: full (per-test       │
+│                                                          attribution per point),     │
+│                                                          totals (points without      │
+│                                                          attribution), or none       │
+│                                                          (manifest and totals only)  │
+│                                                          [default: full]             │
+│ --share-build                                            reuse one compiled simv     │
+│                                                          across tests with identical │
+│                                                          compile inputs (Verilator   │
+│                                                          builders only)              │
+│ --shared-build-root                  TEXT                persistent directory the    │
+│                                                          shared builds are cached    │
+│                                                          under, so the cache         │
+│                                                          survives a workspace wipe   │
+│                                                          [default: (cfg-rtl-reg      │
+│                                                          shared-build-root, else     │
+│                                                          in-tree)]                   │
+│ --rebuild                                                recompile even when a valid │
+│                                                          build already exists        │
+│                                                          (implies nothing about      │
+│                                                          --share-build)              │
+│ --dispatch                           TEXT                execution backend for test  │
+│                                                          runs (local,                │
+│                                                          local-parallel, slurm)      │
+│                                                          [default: (cfg-dispatch     │
+│                                                          backend, else local)]       │
+│ --jobs                       -j      INTEGER             concurrent jobs for         │
+│                                                          --dispatch local-parallel   │
+│                                                          [default: (cfg-dispatch     │
+│                                                          jobs, else min(4, cpu       │
+│                                                          count))]                    │
+│ --orphans                            TEXT                what to do about an         │
+│                                                          interrupted run's jobs that │
+│                                                          are still queued or running │
+│                                                          (warn, cancel, adopt)       │
+│                                                          [default: (cfg-dispatch     │
+│                                                          orphans, else warn)]        │
+│ --run-tag                            TEXT                namespace this run's        │
+│                                                          artefact tree under         │
+│                                                          artefacts/.runs/<tag>/ so a │
+│                                                          concurrent run of the same  │
+│                                                          suites gets its own trees,  │
+│                                                          its own tree locks and its  │
+│                                                          own logs; shared builds     │
+│                                                          stay shared                 │
+│ --help                                                   Show this message and exit. │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -9220,7 +9294,9 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 | `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`; missing `vcd2fst` falls back to VCD |
 | `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder; CLI `--extra-sim-timeout` overrides it |
 
-`--builder-mode` selects a `builder-opts` key. A missing mode or missing compile/run stage is fatal. See [Simulator support](../concepts/simulators.md).
+`--builder-mode` selects a `builder-opts` key. A missing mode or missing compile/run stage is fatal.
+
+`compile-time` tokens get `~` and `$VAR` expansion, like filelist entries, plus `${RTL_BUDDY_PROJECT_ROOT}`, which rtl_buddy sets to the project root. The compile runs from the test's artefact directory, whose depth changes under `--run-tag`, so name a project file as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt` rather than by a relative path. An unset variable is left as written. See [Simulator support](../concepts/simulators.md).
 
 ### Verible, coverage, and Surfer
 

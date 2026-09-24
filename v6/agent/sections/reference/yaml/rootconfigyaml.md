@@ -68,7 +68,9 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](https://rtl-bud
 | `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`; missing `vcd2fst` falls back to VCD |
 | `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder; CLI `--extra-sim-timeout` overrides it |
 
-`--builder-mode` selects a `builder-opts` key. A missing mode or missing compile/run stage is fatal. See [Simulator support](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/simulators/).
+`--builder-mode` selects a `builder-opts` key. A missing mode or missing compile/run stage is fatal.
+
+`compile-time` tokens get `~` and `$VAR` expansion, like filelist entries, plus `${RTL_BUDDY_PROJECT_ROOT}`, which rtl_buddy sets to the project root. The compile runs from the test's artefact directory, whose depth changes under `--run-tag`, so name a project file as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt` rather than by a relative path. An unset variable is left as written. See [Simulator support](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/simulators/).
 
 ### Verible, coverage, and Surfer
 
