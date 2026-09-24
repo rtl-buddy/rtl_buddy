@@ -30,6 +30,7 @@ from stat import S_ISREG
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
 from ..seed_mode import SeedMode
+from ..config.rtl import expand_compile_opts
 
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
@@ -2019,7 +2020,7 @@ class VlogSim:
         return str(Path(self._get_artifact_dir(run_id=run_id)) / TEST_RANDSEED_NAME)
 
     def _coverage_enabled(self):
-        compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+        compile_opts = self._get_builder_compile_opts()
         if any(opt.startswith("--coverage") for opt in compile_opts):
             return True
         # Verilator-side `--coverage-user` injected by assertions=true is enough
@@ -2073,9 +2074,7 @@ class VlogSim:
             return None
         return _find_configured_top(
             spec,
-            self._filter_builder_opts(
-                self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
-            ),
+            self._filter_builder_opts(self._get_builder_compile_opts()),
         )
 
     def _get_top_module_flags(
@@ -2203,6 +2202,18 @@ class VlogSim:
         Return the canonical simulator family for backend-specific handling.
         """
         return self.rtl_builder_cfg.get_simulator_family()
+
+    def _get_builder_compile_opts(self) -> list:
+        """The builder mode's ``compile-time`` opts, variables expanded (#659).
+
+        ``${RTL_BUDDY_PROJECT_ROOT}`` names the project root, so a path
+        spelled with it survives the move of the compile working directory
+        under ``--run-tag``; see :func:`expand_compile_opts`.
+        """
+        return expand_compile_opts(
+            self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode),
+            getattr(self, "_project_root", None),
+        )
 
     def _filter_builder_opts(self, opts: list) -> list:
         return opts
@@ -3870,9 +3881,7 @@ class VlogSim:
         # than guessed (#495).
         self._record_compile(duration_sec=None, reused=None)
 
-        builder_opts = self._filter_builder_opts(
-            rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
-        )
+        builder_opts = self._filter_builder_opts(self._get_builder_compile_opts())
         extra_compile_flags = self._get_extra_compile_flags()
         assertion_flags = self._get_verilator_assertion_flags(builder_opts)
         # After the extra flags, because the subclass that emits its own top

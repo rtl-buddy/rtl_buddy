@@ -29,6 +29,8 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
   `--run-tag <name>`: its tree, lock, log and overlay move under
   `artefacts/.runs/<name>/`, shared builds stay shared, and
   `rb graph results --run-tag <name>` converts that run. Unset changes nothing.
+  The compile cwd moves too, so spell project files in `compile-time` opts as
+  `${RTL_BUDDY_PROJECT_ROOT}/...`, not relative paths.
 - On a long regression use `rb --print-failures-only --machine regression ...`
   to trim `PASS`/`SKIP`/`XFAIL` rows from the console summary; the `summary`
   event and the log keep every row.
