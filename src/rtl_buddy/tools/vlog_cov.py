@@ -800,8 +800,10 @@ class VlogCov:
           only source for toggle, expression and functional, so those
           numbers are *lost*. The returned metrics say so through
           ``merge_failed`` / ``failed_metrics``, and print ``FAIL`` rather
-          than ``UNSP``. Line and branch survive this, because they are read
-          from the per-test LCOV exports the merge did not touch.
+          than ``UNSP``. Line and branch survive this only when ``use-lcov``
+          or HTML output is on, because they are then read from the per-test
+          LCOV exports the merge did not touch. Otherwise those exports are
+          skipped (#661) and line and branch come from the merged database.
         * the merge succeeds and a metric is simply absent — never
           instrumented, or not representable in the artefact it was read
           from. That stays ``UNSP``.
@@ -854,73 +856,77 @@ class VlogCov:
 
         metrics = CoverageMetrics(raw_paths=list(raw_paths), merged_path=merged_path)
 
-        lcov_inputs = []
-        with tempfile.TemporaryDirectory(prefix="rtl_buddy_merge_lcov_") as tmpdir:
-            for idx, raw_path in enumerate(raw_paths):
-                lcov_input = os.path.join(tmpdir, f"part_{idx}.info")
-                lcov_source_roots = [os.path.dirname(raw_path)]
-                if source_roots is not None:
-                    lcov_source_roots.extend(source_roots)
-                if self._write_lcov(
-                    raw_path, lcov_input, source_roots=lcov_source_roots
-                ):
-                    lcov_inputs.append(lcov_input)
+        # The per-test exports feed only the merged `.info`, which is wanted
+        # for `use-lcov` or HTML. Otherwise skip them (#661): line and branch
+        # come from one export of the merged database below.
+        if self.use_lcov or html_output:
+            lcov_inputs = []
+            with tempfile.TemporaryDirectory(prefix="rtl_buddy_merge_lcov_") as tmpdir:
+                for idx, raw_path in enumerate(raw_paths):
+                    lcov_input = os.path.join(tmpdir, f"part_{idx}.info")
+                    lcov_source_roots = [os.path.dirname(raw_path)]
+                    if source_roots is not None:
+                        lcov_source_roots.extend(source_roots)
+                    if self._write_lcov(
+                        raw_path, lcov_input, source_roots=lcov_source_roots
+                    ):
+                        lcov_inputs.append(lcov_input)
 
-            if len(lcov_inputs) > 0 and (self.use_lcov or html_output):
-                merged_lcov_path = os.path.join(outdir, f"{merge_basename}.info")
-                self._merge_lcov_files(lcov_inputs, merged_lcov_path)
-                metrics.lcov_path = merged_lcov_path
-                metrics.line, metrics.branch = self._parse_lcov_summary(
-                    merged_lcov_path
-                )
-                if html_output:
-                    self._require_lcov()
-                    html_base_dir = outdir if html_outdir is None else html_outdir
-                    html_dir = os.path.join(html_base_dir, "coverage_merge.html")
-                    repo_root = str(self._get_repo_root())
-                    genhtml_cmd = [
-                        "genhtml",
-                        "--branch-coverage",
-                        merged_lcov_path,
-                        "--prefix",
-                        repo_root,
-                        "-o",
-                        html_dir,
-                    ]
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "coverage.html_export.start",
-                        simulator=self.simulator_name,
-                        lcov_path=merged_lcov_path,
-                        html_dir=html_dir,
-                        command=" ".join(genhtml_cmd),
+                if len(lcov_inputs) > 0:
+                    merged_lcov_path = os.path.join(outdir, f"{merge_basename}.info")
+                    self._merge_lcov_files(lcov_inputs, merged_lcov_path)
+                    metrics.lcov_path = merged_lcov_path
+                    metrics.line, metrics.branch = self._parse_lcov_summary(
+                        merged_lcov_path
                     )
-                    html_result = subprocess.run(
-                        genhtml_cmd, capture_output=True, text=True, cwd=repo_root
-                    )
-                    if html_result.returncode != 0:
-                        log_event(
-                            logger,
-                            logging.ERROR,
-                            "coverage.html_export.failed",
-                            simulator=self.simulator_name,
-                            lcov_path=merged_lcov_path,
-                            html_dir=html_dir,
-                            returncode=html_result.returncode,
-                            stderr=html_result.stderr.strip(),
-                            stdout=html_result.stdout.strip(),
-                        )
-                    else:
-                        metrics.html_dir = html_dir
+                    if html_output:
+                        self._require_lcov()
+                        html_base_dir = outdir if html_outdir is None else html_outdir
+                        html_dir = os.path.join(html_base_dir, "coverage_merge.html")
+                        repo_root = str(self._get_repo_root())
+                        genhtml_cmd = [
+                            "genhtml",
+                            "--branch-coverage",
+                            merged_lcov_path,
+                            "--prefix",
+                            repo_root,
+                            "-o",
+                            html_dir,
+                        ]
                         log_event(
                             logger,
                             logging.INFO,
-                            "coverage.html_export.completed",
+                            "coverage.html_export.start",
                             simulator=self.simulator_name,
                             lcov_path=merged_lcov_path,
                             html_dir=html_dir,
+                            command=" ".join(genhtml_cmd),
                         )
+                        html_result = subprocess.run(
+                            genhtml_cmd, capture_output=True, text=True, cwd=repo_root
+                        )
+                        if html_result.returncode != 0:
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "coverage.html_export.failed",
+                                simulator=self.simulator_name,
+                                lcov_path=merged_lcov_path,
+                                html_dir=html_dir,
+                                returncode=html_result.returncode,
+                                stderr=html_result.stderr.strip(),
+                                stdout=html_result.stdout.strip(),
+                            )
+                        else:
+                            metrics.html_dir = html_dir
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "coverage.html_export.completed",
+                                simulator=self.simulator_name,
+                                lcov_path=merged_lcov_path,
+                                html_dir=html_dir,
+                            )
 
         if metrics.line is None and merged_path is not None:
             with tempfile.TemporaryDirectory(prefix="rtl_buddy_lcov_") as tmpdir:
