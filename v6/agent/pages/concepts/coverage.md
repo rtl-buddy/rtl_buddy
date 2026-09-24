@@ -65,7 +65,7 @@ The one-line summary uses two different tokens for a missing number:
 | `UNSP` | The metric was never measured: not instrumented, or not representable in the artefact the number was read from. An LCOV `.info` carries no toggle, expression, or functional coverage. |
 | `FAIL` | The metric was measured and the measurement was lost: the tool run that was its only source failed. |
 
-`verilator_coverage --write` is the only source for toggle, expression, and functional coverage under `--coverage-merge` and `--coverage-merge-raw`. When it fails — killed by the environment, out of memory, or exiting non-zero — the per-test LCOV exports still succeed, so line and branch report normally and the rest reads `FAIL`:
+`verilator_coverage --write` is the only source for toggle, expression, and functional coverage under `--coverage-merge` and `--coverage-merge-raw`. When it fails — killed by the environment, out of memory, or exiting non-zero — the rest reads `FAIL`. Line and branch still report normally when `use-lcov` or `--coverage-html` is on, because they are then read from per-test LCOV exports the merge does not touch. Otherwise the merge skips those exports and reads line and branch from the merged database with one export, so a failed merge reports them as `FAIL` too:
 
 ```text
 Merged Coverage: L:0.92 B:0.95 T:FAIL F:FAIL

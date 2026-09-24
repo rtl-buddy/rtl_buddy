@@ -566,7 +566,7 @@ The one-line summary uses two different tokens for a missing number:
 | `UNSP` | The metric was never measured: not instrumented, or not representable in the artefact the number was read from. An LCOV `.info` carries no toggle, expression, or functional coverage. |
 | `FAIL` | The metric was measured and the measurement was lost: the tool run that was its only source failed. |
 
-`verilator_coverage --write` is the only source for toggle, expression, and functional coverage under `--coverage-merge` and `--coverage-merge-raw`. When it fails — killed by the environment, out of memory, or exiting non-zero — the per-test LCOV exports still succeed, so line and branch report normally and the rest reads `FAIL`:
+`verilator_coverage --write` is the only source for toggle, expression, and functional coverage under `--coverage-merge` and `--coverage-merge-raw`. When it fails — killed by the environment, out of memory, or exiting non-zero — the rest reads `FAIL`. Line and branch still report normally when `use-lcov` or `--coverage-html` is on, because they are then read from per-test LCOV exports the merge does not touch. Otherwise the merge skips those exports and reads line and branch from the merged database with one export, so a failed merge reports them as `FAIL` too:
 
 ```text
 Merged Coverage: L:0.92 B:0.95 T:FAIL F:FAIL
@@ -5834,7 +5834,7 @@ Coverage collection and labels use the platform-selected builder, even when a su
 
 ## Coverage merging runs in the submitting process, with no timeout
 
-`verilator_coverage --write`, the coverage model build, and the per-test LCOV exports all run in the process that invoked `rb`, including under `--dispatch slurm` where every simulation ran on a compute node. On a large run this step is not small — a few hundred inputs can peak in the gigabytes — so a shared submit host with a per-user memory cap can kill it. There is no timeout on the merge either: a merge that hangs hangs the run.
+`verilator_coverage --write`, the coverage model build, and the LCOV exports (one per test with `use-lcov` or `--coverage-html`, otherwise one for the merged database) all run in the process that invoked `rb`, including under `--dispatch slurm` where every simulation ran on a compute node. On a large run this step is not small — a few hundred inputs can peak in the gigabytes — so a shared submit host with a per-user memory cap can kill it. There is no timeout on the merge either: a merge that hangs hangs the run.
 
 A merge killed this way reports `FAIL` for toggle, expression, and functional coverage, records `merge_failed` in the manifest and the machine envelope, and exits 1; see [Read a failed merge](concepts/coverage.md#read-a-failed-merge). To avoid it, run the coverage-producing command itself on a compute node (for example, submit `rb regression --coverage-merge` as one job) rather than merging on the submit host.
 
