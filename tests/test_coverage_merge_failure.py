@@ -204,6 +204,73 @@ def test_healthy_merge_keeps_an_unmeasured_metric_unsupported(monkeypatch, proje
     assert metrics.to_dict()["failed_metrics"] == []
 
 
+def _lcov_export_inputs(calls):
+    """The raw database each `verilator_coverage --write-info` call read."""
+    return [
+        cmd[-1] for cmd in calls if cmd[:2] == ["verilator_coverage", "--write-info"]
+    ]
+
+
+def test_merge_without_lcov_exports_only_the_merged_database(monkeypatch, project):
+    """#661: with `use-lcov` off and no HTML, the per-test exports would feed
+    nothing, so the merge skips them and exports the merged database once."""
+    calls = _shim_verilator_coverage(monkeypatch, project, merge_returncode=0)
+    cov = VlogCov(
+        simulator_name="verilator", use_lcov=False, root_cfg=_RootCfg(project)
+    )
+    cov_dir = project / "verif" / "blk" / "cov_dir"
+    cov_dir.mkdir(parents=True)
+    raw = str(project / "verif" / "blk" / "artefacts" / "basic" / "coverage.dat")
+
+    metrics = cov.merge([raw, raw], outdir=str(cov_dir))
+
+    assert metrics is not None
+    assert _lcov_export_inputs(calls) == [str(cov_dir / "coverage_merged.dat")]
+    assert metrics.lcov_path is None
+    assert not (cov_dir / "coverage_merged.info").exists()
+    assert metrics.line == pytest.approx(0.5)
+
+
+def test_merge_with_lcov_still_exports_every_part(monkeypatch, project):
+    """`use-lcov` keeps the per-test exports: they build the merged `.info`."""
+    calls = _shim_verilator_coverage(monkeypatch, project, merge_returncode=0)
+    cov = VlogCov(simulator_name="verilator", use_lcov=True, root_cfg=_RootCfg(project))
+    cov_dir = project / "verif" / "blk" / "cov_dir"
+    cov_dir.mkdir(parents=True)
+    raw = str(project / "verif" / "blk" / "artefacts" / "basic" / "coverage.dat")
+
+    metrics = cov.merge([raw, raw], outdir=str(cov_dir))
+
+    assert _lcov_export_inputs(calls) == [raw, raw]
+    assert metrics.lcov_path == str(cov_dir / "coverage_merged.info")
+
+
+def test_dead_merge_without_lcov_fails_line_and_branch_too(monkeypatch, project):
+    """Without the per-test exports the merged database was the only source
+    for every metric, so a dead merge fails all of them — and no export runs."""
+    calls = _shim_verilator_coverage(monkeypatch, project, merge_returncode=_KILLED)
+    cov = VlogCov(
+        simulator_name="verilator", use_lcov=False, root_cfg=_RootCfg(project)
+    )
+    cov_dir = project / "verif" / "blk" / "cov_dir"
+    cov_dir.mkdir(parents=True)
+
+    metrics = cov.merge(
+        [str(project / "verif" / "blk" / "artefacts" / "basic" / "coverage.dat")],
+        outdir=str(cov_dir),
+    )
+
+    assert _lcov_export_inputs(calls) == []
+    assert metrics.merge_failed is True
+    assert metrics.failed_metrics == [
+        "line",
+        "branch",
+        "toggle",
+        "expression",
+        "functional",
+    ]
+
+
 def test_summary_cells_keep_their_width():
     """`FAIL` is four characters, like `UNSP`: the table does not reflow."""
     failed = CoverageMetrics(
