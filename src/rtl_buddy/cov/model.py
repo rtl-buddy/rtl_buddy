@@ -17,11 +17,14 @@ is a read rather than a re-run. Toggle and expression detail exists only
 in the raw database (:mod:`rtl_buddy.cov.raw`); the LCOV export folds
 both into anonymous records.
 
-**Attribution is unconditional.** Every point carries the per-test hit
+**Attribution by default.** Every point carries the per-test hit
 counts behind it — the ``.desc`` data Coverview gets, except it is built
 whenever per-test artefacts exist rather than only when packaging an
 archive. That is what answers "which test covered this line", and its
-inverse, "what would I lose by dropping this test".
+inverse, "what would I lose by dropping this test". It is also the
+points x tests term that dominates the model's size and build time, so
+``--coverage-model totals`` builds without it (#660); ``attribution``
+records which kind of document this is.
 
 **Paths are project-relative.** Points are keyed by repo-relative source
 path via the one resolver in :mod:`rtl_buddy.cov.source_paths`, so a
@@ -60,9 +63,17 @@ from .raw import (
 from .source_paths import SourcePathResolver
 
 #: Bumped when the document's shape changes incompatibly. Adding a key
-#: is not incompatible — ``source_totals`` (#637) arrived at version 1,
-#: and a reader of an older document sees it absent, never wrong.
+#: is not incompatible — ``source_totals`` (#637) and ``attribution``
+#: (#660) arrived at version 1, and a reader of an older document sees
+#: them absent, never wrong.
 MODEL_SCHEMA_VERSION = 1
+
+#: ``--coverage-model`` values (#660): the whole document, the document
+#: without per-point ``tests`` maps, or no document (manifest only).
+MODEL_MODE_FULL = "full"
+MODEL_MODE_TOTALS = "totals"
+MODEL_MODE_NONE = "none"
+MODEL_MODES = (MODEL_MODE_FULL, MODEL_MODE_TOTALS, MODEL_MODE_NONE)
 
 #: Filename inside ``cov_dir``.
 # Defined in `tools.artifact_paths` — the bottom of the import graph, and
@@ -205,7 +216,12 @@ def _generator() -> str:
 
 
 def build_model(
-    tests, *, project_root, simulator: str | None = None, merged_info=None
+    tests,
+    *,
+    project_root,
+    simulator: str | None = None,
+    merged_info=None,
+    attribution: bool = True,
 ) -> dict:
     """Build the coverage model from a run's per-test artefacts.
 
@@ -216,6 +232,9 @@ def build_model(
     :param merged_info: optional merged ``.info`` used only when no test
         produced any point at all, so a merge-only tree still yields a
         model (with no attribution — a merged file has no test column).
+    :param attribution: record each point's per-test hit counts. False
+        leaves every total and per-test row intact and drops only the
+        per-point ``tests`` maps (#660).
     """
     project_root = str(Path(project_root).resolve())
     files: dict[str, _FileEntry] = {}
@@ -225,6 +244,7 @@ def build_model(
         records = _records_for(artefacts, project_root)
         if records is None:
             continue
+        test_name = artefacts.name if attribution else None
         totals = _empty_totals()
         # This test's points collapsed on their source identity, so its
         # own row carries both figures: one record per elaboration in
@@ -234,7 +254,7 @@ def build_model(
             entry = files.get(path)
             if entry is None:
                 entry = files[path] = _FileEntry(path)
-            entry.add(metric, record, artefacts.name)
+            entry.add(metric, record, test_name)
             bucket = totals[metric]
             bucket["found"] += 1
             if record.get("hits", 0) > 0:
@@ -285,6 +305,7 @@ def build_model(
         "schema_version": MODEL_SCHEMA_VERSION,
         "generator": _generator(),
         "simulator": simulator,
+        "attribution": attribution,
         "totals": totals,
         "source_totals": run_source_totals,
         "counts": {

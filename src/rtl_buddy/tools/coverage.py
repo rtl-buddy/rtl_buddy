@@ -6,6 +6,7 @@
 coverage module handles rtl-buddy coverage result orchestration
 """
 
+import contextlib
 import os
 
 from ..cov import manifest as manifest_mod
@@ -406,6 +407,7 @@ class CoverageReporter:
         suite_name,
         source_roots=None,
         merged_info=None,
+        model_mode=model_mod.MODEL_MODE_FULL,
     ):
         """The structured coverage model for a run, or None.
 
@@ -422,6 +424,10 @@ class CoverageReporter:
         beside them; the model is the only input that carries the
         elaborated module per point, which is what the collapsed figure
         is defined against.
+
+        ``model_mode`` other than ``full`` builds without per-point test
+        attribution (#660): the totals, per-test rows and source-point
+        figures are the same, and the points x tests term is gone.
         """
         tests = self._test_artefacts(
             suite_results,
@@ -436,6 +442,7 @@ class CoverageReporter:
             project_root=self.root_cfg.get_project_rootdir(),
             simulator=self.root_cfg.get_rtl_builder_cfg().get_simulator_family(),
             merged_info=merged_info,
+            attribution=model_mode == model_mod.MODEL_MODE_FULL,
         )
         return model if model["files"] else None
 
@@ -455,6 +462,7 @@ class CoverageReporter:
         merge_failed=False,
         failed_metrics=None,
         model=None,
+        model_mode=model_mod.MODEL_MODE_FULL,
     ):
         """Write the coverage model and manifest, returning the artefacts block.
 
@@ -462,6 +470,10 @@ class CoverageReporter:
         nothing to index, and an empty manifest would advertise coverage
         that does not exist. ``model`` reuses an already-built model (see
         :meth:`build_run_model`) rather than parsing every database twice.
+
+        ``model_mode="none"`` (#660) writes the manifest, totals included,
+        and no model; a model left by an earlier run is removed, so the
+        directory never holds a document the manifest does not describe.
         """
         project_root = self.root_cfg.get_project_rootdir()
         builder_cfg = self.root_cfg.get_rtl_builder_cfg()
@@ -475,12 +487,18 @@ class CoverageReporter:
                 suite_name=suite_name,
                 source_roots=source_roots,
                 merged_info=merged.get("info"),
+                model_mode=model_mode,
             )
         if model is None:
             return None
 
         cov_dir = self._cov_dir(outdir)
-        model_path = model_mod.write_model(model, cov_dir)
+        if model_mode == model_mod.MODEL_MODE_NONE:
+            model_path = None
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(cov_dir, model_mod.MODEL_FILENAME))
+        else:
+            model_path = model_mod.write_model(model, cov_dir)
         manifest = manifest_mod.build_manifest(
             project_root=project_root,
             cov_dir=cov_dir,
@@ -492,6 +510,7 @@ class CoverageReporter:
             merge_failed=merge_failed,
             failed_metrics=failed_metrics,
             model_path=model_path,
+            coverage_model=model_mode,
             totals=model["totals"],
             source_totals=model_mod.source_totals(model),
             merged=merged,
@@ -943,6 +962,7 @@ class CoverageReporter:
         dir_summary_paths=None,
         source_summary=False,
         command="regression",
+        model_mode=model_mod.MODEL_MODE_FULL,
     ):
         """
         Build coverage artifact summaries for merged or unmerged runs.
@@ -978,6 +998,10 @@ class CoverageReporter:
         :meth:`_source_summary_record`. The key is omitted when the
         summary was not asked for, so "absent" keeps meaning "not
         collected" here too.
+
+        ``model_mode`` is ``--coverage-model`` (#660): ``full`` writes the
+        whole model, ``totals`` writes it without per-point test
+        attribution, and ``none`` writes only the manifest.
         """
         metadata = []
         coverage = {
@@ -1232,6 +1256,7 @@ class CoverageReporter:
             suite_name=suite_name,
             source_roots=source_roots,
             merged_info=merged_paths["info"],
+            model_mode=model_mode,
         )
         artefacts = self.write_artefacts(
             suite_results,
@@ -1247,6 +1272,7 @@ class CoverageReporter:
             merge_failed=coverage["merge_failed"],
             failed_metrics=coverage["failed_metrics"],
             model=model,
+            model_mode=model_mode,
         )
         if artefacts is not None:
             coverage["artefacts"] = artefacts
