@@ -584,12 +584,13 @@ def library_fingerprint(paths, root_cfg) -> list[str]:
 
 
 def resolve_dont_use_cells(synth_cfg, root_cfg) -> list[str]:
-    """Cell patterns the run's PDK excludes, or `[]` when it names none.
+    """Cell patterns the run's platform excludes, or `[]` when it names none.
 
     One `cfg-pdks.dont-use-cells` list serves both flows: P&R emits
     `set_dont_use`, synthesis passes the same patterns to the two Yosys
-    passes that pick library cells. A run with no platform — an unmapped
-    synthesis — has no PDK to ask.
+    passes that pick library cells. A synth platform's own
+    `dont-use-cells` is added to the PDK's (#656). A run with no
+    platform — an unmapped synthesis — has no PDK to ask.
     """
     platform = synth_cfg.get_platform()
     if not platform or root_cfg is None:

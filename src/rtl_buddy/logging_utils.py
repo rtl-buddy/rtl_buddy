@@ -2431,6 +2431,25 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('second_type')} in {fields.get('tier')} — "
                 "keeping the first; the two tiers disagree about what that id means"
             )
+        case "pnr.dont_use_unmatched":
+            patterns = ", ".join(str(p) for p in fields.get("patterns") or [])
+            return (
+                f"pnr {fields.get('pnr')}: dont-use-cells pattern(s) {patterns} "
+                "matched no Liberty cell (STA-0122), so they exclude nothing — "
+                "check them for typos"
+            )
+        case "pnr.dont_use_instantiated":
+            shown = [
+                f"{inst} ({master})"
+                for inst, master, _pattern in (fields.get("instances") or [])[:3]
+            ]
+            more = int(fields.get("count") or 0) - len(shown)
+            tail = f" and {more} more" if more > 0 else ""
+            return (
+                f"pnr {fields.get('pnr')}: {fields.get('count')} instance(s) of "
+                f"dont-use-cells in the routed design: {', '.join(shown)}{tail}; "
+                f"every one is listed as RB-DONT-USE-VIOLATION in {fields.get('log')}"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above

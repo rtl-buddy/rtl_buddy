@@ -8,6 +8,8 @@ from .pdk import (
     DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_PADDING,
     PlacementFile,
+    _validate_dont_use_cells,
+    merge_dont_use_cells,
     validate_placement,
 )
 
@@ -54,6 +56,9 @@ class PnrPlatformConfigFile:
     # field: the platform wins where it says something, the PDK where it
     # does not.
     placement: PlacementFile = field(default_factory=PlacementFile)
+    # Cells this platform excludes on top of the PDK's `dont-use-cells`
+    # (#656). Added to the PDK list, never replacing it.
+    dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
 
 
 class PnrPlatformConfig:
@@ -79,6 +84,12 @@ class PnrPlatformConfig:
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._signal_layers = cfg.routing_layers.signal
         self._clock_layers = cfg.routing_layers.clock
+        self._dont_use_cells = merge_dont_use_cells(
+            self._pdk.get_dont_use_cells(),
+            _validate_dont_use_cells(
+                cfg.dont_use_cells, f"pnr platform '{self._name}'"
+            ),
+        )
 
         placement = validate_placement(cfg.placement, f"pnr platform '{self._name}'")
         self._placement_density = _first_set(
@@ -131,6 +142,10 @@ class PnrPlatformConfig:
     def get_placement_macro_halo(self) -> float:
         """Macro halo in microns, after platform/PDK/default."""
         return self._placement_macro_halo
+
+    def get_dont_use_cells(self) -> list[str]:
+        """The PDK's excluded cells plus this platform's, PDK first (#656)."""
+        return list(self._dont_use_cells)
 
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering

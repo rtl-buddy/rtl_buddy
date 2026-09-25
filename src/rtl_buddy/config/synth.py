@@ -8,6 +8,7 @@ from serde.yaml import from_yaml
 from typing import Literal
 
 from .model import ModelConfig, ModelConfigLoader
+from .pdk import _validate_dont_use_cells, merge_dont_use_cells
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .toolpath import resolve_tool_path
@@ -20,6 +21,9 @@ class SynthPlatformConfigFile:
     name: str
     pdk: str
     corner: str = ""
+    # Cells this platform excludes on top of the PDK's `dont-use-cells`
+    # (#656), mirroring the P&R platform key.
+    dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
 
 
 class SynthPlatformConfig:
@@ -38,7 +42,12 @@ class SynthPlatformConfig:
         self._corner = cfg.corner or pdk.get_default_corner()
         self._lib_path = pdk.get_corner_path(self._corner)
         self._lef_paths = [p for p in (pdk.get_tech_lef(), pdk.get_macro_lef()) if p]
-        self._dont_use_cells = pdk.get_dont_use_cells()
+        self._dont_use_cells = merge_dont_use_cells(
+            pdk.get_dont_use_cells(),
+            _validate_dont_use_cells(
+                cfg.dont_use_cells, f"synth platform '{self._name}'"
+            ),
+        )
 
     def get_name(self) -> str:
         return self._name
@@ -56,7 +65,7 @@ class SynthPlatformConfig:
         return list(self._lef_paths)
 
     def get_dont_use_cells(self) -> list[str]:
-        """The PDK's excluded cells — the same list P&R reads."""
+        """The PDK's excluded cells plus this platform's, PDK first (#656)."""
         return list(self._dont_use_cells)
 
 

@@ -118,6 +118,18 @@ def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
     return validated
 
 
+def merge_dont_use_cells(pdk_cells: list[str], platform_cells: list[str]) -> list[str]:
+    """A platform's `dont-use-cells` added to its PDK's, in a stable order.
+
+    Additive, never a replacement (#656): a platform can only exclude more,
+    so a PDK-level exclusion — a cell the process cannot legalise — cannot
+    be dropped by a platform that forgets to repeat it. The PDK's entries
+    come first and a pattern named by both is kept once, so a platform that
+    adds nothing renders exactly the list the PDK alone did.
+    """
+    return list(dict.fromkeys([*pdk_cells, *platform_cells]))
+
+
 @serde
 class PdkConfigFile:
     name: str
