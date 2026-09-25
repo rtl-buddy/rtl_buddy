@@ -1990,6 +1990,24 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # Same for the extraction rules, which are read only after detailed
+        # route — the most expensive way to find a typo (#101). Ahead of the
+        # checkpoint directory, so a typo leaves no empty run behind.
+        rcx_rules = platform.get_pdk().get_rcx_rules()
+        if rcx_rules and not os.path.isfile(rcx_rules):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.rcx_rules_missing",
+                pnr=self.pnr_cfg.get_name(),
+                path=rcx_rules,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"rcx-rules not found: {rcx_rules}",
+                fail_stage="setup",
+            )
+
         # `create_blockage` first shipped in OpenROAD 26Q1, above the
         # minimum this flow otherwise supports; an older build would die on
         # `invalid command name` after the floorplan is written (#105).
@@ -2033,23 +2051,6 @@ class OpenRoadPnr:
                     desc=f"checkpoint setup failed: {e}",
                     fail_stage="setup",
                 )
-        # Same for the extraction rules, which are read only after detailed
-        # route — the most expensive way to find a typo (#101).
-        rcx_rules = platform.get_pdk().get_rcx_rules()
-        if rcx_rules and not os.path.isfile(rcx_rules):
-            log_event(
-                logger,
-                logging.ERROR,
-                "pnr.rcx_rules_missing",
-                pnr=self.pnr_cfg.get_name(),
-                path=rcx_rules,
-            )
-            return PnrFailResults(
-                name=self.name + "/results",
-                desc=f"rcx-rules not found: {rcx_rules}",
-                fail_stage="setup",
-            )
-
         try:
             script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
         except Exception as e:

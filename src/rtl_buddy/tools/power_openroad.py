@@ -728,17 +728,21 @@ class OpenRoadPower(BasePower):
         # The capture `_write_script` took, not a fresh resolution: this
         # names the database OpenROAD was given (#560).
         odb = (self._script_inputs or {}).get("odb")
-        return {
+        identity = {
             "netlist_sha256": None,
             "input_path": (
                 project_relative(odb, project_root_for_dir(self.artefact_dir))
                 if odb
                 else None
             ),
-            # One ODB timed on its extracted SPEF and on the global-route
-            # estimate is two measurements, and has to digest as two (#101).
-            "parasitics": self._parasitics,
         }
+        # One ODB timed on its extracted SPEF and on the global-route
+        # estimate is two measurements, and has to digest as two (#101).
+        # Only the SPEF case adds the key, so an estimate-path model keeps
+        # the digest it had before extraction existed.
+        if self._parasitics == "spef":
+            identity["parasitics"] = self._parasitics
+        return identity
 
     def _resolve_platform(self):
         """Resolve to a PnrPlatformConfig (provides Liberty path)."""

@@ -168,7 +168,7 @@ write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
 # file, so it is written only when the PDK declares `rcx-rules` (#101):
 # extraction then runs after fill, `${DESIGN}.routed.spef` is written
 # and read back, and the final reports above are timed on it, as ORFS
-# does. Without rules (Nangate45 / FreePDK45 ships none) there is
+# does. Without rules (the Nangate45 demo sets none) there is
 # nothing to write — the estimate_parasitics annotations are not
 # extractable ("[INFO RCX-0134] no extraction data.") — and the ODB
 # handoff carries the same routing-derived cap to rb power instead,

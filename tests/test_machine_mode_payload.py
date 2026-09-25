@@ -523,3 +523,16 @@ def test_machine_summary_without_verdict_column_has_no_counts(tmp_path, capsys):
     ]
     summary = [e for e in events if e.get("event") == "summary"][0]
     assert "counts" not in summary
+
+
+def test_power_result_row_says_which_parasitics_were_used():
+    """`spef` or `estimated`, so an agent can tell the two apart (#101)."""
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    results = PowerPassResults(
+        name="p/results", mode="static", total_w=0.5, parasitics="spef"
+    )
+    row = RtlBuddy._power_result_row(
+        object(), {"power_name": "block", "results": results}
+    )
+    assert row["parasitics"] == "spef"

@@ -11378,6 +11378,9 @@ class RtlBuddy:
             "unpowered_instance_count",
             # OpenROAD thread provenance, as for a pnr row (#654).
             "openroad_threads",
+            # What a post-P&R run timed the routing on: `spef` (the P&R
+            # run's OpenRCX extraction) or `estimated` (#101).
+            "parasitics",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
