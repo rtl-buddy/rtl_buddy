@@ -39,9 +39,12 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 ## Synthesis correctness gates
 
 For block boundary planning, set `pnr.yaml`'s optional `pin-constraints` Tcl
-path relative to that YAML. It runs after floorplan/tracks, before `place_pins`.
-Do not place pin-region commands in SDC, which is read before the die exists.
-The default without the key remains unconstrained placement.
+path relative to that YAML. It runs just before `place_pins`, which follows
+macro placement and the PDN. Do not place pin-region commands in SDC, which is
+read before the die exists. The default without the key remains unconstrained
+placement. Keep macros off a pin edge with `floorplan.macro-anchor` (the packer
+starts in that corner); `floorplan.blockages` adds hard/soft/partial placement
+blockages, and macros avoid the hard ones.
 
 `rb synth` (both backends) gates three silent-corruption shapes before
 reporting PPA. A `function`/`task` without an explicit `automatic` lifetime

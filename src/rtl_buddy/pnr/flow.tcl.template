@@ -2,8 +2,9 @@
 #
 # Placeholders are substituted by Python before invoking openroad; no
 # user-edits should be required. Stage order:
-#   read -> floorplan -> pins -> tie cells -> global place -> resize ->
-#   legalize -> CTS -> detail place -> route -> fill -> reports.
+#   read -> floorplan -> tie cells -> macros -> PDN -> pins ->
+#   global place -> resize -> legalize -> CTS -> detail place -> route ->
+#   fill -> reports.
 
 set DESIGN          {{ design }}
 set NETLIST         {{ netlist }}
@@ -52,11 +53,7 @@ initialize_floorplan \
     -aspect_ratio $CORE_ASPECT \
     -core_space   $CORE_MARGIN
 make_tracks
-
-puts ">>> IO pin placement"
-{{ pin_constraints_tcl }}
-place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
-
+{{ blockages_block }}
 puts ">>> Tie cells"
 if {[string length $TIEHI_CELL_PORT] > 0} { insert_tiecells $TIEHI_CELL_PORT }
 if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
@@ -85,7 +82,7 @@ if {[llength $macros] > 0} {
   }
   set placement [rb::macro_pack::solve \
       [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \
-      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron]
+      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{{ macro_pack_directives }}]
   foreach inst $macros {
     lassign [dict get $placement [$inst getName]] x y
     $inst setLocation $x $y
@@ -94,6 +91,17 @@ if {[llength $macros] > 0} {
   }
 }
 {{ pdn_block }}
+# Pins go in after the macros and the power grid, as OpenROAD's reference
+# flow places them (#105). Before, every macro was still unplaced: each one
+# drew a PPL-0015 warning, and the pin placer's wirelength-driven assignment
+# saw it at the origin rather than where its pins really are. Note that
+# `place_pins` only excludes a boundary stretch a placed macro actually
+# touches; the packer keeps macros a halo inside the core, so keeping pins
+# clear of them is `floorplan.macro-anchor`'s job, not this ordering's.
+puts ">>> IO pin placement"
+{{ pin_constraints_tcl }}
+place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
+
 puts ">>> Global placement"
 global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}
 

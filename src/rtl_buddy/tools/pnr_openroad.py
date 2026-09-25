@@ -14,7 +14,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
-from ..config.pnr import GdsMode, PnrConfig
+from ..config.pnr import BlockageType, GdsMode, MacroAnchor, PnrConfig, PnrFloorplan
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
@@ -362,6 +362,61 @@ def _resolve_klayout_exe() -> str | None:
     return shutil.which("klayout")
 
 
+def _tcl_microns(value: float) -> str:
+    """A micron coordinate as a Tcl number, to the nanometre and no further
+    (every PDK's database unit is at least that fine)."""
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
+def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
+    """The Tcl for `floorplan.blockages` and `floorplan.macro-anchor` (#105).
+
+    Returns ``(blockages_block, macro_pack_directives)``. Both are empty for
+    a floorplan that sets neither key, so its pnr.tcl renders as before.
+
+    The blockages block carries its own leading newline and runs right after
+    the floorplan, ahead of macro placement and global placement. A hard
+    blockage's rectangle, read back from the database in DBU, also goes onto
+    `MACRO_KEEPOUTS`, which the packer keeps every macro out of: a hard
+    blockage over a macro would be a floorplan contradiction. Soft and
+    partial blockages only thin out standard cells, so macros may sit on
+    them. `create_blockage` takes its density as a percentage.
+
+    The directives are the packer's optional trailing arguments, appended to
+    the `rb::macro_pack::solve` call: the anchor, then the keep-outs.
+    """
+    lines = []
+    has_keepouts = False
+    for blockage in fp.blockages:
+        region = "{" + " ".join(_tcl_microns(v) for v in blockage.rect) + "}"
+        command = f"create_blockage -region {region}"
+        if blockage.type is BlockageType.HARD:
+            has_keepouts = True
+            lines.append(f"set blockage_box [[{command}] getBBox]")
+            lines.append(
+                "lappend MACRO_KEEPOUTS "
+                "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
+            )
+        elif blockage.type is BlockageType.SOFT:
+            lines.append(f"{command} -soft")
+        else:
+            density = f"{blockage.max_density * 100:.6g}"
+            lines.append(f"{command} -max_density {density}")
+    blockages_block = ""
+    if lines:
+        header = ['puts ">>> Placement blockages"']
+        if has_keepouts:
+            header.append("set MACRO_KEEPOUTS {}")
+        blockages_block = "\n" + "\n".join(header + lines) + "\n"
+
+    directives = ""
+    if has_keepouts:
+        directives = f" \\\n      {fp.macro_anchor.value} $MACRO_KEEPOUTS"
+    elif fp.macro_anchor is not MacroAnchor.LOWER_LEFT:
+        directives = f" \\\n      {fp.macro_anchor.value}"
+    return blockages_block, directives
+
+
 class OpenRoadPnr:
     """OpenROAD-driven P&R backend.
 
@@ -530,6 +585,8 @@ class OpenRoadPnr:
         threads_tcl = self._threads().tcl()
         threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
 
+        blockages_block, macro_pack_directives = _floorplan_directives(fp)
+
         pin_script = self.pnr_cfg.pin_constraints
         pin_constraints_tcl = ""
         if pin_script is not None:
@@ -560,6 +617,8 @@ class OpenRoadPnr:
             "place_padding": str(platform.get_placement_padding()),
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
+            "macro_pack_directives": macro_pack_directives,
+            "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
             "pdn_block": pdn_block,
