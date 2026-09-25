@@ -720,12 +720,22 @@ class _FakePlatform:
     with a different object (#570).
     """
 
-    def __init__(self, liberty="/pdk/fake/nangate45_typ.lib", pdk=None):
+    def __init__(self, liberty="/pdk/fake/nangate45_typ.lib", pdk=None, corners=None):
         self._liberty = liberty
         self._pdk = pdk or _FakePdk("/pdk/fake/tech.lef")
+        # corner -> Liberty, primary first, for a multi-corner platform
+        # (#104, #105); `None` is the single-corner platform every other
+        # test uses.
+        self._corners = corners
 
     def get_sta_lib_path(self):
         return self._liberty
+
+    def is_multi_corner(self):
+        return bool(self._corners) and len(self._corners) > 1
+
+    def get_sta_corner_lib_paths(self):
+        return dict(self._corners or {})
 
     def get_pdk(self):
         return self._pdk

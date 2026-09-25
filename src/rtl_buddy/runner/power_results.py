@@ -70,6 +70,8 @@ class PowerPassResults(PowerResults):
         phys_model: str | None = None,
         unpowered_cells: list | None = None,
         unpowered_instance_count: int = 0,
+        worst_corner: str | None = None,
+        corners: dict | None = None,
     ):
         unpowered_cells = list(unpowered_cells or [])
         super().__init__(
@@ -100,6 +102,13 @@ class PowerPassResults(PowerResults):
         # Absent on a synth-source run, which has no routing (#101).
         if parasitics is not None:
             self.results["parasitics"] = parasitics
+        # Multi-corner signoff (#104, #105): the watts above are the worst
+        # (highest-total) corner's, named here, and `corners` carries each
+        # corner's own four. Both absent on a single-corner run.
+        if worst_corner is not None:
+            self.results["worst_corner"] = worst_corner
+        if corners:
+            self.results["corners"] = corners
         # Where the per-instance breakdown behind these scalars was written
         # (#558). Absent when the run could not publish one.
         if phys_model is not None:

@@ -61,6 +61,38 @@ cfg-pnr-platforms:
 
 The PDK entry supplies Liberty, technology and macro LEF, cell GDS, site, and other cell names. See [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk) and the [root config schema](../reference/yaml.md#root_configyaml).
 
+### Sign off at several corners
+
+`corners:` in place of `corner:` analyses a list of the PDK's corners together. `rb pnr` and `rb power` both read it, since both select their Liberty through the same `cfg-pnr-platforms` entry:
+
+```yaml
+cfg-pdks:
+  - name: sky130hd
+    corners:
+      tt: pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+      ss: pdk/sky130hd/lib/sky130_fd_sc_hd__ss_n40C_1v40.lib
+      ff: pdk/sky130hd/lib/sky130_fd_sc_hd__ff_n40C_1v95.lib
+
+cfg-pnr-platforms:
+  - name: sky130hd_mc
+    pdk: sky130hd
+    corners: [tt, ss, ff]    # the first entry is the primary corner
+```
+
+Every corner is analysed in **one** OpenROAD session, not one session per corner. The flow calls `define_corners` and then reads each corner's Liberty with `read_liberty -corner`. As a result, `repair_design`, `repair_timing` and the hold repair see all corners, and the final `report_worst_slack` and `report_tns` report the worst across them. Clock-tree synthesis is the exception: OpenROAD characterises CTS buffers and wires at its command corner, which is the first corner listed. That is why the first entry of `corners:` is called the primary. A `lib-paths` macro that has a single Liberty is read into every corner, as ORFS does. OpenSTA then logs `STA-1140 library ... already exists` once for each extra corner; the warning is expected. The macro keeps the timing of the corner its Liberty was characterised at, which can make a corner fail for reasons that belong to the macro. For example, a TT SRAM Liberty with `max_transition: 0.04` stops `repair_design` at `RSZ-0090` at a slow corner. Give such a macro per-corner Liberty.
+
+Rules:
+
+- `corner` and `corners` are mutually exclusive.
+- An empty list is an error.
+- Each name must be declared in the PDK's `corners:` and appear only once.
+- Names may contain only letters, digits, `_`, `.` and `-`, because each one becomes an OpenSTA corner name and part of a report file name.
+- A one-entry list is the same run as `corner:` with that name.
+- A platform that sets neither key keeps the PDK's first corner.
+- The generated `pnr.tcl` and `power.tcl` of a single-corner platform are unchanged.
+
+`rb synth` stays single-corner and reads its own `cfg-synth-platforms` entry.
+
 ## Tune the process-dependent steps
 
 The flow's placement, clock-tree and power-grid steps are calibrated for Nangate45. A different process declares its own values; every key below is optional, and a config that sets none of them gets the behaviour the flow had before they existed.
@@ -371,6 +403,13 @@ Paths are project-relative POSIX where they can be, as in `phys-manifest.json`. 
 ## Interpret results
 
 The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing; zero DRC lines indicate a clean route.
+
+On a multi-corner platform, `wns_setup_ps`, `wns_hold_ps` and `tns_ps` are the worst across all corners, so summaries, gates and `xfail` markers read them unchanged. The result also carries:
+
+- `worst_setup_corner` and `worst_hold_corner`: the corner that set each worst value. The summary shows them in a `Worst Corner` column.
+- `corners`: each corner's own `wns_setup_ps`, `wns_hold_ps` and `tns_ps`, in config order.
+
+These per-corner values are also in `pnr.log`, after `>>> Per-corner timing`. `timing.rpt` shows the worst path across all corners.
 
 A run passes when OpenROAD exits 0 and emits no `[ERROR ...]` line, and — with `gds-mode: strict` — when the requested export was delivered complete. It skips when filtered by `reglvl` or when `tool:` is unsupported. Timing violations or DRC counts are reported as metrics; inspect the result policy for your project before using them as signoff gates.
 
