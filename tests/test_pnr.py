@@ -3249,6 +3249,61 @@ def test_dont_use_events_have_readable_messages():
     assert "u0 (probec_p_8), u1 (probec_p_8), u2 (probec_p_8) and 2 more" in placed
 
 
+def test_pnr_warns_about_a_lib_cell_pattern_whose_library_is_missing(
+    tmp_path, monkeypatch
+):
+    """A `lib/cell` pattern naming no library draws STA-0121 only — the cell
+    half is never looked up — and must still be reported (#656)."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log="[WARNING STA-0121] library 'badlib' not found.\n",
+        returncode=0,
+        dont_use_cells=["AND2_X1", "badlib/foo*", "goodlib/bar*"],
+    )
+
+    backend.run()
+
+    _level, fields = _one_event(events, "pnr.dont_use_unmatched")
+    assert fields["patterns"] == ["badlib/foo*"]
+
+
+def test_pnr_does_not_read_a_previous_runs_log(tmp_path, monkeypatch):
+    """OpenROAD truncates `pnr.log` only once it is running; one that dies
+    before that must not leave the previous run's violation lines to be read
+    as this run's (#656)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log="", returncode=0, dont_use_cells=["AND2_X1"]
+    )
+    log = Path(backend._log_path())
+    log.write_text("RB-DONT-USE-VIOLATION: u1 AND2_X1 AND2_X1\n")
+
+    def _dies_before_main(cmd, **_kwargs):
+        result = MagicMock()
+        result.returncode = 134
+        result.stderr = "dyld: Library not loaded"
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _dies_before_main)
+
+    res = backend.run()
+
+    assert "dont-use" not in res.results["desc"]
+    assert "exited with code 134" in res.results["desc"]
+    assert "RB-DONT-USE-VIOLATION" not in log.read_text()
+
+
+@pytest.mark.parametrize("cell", ["probe[c]_p_8", "a$b", "x{y}", 'q"', "a\\b", "a;b"])
+def test_dont_use_cells_reject_tcl_metacharacters(tmp_path, cell):
+    """Each entry is spliced into a Tcl list unquoted; a metacharacter would be
+    executed, not matched (#656)."""
+    with pytest.raises(FatalRtlBuddyError, match=r"only the `\*` and `\?`"):
+        _make_pdk_cfg(tmp_path, dont_use_cells=[cell])
+
+
 # ---------------------------------------------------------------------------
 # OpenRCX extraction + routed SPEF (#101 Phase 3, #104 item 1)
 # ---------------------------------------------------------------------------
@@ -3503,3 +3558,32 @@ def test_a_run_that_dies_after_write_spef_publishes_no_spef(tmp_path, monkeypatc
 
     assert "exited with code 1" in res.results["desc"]
     assert not spef.exists()
+
+
+def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch):
+    """The rules check comes before checkpoint allocation, so a typo in the
+    path does not leave an empty `checkpoints/<run-id>/` per attempt."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", lambda *a, **kw: None)
+    pdk = _make_pdk_cfg(tmp_path, rcx_rules="pdk/missing.rules")
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    pnr_cfg.checkpoints = ("cts",)
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=pnr_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert not (Path(backend.artefact_dir) / "checkpoints").exists() or not any(
+        p.is_dir() for p in (Path(backend.artefact_dir) / "checkpoints").iterdir()
+    )

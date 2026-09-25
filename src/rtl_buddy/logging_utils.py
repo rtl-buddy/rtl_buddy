@@ -1855,6 +1855,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"re-rendered is incomplete — {fields.get('count')} cell(s) "
                 f"with no layout ({named})"
             )
+        case "pnr.blockages_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": floorplan.blockages needs '
+                f"OpenROAD's create_blockage (26Q1 or newer), which "
+                f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
+                "the blockages"
+            )
         case "pnr_export.no_checkpoint":
             return (
                 f'pnr export "{fields.get("pnr")}": --checkpoint '
@@ -1886,6 +1893,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'P&R "{fields.get("pnr")}": could not complete the checkpoint '
                 f"manifest in {fields.get('dir')} ({fields.get('error')}); "
                 "progress.jsonl there still records every event"
+            )
+        case "pnr.checkpoint_latest_failed":
+            return (
+                f'P&R "{fields.get("run")}": could not point checkpoints/latest '
+                f"at {fields.get('dir')} ({fields.get('error')}); the "
+                "checkpoints are still written — name them as <run-id>/<stage>"
             )
         case "pnr.checkpoint_setup_failed":
             return (

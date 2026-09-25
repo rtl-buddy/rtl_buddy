@@ -3145,6 +3145,30 @@ def test_power_threads_clamped_to_a_slurm_allocation(tmp_path, monkeypatch):
     assert "set_thread_count 1\n" in Path(backend._write_script()).read_text()
 
 
+def test_power_threads_never_read_a_previous_runs_log(tmp_path, monkeypatch):
+    """OpenROAD truncates `power.log` only once running; a launch that dies
+    earlier must not report the previous run's ORD-0030 count (#654)."""
+    from unittest.mock import MagicMock
+    from rtl_buddy.tools import power_openroad
+
+    _no_allocation(monkeypatch)
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.threads = 2
+    Path(backend._log_path()).write_text("[INFO ORD-0030] Using 8 thread(s).\n")
+    monkeypatch.setattr(power_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
+    monkeypatch.setattr(
+        power_openroad.subprocess,
+        "run",
+        lambda cmd, **kw: MagicMock(returncode=134, stderr="dyld: Library not loaded"),
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["openroad_threads"]["effective"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Extracted parasitics: reading the P&R run's routed SPEF (#101, #104 item 1)
 # ---------------------------------------------------------------------------

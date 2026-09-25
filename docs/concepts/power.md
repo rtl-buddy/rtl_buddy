@@ -19,7 +19,7 @@ If the routed ODB is missing, rerun `rb pnr`.
 
 ### Extracted parasitics
 
-When the P&R run's PDK sets [`rcx-rules`](pnr.md#tune-the-process-dependent-steps), `rb pnr` writes an OpenRCX-extracted `<top>.routed.spef` beside the ODB, and a `netlist-source: pnr` power run reads it with `read_spef` after the routed SDC, in place of `estimate_parasitics -global_routing`. Without one — every Nangate45 run, since that PDK ships no rules — the ODB handoff and the global-route estimate are used exactly as before.
+When the P&R run's PDK sets [`rcx-rules`](pnr.md#tune-the-process-dependent-steps), `rb pnr` writes an OpenRCX-extracted `<top>.routed.spef` beside the ODB, and a `netlist-source: pnr` power run reads it with `read_spef` after the routed SDC, in place of `estimate_parasitics -global_routing`. Without one — including the template's Nangate45 runs, which leave the key unset — the ODB handoff and the global-route estimate are used exactly as before.
 
 A SPEF is read only when the P&R run that wrote the ODB vouches for it: its `pnr.tcl` must contain a `write_spef` command, and the SPEF must be no older than that `pnr.tcl`, which every `rb pnr` rewrites at the start of every run. A SPEF that fails either test is left unread with a `power.spef_rejected` WARNING naming the reason, and the run falls back to the estimate. That covers the case `rb pnr`'s own clearing cannot: an rtl_buddy that predates the SPEF reruns P&R and leaves the previous run's extraction beside a fresh ODB.
 
