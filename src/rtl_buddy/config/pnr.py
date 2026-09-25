@@ -10,6 +10,7 @@ from serde.yaml import from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .openroad_threads import validate_threads
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
 
@@ -101,6 +102,9 @@ class PnrConfigFile:
     gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # OpenROAD worker threads: a positive integer or `auto`; unset keeps
+    # OpenROAD's single-thread default (#654). See config/openroad_threads.
+    threads: int | str | None = None
     # Expected-fail markers (pytest-style). Either marks this run
     # expected-to-fail; `xfail` is non-strict (an unexpected pass still
     # passes), `xfail_strict` is strict (an unexpected pass is a failure).
@@ -130,6 +134,7 @@ class PnrConfigFile:
                 f"pnr run '{self.name}': unknown 'gds-mode' {self.gds_mode!r} "
                 f"(expected one of {', '.join(m.value for m in GdsMode)})"
             ) from None
+        threads = validate_threads(self.threads, where=f"pnr run '{self.name}'")
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
         constraints = (
@@ -171,6 +176,7 @@ class PnrConfigFile:
             gds_allow_empty=list(self.gds_allow_empty),
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            threads=threads,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -194,6 +200,7 @@ class PnrConfig:
     gds_paths: list[str] = dc_field(default_factory=list)
     gds_mode: GdsMode = GdsMode.PREVIEW
     gds_allow_empty: list[str] = dc_field(default_factory=list)
+    threads: int | str | None = None
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -242,6 +249,10 @@ class PnrConfig:
 
     def get_gds_allow_empty(self) -> list[str]:
         return list(self.gds_allow_empty)
+
+    def get_threads(self) -> int | str | None:
+        """Validated `threads:` — a positive int, `auto`, or None (#654)."""
+        return self.threads
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

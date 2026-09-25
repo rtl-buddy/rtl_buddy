@@ -8,6 +8,7 @@ from serde.yaml import from_yaml
 from typing import Literal
 
 from .model import ModelConfig, ModelConfigLoader
+from .openroad_threads import validate_threads
 from .pdk import _validate_dont_use_cells, merge_dont_use_cells
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -436,6 +437,10 @@ class SynthConfigFile:
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     effort: str | None = None
+    # OpenROAD worker threads for the `tool: openroad` timing stage: a
+    # positive integer or `auto`; unset keeps OpenROAD's single-thread
+    # default (#654). See config/openroad_threads.
+    threads: int | str | None = None
     # Expected-fail markers (pytest-style). Either marks this run
     # expected-to-fail; `xfail` is non-strict (an unexpected pass still
     # passes), `xfail_strict` is strict (an unexpected pass is a failure).
@@ -444,6 +449,7 @@ class SynthConfigFile:
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
     def initialise(self, config_dir: str) -> "SynthConfig":
+        threads = validate_threads(self.threads, where=f"synthesis '{self.name}'")
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
@@ -472,6 +478,7 @@ class SynthConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             effort=self.effort,
+            threads=threads,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -492,6 +499,7 @@ class SynthConfig:
     effort: str | None = None
     lef_paths: list[str] = dc_field(default_factory=list)
     lib_paths: list[str] = dc_field(default_factory=list)
+    threads: int | str | None = None
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -504,6 +512,10 @@ class SynthConfig:
 
     def get_effort_name(self) -> str | None:
         return self.effort
+
+    def get_threads(self) -> int | str | None:
+        """Validated `threads:` — a positive int, `auto`, or None (#654)."""
+        return self.threads
 
     def get_name(self) -> str:
         return self.name

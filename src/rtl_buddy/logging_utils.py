@@ -1887,6 +1887,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "read_liberty of a path that is not there leaves the macro "
                 "reporting 0 W, so the run stops instead"
             )
+        # rtl-buddy/rtl_buddy#654: a configured OpenROAD thread count above
+        # the CPUs the scheduler granted, and a `threads:` value that is
+        # not a thread count.
+        case "openroad.threads_capped":
+            return (
+                f'{fields.get("flow")} run "{fields.get("run")}": threads: '
+                f"{fields.get('requested')} exceeds the {fields.get('allocation')} "
+                f"CPU(s) allocated ({fields.get('allocation_source')}); OpenROAD "
+                f"runs with {fields.get('allocation')} thread(s) instead. Raise "
+                "the reservation, lower threads:, or use threads: auto"
+            )
+        case "openroad_threads.invalid":
+            return (
+                f"{fields.get('where')}: threads: {fields.get('value')} is not "
+                "a positive integer or 'auto'"
+            )
         case "power.unpowered_instances":
             cells = fields.get("cells") or []
             return (

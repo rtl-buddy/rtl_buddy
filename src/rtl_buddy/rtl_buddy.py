@@ -11302,6 +11302,9 @@ class RtlBuddy:
             # published (#560). Omitted, like every other optional field
             # here, when the run published no model.
             "phys_model",
+            # OpenROAD thread provenance of the timing stage, as for a pnr
+            # row (#654). Absent when no OpenROAD stage ran.
+            "openroad_threads",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11333,6 +11336,9 @@ class RtlBuddy:
             # (#618). Absent from an `rb pnr` row: a run writes no such
             # record.
             "export_provenance",
+            # The OpenROAD thread count asked for, run with, and the
+            # allocation that bounded it (#654). Absent from an export row.
+            "openroad_threads",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11360,6 +11366,8 @@ class RtlBuddy:
             "unpowered_cells",
             "unpowered_cell_count",
             "unpowered_instance_count",
+            # OpenROAD thread provenance, as for a pnr row (#654).
+            "openroad_threads",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]

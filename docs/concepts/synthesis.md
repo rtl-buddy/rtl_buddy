@@ -399,6 +399,8 @@ Precedence is per-run `tool_overrides`, then the selected effort, then `cfg-synt
 
 `openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl executed before STA; test it on a small design because syntax and tool errors appear only at runtime.
 
+The OpenROAD stage runs on one thread unless the synthesis entry sets `threads:` — a positive integer, or `auto` for the CPUs of the current allocation. It matters most for a `pre-sta-tcl` that runs global placement. The value is validated, clamped, emitted and recorded exactly as for P&R; see [OpenROAD threads](pnr.md#openroad-threads). It has no effect on the Yosys stage.
+
 ## Synthesize hard macros
 
 For each hard macro:

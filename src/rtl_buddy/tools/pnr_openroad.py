@@ -13,6 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.pnr import GdsMode, PnrConfig
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
@@ -401,6 +402,8 @@ class OpenRoadPnr:
         # saved layout can be re-rendered with another palette without
         # editing the PDK every project shares (#618). `None` is the PDK's.
         self.klayout_props = klayout_props
+        # Resolved once per run by `_threads()` (#654).
+        self._thread_plan: ThreadPlan | None = None
 
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -431,6 +434,33 @@ class OpenRoadPnr:
     # ------------------------------------------------------------------
     # Tcl templating
     # ------------------------------------------------------------------
+
+    def _threads(self) -> ThreadPlan:
+        """This run's OpenROAD thread plan, resolved once (#654).
+
+        Resolved against the allocation the process is in *now*, so a
+        clamp is reported before OpenROAD starts, and the script and the
+        recorded provenance cannot disagree.
+        """
+        if self._thread_plan is None:
+            self._thread_plan = plan_threads(
+                self.pnr_cfg.get_threads(), flow="pnr", run=self.pnr_cfg.get_name()
+            )
+        return self._thread_plan
+
+    def _threads_fields(self) -> dict:
+        """The `openroad_threads` result field, with OpenROAD's own count.
+
+        Empty before a plan exists — a run that failed before it resolved
+        one never launched OpenROAD, so it has no thread count to report.
+        """
+        if self._thread_plan is None:
+            return {}
+        try:
+            reported = parse_reported_threads(Path(self._log_path()).read_text())
+        except OSError:
+            reported = None
+        return {"openroad_threads": self._thread_plan.fields(reported)}
 
     def _load_template(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_TEMPLATE_FILE).read_text()
@@ -491,6 +521,15 @@ class OpenRoadPnr:
             else ""
         )
 
+        # Ahead of the first `read_liberty`, and empty when `threads:` is
+        # unset so the script is the one this flow has always emitted —
+        # OpenROAD's own default is one thread (#654). The `puts` gives
+        # the log a stage marker; OpenROAD itself then logs the count it
+        # actually took (ORD-0030), which can be lower than asked on a host
+        # with fewer cores.
+        threads_tcl = self._threads().tcl()
+        threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
+
         pin_script = self.pnr_cfg.pin_constraints
         pin_constraints_tcl = ""
         if pin_script is not None:
@@ -524,6 +563,7 @@ class OpenRoadPnr:
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
             "pdn_block": pdn_block,
+            "threads_block": threads_block,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -1604,7 +1644,9 @@ class OpenRoadPnr:
         new failure gate added to `run` inherits the cleanup by using it.
         """
         self._clear_stale_outputs()
-        return PnrFailResults(name=self.name + "/results", desc=desc)
+        return PnrFailResults(
+            name=self.name + "/results", desc=desc, fields=self._threads_fields()
+        )
 
     def run(self) -> PnrResults:
         log_event(
@@ -1678,6 +1720,10 @@ class OpenRoadPnr:
                 desc=f"pdn-config not found: {pdn_config}",
                 fail_stage="setup",
             )
+
+        # Before the script: a thread count above the allocation is
+        # reported (and clamped) ahead of the tool, not after it (#654).
+        self._threads()
 
         try:
             script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
@@ -1826,7 +1872,11 @@ class OpenRoadPnr:
                 name=self.name + "/results",
                 desc=export.desc,
                 fail_stage="export",
-                fields={**metrics, **export.result_fields()},
+                fields={
+                    **metrics,
+                    **export.result_fields(),
+                    **self._threads_fields(),
+                },
             )
 
         log_event(
@@ -1843,5 +1893,9 @@ class OpenRoadPnr:
             # An export that did not deliver qualifies the pass in the one
             # field every summary row shows.
             desc=f"P&R passed; {export.desc}" if export and export.desc else None,
-            fields={**metrics, **(export.result_fields() if export else {})},
+            fields={
+                **metrics,
+                **(export.result_fields() if export else {}),
+                **self._threads_fields(),
+            },
         )

@@ -150,6 +150,34 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --gds-mode strict
 
 `--png` and `--gds-mode` imply `--gds`. RTL Buddy invokes KLayout after a successful OpenROAD run. In the default `preview` mode a KLayout failure produces a warning and does not change the P&R verdict; use the OpenROAD timing and DRC results as the run outcome. In `strict` mode an export that could not be delivered fails the run — see [Stream-out completeness](#stream-out-completeness).
 
+### OpenROAD threads
+
+OpenROAD runs on one thread unless the run asks for more, and reserving CPUs from a scheduler does not change that on its own. Set `threads:` on the run:
+
+```yaml
+runs:
+  - name: demo_pnr_nangate45
+    # ...
+    threads: 8        # or: auto
+```
+
+| Value | Threads OpenROAD is given |
+| --- | --- |
+| unset | 1, OpenROAD's default. `pnr.tcl` is unchanged and carries no `set_thread_count` |
+| a positive integer | That many, emitted as `set_thread_count N` before the first `read_liberty` |
+| `auto` | The CPUs of the allocation the run is in; 1 when there is none. Never the host's core count |
+
+Zero, negative numbers, booleans, quoted numbers and any other string fail configuration loading. `0` is refused rather than passed through because OpenROAD reads it as "every core on the host".
+
+**Allocations.** `rb pnr` itself is not dispatched; run it inside an allocation (`srun -c 8 rb pnr ...`, or from an `sbatch` script) to give OpenROAD CPUs. RTL Buddy treats as the allocation, taking the smaller when both apply:
+
+- inside a Slurm job (`SLURM_JOB_ID` set), `SLURM_CPUS_PER_TASK`, else `SLURM_CPUS_ON_NODE`;
+- a CPU affinity mask smaller than the machine (`taskset`, a cpuset cgroup, a bound Slurm step; Linux only).
+
+A count above the allocation is clamped to it, and the run logs `openroad.threads_capped` at WARNING naming both numbers; it never runs more threads than were reserved. The clamp is a warning rather than an error so one checked-in `pnr.yaml` works in allocations of any size. Outside an allocation an explicit count is used as given. OpenROAD then applies its own limit, the host's hardware thread count. A container CPU quota (`docker --cpus`) is not visible to either check. Simulator compile and run concurrency are unaffected.
+
+**Provenance.** The resolved plan is logged as `openroad.threads`. The run's result carries `openroad_threads`: the `requested` value, the `effective` count, and the `allocation` and its `allocation_source`. `effective` is the count OpenROAD itself reported (`[INFO ORD-0030] Using N thread(s).` in `pnr.log`) when it reported one, otherwise the count RTL Buddy set, which is 1 when the key is unset. The same key and contract apply to [`rb power`](power.md) and to the OpenROAD stage of [`rb synth`](synthesis.md). The thread count is not part of any result fingerprint. OpenROAD documents its multi-threaded stages as producing the same result, but no bit-for-bit match across thread counts is claimed here; compare DRC and slack yourself if it matters.
+
 ### Stream-out inputs
 
 Stream-out reads more than the routed DEF. The layout comes from the PDK's `cell-gds` — one path or a list of them — followed by the run's own `gds-paths`, which is where the layout of a hard macro belongs: an OpenRAM SRAM has its LEF in `lef-paths` and its GDS in `gds-paths`, and each path resolves against the file that names it, `root_config.yaml` for the PDK and `pnr.yaml` for the run. The DEF reader is also given the LEFs, so it can resolve the masters the DEF instantiates: technology LEF, the PDK's macro LEF, then the run's `lef-paths`, in that order and de-duplicated, appended to whatever the KLayout technology file already lists rather than replacing it. Both lists reach KLayout through `def2stream.inputs.json` in the artefact directory, which is also where to read back what a given run streamed.

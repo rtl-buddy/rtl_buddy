@@ -6659,3 +6659,49 @@ def test_the_openroad_backend_hashes_its_sdc_at_script_generation(tmp_path):
     or_synth._confirm_constraints_unchanged()
 
     assert or_synth._constraints_sha256 is None
+
+
+# ---------------------------------------------------------------------------
+# OpenROAD thread count on the timing stage (#654)
+# ---------------------------------------------------------------------------
+
+
+def _or_threads_script(tmp_path, monkeypatch, threads):
+    from rtl_buddy.config import openroad_threads
+
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.setattr(openroad_threads, "_affinity_count", lambda: None)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    synth_cfg = _make_synth_cfg(model_name="top", platform="mylib", tool="openroad")
+    synth_cfg.threads = threads
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=synth_cfg,
+        root_cfg=_FakeRootCfgOR(
+            lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+        ),
+    )
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    return or_synth, script
+
+
+def test_openroad_or_script_unset_threads_emits_nothing(tmp_path, monkeypatch):
+    _, script = _or_threads_script(tmp_path, monkeypatch, None)
+    assert "set_thread_count" not in script
+    assert script.startswith("read_lef ")
+
+
+def test_openroad_or_script_threads_come_first(tmp_path, monkeypatch):
+    or_synth, script = _or_threads_script(tmp_path, monkeypatch, 3)
+    assert script.startswith("set_thread_count 3\nread_lef ")
+    Path(or_synth._or_log_path()).write_text("[INFO ORD-0030] Using 3 thread(s).\n")
+    res = or_synth._with_threads(SynthPassResults(name="x/results"))
+    assert res.results["openroad_threads"] == {
+        "requested": 3,
+        "effective": 3,
+        "allocation": None,
+        "allocation_source": None,
+    }

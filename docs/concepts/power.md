@@ -145,6 +145,8 @@ power-configs:
   - power/block_b/power.yaml
 ```
 
+The analysis runs on one OpenROAD thread unless the run sets `threads:` — a positive integer, or `auto` for the CPUs of the current allocation. The value is validated, clamped, emitted and recorded as `openroad_threads` exactly as for P&R; see [OpenROAD threads](pnr.md#openroad-threads).
+
 ## Interpret results
 
 The summary identifies the selected design source and resolved activity source, then reports total, internal, switching, and leakage power with readable SI scaling.

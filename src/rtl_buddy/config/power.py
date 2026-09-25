@@ -8,6 +8,7 @@ from serde import field, serde
 from serde.yaml import from_yaml
 
 from ..errors import FatalRtlBuddyError
+from .openroad_threads import validate_threads
 from ..logging_utils import log_event
 from .pnr import PnrSuiteConfig
 from .synth import SynthSuiteConfig
@@ -104,6 +105,9 @@ class PowerConfigFile:
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # OpenROAD worker threads: a positive integer or `auto`; unset keeps
+    # OpenROAD's single-thread default (#654). See config/openroad_threads.
+    threads: int | str | None = None
     # Expected-fail markers (pytest-style). Either marks this run
     # expected-to-fail; `xfail` is non-strict (an unexpected pass still
     # passes), `xfail_strict` is strict (an unexpected pass is a failure).
@@ -162,6 +166,7 @@ class PowerConfigFile:
                 f"power run '{self.name}': missing 'platform' "
                 "(name of a cfg-pnr-platforms entry)"
             )
+        threads = validate_threads(self.threads, where=f"power run '{self.name}'")
 
         if self.activity.saif and self.activity.vcd:
             raise FatalRtlBuddyError(
@@ -206,6 +211,7 @@ class PowerConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             phys_run=self.phys_run or None,
+            threads=threads,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -233,6 +239,7 @@ class PowerConfig:
     # Optional, so it sits with the defaults rather than beside the
     # `synth`/`synth-path` pair it is resolved against (#589).
     phys_run: str | None = None
+    threads: int | str | None = None
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -254,6 +261,10 @@ class PowerConfig:
 
     def get_mode(self) -> PowerMode:
         return self.mode
+
+    def get_threads(self) -> int | str | None:
+        """Validated `threads:` — a positive int, `auto`, or None (#654)."""
+        return self.threads
 
     def get_netlist_source(self) -> NetlistSource:
         return self.netlist_source
