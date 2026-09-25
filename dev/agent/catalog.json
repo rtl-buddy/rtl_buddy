@@ -1439,6 +1439,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/check-the-environment.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#check-in-process-readers",
+          "slug": "check-in-process-readers",
+          "title": "Check in-process readers",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/check-in-process-readers.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#gate-scripts-and-ci",
           "slug": "gate-scripts-and-ci",
           "title": "Gate scripts and CI",
