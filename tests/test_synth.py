@@ -1654,21 +1654,23 @@ def test_resolve_lib_paths_unknown_name_raises(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_clock_period_ps_basic(tmp_path):
+def test_parse_clock_period_ps_basic(tmp_path, constraint_backend):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("create_clock -period 10.0 [get_ports clk]\n")
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
-def test_parse_clock_period_ps_fractional(tmp_path):
+def test_parse_clock_period_ps_fractional(tmp_path, constraint_backend):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("create_clock -period 3.333 [get_ports clk]\n")
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(sdc)) == 3333
 
 
-def test_parse_clock_period_ps_multi_clock_returns_minimum(tmp_path):
+def test_parse_clock_period_ps_multi_clock_returns_minimum(
+    tmp_path, constraint_backend
+):
     sdc = tmp_path / "c.sdc"
     sdc.write_text(
         "create_clock -period 10.0 [get_ports clk_fast]\n"
@@ -1678,14 +1680,14 @@ def test_parse_clock_period_ps_multi_clock_returns_minimum(tmp_path):
     assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
-def test_parse_clock_period_ps_no_clock_returns_none(tmp_path):
+def test_parse_clock_period_ps_no_clock_returns_none(tmp_path, constraint_backend):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("set_input_delay 2.0 -clock clk [all_inputs]\n")
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(sdc)) is None
 
 
-def test_parse_clock_period_ps_missing_file_returns_none(tmp_path):
+def test_parse_clock_period_ps_missing_file_returns_none(tmp_path, constraint_backend):
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(tmp_path / "missing.sdc")) is None
 
@@ -1694,21 +1696,23 @@ def test_parse_clock_period_ps_missing_file_returns_none(tmp_path):
 # legal SDC; before the tokenizer they left abc running unconstrained.
 
 
-def test_parse_clock_period_ps_line_continuation(tmp_path):
+def test_parse_clock_period_ps_line_continuation(tmp_path, constraint_backend):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("create_clock -name clk \\\n    -period 10.0 [get_ports clk]\n")
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
-def test_parse_clock_period_ps_braced_value(tmp_path):
+def test_parse_clock_period_ps_braced_value(tmp_path, constraint_backend):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("create_clock -name clk -period {10.0} [get_ports clk]\n")
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
-def test_parse_clock_period_ps_braced_value_with_trailing_comment(tmp_path):
+def test_parse_clock_period_ps_braced_value_with_trailing_comment(
+    tmp_path, constraint_backend
+):
     sdc = tmp_path / "c.sdc"
     sdc.write_text(
         "create_clock -name clk -period {10.0} [get_ports clk] # main clock\n"
@@ -1717,14 +1721,18 @@ def test_parse_clock_period_ps_braced_value_with_trailing_comment(tmp_path):
     assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
-def test_parse_clock_period_ps_hash_inside_braces_is_not_a_comment(tmp_path):
+def test_parse_clock_period_ps_hash_inside_braces_is_not_a_comment(
+    tmp_path, constraint_backend
+):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("create_clock -name clk#1 -period 10 [get_ports {clk#1}]\n")
     ys = _make_yosys(tmp_path)
     assert ys._parse_clock_period_ps(str(sdc)) == 10000
 
 
-def test_parse_clock_period_ps_variable_warns_once_and_is_not_silence(tmp_path, caplog):
+def test_parse_clock_period_ps_variable_warns_once_and_is_not_silence(
+    tmp_path, tokenizer_backend, caplog
+):
     # `-period $p` cannot be evaluated without an interp. Saying so beats
     # counting it as "no create_clock in the file".
     sdc = tmp_path / "c.sdc"
@@ -1753,7 +1761,9 @@ def test_parse_clock_period_ps_variable_warns_once_and_is_not_silence(tmp_path, 
     assert skipped[0].rtl_fields["source"] == str(sdc)
 
 
-def test_parse_clock_period_ps_expr_value_is_unevaluated(tmp_path, caplog):
+def test_parse_clock_period_ps_expr_value_is_unevaluated(
+    tmp_path, tokenizer_backend, caplog
+):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("create_clock -name clk -period [expr 20.0 / 2] [get_ports clk]\n")
     ys = _make_yosys(tmp_path)
@@ -1768,7 +1778,9 @@ def test_parse_clock_period_ps_expr_value_is_unevaluated(tmp_path, caplog):
     assert "expr" in rec.rtl_fields["value"]
 
 
-def test_parse_clock_period_ps_mixes_evaluated_and_unevaluated(tmp_path, caplog):
+def test_parse_clock_period_ps_mixes_evaluated_and_unevaluated(
+    tmp_path, tokenizer_backend, caplog
+):
     # A readable clock alongside an unevaluated one still constrains abc.
     sdc = tmp_path / "c.sdc"
     sdc.write_text(
@@ -1786,7 +1798,68 @@ def test_parse_clock_period_ps_mixes_evaluated_and_unevaluated(tmp_path, caplog)
     ]
 
 
-def test_parse_clock_period_ps_ignores_commented_out_clock(tmp_path):
+def test_parse_clock_period_ps_evaluates_a_variable_period(
+    tmp_path, constraint_backend, caplog, request
+):
+    """`set p 10` + `[expr {$p*2}]` is a 20 ns clock — with an interp (#641).
+
+    Without one the tokenizer can only say it did not evaluate the period,
+    which is what the xfail below pins: the fallback is expected to miss
+    this, and must never be *silently* missing it.
+    """
+    if constraint_backend == "tokenizer":
+        request.node.add_marker(
+            pytest.mark.xfail(
+                strict=True,
+                reason="the tokenizer evaluates no Tcl; it warns instead (#642)",
+            )
+        )
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "set p 10\ncreate_clock -name clk -period [expr {$p*2}] [get_ports clk]\n"
+    )
+    ys = _make_yosys(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        got = ys._parse_clock_period_ps(str(sdc))
+    if constraint_backend == "tokenizer":
+        assert [
+            r.rtl_fields["source"]
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == "constraints.tokenizer_skipped"
+        ] == [str(sdc)]
+        assert [
+            r.rtl_fields["value"]
+            for r in caplog.records
+            if getattr(r, "rtl_event", None) == "synth.sdc_period_unevaluated"
+        ] == ["[expr {$p*2}]"]
+    assert got == 20000
+
+
+def test_parse_clock_period_ps_unresolvable_collection_is_unevaluated(
+    tmp_path, tcl_backend, caplog
+):
+    # An interp evaluates `$p` and `[expr]`, but a period that comes from a
+    # design query it cannot answer stays unevaluated — and says so rather
+    # than counting as "no create_clock at all".
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "create_clock -name clk -period [get_property PERIOD] \\\n  [get_ports clk]\n"
+    )
+    ys = _make_yosys(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        assert ys._parse_clock_period_ps(str(sdc)) is None
+    [rec] = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.sdc_period_unevaluated"
+    ]
+    assert rec.rtl_fields["value"] == "[get_property PERIOD]"
+    assert rec.rtl_fields["line"] == 1
+
+
+def test_parse_clock_period_ps_ignores_commented_out_clock(
+    tmp_path, constraint_backend
+):
     sdc = tmp_path / "c.sdc"
     sdc.write_text(
         "# create_clock -name old -period 1.0 [get_ports clk]\n"
