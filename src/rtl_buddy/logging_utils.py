@@ -1855,6 +1855,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"re-rendered is incomplete — {fields.get('count')} cell(s) "
                 f"with no layout ({named})"
             )
+        case "pnr.blockages_unsupported":
+            return (
+                f'P&R "{fields.get("pnr")}": floorplan.blockages needs '
+                f"OpenROAD's create_blockage (26Q1 or newer), which "
+                f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
+                "the blockages"
+            )
         case "pnr_export.no_checkpoint":
             return (
                 f'pnr export "{fields.get("pnr")}": --checkpoint '

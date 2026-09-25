@@ -116,6 +116,12 @@ _DONT_USE_VIOLATION_TAG = "RB-DONT-USE-VIOLATION:"
 _STA_CELL_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
 )
+# ...and the library half of a `lib/cell` pattern that names no library:
+# `[WARNING STA-0121] library '<lib>' not found.` — the cell half is never
+# looked up then, so no STA-0122 follows.
+_STA_LIBRARY_NOT_FOUND = re.compile(
+    r"^\[WARNING STA-0121\] library '(.+)' not found\.$", re.M
+)
 
 
 def _dont_use_check_tcl(cells: list[str]) -> str:
@@ -1753,7 +1759,8 @@ class OpenRoadPnr:
     def _warn_unmatched_dont_use(self, log_text: str, cells: list[str]) -> None:
         """Name every `dont-use-cells` pattern that matched no Liberty cell.
 
-        OpenROAD reports one as `[WARNING STA-0122]` and carries on, so a
+        OpenROAD reports one as `[WARNING STA-0122]` (or, for a `lib/cell`
+        pattern whose library does not exist, `STA-0121`) and carries on, so a
         misspelt pattern silently excludes nothing — and the post-route
         check, which matches the same way, cannot catch what it misses
         either (#656). STA prints the cell part of a `lib/cell` pattern,
@@ -1762,7 +1769,14 @@ class OpenRoadPnr:
         if not cells:
             return
         missed = set(_STA_CELL_NOT_FOUND.findall(log_text))
-        unmatched = [c for c in cells if c in missed or c.rsplit("/", 1)[-1] in missed]
+        missed_libs = set(_STA_LIBRARY_NOT_FOUND.findall(log_text))
+        unmatched = [
+            c
+            for c in cells
+            if c in missed
+            or c.rsplit("/", 1)[-1] in missed
+            or ("/" in c and c.rsplit("/", 1)[0] in missed_libs)
+        ]
         if unmatched:
             log_event(
                 logger,
@@ -1944,6 +1958,28 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # `create_blockage` first shipped in OpenROAD 26Q1, above the
+        # minimum this flow otherwise supports; an older build would die on
+        # `invalid command name` after the floorplan is written (#105).
+        if self.pnr_cfg.get_floorplan().blockages and not self._has_tcl_command(
+            "create_blockage"
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.blockages_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "floorplan.blockages needs OpenROAD's create_blockage "
+                    "(26Q1 or newer); this OpenROAD has none"
+                ),
+                fail_stage="setup",
+            )
+
         # Before the script: a thread count above the allocation is
         # reported (and clamped) ahead of the tool, not after it (#654).
         self._threads()
@@ -2029,6 +2065,15 @@ class OpenRoadPnr:
             )
 
         log_path = self._log_path()
+        # OpenROAD's `-log` truncates the log only once it is running. One
+        # that dies before that — a broken dylib, a killed launch — would
+        # otherwise leave the previous run's log in place, with this run's
+        # stderr appended, and its RB-DONT-USE-VIOLATION lines would be read
+        # as this run's (#656).
+        try:
+            os.unlink(log_path)
+        except FileNotFoundError:
+            pass
         env = os.environ.copy()
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
