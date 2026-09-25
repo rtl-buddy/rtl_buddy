@@ -3249,6 +3249,61 @@ def test_dont_use_events_have_readable_messages():
     assert "u0 (probec_p_8), u1 (probec_p_8), u2 (probec_p_8) and 2 more" in placed
 
 
+def test_pnr_warns_about_a_lib_cell_pattern_whose_library_is_missing(
+    tmp_path, monkeypatch
+):
+    """A `lib/cell` pattern naming no library draws STA-0121 only — the cell
+    half is never looked up — and must still be reported (#656)."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log="[WARNING STA-0121] library 'badlib' not found.\n",
+        returncode=0,
+        dont_use_cells=["AND2_X1", "badlib/foo*", "goodlib/bar*"],
+    )
+
+    backend.run()
+
+    _level, fields = _one_event(events, "pnr.dont_use_unmatched")
+    assert fields["patterns"] == ["badlib/foo*"]
+
+
+def test_pnr_does_not_read_a_previous_runs_log(tmp_path, monkeypatch):
+    """OpenROAD truncates `pnr.log` only once it is running; one that dies
+    before that must not leave the previous run's violation lines to be read
+    as this run's (#656)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log="", returncode=0, dont_use_cells=["AND2_X1"]
+    )
+    log = Path(backend._log_path())
+    log.write_text("RB-DONT-USE-VIOLATION: u1 AND2_X1 AND2_X1\n")
+
+    def _dies_before_main(cmd, **_kwargs):
+        result = MagicMock()
+        result.returncode = 134
+        result.stderr = "dyld: Library not loaded"
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _dies_before_main)
+
+    res = backend.run()
+
+    assert "dont-use" not in res.results["desc"]
+    assert "exited with code 134" in res.results["desc"]
+    assert "RB-DONT-USE-VIOLATION" not in log.read_text()
+
+
+@pytest.mark.parametrize("cell", ["probe[c]_p_8", "a$b", "x{y}", 'q"', "a\\b", "a;b"])
+def test_dont_use_cells_reject_tcl_metacharacters(tmp_path, cell):
+    """Each entry is spliced into a Tcl list unquoted; a metacharacter would be
+    executed, not matched (#656)."""
+    with pytest.raises(FatalRtlBuddyError, match=r"only the `\*` and `\?`"):
+        _make_pdk_cfg(tmp_path, dont_use_cells=[cell])
+
+
 # ---------------------------------------------------------------------------
 # OpenRCX extraction + routed SPEF (#101 Phase 3, #104 item 1)
 # ---------------------------------------------------------------------------

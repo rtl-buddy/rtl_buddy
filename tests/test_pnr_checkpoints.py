@@ -782,3 +782,36 @@ def test_retained_checkpoint_message_names_where_the_run_stopped(status, expecte
     )
     assert expected in msg
     assert "(ok)" not in msg
+
+
+def test_a_filesystem_without_symlinks_keeps_the_run(tmp_path, monkeypatch):
+    """A failed `latest` pointer is a warning, not a failed setup (#653)."""
+    from rtl_buddy.tools import pnr_checkpoints
+
+    def _no_symlinks(*_a, **_k):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(pnr_checkpoints.os, "symlink", _no_symlinks)
+    run_dir = pnr_checkpoints.allocate_run_dir(str(tmp_path))
+    manifest = pnr_checkpoints.begin_run(
+        run_dir,
+        artefact_dir=str(tmp_path),
+        run="demo",
+        design="top",
+        stages=("cts",),
+        inputs={},
+        openroad={"path": "openroad", "version": None},
+    )
+    assert os.path.isfile(manifest)
+    assert not os.path.lexists(pnr_checkpoints.latest_pointer(str(tmp_path)))
+
+
+def test_progress_with_a_non_utf8_byte_still_reads(tmp_path):
+    from rtl_buddy.tools import pnr_checkpoints
+
+    (tmp_path / pnr_checkpoints.PROGRESS_NAME).write_bytes(
+        b'{"event": "step_begin", "step": "a"}\n'
+        b'{"event": "step_end", "step": "a", "error": "caf\xe9"}\n'
+    )
+    events = pnr_checkpoints.read_progress(str(tmp_path))
+    assert [e["event"] for e in events] == ["step_begin", "step_end"]

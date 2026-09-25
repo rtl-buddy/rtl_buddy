@@ -1384,6 +1384,13 @@ class OpenRoadPower(BasePower):
             )
 
         log_path = self._log_path()
+        # OpenROAD's `-log` truncates only once it is running; a launch that
+        # dies earlier would leave the previous run's log, and its ORD-0030
+        # thread count, to be read as this run's (#654).
+        try:
+            os.unlink(log_path)
+        except FileNotFoundError:
+            pass
         env = os.environ.copy()
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 

@@ -164,7 +164,7 @@ The process-dependent P&R keys are all optional, and a config that omits them ge
 | `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, `> 0` and `<= 1`. Default `0.7` |
 | `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
 | `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns kept between two macros and between a macro and each core edge by the macro packer, a non-negative distance. Default `20.0`, which is what `pdngen` needs to repair a channel on sky130hd |
-| `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns, one per list entry, excluded by both synthesis and P&R. A platform's list is added to its PDK's (PDK entries first, duplicates dropped), never replacing it. P&R fails a run whose routed design still instantiates an excluded cell. Empty by default |
+| `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` / `?` wildcards only), one per list entry. The PDK's list is excluded by both synthesis and P&R; a `cfg-synth-platforms` list only by synthesis and a `cfg-pnr-platforms` list only by P&R. A platform's list is added to its PDK's (PDK entries first, duplicates dropped), never replacing it. P&R fails a run whose routed design still instantiates an excluded cell. Empty by default |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid; P&R sources it and calls `pdngen`. Unset by default |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef` and times its final reports on it; a `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list of them. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
@@ -627,7 +627,7 @@ runs:
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
 | `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left` or `upper-right`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
-| `floorplan.blockages` | Optional | List of standard-cell placement blockages. Each is `rect: [x0, y0, x1, y1]` in microns, die coordinates (`x0 < x1`, `y0 < y1`, non-negative), `type: hard` (default), `soft` or `partial`, and for `partial` only, `max-density` strictly between 0 and 1. Macros are kept out of `hard` blockages |
+| `floorplan.blockages` | Optional | List of standard-cell placement blockages. Each is `rect: [x0, y0, x1, y1]` in microns, die coordinates (`x0 < x1`, `y0 < y1`, non-negative), `type: hard` (default), `soft` or `partial`, and for `partial` only, `max-density` strictly between 0 and 1 (honoured by global placement only; legalization clears a partial blockage like a hard one). Needs OpenROAD 26Q1+. Macros are kept out of `hard` blockages |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
