@@ -49,6 +49,7 @@ brings back.
 """
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -57,7 +58,10 @@ from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 
+from ..logging_utils import log_event
 from .artifact_paths import project_relative, project_root_or_none
+
+logger = logging.getLogger(__name__)
 
 CHECKPOINTS_DIRNAME = "checkpoints"
 LATEST_NAME = "latest"
@@ -195,7 +199,9 @@ def read_progress(run_dir: str) -> list[dict]:
     exactly what the file exists to keep.
     """
     try:
-        text = Path(run_dir, PROGRESS_NAME).read_text()
+        # Tcl writes the file in the system encoding; a byte that is not
+        # UTF-8 must cost one event's text, not the reader (#653).
+        text = Path(run_dir, PROGRESS_NAME).read_text(errors="replace")
     except OSError:
         return []
     events = []
@@ -303,7 +309,20 @@ def begin_run(
     _append_event(
         run_dir, "run_start", run_id=document["run_id"], run=run, design=design
     )
-    _point_latest(artefact_dir, run_dir)
+    try:
+        _point_latest(artefact_dir, run_dir)
+    except OSError as e:
+        # A filesystem without symlinks (some SMB/NFS exports, exFAT) costs
+        # the convenience pointer, not the run: the checkpoints are still
+        # written, and `<run-id>/<stage>` still names them (#653).
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.checkpoint_latest_failed",
+            run=run,
+            dir=run_dir,
+            error=str(e),
+        )
     return os.path.join(run_dir, MANIFEST_NAME)
 
 

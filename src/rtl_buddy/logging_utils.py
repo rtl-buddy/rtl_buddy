@@ -1894,6 +1894,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"manifest in {fields.get('dir')} ({fields.get('error')}); "
                 "progress.jsonl there still records every event"
             )
+        case "pnr.checkpoint_latest_failed":
+            return (
+                f'P&R "{fields.get("run")}": could not point checkpoints/latest '
+                f"at {fields.get('dir')} ({fields.get('error')}); the "
+                "checkpoints are still written — name them as <run-id>/<stage>"
+            )
         case "pnr.checkpoint_setup_failed":
             return (
                 f'P&R "{fields.get("pnr")}": checkpoints were requested but '
