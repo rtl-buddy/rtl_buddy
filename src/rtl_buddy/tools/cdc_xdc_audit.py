@@ -31,60 +31,61 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from ..constraints.tcl_reader import TclCommand, extract_names, read_commands
 from ..errors import FatalRtlBuddyError
 
 # CDC-relevant XDC commands. Everything else (set_property, IO/placement,
 # create_pblock, ...) is ignored on purpose.
-_RE_CREATE_CLOCK = re.compile(r"^\s*create_clock\b(?P<args>.*)$", re.MULTILINE)
-_RE_CLOCK_GROUPS = re.compile(r"^\s*set_clock_groups\b(?P<args>.*)$", re.MULTILINE)
-_RE_FALSE_PATH = re.compile(r"^\s*set_false_path\b(?P<args>.*)$", re.MULTILINE)
-_RE_MAX_DELAY = re.compile(r"^\s*set_max_delay\b(?P<args>.*)$", re.MULTILINE)
-_RE_BUS_SKEW = re.compile(r"^\s*set_bus_skew\b(?P<args>.*)$", re.MULTILINE)
+_INTEREST = frozenset(
+    {
+        "create_clock",
+        "set_clock_groups",
+        "set_false_path",
+        "set_max_delay",
+        "set_bus_skew",
+    }
+)
 
-_RE_NAME_OPT = re.compile(r"-name\s+(\S+)")
-_RE_PERIOD_OPT = re.compile(r"-period\s+(\S+)")
-_RE_FROM = re.compile(r"-from\s+(\[[^\]]*\]|\{[^}]*\}|\S+)")
-_RE_TO = re.compile(r"-to\s+(\[[^\]]*\]|\{[^}]*\}|\S+)")
-_RE_GROUP = re.compile(r"-group\s+(\[[^\]]*\]|\{[^}]*\}|\S+)")
-
-
-def _strip_comments(text: str) -> str:
-    out = []
-    for line in text.splitlines():
-        # XDC/Tcl comments start with '#'; keep it simple (no in-string '#').
-        out.append(line.split("#", 1)[0])
-    return "\n".join(out)
+_EXCEPTION_KINDS = {
+    "set_false_path": "false_path",
+    "set_max_delay": "max_delay",
+    "set_bus_skew": "bus_skew",
+}
 
 
-def _tokens(expr: str) -> list[str]:
-    """Pull the bare names out of a Tcl target expression.
+def _tokens(word: str | None) -> list[str]:
+    """Pull the bare names out of one tokenized Tcl word.
 
     Handles ``[get_clocks clk_a]``, ``[get_clocks {clk_a clk_b}]``,
     ``[get_cells u_sync/* -filter {IS_SEQUENTIAL}]``,
-    ``[get_cells -hierarchical u_sync/*]``, ``{clk_a}`` and bare ``clk_a``.
-    Flags (``-hierarchical``) and the ``get_*`` head are dropped; a ``-filter
-    {…}`` expression is dropped whole (its predicate is not a target name); a
-    trailing ``/*`` cell wildcard is trimmed to the instance token.
+    ``[get_cells -hierarchical u_sync/*]``, ``[get_pins [get_cells u_a]/C]``,
+    ``{clk_a}`` and bare ``clk_a``. Flags, the ``get_*`` head (nested ones
+    too) and ``-filter`` predicates are dropped; a trailing ``/*`` cell
+    wildcard is trimmed to the instance token.
     """
-    if expr is None:
+    if word is None:
         return []
-    s = expr.strip().strip("[]{}").strip()
-    s = re.sub(r"^get_(clocks|cells|ports|pins)\b", "", s).strip()
-    # Drop a `-filter {…}` / `-filter expr` clause so its predicate (e.g.
-    # IS_SEQUENTIAL) is not mistaken for a target token.
-    s = re.sub(r"-filter\s+(\{[^}]*\}|\S+)", "", s).strip()
+    return extract_names(word)
+
+
+def _flag_value(cmd: TclCommand, flag: str) -> str | None:
+    """First value word following ``flag``, or ``None`` when absent."""
+    for i, word in enumerate(cmd.words):
+        if word == flag and i + 1 < len(cmd.words):
+            return cmd.words[i + 1]
+    return None
+
+
+def _flag_values(cmd: TclCommand, flag: str) -> list[str]:
+    """Every value word following a repeated ``flag`` (e.g. ``-group``)."""
     out = []
-    for tok in s.split():
-        if tok.startswith("-"):  # a flag like -hierarchical
-            continue
-        tok = tok.strip("{}")
-        tok = tok.rsplit("/", 1)[0] if tok.endswith("/*") else tok
-        if tok:
-            out.append(tok)
+    for i, word in enumerate(cmd.words):
+        if word == flag and i + 1 < len(cmd.words):
+            out.append(cmd.words[i + 1])
     return out
 
 
-def _is_clocks(expr: str) -> bool:
+def _is_clocks(expr: str | None) -> bool:
     return expr is not None and "get_clocks" in expr
 
 
@@ -106,7 +107,7 @@ class XdcConstraints:
     path_exceptions: list = field(default_factory=list)  # list[PathException]
 
 
-def _split_target(expr: str):
+def _split_target(expr: str | None):
     """Return (clocks, cells) token lists for a -from/-to expression."""
     toks = _tokens(expr)
     if _is_clocks(expr):
@@ -114,58 +115,72 @@ def _split_target(expr: str):
     return [], toks
 
 
-def extract_cdc_constraints(xdc_text: str) -> XdcConstraints:
-    text = _strip_comments(xdc_text)
+def _period(word: str | None) -> float | None:
+    """``-period`` value as a float, or ``None`` when absent/unevaluated."""
+    if word is None:
+        return None
+    value = word
+    if value.startswith("{") and value.endswith("}"):
+        value = value[1:-1].strip()
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def extract_cdc_constraints(
+    xdc_text: str, *, source: str | None = None
+) -> XdcConstraints:
+    """Read the CDC-relevant subset of an XDC/SDC into :class:`XdcConstraints`.
+
+    Reading goes through the Tcl word tokenizer (#642) rather than a regex per
+    physical line, so ``\\``-continued commands, braced values and nested
+    collections (``[get_pins [get_cells u_a]/C]``) are read the way Vivado
+    reads them. ``source`` only names the file in the one-per-file
+    ``constraints.tokenizer_skipped`` warning.
+    """
+    commands, _backend = read_commands(xdc_text, interest=_INTEREST, source=source)
     xc = XdcConstraints()
 
-    for m in _RE_CREATE_CLOCK.finditer(text):
-        args = m.group("args")
-        name_m = _RE_NAME_OPT.search(args)
-        per_m = _RE_PERIOD_OPT.search(args)
-        if name_m:
-            name = name_m.group(1).strip("{}")
-            try:
-                period = float(per_m.group(1)) if per_m else None
-            except ValueError:
-                period = None
-            xc.clocks[name] = period
-
-    for m in _RE_CLOCK_GROUPS.finditer(text):
-        args = m.group("args")
-        if "-asynchronous" not in args and "-async" not in args:
+    for cmd in commands:
+        if cmd.name == "create_clock":
+            name = _flag_value(cmd, "-name")
+            if name is None:
+                continue
+            names = _tokens(name)
+            xc.clocks[names[0] if names else name] = _period(
+                _flag_value(cmd, "-period")
+            )
             continue
-        groups = [_tokens(g) for g in _RE_GROUP.findall(args)]
-        # every cross-group clock pair is declared asynchronous
-        for i in range(len(groups)):
-            for j in range(i + 1, len(groups)):
-                for a in groups[i]:
-                    for b in groups[j]:
-                        xc.async_clock_pairs.add(frozenset({a, b}))
 
-    for kind, rx in (
-        ("false_path", _RE_FALSE_PATH),
-        ("max_delay", _RE_MAX_DELAY),
-        ("bus_skew", _RE_BUS_SKEW),
-    ):
-        for m in rx.finditer(text):
-            args = m.group("args")
-            fc, fcell = _split_target(
-                _RE_FROM.search(args).group(1) if _RE_FROM.search(args) else None
+        if cmd.name == "set_clock_groups":
+            if "-asynchronous" not in cmd.words and "-async" not in cmd.words:
+                continue
+            groups = [_tokens(g) for g in _flag_values(cmd, "-group")]
+            # every cross-group clock pair is declared asynchronous
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    for a in groups[i]:
+                        for b in groups[j]:
+                            xc.async_clock_pairs.add(frozenset({a, b}))
+            continue
+
+        kind = _EXCEPTION_KINDS.get(cmd.name)
+        if kind is None:
+            continue
+        fc, fcell = _split_target(_flag_value(cmd, "-from"))
+        tc, tcell = _split_target(_flag_value(cmd, "-to"))
+        xc.path_exceptions.append(
+            PathException(
+                kind=kind,
+                datapath_only="-datapath_only" in cmd.words,
+                from_clocks=fc,
+                to_clocks=tc,
+                from_cells=fcell,
+                to_cells=tcell,
+                raw=cmd.raw or "",
             )
-            tc, tcell = _split_target(
-                _RE_TO.search(args).group(1) if _RE_TO.search(args) else None
-            )
-            xc.path_exceptions.append(
-                PathException(
-                    kind=kind,
-                    datapath_only="-datapath_only" in args,
-                    from_clocks=fc,
-                    to_clocks=tc,
-                    from_cells=fcell,
-                    to_cells=tcell,
-                    raw=m.group(0).strip(),
-                )
-            )
+        )
     return xc
 
 

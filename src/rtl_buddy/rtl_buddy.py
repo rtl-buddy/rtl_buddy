@@ -13756,7 +13756,7 @@ class RtlBuddy:
             raise typer.Exit(exit_code)
 
         report = backend.read_report()
-        xc = extract_cdc_constraints(Path(xdc_path).read_text())
+        xc = extract_cdc_constraints(Path(xdc_path).read_text(), source=str(xdc_path))
         # Recognized-synchronizer patterns: cdc.yaml's `recognized-syncs` plus
         # any --recognize-sync overrides given on the command line.
         recognized = analysis.get_recognized_syncs() + list(recognize_sync or [])

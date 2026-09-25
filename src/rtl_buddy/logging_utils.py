@@ -1745,6 +1745,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
+        case "synth.sdc_period_unevaluated":
+            return (
+                f"create_clock -period {fields.get('value')} in SDC "
+                f'"{fields.get("sdc")}" line {fields.get("line")} needs a Tcl '
+                "interpreter to evaluate; that clock is skipped for the abc "
+                "timing constraint"
+            )
+        case "constraints.tokenizer_skipped":
+            return (
+                f'constraint file "{fields.get("source")}" line {fields.get("line")}: '
+                f'"{fields.get("command")}" uses Tcl the constraint reader does not '
+                f"evaluate ({', '.join(fields.get('features', []))}); commands that "
+                "depend on it may be read incompletely"
+            )
         case "synth.openroad.no_lef":
             return (
                 f'OpenROAD synthesis "{fields.get("synth")}" requires LEF files; '

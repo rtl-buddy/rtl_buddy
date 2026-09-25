@@ -20,6 +20,7 @@ from ..config.synth import (
     resolve_static_functions_mode,
     resolve_unresolved_interfaces_mode,
 )
+from ..constraints.tcl_reader import read_commands
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.manifest import project_relative
@@ -40,6 +41,15 @@ _ABC_SCRIPT_NO_TIMING = (
 )
 # Same but with stime -p appended to report critical-path delay
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
+
+
+def _flag_value(words: list[str], flag: str) -> str | None:
+    """First value word following ``flag`` in a tokenized command, if any."""
+    for i, word in enumerate(words):
+        if word == flag and i + 1 < len(words):
+            return words[i + 1]
+    return None
+
 
 # A machine-log line carries at most this many findings; the full count and the
 # number dropped travel alongside, so nothing is silently lost.
@@ -827,16 +837,45 @@ class YosysSynth:
 
         ABC -D takes a single timing window; for multi-clock designs this is a
         workaround — the minimum period is used, which over-constrains slower domains.
+
+        Read through the Tcl word tokenizer (#642), not a per-line regex, so a
+        ``\\``-continued ``create_clock`` or a braced ``-period {10.0}`` is seen
+        rather than silently yielding "no clock" and an unconstrained ABC. A
+        ``-period`` whose value needs evaluation (``$p``, ``[expr …]``) is
+        reported as :data:`synth.sdc_period_unevaluated` and skipped — the
+        caller's "no create_clock at all" warning would be misleading there.
         """
-        periods = []
         try:
             with open(sdc_path) as f:
-                for line in f:
-                    m = re.search(r"create_clock\s+.*-period\s+([\d.]+)", line)
-                    if m:
-                        periods.append(float(m.group(1)))
+                text = f.read()
         except OSError:
             return None
+
+        commands, _backend = read_commands(
+            text, interest=frozenset({"create_clock"}), source=sdc_path
+        )
+        periods: list[float] = []
+        for cmd in commands:
+            value = _flag_value(cmd.words, "-period")
+            if value is None:
+                continue
+            if value.startswith("{") and value.endswith("}"):
+                value = value[1:-1].strip()
+            if value.startswith("$") or value.startswith("["):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.sdc_period_unevaluated",
+                    synth=self.synth_cfg.get_name(),
+                    sdc=sdc_path,
+                    line=cmd.line,
+                    value=value,
+                )
+                continue
+            try:
+                periods.append(float(value))
+            except ValueError:
+                continue
         if not periods:
             return None
         if len(periods) > 1:

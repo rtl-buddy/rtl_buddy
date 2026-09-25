@@ -9,6 +9,7 @@ report are checked in as the contract.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,125 @@ def test_clock_groups_expands_all_cross_group_pairs():
     assert frozenset({"clk_a2", "clk_b"}) in xc.async_clock_pairs
     # same-group clocks are not declared async to each other
     assert frozenset({"clk_a", "clk_a2"}) not in xc.async_clock_pairs
+
+
+# --------------------------------------------------------------------------
+# Tcl-shaped XDC the old per-line regexes mis-read (#642)
+# --------------------------------------------------------------------------
+
+
+def test_nested_collection_yields_the_instance_not_the_bracket_head():
+    # was: from_cells == ["[get_cells", "u_a"] — the regex cut at the first `]`
+    xc = extract_cdc_constraints(
+        "set_false_path -from [get_pins [get_cells u_a]/C] -to [get_cells u_b]\n"
+    )
+    [fp] = xc.path_exceptions
+    assert fp.from_cells == ["u_a"]
+    assert fp.to_cells == ["u_b"]
+
+
+def test_hash_inside_braces_is_part_of_the_name():
+    # was: clock "clk", period None — `#` was treated as a comment start
+    xc = extract_cdc_constraints(
+        "create_clock -name clk#1 -period 10 [get_ports {clk#1}]\n"
+    )
+    assert xc.clocks == {"clk#1": 10.0}
+
+
+def test_continued_false_path_keeps_both_endpoints():
+    # was: to_clocks == [] — the continuation was dropped, so the audit saw a
+    # one-sided waiver and could miss a masked crossing
+    xc = extract_cdc_constraints(
+        "set_false_path -from [get_clocks clk_a] \\\n-to [get_clocks clk_b]\n"
+    )
+    [fp] = xc.path_exceptions
+    assert fp.from_clocks == ["clk_a"]
+    assert fp.to_clocks == ["clk_b"]
+    # raw is the reconstructed logical command, not the first physical line
+    assert fp.raw == "set_false_path -from [get_clocks clk_a] -to [get_clocks clk_b]"
+
+
+def test_braced_period_is_read():
+    xc = extract_cdc_constraints(
+        "create_clock -name clk -period {10.0} [get_ports clk] # main\n"
+    )
+    assert xc.clocks == {"clk": 10.0}
+
+
+def test_clock_groups_mixes_brace_and_bracket_groups():
+    xc = extract_cdc_constraints(
+        "set_clock_groups -asynchronous -group {a b} -group [get_clocks c]\n"
+    )
+    assert xc.async_clock_pairs == {frozenset({"a", "c"}), frozenset({"b", "c"})}
+
+
+def test_continued_clock_groups_sees_every_group():
+    xc = extract_cdc_constraints(
+        "set_clock_groups -asynchronous \\\n  -group {clk_a} \\\n  -group {clk_b}\n"
+    )
+    assert frozenset({"clk_a", "clk_b"}) in xc.async_clock_pairs
+
+
+def test_commented_out_constraint_is_ignored():
+    xc = extract_cdc_constraints(
+        "# set_false_path -from [get_clocks a] -to [get_clocks b]\n"
+        "create_clock -name a -period 1 [get_ports a]\n"
+    )
+    assert xc.path_exceptions == []
+    assert xc.clocks == {"a": 1.0}
+
+
+def test_variable_period_warns_once_per_file(caplog):
+    xdc = (
+        "set p 10\n"
+        "create_clock -name a -period $p [get_ports a]\n"
+        "create_clock -name b -period $p [get_ports b]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        xc = extract_cdc_constraints(xdc, source="v.xdc")
+    # the clocks are still declared, with an unknown period
+    assert xc.clocks == {"a": None, "b": None}
+    skipped = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "constraints.tokenizer_skipped"
+    ]
+    assert len(skipped) == 1
+    assert skipped[0].rtl_fields["source"] == "v.xdc"
+
+
+def test_plain_xdc_does_not_warn(caplog):
+    xdc = (
+        "create_clock -name clk -period 10 [get_ports clk]\n"
+        "set_property IOSTANDARD LVCMOS18 [get_ports clk]\n"
+    )
+    with caplog.at_level(logging.WARNING):
+        extract_cdc_constraints(xdc, source="plain.xdc")
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "constraints.tokenizer_skipped"
+    ]
+
+
+def test_continued_waiver_is_seen_as_two_sided_by_the_audit():
+    # The dangerous direction: a continued -from/-to read as one-sided made a
+    # correct waiver look missing (and could hide an over-waive).
+    dm = json.loads((FIX / "cdc_bad_domain_map.json").read_text())
+    rep = json.loads((FIX / "cdc_bad_report.json").read_text())
+    one_line = (
+        "create_clock -name clk_a -period 8.0 [get_ports {clk_a}]\n"
+        "create_clock -name clk_b -period 10.0 [get_ports {clk_b}]\n"
+        "set_false_path -from [get_clocks clk_a] -to [get_clocks clk_b]\n"
+    )
+    continued = (
+        "create_clock -name clk_a -period 8.0 [get_ports {clk_a}]\n"
+        "create_clock -name clk_b -period 10.0 [get_ports {clk_b}]\n"
+        "set_false_path -from [get_clocks clk_a] \\\n  -to [get_clocks clk_b]\n"
+    )
+    a = _kinds(audit_xdc(dm, rep, extract_cdc_constraints(one_line)))
+    b = _kinds(audit_xdc(dm, rep, extract_cdc_constraints(continued)))
+    assert a == b
 
 
 # --------------------------------------------------------------------------
