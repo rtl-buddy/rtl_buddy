@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import pprint
 from dataclasses import dataclass, field as dc_field
@@ -130,6 +131,9 @@ class PnrFloorplan:
     blockages: list[PnrBlockage] = dc_field(default_factory=list)
 
 
+_MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
+
+
 def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
     """Validate one `floorplan.blockages` entry; the geometry is checked here
     so a typo fails at load time rather than an hour into the flow."""
@@ -139,6 +143,19 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
             f"{where}: rect must be [x0, y0, x1, y1] in microns, got {entry.rect!r}"
         )
     x0, y0, x1, y1 = (float(v) for v in entry.rect)
+    if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+        raise FatalRtlBuddyError(
+            f"{where}: rect coordinates must be finite numbers, got {entry.rect!r}"
+        )
+    # The flow writes coordinates to the nanometre (`_tcl_microns`), so a
+    # rectangle narrower than that would reach OpenROAD with no area at all.
+    if round(x1, 3) - round(x0, 3) < _MIN_BLOCKAGE_SPAN or (
+        round(y1, 3) - round(y0, 3) < _MIN_BLOCKAGE_SPAN
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}: rect must have x0 < x1 and y0 < y1, at least 0.001 um "
+            f"apart, got {entry.rect!r}"
+        )
     if not (x0 < x1 and y0 < y1):
         raise FatalRtlBuddyError(
             f"{where}: rect must have x0 < x1 and y0 < y1, got {entry.rect!r}"

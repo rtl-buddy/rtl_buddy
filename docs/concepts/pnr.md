@@ -145,9 +145,9 @@ Three optional `floorplan` keys steer where macros and standard cells may go (#1
 | --- | --- |
 | `hard` (default) | No standard cell is placed inside. The macro packer also keeps every macro out of it: a macro that would overlap one moves along its row past it, and a row it leaves no room in is skipped. No halo is kept to a blockage. |
 | `soft` | Global placement keeps standard cells out; later repair and legalization may still use the area. Macros may sit on it. |
-| `partial` | Global placement caps the cell density inside at `max-density`, a fraction strictly between 0 and 1. Macros may sit on it. |
+| `partial` | Global placement caps the cell density inside at `max-density`, a fraction strictly between 0 and 1. The cap is **global placement's only**: OpenROAD's detailed placer treats every non-soft blockage as fully blocked, so the legalization passes that follow move the cells out again and the area ends up behaving like a `hard` one for standard cells. Macros may sit on it. |
 
-The flow creates them with OpenROAD's `create_blockage` right after the floorplan, ahead of macro and global placement. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a negative coordinate, not four numbers), an unknown type, or a `max-density` on anything but a `partial` blockage fails when `pnr.yaml` loads; a rectangle outside the die fails in OpenROAD. When hard blockages leave the macros no room, the no-fit error says how many blockages it avoided and lists moving one among the fixes.
+The flow creates them with OpenROAD's `create_blockage` right after the floorplan, ahead of macro and global placement. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative or non-finite coordinate, not four numbers), an unknown type, or a `max-density` on anything but a `partial` blockage fails when `pnr.yaml` loads; a rectangle outside the die fails in OpenROAD. `create_blockage` first shipped in OpenROAD 26Q1, so a run with blockages fails at setup on an older build. When hard blockages leave the macros no room, the no-fit error says how many blockages it avoided and lists moving one among the fixes.
 
 ## Constrain boundary pins
 

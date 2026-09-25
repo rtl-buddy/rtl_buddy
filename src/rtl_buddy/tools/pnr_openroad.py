@@ -1794,6 +1794,28 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # `create_blockage` first shipped in OpenROAD 26Q1, above the
+        # minimum this flow otherwise supports; an older build would die on
+        # `invalid command name` after the floorplan is written (#105).
+        if self.pnr_cfg.get_floorplan().blockages and not self._has_tcl_command(
+            "create_blockage"
+        ):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.blockages_unsupported",
+                pnr=self.pnr_cfg.get_name(),
+                exe=self.openroad_executable,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "floorplan.blockages needs OpenROAD's create_blockage "
+                    "(26Q1 or newer); this OpenROAD has none"
+                ),
+                fail_stage="setup",
+            )
+
         # Before the script: a thread count above the allocation is
         # reported (and clamped) ahead of the tool, not after it (#654).
         self._threads()

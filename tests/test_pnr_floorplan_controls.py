@@ -22,6 +22,7 @@ from rtl_buddy.config.pnr import (
     PnrFloorplan,
     PnrFloorplanFile,
     PnrSuiteConfig,
+    _load_blockage,
 )
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -354,3 +355,62 @@ def test_an_anchor_and_hard_blockages_render_together(tmp_path):
     )
 
     assert "      upper-right $MACRO_KEEPOUTS]\n" in text
+
+
+@pytest.mark.parametrize(
+    "rect",
+    [
+        [0.0, 0.0, float("inf"), 4.0],
+        [0.0, 0.0, float("nan"), 4.0],
+        [0.0, 0.0, 0.0004, 0.0008],  # rounds to a zero-area rect at 1 nm
+    ],
+)
+def test_blockage_rect_must_be_finite_and_at_least_a_nanometre(rect):
+    with pytest.raises(FatalRtlBuddyError, match="blockages\\[0\\]"):
+        _load_blockage("r", 0, PnrBlockageFile(rect=rect))
+
+
+def test_blockage_rect_of_one_nanometre_is_accepted():
+    b = _load_blockage("r", 0, PnrBlockageFile(rect=[0.0, 0.0, 0.001, 0.001]))
+    assert b.rect == (0.0, 0.0, 0.001, 0.001)
+
+
+def test_blockages_fail_at_setup_without_create_blockage(tmp_path, monkeypatch):
+    """`create_blockage` first shipped in OpenROAD 26Q1; an older build must be
+    refused before the flow starts, not die after the floorplan (#105)."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    pnr_cfg = MagicMock()
+    pnr_cfg.get_name.return_value = "demo"
+    pnr_cfg.get_floorplan.return_value = PnrFloorplan(
+        utilization=0.5,
+        aspect=1.0,
+        core_margin=2.0,
+        blockages=[PnrBlockage(rect=(0.0, 0.0, 1.0, 1.0), type=BlockageType.HARD)],
+    )
+    pnr_cfg.get_checkpoints.return_value = None
+    platform = MagicMock()
+    platform.get_pdk.return_value.get_pdn_config.return_value = ""
+    platform.get_pdk.return_value.get_rcx_rules.return_value = ""
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _n: "/usr/bin/openroad")
+    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), root_cfg)
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    monkeypatch.setattr(backend, "_clear_stale_outputs", lambda **kw: None)
+    probed = []
+    monkeypatch.setattr(
+        backend, "_has_tcl_command", lambda cmd: probed.append(cmd) or False
+    )
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **k: launched.append(a)
+    )
+
+    res = backend.run()
+
+    assert probed == ["create_blockage"]
+    assert res.results["fail_stage"] == "setup"
+    assert "create_blockage" in res.results["desc"]
+    assert launched == []
