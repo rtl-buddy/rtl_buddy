@@ -193,7 +193,7 @@ def test_pnr_multi_corner_reports_follow_the_global_worst(tmp_path):
     block = text.index('puts ">>> Per-corner timing"')
     assert text.index("report_tns\n") < block < text.index("report_checks")
     for corner in ("tt", "ss", "ff"):
-        assert f"rb_report_corner_timing {corner}\n" in text
+        assert f"catch {{rb_report_corner_timing {corner}}} rb_err" in text
     # Both OpenSTA spellings, 3.0 first.
     assert "sta::worst_slack_scene $corner max" in text
     assert "sta::worst_slack_corner $corner max" in text
@@ -508,3 +508,42 @@ def test_power_row_and_table_carry_the_worst_corner():
     single = PowerPassResults(name="demo/results", total_w=1.0)
     assert "worst_corner" not in single.results
     assert "corners" not in single.results
+
+
+def test_corners_written_as_a_scalar_is_refused_by_name(tmp_path):
+    """pyserde would turn `corners: ss` into ['s', 's']; the platform must
+    say it wants a list instead (#104, #105)."""
+    from serde.yaml import from_yaml
+
+    from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    pdk = MagicMock()
+    pdk.get_corners.return_value = ["tt", "ss"]
+    cfg = from_yaml(PnrPlatformConfigFile, 'name: "p"\npdk: "k"\ncorners: ss\n')
+    with pytest.raises(FatalRtlBuddyError, match=r"corners: \[ss\]"):
+        PnrPlatformConfig(cfg, lambda _n: pdk)
+
+
+def test_a_failing_corner_report_does_not_stop_the_flow():
+    """The per-corner block is report-only; a Tcl error in it must not abort
+    the script ahead of `write_db`."""
+    import shutil as _sh
+    import subprocess
+
+    from rtl_buddy.tools import openroad_corners
+
+    tclsh = _sh.which("tclsh")
+    if tclsh is None:
+        pytest.skip("no tclsh")
+    script = (
+        "set ::sta_report_default_digits 2\n"
+        'proc rb_find_corner {n} { error "no such scene $n" }\n'
+        + openroad_corners.timing_report_tcl(["tt", "ss"]).replace(
+            openroad_corners.FIND_CORNER_PROC, ""
+        )
+        + '\nputs "REACHED_WRITE_DB"\n'
+    )
+    out = subprocess.run([tclsh], input=script, capture_output=True, text=True)
+    assert "REACHED_WRITE_DB" in out.stdout
+    assert "per-corner timing for ss unavailable" in out.stdout

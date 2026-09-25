@@ -104,7 +104,14 @@ def timing_report_tcl(corners: list[str]) -> str:
             '  puts "corner $name worst slack min [sta::format_time $hold $digits]"',
             '  puts "corner $name tns max [sta::format_time $tns $digits]"',
             "}",
-            *(f"rb_report_corner_timing {c}" for c in corners),
+            # Report-only, and it sits ahead of the writes: an error here
+            # (an OpenSTA without either API spelling, say) costs that
+            # corner's rows, not the routed database (#104, #105).
+            *(
+                f"if {{[catch {{rb_report_corner_timing {c}}} rb_err]}} "
+                f'{{ puts "rb: per-corner timing for {c} unavailable: $rb_err" }}'
+                for c in corners
+            ),
         ]
     )
 

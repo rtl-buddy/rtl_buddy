@@ -1571,7 +1571,9 @@ class OpenRoadPower(BasePower):
             log=log_path,
             report=report_path,
         )
-        phys_model = self._publish_phys_model(parsed)
+        phys_model = self._publish_phys_model(
+            parsed, worst_corner=corner_fields.get("worst_corner")
+        )
         passed = PowerPassResults(
             name=self.name + "/results",
             mode=self.power_cfg.get_mode(),
@@ -1664,7 +1666,9 @@ class OpenRoadPower(BasePower):
         ]
         return library_fingerprint([path for path in named if path], self.root_cfg)
 
-    def _publish_phys_model(self, parsed: dict) -> str | None:
+    def _publish_phys_model(
+        self, parsed: dict, *, worst_corner: str | None = None
+    ) -> str | None:
         """Write `phys-model.json` + its manifest for a run that passed (#558).
 
         Into `phys_dir`, which is this run's own artefact directory unless
@@ -1796,6 +1800,11 @@ class OpenRoadPower(BasePower):
                 **self._upstream_identity(),
                 "mode": self.power_cfg.get_mode(),
                 "activity_source": source,
+                # Under a multi-corner platform the watts and per-instance
+                # rows are the worst corner's; say which, so the model is
+                # not read as the primary corner's. Absent for one corner,
+                # keeping those digests as they were (#104).
+                **({"corner": worst_corner} if worst_corner else {}),
                 "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),
                 # `tool_overrides` is deliberately absent. Nothing in this
                 # backend reads it -- `PowerConfig.get_tool_overrides()` has

@@ -59,7 +59,9 @@ class PnrPlatformConfigFile:
     # exclusive with `corner:`; the first entry is the primary corner.
     # `None` (the key absent) is kept apart from `[]` so an empty list is
     # an error rather than a silent single-corner run.
-    sta_corners: list[str] | None = field(rename="corners", default=None)
+    # `str` ahead of the list so a scalar `corners: ss` arrives as the
+    # string it is, to be refused, rather than as pyserde's ['s', 's'].
+    sta_corners: str | list[str] | None = field(rename="corners", default=None)
     # One buffer name or a list of them. With a list, CTS is given every
     # entry as its buffer list and the first as the root buffer.
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
@@ -145,6 +147,11 @@ class PnrPlatformConfig:
                 "(the first entry of 'corners' is the primary corner)"
             )
         corners = cfg.sta_corners
+        if isinstance(corners, str):
+            raise FatalRtlBuddyError(
+                f"{where}: 'corners' is a list, e.g. corners: [{corners}]; "
+                f"for one corner write corner: {corners}"
+            )
         if not corners:
             raise FatalRtlBuddyError(
                 f"{where}: 'corners' must name at least one corner of PDK "
