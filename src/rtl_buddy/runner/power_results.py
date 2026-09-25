@@ -66,6 +66,7 @@ class PowerPassResults(PowerResults):
         switching_w: float | None = None,
         leakage_w: float | None = None,
         activity_source: str | None = None,
+        parasitics: str | None = None,
         phys_model: str | None = None,
         unpowered_cells: list | None = None,
         unpowered_instance_count: int = 0,
@@ -94,6 +95,11 @@ class PowerPassResults(PowerResults):
             self.results["leakage_w"] = leakage_w
         if activity_source is not None:
             self.results["activity_source"] = activity_source
+        # What a post-P&R analysis timed the routing on: "spef" (the P&R
+        # run's OpenRCX extraction) or "estimated" (global-route estimate).
+        # Absent on a synth-source run, which has no routing (#101).
+        if parasitics is not None:
+            self.results["parasitics"] = parasitics
         # Where the per-instance breakdown behind these scalars was written
         # (#558). Absent when the run could not publish one.
         if phys_model is not None:

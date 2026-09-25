@@ -147,9 +147,9 @@ detailed_route \
 {{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
-
+{{ rcx_block }}
 puts ">>> Final reports"
-estimate_parasitics -global_routing
+{{ final_parasitics }}
 report_design_area
 report_worst_slack -max
 report_worst_slack -min
@@ -164,13 +164,15 @@ write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
 # annotations so downstream tools (rb power with netlist-source: pnr)
 # can re-enter at the post-route state without re-running PnR.
 #
-# Note on SPEF: we intentionally do NOT call write_spef. Producing a
-# real SPEF requires OpenROAD's RCX extractor (rcx_run) and a PDK-
-# specific .rcx_rules file; Nangate45 / FreePDK45 doesn't ship one,
-# and the estimate_parasitics-derived in-memory annotations are not
-# extractable to SPEF ("[INFO RCX-0134] no extraction data."). The
-# ODB-based handoff carries the same routing-derived cap to rb power
-# without the calibration step.
+# Note on SPEF: a real SPEF needs OpenRCX and a PDK-specific rules
+# file, so it is written only when the PDK declares `rcx-rules` (#101):
+# extraction then runs after fill, `${DESIGN}.routed.spef` is written
+# and read back, and the final reports above are timed on it, as ORFS
+# does. Without rules (Nangate45 / FreePDK45 ships none) there is
+# nothing to write — the estimate_parasitics annotations are not
+# extractable ("[INFO RCX-0134] no extraction data.") — and the ODB
+# handoff carries the same routing-derived cap to rb power instead,
+# which re-estimates it from the global routes.
 write_db      $OUT_DIR/${DESIGN}.routed.odb
 
 puts ">>> DONE"
