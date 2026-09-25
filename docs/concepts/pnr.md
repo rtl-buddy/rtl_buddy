@@ -178,6 +178,47 @@ Do not put these commands in SDC: SDC is read before the floorplan exists,
 when whole-edge intervals can resolve to zero length. Keep clock pin layers
 compatible with the platform's clock-routing range.
 
+## Keep stage checkpoints
+
+A long routing run that hits a scheduler wall limit leaves nothing but its log: the flow writes its DEF and ODB only after detailed routing. Set `checkpoints:` on the run to keep a database at each stage boundary and a progress file that says where the run is:
+
+```yaml
+runs:
+  - name: demo_pnr_nangate45
+    # ...
+    checkpoints: true            # or a stage, or a list: [cts, global_route]
+```
+
+| Stage | Written | Holds |
+| --- | --- | --- |
+| `floorplan` | before `global_placement` | floorplan, pins, tie cells, placed macros, PDN |
+| `place` | before `clock_tree_synthesis` | legalized global placement after `repair_design` |
+| `cts` | before `global_route` | clock tree, hold repair, legalization, `check_placement` |
+| `global_route` | after a successful `global_route` | the global route: ODB, route guides and route segments |
+
+Each stage writes `<NN>_<stage>.odb`, `.def` and `.sdc`; `global_route` also writes `.guide` (`write_guides`) and `.segments` (`write_global_route_segments`). `true` asks for all four stages and a list or a single name asks for some of them. An empty list (`checkpoints: []`) keeps the progress file and the manifest but writes no databases. Leave the key unset, or `false`, and the generated `pnr.tcl` is byte-for-byte what it was without the feature.
+
+Checkpoints live in their own directory per run:
+
+```
+artefacts/<run>/checkpoints/
+  latest -> 20260925T101500-4242
+  20260925T101500-4242/
+    manifest.json      # inputs, hashes, OpenROAD version, outcome
+    progress.jsonl     # one JSON event per line, appended as the flow runs
+    01_floorplan.odb  01_floorplan.def  01_floorplan.sdc
+    ...
+```
+
+- **Progress.** `progress.jsonl` gets a `step_begin` and a `step_end` (`ok` or `error`, with the error text and the elapsed time) for every flow command — `global_placement`, `clock_tree_synthesis`, `global_route`, `detailed_route` and the rest — plus a `checkpoint` event once all of a stage's files are on disk. Each line is flushed as it is written, so `tail -f artefacts/<run>/checkpoints/latest/progress.jsonl` follows a running flow, and after a kill the last `step_begin` with no `step_end` is the step the run was in. The Tcl side only appends events; RTL Buddy writes `run_start` and `run_end` around it.
+- **Manifest.** `manifest.json` is written before OpenROAD starts, with SHA-256 fingerprints of the netlist, the SDC, every Liberty and LEF, the pin-constraints and PDN snippets, and the generated `pnr.tcl`, and the OpenROAD path and version. After OpenROAD exits it gains the outcome, the step the run stopped in, and a fingerprint of every checkpoint file.
+- **Never final.** A checkpoint is never named `*.routed.*` and never sits where `rb power` or a plain `rb pnr-export` looks, and every manifest entry says `final: false`, `detail_routed: false`, and whether it is `global_routed`. No checkpoint carries a congestion grid — before global routing there is none, and the flow's `global_route` writes no congestion report — so each entry says `congestion.available: false` with the reason, rather than anything a reader could take for zero congestion.
+- **Survives failure; never reused.** The routed outputs keep their own rules (see [Inspect artefacts](#inspect-artefacts)): a failed run removes them. Checkpoints are the opposite — they exist to outlive a failure — so a run cannot clear them; instead each run writes into a new `<timestamp>-<pid>` directory and a later run never overwrites or deletes an earlier one's. `latest` is what marks the current run's: every `rb pnr` run removes it first thing, checkpointed or not, and a checkpointed run points it at its own directory once OpenROAD is launched. Older run directories are kept until you delete them, and they are not pruned automatically — each holds a few databases, so clear out the ones you no longer need.
+
+Resume is not implemented. The manifest is shaped for it: a resume must re-read the libraries, the ODB and SDC, and reapply the routing-layer and wire-RC settings, and it should refuse a checkpoint whose recorded input or OpenROAD fingerprints no longer match. A resume from `global_route` needs the `.segments` file as well as the `.guide`: `read_guides` restores the guides but, as it warns, not the parasitics a global-route estimate is made from — only `read_global_route_segments` brings those back. Those are global-route estimates either way, not extracted detailed-route RC.
+
+To look at a checkpoint, open its ODB in OpenROAD, or stream its DEF out with [`rb pnr-export --checkpoint`](#export-a-saved-result).
+
 ## Run P&R
 
 ```bash
@@ -254,6 +295,7 @@ rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --gds-mode strict
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --def ../saved/demo_top.def
+rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --checkpoint cts --png
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png-only --lyp dark.lyp --png-width 4096 --png-height 4096
 ```
 
@@ -263,7 +305,7 @@ Nothing is launched before the saved result has been checked. The routed DEF mus
 
 The export clears **only what an export publishes** — the GDS, the PNG, `def2stream.report.json`, `def2stream.inputs.json` and its own record. The routed DEF, ODB, netlist, SDC and every P&R report stay exactly as they were, on a failed export as much as on a successful one.
 
-`--def <path>` exports a DEF from elsewhere, with the platform and the top still coming from the run, and needs a single named run. `--png-only` re-renders the PNG from the GDS already in the artefact directory: no stream-out, the GDS is an input and is never rewritten, and `--lyp`, `--png-width` and `--png-height` change how it is drawn. If a `def2stream.report.json` sits beside that GDS and says cells had no layout, the re-render carries the same qualifier; if no report sits beside it, nothing vouched for that layout, so the re-render reports it as qualified rather than complete.
+`--def <path>` exports a DEF from elsewhere, with the platform and the top still coming from the run, and needs a single named run. `--checkpoint` exports a [stage checkpoint](#keep-stage-checkpoints) instead of the routed result, and also needs a single named run: a stage name (`cts`, or `03_cts`) takes it from the `latest` run, `<run-id>/<stage>` from an older one, and a path names one of a checkpoint's files. The checkpoint must have a completed `checkpoint` event in its run's `progress.jsonl`, so a database a kill interrupted mid-write is refused. Everything the export writes — GDS, PNG, stream-out report, input manifest and record — goes to `checkpoints/<run-id>/export/<NN>_<stage>/`, never to the routed layout's paths; the row carries `checkpoint_stage`, `checkpoint_run_id` and `checkpoint_final: false`, its description names the checkpoint and says it is not final, and the export record gains a `checkpoint` block with the same `final`, `global_routed` and `congestion` labels as the manifest. `--checkpoint` and `--def` are exclusive. `--png-only` re-renders the PNG from the GDS already in the artefact directory: no stream-out, the GDS is an input and is never rewritten, and `--lyp`, `--png-width` and `--png-height` change how it is drawn. If a `def2stream.report.json` sits beside that GDS and says cells had no layout, the re-render carries the same qualifier; if no report sits beside it, nothing vouched for that layout, so the re-render reports it as qualified rather than complete.
 
 ### The export verdict
 
@@ -325,5 +367,6 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `<top>.gds`, `<top>.png` | Optional KLayout outputs |
 | `export.provenance.json` | What an `rb pnr-export` invocation read and produced |
 | `klayout.*.log` | Optional conversion logs |
+| `checkpoints/` | Optional [stage checkpoints](#keep-stage-checkpoints), one directory per run, plus `latest` |
 
-Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. Unlike the other flows, this happens even when OpenROAD itself is missing — the clear is the first thing a run does — because `rb power` resolves `<top>.routed.odb` by path and must never be handed the previous run's database. For the same reason a run that reaches `write_db` and then dies — killed, exiting non-zero, or logging an `[ERROR ...]` line — has its outputs removed again, so a `FAIL` never leaves a routed database behind. `pnr.tcl` and `def2stream.inputs.json` are cleared only in that first up-front pass, so a rerun that never reaches script generation does not leave the previous run's flow script or stream-out inputs looking like the ones it used — but a run that does reach the tools keeps them even when it fails, because they are what `pnr.log` and `klayout.def2stream.log` are logs of. The optional KLayout steps behave the same: a zero-length GDS, a half-rendered PNG, and the stream-out report that would otherwise say a layout is complete are removed rather than left to be read as this run's. A `strict` export failure removes the layout and its report but keeps the routed outputs, because P&R itself succeeded. `rb pnr-export` clears a narrower set still — the layout, the image, the stream-out report, the input manifest and its own record — and never the routed DEF, ODB, netlist or SDC it reads. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
+Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. Unlike the other flows, this happens even when OpenROAD itself is missing — the clear is the first thing a run does — because `rb power` resolves `<top>.routed.odb` by path and must never be handed the previous run's database. For the same reason a run that reaches `write_db` and then dies — killed, exiting non-zero, or logging an `[ERROR ...]` line — has its outputs removed again, so a `FAIL` never leaves a routed database behind. `pnr.tcl` and `def2stream.inputs.json` are cleared only in that first up-front pass, so a rerun that never reaches script generation does not leave the previous run's flow script or stream-out inputs looking like the ones it used — but a run that does reach the tools keeps them even when it fails, because they are what `pnr.log` and `klayout.def2stream.log` are logs of. The optional KLayout steps behave the same: a zero-length GDS, a half-rendered PNG, and the stream-out report that would otherwise say a layout is complete are removed rather than left to be read as this run's. A `strict` export failure removes the layout and its report but keeps the routed outputs, because P&R itself succeeded. `checkpoints/` is the exception to all of this: its run directories are never cleared, and only its `latest` pointer is removed up front. `rb pnr-export` clears a narrower set still — the layout, the image, the stream-out report, the input manifest and its own record — and never the routed DEF, ODB, netlist or SDC it reads. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.

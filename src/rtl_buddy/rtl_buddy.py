@@ -11339,6 +11339,16 @@ class RtlBuddy:
             # The OpenROAD thread count asked for, run with, and the
             # allocation that bounded it (#654). Absent from an export row.
             "openroad_threads",
+            # Stage checkpoints (#653): where a checkpointed `rb pnr` run
+            # left its databases, which stages it wrote and the step it was
+            # in when it stopped; on an export, which checkpoint it read —
+            # and that it was not the final result.
+            "checkpoint_dir",
+            "checkpoint_stages",
+            "last_step",
+            "checkpoint_stage",
+            "checkpoint_run_id",
+            "checkpoint_final",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11873,6 +11883,20 @@ class RtlBuddy:
                 show_default="the run's <top>.def",
             ),
         ] = None,
+        checkpoint: Annotated[
+            str,
+            typer.Option(
+                "--checkpoint",
+                help=(
+                    "export a stage checkpoint (checkpoints: in pnr.yaml) "
+                    "instead of the routed result: a stage (floorplan, place, "
+                    "cts, global_route) of the latest run, <run-id>/<stage>, "
+                    "or a checkpoint file; output goes under the checkpoint "
+                    "and is labelled not final"
+                ),
+                show_default="the run's routed DEF",
+            ),
+        ] = None,
         lyp: Annotated[
             str,
             typer.Option(
@@ -11934,6 +11958,7 @@ class RtlBuddy:
             emit_png=emit_png,
             png_only=png_only,
             def_path=def_path,
+            checkpoint=checkpoint,
             lyp=lyp,
             png_width=png_width,
             png_height=png_height,
@@ -11959,12 +11984,23 @@ class RtlBuddy:
         emit_png: bool = False,
         png_only: bool = False,
         def_path: str | None = None,
+        checkpoint: str | None = None,
         lyp: str | None = None,
         png_width: int = DEFAULT_PNG_WIDTH,
         png_height: int = DEFAULT_PNG_HEIGHT,
         gds_mode: str | None = None,
     ):
         runs = suite_cfg.get_runs(pnr_name)
+        if checkpoint is not None and len(runs) != 1:
+            # A checkpoint belongs to one run's artefact directory (#653).
+            raise FatalRtlBuddyError(
+                "--checkpoint needs exactly one pnr run: name the run whose "
+                f"checkpoint to export (this selection has {len(runs)})"
+            )
+        if checkpoint is not None and def_path is not None:
+            raise FatalRtlBuddyError(
+                "--checkpoint and --def are exclusive: a checkpoint names its own DEF"
+            )
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         if def_path is not None and len(runs) != 1:
             # One DEF cannot be the saved result of several runs, and
@@ -12011,6 +12047,7 @@ class RtlBuddy:
                 emit_png=emit_png,
                 gds_mode=gds_mode,
                 def_path=def_path,
+                checkpoint=checkpoint,
                 png_only=png_only,
                 klayout_props=lyp,
                 png_width=png_width,

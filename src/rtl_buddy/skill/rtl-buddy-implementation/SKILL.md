@@ -35,6 +35,12 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   A count above a Slurm/affinity allocation is clamped with
   `openroad.threads_capped`; quote `openroad_threads.effective`, not the
   configured value.
+- A long or failing P&R can set `checkpoints: true` in `pnr.yaml`. A `FAIL` row
+  then carries `checkpoint_dir`, `checkpoint_stages` and `last_step`, and
+  `checkpoints/latest/progress.jsonl` shows the step a running or killed flow
+  is in. A checkpoint is never a routed or final result: report it as the
+  stage it names, and `pnr-export --checkpoint <stage>` labels its layout
+  `checkpoint_final: false`.
 
 ## Synthesis correctness gates
 

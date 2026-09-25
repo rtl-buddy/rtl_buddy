@@ -107,12 +107,14 @@ class PnrExportRunner:
         klayout_props: str | None = None,
         png_width: int = DEFAULT_PNG_WIDTH,
         png_height: int = DEFAULT_PNG_HEIGHT,
+        checkpoint: str | None = None,
     ):
         self.name = name
         self.root_cfg = root_cfg
         self.pnr_cfg = pnr_cfg
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
+        self.checkpoint = checkpoint
         # A re-render is a PNG by definition; otherwise `--png` asks for one.
         self.emit_png = emit_png or png_only
         self.gds_mode = gds_mode
@@ -158,4 +160,6 @@ class PnrExportRunner:
             png_width=self.png_width,
             png_height=self.png_height,
         )
-        return backend.export_only(def_path=self.def_path, png_only=self.png_only)
+        return backend.export_only(
+            def_path=self.def_path, png_only=self.png_only, checkpoint=self.checkpoint
+        )

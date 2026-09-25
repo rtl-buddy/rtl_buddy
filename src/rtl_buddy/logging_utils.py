@@ -1855,6 +1855,44 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"re-rendered is incomplete — {fields.get('count')} cell(s) "
                 f"with no layout ({named})"
             )
+        case "pnr_export.no_checkpoint":
+            return (
+                f'pnr export "{fields.get("pnr")}": --checkpoint '
+                f"{fields.get('checkpoint')} cannot be exported: "
+                f"{fields.get('reason')}"
+            )
+        # Stage checkpoints (#653). On a failed run they are the point, so
+        # the retained-checkpoint line says where they are and which step
+        # the run stopped in.
+        case "pnr.checkpoints_retained":
+            stages = fields.get("stages") or []
+            saved = (
+                f"last checkpoint {stages[-1]}" if stages else "no checkpoint written"
+            )
+            # A step that finished "ok" is the last one the flow got
+            # through, not the one that failed: an untraced command after it
+            # (a blockage, a user Tcl snippet) is what stopped the run.
+            step = fields.get("step") or "unknown"
+            status = fields.get("step_status") or "unknown"
+            where = (
+                f"after step {step}" if status == "ok" else f"in step {step} ({status})"
+            )
+            return (
+                f'P&R "{fields.get("pnr")}" failed {where}; {saved}; '
+                f"checkpoints kept in {fields.get('dir')}"
+            )
+        case "pnr.checkpoint_manifest_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": could not complete the checkpoint '
+                f"manifest in {fields.get('dir')} ({fields.get('error')}); "
+                "progress.jsonl there still records every event"
+            )
+        case "pnr.checkpoint_setup_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": checkpoints were requested but '
+                f"could not be set up ({fields.get('error')}); OpenROAD was "
+                "not started"
+            )
         case "pnr_export.failed":
             return (
                 f'pnr export "{fields.get("pnr")}" did not deliver '
