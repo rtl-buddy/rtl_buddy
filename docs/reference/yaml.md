@@ -620,6 +620,7 @@ runs:
 | `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete; `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
 | `gds-allow-empty` | Optional | Cell names or `fnmatch` globs that are empty on purpose, matched case-sensitively. Such a cell is not missing in either mode |
 | `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped to a detected Slurm or affinity allocation with a warning. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`: write a stage-named ODB, DEF and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. Unset renders the flow unchanged. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |

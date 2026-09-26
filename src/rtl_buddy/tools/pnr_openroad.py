@@ -24,6 +24,7 @@ from .artifact_paths import (
     project_relative,
     project_root_or_none,
 )
+from . import pnr_checkpoints
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -469,6 +470,10 @@ class OpenRoadPnr:
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+        # This run's checkpoint directory, once `run` has allocated one; the
+        # flow script and the manifest both name it (#653).
+        self._ckpt_run_dir: str | None = None
+        self._openroad_returncode: int | None = None
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -639,6 +644,15 @@ class OpenRoadPnr:
             "fill_cells": fill_cells,
             "out_dir": self.artefact_dir,
             "extra_libs_lefs": extra_libs_lefs,
+            # Empty unless `checkpoints:` is set, and substituted on what
+            # was a blank line, so an unset key renders the flow unchanged.
+            "checkpoint_block": (
+                pnr_checkpoints.render_tcl_block(
+                    self._ckpt_run_dir, self.pnr_cfg.get_checkpoints() or ()
+                )
+                if self._ckpt_run_dir is not None
+                else ""
+            ),
         }
 
         template = self._load_template()
@@ -1347,6 +1361,7 @@ class OpenRoadPnr:
         png_only: bool,
         klayout: str | None,
         klayout_version: str | None,
+        checkpoint: "pnr_checkpoints.CheckpointRef | None" = None,
     ) -> str:
         """Record what this export read and what it produced (#618).
 
@@ -1388,6 +1403,10 @@ class OpenRoadPnr:
             "top": design,
             "gds_mode": str(self.gds_mode),
             "png_only": png_only,
+            # Which stage checkpoint the layout came from, and that it is
+            # not the run's final, routed result (#653). `None` for an
+            # export of the run's own routed DEF or of a `--def`.
+            "checkpoint": checkpoint.provenance(root) if checkpoint else None,
             "tool": {"name": "klayout", "path": klayout, "version": klayout_version},
             "inputs": {
                 # Exactly one of these two is the layout's source: the DEF
@@ -1426,7 +1445,11 @@ class OpenRoadPnr:
         return path
 
     def export_only(
-        self, *, def_path: str | None = None, png_only: bool = False
+        self,
+        *,
+        def_path: str | None = None,
+        png_only: bool = False,
+        checkpoint: str | None = None,
     ) -> PnrResults:
         """Export a saved P&R result's layout, running no P&R at all.
 
@@ -1447,6 +1470,13 @@ class OpenRoadPnr:
         `preview` still forgives is the case it exists for: a layout that
         was published with cells that have no GDS is a qualified pass, not
         a failure.
+
+        ``checkpoint`` exports a stage checkpoint instead (#653): its DEF is
+        the input, and everything the export writes — layout, render,
+        report, provenance — goes to the checkpoint's own ``export/<stage>``
+        directory, never to the paths the run's routed layout is read from.
+        The provenance and the result name the stage and say it is not
+        final.
         """
         if png_only:
             # A re-render is a PNG whether or not `--png` was also typed;
@@ -1485,6 +1515,29 @@ class OpenRoadPnr:
                 desc=f"cannot resolve the design name from the synth entry: {e}",
                 fail_stage="setup",
             )
+        ckpt = None
+        if checkpoint is not None:
+            ckpt = pnr_checkpoints.resolve_checkpoint(self.artefact_dir, checkpoint)
+            if isinstance(ckpt, str):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_export.no_checkpoint",
+                    pnr=self.pnr_cfg.get_name(),
+                    checkpoint=checkpoint,
+                    reason=ckpt,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"checkpoint unusable: {ckpt}",
+                    fail_stage="setup",
+                )
+            # From here on "the artefact directory" is the checkpoint's
+            # export directory, so every path the export clears, writes and
+            # reports is below the checkpoint and none is a routed output.
+            self.artefact_dir = ckpt.export_dir()
+            os.makedirs(self.artefact_dir, exist_ok=True)
+            def_path = ckpt.def_path
         # Before the validation, not after it: an export that fails on its
         # inputs must not leave the *previous* export's layout at the paths
         # a reader takes for this one's (#469). Everything above this line
@@ -1530,8 +1583,19 @@ class OpenRoadPnr:
             png_only=png_only,
             klayout=klayout,
             klayout_version=klayout_version,
+            checkpoint=ckpt,
         )
         fields = {**export.result_fields(), "export_provenance": provenance}
+        qualifier = ""
+        if ckpt is not None:
+            fields.update(
+                checkpoint_stage=ckpt.name,
+                checkpoint_run_id=ckpt.run_id,
+                checkpoint_final=False,
+            )
+            # Said in the one field every summary row shows: this layout is
+            # a stage of the run, not its result.
+            qualifier = f"checkpoint {ckpt.name} of run {ckpt.run_id} (not final)"
         # Everything that was asked for, on disk. `strict` has already
         # withdrawn what it would not publish, so a rejected export
         # arrives here with nothing to report either way.
@@ -1548,9 +1612,10 @@ class OpenRoadPnr:
                 status=export.status,
                 desc=export.desc,
             )
+            desc = export.desc or "export not delivered"
             return PnrFailResults(
                 name=self.name + "/results",
-                desc=export.desc or "export not delivered",
+                desc=f"{qualifier}: {desc}" if qualifier else desc,
                 fail_stage="export",
                 fields=fields,
             )
@@ -1568,7 +1633,14 @@ class OpenRoadPnr:
             name=self.name + "/results",
             # An export that delivered but is qualified says so in the one
             # field every summary row shows first.
-            desc=export.desc or ("PNG re-rendered" if png_only else "GDS exported"),
+            desc="; ".join(
+                part
+                for part in (
+                    qualifier,
+                    export.desc or ("PNG re-rendered" if png_only else "GDS exported"),
+                )
+                if part
+            ),
             fields=fields,
         )
 
@@ -1626,7 +1698,18 @@ class OpenRoadPnr:
                         else ()
                     ),
                 )
-            ],
+            ]
+            # The `checkpoints/latest` pointer, and only the pointer: the
+            # run directories behind it are what a failed run leaves on
+            # purpose and are never cleared (#653). Retiring the pointer
+            # up front is what stops an older run's checkpoints reading as
+            # this run's — `run` re-points it once it launches OpenROAD
+            # with checkpoints on.
+            + (
+                [pnr_checkpoints.latest_pointer(self.artefact_dir)]
+                if include_script
+                else []
+            ),
             owner=self.pnr_cfg.get_name(),
         )
         # This run's own design-named outputs, cleared whatever they are
@@ -1718,8 +1801,89 @@ class OpenRoadPnr:
         """
         self._clear_stale_outputs()
         return PnrFailResults(
-            name=self.name + "/results", desc=desc, fields=self._threads_fields()
+            name=self.name + "/results",
+            desc=desc,
+            fields={
+                **self._threads_fields(),
+                **(self._close_checkpoints("FAIL", desc, announce=True) or {}),
+            },
         )
+
+    def _checkpoint_inputs(self, platform, script_path: str) -> dict:
+        """Fingerprints of everything the flow reads, for the manifest.
+
+        Hashed once in Python rather than in Tcl, and of the exact files
+        the generated script names, so a later reader — or a resume — can
+        refuse a checkpoint whose netlist, constraints, libraries or flow
+        no longer match (#653).
+        """
+        pdk = platform.get_pdk()
+        return {
+            "netlist": _file_fingerprint(self._resolve_netlist_path()),
+            "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
+            "liberty": [
+                _file_fingerprint(p)
+                for p in [platform.get_sta_lib_path(), *self.pnr_cfg.get_lib_paths()]
+            ],
+            "lef": [
+                _file_fingerprint(p)
+                for p in _dedup_paths(
+                    [
+                        pdk.get_tech_lef(),
+                        pdk.get_macro_lef(),
+                        *self.pnr_cfg.get_lef_paths(),
+                    ]
+                )
+            ],
+            "pin_constraints": _file_fingerprint(self.pnr_cfg.pin_constraints),
+            "pdn_config": _file_fingerprint(pdk.get_pdn_config()),
+            "script": _file_fingerprint(script_path),
+        }
+
+    def _close_checkpoints(
+        self, result: str, desc: str | None, *, announce: bool = False
+    ) -> dict | None:
+        """Complete this run's checkpoint manifest; the result fields for it.
+
+        ``None`` for a run without checkpoints. ``announce`` is set for a
+        failure inside OpenROAD, where the checkpoints are the point: the
+        step the run stopped in and the last stage it saved are logged where
+        a user reading the failure will see them. A `strict` export failure
+        after a clean P&R records its verdict without that line — the flow
+        did not stop anywhere.
+        """
+        if self._ckpt_run_dir is None:
+            return None
+        try:
+            summary = pnr_checkpoints.finish_run(
+                self._ckpt_run_dir,
+                returncode=self._openroad_returncode,
+                result=result,
+                desc=desc or "",
+                fingerprint=_file_fingerprint,
+            )
+        except OSError as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.checkpoint_manifest_failed",
+                pnr=self.pnr_cfg.get_name(),
+                dir=self._ckpt_run_dir,
+                error=str(e),
+            )
+            return {"checkpoint_dir": self._ckpt_run_dir}
+        if announce:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.checkpoints_retained",
+                pnr=self.pnr_cfg.get_name(),
+                dir=summary["checkpoint_dir"],
+                stages=summary["checkpoint_stages"],
+                step=(summary["last_step"] or {}).get("step"),
+                step_status=(summary["last_step"] or {}).get("status"),
+            )
+        return summary
 
     def run(self) -> PnrResults:
         log_event(
@@ -1819,10 +1983,32 @@ class OpenRoadPnr:
         # Before the script: a thread count above the allocation is
         # reported (and clamped) ahead of the tool, not after it (#654).
         self._threads()
+        if self.pnr_cfg.get_checkpoints() is not None:
+            # A fresh directory per run, never an existing one: the previous
+            # run's checkpoints stay exactly as it left them (#653).
+            try:
+                self._ckpt_run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
+            except (OSError, RuntimeError) as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.checkpoint_setup_failed",
+                    pnr=self.pnr_cfg.get_name(),
+                    error=str(e),
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"checkpoint setup failed: {e}",
+                    fail_stage="setup",
+                )
 
         try:
             script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
         except Exception as e:
+            if self._ckpt_run_dir is not None:
+                # Nothing was launched, so the run left nothing to keep.
+                shutil.rmtree(self._ckpt_run_dir, ignore_errors=True)
+                self._ckpt_run_dir = None
             log_event(
                 logger,
                 logging.ERROR,
@@ -1834,6 +2020,48 @@ class OpenRoadPnr:
                 name=self.name + "/results",
                 desc=f"template error: {e}",
                 fail_stage="setup",
+            )
+
+        if self._ckpt_run_dir is not None:
+            try:
+                manifest = pnr_checkpoints.begin_run(
+                    self._ckpt_run_dir,
+                    artefact_dir=self.artefact_dir,
+                    run=self.pnr_cfg.get_name(),
+                    design=self.pnr_cfg.resolve_synth_cfg().get_top(),
+                    stages=self.pnr_cfg.get_checkpoints() or (),
+                    openroad={
+                        "path": shutil.which(self.openroad_executable),
+                        "version": version,
+                    },
+                    inputs=self._checkpoint_inputs(platform, script_path),
+                )
+            except Exception as e:
+                # A run asked for checkpoints and cannot record them: running
+                # on would produce databases nothing identifies, so stop
+                # before OpenROAD rather than after hours of routing.
+                shutil.rmtree(self._ckpt_run_dir, ignore_errors=True)
+                self._ckpt_run_dir = None
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.checkpoint_setup_failed",
+                    pnr=self.pnr_cfg.get_name(),
+                    error=str(e),
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"checkpoint setup failed: {e}",
+                    fail_stage="setup",
+                )
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr.checkpoints_armed",
+                pnr=self.pnr_cfg.get_name(),
+                dir=self._ckpt_run_dir,
+                stages=list(self.pnr_cfg.get_checkpoints() or ()),
+                manifest=manifest,
             )
 
         log_path = self._log_path()
@@ -1874,6 +2102,7 @@ class OpenRoadPnr:
                 check=False,
                 env=env,
             )
+        self._openroad_returncode = result.returncode
 
         # OpenROAD's `-log` records what it writes to stdout. A Tcl error
         # — the macro packer refusing a floorplan, say — goes to stderr
@@ -1980,6 +2209,7 @@ class OpenRoadPnr:
                     **metrics,
                     **export.result_fields(),
                     **self._threads_fields(),
+                    **(self._close_checkpoints("FAIL", export.desc) or {}),
                 },
             )
 
@@ -2001,5 +2231,6 @@ class OpenRoadPnr:
                 **metrics,
                 **(export.result_fields() if export else {}),
                 **self._threads_fields(),
+                **(self._close_checkpoints("PASS", None) or {}),
             },
         )

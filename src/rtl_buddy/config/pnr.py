@@ -192,6 +192,38 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
     return PnrBlockage(rect=(x0, y0, x1, y1), type=kind, max_density=max_density)
 
 
+#: The stage checkpoints `checkpoints:` can ask for, in flow order (#653).
+#: Each is written on the way *out* of the stage it names: `floorplan` holds
+#: the floorplan, pins, tie cells, placed macros and PDN; `place` the
+#: legalized global placement; `cts` the clock tree with hold repair
+#: legalized; `global_route` a successful global route, with its guides and
+#: segments. None of them is detail-routed, and none is a final output.
+CHECKPOINT_STAGES = ("floorplan", "place", "cts", "global_route")
+
+
+def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
+    """`checkpoints:` as the stages to write, in flow order; ``None`` = off.
+
+    ``true`` is every stage and ``false`` (the default) is none — and no
+    progress file either, so a run that never sets the key renders the flow
+    it always has. A name or a list of names picks stages; an empty list
+    keeps the progress file and the manifest but writes no database.
+    """
+    if value is False or value is None:
+        return None
+    if value is True:
+        return CHECKPOINT_STAGES
+    names = [value] if isinstance(value, str) else list(value)
+    unknown = [n for n in names if n not in CHECKPOINT_STAGES]
+    if unknown:
+        raise FatalRtlBuddyError(
+            f"pnr run '{run}': unknown 'checkpoints' stage(s) "
+            f"{', '.join(repr(n) for n in unknown)} "
+            f"(expected true, false or any of {', '.join(CHECKPOINT_STAGES)})"
+        )
+    return tuple(s for s in CHECKPOINT_STAGES if s in names)
+
+
 @serde
 class PnrConfigFile:
     name: str
@@ -213,6 +245,10 @@ class PnrConfigFile:
     # (#619). Names or fnmatch globs; matched case-sensitively.
     gds_mode: str = field(rename="gds-mode", default=GdsMode.PREVIEW.value)
     gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
+    # Stage checkpoints + a progress file for long or failed runs (#653).
+    # `str` sits before the list so a single stage name is not read as a
+    # list of characters.
+    checkpoints: bool | str | list[str] = False
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD worker threads: a positive integer or `auto`; unset keeps
@@ -261,6 +297,7 @@ class PnrConfigFile:
             _load_blockage(self.name, i, entry)
             for i, entry in enumerate(self.floorplan.blockages)
         ]
+        checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
         constraints = (
@@ -302,6 +339,7 @@ class PnrConfigFile:
             gds_paths=gds_paths,
             gds_mode=gds_mode,
             gds_allow_empty=list(self.gds_allow_empty),
+            checkpoints=checkpoints,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             threads=threads,
@@ -329,6 +367,7 @@ class PnrConfig:
     gds_mode: GdsMode = GdsMode.PREVIEW
     gds_allow_empty: list[str] = dc_field(default_factory=list)
     threads: int | str | None = None
+    checkpoints: tuple[str, ...] | None = None
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -381,6 +420,10 @@ class PnrConfig:
     def get_threads(self) -> int | str | None:
         """Validated `threads:` — a positive int, `auto`, or None (#654)."""
         return self.threads
+
+    def get_checkpoints(self) -> tuple[str, ...] | None:
+        """The stages to checkpoint, in flow order; ``None`` when off (#653)."""
+        return self.checkpoints
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

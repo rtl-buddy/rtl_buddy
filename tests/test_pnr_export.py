@@ -1289,3 +1289,84 @@ def test_cli_lists_the_runs_without_touching_the_artefacts(export_project):
     assert result.exit_code == 0
     assert "demo_pnr" in result.output
     assert _routed_digests(artefacts) == before
+
+
+# ---------------------------------------------------------------------------
+# --checkpoint (#653)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_checkpoint_needs_a_single_named_run(export_project):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app, ["pnr-export", "-c", "pnr.yaml", "--checkpoint", "cts"]
+    )
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--checkpoint needs exactly one pnr run" in str(result.exception)
+
+
+def test_cli_checkpoint_and_def_are_exclusive(export_project):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["pnr-export", "demo_pnr", "-c", "pnr.yaml", "--checkpoint", "cts"]
+        + ["--def", "saved/x.def"],
+    )
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "exclusive" in str(result.exception)
+
+
+def test_cli_machine_row_labels_a_checkpoint_export(export_project, monkeypatch):
+    """The row names the checkpoint and says it is not final; the routed
+    result beside it is untouched."""
+    root, artefacts = export_project
+    before = _routed_digests(artefacts)
+    run_dir = artefacts / "checkpoints" / "20260925T101500-42"
+    run_dir.mkdir(parents=True)
+    (run_dir / "02_place.def").write_text("DESIGN demo_top ;\nEND DESIGN\n")
+    (run_dir / "progress.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "checkpoint",
+                "stage": "place",
+                "index": "02",
+                "status": "ok",
+                "design": "demo_top",
+                "files": {"def": "02_place.def"},
+            }
+        )
+        + "\n"
+    )
+    os.symlink(run_dir.name, artefacts / "checkpoints" / "latest")
+    export_dir = run_dir / "export" / "02_place"
+    _klayout_only(monkeypatch, export_dir)
+    export_dir.mkdir(parents=True)
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "pnr-export", "demo_pnr", "-c", "pnr.yaml"]
+        + ["--checkpoint", "place"],
+    )
+
+    payload = json.loads(
+        next(
+            line for line in result.output.splitlines() if line.startswith('{"command"')
+        )
+    )
+    row = payload["payload"]["results"][0]
+    assert row["result"] == "PASS", row
+    assert row["checkpoint_stage"] == "02_place"
+    assert row["checkpoint_run_id"] == run_dir.name
+    assert row["checkpoint_final"] is False
+    assert "not final" in row["desc"]
+    assert row["gds_path"] == str(export_dir / "demo_top.gds")
+    assert _routed_digests(artefacts) == before
