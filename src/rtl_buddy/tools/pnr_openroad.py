@@ -25,7 +25,7 @@ from .artifact_paths import (
     project_relative,
     project_root_or_none,
 )
-from . import pnr_checkpoints
+from . import pnr_abstract, pnr_checkpoints
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -464,6 +464,9 @@ class OpenRoadPnr:
     ):
         self.name = name
         self.pnr_cfg = pnr_cfg
+        # The run as configured, before anything the run itself adds to it;
+        # what an abstract's config record describes (#95).
+        self._configured_cfg = pnr_cfg
         self.root_cfg = root_cfg
         self.openroad_executable = openroad_executable
         self.emit_gds = emit_gds or emit_png
@@ -474,6 +477,12 @@ class OpenRoadPnr:
         # `--gds-mode` overrides the run's own `gds-mode` for this
         # invocation; `None` means the run's, which defaults to preview.
         self.gds_mode = gds_mode or pnr_cfg.get_gds_mode()
+        if pnr_cfg.get_harden():
+            # A hardened block is about to be streamed into a parent, so its
+            # layout must be complete: the export is implied and strict,
+            # whatever this invocation or the run's `gds-mode` asked (#95).
+            self.emit_gds = True
+            self.gds_mode = GdsMode.STRICT
         # `--lyp` overrides the PDK's `klayout-props` for this render, so a
         # saved layout can be re-rendered with another palette without
         # editing the PDK every project shares (#618). `None` is the PDK's.
@@ -691,6 +700,11 @@ class OpenRoadPnr:
             "threads_block": threads_block,
             "rcx_block": rcx_block,
             "final_parasitics": final_parasitics,
+            # Substituted on the blank line after `write_db`, so a run that does not harden
+            # renders the flow it always has (#95).
+            "harden_block": (
+                pnr_abstract.harden_tcl() if self.pnr_cfg.get_harden() else ""
+            ),
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -1811,6 +1825,9 @@ class OpenRoadPnr:
             own=own,
             own_flow="pnr-openroad",
         )
+        # The abstract is cut from the result this run replaces, so it goes
+        # too — whether or not the run still hardens (#95).
+        stale += pnr_abstract.clear_abstract(self.artefact_dir)
         if stale:
             log_event(
                 logger,
@@ -1965,6 +1982,103 @@ class OpenRoadPnr:
             )
         return summary
 
+    def abstract_inputs(self, platform) -> dict:
+        """Every input file a hardened result was made from, by role (#95).
+
+        `rtl` is the source list of the upstream synthesis filelist, so an
+        RTL edit shows up even before the block is re-synthesized — the
+        netlist alone would not change until then.
+        """
+        pdk = platform.get_pdk()
+        synth_cfg = self.pnr_cfg.resolve_synth_cfg()
+        synth_dir = os.path.join(
+            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
+            "artefacts",
+            synth_cfg.get_name(),
+        )
+        return {
+            "rtl": pnr_abstract.filelist_sources(os.path.join(synth_dir, "synth.f")),
+            "netlist": self._resolve_netlist_path(),
+            "sdc": self.pnr_cfg.get_constraints(),
+            "liberty": [platform.get_sta_lib_path(), *self.pnr_cfg.get_lib_paths()],
+            "lef": _dedup_paths(
+                [pdk.get_tech_lef(), pdk.get_macro_lef(), *self.pnr_cfg.get_lef_paths()]
+            ),
+            "pin_constraints": self.pnr_cfg.pin_constraints,
+            "pdn_config": pdk.get_pdn_config() or None,
+        }
+
+    def _publish_abstract(
+        self, platform, openroad_version: str | None, export: GdsExport | None
+    ) -> dict | str:
+        """Complete and publish a hardening run's abstract (#95).
+
+        OpenROAD has staged the LEF and the Liberty model; the strict
+        stream-out has produced the GDS. Copy the GDS in, write the
+        manifest, and move the directory into place. Returns the result
+        fields, or — having removed every trace of the attempt — the reason
+        the abstract could not be produced.
+        """
+        design = self.pnr_cfg.resolve_synth_cfg().get_top()
+        staging = pnr_abstract.staging_dir(self.artefact_dir)
+        missing = [
+            os.path.basename(pnr_abstract.view_path(staging, design, view))
+            for view in ("lef", "lib")
+            if not os.path.isfile(pnr_abstract.view_path(staging, design, view))
+            or os.path.getsize(pnr_abstract.view_path(staging, design, view)) == 0
+        ]
+        gds = export.gds_path if export is not None else None
+        if not gds or not os.path.isfile(gds):
+            missing.append(f"{design}.gds")
+        problem = (
+            f"abstract view(s) not produced: {', '.join(missing)}" if missing else None
+        )
+        if problem is None:
+            try:
+                shutil.copyfile(gds, pnr_abstract.view_path(staging, design, "gds"))
+                pnr_abstract.write_manifest(
+                    staging,
+                    artefact_dir=self.artefact_dir,
+                    design=design,
+                    run=self.pnr_cfg.get_name(),
+                    platform=self.pnr_cfg.get_platform(),
+                    pdk=platform.get_pdk().get_name(),
+                    openroad={
+                        "path": shutil.which(self.openroad_executable),
+                        "version": openroad_version,
+                    },
+                    technology={
+                        "tech_lef": platform.get_pdk().get_tech_lef(),
+                        "liberty": platform.get_sta_lib_path(),
+                    },
+                    inputs=self.abstract_inputs(platform),
+                    config=pnr_abstract.abstract_config(self._configured_cfg, platform),
+                )
+                published = pnr_abstract.publish(self.artefact_dir)
+            except OSError as e:
+                problem = f"abstract could not be written: {e}"
+        if problem is not None:
+            pnr_abstract.clear_abstract(self.artefact_dir)
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.abstract_failed",
+                pnr=self.pnr_cfg.get_name(),
+                reason=problem,
+                log=self._log_path(),
+            )
+            return problem
+        manifest = os.path.join(published, pnr_abstract.ABSTRACT_MANIFEST_NAME)
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr.abstract_published",
+            pnr=self.pnr_cfg.get_name(),
+            dir=published,
+            manifest=manifest,
+        )
+        return {"abstract_dir": published, "abstract_manifest": manifest}
+
     def run(self) -> PnrResults:
         log_event(
             logger,
@@ -2074,6 +2188,26 @@ class OpenRoadPnr:
                 desc=(
                     "floorplan.blockages needs OpenROAD's create_blockage "
                     "(26Q1 or newer); this OpenROAD has none"
+                ),
+                fail_stage="setup",
+            )
+
+        # One corner per abstract until the multi-corner design reaches
+        # abstracts (#95 out of scope, #104): a Liberty model characterised at
+        # one of several corners would be read by a parent as the block.
+        if self.pnr_cfg.get_harden() and platform.is_multi_corner():
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.harden_multi_corner",
+                pnr=self.pnr_cfg.get_name(),
+                platform=self.pnr_cfg.get_platform(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    f"harden: needs a single-corner platform; "
+                    f"'{self.pnr_cfg.get_platform()}' declares corners"
                 ),
                 fail_stage="setup",
             )
@@ -2303,6 +2437,8 @@ class OpenRoadPnr:
             # `rb power` has every right to the database it wrote.
             # `export_layout` has already reported the export at ERROR,
             # naming the cells; this is the verdict, not a second report.
+            # A hardening run's staged views go with it: no GDS, no abstract.
+            pnr_abstract.clear_abstract(self.artefact_dir)
             return PnrFailResults(
                 name=self.name + "/results",
                 desc=export.desc,
@@ -2315,6 +2451,24 @@ class OpenRoadPnr:
                     **(self._close_checkpoints("FAIL", export.desc) or {}),
                 },
             )
+
+        abstract_fields: dict = {}
+        if self.pnr_cfg.get_harden():
+            published = self._publish_abstract(platform, version, export)
+            if isinstance(published, str):
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=published,
+                    fail_stage="abstract",
+                    fields={
+                        **metrics,
+                        **corner_fields,
+                        **(export.result_fields() if export else {}),
+                        **self._threads_fields(),
+                        **(self._close_checkpoints("FAIL", published) or {}),
+                    },
+                )
+            abstract_fields = published
 
         log_event(
             logger,
@@ -2336,6 +2490,7 @@ class OpenRoadPnr:
                 **metrics,
                 **corner_fields,
                 **(export.result_fields() if export else {}),
+                **abstract_fields,
                 **self._threads_fields(),
                 **(self._close_checkpoints("PASS", None) or {}),
             },

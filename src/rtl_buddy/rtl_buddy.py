@@ -317,6 +317,8 @@ def _pnr_outputs_cell(res: dict) -> str:
         tags.append("gds")
     if res.get("png_path"):
         tags.append("png")
+    if res.get("abstract_dir"):
+        tags.append("abstract")
     text = "+".join(tags) if tags else "-"
 
     def _qualified(note: str) -> str:
@@ -11369,6 +11371,9 @@ class RtlBuddy:
             "checkpoint_stage",
             "checkpoint_run_id",
             "checkpoint_final",
+            # A hardening run's published abstract and its manifest (#95).
+            "abstract_dir",
+            "abstract_manifest",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11797,6 +11802,7 @@ class RtlBuddy:
             "gds_path" in r["results"].results
             or "png_path" in r["results"].results
             or "gds_status" in r["results"].results
+            or "abstract_dir" in r["results"].results
             for r in pnr_results
         )
         rows = []

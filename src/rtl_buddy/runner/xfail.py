@@ -54,6 +54,7 @@ FAIL_STAGE_REASONS = {
     "dispatch": "dispatch failure",
     "tool": "tool failure before a verdict",
     "export": "requested export not delivered",
+    "abstract": "hardened abstract not produced",
 }
 
 
