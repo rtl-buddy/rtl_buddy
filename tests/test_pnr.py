@@ -1,6 +1,7 @@
 """Tests for the P&R config schema, OpenRoadPnr backend, and rb pnr wiring."""
 
 import json
+import logging
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -2856,3 +2857,448 @@ def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
 
     assert backend._run_gds2png(platform, str(gds), "demo_top") is None
     assert not out_png.exists()
+
+
+# ---------------------------------------------------------------------------
+# Platform-scoped don't-use cells + the post-route don't-use check (#656)
+# ---------------------------------------------------------------------------
+
+
+def test_pnr_platform_dont_use_cells_default_to_the_pdk_list(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1", "*_X32"])
+    assert _platform(pdk).get_dont_use_cells() == ["AND2_X1", "*_X32"]
+
+
+def test_pnr_platform_dont_use_cells_add_to_the_pdk_list(tmp_path):
+    """Additive, PDK first, a pattern named by both kept once: a platform
+    can exclude more than its PDK, never less."""
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1", "*_X32"])
+    platform = _platform(pdk, dont_use_cells=["probe*", "AND2_X1", "probe*"])
+    assert platform.get_dont_use_cells() == ["AND2_X1", "*_X32", "probe*"]
+
+
+def test_pnr_platform_dont_use_cells_without_a_pdk_list(tmp_path):
+    platform = _platform(_make_pdk_cfg(tmp_path), dont_use_cells=["probe*"])
+    assert platform.get_dont_use_cells() == ["probe*"]
+
+
+@pytest.mark.parametrize("cell", ["", "   ", "AND2_X1 OR2_X1"])
+def test_pnr_platform_rejects_an_unusable_dont_use_entry(tmp_path, cell):
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(_make_pdk_cfg(tmp_path), dont_use_cells=[cell])
+    assert "dont-use-cells" in str(excinfo.value)
+    assert "pnr platform 'nangate45_typ'" in str(excinfo.value)
+
+
+def test_synth_platform_dont_use_cells_add_to_the_pdk_list(tmp_path):
+    """The synth platform takes the same key, merged the same way, so a
+    platform exclusion also keeps the cell out of tech mapping."""
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1"])
+    cfg = SynthPlatformConfig(
+        SynthPlatformConfigFile(
+            name="nangate45_typ", pdk="nangate45", dont_use_cells=["probe*"]
+        ),
+        lambda _name: pdk,
+    )
+    assert cfg.get_dont_use_cells() == ["AND2_X1", "probe*"]
+
+
+def test_synth_platform_rejects_an_unusable_dont_use_entry(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="synth platform 'nangate45_typ'"):
+        SynthPlatformConfig(
+            SynthPlatformConfigFile(
+                name="nangate45_typ", pdk="nangate45", dont_use_cells=["A B"]
+            ),
+            lambda _name: _make_pdk_cfg(tmp_path),
+        )
+
+
+def test_platform_dont_use_cells_key_is_spelled_in_kebab_case(tmp_path):
+    from serde.yaml import from_yaml
+
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1"])
+    yaml_text = dedent("""\
+        name: "p"
+        pdk: "nangate45"
+        dont-use-cells: ["sky130_fd_sc_hd__probe*"]
+    """)
+    pnr = PnrPlatformConfig(
+        from_yaml(PnrPlatformConfigFile, yaml_text), lambda _name: pdk
+    )
+    synth = SynthPlatformConfig(
+        from_yaml(SynthPlatformConfigFile, yaml_text), lambda _name: pdk
+    )
+    assert pnr.get_dont_use_cells() == ["AND2_X1", "sky130_fd_sc_hd__probe*"]
+    assert synth.get_dont_use_cells() == ["AND2_X1", "sky130_fd_sc_hd__probe*"]
+
+
+def test_pnr_flow_emits_the_platform_dont_use_cells(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1"])
+    text = _render_flow(tmp_path, _platform(pdk, dont_use_cells=["probe*"]))
+
+    assert "set_dont_use [list AND2_X1 probe*]\n" in text
+    assert "foreach rb_pattern [list AND2_X1 probe*] {\n" in text
+
+
+def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
+    """No exclusions, no check: the route-to-fill seam renders as it did
+    before the check existed."""
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+
+    assert "Don't-use check" not in text
+    assert "RB-DONT-USE-VIOLATION" not in text
+    assert '    -verbose 0\n\nputs ">>> Fill insertion"\n' in text
+
+
+def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path):
+    """After the last pass that can add a cell (hold repair, then routing),
+    before the PDK's own fill cells go in and before anything is written."""
+    pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1"])
+    text = _render_flow(tmp_path, _platform(pdk))
+
+    check_at = text.index('puts ">>> Don\'t-use check"')
+    assert text.index("repair_timing -hold") < check_at
+    assert text.index("detailed_route") < check_at
+    assert check_at < text.index("filler_placement")
+    assert check_at < text.index("write_def")
+    assert check_at < text.index("write_db")
+
+
+_TCL_DONT_USE_STUBS = """
+# Just enough of OpenROAD for the don't-use check: a two-library
+# `get_lib_cells` with glob matching, and a block of named instances.
+set rb_test_lib_cells {AND2_X1 AND2_X2 OR2_X1 probe_p_8 probec_p_8}
+proc get_lib_cells {args} {
+  set pattern [lindex $args end]
+  set pattern [lindex [split $pattern /] end]
+  set out {}
+  foreach c $::rb_test_lib_cells {
+    if {[string match $pattern $c]} { lappend out $c }
+  }
+  return $out
+}
+proc get_name {c} { return $c }
+namespace eval ord { proc get_db_block {} { return rb_test_block } }
+proc rb_test_block {cmd} { return [dict keys $::rb_test_insts] }
+proc rb_test_inst_cmd {inst cmd} {
+  switch $cmd {
+    getName { return $inst }
+    getMaster { return [list rb_test_master [dict get $::rb_test_insts $inst]] }
+  }
+}
+proc rb_test_master {master cmd} { return $master }
+"""
+
+
+def _run_dont_use_check(cells, insts):
+    """Run the rendered check against stub instances; `(stdout, error)`."""
+    import subprocess
+    import sys
+    import shutil
+
+    from rtl_buddy.tools.pnr_openroad import _dont_use_check_tcl
+
+    # Each fake instance is its own command, as an odb object is.
+    inst_cmds = "".join(
+        f"proc {name} {{cmd}} {{ return [rb_test_inst_cmd {name} $cmd] }}\n"
+        for name in insts
+    )
+    master_fix = (
+        # `[[$inst getMaster] getName]` calls the returned word as a command.
+        "proc rb_test_inst_cmd {inst cmd} {\n"
+        "  switch $cmd {\n"
+        "    getName { return $inst }\n"
+        "    getMaster { return rb_test_master_[dict get $::rb_test_insts $inst] }\n"
+        "  }\n"
+        "}\n"
+        + "".join(
+            f"proc rb_test_master_{m} {{cmd}} {{ return {m} }}\n"
+            for m in set(insts.values())
+        )
+    )
+    insts_tcl = " ".join(f"{k} {v}" for k, v in insts.items())
+    script = (
+        _TCL_DONT_USE_STUBS
+        + master_fix
+        + inst_cmds
+        + f"set rb_test_insts [dict create {insts_tcl}]\n"
+        + "if {[catch {\n"
+        + _dont_use_check_tcl(cells)
+        + '} err]} { puts "TCL-ERROR: $err" }\n'
+    )
+    driver = (
+        "import sys\n"
+        "try:\n"
+        "    import tkinter\n"
+        "    interp = tkinter.Tcl()\n"
+        "except Exception:\n"
+        "    raise SystemExit(9)\n"
+        "interp.eval(sys.stdin.read())\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", driver],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode == 9:
+        tclsh = shutil.which("tclsh")
+        if tclsh is None:  # pragma: no cover - depends on the machine
+            pytest.skip("no Tcl interpreter (tkinter or tclsh) available")
+        proc = subprocess.run(
+            [tclsh], input=script, capture_output=True, text=True, check=False
+        )
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    errors = [ln for ln in lines if ln.startswith("TCL-ERROR: ")]
+    return lines, errors[0] if errors else None
+
+
+def test_dont_use_check_passes_a_clean_design():
+    lines, error = _run_dont_use_check(["probe*"], {"u1": "AND2_X1", "u2": "OR2_X1"})
+    assert error is None
+    assert not [ln for ln in lines if ln.startswith("RB-DONT-USE-VIOLATION:")]
+
+
+def test_dont_use_check_names_every_offender_and_fails():
+    """Each placed don't-use instance is named with its master and the
+    pattern that excluded it, and the script stops with a Tcl error."""
+    lines, error = _run_dont_use_check(
+        ["AND2_X2", "*/probe*"],
+        {"u1": "AND2_X1", "repair_buffer": "probec_p_8", "u3": "AND2_X2"},
+    )
+    violations = sorted(ln for ln in lines if ln.startswith("RB-DONT-USE-VIOLATION:"))
+    assert violations == [
+        "RB-DONT-USE-VIOLATION: repair_buffer probec_p_8 */probe*",
+        "RB-DONT-USE-VIOLATION: u3 AND2_X2 AND2_X2",
+    ]
+    assert error == "TCL-ERROR: 2 instance(s) of dont-use-cells in the routed design"
+
+
+def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells):
+    """An `OpenRoadPnr` whose OpenROAD writes `log` and exits `returncode`."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    platform.get_dont_use_cells.return_value = list(dont_use_cells)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
+
+    def _fake_openroad(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text(log)
+        odb.write_bytes(b"\x00odb\x00")
+        result = MagicMock()
+        result.returncode = returncode
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_openroad)
+    return backend, odb
+
+
+def test_pnr_fails_naming_a_placed_dont_use_cell(tmp_path, monkeypatch):
+    """The check's Tcl error exits OpenROAD non-zero; the verdict names the
+    offender rather than the exit code, and nothing is published."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log=(
+            ">>> Don't-use check\n"
+            "RB-DONT-USE-VIOLATION: repair_buffer1 sky130_fd_sc_hd__probec_p_8 "
+            "sky130_fd_sc_hd__probe*\n"
+            "RB-DONT-USE-VIOLATION: repair_buffer2 sky130_fd_sc_hd__probec_p_8 "
+            "sky130_fd_sc_hd__probe*\n"
+            "Error: pnr.tcl, 210 2 instance(s) of dont-use-cells in the routed design\n"
+        ),
+        returncode=1,
+        dont_use_cells=["sky130_fd_sc_hd__probe*"],
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert res.results["desc"] == (
+        "2 instance(s) of dont-use-cells in the routed design: repair_buffer1 "
+        "is sky130_fd_sc_hd__probec_p_8 (pattern 'sky130_fd_sc_hd__probe*') "
+        "(+1 more)"
+    )
+    level, fields = _one_event(events, "pnr.dont_use_instantiated")
+    assert level == logging.ERROR
+    assert fields["count"] == 2
+    assert fields["instances"][0] == (
+        "repair_buffer1",
+        "sky130_fd_sc_hd__probec_p_8",
+        "sky130_fd_sc_hd__probe*",
+    )
+    assert not odb.exists()
+
+
+def test_pnr_never_passes_with_a_dont_use_violation_in_the_log(tmp_path, monkeypatch):
+    """Even with a clean exit, a violation line in the log is a FAIL."""
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log="RB-DONT-USE-VIOLATION: u1 AND2_X1 AND2_X1\n",
+        returncode=0,
+        dont_use_cells=["AND2_X1"],
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert "u1 is AND2_X1" in res.results["desc"]
+
+
+def test_pnr_warns_about_a_dont_use_pattern_that_matched_nothing(tmp_path, monkeypatch):
+    """OpenROAD only warns (STA-0122) and excludes nothing; rb names the
+    pattern. STA prints the cell part of a `lib/cell` pattern."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log=(
+            "[WARNING STA-0122] cell 'no_such_*' not found.\n"
+            "[WARNING STA-0122] cell 'gone_X1' not found.\n"
+            "[WARNING STA-0122] cell 'unrelated' not found.\n"
+        ),
+        returncode=0,
+        dont_use_cells=["AND2_X1", "no_such_*", "mylib/gone_X1"],
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults)
+    level, fields = _one_event(events, "pnr.dont_use_unmatched")
+    assert level == logging.WARNING
+    assert fields["patterns"] == ["no_such_*", "mylib/gone_X1"]
+
+
+def test_pnr_is_quiet_when_every_dont_use_pattern_matched(tmp_path, monkeypatch):
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log="", returncode=0, dont_use_cells=["AND2_X1"]
+    )
+
+    backend.run()
+
+    assert not [e for e in events if e[1].startswith("pnr.dont_use")]
+
+
+def test_dont_use_events_have_readable_messages():
+    """Both events are WARNING or above, so each gets a dedicated message
+    naming what to act on rather than the generic fallback."""
+    from rtl_buddy.logging_utils import _human_message, _machine_field_value
+
+    unmatched = _human_message(
+        "pnr.dont_use_unmatched",
+        {"pnr": "blk", "patterns": _machine_field_value(["no_such_*"])},
+    )
+    assert "no_such_*" in unmatched and "matched no Liberty cell" in unmatched
+
+    placed = _human_message(
+        "pnr.dont_use_instantiated",
+        {
+            "pnr": "blk",
+            "count": 5,
+            "instances": _machine_field_value(
+                [(f"u{i}", "probec_p_8", "probe*") for i in range(5)]
+            ),
+            "log": "pnr.log",
+        },
+    )
+    assert "5 instance(s)" in placed
+    assert "u0 (probec_p_8), u1 (probec_p_8), u2 (probec_p_8) and 2 more" in placed
+
+
+def test_pnr_warns_about_a_lib_cell_pattern_whose_library_is_missing(
+    tmp_path, monkeypatch
+):
+    """A `lib/cell` pattern naming no library draws STA-0121 only — the cell
+    half is never looked up — and must still be reported (#656)."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log="[WARNING STA-0121] library 'badlib' not found.\n",
+        returncode=0,
+        dont_use_cells=["AND2_X1", "badlib/foo*", "goodlib/bar*"],
+    )
+
+    backend.run()
+
+    _level, fields = _one_event(events, "pnr.dont_use_unmatched")
+    assert fields["patterns"] == ["badlib/foo*"]
+
+
+def test_pnr_does_not_read_a_previous_runs_log(tmp_path, monkeypatch):
+    """OpenROAD truncates `pnr.log` only once it is running; one that dies
+    before that must not leave the previous run's violation lines to be read
+    as this run's (#656)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log="", returncode=0, dont_use_cells=["AND2_X1"]
+    )
+    log = Path(backend._log_path())
+    log.write_text("RB-DONT-USE-VIOLATION: u1 AND2_X1 AND2_X1\n")
+
+    def _dies_before_main(cmd, **_kwargs):
+        result = MagicMock()
+        result.returncode = 134
+        result.stderr = "dyld: Library not loaded"
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _dies_before_main)
+
+    res = backend.run()
+
+    assert "dont-use" not in res.results["desc"]
+    assert "exited with code 134" in res.results["desc"]
+    assert "RB-DONT-USE-VIOLATION" not in log.read_text()
+
+
+@pytest.mark.parametrize("cell", ["probe[c]_p_8", "a$b", "x{y}", 'q"', "a\\b", "a;b"])
+def test_dont_use_cells_reject_tcl_metacharacters(tmp_path, cell):
+    """Each entry is spliced into a Tcl list unquoted; a metacharacter would be
+    executed, not matched (#656)."""
+    with pytest.raises(FatalRtlBuddyError, match=r"only the `\*` and `\?`"):
+        _make_pdk_cfg(tmp_path, dont_use_cells=[cell])

@@ -105,6 +105,62 @@ DEFAULT_PNG_WIDTH = 2048
 DEFAULT_PNG_HEIGHT = 2048
 
 
+# Marker the post-route don't-use check prints for each offending instance,
+# and the one `run` looks for in the log to name them (#656).
+_DONT_USE_VIOLATION_TAG = "RB-DONT-USE-VIOLATION:"
+
+# `get_lib_cells` / `set_dont_use` warning for a pattern that matched no
+# Liberty cell: `[WARNING STA-0122] cell '<pattern>' not found.`
+_STA_CELL_NOT_FOUND = re.compile(
+    r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
+)
+# ...and the library half of a `lib/cell` pattern that names no library:
+# `[WARNING STA-0121] library '<lib>' not found.` — the cell half is never
+# looked up then, so no STA-0122 follows.
+_STA_LIBRARY_NOT_FOUND = re.compile(
+    r"^\[WARNING STA-0121\] library '(.+)' not found\.$", re.M
+)
+
+
+def _dont_use_check_tcl(cells: list[str]) -> str:
+    """The post-route check that no don't-use cell made it into the design.
+
+    `set_dont_use` only stops the resizer and CTS from *choosing* a cell;
+    it does nothing about one already in the synthesis netlist, and a
+    pattern that matches nothing is only an STA warning. A probe cell in a
+    routed SKY130 block fails the power grid much later (#656), so the flow
+    checks the placed instances itself, with the same `get_lib_cells`
+    matching `set_dont_use` used, and fails the run naming each offender.
+    It runs before fill insertion — fill cells are named explicitly by the
+    PDK and are not a repair pass's choice — and before any output is
+    written. Empty, like the `set_dont_use` block, when no cell is excluded.
+    """
+    if not cells:
+        return ""
+    return (
+        '\nputs ">>> Don\'t-use check"\n'
+        "set rb_dont_use_masters [dict create]\n"
+        f"foreach rb_pattern [list {' '.join(cells)}] {{\n"
+        "  foreach rb_cell [get_lib_cells -quiet $rb_pattern] {\n"
+        "    dict set rb_dont_use_masters [get_name $rb_cell] $rb_pattern\n"
+        "  }\n"
+        "}\n"
+        "set rb_dont_use_hits 0\n"
+        "foreach inst [[ord::get_db_block] getInsts] {\n"
+        "  set master [[$inst getMaster] getName]\n"
+        "  if {[dict exists $rb_dont_use_masters $master]} {\n"
+        f'    puts "{_DONT_USE_VIOLATION_TAG} [$inst getName] $master '
+        '[dict get $rb_dont_use_masters $master]"\n'
+        "    incr rb_dont_use_hits\n"
+        "  }\n"
+        "}\n"
+        "if {$rb_dont_use_hits > 0} {\n"
+        '  error "$rb_dont_use_hits instance(s) of dont-use-cells in the '
+        'routed design"\n'
+        "}\n"
+    )
+
+
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Absolute paths of every non-log artefact one pnr run produces."""
     return [
@@ -422,13 +478,15 @@ class OpenRoadPnr:
 
         # Both blocks carry their own leading newline and are empty when
         # unconfigured, so the surrounding blank lines stay as they are.
-        dont_use_cells = pdk.get_dont_use_cells()
+        # The platform's list is the PDK's plus its own (#656).
+        dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
             '\nputs ">>> Don\'t-use cells"\n'
             f"set_dont_use [list {' '.join(dont_use_cells)}]\n"
             if dont_use_cells
             else ""
         )
+        dont_use_check_block = _dont_use_check_tcl(dont_use_cells)
 
         # ORFS convention: the snippet declares the grid, the flow runs
         # `pdngen` after sourcing it.
@@ -470,6 +528,7 @@ class OpenRoadPnr:
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
             "dont_use_block": dont_use_block,
+            "dont_use_check_block": dont_use_check_block,
             "pdn_block": pdn_block,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
@@ -1499,6 +1558,53 @@ class OpenRoadPnr:
                 paths=stale,
             )
 
+    def _dont_use_violations(self, log_text: str) -> list[tuple[str, str, str]]:
+        """`(instance, master, pattern)` for each don't-use cell the flow's
+        post-route check found placed, in log order (#656).
+
+        Split from the right: the master is a Liberty cell name and the
+        pattern was rejected at config load if it had whitespace, so only
+        the instance name could ever carry any.
+        """
+        hits = []
+        for line in log_text.splitlines():
+            if line.startswith(_DONT_USE_VIOLATION_TAG):
+                fields = line[len(_DONT_USE_VIOLATION_TAG) :].strip().rsplit(None, 2)
+                if len(fields) == 3:
+                    hits.append(tuple(fields))
+        return hits
+
+    def _warn_unmatched_dont_use(self, log_text: str, cells: list[str]) -> None:
+        """Name every `dont-use-cells` pattern that matched no Liberty cell.
+
+        OpenROAD reports one as `[WARNING STA-0122]` (or, for a `lib/cell`
+        pattern whose library does not exist, `STA-0121`) and carries on, so a
+        misspelt pattern silently excludes nothing — and the post-route
+        check, which matches the same way, cannot catch what it misses
+        either (#656). STA prints the cell part of a `lib/cell` pattern,
+        so both spellings are compared.
+        """
+        if not cells:
+            return
+        missed = set(_STA_CELL_NOT_FOUND.findall(log_text))
+        missed_libs = set(_STA_LIBRARY_NOT_FOUND.findall(log_text))
+        unmatched = [
+            c
+            for c in cells
+            if c in missed
+            or c.rsplit("/", 1)[-1] in missed
+            or ("/" in c and c.rsplit("/", 1)[0] in missed_libs)
+        ]
+        if unmatched:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.dont_use_unmatched",
+                pnr=self.pnr_cfg.get_name(),
+                patterns=unmatched,
+                log=self._log_path(),
+            )
+
     def _fail_after_openroad(self, desc: str) -> PnrFailResults:
         """Fail a run that has already invoked OpenROAD, publishing nothing.
 
@@ -1604,6 +1710,15 @@ class OpenRoadPnr:
             )
 
         log_path = self._log_path()
+        # OpenROAD's `-log` truncates the log only once it is running. One
+        # that dies before that — a broken dylib, a killed launch — would
+        # otherwise leave the previous run's log in place, with this run's
+        # stderr appended, and its RB-DONT-USE-VIOLATION lines would be read
+        # as this run's (#656).
+        try:
+            os.unlink(log_path)
+        except FileNotFoundError:
+            pass
         env = os.environ.copy()
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
@@ -1646,6 +1761,35 @@ class OpenRoadPnr:
             except OSError:
                 pass
 
+        try:
+            log_text = Path(log_path).read_text()
+        except OSError:
+            log_text = ""
+
+        # Checked ahead of the exit code: the flow's own don't-use check
+        # fails the script with a Tcl `error`, and the instances it names
+        # are the diagnostic, not the exit code (#656).
+        self._warn_unmatched_dont_use(log_text, platform.get_dont_use_cells())
+        dont_use_hits = self._dont_use_violations(log_text)
+        if dont_use_hits:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.dont_use_instantiated",
+                pnr=self.pnr_cfg.get_name(),
+                count=len(dont_use_hits),
+                instances=dont_use_hits,
+                log=log_path,
+            )
+            inst, master, pattern = dont_use_hits[0]
+            more = (
+                f" (+{len(dont_use_hits) - 1} more)" if len(dont_use_hits) > 1 else ""
+            )
+            return self._fail_after_openroad(
+                f"{len(dont_use_hits)} instance(s) of dont-use-cells in the "
+                f"routed design: {inst} is {master} (pattern {pattern!r}){more}"
+            )
+
         if result.returncode != 0:
             log_event(
                 logger,
@@ -1662,11 +1806,6 @@ class OpenRoadPnr:
             if first_line:
                 desc = f"{desc}: {first_line.strip()}"
             return self._fail_after_openroad(desc)
-
-        try:
-            log_text = Path(log_path).read_text()
-        except OSError:
-            log_text = ""
 
         error_lines = [ln for ln in log_text.splitlines() if ln.startswith("[ERROR ")]
         if error_lines:

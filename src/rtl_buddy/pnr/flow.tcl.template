@@ -136,7 +136,7 @@ detailed_route \
     -output_drc  $OUT_DIR/route.drc.rpt \
     -output_maze $OUT_DIR/route.maze.log \
     -verbose 0
-
+{{ dont_use_check_block }}
 puts ">>> Fill insertion"
 filler_placement $FILL_CELLS
 

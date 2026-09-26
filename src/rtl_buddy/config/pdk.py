@@ -95,6 +95,9 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
     return PlacementFile(density=density, padding=padding, macro_halo=macro_halo)
 
 
+_TCL_METACHARACTERS = frozenset('[]{}$"\\;')
+
+
 def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
     """Check a `dont-use-cells:` list, naming the block that carries it.
 
@@ -114,8 +117,31 @@ def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
                 f"{where}: dont-use-cells entry {cell!r} contains whitespace; "
                 "write one pattern per list entry"
             )
+        # The entry is spliced into a Tcl `[list ...]` unquoted, so a Tcl
+        # metacharacter would be run, not matched — `probe[c]*` dies as
+        # `invalid command name "c"` minutes into the flow. OpenSTA's
+        # matcher only knows `*` and `?` anyway (#656).
+        bad = sorted(set(cell) & _TCL_METACHARACTERS)
+        if bad:
+            raise FatalRtlBuddyError(
+                f"{where}: dont-use-cells entry {cell!r} contains "
+                f"{' '.join(bad)}; patterns support only the `*` and `?` "
+                "wildcards"
+            )
         validated.append(cell)
     return validated
+
+
+def merge_dont_use_cells(pdk_cells: list[str], platform_cells: list[str]) -> list[str]:
+    """A platform's `dont-use-cells` added to its PDK's, in a stable order.
+
+    Additive, never a replacement (#656): a platform can only exclude more,
+    so a PDK-level exclusion — a cell the process cannot legalise — cannot
+    be dropped by a platform that forgets to repeat it. The PDK's entries
+    come first and a pattern named by both is kept once, so a platform that
+    adds nothing renders exactly the list the PDK alone did.
+    """
+    return list(dict.fromkeys([*pdk_cells, *platform_cells]))
 
 
 @serde
