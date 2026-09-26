@@ -174,6 +174,6 @@ write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
 # handoff carries the same routing-derived cap to rb power instead,
 # which re-estimates it from the global routes.
 write_db      $OUT_DIR/${DESIGN}.routed.odb
-
+{{ harden_block }}
 puts ">>> DONE"
 exit 0

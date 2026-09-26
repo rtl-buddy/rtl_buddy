@@ -249,6 +249,10 @@ class PnrConfigFile:
     # `str` sits before the list so a single stage name is not read as a
     # list of characters.
     checkpoints: bool | str | list[str] = False
+    # Publish the routed result as a hard-macro abstract — LEF, Liberty
+    # timing model, GDS and a fingerprint manifest under `abstract/` — for
+    # a parent run to instance (#95). Forces a strict GDS export.
+    harden: bool = False
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD worker threads: a positive integer or `auto`; unset keeps
@@ -340,6 +344,7 @@ class PnrConfigFile:
             gds_mode=gds_mode,
             gds_allow_empty=list(self.gds_allow_empty),
             checkpoints=checkpoints,
+            harden=bool(self.harden),
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             threads=threads,
@@ -368,6 +373,7 @@ class PnrConfig:
     gds_allow_empty: list[str] = dc_field(default_factory=list)
     threads: int | str | None = None
     checkpoints: tuple[str, ...] | None = None
+    harden: bool = False
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -424,6 +430,10 @@ class PnrConfig:
     def get_checkpoints(self) -> tuple[str, ...] | None:
         """The stages to checkpoint, in flow order; ``None`` when off (#653)."""
         return self.checkpoints
+
+    def get_harden(self) -> bool:
+        """Whether the run publishes a hard-macro abstract (#95)."""
+        return self.harden
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

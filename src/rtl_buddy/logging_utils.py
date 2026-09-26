@@ -1862,6 +1862,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
                 "the blockages"
             )
+        # Hardened-block abstracts (#95).
+        case "pnr.harden_multi_corner":
+            return (
+                f'P&R "{fields.get("pnr")}": harden: needs a single-corner '
+                f"platform, and '{fields.get('platform')}' declares corners — "
+                "an abstract carries one corner's timing model"
+            )
+        case "pnr.abstract_failed":
+            return (
+                f'P&R "{fields.get("pnr")}": no abstract published — '
+                f"{fields.get('reason')}; see {fields.get('log')}"
+            )
         case "pnr_export.no_checkpoint":
             return (
                 f'pnr export "{fields.get("pnr")}": --checkpoint '
