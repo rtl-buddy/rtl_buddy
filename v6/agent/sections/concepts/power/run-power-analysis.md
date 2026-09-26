@@ -15,3 +15,5 @@ power-configs:
   - power/block_a/power.yaml
   - power/block_b/power.yaml
 ```
+
+The analysis runs on one OpenROAD thread unless the run sets `threads:` — a positive integer, or `auto` for the CPUs of the current allocation. The value is validated, clamped, emitted and recorded as `openroad_threads` exactly as for P&R; see [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#openroad-threads).

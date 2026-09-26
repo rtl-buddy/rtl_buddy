@@ -27,16 +27,20 @@ runs:
 | `synth` | Required | Upstream synthesis entry |
 | `synth-path` | Required | Upstream `synth.yaml`, relative to `pnr.yaml` |
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
-| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced after floorplan/tracks and immediately before pin placement. A missing file fails the run |
+| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement and the PDN. A missing file fails the run |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
 | `gds-paths` | Optional | Layout of the macros `lef-paths` names, relative to `pnr.yaml`. P&R never reads it; KLayout stream-out does |
 | `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete; `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
 | `gds-allow-empty` | Optional | Cell names or `fnmatch` globs that are empty on purpose, matched case-sensitively. Such a cell is not missing in either mode |
+| `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped to a detected Slurm or affinity allocation with a warning. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads) |
+| `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`: write a stage-named ODB, DEF and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. Unset renders the flow unchanged. See [Keep stage checkpoints](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
+| `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left` or `upper-right`. See [Floorplan controls](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#floorplan-controls) |
+| `floorplan.blockages` | Optional | List of standard-cell placement blockages. Each is `rect: [x0, y0, x1, y1]` in microns, die coordinates (`x0 < x1`, `y0 < y1`, non-negative), `type: hard` (default), `soft` or `partial`, and for `partial` only, `max-density` strictly between 0 and 1 (honoured by global placement only; legalization clears a partial blockage like a hard one). Needs OpenROAD 26Q1+. Macros are kept out of `hard` blockages |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |

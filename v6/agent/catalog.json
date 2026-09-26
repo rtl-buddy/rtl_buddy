@@ -965,10 +965,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#pdk-setup-notes",
+          "slug": "pdk-setup-notes",
+          "title": "PDK setup notes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/pdk-setup-notes.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#constrain-boundary-pins",
           "slug": "constrain-boundary-pins",
           "title": "Constrain boundary pins",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/constrain-boundary-pins.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#keep-stage-checkpoints",
+          "slug": "keep-stage-checkpoints",
+          "title": "Keep stage checkpoints",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#run-pr",
@@ -1437,6 +1449,12 @@
           "slug": "check-the-environment",
           "title": "Check the environment",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/tool-check/check-the-environment.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tool-check/#check-in-process-readers",
+          "slug": "check-in-process-readers",
+          "title": "Check in-process readers",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/tool-check/check-in-process-readers.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/tool-check/#gate-scripts-and-ci",

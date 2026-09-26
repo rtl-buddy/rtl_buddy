@@ -965,10 +965,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#pdk-setup-notes",
+          "slug": "pdk-setup-notes",
+          "title": "PDK setup notes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/pdk-setup-notes.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#constrain-boundary-pins",
           "slug": "constrain-boundary-pins",
           "title": "Constrain boundary pins",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/constrain-boundary-pins.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints",
+          "slug": "keep-stage-checkpoints",
+          "title": "Keep stage checkpoints",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-pr",

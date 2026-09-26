@@ -31,6 +31,7 @@ runs:
 | `constraints` | Required for synth source | SDC path; for P&R source defaults to routed SDC |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `lib-paths` | Optional | Extra macro Liberty, relative to `power.yaml`, appended after what the referenced run declares |
+| `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF/VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |

@@ -6,7 +6,8 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | --- | --- |
 | `power.tcl` | Generated OpenROAD script |
 | `power.log` | OpenROAD output |
-| `power.rpt` | Raw `report_power` report |
+| `power.rpt` | Raw `report_power` report (at the worst corner, on a multi-corner platform) |
+| `power.<corner>.rpt` | Each corner's `report_power`, on a multi-corner platform only |
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
 | `power_instances.rpt` | Raw `report_power -instances` report, one line per leaf instance |
 | `power_instances.cells` | Instance path to Liberty cell, the module column that report lacks |

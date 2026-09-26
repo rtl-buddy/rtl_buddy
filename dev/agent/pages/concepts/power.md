@@ -11,17 +11,27 @@ description: Run OpenROAD gate-level power analysis from synthesis or P&R output
 | Source | Input | Timing and parasitics | Required upstream runs |
 | --- | --- | --- | --- |
 | `netlist-source: synth` | `synth_netlist.v` | User SDC, no wire parasitics or clock tree | `rb synth` |
-| `netlist-source: pnr` | `<top>.routed.odb` | Routed SDC, CTS, and global-routing parasitic estimates | `rb synth`, then `rb pnr` |
+| `netlist-source: pnr` | `<top>.routed.odb` | Routed SDC, CTS, and the P&R run's extracted SPEF — or global-routing parasitic estimates when there is none | `rb synth`, then `rb pnr` |
 
 The default `synth` source is useful for early leakage and activity comparisons but underestimates switching because it has no routed wire capacitance. Use `pnr` for a more representative post-route estimate.
 
 If the routed ODB is missing, rerun `rb pnr`.
 
+### Extracted parasitics
+
+When the P&R run's PDK sets [`rcx-rules`](pnr.md#tune-the-process-dependent-steps), `rb pnr` writes an OpenRCX-extracted `<top>.routed.spef` beside the ODB, and a `netlist-source: pnr` power run reads it with `read_spef` after the routed SDC, in place of `estimate_parasitics -global_routing`. Without one — including the template's Nangate45 runs, which leave the key unset — the ODB handoff and the global-route estimate are used exactly as before.
+
+A SPEF is read only when the P&R run that wrote the ODB vouches for it: its `pnr.tcl` must contain a `write_spef` command, and the SPEF must be no older than that `pnr.tcl`, which every `rb pnr` rewrites at the start of every run. A SPEF that fails either test is left unread with a `power.spef_rejected` WARNING naming the reason, and the run falls back to the estimate. That covers the case `rb pnr`'s own clearing cannot: an rtl_buddy that predates the SPEF reruns P&R and leaves the previous run's extraction beside a fresh ODB.
+
+Which one was used is the run's `parasitics` result field — `spef` or `estimated`, absent on a `synth` source — shown in the summary's Parasitics column, logged as `power.parasitics`, and part of the model's options digest, so one ODB measured both ways is two experiments.
+
+On the project template's flat sky130hd pipeclean (`demo_tiny_alu_subsys_sky130_flat_power`, static mode, default activity), switching power rose from 372 µW on the estimate to 467 µW on the extracted SPEF (+25 %; total 3.47 → 3.56 mW), with the clock network 269 → 315 µW and the registers 60 → 99 µW, while internal power (3.08 mW) and leakage (9.5 µW) — which do not depend on wire load — stayed put. The same P&R run's setup WNS went from +3.61 ns to +2.68 ns; nothing before extraction changed, and area and cell count are identical. The direction is the expected one: the global-route estimate prices wires as per-layer R and C along routing guides, while OpenRCX extracts the detailed routes themselves, vias and coupling capacitance included, and the estimate also skipped the segments it could not find a route for (`EST-0026 Missing route to pin` on seven reset pins) where extraction does not.
+
 ## Install OpenROAD
 
 OpenROAD 25Q1 or newer must be on `PATH` or configured under `cfg-power-tools`. Power runs currently support only `tool: openroad`; unsupported tools report `SKIP`.
 
-The selected `cfg-pnr-platforms` entry supplies the PDK and Liberty corner. See [Place-and-Route](pnr.md#configure-the-physical-platform).
+The selected `cfg-pnr-platforms` entry supplies the PDK and Liberty corner. A platform with `corners:` analyses every listed corner in one session; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners).
 
 ## Define power runs
 
@@ -145,9 +155,13 @@ power-configs:
   - power/block_b/power.yaml
 ```
 
+The analysis runs on one OpenROAD thread unless the run sets `threads:` — a positive integer, or `auto` for the CPUs of the current allocation. The value is validated, clamped, emitted and recorded as `openroad_threads` exactly as for P&R; see [OpenROAD threads](pnr.md#openroad-threads).
+
 ## Interpret results
 
 The summary identifies the selected design source and resolved activity source, then reports total, internal, switching, and leakage power with readable SI scaling.
+
+On a multi-corner platform, the reported watts are those of the worst corner, meaning the one with the highest design total. The result names it in `worst_corner`, and the summary shows it in a `Worst Corner` column. `corners` holds each corner's own `total_w`, `internal_w`, `switching_w` and `leakage_w`. The session chooses the worst corner itself, so `power.rpt`, `power_instances.rpt` and the published `phys-model.json` all describe that corner; the model's manifest options name it as `corner`. A multi-corner run also fails when any corner's `power.<corner>.rpt` is missing or unparseable.
 
 A run passes when OpenROAD exits 0, emits no `[ERROR ...]` line, and produces a parseable `Total` row in `power.rpt`. It skips when filtered by `reglvl` or when its tool has no registered backend.
 
@@ -183,7 +197,8 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | --- | --- |
 | `power.tcl` | Generated OpenROAD script |
 | `power.log` | OpenROAD output |
-| `power.rpt` | Raw `report_power` report |
+| `power.rpt` | Raw `report_power` report (at the worst corner, on a multi-corner platform) |
+| `power.<corner>.rpt` | Each corner's `report_power`, on a multi-corner platform only |
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
 | `power_instances.rpt` | Raw `report_power -instances` report, one line per leaf instance |
 | `power_instances.cells` | Instance path to Liberty cell, the module column that report lacks |

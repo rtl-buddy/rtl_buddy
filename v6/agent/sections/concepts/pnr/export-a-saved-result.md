@@ -7,6 +7,7 @@ rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --gds-mode strict
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --def ../saved/demo_top.def
+rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --checkpoint cts --png
 rb pnr-export demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png-only --lyp dark.lyp --png-width 4096 --png-height 4096
 ```
 
@@ -16,7 +17,7 @@ Nothing is launched before the saved result has been checked. The routed DEF mus
 
 The export clears **only what an export publishes** — the GDS, the PNG, `def2stream.report.json`, `def2stream.inputs.json` and its own record. The routed DEF, ODB, netlist, SDC and every P&R report stay exactly as they were, on a failed export as much as on a successful one.
 
-`--def <path>` exports a DEF from elsewhere, with the platform and the top still coming from the run, and needs a single named run. `--png-only` re-renders the PNG from the GDS already in the artefact directory: no stream-out, the GDS is an input and is never rewritten, and `--lyp`, `--png-width` and `--png-height` change how it is drawn. If a `def2stream.report.json` sits beside that GDS and says cells had no layout, the re-render carries the same qualifier; if no report sits beside it, nothing vouched for that layout, so the re-render reports it as qualified rather than complete.
+`--def <path>` exports a DEF from elsewhere, with the platform and the top still coming from the run, and needs a single named run. `--checkpoint` exports a [stage checkpoint](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#keep-stage-checkpoints) instead of the routed result, and also needs a single named run: a stage name (`cts`, or `03_cts`) takes it from the `latest` run, `<run-id>/<stage>` from an older one, and a path names one of a checkpoint's files. The checkpoint must have a completed `checkpoint` event in its run's `progress.jsonl`, so a database a kill interrupted mid-write is refused. Everything the export writes — GDS, PNG, stream-out report, input manifest and record — goes to `checkpoints/<run-id>/export/<NN>_<stage>/`, never to the routed layout's paths; the row carries `checkpoint_stage`, `checkpoint_run_id` and `checkpoint_final: false`, its description names the checkpoint and says it is not final, and the export record gains a `checkpoint` block with the same `final`, `global_routed` and `congestion` labels as the manifest. `--checkpoint` and `--def` are exclusive. `--png-only` re-renders the PNG from the GDS already in the artefact directory: no stream-out, the GDS is an input and is never rewritten, and `--lyp`, `--png-width` and `--png-height` change how it is drawn. If a `def2stream.report.json` sits beside that GDS and says cells had no layout, the re-render carries the same qualifier; if no report sits beside it, nothing vouched for that layout, so the re-render reports it as qualified rather than complete.
 
 ### The export verdict
 

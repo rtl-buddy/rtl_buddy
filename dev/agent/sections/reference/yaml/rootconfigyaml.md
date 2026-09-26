@@ -114,6 +114,7 @@ cfg-pdks:
     placement: {density: 0.55, padding: 2, macro-halo: 30.0}
     dont-use-cells: ["*_lp__*", "sky130_fd_sc_hd__probe*"]
     pdn-config: pdk/sky130hd/pdn.tcl
+    rcx-rules: pdk/sky130hd/rcx_patterns.rules
 
 cfg-synth-platforms:
   - name: sky130hd_tt
@@ -128,14 +129,15 @@ cfg-pnr-platforms:
     cts-sink-clustering: false
     routing-layers: {signal: met1-met5, clock: met3-met5}
     placement: {density: 0.6}
+    dont-use-cells: ["sky130_fd_sc_hd__lpflow_*"]   # added to the PDK's list
 ```
 
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD additionally accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding` / `placement.macro-halo`, `dont-use-cells`, and `pdn-config`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
-| `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
-| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, and `placement.density` / `placement.padding` / `placement.macro-halo` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding` / `placement.macro-halo`, `dont-use-cells`, `pdn-config`, and `rcx-rules`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
+| `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) and `dont-use-cells` |
+| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`, or `corners` (a list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; mutually exclusive with `corner`, and must not be empty). See [multi-corner signoff](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners); P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, `placement.density` / `placement.padding` / `placement.macro-halo`, and `dont-use-cells` |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. Built-in default is `standard`. Precedence is per-run override, effort, tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
@@ -147,8 +149,9 @@ The process-dependent P&R keys are all optional, and a config that omits them ge
 | `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, `> 0` and `<= 1`. Default `0.7` |
 | `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
 | `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns kept between two macros and between a macro and each core edge by the macro packer, a non-negative distance. Default `20.0`, which is what `pdngen` needs to repair a channel on sky130hd |
-| `dont-use-cells` | `cfg-pdks` | Cell names or patterns, one per list entry, excluded by both synthesis and P&R. Empty by default |
+| `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` / `?` wildcards only), one per list entry. The PDK's list is excluded by both synthesis and P&R; a `cfg-synth-platforms` list only by synthesis and a `cfg-pnr-platforms` list only by P&R. A platform's list is added to its PDK's (PDK entries first, duplicates dropped), never replacing it. P&R fails a run whose routed design still instantiates an excluded cell. Empty by default |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid; P&R sources it and calls `pdngen`. Unset by default |
+| `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef` and times its final reports on it; a `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list of them. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 
 A `placement:` block on a P&R platform overrides its PDK's field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps).

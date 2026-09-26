@@ -129,6 +129,7 @@ cfg-pdks:
     placement: {density: 0.55, padding: 2, macro-halo: 30.0}
     dont-use-cells: ["*_lp__*", "sky130_fd_sc_hd__probe*"]
     pdn-config: pdk/sky130hd/pdn.tcl
+    rcx-rules: pdk/sky130hd/rcx_patterns.rules
 
 cfg-synth-platforms:
   - name: sky130hd_tt
@@ -143,14 +144,15 @@ cfg-pnr-platforms:
     cts-sink-clustering: false
     routing-layers: {signal: met1-met5, clock: met3-met5}
     placement: {density: 0.6}
+    dont-use-cells: ["sky130_fd_sc_hd__lpflow_*"]   # added to the PDK's list
 ```
 
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD additionally accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding` / `placement.macro-halo`, `dont-use-cells`, and `pdn-config`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
-| `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) |
-| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`; P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, and `placement.density` / `placement.padding` / `placement.macro-halo` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding` / `placement.macro-halo`, `dont-use-cells`, `pdn-config`, and `rcx-rules`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
+| `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) and `dont-use-cells` |
+| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`, or `corners` (a list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; mutually exclusive with `corner`, and must not be empty). See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners); P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, `placement.density` / `placement.padding` / `placement.macro-halo`, and `dont-use-cells` |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. Built-in default is `standard`. Precedence is per-run override, effort, tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
@@ -162,8 +164,9 @@ The process-dependent P&R keys are all optional, and a config that omits them ge
 | `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, `> 0` and `<= 1`. Default `0.7` |
 | `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
 | `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns kept between two macros and between a macro and each core edge by the macro packer, a non-negative distance. Default `20.0`, which is what `pdngen` needs to repair a channel on sky130hd |
-| `dont-use-cells` | `cfg-pdks` | Cell names or patterns, one per list entry, excluded by both synthesis and P&R. Empty by default |
+| `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` / `?` wildcards only), one per list entry. The PDK's list is excluded by both synthesis and P&R; a `cfg-synth-platforms` list only by synthesis and a `cfg-pnr-platforms` list only by P&R. A platform's list is added to its PDK's (PDK entries first, duplicates dropped), never replacing it. P&R fails a run whose routed design still instantiates an excluded cell. Empty by default |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid; P&R sources it and calls `pdngen`. Unset by default |
+| `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef` and times its final reports on it; a `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list of them. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 
 A `placement:` block on a P&R platform overrides its PDK's field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
@@ -566,6 +569,7 @@ syntheses:
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry; CLI `--effort` wins |
+| `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`; no effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
 `tool: yosys` writes RTLIL without a platform and a mapped netlist with one. `tool: openroad` requires platform LEF data and runs Yosys elaboration before OpenROAD timing analysis. An effort with `openroad.run: false` uses only the Yosys stage. See [Synthesis](../concepts/synthesis.md).
@@ -610,16 +614,20 @@ runs:
 | `synth` | Required | Upstream synthesis entry |
 | `synth-path` | Required | Upstream `synth.yaml`, relative to `pnr.yaml` |
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
-| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced after floorplan/tracks and immediately before pin placement. A missing file fails the run |
+| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement and the PDN. A missing file fails the run |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
 | `gds-paths` | Optional | Layout of the macros `lef-paths` names, relative to `pnr.yaml`. P&R never reads it; KLayout stream-out does |
 | `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete; `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
 | `gds-allow-empty` | Optional | Cell names or `fnmatch` globs that are empty on purpose, matched case-sensitively. Such a cell is not missing in either mode |
+| `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped to a detected Slurm or affinity allocation with a warning. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`: write a stage-named ODB, DEF and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. Unset renders the flow unchanged. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
+| `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left` or `upper-right`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
+| `floorplan.blockages` | Optional | List of standard-cell placement blockages. Each is `rect: [x0, y0, x1, y1]` in microns, die coordinates (`x0 < x1`, `y0 < y1`, non-negative), `type: hard` (default), `soft` or `partial`, and for `partial` only, `max-density` strictly between 0 and 1 (honoured by global placement only; legalization clears a partial blockage like a hard one). Needs OpenROAD 26Q1+. Macros are kept out of `hard` blockages |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
@@ -659,6 +667,7 @@ runs:
 | `constraints` | Required for synth source | SDC path; for P&R source defaults to routed SDC |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `lib-paths` | Optional | Extra macro Liberty, relative to `power.yaml`, appended after what the referenced run declares |
+| `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
 | `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF/VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |

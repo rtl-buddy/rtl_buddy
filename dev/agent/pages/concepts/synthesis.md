@@ -112,7 +112,15 @@ The Yosys backend uses Liberty for mapping, area, and timing. The OpenROAD backe
 
 OpenROAD `strategy` values are `AREA`, `TIMING`, `TIMING_ANNEAL`, and `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
 
-A PDK's `dont-use-cells` list excludes cells from mapping: each pattern becomes a `-dont_use` argument to Yosys `dfflibmap` and `abc`, and on the OpenROAD backend a `set_dont_use` before the resynthesis stage reads the netlist. It is the same list [P&R](pnr.md#tune-the-process-dependent-steps) reads, so a cell excluded here is excluded there too, and two runs that exclude different cells fingerprint as two experiments.
+Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`, so the per-PDK notes are short:
+
+- **Nangate45** — one Liberty file (`NangateOpenCellLibrary_typical.lib`); the project template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
+- **sky130hd** — one Liberty per corner (`sky130_fd_sc_hd__tt_025C_1v80.lib`), plus the `dont-use-cells` list for the probe and `lpflow` cells; see the template's `sky130hd` entry and `synth/demo_tiny_alu_subsys_hier/download_pdk.sh`.
+- **ASAP7** — not validated by rtl_buddy. Its cells are split across one Liberty file per cell group per Vt and corner, mostly gzipped, and `corners:` takes one file per corner, so merge a corner's files into one Liberty first, as ORFS does for its synthesis step.
+
+The P&R side of each PDK, including the ASAP7 gaps, is in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
+
+A PDK's `dont-use-cells` list excludes cells from mapping: each pattern becomes a `-dont_use` argument to Yosys `dfflibmap` and `abc`, and on the OpenROAD backend a `set_dont_use` before the resynthesis stage reads the netlist. It is the same list [P&R](pnr.md#tune-the-process-dependent-steps) reads, so a cell excluded here is excluded there too, and two runs that exclude different cells fingerprint as two experiments. A synth platform's own `dont-use-cells` is added to the PDK's list, PDK entries first, as on a P&R platform.
 
 ## Use SDC constraints
 
@@ -398,6 +406,8 @@ rb synth-regression --effort accurate
 Precedence is per-run `tool_overrides`, then the selected effort, then `cfg-synth-tools`. Without a configured or selected effort, RTL Buddy uses built-in `standard` behavior.
 
 `openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl executed before STA; test it on a small design because syntax and tool errors appear only at runtime.
+
+The OpenROAD stage runs on one thread unless the synthesis entry sets `threads:` — a positive integer, or `auto` for the CPUs of the current allocation. It matters most for a `pre-sta-tcl` that runs global placement. The value is validated, clamped, emitted and recorded exactly as for P&R; see [OpenROAD threads](pnr.md#openroad-threads). It has no effect on the Yosys stage.
 
 ## Synthesize hard macros
 
