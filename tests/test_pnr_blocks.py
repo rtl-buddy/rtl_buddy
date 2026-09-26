@@ -559,11 +559,11 @@ def test_synthesis_refuses_a_stale_block_unless_accepted(tmp_path, monkeypatch):
 
 
 def test_rb_pnr_and_rb_synth_take_accept_stale():
-    from typer.testing import CliRunner
+    import typer
 
     from rtl_buddy.rtl_buddy import RtlBuddy
 
-    app = RtlBuddy(name="test_pnr_blocks").app
+    group = typer.main.get_command(RtlBuddy(name="test_pnr_blocks").app)
     for command in ("pnr", "synth"):
-        out = CliRunner().invoke(app, [command, "--help"], env={"COLUMNS": "200"})
-        assert "--accept-stale" in out.output, command
+        opts = {o for p in group.commands[command].params for o in p.opts}
+        assert "--accept-stale" in opts, command
