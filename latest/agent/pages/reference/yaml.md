@@ -566,6 +566,7 @@ syntheses:
 | `defines` | Optional map | Verilog preprocessor definitions |
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
 | `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF/Liberty files appended after platform data |
+| `blocks` | Optional list | Hardened blocks the design instances. Each is `name` (the module), `pnr` (a `harden: true` P&R run) and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`, required). The abstract's `.lib` and `.lef` are appended to `lib-paths` / `lef-paths`; the model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers` |
 | `effort` | Default `standard` | `cfg-synth-efforts` entry; CLI `--effort` wins |
@@ -619,10 +620,12 @@ runs:
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
 | `gds-paths` | Optional | Layout of the macros `lef-paths` names, relative to `pnr.yaml`. P&R never reads it; KLayout stream-out does |
+| `blocks` | Optional | Hardened blocks instanced as hard macros. Each is `name` (the module as instanced), `pnr` (a `harden: true` run) and optional `pnr-path` (its `pnr.yaml`, relative to this one; default this file). The abstract's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`. A missing abstract, or one built for another technology LEF or corner Liberty, fails the run before OpenROAD. Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete; `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
 | `gds-allow-empty` | Optional | Cell names or `fnmatch` globs that are empty on purpose, matched case-sensitively. Such a cell is not missing in either mode |
 | `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped to a detected Slurm or affinity allocation with a warning. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`: write a stage-named ODB, DEF and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. Unset renders the flow unchanged. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
+| `harden` | Default `false` | Publish the routed result as a hard-macro abstract under `artefacts/<run>/abstract/`: `<top>.lef`, `<top>.lib` (OpenSTA timing model), `<top>.gds` and `abstract.manifest.json`. Implies `--gds` with `gds-mode: strict`; needs a single-corner platform. Unset renders the flow unchanged. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |

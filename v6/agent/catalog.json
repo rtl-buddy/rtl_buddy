@@ -983,6 +983,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#harden-a-block",
+          "slug": "harden-a-block",
+          "title": "Harden a block",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/harden-a-block.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#assemble-hardened-blocks",
+          "slug": "assemble-hardened-blocks",
+          "title": "Assemble hardened blocks",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/assemble-hardened-blocks.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#run-pr",
           "slug": "run-pr",
           "title": "Run P&R",

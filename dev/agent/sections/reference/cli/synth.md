@@ -14,6 +14,9 @@ Usage: rtl-buddy synth [OPTIONS] [SYNTH_NAME]
 │ --list                        list syntheses in the selected config and exit         │
 │ --effort                TEXT  override synthesis effort (must match                  │
 │                               cfg-synth-efforts entry)                               │
+│ --accept-stale                consume blocks: abstracts whose recorded inputs        │
+│                               changed since they were hardened, qualifying the       │
+│                               result instead of failing                              │
 │ --help                        Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

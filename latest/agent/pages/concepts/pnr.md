@@ -276,6 +276,78 @@ Resume is not implemented. The manifest is shaped for it: a resume must re-read 
 
 To look at a checkpoint, open its ODB in OpenROAD, or stream its DEF out with [`rb pnr-export --checkpoint`](#export-a-saved-result).
 
+## Harden a block
+
+A block that a larger design instances as a hard macro needs three views of its routed result: an abstract LEF for placement and routing, a Liberty timing model for synthesis and STA, and its layout for stream-out. Set `harden: true` on the block's run and it publishes them beside its routed outputs:
+
+```yaml
+runs:
+  - name: alu_block_pnr
+    # ...
+    platform: sky130hd_tt_block
+    harden: true
+```
+
+```
+artefacts/<run>/abstract/
+  <top>.lef                 write_abstract_lef -bloat_occupied_layers
+  <top>.lib                 write_timing_model (OpenSTA)
+  <top>.gds                 the run's strict stream-out
+  abstract.manifest.json    fingerprints of every input and output
+```
+
+- **In the same session.** The LEF and the Liberty model are written by the P&R run itself, after `write_db`, so the model is characterised against the Liberty set the block was routed against and the propagated clocks CTS left. `-bloat_occupied_layers` reports every layer the block routes on as blocked over its whole footprint.
+- **Strict layout.** `harden` implies `--gds` and forces `gds-mode: strict` whatever the run or `--gds-mode` asked: a hardened block with a hole in its layout is never acceptable. It therefore needs KLayout, like any strict export.
+- **All or nothing.** The views are staged in `abstract.partial/` and moved into place only once all three and the manifest exist. If one is missing, the run fails with `fail_stage: abstract` and no abstract directory is left; the routed DEF and ODB stay, because P&R itself succeeded. Every rerun of the block removes the previous abstract first, whether or not it still hardens — the abstract belongs to the result the rerun replaces.
+- **One corner.** An abstract carries one corner's timing model, so `harden` on a multi-corner platform is refused before OpenROAD starts.
+- **No power.** `write_timing_model` writes timing arcs only. A parent's `rb power` sees a hardened block as drawing 0 W; account for the block with its own `rb power` run.
+
+The manifest (`schema_version: 1`) records the block, the run, the platform, the PDK, the OpenROAD path and version, the `technology` it was built on (technology LEF and corner Liberty), and a `{path, size, sha256}` fingerprint of each input and output. Inputs are the RTL sources of the upstream synthesis filelist, the synthesized netlist, the SDC, every Liberty and LEF file, and the pin-constraint and PDN snippets. `config` holds what the files do not say — the files the run is configured to read (synthesis entry, SDC, `lef-paths`, `lib-paths`, `gds-paths`), the floorplan, placement, routing layers, CTS buffers and don't-use cells — with a digest over them. Paths are project-relative POSIX where they can be, as in the other manifests.
+
+### Block power-grid convention
+
+A parent ties a hardened block into its own grid the way it ties in any macro: its top-level straps cross the block and drop vias onto the block's power pins. That only works if the block leaves those top layers free. RTL Buddy does not enforce the split; give the block its own platform that keeps it:
+
+- **The block owns the lower layers; the top layers belong to the parent.** On sky130hd the block routes and straps on met1–met4 and exposes its power straps as pins on met4, and the parent's met5 straps run over it. With `-bloat_occupied_layers`, a single block strap on met5 blocks met5 across the whole block, and the parent's `pdngen` fails.
+- **Use a block PDK entry and platform.** Point a copy of the PDK entry at a block-level `pdn-config` whose straps stop below the parent's layers, and set the block platform's `routing-layers` to the same range.
+- **Match third-party macros.** An OpenRAM SRAM exposes its power on met4 and met3; a hardened block that does the same looks identical to it at the top.
+
+The project template's sky130hd hierarchical example uses this split: see `pnr/sky130hd/pdn_block.tcl` and the `sky130hd_tt_block` platform there.
+
+## Assemble hardened blocks
+
+A top-level run instances hardened blocks by naming them under `blocks:`, in `pnr.yaml` and in the `synth.yaml` entry the run reads:
+
+```yaml
+# pnr.yaml
+runs:
+  - name: top_pnr
+    synth: top_synth
+    synth-path: ../../synth/top/synth.yaml
+    platform: sky130hd_tt
+    blocks:
+      - name: alu_block          # module name as instanced in the top netlist
+        pnr: alu_block_pnr       # a harden: true run
+        pnr-path: ../alu/pnr.yaml  # default: this pnr.yaml
+
+# synth.yaml
+syntheses:
+  - name: top_synth
+    # ...
+    blocks:
+      - name: alu_block
+        pnr: alu_block_pnr
+        pnr-path: ../../pnr/alu/pnr.yaml   # required here
+```
+
+Each entry resolves to the `abstract/` its `harden: true` run published. P&R appends the abstract's `.lef`, `.lib` and `.gds` to the run's `lef-paths`, `lib-paths` and `gds-paths`, so the flow script, the stream-out manifest and the result fingerprints take the block exactly as they take a hand-wired macro. Synthesis appends the `.lib` and `.lef` to its own lists. The result's `blocks` field lists each consumed block with its run, abstract directory, manifest, the `{path, size, sha256}` fingerprints of the three views it read, and whether it was stale.
+
+- **Build the blocks first.** A block's run is never started from here. With no abstract — never run, or its last run failed — the consuming run fails before its tool starts, naming the block and the `rb pnr` command that builds it. Synthesis of the top reads the block's Liberty model, so it too runs after the block is hardened.
+- **Same technology and corner.** A block may be hardened on its own block-level platform (see [Block power-grid convention](#block-power-grid-convention)), but its technology LEF and corner Liberty must be the ones the consuming run uses, compared by content. Otherwise the run fails with a platform/corner mismatch. A multi-corner P&R platform cannot consume single-corner abstracts.
+- **Stale abstracts are refused.** Before the tool starts, every input the block's manifest recorded — its RTL sources, netlist, SDC, Liberty and LEF files, pin and PDN snippets — and the three published views are fingerprinted again and compared by content, and the block's configuration is rebuilt from its `pnr.yaml` and platform and compared by digest. Any difference fails the consuming run, naming the block, what changed, and the `rb pnr` command that re-hardens it. Timestamps are never used: a checkout or a copy rewrites them in any order. `--accept-stale` on `rb pnr` or `rb synth` consumes a stale abstract anyway; the result description then says `stale block abstract(s) accepted: <names>`, and that block's row in the result has `stale: true` and the list of changes.
+- **Blackbox the module in the netlist.** `blocks:` supplies the block's views; it does not change what the model's filelist compiles. The top's filelist has to leave the block's module a blackbox, typically a port-only stub, as it would for any hard macro.
+- **Power.** The abstract Liberty has no power data, so a parent's `rb power` reports the block as drawing nothing (see [Harden a block](#harden-a-block)).
+
 ## Run P&R
 
 ```bash
@@ -433,5 +505,6 @@ Outputs land under `<pnr-dir>/artefacts/<run>/`.
 | `export.provenance.json` | What an `rb pnr-export` invocation read and produced |
 | `klayout.*.log` | Optional conversion logs |
 | `checkpoints/` | Optional [stage checkpoints](#keep-stage-checkpoints), one directory per run, plus `latest` |
+| `abstract/` | Optional [hardened-block abstract](#harden-a-block): LEF, Liberty, GDS and manifest |
 
 Every file above except the logs is deleted before each run — including the optional KLayout outputs, which are cleared up front rather than at the streamout step, so a run that dies inside OpenROAD or on a host without KLayout leaves no older layout behind. A run that dies short of routing therefore leaves the outputs it never wrote absent rather than the previous run's. Unlike the other flows, this happens even when OpenROAD itself is missing — the clear is the first thing a run does — because `rb power` resolves `<top>.routed.odb` by path and must never be handed the previous run's database. For the same reason a run that reaches `write_db` and then dies — killed, exiting non-zero, or logging an `[ERROR ...]` line — has its outputs removed again, so a `FAIL` never leaves a routed database behind. `pnr.tcl` and `def2stream.inputs.json` are cleared only in that first up-front pass, so a rerun that never reaches script generation does not leave the previous run's flow script or stream-out inputs looking like the ones it used — but a run that does reach the tools keeps them even when it fails, because they are what `pnr.log` and `klayout.def2stream.log` are logs of. The optional KLayout steps behave the same: a zero-length GDS, a half-rendered PNG, and the stream-out report that would otherwise say a layout is complete are removed rather than left to be read as this run's. A `strict` export failure removes the layout and its report but keeps the routed outputs, because P&R itself succeeded. `checkpoints/` is the exception to all of this: its run directories are never cleared, and only its `latest` pointer is removed up front. `rb pnr-export` clears a narrower set still — the layout, the image, the stream-out report, the input manifest and its own record — and never the routed DEF, ODB, netlist or SDC it reads. The routed SPEF is cleared with the ODB, up front and on every failure, so a run on a PDK that no longer sets `rcx-rules` cannot leave the previous run's extraction beside its fresh database for `rb power` to read. On failure, inspect `pnr.log`. If KLayout alone failed, inspect the corresponding `klayout.*.log` and rerun with `--gds` or `--png` after correcting the installation.
