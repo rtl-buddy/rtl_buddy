@@ -25,7 +25,7 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -174,6 +174,13 @@ def abstract_config(pnr_cfg, platform) -> dict:
         "lef_paths": [_rel(p) for p in pnr_cfg.get_lef_paths()],
         "lib_paths": [_rel(p) for p in pnr_cfg.get_lib_paths()],
         "gds_paths": [_rel(p) for p in pnr_cfg.get_gds_paths()],
+        # A block that itself instances blocks is a different block when
+        # that list changes; their abstracts' own bytes are recorded under
+        # `inputs` (as `lef` / `liberty`) by the run that consumed them.
+        "blocks": [
+            {"name": b.name, "pnr": b.pnr_run, "pnr_path": _rel(b.pnr_suite_path)}
+            for b in pnr_cfg.get_blocks()
+        ],
         "floorplan": {
             "utilization": fp.utilization,
             "aspect": fp.aspect,
@@ -298,15 +305,31 @@ class ResolvedBlock:
     lef: str
     lib: str
     gds: str
+    # The block's `harden: true` run, as configured now (#95 staleness).
+    run_cfg: object = None
+    # What changed since the block was hardened; empty when it is current.
+    changes: tuple[str, ...] = ()
+
+    @property
+    def stale(self) -> bool:
+        return bool(self.changes)
 
     def result_row(self) -> dict:
-        """What the machine output says about one consumed block."""
+        """What the machine output says about one consumed block: which
+        abstract, the fingerprints of the three views it read, and whether
+        the abstract was stale (only ever true under `--accept-stale`)."""
         return {
             "name": self.ref.name,
             "pnr_run": self.ref.pnr_run,
             "pnr_path": self.ref.pnr_suite_path,
             "abstract_dir": self.abstract_dir,
             "manifest": self.manifest_path,
+            "fingerprints": {
+                view: (self.manifest.get("outputs") or {}).get(view)
+                for view in ABSTRACT_VIEWS
+            },
+            "stale": self.stale,
+            "changes": list(self.changes),
         }
 
 
@@ -345,7 +368,8 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
         raise BlockResolutionError(f"{where}: {e}") from None
     if ref.pnr_run not in suite.get_run_names():
         raise BlockResolutionError(f"{where}: no such run in that pnr.yaml")
-    if not suite.get_runs(ref.pnr_run)[0].get_harden():
+    run_cfg = suite.get_runs(ref.pnr_run)[0]
+    if not run_cfg.get_harden():
         raise BlockResolutionError(
             f"{where}: that run does not set harden: true, so it publishes no abstract"
         )
@@ -378,6 +402,7 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
         lef=views["lef"],
         lib=views["lib"],
         gds=views["gds"],
+        run_cfg=run_cfg,
     )
 
 
@@ -418,3 +443,100 @@ def check_technology(
 
 def resolve_blocks(refs: list[BlockRef]) -> list[ResolvedBlock]:
     return [resolve_block(ref) for ref in refs]
+
+
+def _records(value):
+    """A manifest input entry — one record, a list of them, or none."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
+    """What has changed since the block was hardened; empty when current.
+
+    Every input the manifest recorded is fingerprinted again and compared
+    by content — no timestamps, which a checkout or a copy rewrites in any
+    order (the reasoning of #618's DEF check). The three published views
+    are compared too, so an abstract edited after the fact is not taken as
+    the one the manifest vouches for. The block's configuration is rebuilt
+    from its `pnr.yaml` and platform as they are now and its digest
+    compared, which catches an edited floorplan, platform or file list.
+    """
+    root = project_root_or_none(block.abstract_dir)
+    changes: list[str] = []
+
+    def _compare(role: str, record: dict | None) -> None:
+        if not record or not record.get("path"):
+            return
+        path = record["path"]
+        on_disk = (
+            path if os.path.isabs(path) or root is None else os.path.join(root, path)
+        )
+        now = (file_fingerprint(on_disk, None) or {}).get("sha256")
+        if now is None:
+            changes.append(f"{role} {path} is gone")
+        elif now != record.get("sha256"):
+            changes.append(f"{role} {path} changed")
+
+    for role, value in (block.manifest.get("inputs") or {}).items():
+        for record in _records(value):
+            _compare(role, record)
+    for view, record in (block.manifest.get("outputs") or {}).items():
+        _compare(f"abstract {view}", record)
+
+    recorded = block.manifest.get("config") or {}
+    try:
+        platform = root_cfg.get_pnr_platform_cfg(block.run_cfg.get_platform())
+        current = abstract_config(block.run_cfg, platform)
+        digest = config_digest(current)
+    except Exception as e:  # an unloadable platform is itself a change
+        changes.append(f"config cannot be rebuilt ({e})")
+    else:
+        if digest != recorded.get("sha256"):
+            edited = sorted(
+                key
+                for key in set(current) | (set(recorded) - {"sha256"})
+                if current.get(key) != recorded.get(key)
+            )
+            changes.append(f"config changed ({', '.join(edited) or 'digest'})")
+    return changes
+
+
+def assess_blocks(
+    resolved: list[ResolvedBlock], root_cfg, *, accept_stale: bool
+) -> list[ResolvedBlock]:
+    """Attach each block's changes; refuse stale ones unless accepted.
+
+    A stale abstract describes a block that no longer exists in the source
+    tree, so a run consuming it is refused, naming every stale block and
+    what changed. ``accept_stale`` (`--accept-stale`) lets it through; the
+    consuming run then qualifies its result and each block's row says
+    `stale: true` with the changes.
+    """
+    assessed = [replace(b, changes=tuple(block_changes(b, root_cfg))) for b in resolved]
+    stale = [b for b in assessed if b.stale]
+    if stale and not accept_stale:
+        first = stale[0]
+        more = f" (and {len(stale) - 1} more stale block(s))" if len(stale) > 1 else ""
+        raise BlockResolutionError(
+            f"block {first.ref.name!r} is stale: {describe_changes(list(first.changes))}"
+            f"{more} — re-run `rb pnr {first.ref.pnr_run} -c "
+            f"{first.ref.pnr_suite_path}`, or pass --accept-stale"
+        )
+    return assessed
+
+
+def stale_qualifier(blocks: list[ResolvedBlock]) -> str:
+    """The result qualifier for stale abstracts a run accepted; "" if none."""
+    names = [b.ref.name for b in blocks if b.stale]
+    if not names:
+        return ""
+    return f"stale block abstract(s) accepted: {', '.join(names)}"
+
+
+def describe_changes(changes: list[str], limit: int = 3) -> str:
+    shown = "; ".join(changes[:limit])
+    if len(changes) > limit:
+        shown += f"; +{len(changes) - limit} more"
+    return shown

@@ -37,8 +37,29 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _block_platform(tmp_path):
+    """The platform the block was hardened on; also what the stale check
+    rebuilds the block's config against."""
+    pdk = PdkConfig(
+        PdkConfigFile(
+            name="p",
+            site="core",
+            corners={"typ": "pdk/typ.lib"},
+            tech_lef="pdk/tech.lef",
+            macro_lef="pdk/cells.lef",
+            tie_hi="T/Z",
+            tie_lo="T/Z",
+            fill_cells=["F"],
+        ),
+        str(tmp_path / "top/root_config.yaml"),
+    )
+    return PnrPlatformConfig(
+        PnrPlatformConfigFile(name="p", pdk="p", cts_buffer="B"), lambda _n: pdk
+    )
+
+
 def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, views=True):
-    """A block pnr.yaml whose `blk_pnr` run published an abstract."""
+    """A block pnr.yaml whose `blk_pnr` run published a current abstract."""
     suite = _write(
         tmp_path / "blk/pnr.yaml",
         dedent(f"""\
@@ -58,6 +79,9 @@ def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, view
         for view in ("lef", "lib", "gds"):
             _write(out / f"{module}.{view}", f"{view}\n")
     if manifest:
+        run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
+        config = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
+        sdc = _write(tmp_path / "blk/blk.sdc", "create_clock\n")
         _write(
             out / "abstract.manifest.json",
             json.dumps(
@@ -68,6 +92,19 @@ def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, view
                         "tech_lef": {"path": "tech.lef", "sha256": _sha(_TECH)},
                         "liberty": {"path": "typ.lib", "sha256": _sha(_CORNER)},
                     },
+                    "inputs": {
+                        "sdc": {"path": str(sdc), "sha256": _sha("create_clock\n")}
+                    },
+                    "config": {**config, "sha256": pnr_abstract.config_digest(config)},
+                    "outputs": {
+                        view: {
+                            "path": str(out / f"{module}.{view}"),
+                            "sha256": _sha(f"{view}\n"),
+                        }
+                        for view in ("lef", "lib", "gds")
+                    }
+                    if views
+                    else {},
                 }
             ),
         )
@@ -297,15 +334,16 @@ def test_a_top_run_reads_every_block_view_and_reports_the_block(tmp_path, monkey
     assert f"read_lef     {out}/blk_top.lef" in script
     assert f"read_liberty {out}/blk_top.lib" in script
     assert str(out / "blk_top.gds") in backend.pnr_cfg.get_gds_paths()
-    assert res.results["blocks"] == [
-        {
-            "name": "blk_top",
-            "pnr_run": "blk_pnr",
-            "pnr_path": str(tmp_path / "blk/pnr.yaml"),
-            "abstract_dir": str(out),
-            "manifest": str(out / "abstract.manifest.json"),
-        }
-    ]
+    [row] = res.results["blocks"]
+    assert {k: row[k] for k in ("name", "pnr_run", "pnr_path", "abstract_dir")} == {
+        "name": "blk_top",
+        "pnr_run": "blk_pnr",
+        "pnr_path": str(tmp_path / "blk/pnr.yaml"),
+        "abstract_dir": str(out),
+    }
+    assert row["manifest"] == str(out / "abstract.manifest.json")
+    assert row["stale"] is False and row["changes"] == []
+    assert row["fingerprints"]["lib"]["sha256"] == _sha("lib\n")
 
 
 def test_a_block_with_no_abstract_fails_before_openroad(tmp_path, monkeypatch):
@@ -351,6 +389,7 @@ def _synth_runner(tmp_path, blocks_yaml):
     synth_cfg = SynthSuiteConfig(str(path)).get_syntheses("top_synth")[0]
     root_cfg = MagicMock()
     root_cfg.get_synth_effort_cfg.return_value.get_openroad_run.return_value = False
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
     return SynthRunner(
         name="top_synth",
         root_cfg=root_cfg,
@@ -368,7 +407,7 @@ def test_synthesis_takes_each_block_liberty_and_lef(tmp_path, monkeypatch):
     def _fake_run(self):
         seen["lib"] = self.synth_cfg.get_lib_paths()
         seen["lef"] = self.synth_cfg.get_lef_paths()
-        return "ran"
+        return MagicMock(results={"result": "PASS", "desc": None})
 
     monkeypatch.setattr(synth_yosys.YosysSynth, "run", _fake_run)
     runner = _synth_runner(
@@ -376,7 +415,9 @@ def test_synthesis_takes_each_block_liberty_and_lef(tmp_path, monkeypatch):
         "    blocks:\n      - {name: blk_top, pnr: blk_pnr, pnr-path: ../blk/pnr.yaml}\n",
     )
 
-    assert runner.run() == "ran"
+    res = runner.run()
+    assert res.results["blocks"][0]["name"] == "blk_top"
+    assert res.results["desc"] is None
     out = tmp_path / "blk/artefacts/blk_pnr/abstract"
     assert seen == {
         "lib": [str(out / "blk_top.lib")],
@@ -402,3 +443,127 @@ def test_synthesis_with_an_unusable_block_withdraws_its_netlist(tmp_path, monkey
     assert res.results["fail_stage"] == "setup"
     assert "rb pnr blk_pnr" in res.results["desc"]
     assert not stale.exists()
+
+
+# ---------------------------------------------------------------------------
+# Staleness (step 3)
+# ---------------------------------------------------------------------------
+
+
+def test_editing_a_block_input_refuses_the_top_run_naming_the_block(
+    tmp_path, monkeypatch
+):
+    """Acceptance 4: edit a block's SDC, re-run only the top — refused."""
+    _block_suite(tmp_path)
+    (tmp_path / "blk/blk.sdc").write_text("create_clock -period 5\n")
+    backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    desc = res.results["desc"]
+    assert "block 'blk_top' is stale" in desc
+    assert f"sdc {tmp_path / 'blk/blk.sdc'} changed" in desc
+    assert "rb pnr blk_pnr" in desc and "--accept-stale" in desc
+    assert launched == []
+
+
+def test_a_touched_but_unchanged_input_is_not_stale(tmp_path, monkeypatch):
+    """Content, not timestamps: a checkout that rewrites mtimes is current."""
+    import os
+
+    _block_suite(tmp_path)
+    os.utime(tmp_path / "blk/blk.sdc", (1, 1))
+    backend, _ = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    assert backend.run().is_pass()
+
+
+@pytest.mark.parametrize(
+    "mutate,expected",
+    [
+        (lambda t: (t / "blk/blk.sdc").unlink(), "is gone"),
+        (
+            lambda t: (t / "blk/artefacts/blk_pnr/abstract/blk_top.lib").write_text(
+                "hand edited\n"
+            ),
+            "abstract lib",
+        ),
+        (
+            lambda t: (t / "blk/pnr.yaml").write_text(
+                (t / "blk/pnr.yaml").read_text() + "    floorplan: {utilization: 0.3}\n"
+            ),
+            "config changed (floorplan)",
+        ),
+    ],
+    ids=["input-deleted", "view-edited", "floorplan-edited"],
+)
+def test_every_kind_of_change_makes_a_block_stale(tmp_path, mutate, expected):
+    suite = _block_suite(tmp_path)
+    mutate(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
+    block = resolve_block(_ref(suite))
+
+    changes = pnr_abstract.block_changes(block, root_cfg)
+
+    assert any(expected in c for c in changes), changes
+
+
+def test_accept_stale_runs_the_top_and_qualifies_the_result(tmp_path, monkeypatch):
+    _block_suite(tmp_path)
+    (tmp_path / "blk/blk.sdc").write_text("create_clock -period 5\n")
+    backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    backend.accept_stale = True
+
+    res = backend.run()
+
+    assert res.is_pass()
+    assert launched
+    assert "stale block abstract(s) accepted: blk_top" in res.results["desc"]
+    [row] = res.results["blocks"]
+    assert row["stale"] is True
+    assert any("sdc" in c for c in row["changes"])
+
+
+def test_every_stale_block_is_counted_in_the_refusal(tmp_path):
+    suite = _block_suite(tmp_path)
+    (tmp_path / "blk/blk.sdc").write_text("changed\n")
+    block = resolve_block(_ref(suite))
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _block_platform(tmp_path)
+    with pytest.raises(BlockResolutionError, match=r"and 1 more stale block"):
+        pnr_abstract.assess_blocks([block, block], root_cfg, accept_stale=False)
+
+
+def test_synthesis_refuses_a_stale_block_unless_accepted(tmp_path, monkeypatch):
+    from rtl_buddy.tools import synth_yosys
+
+    _block_suite(tmp_path)
+    (tmp_path / "blk/blk.sdc").write_text("changed\n")
+    monkeypatch.setattr(
+        synth_yosys.YosysSynth,
+        "run",
+        lambda self: MagicMock(results={"result": "PASS", "desc": "ok"}),
+    )
+    blocks_yaml = "    blocks:\n      - {name: blk_top, pnr: blk_pnr, pnr-path: ../blk/pnr.yaml}\n"
+
+    refused = _synth_runner(tmp_path, blocks_yaml).run()
+    assert refused.results["fail_stage"] == "setup"
+    assert "is stale" in refused.results["desc"]
+
+    runner = _synth_runner(tmp_path, blocks_yaml)
+    runner.accept_stale = True
+    accepted = runner.run()
+    assert accepted.results["desc"] == "ok; stale block abstract(s) accepted: blk_top"
+    assert accepted.results["blocks"][0]["stale"] is True
+
+
+def test_rb_pnr_and_rb_synth_take_accept_stale():
+    import typer
+
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    group = typer.main.get_command(RtlBuddy(name="test_pnr_blocks").app)
+    for command in ("pnr", "synth"):
+        opts = {o for p in group.commands[command].params for o in p.opts}
+        assert "--accept-stale" in opts, command

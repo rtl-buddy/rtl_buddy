@@ -461,8 +461,12 @@ class OpenRoadPnr:
         png_height: int = DEFAULT_PNG_HEIGHT,
         gds_mode: str | None = None,
         klayout_props: str | None = None,
+        accept_stale: bool = False,
     ):
         self.name = name
+        # `--accept-stale`: consume `blocks:` abstracts whose recorded
+        # inputs have changed, qualifying the result instead of failing (#95).
+        self.accept_stale = accept_stale
         self.pnr_cfg = pnr_cfg
         # The run as configured, before anything the run itself adds to it;
         # what an abstract's config record describes (#95).
@@ -2017,6 +2021,9 @@ class OpenRoadPnr:
                     liberty=platform.get_sta_lib_path(),
                     tech_lef=platform.get_pdk().get_tech_lef(),
                 )
+            resolved = pnr_abstract.assess_blocks(
+                resolved, self.root_cfg, accept_stale=self.accept_stale
+            )
         except pnr_abstract.BlockResolutionError as e:
             log_event(
                 logger,
@@ -2031,6 +2038,16 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
         self._blocks = resolved
+        for block in resolved:
+            if block.stale:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.block_stale_accepted",
+                    pnr=self.pnr_cfg.get_name(),
+                    block=block.ref.name,
+                    changes=list(block.changes),
+                )
         self.pnr_cfg = replace(
             self.pnr_cfg,
             lef_paths=[*self.pnr_cfg.get_lef_paths(), *(b.lef for b in resolved)],
@@ -2557,11 +2574,20 @@ class OpenRoadPnr:
             gds_status=export.status if export is not None else None,
             log=log_path,
         )
+        # An export that did not deliver, or a stale block abstract the run
+        # was told to accept, qualifies the pass in the one field every
+        # summary row shows.
+        qualifiers = [
+            q
+            for q in (
+                export.desc if export else "",
+                pnr_abstract.stale_qualifier(self._blocks),
+            )
+            if q
+        ]
         return PnrPassResults(
             name=self.name + "/results",
-            # An export that did not deliver qualifies the pass in the one
-            # field every summary row shows.
-            desc=f"P&R passed; {export.desc}" if export and export.desc else None,
+            desc=f"P&R passed; {'; '.join(qualifiers)}" if qualifiers else None,
             fields={
                 **metrics,
                 **corner_fields,

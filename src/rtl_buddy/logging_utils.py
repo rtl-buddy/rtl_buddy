@@ -1873,6 +1873,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")
             return f'{flow} "{run}": {fields.get("reason")}'
+        case "pnr.block_stale_accepted" | "synth.block_stale_accepted":
+            flow = "P&R" if event.startswith("pnr") else "synthesis"
+            run = fields.get("pnr") or fields.get("synth")
+            changes = "; ".join(str(c) for c in (fields.get("changes") or [])[:3])
+            return (
+                f'{flow} "{run}": using stale abstract of block '
+                f"{fields.get('block')!r} (--accept-stale): {changes}"
+            )
         case "pnr.abstract_failed":
             return (
                 f'P&R "{fields.get("pnr")}": no abstract published — '

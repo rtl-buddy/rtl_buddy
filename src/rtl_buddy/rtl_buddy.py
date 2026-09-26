@@ -11321,6 +11321,8 @@ class RtlBuddy:
             # OpenROAD thread provenance of the timing stage, as for a pnr
             # row (#654). Absent when no OpenROAD stage ran.
             "openroad_threads",
+            # The hardened blocks' abstracts the run read (#95).
+            "blocks",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11534,7 +11536,12 @@ class RtlBuddy:
         return 0 if all(r["results"].is_pass() for r in synth_results) else 1
 
     def _do_synth_suite(
-        self, suite_cfg, synth_name=None, reg_level=None, effort_override=None
+        self,
+        suite_cfg,
+        synth_name=None,
+        reg_level=None,
+        effort_override=None,
+        accept_stale: bool = False,
     ):
         syntheses = suite_cfg.get_syntheses(synth_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
@@ -11568,6 +11575,7 @@ class RtlBuddy:
                 synth_cfg=s,
                 suite_dir=suite_dir,
                 effort_override=effort_override,
+                accept_stale=accept_stale,
             )
             res = runner.run()
             if s.is_xfail():
@@ -11600,6 +11608,17 @@ class RtlBuddy:
                 help="override synthesis effort (must match cfg-synth-efforts entry)",
             ),
         ] = None,
+        accept_stale: Annotated[
+            bool,
+            typer.Option(
+                "--accept-stale",
+                help=(
+                    "consume blocks: abstracts whose recorded inputs changed "
+                    "since they were hardened, qualifying the result instead "
+                    "of failing"
+                ),
+            ),
+        ] = False,
     ):
         """
         run synthesis
@@ -11630,7 +11649,10 @@ class RtlBuddy:
             raise typer.Exit(0)
 
         synth_results = self._do_synth_suite(
-            suite_cfg, synth_name=synth_name, effort_override=effort
+            suite_cfg,
+            synth_name=synth_name,
+            effort_override=effort,
+            accept_stale=accept_stale,
         )
         exit_code = self._exit_code_from_synth_results(synth_results)
         if self.machine:
@@ -11696,6 +11718,17 @@ class RtlBuddy:
                 show_default="each run's gds-mode (preview)",
             ),
         ] = None,
+        accept_stale: Annotated[
+            bool,
+            typer.Option(
+                "--accept-stale",
+                help=(
+                    "consume blocks: abstracts whose recorded inputs changed "
+                    "since they were hardened, qualifying the result instead "
+                    "of failing"
+                ),
+            ),
+        ] = False,
     ):
         """run place-and-route"""
         ctx = self._enter_command_context(
@@ -11729,6 +11762,7 @@ class RtlBuddy:
             emit_gds=emit_gds,
             emit_png=emit_png,
             gds_mode=gds_mode,
+            accept_stale=accept_stale,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -11750,6 +11784,7 @@ class RtlBuddy:
         emit_gds: bool = False,
         emit_png: bool = False,
         gds_mode: str | None = None,
+        accept_stale: bool = False,
     ):
         root_cfg = self.root_cfg
         runs = suite_cfg.get_runs(pnr_name)
@@ -11786,6 +11821,7 @@ class RtlBuddy:
                 emit_gds=emit_gds,
                 emit_png=emit_png,
                 gds_mode=gds_mode,
+                accept_stale=accept_stale,
             )
             res = runner.run()
             if run.is_xfail():
