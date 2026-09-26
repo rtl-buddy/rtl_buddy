@@ -103,7 +103,7 @@ A synth or P&R platform may name its own `dont-use-cells` for one selection; a p
 
 A design whose netlist instantiates hard macros — an SRAM, or a partition hardened by an earlier P&R run — gets an automatic macro placement before the power grid is built. Every block instance is packed by its *own* footprint: macros are sorted tallest first (then widest, then by name, so the result never depends on the order the database returns instances) and packed left to right into rows whose height is the tallest macro in the row, keeping `placement.macro-halo` between neighbours and at every core edge. Each origin is snapped up to the standard-cell site grid counted from the core corner (the site width in x, the row height in y) — up, so snapping can only widen a channel — and the instance is left `FIRM`, which global placement and the detailed placer then respect. Row alignment is what keeps the detailed placer's padding check (`DPL-0011`) honest: it rounds a macro to its nearest row, so a bottom edge between two rows can make it scan the row of standard cells above the macro as the macro's own.
 
-Rows start at the core's bottom-left corner, so macro locations differ from the grid placement this replaced: a single macro sits in the corner, a halo from both edges, where it used to be centred in the core. Macros still place legally in every case that placed before, and the free area they leave is contiguous instead of split around a centred block.
+Rows start at the core's bottom-left corner (or the corner [`floorplan.macro-anchor`](#floorplan-controls) names), so macro locations differ from the grid placement this replaced: a single macro sits in the corner, a halo from both edges, where it used to be centred in the core. Macros still place legally in every case that placed before, and the free area they leave is contiguous instead of split around a centred block.
 
 Packing by footprint is what lets a mixed-size set fit a floorplan sized for the design. Three macros of 479.78 × 397.50, 98.94 × 98.94 and 89.47 × 89.47 µm need a 695 × 695 µm core this way; sized into equal slots, as the flow did before, the smallest core that held them was 959.56 × 795.00 µm (#626).
 
@@ -119,12 +119,53 @@ When the macros do not fit, the error says what was tried — the halo, the larg
 
 A design with no macros is unaffected: the packer's procedures are defined in `pnr.tcl` and never called.
 
+### Floorplan controls
+
+Three optional `floorplan` keys steer where macros and standard cells may go (#105). A run that sets none of them renders the flow it always did.
+
+```yaml
+    floorplan:
+      utilization: 0.45
+      core-margin: 10.0
+      macro-anchor: upper-right        # default lower-left
+      blockages:
+        - rect: [10, 10, 130, 60]      # microns, die coordinates: x0 y0 x1 y1
+        - rect: [300, 10, 360, 200]
+          type: soft
+        - rect: [400, 300, 520, 420]
+          type: partial
+          max-density: 0.4
+```
+
+**Macro anchor.** `macro-anchor` is the core corner the [macro packer](#macro-placement) starts from: `lower-left` (the default, the packing described above), `lower-right`, `upper-left` or `upper-right`. The rows fill away from that corner, so the two edges opposite it stay clear of macros for as long as the macros allow — the edges to point `pin-constraints` at when a neighbouring block abuts one side. An anchored packing is the default packing reflected across the core's centre lines, so the halo, the order and the channels are the same; only the snapping differs, because the site grid still counts from the core's lower-left corner: a mirrored macro's origin is snapped *down*, away from the anchor edge, which again only ever widens a channel. The setting is per run, not per platform, because it is part of the design's pin plan.
+
+**Placement blockages.** Each `blockages` entry is a rectangle, `rect: [x0, y0, x1, y1]` in microns in die coordinates (the die's lower-left corner is the origin), with a `type`:
+
+| `type` | Effect |
+| --- | --- |
+| `hard` (default) | No standard cell is placed inside. The macro packer also keeps every macro out of it: a macro that would overlap one moves along its row past it, and a row it leaves no room in is skipped. No halo is kept to a blockage. |
+| `soft` | Global placement keeps standard cells out; later repair and legalization may still use the area. Macros may sit on it. |
+| `partial` | Global placement caps the cell density inside at `max-density`, a fraction strictly between 0 and 1. The cap is **global placement's only**: OpenROAD's detailed placer treats every non-soft blockage as fully blocked, so the legalization passes that follow move the cells out again and the area ends up behaving like a `hard` one for standard cells. Macros may sit on it. |
+
+The flow creates them with OpenROAD's `create_blockage` right after the floorplan, ahead of macro and global placement. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative or non-finite coordinate, not four numbers), an unknown type, or a `max-density` on anything but a `partial` blockage fails when `pnr.yaml` loads; a rectangle outside the die fails in OpenROAD. `create_blockage` first shipped in OpenROAD 26Q1, so a run with blockages fails at setup on an older build. When hard blockages leave the macros no room, the no-fit error says how many blockages it avoided and lists moving one among the fixes.
+
 ## Constrain boundary pins
 
 Set `pin-constraints: pins.tcl` in a run to assign pins to boundary edges or
-groups. The path is relative to `pnr.yaml`; it is sourced after floorplan and
-track initialization, immediately before `place_pins`. Missing files fail.
-Without this key the default unconstrained placement is unchanged.
+groups. The path is relative to `pnr.yaml`; it is sourced immediately before
+`place_pins`. Missing files fail. Without this key the default unconstrained
+placement is unchanged.
+
+IO pins are placed after [macro placement](#macro-placement) and the power
+grid, and before global placement — the order OpenROAD's reference flow uses.
+Placing them first left every macro unplaced at that point: each drew a
+`PPL-0015 Macro ... is not placed` warning, and the pin placer's
+wirelength-driven assignment saw the macro at the origin instead of where its
+pins are. `place_pins` does not, however, keep pins off the stretch of an edge
+a macro sits behind: it excludes only boundary intervals a placed macro
+actually touches, and the packer keeps every macro a halo inside the core. To
+keep a pin edge clear of macros, anchor the packer at the opposite corner with
+[`floorplan.macro-anchor`](#floorplan-controls).
 
 For example, `pins.tcl` can contain:
 

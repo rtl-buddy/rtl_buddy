@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 import pprint
 from dataclasses import dataclass, field as dc_field
@@ -65,11 +66,60 @@ class PnrToolConfig:
         )
 
 
+class MacroAnchor(StrEnum):
+    """The core corner the macro packer starts from (#105).
+
+    The packer fills rows away from this corner, so the edges opposite it
+    stay clear of macros — where a design's IO pins, or its abutting
+    neighbour, want the boundary free. ``LOWER_LEFT`` is the packing the
+    flow has always done.
+    """
+
+    LOWER_LEFT = "lower-left"
+    LOWER_RIGHT = "lower-right"
+    UPPER_LEFT = "upper-left"
+    UPPER_RIGHT = "upper-right"
+
+
+class BlockageType(StrEnum):
+    """Standard-cell placement blockage kinds, as OpenROAD has them (#105).
+
+    ``HARD`` keeps every standard cell out, and the macro packer treats it
+    as a keep-out too; ``SOFT`` keeps cells out of initial (global)
+    placement only, so repair and legalization may still use it;
+    ``PARTIAL`` caps the placement density inside it at ``max-density``.
+    """
+
+    HARD = "hard"
+    SOFT = "soft"
+    PARTIAL = "partial"
+
+
+@serde
+class PnrBlockageFile:
+    rect: list[float]
+    type: str = BlockageType.HARD.value
+    max_density: float | None = field(rename="max-density", default=None)
+
+
+@dataclass(frozen=True)
+class PnrBlockage:
+    """One placement blockage: a die-coordinate rectangle in microns."""
+
+    rect: tuple[float, float, float, float]
+    type: BlockageType
+    max_density: float | None = None
+
+
 @serde
 class PnrFloorplanFile:
     utilization: float = 0.55
     aspect: float = 1.0
     core_margin: float = field(rename="core-margin", default=2.0)
+    macro_anchor: str = field(
+        rename="macro-anchor", default=MacroAnchor.LOWER_LEFT.value
+    )
+    blockages: list[PnrBlockageFile] = field(default_factory=list)
 
 
 @dataclass
@@ -77,6 +127,69 @@ class PnrFloorplan:
     utilization: float
     aspect: float
     core_margin: float
+    macro_anchor: MacroAnchor = MacroAnchor.LOWER_LEFT
+    blockages: list[PnrBlockage] = dc_field(default_factory=list)
+
+
+_MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
+
+
+def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
+    """Validate one `floorplan.blockages` entry; the geometry is checked here
+    so a typo fails at load time rather than an hour into the flow."""
+    where = f"pnr run '{run}': floorplan.blockages[{index}]"
+    if len(entry.rect) != 4:
+        raise FatalRtlBuddyError(
+            f"{where}: rect must be [x0, y0, x1, y1] in microns, got {entry.rect!r}"
+        )
+    x0, y0, x1, y1 = (float(v) for v in entry.rect)
+    if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+        raise FatalRtlBuddyError(
+            f"{where}: rect coordinates must be finite numbers, got {entry.rect!r}"
+        )
+    # The flow writes coordinates to the nanometre (`_tcl_microns`), so a
+    # rectangle narrower than that would reach OpenROAD with no area at all.
+    if round(x1, 3) - round(x0, 3) < _MIN_BLOCKAGE_SPAN or (
+        round(y1, 3) - round(y0, 3) < _MIN_BLOCKAGE_SPAN
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}: rect must have x0 < x1 and y0 < y1, at least 0.001 um "
+            f"apart, got {entry.rect!r}"
+        )
+    if not (x0 < x1 and y0 < y1):
+        raise FatalRtlBuddyError(
+            f"{where}: rect must have x0 < x1 and y0 < y1, got {entry.rect!r}"
+        )
+    # Die coordinates start at the origin: `initialize_floorplan` puts the
+    # die's lower-left corner there.
+    if x0 < 0.0 or y0 < 0.0:
+        raise FatalRtlBuddyError(
+            f"{where}: rect is in die coordinates, which start at 0, got {entry.rect!r}"
+        )
+    try:
+        kind = BlockageType(entry.type)
+    except ValueError:
+        raise FatalRtlBuddyError(
+            f"{where}: unknown type {entry.type!r} "
+            f"(expected one of {', '.join(t.value for t in BlockageType)})"
+        ) from None
+    max_density = entry.max_density
+    if kind is BlockageType.PARTIAL:
+        if max_density is None:
+            raise FatalRtlBuddyError(
+                f"{where}: a partial blockage needs max-density (0 < max-density < 1)"
+            )
+        max_density = float(max_density)
+        if not 0.0 < max_density < 1.0:
+            raise FatalRtlBuddyError(
+                f"{where}: max-density must be between 0 and 1, exclusive, got "
+                f"{max_density} (use type: hard for 0; drop the blockage for 1)"
+            )
+    elif max_density is not None:
+        raise FatalRtlBuddyError(
+            f"{where}: max-density applies to partial blockages only, not {kind.value}"
+        )
+    return PnrBlockage(rect=(x0, y0, x1, y1), type=kind, max_density=max_density)
 
 
 @serde
@@ -136,6 +249,19 @@ class PnrConfigFile:
             ) from None
         threads = validate_threads(self.threads, where=f"pnr run '{self.name}'")
 
+        try:
+            macro_anchor = MacroAnchor(self.floorplan.macro_anchor)
+        except ValueError:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': unknown 'floorplan.macro-anchor' "
+                f"{self.floorplan.macro_anchor!r} "
+                f"(expected one of {', '.join(a.value for a in MacroAnchor)})"
+            ) from None
+        blockages = [
+            _load_blockage(self.name, i, entry)
+            for i, entry in enumerate(self.floorplan.blockages)
+        ]
+
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
         constraints = (
             os.path.normpath(os.path.join(config_dir, self.constraints))
@@ -168,6 +294,8 @@ class PnrConfigFile:
                 utilization=self.floorplan.utilization,
                 aspect=self.floorplan.aspect,
                 core_margin=self.floorplan.core_margin,
+                macro_anchor=macro_anchor,
+                blockages=blockages,
             ),
             lef_paths=lef_paths,
             lib_paths=lib_paths,

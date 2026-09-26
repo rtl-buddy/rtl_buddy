@@ -102,11 +102,32 @@ def _run(body: str) -> str:
     return _tcl_eval(source + "\n" + body + "\n")
 
 
-def _place(macros, core_w, core_h, halo_um, origin_um=0.0, grid=GRID):
-    """Run the packer and return {name: (x_um, y_um)}, or None for no fit."""
+def _keepout_list(keepouts) -> str:
+    return " ".join(
+        "{" + " ".join(str(_um(v)) for v in rect) + "}" for rect in keepouts
+    )
+
+
+def _place(
+    macros,
+    core_w,
+    core_h,
+    halo_um,
+    origin_um=0.0,
+    grid=GRID,
+    anchor=None,
+    keepouts=None,
+):
+    """Run the packer and return {name: (x_um, y_um)}, or None for no fit.
+
+    `anchor` and `keepouts` (rectangles in microns) are passed only when
+    given, so the default call is the one the flow has always made."""
+    extra = ""
+    if anchor is not None or keepouts is not None:
+        extra = f" {anchor or 'lower-left'} {{{_keepout_list(keepouts or [])}}}"
     body = (
         f"set p [rb::macro_pack::place {_core(core_w, core_h, origin_um)} "
-        f"{{{_macro_list(macros)}}} {_um(halo_um)} {grid}]\n"
+        f"{{{_macro_list(macros)}}} {_um(halo_um)} {grid}{extra}]\n"
         "set result {}\n"
         "dict for {name xy} $p { lappend result [list $name {*}$xy] }"
     )
@@ -394,6 +415,254 @@ def test_the_rendered_flow_sources_the_packer_and_is_valid_tcl():
     assert "{{ macro_pack_procs }}" in template
     assert "rb::macro_pack::solve \\" in template
     assert _run("set result [info args rb::macro_pack::solve]") == (
-        "core macros halo grid dbu_per_micron"
+        "core macros halo grid dbu_per_micron anchor keepouts"
+    )
+    # The two trailing arguments are optional, and default to the packing
+    # the flow did before they existed (#105).
+    assert (
+        _run(
+            "set result [list [info default rb::macro_pack::solve anchor a] $a "
+            "[info default rb::macro_pack::solve keepouts k] $k]"
+        )
+        == "1 lower-left 1 {}"
     )
     assert source.strip().endswith("}")
+
+
+# ----------------------------------------------------------------------
+# Anchor corner (#105)
+# ----------------------------------------------------------------------
+
+ANCHORS = ("lower-left", "lower-right", "upper-left", "upper-right")
+
+
+def _mirror(placement, macros, core_w, core_h, anchor, origin_um=0.0):
+    """Reflect a lower-left packing into `anchor`'s corner, in microns."""
+    sizes = {name: (w, h) for name, w, h in macros}
+    flip_x = anchor.endswith("right")
+    flip_y = anchor.startswith("upper")
+    lo_hi_x = 2 * origin_um + core_w
+    lo_hi_y = 2 * origin_um + core_h
+    return {
+        name: (
+            round(lo_hi_x - x - sizes[name][0], 6) if flip_x else x,
+            round(lo_hi_y - y - sizes[name][1], 6) if flip_y else y,
+        )
+        for name, (x, y) in placement.items()
+    }
+
+
+def _rounded(placement):
+    return {name: (round(x, 6), round(y, 6)) for name, (x, y) in placement.items()}
+
+
+def test_an_explicit_lower_left_anchor_is_the_default_packing():
+    macros = [SRAM, PART_A, PART_B, ("part_c", 150.0, 60.0)]
+    default = _place(macros, 695.0, 695.0, 12.0)
+    explicit = _place(macros, 695.0, 695.0, 12.0, anchor="lower-left", keepouts=[])
+
+    assert default == explicit
+
+
+@pytest.mark.parametrize("anchor", ANCHORS)
+def test_each_anchor_is_the_default_packing_reflected_into_its_corner(anchor):
+    """On a core the grid divides evenly, an anchor is an exact reflection:
+    the same rows, the same order, the same channels, from another corner."""
+    macros = [SRAM, PART_A, PART_B, ("part_c", 150.0, 60.0)]
+    base = _place(macros, 695.0, 695.0, 12.0)
+    anchored = _place(macros, 695.0, 695.0, 12.0, anchor=anchor)
+
+    assert base is not None and anchored is not None
+    assert _rounded(anchored) == _mirror(base, macros, 695.0, 695.0, anchor)
+
+
+@pytest.mark.parametrize("anchor", ANCHORS)
+def test_a_single_macro_lands_in_the_anchor_corner_inside_the_halo(anchor):
+    placement = _place([("m", 100.0, 50.0)], 400.0, 300.0, 10.0, anchor=anchor)
+
+    expected_x = 290.0 if anchor.endswith("right") else 10.0
+    expected_y = 240.0 if anchor.startswith("upper") else 10.0
+    assert placement == {"m": (expected_x, expected_y)}
+
+
+@pytest.mark.parametrize("anchor", ANCHORS)
+def test_anchored_origins_stay_on_the_site_grid_counted_from_the_lower_left(anchor):
+    """The rows belong to the real core, so a mirrored packing still snaps
+    every *origin* (the macro's lower-left corner) to the grid counted from
+    the core's lower-left corner — on a core the grid does not divide, and
+    with footprints that are no multiple of it either."""
+    macros = [("odd", 100.003, 100.007), PART_A, ("slab", 180.01, 30.3)]
+    origin, halo = 20.0, 3.3331
+    core_w, core_h = 400.123, 401.777
+    placement = _place(
+        macros,
+        core_w,
+        core_h,
+        halo,
+        origin_um=origin,
+        grid=_site_grid(),
+        anchor=anchor,
+    )
+
+    assert placement is not None
+    site_w, row_h = SKY130HD_SITE
+    for name, (x, y) in placement.items():
+        assert _on_grid(x, site_w, origin), name
+        assert _on_grid(y, row_h, origin), name
+    boxes = _boxes(placement, macros)
+    for name, (x0, y0, x1, y1) in boxes.items():
+        assert x0 >= origin + halo - 1e-9, name
+        assert y0 >= origin + halo - 1e-9, name
+        assert x1 <= origin + core_w - halo + 1e-9, name
+        assert y1 <= origin + core_h - halo + 1e-9, name
+    names = sorted(boxes)
+    for i, first in enumerate(names):
+        for second in names[i + 1 :]:
+            assert _gap(boxes[first], boxes[second]) >= halo - 1e-9, (first, second)
+
+
+@pytest.mark.parametrize("anchor", ANCHORS)
+def test_the_first_macro_hugs_the_anchor_corner_within_one_grid_step(anchor):
+    """Snapping away from the anchor edge widens that channel by less than
+    one site (x) or one row (y), never more."""
+    origin, halo = 20.0, 20.0
+    core_w, core_h = 960.123, 960.777
+    placement = _place(
+        [SRAM], core_w, core_h, halo, origin_um=origin, grid=_site_grid(), anchor=anchor
+    )
+
+    assert placement is not None
+    site_w, row_h = SKY130HD_SITE
+    (x0, y0, x1, y1) = _boxes(placement, [SRAM])["sram"]
+    channel_x = (origin + core_w - x1) if anchor.endswith("right") else (x0 - origin)
+    channel_y = (origin + core_h - y1) if anchor.startswith("upper") else (y0 - origin)
+    assert halo - 1e-9 <= channel_x < halo + site_w
+    assert halo - 1e-9 <= channel_y < halo + row_h
+
+
+@pytest.mark.parametrize("anchor", ANCHORS)
+def test_issue_639_rows_stay_row_aligned_from_every_corner(anchor):
+    """The #639 pair of SRAMs, stacked one per shelf, from each corner: both
+    bottoms on row boundaries and the channel between them at least the halo."""
+    macros = [("sram_a", *SRAM[1:]), ("sram_b", *SRAM[1:])]
+    origin, halo = 20.0, 20.0
+    placement = _place(
+        macros, 960.0, 960.0, halo, origin_um=origin, grid=_site_grid(), anchor=anchor
+    )
+
+    assert placement is not None
+    site_w, row_h = SKY130HD_SITE
+    ys = sorted(y for _, y in placement.values())
+    assert len(ys) == 2
+    for name, (x, y) in placement.items():
+        assert _on_grid(x, site_w, origin), name
+        assert _on_grid(y, row_h, origin), name
+    assert ys[1] - (ys[0] + SRAM[2]) >= halo
+
+
+def test_an_unknown_anchor_is_an_error():
+    with pytest.raises(AssertionError, match="unknown macro anchor"):
+        _place([SRAM], 695.0, 695.0, 12.0, anchor="centre")
+
+
+def test_the_no_fit_message_names_a_non_default_anchor():
+    macros = [SRAM, PART_A, PART_B]
+    body = (
+        f"set result [rb::macro_pack::no_fit_message {_core(500.0, 500.0)} "
+        f"{{{_macro_list(macros)}}} {_um(12.0)} {GRID} {DBU_PER_MICRON} upper-right]"
+    )
+    message = _run(body)
+
+    assert (
+        "packing from the upper-right core corner (floorplan.macro-anchor)" in message
+    )
+    # The minimum is still one this packer, from this corner, would fit.
+    quoted = [
+        line for line in message.splitlines() if "smallest core at this aspect" in line
+    ][0]
+    width, height = (
+        float(v) for v in quoted.split(":")[1].replace("um", "").split("x")
+    )
+    assert _place(macros, width, height, 12.0, anchor="upper-right") is not None
+
+
+# ----------------------------------------------------------------------
+# Hard-blockage keep-outs (#105)
+# ----------------------------------------------------------------------
+
+
+def _overlaps(box, rect) -> bool:
+    x0, y0, x1, y1 = box
+    kx0, ky0, kx1, ky1 = rect
+    return x0 < kx1 and kx0 < x1 and y0 < ky1 and ky0 < y1
+
+
+def test_a_keepout_in_the_row_pushes_the_macro_past_it():
+    keepout = (0.0, 0.0, 50.0, 200.0)
+    placement = _place([("m", 100.0, 100.0)], 400.0, 400.0, 10.0, keepouts=[keepout])
+
+    # Pushed to the keep-out's right edge; no halo is owed to a keep-out.
+    assert placement == {"m": (50.0, 10.0)}
+
+
+def test_a_keepout_spanning_the_row_lifts_the_macro_above_it():
+    keepout = (0.0, 0.0, 400.0, 60.0)
+    placement = _place([("m", 100.0, 100.0)], 400.0, 400.0, 10.0, keepouts=[keepout])
+
+    assert placement == {"m": (10.0, 60.0)}
+
+
+def test_the_next_macro_in_a_row_also_steps_over_a_keepout():
+    macros = [("a", 100.0, 100.0), ("b", 100.0, 100.0)]
+    keepout = (115.0, 50.0, 140.0, 70.0)
+    placement = _place(macros, 400.0, 400.0, 10.0, keepouts=[keepout])
+
+    assert placement == {"a": (10.0, 10.0), "b": (140.0, 10.0)}
+
+
+@pytest.mark.parametrize("anchor", ANCHORS)
+def test_no_macro_overlaps_a_keepout_from_any_corner(anchor):
+    macros = [SRAM, PART_A, PART_B, ("part_c", 150.0, 60.0)]
+    # One keep-out in each corner, and one off to the side.
+    keepouts = [
+        (0.0, 0.0, 120.0, 90.0),
+        (575.0, 0.0, 695.0, 90.0),
+        (0.0, 605.0, 120.0, 695.0),
+        (575.0, 605.0, 695.0, 695.0),
+        (600.0, 330.0, 650.0, 380.0),
+    ]
+    placement = _place(
+        macros,
+        695.0,
+        695.0,
+        12.0,
+        grid=_site_grid(),
+        anchor=anchor,
+        keepouts=keepouts,
+    )
+
+    assert placement is not None
+    boxes = _boxes(placement, macros)
+    for name, box in boxes.items():
+        for rect in keepouts:
+            assert not _overlaps(box, rect), (name, rect)
+        assert _on_grid(box[0], SKY130HD_SITE[0], 0.0), name
+        assert _on_grid(box[1], SKY130HD_SITE[1], 0.0), name
+    names = sorted(boxes)
+    for i, first in enumerate(names):
+        for second in names[i + 1 :]:
+            assert _gap(boxes[first], boxes[second]) >= 12.0, (first, second)
+
+
+def test_a_keepout_that_leaves_no_room_is_a_no_fit_that_says_so():
+    keepouts = [(0.0, 0.0, 400.0, 350.0)]
+    assert _place([("m", 100.0, 100.0)], 400.0, 400.0, 10.0, keepouts=keepouts) is None
+    body = (
+        f"set result [rb::macro_pack::no_fit_message {_core(400.0, 400.0)} "
+        f"{{{_macro_list([('m', 100.0, 100.0)])}}} {_um(10.0)} {GRID} "
+        f"{DBU_PER_MICRON} lower-left {{{_keepout_list(keepouts)}}}]"
+    )
+    message = _run(body)
+
+    assert "keeping every macro out of 1 hard placement blockage(s)" in message
+    assert "floorplan.blockages" in message.splitlines()[-1]
