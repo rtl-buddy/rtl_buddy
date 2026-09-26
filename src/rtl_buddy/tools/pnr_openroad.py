@@ -489,6 +489,8 @@ class OpenRoadPnr:
         self.klayout_props = klayout_props
         # Resolved once per run by `_threads()` (#654).
         self._thread_plan: ThreadPlan | None = None
+        # The `blocks:` abstracts this run consumes, once resolved (#95).
+        self._blocks: list[pnr_abstract.ResolvedBlock] = []
 
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -1609,6 +1611,10 @@ class OpenRoadPnr:
                 desc=f"cannot resolve the design name from the synth entry: {e}",
                 fail_stage="setup",
             )
+        # A block's layout is part of the stream-out, as it is of the run's.
+        blocks_failure = self._resolve_blocks(platform)
+        if blocks_failure is not None:
+            return blocks_failure
         ckpt = None
         if checkpoint is not None:
             ckpt = pnr_checkpoints.resolve_checkpoint(self.artefact_dir, checkpoint)
@@ -1901,6 +1907,7 @@ class OpenRoadPnr:
             name=self.name + "/results",
             desc=desc,
             fields={
+                **self._blocks_fields(),
                 **self._threads_fields(),
                 **(self._close_checkpoints("FAIL", desc, announce=True) or {}),
             },
@@ -1981,6 +1988,69 @@ class OpenRoadPnr:
                 step_status=(summary["last_step"] or {}).get("status"),
             )
         return summary
+
+    def _resolve_blocks(self, platform) -> PnrFailResults | None:
+        """Resolve `blocks:` to published abstracts and add their views (#95).
+
+        Each block's LEF, Liberty and GDS join the run's own `lef-paths`,
+        `lib-paths` and `gds-paths`, after them, so every consumer of those
+        lists — the flow script, the stream-out manifest, the checkpoint
+        and abstract fingerprints — takes a block exactly as it takes a
+        hand-wired macro. Fails fast, before OpenROAD, when an abstract is
+        missing or was built for another technology or corner; a block is
+        never re-run from here.
+        """
+        refs = self.pnr_cfg.get_blocks()
+        if not refs:
+            return None
+        try:
+            if platform.is_multi_corner():
+                raise pnr_abstract.BlockResolutionError(
+                    f"blocks: needs a single-corner platform; "
+                    f"'{self.pnr_cfg.get_platform()}' declares corners, and an "
+                    "abstract carries one corner's timing model"
+                )
+            resolved = pnr_abstract.resolve_blocks(refs)
+            for block in resolved:
+                pnr_abstract.check_technology(
+                    block,
+                    liberty=platform.get_sta_lib_path(),
+                    tech_lef=platform.get_pdk().get_tech_lef(),
+                )
+        except pnr_abstract.BlockResolutionError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.block_unresolved",
+                pnr=self.pnr_cfg.get_name(),
+                reason=str(e),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=str(e),
+                fail_stage="setup",
+            )
+        self._blocks = resolved
+        self.pnr_cfg = replace(
+            self.pnr_cfg,
+            lef_paths=[*self.pnr_cfg.get_lef_paths(), *(b.lef for b in resolved)],
+            lib_paths=[*self.pnr_cfg.get_lib_paths(), *(b.lib for b in resolved)],
+            gds_paths=[*self.pnr_cfg.get_gds_paths(), *(b.gds for b in resolved)],
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr.blocks_resolved",
+            pnr=self.pnr_cfg.get_name(),
+            blocks=[b.ref.name for b in resolved],
+        )
+        return None
+
+    def _blocks_fields(self) -> dict:
+        """The `blocks` result field: the abstracts this run consumed (#95)."""
+        if not self._blocks:
+            return {}
+        return {"blocks": [b.result_row() for b in self._blocks]}
 
     def abstract_inputs(self, platform) -> dict:
         """Every input file a hardened result was made from, by role (#95).
@@ -2211,6 +2281,10 @@ class OpenRoadPnr:
                 ),
                 fail_stage="setup",
             )
+
+        blocks_failure = self._resolve_blocks(platform)
+        if blocks_failure is not None:
+            return blocks_failure
 
         # Before the script: a thread count above the allocation is
         # reported (and clamped) ahead of the tool, not after it (#654).
@@ -2447,6 +2521,7 @@ class OpenRoadPnr:
                     **metrics,
                     **corner_fields,
                     **export.result_fields(),
+                    **self._blocks_fields(),
                     **self._threads_fields(),
                     **(self._close_checkpoints("FAIL", export.desc) or {}),
                 },
@@ -2464,6 +2539,7 @@ class OpenRoadPnr:
                         **metrics,
                         **corner_fields,
                         **(export.result_fields() if export else {}),
+                        **self._blocks_fields(),
                         **self._threads_fields(),
                         **(self._close_checkpoints("FAIL", published) or {}),
                     },
@@ -2491,6 +2567,7 @@ class OpenRoadPnr:
                 **corner_fields,
                 **(export.result_fields() if export else {}),
                 **abstract_fields,
+                **self._blocks_fields(),
                 **self._threads_fields(),
                 **(self._close_checkpoints("PASS", None) or {}),
             },

@@ -1869,6 +1869,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"platform, and '{fields.get('platform')}' declares corners — "
                 "an abstract carries one corner's timing model"
             )
+        case "pnr.block_unresolved" | "synth.block_unresolved":
+            flow = "P&R" if event.startswith("pnr") else "synthesis"
+            run = fields.get("pnr") or fields.get("synth")
+            return f'{flow} "{run}": {fields.get("reason")}'
         case "pnr.abstract_failed":
             return (
                 f'P&R "{fields.get("pnr")}": no abstract published — '
