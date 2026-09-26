@@ -289,6 +289,20 @@ def _graph_where(node: dict) -> str:
     return f"{file_path}:{line}" if line is not None else str(file_path)
 
 
+def _pnr_worst_corner_cell(res: dict) -> str:
+    """The `Worst Corner` column for one multi-corner P&R row (#104, #105).
+
+    Which corner set the setup WNS and which the hold WNS — typically not
+    the same one — so a reader knows where the two slack columns come from.
+    A single-corner row in a mixed table reads `-`.
+    """
+    setup = res.get("worst_setup_corner")
+    hold = res.get("worst_hold_corner")
+    if setup is None and hold is None:
+        return "-"
+    return f"setup {setup or '-'} / hold {hold or '-'}"
+
+
 def _pnr_outputs_cell(res: dict) -> str:
     """The `Outputs` column for one P&R row, qualified when it has to be.
 
@@ -11321,6 +11335,12 @@ class RtlBuddy:
             "wns_setup_ps",
             "wns_hold_ps",
             "drc_count",
+            # Multi-corner signoff (#104, #105): the WNS fields above are
+            # the worst across corners; these say which corner set each and
+            # carry every corner's own numbers. Absent on a one-corner run.
+            "worst_setup_corner",
+            "worst_hold_corner",
+            "corners",
             # The optional KLayout export: where it landed, and how
             # complete it is. Present only when one was requested, so a
             # consumer reading `gds_status` reads the mode that produced
@@ -11365,6 +11385,11 @@ class RtlBuddy:
             "internal_w",
             "switching_w",
             "leakage_w",
+            # Multi-corner signoff (#104, #105): the watts above are the
+            # worst (highest-total) corner's, which this names; `corners`
+            # carries every corner's own. Absent on a one-corner run.
+            "worst_corner",
+            "corners",
             # Where the per-instance breakdown behind these scalars was
             # published (#560). Omitted, like every other optional field
             # here, when the run published no model.
@@ -11767,6 +11792,7 @@ class RtlBuddy:
         has_setup = any("wns_setup_ps" in r["results"].results for r in pnr_results)
         has_hold = any("wns_hold_ps" in r["results"].results for r in pnr_results)
         has_drcs = any("drc_count" in r["results"].results for r in pnr_results)
+        has_corners = any("corners" in r["results"].results for r in pnr_results)
         has_outputs = any(
             "gds_path" in r["results"].results
             or "png_path" in r["results"].results
@@ -11802,6 +11828,8 @@ class RtlBuddy:
                     if wns is not None
                     else "-"
                 )
+            if has_corners:
+                row["worst_corner"] = _pnr_worst_corner_cell(res)
             if has_drcs:
                 drcs = res.get("drc_count")
                 row["drcs"] = str(drcs) if drcs is not None else "-"
@@ -11822,6 +11850,8 @@ class RtlBuddy:
             columns.append(("wns_setup", "WNS Setup"))
         if has_hold:
             columns.append(("wns_hold", "WNS Hold"))
+        if has_corners:
+            columns.append(("worst_corner", "Worst Corner"))
         if has_drcs:
             columns.append(("drcs", "DRCs"))
         if has_outputs:
@@ -12200,6 +12230,9 @@ class RtlBuddy:
             "parasitics" in r["results"].results for r in power_results
         )
         has_total = any("total_w" in r["results"].results for r in power_results)
+        # Multi-corner runs (#104, #105) report the worst corner's watts;
+        # the column says which corner that was.
+        has_corner = any("worst_corner" in r["results"].results for r in power_results)
         has_breakdown = any(
             "internal_w" in r["results"].results
             or "switching_w" in r["results"].results
@@ -12225,6 +12258,8 @@ class RtlBuddy:
                 row["parasitics"] = res.get("parasitics", "-")
             if has_total:
                 row["total"] = _fmt_w(res.get("total_w"))
+            if has_corner:
+                row["corner"] = res.get("worst_corner", "-")
             if has_breakdown:
                 row["internal"] = _fmt_w(res.get("internal_w"))
                 row["switching"] = _fmt_w(res.get("switching_w"))
@@ -12246,6 +12281,8 @@ class RtlBuddy:
             columns.append(("parasitics", "Parasitics"))
         if has_total:
             columns.append(("total", "Total"))
+        if has_corner:
+            columns.append(("corner", "Worst Corner"))
         if has_breakdown:
             columns.append(("internal", "Internal"))
             columns.append(("switching", "Switching"))

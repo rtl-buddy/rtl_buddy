@@ -18,6 +18,7 @@ from ..config.pnr import BlockageType, GdsMode, MacroAnchor, PnrConfig, PnrFloor
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
+from . import openroad_corners
 from .artifact_paths import (
     clear_managed_outputs,
     clear_stale_artefacts,
@@ -559,10 +560,30 @@ class OpenRoadPnr:
 
         fill_cells = " ".join(pdk.get_fill_cells())
 
-        # Design-specific macro libraries and LEFs (e.g. SRAM macros).
+        # Multi-corner signoff (#104, #105): every corner in one session.
+        # A single-corner platform keeps the one `read_liberty` and no
+        # per-corner block, so its script is byte-identical to before.
+        multi_corner = platform.is_multi_corner()
+        if multi_corner:
+            corner_libs = platform.get_sta_corner_lib_paths()
+            read_liberty = "\n".join(openroad_corners.liberty_tcl(corner_libs, []))
+            corner_reports = openroad_corners.timing_report_tcl(list(corner_libs))
+        else:
+            corner_libs = {}
+            read_liberty = "read_liberty $LIBERTY"
+            corner_reports = ""
+
+        # Design-specific macro libraries and LEFs (e.g. SRAM macros). A
+        # macro's Liberty is read into every corner under multi-corner;
+        # see `openroad_corners.liberty_tcl`.
         extra_lines = []
         for lib in self.pnr_cfg.get_lib_paths():
-            extra_lines.append(f"read_liberty {lib}")
+            if multi_corner:
+                extra_lines.extend(
+                    f"read_liberty -corner {c} {lib}" for c in corner_libs
+                )
+            else:
+                extra_lines.append(f"read_liberty {lib}")
         for lef in self.pnr_cfg.get_lef_paths():
             extra_lines.append(f"read_lef     {lef}")
         extra_libs_lefs = "\n".join(extra_lines)
@@ -644,6 +665,10 @@ class OpenRoadPnr:
             "netlist": netlist,
             "sdc": sdc,
             "liberty": platform.get_sta_lib_path(),
+            "read_liberty": read_liberty,
+            # Appended to the `report_tns` line, so an empty block leaves the
+            # template's own line exactly as it was.
+            "corner_reports": corner_reports,
             "tech_lef": pdk.get_tech_lef(),
             "macro_lef": pdk.get_macro_lef(),
             "site": pdk.get_site(),
@@ -723,6 +748,29 @@ class OpenRoadPnr:
     def _parse_tns(self, log_text: str) -> float | None:
         m = re.search(r"^tns\s+(?:max|min)?\s*([-\d.]+)", log_text, re.MULTILINE)
         return float(m.group(1)) if m else None
+
+    def _corner_fields(self, platform, log_text: str) -> dict:
+        """Per-corner timing result fields for a multi-corner run (#104, #105).
+
+        `corners` maps each corner, in config order, to its own
+        `wns_setup_ps` / `wns_hold_ps` / `tns_ps`; `worst_setup_corner` and
+        `worst_hold_corner` name the corner behind the scalar WNS fields.
+        Empty for a single-corner platform, so its result is unchanged.
+        """
+        if not platform.is_multi_corner():
+            return {}
+        per_corner = openroad_corners.parse_corner_timing(
+            log_text, platform.get_sta_corners()
+        )
+        return {
+            "corners": per_corner,
+            "worst_setup_corner": openroad_corners.worst_corner(
+                per_corner, "wns_setup_ps"
+            ),
+            "worst_hold_corner": openroad_corners.worst_corner(
+                per_corner, "wns_hold_ps"
+            ),
+        }
 
     # ------------------------------------------------------------------
     # Version + feature probes
@@ -2233,6 +2281,11 @@ class OpenRoadPnr:
             "tns_ps": tns * 1000.0 if tns is not None else None,
             "drc_count": drcs,
         }
+        # Multi-corner (#104, #105): the scalars above are OpenSTA's worst
+        # across every corner, so summaries, gates and xfail markers read
+        # them unchanged. Each corner's own numbers and the corner that set
+        # each worst are added beside them; a single-corner run adds none.
+        corner_fields = self._corner_fields(platform, log_text)
 
         export: GdsExport | None = None
         if self.emit_gds:
@@ -2256,6 +2309,7 @@ class OpenRoadPnr:
                 fail_stage="export",
                 fields={
                     **metrics,
+                    **corner_fields,
                     **export.result_fields(),
                     **self._threads_fields(),
                     **(self._close_checkpoints("FAIL", export.desc) or {}),
@@ -2268,6 +2322,8 @@ class OpenRoadPnr:
             "pnr.passed",
             pnr=self.pnr_cfg.get_name(),
             **metrics,
+            worst_setup_corner=corner_fields.get("worst_setup_corner"),
+            worst_hold_corner=corner_fields.get("worst_hold_corner"),
             gds_status=export.status if export is not None else None,
             log=log_path,
         )
@@ -2278,6 +2334,7 @@ class OpenRoadPnr:
             desc=f"P&R passed; {export.desc}" if export and export.desc else None,
             fields={
                 **metrics,
+                **corner_fields,
                 **(export.result_fields() if export else {}),
                 **self._threads_fields(),
                 **(self._close_checkpoints("PASS", None) or {}),

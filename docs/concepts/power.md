@@ -31,7 +31,7 @@ On the project template's flat sky130hd pipeclean (`demo_tiny_alu_subsys_sky130_
 
 OpenROAD 25Q1 or newer must be on `PATH` or configured under `cfg-power-tools`. Power runs currently support only `tool: openroad`; unsupported tools report `SKIP`.
 
-The selected `cfg-pnr-platforms` entry supplies the PDK and Liberty corner. See [Place-and-Route](pnr.md#configure-the-physical-platform).
+The selected `cfg-pnr-platforms` entry supplies the PDK and Liberty corner. A platform with `corners:` analyses every listed corner in one session; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners).
 
 ## Define power runs
 
@@ -161,6 +161,8 @@ The analysis runs on one OpenROAD thread unless the run sets `threads:` — a po
 
 The summary identifies the selected design source and resolved activity source, then reports total, internal, switching, and leakage power with readable SI scaling.
 
+On a multi-corner platform, the reported watts are those of the worst corner, meaning the one with the highest design total. The result names it in `worst_corner`, and the summary shows it in a `Worst Corner` column. `corners` holds each corner's own `total_w`, `internal_w`, `switching_w` and `leakage_w`. The session chooses the worst corner itself, so `power.rpt`, `power_instances.rpt` and the published `phys-model.json` all describe that corner; the model's manifest options name it as `corner`. A multi-corner run also fails when any corner's `power.<corner>.rpt` is missing or unparseable.
+
 A run passes when OpenROAD exits 0, emits no `[ERROR ...]` line, and produces a parseable `Total` row in `power.rpt`. It skips when filtered by `reglvl` or when its tool has no registered backend.
 
 ## Pair the model with a synthesis run
@@ -195,7 +197,8 @@ Outputs land under `<power-dir>/artefacts/<run>/`:
 | --- | --- |
 | `power.tcl` | Generated OpenROAD script |
 | `power.log` | OpenROAD output |
-| `power.rpt` | Raw `report_power` report |
+| `power.rpt` | Raw `report_power` report (at the worst corner, on a multi-corner platform) |
+| `power.<corner>.rpt` | Each corner's `report_power`, on a multi-corner platform only |
 | `power_netlist.v` | This run's copy of the upstream netlist, the file OpenROAD reads |
 | `power_instances.rpt` | Raw `report_power -instances` report, one line per leaf instance |
 | `power_instances.cells` | Instance path to Liberty cell, the module column that report lacks |
