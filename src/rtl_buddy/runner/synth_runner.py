@@ -20,8 +20,12 @@ class SynthRunner:
         synth_cfg: SynthConfig,
         suite_dir: str,
         effort_override: str | None = None,
+        accept_stale: bool = False,
     ):
         self.name = name
+        # `--accept-stale` for `blocks:` abstracts (#95).
+        self.accept_stale = accept_stale
+        self._blocks: list[pnr_abstract.ResolvedBlock] = []
         self.root_cfg = root_cfg
         self.synth_cfg = synth_cfg
         self.suite_dir = suite_dir
@@ -84,7 +88,14 @@ class SynthRunner:
         failure = self._resolve_blocks(backend)
         if failure is not None:
             return failure
-        return backend.run()
+        res = backend.run()
+        if self._blocks:
+            res.results["blocks"] = [b.result_row() for b in self._blocks]
+            qualifier = pnr_abstract.stale_qualifier(self._blocks)
+            if qualifier and res.results.get("result") == "PASS":
+                desc = res.results.get("desc")
+                res.results["desc"] = f"{desc}; {qualifier}" if desc else qualifier
+        return res
 
     def _resolve_blocks(self, backend) -> SynthFailResults | None:
         """Add each `blocks:` abstract's Liberty model and LEF to the run (#95).
@@ -95,6 +106,7 @@ class SynthRunner:
         backend has withdrawn its previous netlist, so `rb pnr` downstream
         cannot pick that one up as this run's (#469).
         """
+        self._blocks = []
         refs = self.synth_cfg.get_blocks()
         if not refs:
             return None
@@ -108,6 +120,9 @@ class SynthRunner:
             resolved = pnr_abstract.resolve_blocks(refs)
             for block in resolved:
                 pnr_abstract.check_technology(block, liberty=liberty, tech_lef=None)
+            resolved = pnr_abstract.assess_blocks(
+                resolved, self.root_cfg, accept_stale=self.accept_stale
+            )
         except pnr_abstract.BlockResolutionError as e:
             log_event(
                 logger,
@@ -122,6 +137,17 @@ class SynthRunner:
                 desc=str(e),
                 fail_stage="setup",
             )
+        self._blocks = resolved
+        for block in resolved:
+            if block.stale:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "synth.block_stale_accepted",
+                    synth=self.synth_cfg.get_name(),
+                    block=block.ref.name,
+                    changes=list(block.changes),
+                )
         backend.synth_cfg = replace(
             self.synth_cfg,
             lib_paths=[*self.synth_cfg.get_lib_paths(), *(b.lib for b in resolved)],

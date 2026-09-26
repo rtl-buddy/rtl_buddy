@@ -23,12 +23,14 @@ class PnrRunner:
         emit_gds: bool = False,
         emit_png: bool = False,
         gds_mode: str | None = None,
+        accept_stale: bool = False,
     ):
         self.name = name
         self.root_cfg = root_cfg
         self.pnr_cfg = pnr_cfg
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
+        self.accept_stale = accept_stale
         self.emit_gds = emit_gds
         self.emit_png = emit_png
         # `None` leaves each run to its own `gds-mode:`; `--gds-mode`
@@ -74,6 +76,7 @@ class PnrRunner:
             emit_gds=self.emit_gds,
             emit_png=self.emit_png,
             gds_mode=self.gds_mode,
+            accept_stale=self.accept_stale,
         )
         return backend.run()
 
@@ -156,6 +159,9 @@ class PnrExportRunner:
             emit_gds=True,
             emit_png=self.emit_png,
             gds_mode=self.gds_mode,
+            # An export streams the layouts that were routed; whether the
+            # blocks' sources have moved on since is the P&R run's question.
+            accept_stale=True,
             klayout_props=self.klayout_props,
             png_width=self.png_width,
             png_height=self.png_height,
