@@ -169,6 +169,11 @@ class PdkConfigFile:
     # Path to a Tcl snippet that defines the power grid. The flow sources it
     # and calls `pdngen` itself, as ORFS does with `PDN_TCL`.
     pdn_config: str = field(rename="pdn-config", default="")
+    # Path to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). When set,
+    # `rb pnr` extracts the routed design and writes `<top>.routed.spef`,
+    # and `rb power` with `netlist-source: pnr` reads that SPEF instead of
+    # re-estimating parasitics from the global routes (#101, #104).
+    rcx_rules: str = field(rename="rcx-rules", default="")
 
 
 class PdkConfig:
@@ -196,6 +201,7 @@ class PdkConfig:
             cfg.dont_use_cells, f"PDK '{cfg.name}'"
         )
         self._pdn_config = _resolve(cfg.pdn_config)
+        self._rcx_rules = _resolve(cfg.rcx_rules)
 
     def get_name(self) -> str:
         return self._name
@@ -277,3 +283,7 @@ class PdkConfig:
     def get_pdn_config(self) -> str:
         """Resolved path to the PDN Tcl snippet, or `""` when unset."""
         return self._pdn_config
+
+    def get_rcx_rules(self) -> str:
+        """Resolved path to the OpenRCX rules file, or `""` when unset."""
+        return self._rcx_rules

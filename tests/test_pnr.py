@@ -3302,3 +3302,288 @@ def test_dont_use_cells_reject_tcl_metacharacters(tmp_path, cell):
     executed, not matched (#656)."""
     with pytest.raises(FatalRtlBuddyError, match=r"only the `\*` and `\?`"):
         _make_pdk_cfg(tmp_path, dont_use_cells=[cell])
+
+
+# ---------------------------------------------------------------------------
+# OpenRCX extraction + routed SPEF (#101 Phase 3, #104 item 1)
+# ---------------------------------------------------------------------------
+
+
+def test_pdk_leaves_rcx_rules_unset_by_default(tmp_path):
+    assert _make_pdk_cfg(tmp_path).get_rcx_rules() == ""
+
+
+def test_pdk_resolves_rcx_rules_against_the_root_config(tmp_path):
+    """Spelled `rcx-rules`, and resolved like every other PDK path."""
+    from serde.yaml import from_yaml
+
+    pdk_file = from_yaml(
+        PdkConfigFile,
+        dedent("""\
+            name: "sky130hd"
+            corners:
+              tt: "pdk/lib/tt.lib"
+            rcx-rules: "pdk/sky130hd/rcx_patterns.rules"
+        """),
+    )
+    pdk = PdkConfig(pdk_file, str(tmp_path / "root_config.yaml"))
+    assert pdk.get_rcx_rules() == str(tmp_path / "pdk/sky130hd/rcx_patterns.rules")
+
+
+def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
+    """Back-compat pin for the one region #101 Phase 3 touches: no rules,
+    no extraction, and the final reports are timed on the global-route
+    estimate exactly as before — byte for byte across the fill/report seam."""
+    text = _render_flow(
+        tmp_path, _platform(_make_pdk_cfg(tmp_path), cts_buffer="BUF_X4")
+    )
+
+    assert (
+        "filler_placement $FILL_CELLS\n"
+        "\n"
+        'puts ">>> Final reports"\n'
+        "estimate_parasitics -global_routing\n"
+        "report_design_area\n"
+    ) in text
+    # The "Note on SPEF" comment names them; no command does.
+    commands = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    for absent in (
+        "define_process_corner",
+        "extract_parasitics",
+        "write_spef",
+        "read_spef",
+        ".routed.spef",
+    ):
+        assert absent not in commands, absent
+
+
+def test_pnr_flow_extracts_writes_and_times_on_the_routed_spef(tmp_path):
+    """With rules: extract after fill, write the SPEF, and read it back for
+    the final reports in place of the estimate — OpenROAD's own test flow
+    and ORFS' final report, in that order."""
+    pdk = _make_pdk_cfg(tmp_path, rcx_rules="pdk/rcx.rules")
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+
+    rules = tmp_path / "pdk/rcx.rules"
+    block = (
+        'puts ">>> Parasitic extraction (OpenRCX)"\n'
+        "define_process_corner -ext_model_index 0 X\n"
+        f"extract_parasitics -ext_model_file {rules}\n"
+        "write_spef $OUT_DIR/${DESIGN}.routed.spef\n"
+    )
+    assert block in text
+    order = [
+        "detailed_route",
+        "filler_placement",
+        "define_process_corner",
+        "extract_parasitics",
+        "write_spef",
+        'puts ">>> Final reports"',
+        "read_spef $OUT_DIR/${DESIGN}.routed.spef",
+        "report_worst_slack -max",
+        "write_db",
+    ]
+    positions = [text.index(marker) for marker in order]
+    assert positions == sorted(positions), order
+    # The estimate the reports used to run on is gone, not layered under.
+    assert "estimate_parasitics -global_routing" not in text
+    assert "{{" not in text
+
+
+def test_pnr_clear_list_covers_the_rendered_spef_target(tmp_path):
+    """The SPEF write lives in Python, not in the template text the static
+    coverage test scans, so check the rendered script: every `$OUT_DIR`
+    target it writes is cleared before a run (#469, #101)."""
+    import re
+    from rtl_buddy.tools import pnr_openroad
+
+    pdk = _make_pdk_cfg(tmp_path, rcx_rules="pdk/rcx.rules")
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+    written = {
+        name
+        for name in re.findall(r"\$OUT_DIR/(\S+)", text)
+        if not name.endswith(".log")
+    }
+    assert "${DESIGN}.routed.spef" in written
+
+    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES)
+    suffixes = pnr_openroad._MANAGED_OUTPUT_SUFFIXES
+    missed = {
+        name for name in written if name not in fixed and not name.endswith(suffixes)
+    }
+    assert not missed, f"not cleared before a run: {sorted(missed)}"
+    named = {
+        os.path.basename(p)
+        for p in pnr_openroad.run_output_paths("/artefacts", "${DESIGN}")
+    }
+    assert written <= named, f"undocumented output: {sorted(written - named)}"
+
+
+def test_pnr_run_rejects_missing_rcx_rules_before_launching_openroad(
+    tmp_path, monkeypatch
+):
+    """Rules are read only after detailed route; a typo in the path is a
+    setup failure, not a Tcl error at the end of a long run."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **kw: launched.append(a)
+    )
+
+    pdk = _make_pdk_cfg(tmp_path, rcx_rules="pdk/sky130hd/rcx_patterns.rules")
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    events = _capture_pnr_events(monkeypatch)
+
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert res.results["fail_stage"] == "setup"
+    assert "rcx-rules not found" in res.results["desc"]
+    assert not launched
+    assert not Path(backend._script_path()).exists()
+    level, fields = _one_event(events, "pnr.rcx_rules_missing")
+    assert fields["path"] == pdk.get_rcx_rules()
+
+
+def _pnr_backend_over_a_real_synth(tmp_path, monkeypatch, pdk):
+    """A backend whose synth back-reference resolves, with OpenROAD faked."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    return backend
+
+
+def test_a_rerun_without_rcx_rules_clears_the_previous_spef(tmp_path, monkeypatch):
+    """A SPEF surviving beside a fresh ODB would be read by `rb power` as
+    this run's extracted parasitics. A run that writes none — its PDK has
+    no rules any more — must not leave the last one there (#101)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    backend = _pnr_backend_over_a_real_synth(
+        tmp_path, monkeypatch, _make_pdk_cfg(tmp_path)
+    )
+    artefacts = Path(backend.artefact_dir)
+    stale_spef = artefacts / "demo_top.routed.spef"
+    stale_spef.write_text("*SPEF stale\n")
+
+    def _fake_run(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        (artefacts / "demo_top.routed.odb").write_bytes(b"\x00fresh odb\x00")
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    res = backend.run()
+
+    assert res.is_pass()
+    assert (artefacts / "demo_top.routed.odb").exists()
+    assert not stale_spef.exists()
+
+
+def test_a_run_that_dies_after_write_spef_publishes_no_spef(tmp_path, monkeypatch):
+    """`write_spef` runs before the reports and the other writes, so a
+    failure later in the script leaves a SPEF this run never stood behind;
+    `_fail_after_openroad` takes it with the ODB (#469, #101)."""
+    from rtl_buddy.tools import pnr_openroad
+
+    rules = tmp_path / "pdk/rcx.rules"
+    _touch(str(rules))
+    backend = _pnr_backend_over_a_real_synth(
+        tmp_path, monkeypatch, _make_pdk_cfg(tmp_path, rcx_rules=str(rules))
+    )
+    artefacts = Path(backend.artefact_dir)
+    spef = artefacts / "demo_top.routed.spef"
+
+    def _writes_then_dies(cmd, **_kwargs):
+        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        spef.write_text("*SPEF partial\n")
+        result = MagicMock()
+        result.returncode = 1
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _writes_then_dies)
+
+    res = backend.run()
+
+    assert "exited with code 1" in res.results["desc"]
+    assert not spef.exists()
+
+
+def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch):
+    """The rules check comes before checkpoint allocation, so a typo in the
+    path does not leave an empty `checkpoints/<run-id>/` per attempt."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", lambda *a, **kw: None)
+    pdk = _make_pdk_cfg(tmp_path, rcx_rules="pdk/missing.rules")
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    pnr_cfg.checkpoints = ("cts",)
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=pnr_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert not (Path(backend.artefact_dir) / "checkpoints").exists() or not any(
+        p.is_dir() for p in (Path(backend.artefact_dir) / "checkpoints").iterdir()
+    )

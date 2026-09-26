@@ -11378,6 +11378,9 @@ class RtlBuddy:
             "unpowered_instance_count",
             # OpenROAD thread provenance, as for a pnr row (#654).
             "openroad_threads",
+            # What a post-P&R run timed the routing on: `spef` (the P&R
+            # run's OpenRCX extraction) or `estimated` (#101).
+            "parasitics",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -12193,6 +12196,9 @@ class RtlBuddy:
         has_activity = any(
             "activity_source" in r["results"].results for r in power_results
         )
+        has_parasitics = any(
+            "parasitics" in r["results"].results for r in power_results
+        )
         has_total = any("total_w" in r["results"].results for r in power_results)
         has_breakdown = any(
             "internal_w" in r["results"].results
@@ -12215,6 +12221,8 @@ class RtlBuddy:
                 row["source"] = res.get("netlist_source", "-")
             if has_activity:
                 row["activity"] = res.get("activity_source", "-")
+            if has_parasitics:
+                row["parasitics"] = res.get("parasitics", "-")
             if has_total:
                 row["total"] = _fmt_w(res.get("total_w"))
             if has_breakdown:
@@ -12234,6 +12242,8 @@ class RtlBuddy:
             columns.append(("source", "Source"))
         if has_activity:
             columns.append(("activity", "Activity"))
+        if has_parasitics:
+            columns.append(("parasitics", "Parasitics"))
         if has_total:
             columns.append(("total", "Total"))
         if has_breakdown:

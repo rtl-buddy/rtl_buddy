@@ -34,6 +34,7 @@ from ..phys.publish import (
 )
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from .artifact_paths import clear_stale_artefacts
+from .pnr_openroad import PNR_SCRIPT_NAME, ROUTED_SPEF_SUFFIX
 from .power_base import BasePower
 from .synth_yosys import library_fingerprint
 
@@ -56,6 +57,49 @@ def _within(root: str, path: str) -> bool:
         if candidate == base or candidate.startswith(base + os.sep):
             return True
     return False
+
+
+#: `parasitics` values: what the analysis timed the routed design on.
+PARASITICS_SPEF = "spef"
+PARASITICS_ESTIMATED = "estimated"
+
+_WRITE_SPEF_RE = re.compile(r"^\s*write_spef\s", re.MULTILINE)
+
+
+def routed_spef_rejection(spef: str, script: str) -> str | None:
+    """Why the routed SPEF beside a P&R result may not be read, or `None`.
+
+    `rb pnr` clears `<top>.routed.spef` before every run and on every
+    failure, so a SPEF on disk is normally the one the run that wrote the
+    ODB extracted (#101). "Normally" is not enough to time a design on: an
+    rtl_buddy that predates the SPEF does not know to clear it, so a rerun
+    under one leaves a fresh ODB beside the previous run's SPEF, and a
+    copied or restored artefact directory can pair any two files.
+
+    So the SPEF has to be vouched for by the P&R run's own flow script,
+    which every rtl_buddy writes afresh at the start of every run: the
+    script must contain a `write_spef` command — the run that produced the
+    ODB was configured to extract — and the SPEF must be no older than the
+    script, i.e. written by that run rather than an earlier one. mtime,
+    not content, because the script is the run's first write and the SPEF
+    one of its last, minutes apart on any real design.
+    """
+    if not os.path.isfile(spef):
+        return "no routed SPEF"
+    try:
+        script_text = Path(script).read_text()
+        script_mtime = os.stat(script).st_mtime_ns
+    except OSError:
+        return f"no P&R flow script at {script} to vouch for it"
+    if not _WRITE_SPEF_RE.search(script_text):
+        return "the P&R run that wrote the ODB did not extract parasitics"
+    try:
+        spef_mtime = os.stat(spef).st_mtime_ns
+    except OSError as e:
+        return f"cannot stat it: {e}"
+    if spef_mtime < script_mtime:
+        return "it is older than the P&R run that wrote the ODB"
+    return None
 
 
 def _dedup_paths(paths) -> list[str]:
@@ -199,6 +243,11 @@ class OpenRoadPower(BasePower):
         # analysis could say nothing about; see `_unpowered_instances`.
         # Captured by `_write_script` with the rest of the platform.
         self._physical_only_cells: list[str] = []
+        # What a `netlist-source: pnr` run timed the routed design on —
+        # `PARASITICS_SPEF` or `PARASITICS_ESTIMATED` — decided by
+        # `_write_script` (#101). `None` for a synth-source run, which
+        # has no routing to take parasitics from.
+        self._parasitics: str | None = None
         # What `_resolve_inputs()` said when the script was generated —
         # the top `link_design` names, the SDC `read_sdc` reads. `None`
         # until `_write_script` runs; see `_publish_phys_model` for why
@@ -569,13 +618,15 @@ class OpenRoadPower(BasePower):
         - "pnr": post-PnR OpenROAD binary DB (`<top>.routed.odb`) +
           post-CTS SDC. The .odb encapsulates placement + routing so
           rerunning `estimate_parasitics -global_routing` reflects the
-          CTS-buffered clock tree and routed wire capacitance.
-          Stand-alone SPEF is not used — OpenROAD's RCX extractor is
-          not wired into the PnR flow, so `write_spef` would produce
-          an empty file.
+          CTS-buffered clock tree and routed wire capacitance. When the
+          P&R run's PDK declared `rcx-rules`, the run also wrote an
+          OpenRCX-extracted `<top>.routed.spef`, and `_write_script`
+          reads that instead of estimating (#101); see
+          `routed_spef_rejection` for when it is trusted.
 
         Returns a dict with keys: netlist (None for pnr), odb (None for
-        synth), sdc, top, macro_libs, macro_lefs.
+        synth), spef and pnr_script (None for synth), sdc, top,
+        macro_libs, macro_lefs.
 
         **The macro libraries are resolved here** rather than in
         `_write_script`, because this is the one place that already holds
@@ -614,6 +665,8 @@ class OpenRoadPower(BasePower):
             return {
                 "netlist": None,
                 "odb": odb,
+                "spef": os.path.join(pnr_artefact, f"{top}{ROUTED_SPEF_SUFFIX}"),
+                "pnr_script": os.path.join(pnr_artefact, PNR_SCRIPT_NAME),
                 "sdc": sdc,
                 "top": top,
                 "macro_libs": _dedup_paths([*pnr_cfg.get_lib_paths(), *own_libs]),
@@ -631,6 +684,8 @@ class OpenRoadPower(BasePower):
         return {
             "netlist": netlist,
             "odb": None,
+            "spef": None,
+            "pnr_script": None,
             "sdc": self.power_cfg.get_constraints(),
             "top": top,
             "macro_libs": _dedup_paths([*synth_cfg.get_lib_paths(), *own_libs]),
@@ -673,7 +728,7 @@ class OpenRoadPower(BasePower):
         # The capture `_write_script` took, not a fresh resolution: this
         # names the database OpenROAD was given (#560).
         odb = (self._script_inputs or {}).get("odb")
-        return {
+        identity = {
             "netlist_sha256": None,
             "input_path": (
                 project_relative(odb, project_root_for_dir(self.artefact_dir))
@@ -681,6 +736,13 @@ class OpenRoadPower(BasePower):
                 else None
             ),
         }
+        # One ODB timed on its extracted SPEF and on the global-route
+        # estimate is two measurements, and has to digest as two (#101).
+        # Only the SPEF case adds the key, so an estimate-path model keeps
+        # the digest it had before extraction existed.
+        if self._parasitics == "spef":
+            identity["parasitics"] = self._parasitics
+        return identity
 
     def _resolve_platform(self):
         """Resolve to a PnrPlatformConfig (provides Liberty path)."""
@@ -900,13 +962,19 @@ class OpenRoadPower(BasePower):
         lines.extend(f"read_lef {lef}" for lef in macro_lefs)
         if source == "pnr":
             # ODB encapsulates placement + routing. Reading it
-            # repopulates OpenROAD's DB at the post-route state;
-            # estimate_parasitics then derives wire-cap from the global
-            # routes so the CTS-buffered clock tree contributes
-            # realistically to switching power.
+            # repopulates OpenROAD's DB at the post-route state. The
+            # wire parasitics then come from the P&R run's extracted SPEF
+            # when it wrote one this run can trust (#101); otherwise
+            # estimate_parasitics derives them from the global routes, so
+            # the CTS-buffered clock tree still contributes realistically
+            # to switching power.
+            spef = self._choose_parasitics(inputs)
             lines.append(f"read_db {odb}")
             lines.append(f"read_sdc {sdc}")
-            lines.append("estimate_parasitics -global_routing")
+            if spef is not None:
+                lines.append(f"read_spef {spef}")
+            else:
+                lines.append("estimate_parasitics -global_routing")
         else:
             lines.extend(
                 [
@@ -924,6 +992,41 @@ class OpenRoadPower(BasePower):
         script_path = self._script_path()
         Path(script_path).write_text("\n".join(lines))
         return script_path
+
+    def _choose_parasitics(self, inputs: dict) -> str | None:
+        """The routed SPEF to read, or `None` to estimate; logs which (#101).
+
+        Sets `_parasitics` for the results and the model's provenance. A
+        SPEF that exists but is refused is a WARNING, naming why: the user
+        configured extraction and is about to get the estimate instead.
+        """
+        spef = inputs.get("spef")
+        script = inputs.get("pnr_script")
+        reason = (
+            routed_spef_rejection(spef, script) if spef and script else "no routed SPEF"
+        )
+        if reason is None:
+            self._parasitics = PARASITICS_SPEF
+        else:
+            self._parasitics = PARASITICS_ESTIMATED
+            if spef and os.path.isfile(spef):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "power.spef_rejected",
+                    power=self.power_cfg.get_name(),
+                    spef=spef,
+                    reason=reason,
+                )
+        log_event(
+            logger,
+            logging.INFO,
+            "power.parasitics",
+            power=self.power_cfg.get_name(),
+            parasitics=self._parasitics,
+            spef=spef if reason is None else None,
+        )
+        return spef if reason is None else None
 
     # ------------------------------------------------------------------
     # Report parsing
@@ -1397,6 +1500,7 @@ class OpenRoadPower(BasePower):
             power=self.power_cfg.get_name(),
             mode=self.power_cfg.get_mode(),
             activity_source=activity_source,
+            parasitics=self._parasitics,
             total_w=parsed["total_w"],
             internal_w=parsed["internal_w"],
             switching_w=parsed["switching_w"],
@@ -1414,6 +1518,7 @@ class OpenRoadPower(BasePower):
             switching_w=parsed["switching_w"],
             leakage_w=parsed["leakage_w"],
             activity_source=activity_source,
+            parasitics=self._parasitics,
             phys_model=phys_model,
             unpowered_cells=unpowered["cells"],
             unpowered_instance_count=unpowered["instances"],

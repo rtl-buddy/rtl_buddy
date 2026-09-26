@@ -3157,3 +3157,181 @@ def test_power_threads_never_read_a_previous_runs_log(tmp_path, monkeypatch):
 
     assert res.results["result"] == "FAIL"
     assert res.results["openroad_threads"]["effective"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Extracted parasitics: reading the P&R run's routed SPEF (#101, #104 item 1)
+# ---------------------------------------------------------------------------
+
+
+def _age(path, seconds):
+    """Set a file's mtime `seconds` into the past."""
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns - int(seconds * 1e9)))
+
+
+def _pnr_artefact_with_spef(
+    root, *, extracted=True, spef=True, spef_age=0.0, script_age=60.0
+):
+    """A P&R artefact dir as `rb pnr` leaves it: script first, SPEF last.
+
+    ``extracted`` says whether the flow script carries a `write_spef`
+    command, i.e. whether the run that wrote the ODB was configured with
+    `rcx-rules`. Ages are seconds into the past.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    script = root / "pnr.tcl"
+    script.write_text(
+        "filler_placement $FILL_CELLS\n"
+        + ("write_spef $OUT_DIR/${DESIGN}.routed.spef\n" if extracted else "")
+        + "write_db $OUT_DIR/${DESIGN}.routed.odb\n"
+    )
+    _age(script, script_age)
+    spef_path = root / "demo_top.routed.spef"
+    if spef:
+        spef_path.write_text('*SPEF "IEEE 1481-1998"\n')
+        _age(spef_path, spef_age)
+    return str(spef_path), str(script)
+
+
+def test_a_spef_the_pnr_run_wrote_is_trusted(tmp_path):
+    from rtl_buddy.tools.power_openroad import routed_spef_rejection
+
+    spef, script = _pnr_artefact_with_spef(tmp_path)
+    assert routed_spef_rejection(spef, script) is None
+
+
+def test_no_spef_is_rejected_as_absent(tmp_path):
+    from rtl_buddy.tools.power_openroad import routed_spef_rejection
+
+    spef, script = _pnr_artefact_with_spef(tmp_path, spef=False)
+    assert routed_spef_rejection(spef, script) == "no routed SPEF"
+
+
+def test_a_spef_older_than_the_pnr_run_is_stale(tmp_path):
+    """The case the clear list cannot cover: an rtl_buddy that predates the
+    SPEF reruns P&R, rewrites the script and the ODB, and leaves the previous
+    run's SPEF where it was."""
+    from rtl_buddy.tools.power_openroad import routed_spef_rejection
+
+    spef, script = _pnr_artefact_with_spef(tmp_path, spef_age=120.0)
+    assert "older than the P&R run" in routed_spef_rejection(spef, script)
+
+
+def test_a_spef_beside_a_run_that_did_not_extract_is_stale(tmp_path):
+    """However new it is: the script that produced the ODB never wrote it."""
+    from rtl_buddy.tools.power_openroad import routed_spef_rejection
+
+    spef, script = _pnr_artefact_with_spef(tmp_path, extracted=False)
+    assert "did not extract" in routed_spef_rejection(spef, script)
+
+
+def test_a_spef_with_no_flow_script_is_not_vouched_for(tmp_path):
+    from rtl_buddy.tools.power_openroad import routed_spef_rejection
+
+    spef, script = _pnr_artefact_with_spef(tmp_path)
+    os.unlink(script)
+    assert "no P&R flow script" in routed_spef_rejection(spef, script)
+
+
+def _make_spef_power_backend(tmp_path, **artefact):
+    """`_make_pnr_power_backend`, with the SPEF and script resolved too."""
+    backend, routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    inputs = backend._resolve_inputs()
+    spef, script = _pnr_artefact_with_spef(Path(inputs["odb"]).parent, **artefact)
+    backend._resolve_inputs = lambda: {**inputs, "spef": spef, "pnr_script": script}
+    return backend, spef
+
+
+def test_a_pnr_power_run_reads_the_trusted_spef_instead_of_estimating(tmp_path):
+    backend, spef = _make_spef_power_backend(tmp_path)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    assert f"read_spef {spef}" in lines
+    assert "estimate_parasitics -global_routing" not in lines
+    # After the database and the constraints it annotates, before power.
+    read_db = next(i for i, ln in enumerate(lines) if ln.startswith("read_db "))
+    read_sdc = next(i for i, ln in enumerate(lines) if ln.startswith("read_sdc "))
+    read_spef = lines.index(f"read_spef {spef}")
+    report = next(i for i, ln in enumerate(lines) if ln.startswith("report_power >"))
+    assert read_db < read_sdc < read_spef < report
+    assert backend._parasitics == "spef"
+
+
+def test_a_pnr_power_run_without_a_spef_estimates_as_before(tmp_path):
+    """The ODB-only fallback — Nangate45, which ships no rules — unchanged."""
+    backend, spef = _make_spef_power_backend(tmp_path, spef=False)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert "estimate_parasitics -global_routing\n" in script
+    assert "read_spef" not in script
+    assert backend._parasitics == "estimated"
+
+
+def test_a_stale_spef_falls_back_to_the_estimate_and_says_so(tmp_path, monkeypatch):
+    backend, spef = _make_spef_power_backend(tmp_path, spef_age=120.0)
+    events = _capture_power_events(monkeypatch)
+
+    script = Path(backend._write_script()).read_text()
+
+    assert "read_spef" not in script
+    assert "estimate_parasitics -global_routing\n" in script
+    (rejected,) = _fields_of(events, "power.spef_rejected")
+    assert rejected["spef"] == spef
+    assert "older than" in rejected["reason"]
+    (chosen,) = _fields_of(events, "power.parasitics")
+    assert chosen["parasitics"] == "estimated"
+
+
+def test_a_missing_spef_is_not_a_warning(tmp_path, monkeypatch):
+    """No rules, no SPEF: the ordinary Nangate45 run has nothing to warn about."""
+    backend, _spef = _make_spef_power_backend(tmp_path, spef=False)
+    events = _capture_power_events(monkeypatch)
+
+    backend._write_script()
+
+    assert _fields_of(events, "power.spef_rejected") == []
+
+
+def test_the_parasitics_source_reaches_the_results(tmp_path, monkeypatch):
+    backend, _spef = _make_spef_power_backend(tmp_path)
+
+    result = _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+
+    assert result.results["parasitics"] == "spef"
+
+
+def test_a_synth_source_run_records_no_parasitics(tmp_path, monkeypatch):
+    _backend, result = _run_power_with(tmp_path, monkeypatch)
+
+    assert "parasitics" not in result.results
+
+
+def test_spef_and_estimated_runs_over_one_odb_do_not_share_a_fingerprint(
+    tmp_path, monkeypatch
+):
+    """Same ODB, same SDC, same activity: timed on extracted parasitics and
+    on the global-route estimate they are two measurements."""
+    from rtl_buddy.phys.model import load_model
+
+    digests = []
+    # One directory for both, so the ODB path — the rest of the upstream
+    # identity — is the same; only the SPEF beside it comes and goes.
+    for spef in (True, False):
+        backend, spef_path = _make_spef_power_backend(tmp_path)
+        if not spef:
+            os.unlink(spef_path)
+        result = _run_prepared_power(
+            backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+        )
+        assert result.results["parasitics"] == ("spef" if spef else "estimated")
+        recorded = load_model(result.results["phys_model"])["provenance"]["power"]
+        digests.append(recorded["config"]["options_sha256"])
+
+    assert digests[0] is not None and digests[0] != digests[1]

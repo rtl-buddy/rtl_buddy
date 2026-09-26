@@ -47,6 +47,11 @@ _FLOW_OUTPUT_NAMES = (
     "{design}.routed.v",
     "{design}.routed.sdc",
     "{design}.routed.odb",
+    # Only when the PDK declares `rcx-rules`, and emitted by `_write_script`
+    # rather than spelled out in the template — but cleared on every run all
+    # the same: a SPEF left beside a fresh ODB by an earlier run with rules
+    # would be read by `rb power` as this run's parasitics (#101).
+    "{design}.routed.spef",
 )
 
 # KLayout's streamout / render outputs. Written after the OpenROAD run, but
@@ -67,9 +72,14 @@ _MANAGED_OUTPUT_SUFFIXES = (
     ".routed.v",
     ".routed.sdc",
     ".routed.odb",
+    ".routed.spef",
     ".gds",
     ".png",
 )
+
+# The OpenRCX output `_write_script` adds when the PDK declares `rcx-rules`
+# (#101), and the suffix `rb power` resolves it by.
+ROUTED_SPEF_SUFFIX = ".routed.spef"
 
 # Outputs whose names carry no design, cleared by exact name.
 _FIXED_OUTPUT_NAMES = tuple(
@@ -82,6 +92,9 @@ _FIXED_OUTPUT_NAMES = tuple(
 # `_write_script` must not leave the previous run's script describing it
 # (#527). Cleared up front only; see `_clear_stale_outputs`.
 _SCRIPT_NAME = "pnr.tcl"
+# Public for `rb power`, which reads it to tell whether a routed SPEF was
+# written by the run that wrote the ODB beside it (#101).
+PNR_SCRIPT_NAME = _SCRIPT_NAME
 
 # The stream-out result the bundled KLayout helper writes and
 # `_run_def2stream` reads back: which cells came out empty, and whether
@@ -597,6 +610,23 @@ class OpenRoadPnr:
         threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
 
         blockages_block, macro_pack_directives = _floorplan_directives(fp)
+        # OpenRCX, as OpenROAD's own test flow and ORFS' final report run
+        # it (#101): extract after fill, write the SPEF, and read it back
+        # so the final reports are timed on extracted parasitics rather
+        # than the global-route estimate. Without rules the reports keep
+        # the estimate and the Tcl is what the flow has always emitted.
+        rcx_rules = pdk.get_rcx_rules()
+        if rcx_rules:
+            rcx_block = (
+                '\nputs ">>> Parasitic extraction (OpenRCX)"\n'
+                "define_process_corner -ext_model_index 0 X\n"
+                f"extract_parasitics -ext_model_file {rcx_rules}\n"
+                f"write_spef $OUT_DIR/${{DESIGN}}{ROUTED_SPEF_SUFFIX}\n"
+            )
+            final_parasitics = f"read_spef $OUT_DIR/${{DESIGN}}{ROUTED_SPEF_SUFFIX}"
+        else:
+            rcx_block = ""
+            final_parasitics = "estimate_parasitics -global_routing"
 
         pin_script = self.pnr_cfg.pin_constraints
         pin_constraints_tcl = ""
@@ -634,6 +664,8 @@ class OpenRoadPnr:
             "dont_use_check_block": dont_use_check_block,
             "pdn_block": pdn_block,
             "threads_block": threads_block,
+            "rcx_block": rcx_block,
+            "final_parasitics": final_parasitics,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -1958,6 +1990,24 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
+        # Same for the extraction rules, which are read only after detailed
+        # route — the most expensive way to find a typo (#101). Ahead of the
+        # checkpoint directory, so a typo leaves no empty run behind.
+        rcx_rules = platform.get_pdk().get_rcx_rules()
+        if rcx_rules and not os.path.isfile(rcx_rules):
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.rcx_rules_missing",
+                pnr=self.pnr_cfg.get_name(),
+                path=rcx_rules,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=f"rcx-rules not found: {rcx_rules}",
+                fail_stage="setup",
+            )
+
         # `create_blockage` first shipped in OpenROAD 26Q1, above the
         # minimum this flow otherwise supports; an older build would die on
         # `invalid command name` after the floorplan is written (#105).
@@ -2001,7 +2051,6 @@ class OpenRoadPnr:
                     desc=f"checkpoint setup failed: {e}",
                     fail_stage="setup",
                 )
-
         try:
             script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
         except Exception as e:
