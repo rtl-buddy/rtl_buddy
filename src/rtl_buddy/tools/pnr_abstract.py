@@ -25,10 +25,12 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
 
+from ..config.blocks import BlockRef
 from .artifact_paths import project_relative, project_root_or_none
 
 #: Where a hardened run publishes its abstract, under its artefact dir.
@@ -274,3 +276,145 @@ def publish(artefact_dir: str) -> str:
         shutil.rmtree(final)
     os.replace(staging_dir(artefact_dir), final)
     return final
+
+
+# ---------------------------------------------------------------------------
+# Consuming abstracts: `blocks:` (#95)
+# ---------------------------------------------------------------------------
+
+
+class BlockResolutionError(Exception):
+    """A `blocks:` entry that cannot be satisfied; the message says why."""
+
+
+@dataclass(frozen=True)
+class ResolvedBlock:
+    """A `blocks:` entry resolved to a published abstract on disk."""
+
+    ref: BlockRef
+    abstract_dir: str
+    manifest_path: str
+    manifest: dict
+    lef: str
+    lib: str
+    gds: str
+
+    def result_row(self) -> dict:
+        """What the machine output says about one consumed block."""
+        return {
+            "name": self.ref.name,
+            "pnr_run": self.ref.pnr_run,
+            "pnr_path": self.ref.pnr_suite_path,
+            "abstract_dir": self.abstract_dir,
+            "manifest": self.manifest_path,
+        }
+
+
+def read_manifest(directory: str) -> dict | None:
+    """The abstract manifest in ``directory``, or ``None`` if there is no
+    readable one of a schema this rtl_buddy knows."""
+    try:
+        data = json.loads(
+            Path(directory, ABSTRACT_MANIFEST_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema_version") != ABSTRACT_MANIFEST_SCHEMA:
+        return None
+    return data
+
+
+def resolve_block(ref: BlockRef) -> ResolvedBlock:
+    """Resolve one `blocks:` entry to its published abstract, or raise.
+
+    Fails fast rather than re-running anything: a block with no abstract
+    means its `harden: true` run has not been run (or last failed), and the
+    fix is to run it, which the message says how to do.
+    """
+    from ..config.pnr import PnrSuiteConfig
+    from ..errors import FatalRtlBuddyError
+
+    where = f"block {ref.name!r} (pnr run {ref.pnr_run!r} in {ref.pnr_suite_path})"
+    if not os.path.isfile(ref.pnr_suite_path):
+        raise BlockResolutionError(f"{where}: pnr-path does not exist")
+    try:
+        suite = PnrSuiteConfig(ref.pnr_suite_path)
+    except FatalRtlBuddyError as e:
+        raise BlockResolutionError(f"{where}: {e}") from None
+    if ref.pnr_run not in suite.get_run_names():
+        raise BlockResolutionError(f"{where}: no such run in that pnr.yaml")
+    if not suite.get_runs(ref.pnr_run)[0].get_harden():
+        raise BlockResolutionError(
+            f"{where}: that run does not set harden: true, so it publishes no abstract"
+        )
+    directory = abstract_dir(
+        os.path.join(os.path.dirname(ref.pnr_suite_path), "artefacts", ref.pnr_run)
+    )
+    manifest_path = os.path.join(directory, ABSTRACT_MANIFEST_NAME)
+    manifest = read_manifest(directory)
+    if manifest is None:
+        raise BlockResolutionError(
+            f"{where}: no abstract at {directory} — run "
+            f"`rb pnr {ref.pnr_run} -c {ref.pnr_suite_path}` first"
+        )
+    if manifest.get("block") != ref.name:
+        raise BlockResolutionError(
+            f"{where}: the abstract is of module {manifest.get('block')!r}, "
+            f"not {ref.name!r}"
+        )
+    views = {view: view_path(directory, ref.name, view) for view in ABSTRACT_VIEWS}
+    missing = [os.path.basename(p) for p in views.values() if not os.path.isfile(p)]
+    if missing:
+        raise BlockResolutionError(
+            f"{where}: abstract at {directory} is missing {', '.join(missing)}"
+        )
+    return ResolvedBlock(
+        ref=ref,
+        abstract_dir=directory,
+        manifest_path=manifest_path,
+        manifest=manifest,
+        lef=views["lef"],
+        lib=views["lib"],
+        gds=views["gds"],
+    )
+
+
+def check_technology(
+    block: ResolvedBlock, *, liberty: str | None, tech_lef: str | None
+) -> None:
+    """Raise unless the consumer shares the block's technology and corner.
+
+    Compared by content, not by path or platform name: a block hardened on
+    a block-level platform (its own PDN, its own routing layers) is meant
+    to go into a top on the full platform, and the two share exactly the
+    technology LEF and the corner Liberty. A different corner or process is
+    a model that does not describe the block in this run.
+    """
+    recorded = block.manifest.get("technology") or {}
+    for role, path, what in (
+        ("liberty", liberty, "corner Liberty"),
+        ("tech_lef", tech_lef, "technology LEF"),
+    ):
+        if path is None:
+            continue
+        expected = (recorded.get(role) or {}).get("sha256")
+        if expected is None:
+            # An abstract from before the manifest recorded it: nothing to
+            # compare, so nothing vouches that it fits this run.
+            raise BlockResolutionError(
+                f"block {block.ref.name!r}: its abstract records no {what} — "
+                f"re-run `rb pnr {block.ref.pnr_run} -c {block.ref.pnr_suite_path}`"
+            )
+        actual = (file_fingerprint(path, None) or {}).get("sha256")
+        if actual != expected:
+            raise BlockResolutionError(
+                f"block {block.ref.name!r}: platform/corner mismatch — hardened "
+                f"against {what} {(recorded.get(role) or {}).get('path')!r}, "
+                f"this run uses {path!r}"
+            )
+
+
+def resolve_blocks(refs: list[BlockRef]) -> list[ResolvedBlock]:
+    return [resolve_block(ref) for ref in refs]

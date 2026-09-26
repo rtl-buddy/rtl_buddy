@@ -7,6 +7,7 @@ from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
 
+from .blocks import BlockRef, BlockRefFile, load_block_refs
 from .model import ModelConfig, ModelConfigLoader
 from .openroad_threads import validate_threads
 from .pdk import _validate_dont_use_cells, merge_dont_use_cells
@@ -434,6 +435,11 @@ class SynthConfigFile:
     platform: str | None = None
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
     lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
+    # Hardened blocks the design instances: each adds its abstract's
+    # Liberty model and LEF to the run, as `lib-paths` / `lef-paths` would
+    # (#95). The model's filelist must still leave the module undefined or
+    # a blackbox stub.
+    blocks: list[BlockRefFile] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     effort: str | None = None
@@ -475,6 +481,12 @@ class SynthConfigFile:
             platform=self.platform,
             lef_paths=lef_paths,
             lib_paths=lib_paths,
+            blocks=load_block_refs(
+                f"synthesis '{self.name}'",
+                self.blocks,
+                config_dir,
+                default_pnr_path=None,
+            ),
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             effort=self.effort,
@@ -499,6 +511,7 @@ class SynthConfig:
     effort: str | None = None
     lef_paths: list[str] = dc_field(default_factory=list)
     lib_paths: list[str] = dc_field(default_factory=list)
+    blocks: list[BlockRef] = dc_field(default_factory=list)
     threads: int | str | None = None
     xfail: bool = False
     xfail_strict: bool = False
@@ -549,6 +562,10 @@ class SynthConfig:
 
     def get_lib_paths(self) -> list[str]:
         return list(self.lib_paths)
+
+    def get_blocks(self) -> list[BlockRef]:
+        """The hardened blocks this run instances (#95)."""
+        return list(self.blocks)
 
     def get_tool_name(self) -> str:
         return self.tool
@@ -630,6 +647,9 @@ class SynthSuiteConfig:
         config_dir = os.path.dirname(os.path.abspath(path))
         try:
             self.syntheses = {s.name: s.initialise(config_dir) for s in data.syntheses}
+        except FatalRtlBuddyError:
+            # Already says which entry and what is wrong with it.
+            raise
         except Exception as e:
             log_event(
                 logger,

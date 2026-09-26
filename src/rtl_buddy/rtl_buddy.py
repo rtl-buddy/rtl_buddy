@@ -11374,6 +11374,8 @@ class RtlBuddy:
             # A hardening run's published abstract and its manifest (#95).
             "abstract_dir",
             "abstract_manifest",
+            # The hardened blocks' abstracts the run consumed (#95).
+            "blocks",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]

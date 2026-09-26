@@ -11,6 +11,7 @@ from serde.yaml import from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .blocks import BlockRef, BlockRefFile, load_block_refs
 from .openroad_threads import validate_threads
 from .synth import SynthSuiteConfig
 from .toolpath import resolve_tool_path
@@ -253,6 +254,9 @@ class PnrConfigFile:
     # timing model, GDS and a fingerprint manifest under `abstract/` — for
     # a parent run to instance (#95). Forces a strict GDS export.
     harden: bool = False
+    # Hardened blocks this run instances as hard macros, each resolved to
+    # a `harden: true` run's abstract (#95).
+    blocks: list[BlockRefFile] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     # OpenROAD worker threads: a positive integer or `auto`; unset keeps
@@ -265,7 +269,7 @@ class PnrConfigFile:
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
-    def initialise(self, config_dir: str) -> "PnrConfig":
+    def initialise(self, config_dir: str, suite_path: str | None = None) -> "PnrConfig":
         if not self.synth:
             raise FatalRtlBuddyError(
                 f"pnr run '{self.name}': missing 'synth' (name of upstream rb synth entry)"
@@ -302,6 +306,23 @@ class PnrConfigFile:
             for i, entry in enumerate(self.floorplan.blockages)
         ]
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
+
+        blocks = load_block_refs(
+            f"pnr run '{self.name}'",
+            self.blocks,
+            config_dir,
+            default_pnr_path=(
+                os.path.abspath(suite_path) if suite_path is not None else None
+            ),
+        )
+        if suite_path is not None and any(
+            b.pnr_run == self.name
+            and os.path.abspath(b.pnr_suite_path) == os.path.abspath(suite_path)
+            for b in blocks
+        ):
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': lists itself under blocks"
+            )
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
         constraints = (
@@ -345,6 +366,7 @@ class PnrConfigFile:
             gds_allow_empty=list(self.gds_allow_empty),
             checkpoints=checkpoints,
             harden=bool(self.harden),
+            blocks=blocks,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             threads=threads,
@@ -374,6 +396,7 @@ class PnrConfig:
     threads: int | str | None = None
     checkpoints: tuple[str, ...] | None = None
     harden: bool = False
+    blocks: list[BlockRef] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -435,6 +458,10 @@ class PnrConfig:
         """Whether the run publishes a hard-macro abstract (#95)."""
         return self.harden
 
+    def get_blocks(self) -> list[BlockRef]:
+        """The hardened blocks this run instances (#95)."""
+        return list(self.blocks)
+
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:
             case int() as lvl:
@@ -494,7 +521,7 @@ class PnrSuiteConfig:
 
         config_dir = os.path.dirname(os.path.abspath(path))
         try:
-            self.runs = {r.name: r.initialise(config_dir) for r in data.runs}
+            self.runs = {r.name: r.initialise(config_dir, path) for r in data.runs}
         except FatalRtlBuddyError:
             raise
         except Exception as e:
