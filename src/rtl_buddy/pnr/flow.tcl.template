@@ -31,7 +31,7 @@ set FILL_CELLS      [list {{ fill_cells }}]
 
 set OUT_DIR         {{ out_dir }}
 file mkdir $OUT_DIR
-
+{{ threads_block }}
 puts ">>> Reading Liberty + LEF"
 read_liberty $LIBERTY
 read_lef     $TECH_LEF

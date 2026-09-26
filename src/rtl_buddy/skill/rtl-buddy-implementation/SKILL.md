@@ -30,6 +30,11 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   have no GDS stays a qualified pass in `preview` and is a `FAIL` in `strict`.
   Read `gds_status` and `gds_missing_cells` before reporting a layout, and
   `export_provenance` for the record of what was read.
+- OpenROAD runs single-threaded unless a `pnr.yaml`, `power.yaml` or
+  `synth.yaml` entry sets `threads:` (a count, or `auto` for the allocation).
+  A count above a Slurm/affinity allocation is clamped with
+  `openroad.threads_capped`; quote `openroad_threads.effective`, not the
+  configured value.
 
 ## Synthesis correctness gates
 

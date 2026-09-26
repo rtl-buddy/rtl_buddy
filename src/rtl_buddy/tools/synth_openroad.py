@@ -36,6 +36,7 @@ from ..config.synth import (
     resolve_static_functions_mode,
     resolve_unresolved_interfaces_mode,
 )
+from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.provenance import text_sha256
@@ -95,6 +96,9 @@ class OpenRoadSynth:
         self._constraints_sha256: str | None = None
         self.static_function_findings = 0
         self.unresolved_interfaces = 0
+        # The OpenROAD thread plan `_write_or_script` resolved; `None`
+        # until stage 2 is scripted (#654).
+        self._thread_plan: ThreadPlan | None = None
 
     # ------------------------------------------------------------------
     # Artefact paths
@@ -649,6 +653,14 @@ class OpenRoadSynth:
         constraints = self.synth_cfg.get_constraints()
 
         lines = []
+        # First, and absent when `threads:` is unset, so such a script is
+        # the one this stage has always emitted (#654). Matters most for
+        # an effort whose `pre-sta-tcl` runs global placement.
+        self._thread_plan = plan_threads(
+            self.synth_cfg.get_threads(), flow="synth", run=self.synth_cfg.get_name()
+        )
+        if self._thread_plan.emit:
+            lines.append(self._thread_plan.tcl())
         for lef in lef_paths:
             lines.append(f"read_lef {lef}")
         for lib in lib_paths:
@@ -1195,5 +1207,19 @@ class OpenRoadSynth:
         result = self._run_or_stage(gate_count, lef_paths, lib_paths)
         if isinstance(result, SynthFailResults):
             # Stage 1 succeeded and published a netlist; stage 2 then failed.
-            return self._fail_after_yosys(result.results["desc"])
-        return result
+            return self._with_threads(self._fail_after_yosys(result.results["desc"]))
+        return self._with_threads(result)
+
+    def _with_threads(self, res: SynthResults) -> SynthResults:
+        """Record stage 2's OpenROAD thread provenance on ``res`` (#654).
+
+        Only once stage 2 was scripted; the count OpenROAD itself logged
+        wins over the one asked for.
+        """
+        if self._thread_plan is not None:
+            try:
+                reported = parse_reported_threads(Path(self._or_log_path()).read_text())
+            except OSError:
+                reported = None
+            res.results["openroad_threads"] = self._thread_plan.fields(reported)
+        return res
