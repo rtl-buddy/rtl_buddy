@@ -31,6 +31,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 from ..config.blocks import BlockRef
+from ..config.pdk import DEFAULT_PLACEMENT_MACRO_CELL_HALO
 from .artifact_paths import project_relative, project_root_or_none
 
 #: Where a hardened run publishes its abstract, under its artefact dir.
@@ -199,6 +200,14 @@ def abstract_config(pnr_cfg, platform) -> dict:
             "density": platform.get_placement_density(),
             "padding": platform.get_placement_padding(),
             "macro_halo": platform.get_placement_macro_halo(),
+            # Only when set away from its default, so the abstracts hardened
+            # before the key existed keep their digest (#673).
+            **(
+                {"macro_cell_halo": platform.get_placement_macro_cell_halo()}
+                if platform.get_placement_macro_cell_halo()
+                != DEFAULT_PLACEMENT_MACRO_CELL_HALO
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),

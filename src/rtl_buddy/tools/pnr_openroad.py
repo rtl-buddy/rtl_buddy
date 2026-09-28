@@ -697,6 +697,7 @@ class OpenRoadPnr:
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
+            "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
             "macro_pack_directives": macro_pack_directives,
             "blockages_block": blockages_block,

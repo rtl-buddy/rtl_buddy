@@ -7,6 +7,7 @@ from ..errors import FatalRtlBuddyError
 from .pdk import (
     DEFAULT_PLACEMENT_DENSITY,
     DEFAULT_PLACEMENT_MACRO_HALO,
+    DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
     PlacementFile,
     _validate_dont_use_cells,
@@ -119,6 +120,11 @@ class PnrPlatformConfig:
             self._pdk.get_placement_macro_halo(),
             DEFAULT_PLACEMENT_MACRO_HALO,
         )
+        self._placement_macro_cell_halo = _first_set(
+            placement.macro_cell_halo,
+            self._pdk.get_placement_macro_cell_halo(),
+            DEFAULT_PLACEMENT_MACRO_CELL_HALO,
+        )
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
         """The analysis corners, primary first, validated against the PDK.
@@ -227,6 +233,10 @@ class PnrPlatformConfig:
     def get_placement_macro_halo(self) -> float:
         """Macro halo in microns, after platform/PDK/default."""
         return self._placement_macro_halo
+
+    def get_placement_macro_cell_halo(self) -> float:
+        """Macro-to-row keep-out in microns, after platform/PDK/default (#673)."""
+        return self._placement_macro_cell_halo
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first (#656)."""
