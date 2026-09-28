@@ -11415,6 +11415,9 @@ class RtlBuddy:
             # What a post-P&R run timed the routing on: `spef` (the P&R
             # run's OpenRCX extraction) or `estimated` (#101).
             "parasitics",
+            # The hardened blocks' abstracts the upstream run consumed,
+            # which this run read too (#679).
+            "blocks",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
