@@ -1,8 +1,8 @@
 """Tcl-aware SDC/XDC word tokenizer — VENDORED COPY, DO NOT EDIT HERE.
 
 Source repo:   rtl-buddy/rtl-buddy-cdc
-Source file:   src/rtl_buddy_cdc/sdc.py
-Pinned commit: 53b5f34161debccda45c44a33c9b663ee5410b1a  (main, 2026-09-22)
+Source file:   src/rtl_buddy_cdc/tcl_tokenizer.py
+Pinned commit: df996d55af0e8b824183d03d531426b8601af429  (main, 2026-09-28)
 
 ``_tokenize`` and ``_extract_names`` below are a **verbatim copy** of the
 functions of the same name in that file at that commit. Do not edit them
@@ -15,8 +15,10 @@ Stdlib-only on purpose — the copy must stay droppable into either repo.
 Why a copy and not a dependency: ``rtl_buddy`` does not depend on
 ``rtl_buddy_cdc`` (the CDC engine is an optional external tool, invoked
 as a subprocess), and the tokenizer is ~120 lines of pure text handling.
-rtl-buddy/rtl-buddy-cdc#298 splits it out upstream into its own
-``tcl_tokenizer.py``, after which this copy re-points at that file.
+rtl-buddy/rtl-buddy-cdc#298 split it out upstream into its own
+``tcl_tokenizer.py``; this copy now tracks that file. (Before the split it
+was pinned to ``sdc.py`` at 53b5f34; the two function bodies are
+byte-identical across the move.)
 """
 
 from __future__ import annotations

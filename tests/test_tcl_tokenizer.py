@@ -2,8 +2,11 @@
 
 Copied from rtl-buddy-cdc's ``tests/test_sdc_tokenizer.py`` at the same
 pinned commit as :mod:`rtl_buddy.constraints.tcl_tokenizer` itself
-(``53b5f34161debccda45c44a33c9b663ee5410b1a``); only the import path is
-adapted. Upstream's own rationale follows.
+(``df996d55af0e8b824183d03d531426b8601af429``); only the import path is
+adapted. Upstream's ``test_sdc_re_exports_the_tokenizer`` is left out: it
+pins that cdc's ``sdc`` module still re-exports ``_tokenize`` after the
+rtl-buddy/rtl-buddy-cdc#298 split, which has no counterpart here.
+Upstream's own rationale follows.
 
 The tokenizer is the foundation of the issue #144 parser refactor —
 every collection-handling bug we fixed in #140 / #142 ultimately
