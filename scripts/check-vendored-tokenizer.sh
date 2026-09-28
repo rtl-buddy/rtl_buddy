@@ -17,8 +17,8 @@
 set -euo pipefail
 
 UPSTREAM_REPO="rtl-buddy/rtl-buddy-cdc"
-UPSTREAM_PATH="src/rtl_buddy_cdc/sdc.py"
-UPSTREAM_REF="53b5f34161debccda45c44a33c9b663ee5410b1a"
+UPSTREAM_PATH="src/rtl_buddy_cdc/tcl_tokenizer.py"
+UPSTREAM_REF="df996d55af0e8b824183d03d531426b8601af429"
 FUNCS="_tokenize _extract_names"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
