@@ -567,3 +567,28 @@ def test_rb_pnr_and_rb_synth_take_accept_stale():
     for command in ("pnr", "synth"):
         opts = {o for p in group.commands[command].params for o in p.opts}
         assert "--accept-stale" in opts, command
+
+
+def test_the_default_macro_cell_halo_leaves_the_config_digest_alone(tmp_path):
+    """An abstract hardened before the key existed must stay current: the
+    key only enters the digest when it is set away from its default (#673)."""
+    from rtl_buddy.config.pdk import PlacementFile
+
+    suite = _block_suite(tmp_path)
+    run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
+    default = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
+    assert "macro_cell_halo" not in default["placement"]
+
+    platform = _block_platform(tmp_path)
+    wider = PnrPlatformConfig(
+        PnrPlatformConfigFile(
+            name="p",
+            pdk="p",
+            cts_buffer="B",
+            placement=PlacementFile(macro_cell_halo=3.0),
+        ),
+        lambda _n: platform.get_pdk(),
+    )
+    changed = pnr_abstract.abstract_config(run_cfg, wider)
+    assert changed["placement"]["macro_cell_halo"] == 3.0
+    assert pnr_abstract.config_digest(changed) != pnr_abstract.config_digest(default)

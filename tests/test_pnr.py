@@ -3587,3 +3587,59 @@ def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch
     assert not (Path(backend.artefact_dir) / "checkpoints").exists() or not any(
         p.is_dir() for p in (Path(backend.artefact_dir) / "checkpoints").iterdir()
     )
+
+
+# --- macro-cell-halo: no standard cell abuts a macro (#673) ----------------
+
+
+def test_the_macro_cell_halo_defaults_to_one_micron(tmp_path):
+    """Neither block says anything: a keep-out wide enough that a cell pin is
+    never inside met1 spacing of a bloated abstract obstruction."""
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_macro_cell_halo() is None
+    assert _platform(pdk).get_placement_macro_cell_halo() == 1.0
+
+
+def test_the_platform_macro_cell_halo_overrides_the_pdk(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_cell_halo=2.0))
+    assert _platform(pdk).get_placement_macro_cell_halo() == 2.0
+    assert (
+        _platform(
+            pdk, placement=PlacementFile(macro_cell_halo=0.0)
+        ).get_placement_macro_cell_halo()
+        == 0.0
+    )
+
+
+@pytest.mark.parametrize("halo", [-1.0, float("inf"), float("nan")])
+def test_pdk_rejects_an_unusable_macro_cell_halo(tmp_path, halo):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_cell_halo=halo))
+    assert "placement.macro-cell-halo" in str(excinfo.value)
+
+
+def test_pnr_flow_blocks_cells_around_each_macro_after_placing_it(tmp_path):
+    """A hard blockage per macro, once its location is FIRM and before the
+    PDN and any standard-cell placement; never `cut_rows`, which breaks the
+    followpins the PDN lays along the rows."""
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+
+    assert "set MACRO_CELL_HALO 1\n" in text
+    blockage = text.index("odb::dbBlockage_create $block")
+    assert text.index("$inst setPlacementStatus FIRM") < blockage
+    assert blockage < text.index('puts ">>> IO pin placement"')
+    assert blockage < text.index("global_placement -density")
+    assert "cut_rows" not in text.replace("`cut_rows`", "")
+
+
+def test_pnr_flow_renders_a_configured_macro_cell_halo(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_cell_halo=2.5))
+    text = _render_flow(tmp_path, _platform(pdk))
+
+    assert "set MACRO_CELL_HALO 2.5\n" in text

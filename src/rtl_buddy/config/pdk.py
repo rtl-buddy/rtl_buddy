@@ -46,6 +46,17 @@ DEFAULT_PLACEMENT_PADDING = 1
 #: only: ~14 standard-cell rows at its 1.4 um site height.
 DEFAULT_PLACEMENT_MACRO_HALO = 20.0
 
+#: Standard-cell keep-out, in microns, around each placed macro (#673). After
+#: macro placement the flow puts a hard placement blockage over every macro
+#: grown by this much on each side, so no standard cell sits flush against a
+#: macro edge. Without it the detailed placer abuts cells to the macro, and an
+#: abstract LEF written with `-bloat_occupied_layers` obstructs met1 over the
+#: whole footprint: a cell pin at the shared edge is then reachable only by
+#: met1 inside the obstruction's spacing, which the detailed router reports as
+#: a Metal Spacing violation. 1 um is two sky130hd sites or five Nangate45
+#: sites. 0 places no blockage.
+DEFAULT_PLACEMENT_MACRO_CELL_HALO = 1.0
+
 
 @serde
 class PlacementFile:
@@ -58,6 +69,7 @@ class PlacementFile:
     density: float | None = None
     padding: int | None = None
     macro_halo: float | None = field(rename="macro-halo", default=None)
+    macro_cell_halo: float | None = field(rename="macro-cell-halo", default=None)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -92,7 +104,20 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
             raise FatalRtlBuddyError(
                 f"{where}: placement.macro-halo must be >= 0, got {macro_halo}"
             )
-    return PlacementFile(density=density, padding=padding, macro_halo=macro_halo)
+    macro_cell_halo = placement.macro_cell_halo
+    if macro_cell_halo is not None:
+        macro_cell_halo = float(macro_cell_halo)
+        if not 0.0 <= macro_cell_halo < float("inf"):
+            raise FatalRtlBuddyError(
+                f"{where}: placement.macro-cell-halo must be >= 0, "
+                f"got {macro_cell_halo}"
+            )
+    return PlacementFile(
+        density=density,
+        padding=padding,
+        macro_halo=macro_halo,
+        macro_cell_halo=macro_cell_halo,
+    )
 
 
 _TCL_METACHARACTERS = frozenset('[]{}$"\\;')
@@ -276,6 +301,10 @@ class PdkConfig:
     def get_placement_macro_halo(self) -> float | None:
         """Configured macro halo in microns, or `None` when unset."""
         return self._placement.macro_halo
+
+    def get_placement_macro_cell_halo(self) -> float | None:
+        """Configured macro row keep-out in microns, or `None` when unset."""
+        return self._placement.macro_cell_halo
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)
