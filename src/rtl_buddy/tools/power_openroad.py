@@ -33,7 +33,7 @@ from ..phys.publish import (
     withdrawal_failure_desc,
 )
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
-from . import openroad_corners
+from . import openroad_corners, pnr_abstract
 from .artifact_paths import clear_stale_artefacts
 from .pnr_openroad import PNR_SCRIPT_NAME, ROUTED_SPEF_SUFFIX
 from .power_base import BasePower
@@ -254,6 +254,11 @@ class OpenRoadPower(BasePower):
         # until `_write_script` runs; see `_publish_phys_model` for why
         # publication reads this rather than resolving a second time.
         self._script_inputs: dict | None = None
+        # The hardened blocks the upstream run consumed through `blocks:`,
+        # resolved by `_resolve_inputs` so their abstracts reach this
+        # session the way they reached that run (#679). Empty when the
+        # upstream run lists none.
+        self._blocks: list[pnr_abstract.ResolvedBlock] = []
         # The OpenROAD thread plan `_write_script` resolved; `None` until
         # it runs (#654).
         self._thread_plan: ThreadPlan | None = None
@@ -669,6 +674,16 @@ class OpenRoadPower(BasePower):
         master the router placed is already present. Reading the macro LEF
         again before a `read_db` would not even survive it — the database
         read replaces the technology the LEF built.
+
+        **A `blocks:` entry on the upstream run counts as one of its
+        macros** (#679). That run appended each hardened block's abstract
+        Liberty (and, for synthesis, its LEF) after its own `lib-paths`,
+        so this does the same, in the same order: two consumers of one run
+        see one macro set. Resolved without the staleness gate `rb pnr`
+        and `rb synth` apply — the analysis reads what was routed, and the
+        abstract on disk is the one that run consumed unless it has been
+        re-hardened since, which is that run's staleness to report, not
+        this one's.
         """
         # Appended after whatever the upstream run declares, so the
         # inherited list stays the base and a `power.yaml` adds to it.
@@ -676,6 +691,7 @@ class OpenRoadPower(BasePower):
         if self.power_cfg.get_netlist_source() == "pnr":
             pnr_cfg = self.power_cfg.resolve_pnr_cfg()
             top = pnr_cfg.resolve_synth_cfg().get_top()
+            self._blocks = self._resolve_upstream_blocks(pnr_cfg.get_blocks())
             pnr_suite_path = self.power_cfg.get_pnr_suite_path()
             assert pnr_suite_path is not None
             pnr_suite_dir = os.path.dirname(pnr_suite_path)
@@ -691,12 +707,19 @@ class OpenRoadPower(BasePower):
                 "pnr_script": os.path.join(pnr_artefact, PNR_SCRIPT_NAME),
                 "sdc": sdc,
                 "top": top,
-                "macro_libs": _dedup_paths([*pnr_cfg.get_lib_paths(), *own_libs]),
+                "macro_libs": _dedup_paths(
+                    [
+                        *pnr_cfg.get_lib_paths(),
+                        *(b.lib for b in self._blocks),
+                        *own_libs,
+                    ]
+                ),
                 "macro_lefs": [],
             }
 
         synth_cfg = self.power_cfg.resolve_synth_cfg()
         top = synth_cfg.get_top()
+        self._blocks = self._resolve_upstream_blocks(synth_cfg.get_blocks())
         synth_suite_path = self.power_cfg.get_synth_suite_path()
         assert synth_suite_path is not None
         synth_suite_dir = os.path.dirname(synth_suite_path)
@@ -710,9 +733,48 @@ class OpenRoadPower(BasePower):
             "pnr_script": None,
             "sdc": self.power_cfg.get_constraints(),
             "top": top,
-            "macro_libs": _dedup_paths([*synth_cfg.get_lib_paths(), *own_libs]),
-            "macro_lefs": _dedup_paths(synth_cfg.get_lef_paths()),
+            "macro_libs": _dedup_paths(
+                [
+                    *synth_cfg.get_lib_paths(),
+                    *(b.lib for b in self._blocks),
+                    *own_libs,
+                ]
+            ),
+            "macro_lefs": _dedup_paths(
+                [*synth_cfg.get_lef_paths(), *(b.lef for b in self._blocks)]
+            ),
         }
+
+    def _resolve_upstream_blocks(self, refs) -> list[pnr_abstract.ResolvedBlock]:
+        """The upstream run's `blocks:`, each resolved to its abstract (#679).
+
+        A block whose abstract is gone is a configuration error like a
+        missing macro Liberty (`power.missing_macro_inputs`): reading on
+        without it would report the partition at zero watts, so it fails
+        the run at setup, naming the block.
+        """
+        if not refs:
+            return []
+        try:
+            return pnr_abstract.resolve_blocks(refs)
+        except pnr_abstract.BlockResolutionError as e:
+            raise RuntimeError(
+                f"power run '{self.power_cfg.get_name()}': upstream {e}"
+            ) from None
+
+    def _blocks_fields(self) -> dict:
+        """The `blocks` result field: the abstracts this run read (#679).
+
+        The rows `rb pnr` and `rb synth` report, less their staleness,
+        which this run does not assess.
+        """
+        rows = []
+        for block in self._blocks:
+            row = block.result_row()
+            row.pop("stale", None)
+            row.pop("changes", None)
+            rows.append(row)
+        return {"blocks": rows} if rows else {}
 
     def _upstream_identity(self) -> dict:
         """Which upstream run this analysis actually read, for the digest.
@@ -1284,6 +1346,13 @@ class OpenRoadPower(BasePower):
             # zero-power instance means no Liberty needs scanning.
             return empty
         technology = self._script_technology or {}
+        # A hardened block's abstract Liberty declares the block as a cell,
+        # but `write_timing_model` writes timing arcs and no power tables,
+        # so it cannot vouch for a zero-watt instance of it: left out, the
+        # block is named like any macro with no Liberty power data (#679).
+        # An abstract that did carry power would report watts, and a row
+        # with watts is never flagged.
+        block_libs = {os.path.abspath(b.lib) for b in self._blocks}
         known = _liberty_cell_names(
             [
                 path
@@ -1291,7 +1360,7 @@ class OpenRoadPower(BasePower):
                     technology.get("liberty"),
                     *(technology.get("macro_libs") or []),
                 ]
-                if path
+                if path and os.path.abspath(path) not in block_libs
             ]
         )
         unpowered = [row for row in rows if str(row["module"]) not in known]
@@ -1590,6 +1659,7 @@ class OpenRoadPower(BasePower):
             worst_corner=corner_fields.get("worst_corner"),
             corners=corner_fields.get("corners"),
         )
+        passed.results.update(self._blocks_fields())
         return self._with_threads(passed)
 
     def _parse_corner_reports(self, log_text: str) -> tuple[dict, str | None]:

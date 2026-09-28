@@ -1,6 +1,7 @@
 """Tests for the power-analysis config schema."""
 
 import hashlib
+import json
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -16,8 +17,10 @@ from rtl_buddy.config.power import (
     PowerToolConfig,
     PowerToolConfigFile,
 )
+from rtl_buddy.config.blocks import BlockRef
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.phys.manifest import load_manifest, resolve
+from rtl_buddy.tools import pnr_abstract
 
 
 # ---------------------------------------------------------------------------
@@ -2669,7 +2672,9 @@ def _write_macro_liberty(path, cell="sram_32x256"):
     return str(path)
 
 
-def _write_upstream_suites(tmp_path, *, pnr_lib=(), lef=(), synth_lib=()):
+def _write_upstream_suites(
+    tmp_path, *, pnr_lib=(), lef=(), synth_lib=(), blocks_yaml=""
+):
     """A models/synth/pnr trio the power config resolves through for real.
 
     The inheritance rule is a statement about the *referenced run*, so the
@@ -2702,6 +2707,7 @@ def _write_upstream_suites(tmp_path, *, pnr_lib=(), lef=(), synth_lib=()):
             lef-paths: {_list(lef)}
             reglvl: 0
         """)
+        + blocks_yaml
     )
     (tmp_path / "pnr.yaml").write_text(
         dedent(f"""\
@@ -2718,6 +2724,7 @@ def _write_upstream_suites(tmp_path, *, pnr_lib=(), lef=(), synth_lib=()):
             lef-paths: {_list(lef)}
             reglvl: 0
         """)
+        + blocks_yaml
     )
 
 
@@ -2771,9 +2778,17 @@ def test_power_lib_paths_resolve_against_the_power_yaml(tmp_path):
 # --- inheritance ------------------------------------------------------------
 
 
-def _inputs_with_upstream(tmp_path, *, source, pnr_lib=(), lef=(), synth_lib=()):
+def _inputs_with_upstream(
+    tmp_path, *, source, pnr_lib=(), lef=(), synth_lib=(), blocks_yaml=""
+):
     """`_resolve_inputs()` of a backend whose upstream suites are real."""
-    _write_upstream_suites(tmp_path, pnr_lib=pnr_lib, lef=lef, synth_lib=synth_lib)
+    _write_upstream_suites(
+        tmp_path,
+        pnr_lib=pnr_lib,
+        lef=lef,
+        synth_lib=synth_lib,
+        blocks_yaml=blocks_yaml,
+    )
     backend = _make_power_backend(tmp_path)
     del backend._resolve_inputs  # undo the fixture's stub
     cfg = backend.power_cfg
@@ -3345,3 +3360,160 @@ def test_spef_and_estimated_runs_over_one_odb_do_not_share_a_fingerprint(
         digests.append(recorded["config"]["options_sha256"])
 
     assert digests[0] is not None and digests[0] != digests[1]
+
+
+# --- hardened blocks the upstream run consumed (#679) ----------------------
+
+
+_BLOCKS_YAML = (
+    "    blocks:\n      - {name: blk_top, pnr: blk_pnr, pnr-path: blk/pnr.yaml}\n"
+)
+
+
+def _publish_block_abstract(tmp_path, *, module="blk_top"):
+    """A block pnr.yaml whose `harden: true` run published an abstract.
+
+    Its Liberty is what `write_timing_model` writes: the block as a cell,
+    with timing and no power tables.
+    """
+    suite = tmp_path / "blk" / "pnr.yaml"
+    suite.parent.mkdir(parents=True, exist_ok=True)
+    suite.write_text(
+        dedent("""\
+        rtl-buddy-filetype: pnr_config
+        runs:
+          - name: blk_pnr
+            desc: block
+            synth: s
+            synth-path: synth.yaml
+            platform: p
+            harden: true
+        """)
+    )
+    out = tmp_path / "blk" / "artefacts" / "blk_pnr" / "abstract"
+    out.mkdir(parents=True)
+    _write_macro_liberty(out / f"{module}.lib", cell=module)
+    (out / f"{module}.lef").write_text(f"MACRO {module}\nEND {module}\n")
+    (out / f"{module}.gds").write_text("gds\n")
+    (out / "abstract.manifest.json").write_text(
+        json.dumps({"schema_version": 1, "block": module, "outputs": {}})
+    )
+    return out
+
+
+def test_a_pnr_power_run_reads_the_pnr_runs_block_abstracts(tmp_path):
+    """`blocks:` adds each abstract's Liberty to the P&R run after its own
+    `lib-paths`; the power run over that ODB reads the same set, in the
+    same order, before its own `lib-paths` (#679)."""
+    sram = _write_macro_liberty(tmp_path / "sram.lib")
+    own = _write_macro_liberty(tmp_path / "pll.lib", cell="pll")
+    out = _publish_block_abstract(tmp_path)
+    backend = _inputs_with_upstream(
+        tmp_path, source="pnr", pnr_lib=["sram.lib"], blocks_yaml=_BLOCKS_YAML
+    )
+    backend.power_cfg.lib_paths = [own]
+
+    inputs = backend._resolve_inputs()
+
+    assert inputs["macro_libs"] == [sram, str(out / "blk_top.lib"), own]
+    assert inputs["macro_lefs"] == []
+
+
+def test_a_synth_power_run_reads_the_synth_runs_block_abstracts(tmp_path):
+    """`link_design` builds the database out of LEF masters, so the block's
+    LEF is read as well as its Liberty — without it the blackbox the
+    netlist instances has no master at all."""
+    out = _publish_block_abstract(tmp_path)
+    backend = _inputs_with_upstream(tmp_path, source="synth", blocks_yaml=_BLOCKS_YAML)
+
+    inputs = backend._resolve_inputs()
+
+    assert inputs["macro_libs"] == [str(out / "blk_top.lib")]
+    assert inputs["macro_lefs"] == [str(out / "blk_top.lef")]
+
+
+def test_a_block_whose_abstract_is_gone_stops_the_run_naming_it(tmp_path):
+    """Reading on without it would report the partition at zero watts."""
+    out = _publish_block_abstract(tmp_path)
+    (out / "abstract.manifest.json").unlink()
+    backend = _inputs_with_upstream(tmp_path, source="pnr", blocks_yaml=_BLOCKS_YAML)
+
+    with pytest.raises(RuntimeError, match="block 'blk_top'.*no abstract"):
+        backend._resolve_inputs()
+
+
+def test_a_run_with_no_blocks_resolves_none(tmp_path):
+    backend = _inputs_with_upstream(tmp_path, source="pnr")
+
+    backend._resolve_inputs()
+
+    assert backend._blocks == []
+    assert backend._blocks_fields() == {}
+
+
+_BLOCK_INSTANCE_RPT = (
+    "   Internal  Switching    Leakage      Total\n"
+    "      Power      Power      Power      Power (Watts)\n"
+    "--------------------------------------------\n"
+    "   2.28e-06   6.75e-08   7.91e-08   2.42e-06 u_sub/_64_\n"
+    "   0.00e+00   0.00e+00   0.00e+00   0.00e+00 u_blk\n"
+)
+
+
+def _run_with_a_block(tmp_path, monkeypatch):
+    """A run whose inputs came from an upstream with one `blocks:` entry."""
+    out = _publish_block_abstract(tmp_path)
+    block = pnr_abstract.resolve_block(
+        BlockRef(
+            name="blk_top",
+            pnr_run="blk_pnr",
+            pnr_suite_path=str(tmp_path / "blk" / "pnr.yaml"),
+        )
+    )
+    backend = _make_power_backend(tmp_path)
+    inner = backend._resolve_inputs
+
+    def _inputs():
+        backend._blocks = [block]
+        return {**inner(), "macro_libs": [block.lib]}
+
+    backend._resolve_inputs = _inputs
+    res = _run_prepared_power(
+        backend,
+        monkeypatch,
+        instances=_BLOCK_INSTANCE_RPT,
+        cells="u_sub/_64_ DFF_X1\nu_blk blk_top\n",
+    )
+    return out, res
+
+
+def test_a_block_at_zero_watts_is_named_although_its_abstract_was_read(
+    tmp_path, monkeypatch
+):
+    """The abstract declares the block as a cell, but a timing model carries
+    no power tables, so reading it vouches for nothing: the partition is
+    still an instance the analysis could say nothing about."""
+    _out, res = _run_with_a_block(tmp_path, monkeypatch)
+
+    assert res.is_pass()
+    assert res.results["unpowered_cells"] == ["blk_top"]
+
+
+def test_the_blocks_the_run_read_are_in_its_result_and_machine_row(
+    tmp_path, monkeypatch
+):
+    """The rows `rb pnr` reports, without the staleness this run does not
+    assess."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    out, res = _run_with_a_block(tmp_path, monkeypatch)
+
+    [row] = res.results["blocks"]
+    assert row["name"] == "blk_top"
+    assert row["pnr_run"] == "blk_pnr"
+    assert row["abstract_dir"] == str(out)
+    assert "stale" not in row and "changes" not in row
+    machine = RtlBuddy._power_result_row(
+        None, {"power_name": "demo_power", "results": res}
+    )
+    assert machine["blocks"] == [row]
