@@ -2,103 +2,39 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Read verbs over physical artefacts already on disk (#558).
+"""Read verbs over physical artefacts already on disk.
 
 ``rb phys summary``, ``rb phys module <name>`` and ``rb phys instance
-<path>`` answer the three questions the four scalars in a synthesis or
-power summary cannot: *what did this run measure*, *which module owns
-the area*, and *which instance owns the power*. None of them runs a
-tool; all three read ``phys-manifest.json`` and the ``phys-model.json``
-it points at.
+<path>`` read ``phys-manifest.json`` and the ``phys-model.json`` it
+names and run no tool. ``rb phys runs`` lists every manifest under the
+project, newest first, with the identity each run recorded
+(:mod:`rtl_buddy.phys.provenance`). It reads manifests only, never
+models, so it stays cheap for a project with many runs.
 
-``rb phys runs`` is the fourth, and the one that comes before the other
-three: it lists every manifest under the project, newest first, with the
-identity each run recorded (:mod:`rtl_buddy.phys.provenance`) — top,
-backends, power mode and activity, config fingerprint, and the `rb xplr`
-experiment the path names. It is the only builder here that takes no
-context, because its subject is the set of runs rather than one of them,
-and it opens no model: the manifest carries everything a menu needs, and
-a project's fifty runs must cost fifty small reads rather than fifty
-models.
+Every payload builder is a plain function taking a context and returning
+a dict, as in :mod:`rtl_buddy.cov.query`. The CLI emits the dict through
+``_emit_machine_result`` and the MCP tools return it verbatim, so
+payloads are never assembled in a command body.
 
-Every payload builder here is a **plain function taking a context and
-returning a dict**, exactly as :mod:`rtl_buddy.cov.query` does it. The
-CLI hands the dict straight to ``_emit_machine_result`` and a later MCP
-tool wraps the same dict verbatim — the payload *is* the contract, so it
-may not be assembled inside a command body where only one of the two
-surfaces would see it.
-
-**Roll-up happens here, not in the model.** The model is leaf-only on
-purpose (see :mod:`rtl_buddy.phys.model`): a subtree sum depends on the
-hierarchy the consumer is projecting onto, and the producer does not
-know it. ``rb phys instance`` *is* a consumer, and the hierarchy it
-projects onto is the instance path it was asked about — so it sums the
-rows under that path at query time and the document on disk stays leaf
-values only.
-
-**The two ``module`` columns are two namespaces, and this module does
-not pretend otherwise.** ``modules[].module`` is an *RTL module* name,
-as Yosys' ``stat`` saw it after elaboration. ``instances[].module`` is
-the *Liberty cell* each leaf is an instance of — ``DFF_X1``,
-``NAND2_X1`` — because that is what ``report_power`` and the cell
-sidecar name, and a mapped netlist's leaves are cells, not RTL modules.
-So the join these verbs make on that column answers Liberty-cell
-questions ("how much do all the DFFs burn") and nothing else. It does
-*not* attribute power to an RTL module, and a flat netlist is no
-exception: the join matches the power half's ``module`` field as it
-stands, and no leaf row carries ``u_cpu``'s name — or the top's — so it
-simply misses.
-
-Rather than invent an instance→RTL-module mapping here, the surfaces say
-so: every module payload carries the ``namespaces`` the name it resolved
-was found in, and ``module_payload`` sets :data:`INSTANCE_JOIN_LIBERTY_ONLY`
-on ``instance_join`` when it can see that shape. One name can be in
-*both* — a design with an RTL module called ``DFF_X1``, or a cell named
-after a block — and then the two halves are answering about two
-different things under one word; that payload says so
-(:data:`INSTANCE_JOIN_NAME_COLLISION`) rather than presenting the
-module's cells and area beside the cell type's power as one row. Nothing here attributes
-*area* to an instance or a subtree at all — see :func:`subtree_rollup`.
-Real RTL-module↔instance attribution needs the hierarchy join, which is
-tracked as its own phase on the epic (rtl-buddy/rtl_buddy#558).
-
-**A document that is not an object is refused where it is read.** Both
-files are JSON, and JSON's root may be a list, a string, a number, or
-``null`` — an empty artefact directory rebuilt by hand, a truncated
-write, a path pointed at the wrong file. Every payload here indexes into
-the root by key, so an unchecked non-object would raise ``AttributeError``
-out of the query layer, past :class:`PhysQueryError` and past the
-machine-mode envelope that turns a refusal into a result an agent can
-read. :func:`_require_mapping` makes it the same kind of refusal as an
-unreadable file, naming the path and what was found there.
-
-**And so is a block that is not the shape it is read as.** An object at
-the root and a ``schema_version`` this build knows say the document is
-one of these; neither says anything about its insides. A hand-edited or
-half-written file can carry both over ``"synth": []``, ``"modules": 7``
-or ``"totals": "x"`` and reach the builders, where ``len()`` on a number
-and ``.get`` on a string raise past the envelope exactly as a non-object
-root did. :func:`_require_blocks` refuses those at the read too, naming
-the field and what it holds. It is deliberately shallow: each block is
-checked for the shape it is *indexed* as and never for its keys, every
-one of which is optional by design.
-
-**A version this build does not know is an error, not a guess.** Both
-documents carry a ``schema_version`` that their producers bump when the
-shape changes incompatibly, and every payload here reads their blocks by
-name. A document from a future rtl_buddy would be read with today's key
-names and answered from whatever happened to still be spelled the same —
-a summary that is wrong rather than absent. :func:`_read_publication`
-refuses both documents outright, naming the version it found and the one
-this build reads, which is the same class of answer as a document that
-cannot be parsed at all.
-
-**Reading a publication.** The model and the manifest that names it are
-two files, written one after the other, so a reader can arrive between
-the two writes and pair a new model with the old manifest. Both carry
-the same ``publication`` token (see
-:func:`rtl_buddy.phys.model.new_publication`) and
-:func:`load_context` re-reads on a mismatch.
+* **Roll-up happens here.** The model holds leaf rows only.
+  ``rb phys instance`` sums the rows under the requested path at query
+  time (:func:`subtree_rollup`). There is no area roll-up.
+* **Two ``module`` namespaces.** ``modules[].module`` is an RTL module
+  name as Yosys saw it. ``instances[].module`` is the Liberty cell a leaf
+  instantiates. Joining on it answers Liberty-cell questions only and
+  cannot attribute power to an RTL module. Module payloads carry the
+  ``namespaces`` the name was found in and set ``instance_join`` to
+  :data:`INSTANCE_JOIN_LIBERTY_ONLY` or
+  :data:`INSTANCE_JOIN_NAME_COLLISION` when the join would mislead.
+* **Malformed documents are refused at the read.** A JSON root that is
+  not an object (:func:`_require_mapping`), a nested block of the wrong
+  shape (:func:`_require_blocks`) and an unknown ``schema_version``
+  (:func:`_require_schema`) each raise :class:`PhysQueryError`, so
+  ``--machine`` returns an error envelope instead of a traceback.
+* **Publication pairs.** The model and manifest are written one after the
+  other and carry the same ``publication`` token
+  (:func:`rtl_buddy.phys.model.new_publication`). :func:`load_context`
+  re-reads on a mismatch.
 """
 
 from __future__ import annotations
@@ -118,123 +54,71 @@ from .model import MODEL_SCHEMA_VERSION, load_model, provenance_of
 
 logger = logging.getLogger(__name__)
 
-#: Bumped when a payload's shape changes incompatibly. Rides on every
-#: payload so an agent surface can tell.
+#: Bumped when a payload's shape changes incompatibly; on every payload.
 PHYS_QUERY_SCHEMA_VERSION = 1
 
-#: How many times :func:`load_context` re-reads a model+manifest pair
-#: whose ``publication`` tokens disagree. Small because the only window
-#: it covers is the gap between two ``os.replace`` calls in the same
-#: function — a reader that is still mismatched after this is looking at
-#: two documents that were never written together, not at a race.
+#: Reads of a pair whose ``publication`` tokens disagree before giving up.
 PUBLICATION_ATTEMPTS = 3
 
-#: Seconds between those attempts. Long enough for a publish to finish
-#: its second write, short enough that a `rb phys summary` on a document
-#: nobody is writing never notices.
+#: Seconds between those reads.
 PUBLICATION_RETRY_SECONDS = 0.05
 
-#: Runs listed by ``rb phys runs`` before truncation. Larger than the
-#: row limit because a run list is a *menu*: a project holds tens of
-#: artefact directories, not thousands of leaf instances, and a menu cut
-#: off before the run you are looking for is a menu you cannot use. The
-#: payload carries the applied limit beside the untruncated count, as
-#: every other list here does.
+#: Runs listed by ``rb phys runs`` before truncation.
 DEFAULT_RUNS_LIMIT = 20
 
-#: Rows per ranking in ``rb phys summary`` before truncation. A headline,
-#: not a report: the whole breakdown is in the model the payload names,
-#: and a terminal listing ten thousand leaf instances is a terminal
-#: nobody reads to the end.
+#: Rows per ranking in ``rb phys summary`` before truncation.
 DEFAULT_RANK_LIMIT = 10
 
-#: How ``rb phys summary`` spells "list none of this ranking".
-#:
-#: ``--limit 0`` already means *all* — documented, relied on, and what
-#: the hub pane passes — so a per-ranking override needs a spelling for
-#: the opposite that cannot be confused with it. A literal word does
-#: that without renumbering anything: ``--instances-limit none`` yields
-#: an empty ``instances`` list, while ``--modules-limit 0`` still
-#: yields every module. It travels through the payload builders and the
-#: MCP tools as this exact string, so one value means one thing
-#: everywhere, and lands in the payload's ``limits`` block as itself.
+#: The per-ranking limit that lists no rows. ``--limit 0`` means all, so
+#: "none" needs a word; it is passed through the builders and MCP tools
+#: as this string and appears as itself in ``limits``.
 RANK_NONE = "none"
 
-#: A per-ranking limit as the surfaces exchange it: an ``int`` head
-#: (``0`` for all), :data:`RANK_NONE` for no rows at all, or ``None``
-#: for "not overridden — use the shared limit".
+#: A per-ranking limit: an ``int`` head (``0`` for all), :data:`RANK_NONE`,
+#: or ``None`` to use the shared limit.
 RankLimit = int | str | None
 
-#: The four power columns every instance row carries, in the order a
-#: reader wants them: the total first, then what it decomposes into.
+#: The power columns of an instance row: the total, then its parts.
 POWER_COLUMNS = ("total_uw", "internal_uw", "switching_uw", "leakage_uw")
 
-#: Which command fills each half of the model, so a summary over a
-#: one-sided document can say what to run rather than only what is
-#: absent. Keyed by the model's own block names.
+#: The command that fills each model half.
 HALF_PRODUCER = {"modules": "rb synth", "instances": "rb power"}
 
-#: Which ``provenance`` block each half's producer fills. The read side of
-#: the model's own pairing (its ``_HALVES`` table), spelled here rather
-#: than reached for privately — ``tests/test_phys_verbs.py`` pins the two
-#: against each other so a third half cannot be added to one alone.
+#: The ``provenance`` block each half's producer fills.
+# tests/test_phys_verbs.py pins it against the model's ``_HALVES``.
 HALF_PROVENANCE = {"modules": "synth", "instances": "power"}
 
-#: The characters a hierarchical instance path is built from. Both are
-#: admitted because the separator is the *tool's* choice — OpenSTA
-#: prints ``/`` for a netlist read from Verilog and ``.`` is what every
-#: RTL-side consumer spells the same path with — and a user typing the
-#: parent of a path they read elsewhere should not have to know which.
+#: Instance path separators. OpenSTA prints ``/`` and RTL-side consumers
+#: use ``.``, so both are accepted.
 _PATH_SEPARATORS = ("/", ".")
 
-#: What starts a Verilog escaped identifier. A name that is not a legal
-#: bare identifier -- a generate label carrying its index, a name a
-#: frontend mangled -- is written ``\gen[0].u_x``, and the ``.`` inside
-#: it is part of the *name*, not a level. Only a backslash that opens a
-#: segment leads an escape: Verilog admits no other position for one, and
-#: requiring the position keeps a stray backslash mid-name from
-#: swallowing every level after it.
+#: Starts a Verilog escaped identifier (``\gen[0].u_x``), whose ``.`` is
+#: part of the name. Only a backslash at the start of a segment counts.
 _ESCAPE_LEAD = "\\"
 
-#: The one separator every path comparison here is made in. Which of the
-#: two a path is spelled with is the *producer's* choice, so a comparison
-#: that kept it would make ``u_top.u_sub`` and ``u_top/u_sub`` different
-#: instances; levelling both sides first is the only way a query typed in
-#: one spelling can find rows stored in the other. Output rows keep the
-#: model's own spelling — this is a comparison rule, not a rewrite.
+#: The separator all path comparisons use. Output rows keep the model's
+#: own spelling.
 _CANONICAL_SEPARATOR = "/"
 
-#: What ``module_payload`` puts on ``instance_join`` when the module it
-#: was asked about lives only in the synthesis half and the power half,
-#: though populated, carries no row for it. The two halves spell
-#: ``module`` in different namespaces (see this module's docstring), so
-#: "no instances" and "the join cannot see them" are different answers and
-#: a consumer must be able to tell them apart. The value is the sentence
-#: rather than a code, so a machine reader gates on ``is not None`` and
-#: every surface — CLI, hub pane, MCP client — reports the same reason.
+#: ``instance_join`` note for a module found only in the synthesis half
+#: when the populated power half has no row for it. A string, so machine
+#: readers gate on ``is not None`` and all surfaces show one reason.
 INSTANCE_JOIN_LIBERTY_ONLY = (
     "liberty-cell names only: no instance row carries this RTL module, so "
     "power cannot be attributed to it until the hierarchy join lands"
 )
 
-#: The namespace of the synthesis half's ``module`` column: an RTL module
-#: name, as Yosys' ``stat`` saw it after elaboration.
+#: Namespace of the synthesis half's ``module`` column: an RTL module name.
 NAMESPACE_RTL = "rtl"
 
-#: The namespace of the power half's ``module`` column: the Liberty cell
-#: a leaf instance is an instance of.
+#: Namespace of the power half's ``module`` column: a Liberty cell name.
 NAMESPACE_LIBERTY = "liberty"
 
-#: Both namespaces, in the order a payload lists them.
+#: Both namespaces, in payload order.
 NAMESPACES = (NAMESPACE_RTL, NAMESPACE_LIBERTY)
 
-#: What ``module_payload`` puts on ``instance_join`` when the name it
-#: resolved exists in *both* namespaces. The two halves are then about
-#: two different things — an RTL module's cells and area, an unrelated
-#: cell type's power — and combining them into one answer silently is
-#: precisely the failure the namespace split exists to prevent. Said
-#: rather than guessed at, because which of the two the user meant is
-#: not knowable from the name they typed, and both halves are real.
+#: ``instance_join`` note for a name that is an RTL module and also a
+#: Liberty cell, so the two halves measure different things.
 INSTANCE_JOIN_NAME_COLLISION = (
     "name collision: this name is an RTL module in the synthesis half *and* "
     "a liberty cell in the power half, so the cells and area below are the "
@@ -246,31 +130,16 @@ INSTANCE_JOIN_NAME_COLLISION = (
 def level_path(path: str) -> str:
     r"""One instance path in the separator every comparison here uses.
 
-    Every ``/`` and every ``.`` is a level, whichever the tool wrote —
-    *except* inside an escaped identifier. Verilog escapes a name that is
-    not a legal bare identifier as ``\gen[0].u_x``, terminated by
-    whitespace, and the ``.`` in there names no level: levelling it would
-    split one leaf into two and put the row under a parent that does not
-    exist. So a backslash opening a segment runs atomically to the
-    whitespace that ends it, or to the end of the path when nothing does.
+    Every ``/`` and ``.`` is a level, except inside a Verilog escaped
+    identifier: a backslash that opens a segment runs to the next
+    whitespace or the end of the path, and its ``.`` is part of the name.
+    The stored form keeps the backslash and drops the terminator
+    (``u_top/\gen[0].u_x``), because the readers keep only paths without
+    spaces. A terminated form typed by a user is accepted and the
+    terminator dropped.
 
-    What the model can actually hold, since the rule is only worth what
-    the data makes of it: both readers behind it keep a path only if it
-    has no space in it — :func:`~rtl_buddy.phys.reports.parse_instance_power`
-    captures the path as ``(\S+)\s*$`` and the cells sidecar takes a
-    line of exactly two whitespace-separated fields — so an escape's
-    terminator is *stripped* on the way in, and an escape that is not the
-    last segment takes its whole row down with it (the space makes the
-    line unparseable and it is dropped). An escaped leaf therefore
-    reaches the model as ``u_top/\gen[0].u_x``, backslash kept and
-    terminator gone, which is the spelling this must survive. The
-    terminated form is handled too, and the terminator dropped, so a user
-    who types the path as Verilog spells it still matches the stored row.
-
-    The hub's `/phy` pane levels a schematic path the same way in its
-    ``toWirePath`` before it puts one on the wire (#561). The two are
-    separate copies on either side of the wire and must not drift: a
-    change here needs the same change there.
+    The hub's `/phy` pane levels paths the same way in ``toWirePath``;
+    change the two together.
     """
     text = str(path)
     levelled: list[str] = []
@@ -301,9 +170,8 @@ def level_path(path: str) -> str:
 class PhysQueryError(FatalRtlBuddyError):
     """A physical question that cannot be answered as asked.
 
-    Carries ``candidates`` when the failure was an unknown module name
-    or instance path, so the CLI and a later MCP server can show near
-    misses instead of only the miss.
+    ``candidates`` holds near misses for an unknown module name or
+    instance path.
     """
 
     def __init__(self, message: str, *, candidates: list[str] | None = None) -> None:
@@ -330,16 +198,9 @@ class PhysContext:
 def resolve_manifest_path(project_root, *, phys_dir=None, manifest=None) -> str:
     """Locate the manifest to read, most explicit request first.
 
-    Three ways in, in descending order of how specific the user was:
-    ``--manifest`` names the document, ``--phys-dir`` names the
-    directory holding it, and neither means the newest manifest in the
-    project. The precedence is the coverage verbs' verbatim, because a
-    user who has learned one should not have to learn the other.
-
-    Unlike coverage, discovery cannot shortcut on a directory name:
-    synthesis and power write into whatever ``artefacts/<run>/`` the run
-    was named into, so the filename is the only marker and
-    :func:`~rtl_buddy.phys.manifest.discover_manifests` walks for it.
+    ``manifest`` names the document (or its directory), ``phys_dir`` names
+    the directory holding it, and with neither the newest manifest in the
+    project is used, as in the coverage verbs.
     """
     if manifest is not None:
         candidate = Path(manifest)
@@ -370,32 +231,15 @@ def resolve_manifest_path(project_root, *, phys_dir=None, manifest=None) -> str:
 def load_context(project_root, *, phys_dir=None, manifest=None) -> PhysContext:
     """Load the manifest and the model it names, as one publication.
 
-    A manifest with no readable model is an error rather than an empty
-    answer: both documents are written by the same code path, so a
-    missing model means the artefacts were truncated, not that the run
-    measured nothing. A run that measured nothing still writes a model —
-    with both halves ``null`` — and that is a state the payloads report
-    rather than refuse.
+    A manifest with no readable model is an error. A run that measured
+    nothing still writes a model with both halves ``null``, which the
+    payloads report rather than refuse.
 
-    **The pair, not the two files.** A publish replaces the model and
-    then the manifest, each atomically but not together, so a read that
-    lands between the two ``os.replace`` calls gets a new model under an
-    old manifest — the totals from one run beside the artefact paths of
-    another. Both documents carry the ``publication`` token of the write
-    that produced them (:func:`rtl_buddy.phys.model.new_publication`), so
-    the mismatch is *visible*: this re-reads the pair up to
+    If the ``publication`` tokens differ, the pair is re-read up to
     :data:`PUBLICATION_ATTEMPTS` times, :data:`PUBLICATION_RETRY_SECONDS`
-    apart, which is far longer than the window.
-
-    Still mismatched after that is **not** an error, and this is an
-    advisory read: nothing here holds a lock, so the only alternatives
-    are to refuse a question the documents can very nearly answer or to
-    answer it from the freshest read of each. It takes the latter — the
-    last pair read, which is what the two files say right now — and logs
-    it. Two documents that genuinely disagree (one written by an
-    rtl_buddy that predates the token, say, and one that does not) are
-    the case that would otherwise never resolve. A document that cannot
-    be *read* is still an error, as above.
+    apart, to ride out a publish between its two writes. If they still
+    differ, the last read is returned and a DEBUG event is logged, because
+    the read holds no lock and refusing would be worse.
     """
     manifest_path = resolve_manifest_path(
         project_root, phys_dir=phys_dir, manifest=manifest
@@ -453,9 +297,7 @@ def _read_publication(manifest_path: str, project_root) -> PhysContext:
     )
 
 
-#: JSON's own names for what a value is, so the refusals below say what
-#: a document holds in the vocabulary of the format it is written in
-#: rather than in Python's.
+#: JSON's names for value kinds, used in refusal messages.
 _JSON_KINDS = {
     type(None): "null",
     bool: "a boolean",
@@ -466,31 +308,16 @@ _JSON_KINDS = {
     dict: "an object",
 }
 
-#: The three shapes a nested block is read as here, spelled as the
-#: refusal spells them.
+#: The shapes a nested block is read as, worded as the refusal words them.
 _SHAPE_MAPPING = "an object"
 _SHAPE_ROWS = "an array of objects"
 _SHAPE_TEXT = "a string"
 
-#: Every nested field a read here dereferences, and the shape each one
-#: is dereferenced as. Named once, as data, because the check belongs at
-#: the read and not in whichever payload builder happens to touch a block
-#: first: one malformed document must be one refusal, whichever verb was
-#: asked. ``null`` is admitted everywhere — a half-filled model and a
-#: manifest with no power block are the ordinary states these payloads
-#: report rather than refuse.
-#:
-#: "A read here" includes the manifest helpers this module reads
-#: *through*: ``phys_dir`` is never indexed by a payload, but
-#: :func:`~rtl_buddy.phys.manifest.project_root_for` calls
-#: ``os.path.isabs`` on it and walks its ``parts`` on the way to every
-#: artefact path, which a list or a number fails with a ``TypeError``
-#: past the envelope. The header fields a payload only *echoes*
-#: (``run``, ``top``, ``generated_at``, ``command``, ``publication``) are
-#: deliberately absent: nothing dereferences them, so nothing here can
-#: fail on their shape, and refusing a whole document over a field that
-#: is passed through untouched would be strictness with no failure behind
-#: it.
+#: Every nested field that is dereferenced, and the shape it is read as.
+#: ``null`` is admitted everywhere, since a half-filled model is an
+#: ordinary state. ``phys_dir`` is included because
+#: :func:`~rtl_buddy.phys.manifest.project_root_for` walks it. Header
+#: fields that are only echoed are not checked.
 _NESTED_SHAPES = {
     "manifest": (
         ("model", _SHAPE_TEXT),
@@ -516,14 +343,8 @@ def _json_kind(value) -> str:
 def _require_mapping(document, path, what: str) -> None:
     """Refuse a document whose JSON root is not an object.
 
-    Read before the ``schema_version`` check, because that check is
-    itself a key lookup: everything downstream — the version, the
-    blocks, the halves — assumes a mapping, and the first thing to touch
-    a list or a ``null`` would raise ``AttributeError`` rather than
-    :class:`PhysQueryError`. That distinction is the whole point: a
-    ``PhysQueryError`` reaches ``--machine`` as an error envelope with a
-    message in it, and an ``AttributeError`` reaches it as a traceback
-    and no envelope at all.
+    Checked first, so a list or ``null`` raises :class:`PhysQueryError`
+    (an error envelope under ``--machine``) and not ``AttributeError``.
     """
     if isinstance(document, dict):
         return
@@ -546,15 +367,9 @@ def _shape_ok(value, shape: str) -> bool:
 def _require_blocks(document: dict, path, what: str) -> None:
     """Refuse a document whose nested blocks are not the shapes they are read as.
 
-    The row-level test is a plain ``all()`` over the list rather than a
-    per-column schema, and that is the whole of the strictness on
-    purpose: every column a payload reads is read with ``.get`` and
-    every one of them is legitimately ``None`` somewhere (no Liberty, no
-    ``area_um2``), so anything finer would refuse documents these
-    payloads answer about correctly today. What it does catch is the
-    thing that cannot be answered about at all — a block of the wrong
-    *kind*, which is a truncated write or a hand edit rather than a
-    measurement that did not happen.
+    Shallow on purpose: rows are checked to be objects and keys are never
+    checked, since every column is read with ``.get`` and may legitimately
+    be ``None``.
     """
     for field, shape in _NESTED_SHAPES[what]:
         value = document.get(field)
@@ -573,21 +388,11 @@ def _require_blocks(document: dict, path, what: str) -> None:
 
 
 def _require_schema(document: dict, supported: int, path, what: str) -> None:
-    """Refuse a document whose ``schema_version`` this build cannot read.
+    """Refuse a document whose ``schema_version`` is not ``supported``.
 
-    The producers bump the version when the shape changes incompatibly,
-    so a value other than the one compiled in here means the blocks the
-    payloads index into are not the blocks that were written. Both
-    directions are refused rather than only the newer one: an older
-    document is missing keys this build treats as guaranteed, and a
-    newer one has moved them. The message names both versions, because
-    which of the two is bigger is what tells a user whether to re-run
+    Older and newer versions are both refused, and so is an absent one.
+    The message names both versions so the user knows whether to re-run
     the flow or upgrade rtl_buddy.
-
-    A document with no ``schema_version`` at all is refused the same
-    way, and reported as such — the producers have written the key since
-    the first version of both documents, so its absence says this is not
-    one of these documents rather than that it is an early one.
     """
     found = document.get("schema_version")
     if found == supported:
@@ -608,11 +413,9 @@ def _require_schema(document: dict, supported: int, path, what: str) -> None:
 def artefacts_block(ctx: PhysContext) -> dict:
     """Every artefact path this run produced, project-relative.
 
-    The block a machine consumer gates on. Both producer blocks are
-    flattened into it under a prefix rather than nested, so a consumer
-    reading ``artefacts["synth_netlist"]`` need not first ask whether a
-    synthesis ever ran here — the manifest's stable-keys rule already
-    guarantees the key, and ``null`` already means "not produced".
+    Both producer blocks are flattened under ``synth_`` and ``power_``
+    prefixes, so every key is always present and ``null`` means "not
+    produced".
     """
     document = ctx.manifest
     synth = document.get("synth") or {}
@@ -630,34 +433,14 @@ def artefacts_block(ctx: PhysContext) -> dict:
 
 
 def halves_block(model: dict) -> dict:
-    """Which halves of the model this document actually has.
+    """Which halves of the model this document has.
 
-    The first thing every payload here reports, because the model is
-    routinely half-filled by design: a synthesis writes ``modules`` and
-    a power analysis writes ``instances``, and only a directory that saw
-    both runs holds both. ``rows`` is the row count when present and
-    ``null`` when not — ``0`` is a real answer (a design with no cells)
-    and must not read as "missing".
-
-    ``netlist_hash`` is the provenance echo: whether this half's producer
-    recorded the hash of the netlist it measured. It is what a surface
-    needs before telling anyone how to fill the *other* half, because the
-    merge is gated on that hash
-    (:func:`rtl_buddy.phys.model.may_inherit_other_half`). A half without
-    one — a ``netlist-source: pnr`` power run reads a routed database and
-    has no netlist to hash — cannot be paired with, so the run that would
-    otherwise complete the model replaces it instead. A boolean rather
-    than the hash itself: whether there is one is the whole of what a
-    consumer can act on, and the digest belongs to the model.
-
-    ``mode`` and ``activity`` say what kind of power the ``instances``
-    half holds and what drove it (#568) — the one thing the rows cannot
-    say about themselves, and what makes two runs over one netlist two
-    measurements rather than two readings of one. Both keys are on
-    *both* halves, ``null`` on ``modules``, because a consumer walks this
-    block half by half and a shape that changed between the two would
-    have to be special-cased everywhere it is read; a synthesis has no
-    mode, and says so.
+    Per half: ``present``; ``rows`` (a count, or ``null`` when absent, so
+    ``0`` is a real answer); ``produced_by``, the command that fills it;
+    ``netlist_hash``, whether its producer recorded a netlist hash (the
+    merge is gated on it, and a ``netlist-source: pnr`` power half has
+    none); and ``mode`` and ``activity``, which are ``null`` on
+    ``modules``.
     """
     block = {}
     provenance = provenance_of(model)
@@ -681,22 +464,12 @@ def missing_halves(model: dict) -> list[str]:
 
 
 def _run_block(ctx: PhysContext) -> dict:
-    """The header every payload here opens with: which run this is.
+    """The header every payload opens with: which run this is.
 
-    Since #568 that means identity as well as location. ``power_mode``
-    and ``power_activity`` say which kind of power the numbers below
-    are — a header naming only the backend presents a static leakage
-    total and a SAIF-driven one as the same measurement. ``config``
-    carries each half's fingerprint, which is what tells two experiments
-    of one design apart when they share a ``top`` and their run names
-    are generated. ``xplr`` names the experiment the manifest sits
-    under, or ``null``; it is derived from the path, so it costs no
-    read.
-
-    All three are read off the *manifest* rather than the model, for the
-    reason the manifest records them at all: they are the same blocks,
-    and the manifest is the document a listing of every run in a project
-    can afford to open.
+    Identity comes from the manifest: ``power_mode`` and
+    ``power_activity`` say which kind of power the numbers are, ``config``
+    holds each half's fingerprint, and ``xplr`` names the ``rb xplr``
+    experiment the manifest sits under, or ``null``.
     """
     document = ctx.manifest
     synth = document.get("synth") or {}
@@ -706,8 +479,7 @@ def _run_block(ctx: PhysContext) -> dict:
         "manifest": manifest_mod.project_relative(ctx.manifest_path, ctx.project_root),
         "model": document.get("model"),
         "generated_at": document.get("generated_at"),
-        # Not `command`: the machine envelope already spends that key on
-        # the verb being run, and `**payload` would collide with it.
+        # Not `command`: the machine envelope uses that key.
         "run_command": document.get("command"),
         "run": document.get("run"),
         "top": document.get("top"),
@@ -732,15 +504,11 @@ def _instance_rows(model: dict) -> list[dict]:
 
 
 def truncate(rows: list, limit: int | None) -> list:
-    """The rows a payload lists, given the ``limit`` its caller asked for.
+    """The head of ``rows`` for a ``limit``.
 
-    One rule, named once, because four payloads and two surfaces obey
-    it: ``None`` means the caller wants the complete list (the builders'
-    default, and what the MCP tools pass), ``0`` means the same thing
-    said by a CLI flag whose help documents ``0`` as "all", and anything
-    positive is a head. Nothing here reports *that* it truncated — the
-    payload carries the applied ``limit`` and the untruncated count
-    beside the list, so a consumer can tell without being told.
+    ``None`` and ``0`` (from a CLI flag) mean the complete list, and a
+    positive number is a head. Payloads carry the applied ``limit`` and
+    the untruncated count.
     """
     return rows if limit is None or limit <= 0 else rows[:limit]
 
@@ -748,9 +516,8 @@ def truncate(rows: list, limit: int | None) -> list:
 def _sort_key_desc(value):
     """Order a possibly-``None`` metric descending, nulls last.
 
-    A row whose metric was never measured is not a zero — Yosys writes
-    no ``area`` without a Liberty — so it sinks rather than ranking
-    alongside the genuinely small.
+    An unmeasured metric is not zero (Yosys writes no ``area`` without a
+    Liberty), so it sorts after every measured value.
     """
     return (0, -value) if isinstance(value, (int, float)) else (1, 0.0)
 
@@ -758,10 +525,7 @@ def _sort_key_desc(value):
 def heaviest_modules(model: dict, limit: int | None = None) -> list[dict]:
     """Module rows ranked by cell count, then area, then name.
 
-    Cells lead and area breaks the tie rather than the other way round,
-    because ``area_um2`` is ``null`` for every unmapped run while
-    ``cell_count`` is always there — ranking on the column that can be
-    absent would order a whole class of runs alphabetically.
+    Cell count leads because ``area_um2`` is ``null`` for unmapped runs.
     """
 
     def key(row):
@@ -777,12 +541,8 @@ def heaviest_modules(model: dict, limit: int | None = None) -> list[dict]:
 def hottest_key(row) -> tuple:
     """The order every list of instance rows is presented in.
 
-    Total power descending with nulls last, path breaking the tie. Named
-    once because three payloads sort by it — the ranking
-    :func:`hottest_instances` is, the instances of a module, and the
-    children of a subtree — and a list that quietly used a different one
-    would head to a different set of rows under ``limit`` than the
-    surface above it says it is heading (#563 review).
+    Total power descending with nulls last, then path. Shared by the
+    global ranking, a module's instances and a subtree's children.
     """
     return (
         _sort_key_desc(row.get("total_uw")),
@@ -796,12 +556,9 @@ def hottest_instances(model: dict, limit: int | None = None) -> list[dict]:
 
 
 def _power_sum(rows) -> dict:
-    """Add up the four power columns over ``rows``.
+    """Add up the power columns over ``rows``.
 
-    ``null`` in, ``null`` out: a column no row measured stays ``None``
-    rather than becoming ``0.0``, so a rollup over instances whose
-    switching power was never reported cannot be read as "it switches
-    nothing".
+    A column no row measured stays ``None`` and does not become ``0.0``.
     """
     totals: dict[str, float | None] = {column: None for column in POWER_COLUMNS}
     for row in rows:
@@ -818,16 +575,12 @@ def _power_sum(rows) -> dict:
 
 
 def parse_rank_limit(value: str | None) -> RankLimit:
-    """Read a per-ranking limit off a CLI flag.
+    """Parse a per-ranking limit from a CLI flag.
 
-    ``None`` in (the flag was not passed) is ``None`` out — the caller
-    falls back to the shared ``--limit`` rather than to a default of its
-    own, so an invocation that names neither flag behaves exactly as it
-    did before they existed. Otherwise the word :data:`RANK_NONE` asks
-    for no rows and a non-negative integer is a head, ``0`` meaning all
-    as it does everywhere else. Anything else raises :class:`ValueError`
-    naming the spellings it takes; the CLI turns that into a usage
-    error rather than a traceback.
+    ``None`` stays ``None``, meaning the shared ``--limit``. The word
+    :data:`RANK_NONE` lists no rows, a non-negative integer is a head, and
+    ``0`` means all. Anything else raises :class:`ValueError`, which the
+    CLI turns into a usage error.
     """
     if value is None:
         return None
@@ -851,12 +604,9 @@ def parse_rank_limit(value: str | None) -> RankLimit:
 
 
 def _rank_rows(builder, model: dict, limit: RankLimit) -> list[dict]:
-    """One ranking, or none of it, without paying for what was not asked.
+    """One ranking, or ``[]`` for :data:`RANK_NONE` without calling ``builder``.
 
-    :data:`RANK_NONE` returns ``[]`` *without calling* ``builder``:
-    suppression exists because a 300k-row ranking costs a sort, a
-    serialisation and a decode, and a suppression that sorted the rows
-    before dropping them would have saved only the last of the three.
+    Skipping the builder avoids sorting rows that would be dropped.
     """
     if limit == RANK_NONE:
         return []
@@ -870,24 +620,15 @@ def summary_payload(
     modules_limit: RankLimit = None,
     instances_limit: RankLimit = None,
 ) -> dict:
-    """The run header, the totals sanity block, and the two rankings.
+    """The run header, the totals sanity block and the two rankings.
 
-    The totals come from the flows' own log scrapes and the rows from a
-    different scrape entirely, so both are reported and neither is
-    derived from the other — a totals-versus-sum mismatch is information
-    (see :mod:`rtl_buddy.phys.model`), and folding one into the other
-    here would destroy it.
-
-    ``limit`` heads *both* rankings and keeps its meaning and its
-    default. ``modules_limit`` and ``instances_limit`` override it for
-    one ranking each and may be :data:`RANK_NONE` for an empty one —
-    the consumer that wants the complete module table (``limit=0``)
-    without every leaf instance row behind it (#606). The payload
-    reports both applied values in ``limits``, beside the shared
-    ``limit`` it still carries, and ``counts`` stays the *model's* row
-    counts either way, so a suppressed ranking is never mistaken for a
-    half the run never produced: that is ``counts[half] is None``,
-    which only a one-sided model says.
+    Totals and rows come from different scrapes and are both reported,
+    never derived from each other. ``limit`` heads both rankings;
+    ``modules_limit`` and ``instances_limit`` override it per ranking and
+    may be :data:`RANK_NONE`. The applied values are in ``limits``.
+    ``counts`` is always the model's row count, so a suppressed ranking is
+    not mistaken for a half the run never produced, which is
+    ``counts[half] is None``.
     """
     model = ctx.model
     modules_limit = limit if modules_limit is None else modules_limit
@@ -919,16 +660,8 @@ def _names_in(rows) -> set[str]:
 def namespaces_of(model: dict, name: str) -> list[str]:
     """Which halves' ``module`` column spells ``name``.
 
-    ``["rtl"]`` for a synthesis row, ``["liberty"]`` for the cell a leaf
-    is an instance of, and *both* when one word is in both columns —
-    which is a real shape, not a corner case: nothing stops a design
-    from having a module called ``DFF_X1``, and a cell library from
-    naming a cell after a block. The two halves then measure two
-    different things under one name, and a payload that reported only
-    the union of their rows would read as one.
-
-    Ordered by :data:`NAMESPACES` rather than by which half was looked at
-    first, so a consumer can compare the field for equality.
+    ``["rtl"]``, ``["liberty"]`` or both, in :data:`NAMESPACES` order. A
+    name can be in both, for example an RTL module called ``DFF_X1``.
     """
     found = {
         NAMESPACE_RTL: _names_in(_module_rows(model)),
@@ -938,12 +671,10 @@ def namespaces_of(model: dict, name: str) -> list[str]:
 
 
 def module_names(model: dict) -> list[str]:
-    """Every module name the model can be asked about.
+    """Every module name the model can be asked about, sorted.
 
-    The union of both halves, not just the synthesis one: the power
-    half's ``module`` column names the Liberty cell each leaf instance is
-    an instance of, and "how much power do all the DFFs burn" is a
-    question a power-only model can answer perfectly well.
+    The union of both halves, since a power-only model can still answer
+    Liberty-cell questions.
     """
     names = {str(row["module"]) for row in _module_rows(model) if row.get("module")}
     names.update(
@@ -953,27 +684,13 @@ def module_names(model: dict) -> list[str]:
 
 
 def resolve_module_name(model: dict, module: str, *, where=None) -> str:
-    """A user's module name -> the name the model spells it with.
+    """Resolve a user's module name to the name the model spells it with.
 
-    Raises :class:`PhysQueryError` with near misses when there is no
-    such module, for the same reason the coverage verbs do: an unknown
-    name is a typo far more often than it is a design that lacks the
-    block, and the near-miss list is the cheaper fix. When the model is
-    half-filled the message says which command would add the missing
-    half, since that is the other way a name goes missing.
-
-    An exact match is taken first and case is only a fallback, and that
-    fallback applies only where it is unambiguous. Verilog is
-    case-sensitive and a Liberty library need not agree with the RTL
-    about case, so ``CPU`` and ``cpu`` can both be real names in one
-    model — in one half, or one in each (see :func:`namespaces_of`). A
-    single lowercase key cannot hold both, and the old lookup silently
-    answered with whichever the dict had kept, reporting one block's
-    cells and area under the other's name. Two or more case-variants is
-    therefore a refusal that lists them as candidates: the user knows
-    which they meant and spelling it exactly gets it, where a guess here
-    is wrong half the time and says nothing about being a guess
-    (#561 review).
+    An exact match wins. Otherwise a case-insensitive match is accepted
+    only if unambiguous; several case variants raise
+    :class:`PhysQueryError` with the variants as candidates. An unknown
+    name raises with near misses, and the message names the command that
+    would add a missing half.
     """
     known = module_names(model)
     if module in known:
@@ -1004,52 +721,17 @@ def _missing_half_hint(model: dict) -> str:
 
 
 def module_payload(ctx: PhysContext, module: str, *, limit: int | None = None) -> dict:
-    """One module's synthesis row and the instances of it, with power.
+    """One module's synthesis row and its instances, with power.
 
-    The join the two halves make where they can: ``modules`` says how
-    many cells and how much area the block is, ``instances`` says what
-    the leaves *of that Liberty cell* burn. Either side may be ``null`` —
-    the payload reports what it has and names the command that would
-    supply the rest.
+    ``row`` is the synthesis row and ``instances`` are the power rows
+    whose Liberty cell is that name. Either may be ``null``, and
+    ``missing_halves`` names what is absent. ``namespaces`` says which
+    halves the name was found in. ``instance_join`` qualifies the join
+    (:func:`_instance_join_note`).
 
-    ``namespaces`` says which halves' ``module`` column the resolved name
-    was found in (:func:`namespaces_of`), so a reader knows what kind of
-    name it is holding before it reads either half.
-
-    ``instance_join`` is the honest signal about the join itself. It is
-    ``null`` when there is nothing to qualify, and
-    :data:`INSTANCE_JOIN_LIBERTY_ONLY` when the name resolved out of the
-    synthesis half alone, matched no instance row, and the power half is
-    populated — the shape of an RTL module on a mapped hierarchical
-    design, whose leaves are named after Liberty cells and so can never
-    match it. Without it a consumer cannot tell "this module has no
-    instances" from "the join cannot see this module's instances", and
-    the two call for opposite reactions.
-
-    When ``namespaces`` holds both, it is :data:`INSTANCE_JOIN_NAME_COLLISION`
-    instead: the row and the instances are then measurements of two
-    unrelated things — an RTL module and a Liberty cell that happen to
-    share a name — and the payload puts them side by side only because
-    the user named one word. Nothing here picks a winner (both halves
-    really do have rows under that name), and nothing sums across them;
-    the note is what stops the pairing from being read as a module's
-    own power.
-
-    ``limit`` heads the ``instances`` list, and defaults to the complete
-    one. It lives here rather than in the CLI's rendering because the
-    machine payload is the CLI's *whole* output under ``--machine``: a
-    flag honoured only in the table would print one row and emit ten
-    thousand, which is the flag lying to exactly the consumer that cannot
-    re-count. The MCP tools pass nothing and so keep the complete list,
-    which is the contract they were registered with.
-
-    A truncated list stays self-describing: ``instance_count`` is the
-    number of instances there *are* — never the number listed — and
-    ``limit`` is what was applied, so ``len(instances) < instance_count``
-    is a head rather than a miss. ``power`` sums every matching instance
-    for the same reason: it is the module's total, and a total over the
-    first ``n`` rows of an arbitrary ranking is not a figure anyone
-    asked for.
+    ``limit`` heads ``instances`` and defaults to the complete list.
+    ``instance_count`` and ``power`` are always over every matching
+    instance.
     """
     resolved = resolve_module_name(ctx.model, module, where=ctx.model_path)
     model = ctx.model
@@ -1084,19 +766,12 @@ def module_payload(ctx: PhysContext, module: str, *, limit: int | None = None) -
 
 
 def _instance_join_note(model: dict, row, instances, namespaces) -> str | None:
-    """What, if anything, the reader would otherwise misread about the join.
+    """The note on a module payload's instance join, or ``None``.
 
-    Two things can go wrong under one name, and they are opposites. A
-    name in *both* namespaces joins rows that should never have been put
-    together, and the note says so first, because that payload looks
-    complete — a row, instances, a power total — and is the one nobody
-    would think to question.
-
-    Otherwise the note marks the empty join, and only when all three
-    hold: the name came out of the synthesis half (so it is an RTL module
-    name), the power half exists and has rows (so "no instances" is not
-    simply "no power run"), and nothing matched. A Liberty cell that
-    *did* match, or a genuinely instance-free design, gets no note.
+    A name in both namespaces gets :data:`INSTANCE_JOIN_NAME_COLLISION`.
+    Otherwise :data:`INSTANCE_JOIN_LIBERTY_ONLY` is returned only when the
+    name came from the synthesis half, the power half has rows and
+    nothing matched.
     """
     if len(namespaces) > 1:
         return INSTANCE_JOIN_NAME_COLLISION
@@ -1119,15 +794,8 @@ def instance_paths(model: dict) -> list[str]:
 def is_descendant(path: str, prefix: str) -> bool:
     """Is ``path`` strictly below ``prefix`` in the instance hierarchy?
 
-    Both sides are levelled first (:func:`level_path`): OpenSTA writes
-    ``/`` for a netlist read from Verilog while every RTL-side surface
-    spells the same path with ``.``, and a user asking for the subtree
-    under a path they read in the schematic must not miss the rows
-    because of the separator.
-
-    A separator has to follow the prefix, or ``u_cpu`` would claim
-    ``u_cpu_regs`` — a different block whose name merely starts the
-    same way, and the kind of miscount a rollup must never make.
+    Both sides are levelled first (:func:`level_path`). A separator must
+    follow the prefix, so ``u_cpu`` does not claim ``u_cpu_regs``.
     """
     path = level_path(path)
     prefix = level_path(prefix)
@@ -1137,24 +805,10 @@ def is_descendant(path: str, prefix: str) -> bool:
 
 
 def subtree_rollup(rows: list[dict]) -> dict:
-    """Sum ``rows`` into one subtree figure: the leaf count and the power.
+    """Sum ``rows`` into a leaf count and the power columns.
 
-    The roll-up the model deliberately does not do. Power adds up
-    straightforwardly because every row is a leaf and every column is a
-    watt figure of that leaf alone.
-
-    **No area.** There is no per-cell area anywhere in the model, so
-    there is nothing here to sum. The obvious substitute — join each
-    leaf's ``module`` to the synthesis half and add that row's area — is
-    wrong twice over: the synthesis row's ``area_um2`` is the *whole
-    module's* area, not one instance's, so a subtree with fifty
-    ``DFF_X1`` leaves would add the ``DFF_X1`` row's total fifty times;
-    and the two halves spell ``module`` in different namespaces (see this
-    module's docstring), so on a Liberty/RTL name collision the figure
-    would be some other module's area entirely — reported as covered.
-    Area attribution to an instance needs the hierarchy join, which is
-    Phase 5 of the epic (rtl-buddy/rtl_buddy#558); until then this says
-    nothing about area rather than saying something arbitrary.
+    There is no area: the model has no per-instance area, and adding the
+    synthesis row's module area per leaf would count it once per instance.
     """
     return {"instances": len(rows), **_power_sum(rows)}
 
@@ -1162,46 +816,17 @@ def subtree_rollup(rows: list[dict]) -> dict:
 def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -> dict:
     """One instance's row, or the subtree its path is the root of.
 
-    Exact match first, prefix second — in that order because a path that
-    is both a leaf and a prefix is a real netlist shape, and the row the
-    user named is the answer they asked for. The subtree case lists the
-    leaves under the path and rolls them up at query time; the model on
-    disk stays leaf-only.
+    An exact match wins, then a prefix match. Paths are compared levelled
+    (:func:`level_path`), rows keep the model's spelling, and
+    ``instance_path`` echoes the query. ``match`` is ``"exact"`` or
+    ``"prefix"``.
 
-    ``match`` says which question was answered, and ``rollup`` answers
-    that question and no other. An **exact** match rolls up the named row
-    alone: the path resolved to one row, so adding the rows beneath it
-    would report a subtree total under a payload that says ``exact`` and
-    beside an ``instance`` that is one leaf — three parts of one document
-    describing two different sets. A **prefix** match rolls up the whole
-    subtree, which is the only set it has.
-
-    Descendants of an exact match are still listed in ``children``, and
-    still counted by ``child_count``: they exist, the caller asked about
-    a path they hang off, and hiding them would be its own kind of lie.
-    They are navigation, not summands — the console says so when both are
-    present (#561 round-16).
-
-    Both comparisons are made on levelled paths (:func:`level_path`), so
-    a dotted query finds slash-stored rows and the reverse. The rows
-    themselves are returned with the model's own spelling, and
-    ``instance_path`` echoes what the user asked.
-
-    ``children`` is ordered by total power descending, nulls last, with
-    the path breaking the tie — :func:`hottest_key`, the same ranking the
-    other two instance lists use. It was lexicographic, which read the
-    same as long as nothing was cut off it but headed the wrong rows the
-    moment something was: ``limit`` truncates *after* the sort, and every
-    surface that heads this list describes it as the heaviest children
-    (#563 review).
-
-    ``limit`` heads the ``children`` list and defaults to the complete
-    one, exactly as :func:`module_payload`'s does and for the same
-    reason. ``child_count`` is how many children there are, and a prefix
-    match's ``rollup`` sums every leaf under the path, listed or not — a
-    subtree total that counted only the rows that fitted on a terminal
-    would be a different number under ``--limit 5`` than under
-    ``--limit 0``.
+    ``rollup`` covers only what ``match`` says: the named row for an
+    exact match, the whole subtree for a prefix match. ``children`` lists
+    the descendants in :func:`hottest_key` order either way, as
+    navigation and not as summands. ``limit`` heads ``children`` and
+    defaults to the complete list. ``child_count`` and ``rollup`` are
+    always over every row.
     """
     model = ctx.model
     if model.get("instances") is None:
@@ -1227,8 +852,6 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
             or known[:10],
         )
 
-    # What `match` says was matched, and nothing else: the named row for
-    # an exact match, the subtree for a prefix one.
     covered = [exact] if exact is not None else children
     payload = _run_block(ctx)
     payload.update(
@@ -1249,45 +872,25 @@ def instance_payload(ctx: PhysContext, path: str, *, limit: int | None = None) -
 
 
 # ---------------------------------------------------------------------------
-# the run listing (#568)
+# the run listing
 # ---------------------------------------------------------------------------
 
 
 def runs_payload(project_root, *, limit: int | None = None) -> dict:
     """Every run with physical artefacts under a project, newest first.
 
-    The verb the other three needed and did not have. ``--phys-dir``
-    already selects a run, but nothing said what there was to select:
-    a project accumulates one artefact directory per partition, per
-    corner and per power mode, and the only way to see them was to walk
-    the tree by hand and open manifests.
-
-    Ordered by :func:`~rtl_buddy.phys.manifest.discover_manifests` —
-    newest manifest first, exactly the order that decides the default
-    run — so ``runs[0]`` is what the other verbs answer about when no
-    ``--phys-dir`` is given, and every entry says so itself in
-    ``newest``. A consumer that re-sorts the list therefore does not
-    lose the fact.
-
-    **One small file per run.** Only the manifests are read; no model is
-    opened. That is what the identity fields in the manifest are for
-    (#568), and it is what keeps a listing of a project's fifty runs
-    cheap enough to sit in a page load. The cost of it is that the row
-    counts and the totals are not here — those are the model's, and
-    ``rb phys summary`` is one ``--phys-dir`` away.
-
-    **A manifest that cannot be read is listed, not dropped.** Its entry
-    carries ``error`` and nulls elsewhere. Discovery found the file; a
-    listing that silently omitted it would report a project as having
-    fewer runs than it has, which is the one thing a menu must not do.
+    The order is that of
+    :func:`~rtl_buddy.phys.manifest.discover_manifests`, so ``runs[0]`` is
+    the run the other verbs use by default, and each entry also carries
+    ``newest``. Only manifests are read, so row counts and totals are not
+    included; ``rb phys summary --phys-dir`` gives them. A manifest that
+    cannot be read is listed with ``error`` set, so the listing never
+    reports fewer runs than exist.
     """
     found = manifest_mod.discover_manifests(project_root)
     shown = truncate(found, limit)
     return {
         "schema_version": PHYS_QUERY_SCHEMA_VERSION,
-        # How many there are, against how many are listed: the same
-        # pairing every other list here reports, so a headed listing is
-        # never mistaken for the whole one.
         "count": len(found),
         "limit": limit,
         "runs": [
@@ -1300,17 +903,9 @@ def runs_payload(project_root, *, limit: int | None = None) -> dict:
 def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
     """One manifest as a row of the run listing.
 
-    Never raises, and never leaves a key out. A listing is a menu: the
-    caller renders it row by row, and a row that is missing half its keys
-    because the document behind it was truncated would fail in the
-    renderer rather than here, where the failure can be named.
-
-    ``phys_dir`` is derived from *where the manifest was found*, not from
-    the document's own ``phys_dir`` field. It is the key a reader hands
-    straight back — to ``--phys-dir``, or to the pane's ``?dir=`` — so it
-    has to be relative to the root this listing was taken under, and it
-    has to be there even for a row whose document could not be read at
-    all.
+    Never raises and never omits a key. ``phys_dir`` is derived from where
+    the manifest was found, relative to ``project_root``, so it can be
+    passed straight back to ``--phys-dir`` even for an unreadable row.
     """
     entry = {
         "manifest": manifest_mod.project_relative(manifest_path, project_root),
@@ -1325,8 +920,7 @@ def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
         "mode": None,
         "activity": None,
         "config": {"synth": None, "power": None},
-        # Derived from the path, so it is there even when the document is
-        # not readable — an experiment's run is still that experiment's.
+        # From the path, so present even for an unreadable document.
         "xplr": provenance_mod.experiment_for(manifest_path),
         "fingerprint": None,
         "newest": newest,
@@ -1345,8 +939,7 @@ def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
         return entry
     found = document.get("schema_version")
     if found != manifest_mod.MANIFEST_SCHEMA_VERSION:
-        # Reported per row rather than raised: one unreadable manifest in
-        # a tree must not cost the listing every other run in it.
+        # Per row and not raised, so one bad manifest keeps the others listed.
         entry["error"] = (
             f"{entry['manifest']} is a manifest of schema_version "
             f"{'(absent)' if found is None else found}, and this rtl-buddy "
@@ -1380,17 +973,9 @@ def _run_entry(manifest_path, project_root, *, newest: bool) -> dict:
 def config_label(config) -> str | None:
     """The one config summary a listing shows for a run.
 
-    The synthesis half's when there is one, the power half's otherwise.
-    A run's directory can hold both blocks and they are two different
-    configurations — the synthesis that produced the netlist, and the
-    analysis that measured it — but the netlist is what an optimisation
-    experiment varies, so that is the one a menu row is *about*. A
-    power-only run has no such half and its own configuration is then
-    the whole of what there is to say.
-
-    Derived here rather than in the entry's own block so the CLI table,
-    the MCP payload and the pane's dropdown cannot each pick a different
-    half and disagree about which run is which.
+    The synthesis half's when there is one, the power half's otherwise,
+    because the netlist is what an optimisation experiment varies. Shared
+    so the CLI table, MCP payload and pane dropdown agree.
     """
     for half in ("synth", "power"):
         block = (config or {}).get(half) if isinstance(config, dict) else None
@@ -1400,10 +985,8 @@ def config_label(config) -> str | None:
 
 
 def _mapping(value) -> dict:
-    """``value`` when it is an object, an empty one otherwise.
+    """``value`` when it is an object, otherwise an empty dict.
 
-    The listing's counterpart to :func:`_require_blocks`, which refuses.
-    A run list refuses nothing: a block of the wrong shape costs that row
-    its backend and its identity, and the row still says where the run is.
+    The run listing's lenient counterpart to :func:`_require_blocks`.
     """
     return value if isinstance(value, dict) else {}
