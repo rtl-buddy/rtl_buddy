@@ -9,13 +9,13 @@ Use this page for required keys, defaults, path resolution, and validation. Use 
 Unless stated otherwise:
 
 - Relative paths resolve from the YAML file that contains them. See [Execution Context](../concepts/execution-context.md).
-- `reglvl` defaults to 0. It may be an integer or a per-tool/per-builder map with `default` fallback. A run is selected when its level is at most the CLI regression level.
-- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict — a setup or compile failure, a sim timeout, a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
+- `reglvl` defaults to 0. It is an integer, or a per-tool or per-builder map with a `default` fallback. A run is selected when its level is at most the CLI regression level.
+- `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
 
 ## root_config.yaml
 
-`root_config.yaml` lives at the project root and selects the platform, simulator, shared tools, physical-design data, regression manifests, and dispatch defaults.
+`root_config.yaml` lives at the project root. It selects the platform, simulator, shared tools, physical-design data, regression manifests, and dispatch defaults.
 
 Required top-level keys are `rtl-buddy-filetype: project_root_config`, `cfg-platforms`, `cfg-rtl-builder`, `cfg-verible`, and `cfg-rtl-reg`.
 
@@ -55,16 +55,16 @@ cfg-rtl-reg:
 | `cfg-platforms[].unames` | Required | `uname` values selecting this platform |
 | `cfg-platforms[].builder` | Required | Entry in `cfg-rtl-builder` |
 | `cfg-platforms[].verible` | Required | Entry in `cfg-verible` |
-| `cfg-platforms[].surfer` | Optional | Entry in `cfg-surfer`; otherwise `surfer-default` is used |
+| `cfg-platforms[].surfer` | Optional | Entry in `cfg-surfer`; `surfer-default` is used when unset |
 
-Every routed name is validated at load time for every platform entry. CLI selections such as `--builder` and `--surfer` override platform defaults. Per-flow `cfg-*-tools` blocks are selected by the flow YAML's `tool` and cannot be routed from `cfg-platforms`.
+Every routed name is validated at load time for every platform entry. CLI selections such as `--builder` and `--surfer` override platform defaults. Per-flow `cfg-*-tools` blocks are selected by the flow YAML's `tool`; they cannot be routed from `cfg-platforms`.
 
-Executable and tool path fields accept a string or an ordered candidate list. This applies to `cfg-rtl-builder[].builder`, `cfg-verible[].path`, `cfg-surfer[].path`, `cfg-systemc.home`, and `tool` in `cfg-*-tools` entries.
+Executable and tool path fields accept a string or an ordered candidate list. This covers `cfg-rtl-builder[].builder`, `cfg-verible[].path`, `cfg-surfer[].path`, `cfg-systemc.home`, and `tool` in `cfg-*-tools` entries.
 
 - `~` and environment variables are expanded.
 - Relative paths anchor to `root_config.yaml`.
-- The first expanded candidate that exists wins; a bare final name is resolved through `PATH`.
-- A candidate containing an unset variable is skipped. If every candidate contains an unset variable, rtl_buddy warns and retains the literal value.
+- The first expanded candidate that exists wins. A bare final name is resolved through `PATH`.
+- A candidate containing an unset variable is skipped. If every candidate contains one, rtl_buddy warns and keeps the literal value.
 
 Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/root-config.md#project-local-env-defaults-rtl-buddyenv).
 
@@ -74,25 +74,25 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 |---|---|---|
 | `name` | Required | Builder identifier |
 | `builder` | Required | Compiler executable or candidate list |
-| `builder-simv` | Required | Simulation executable path relative to the build directory; an absolute path disables cross-test shared builds |
+| `builder-simv` | Required | Simulation executable path relative to the build directory. An absolute path disables cross-test shared builds |
 | `sim-rand-seed` | Required | Default random seed |
 | `sim-rand-seed-prefix` | Required | Simulator argument prefix for the seed |
 | `builder-opts.<mode>.compile-time` | Required per used mode | Compile arguments |
 | `builder-opts.<mode>.run-time` | Required per used mode | Simulation arguments |
-| `simulator-family` | Optional | Backend family; otherwise inferred from the executable (`verilator`, `vcs`, or `icarus`) |
-| `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`; missing `vcd2fst` falls back to VCD |
-| `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder; CLI `--extra-sim-timeout` overrides it |
+| `simulator-family` | Optional | `verilator`, `vcs`, or `icarus`; inferred from the executable when unset |
+| `wave-format` | Optional | `fst-postproc` converts VCD to FST with `vcd2fst` before `rb wave`. A missing `vcd2fst` falls back to VCD |
+| `extra-sim-timeout` | Optional, default 0 | Non-negative seconds added to each test timeout for this builder. CLI `--extra-sim-timeout` overrides it |
 
-`--builder-mode` selects a `builder-opts` key. A missing mode or missing compile/run stage is fatal.
+`--builder-mode` selects a `builder-opts` key. A missing mode, or a missing compile or run stage, is fatal.
 
-`compile-time` tokens get `~` and `$VAR` expansion, like filelist entries, plus `${RTL_BUDDY_PROJECT_ROOT}`, which rtl_buddy sets to the project root. The compile runs from the test's artefact directory, whose depth changes under `--run-tag`, so name a project file as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt` rather than by a relative path. An unset variable is left as written. See [Simulator support](../concepts/simulators.md).
+`compile-time` tokens get `~` and `$VAR` expansion, like filelist entries, plus `${RTL_BUDDY_PROJECT_ROOT}`, which rtl_buddy sets to the project root. An unset variable is left as written. The compile runs from the test's artefact directory, whose depth changes under `--run-tag`, so name a project file as `${RTL_BUDDY_PROJECT_ROOT}/design/waive.vlt` instead of by a relative path. See [Simulator support](../concepts/simulators.md).
 
 ### Verible, coverage, and Surfer
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor`, and `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
-| `cfg-coverage` | `name` is the simulator family; `use-lcov: true` enables LCOV info and HTML |
+| `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor`; optional `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
+| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML |
 | `cfg-coverview` | `name`, `generate-tables`, and inline Coverview `config` |
 | `cfg-surfer` | `name`, `path`; optional `wcp-port` (0 asks the OS), `editor-cmd` with `%f`/`%l`, `editor-terminal` (`tmux`, `iterm2`, `terminal`, or empty), `editor-sock`, and `ctrl-sock` |
 
@@ -149,40 +149,57 @@ cfg-pnr-platforms:
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD additionally accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical`, `placement.density` / `placement.padding` / `placement.macro-halo` / `placement.macro-cell-halo`, `dont-use-cells`, `pdn-config`, and `rcx-rules`. `cell-gds` takes one path or a list of them, each resolved on its own. Pin layers default to `metal3` / `metal2`; paths resolve from `root_config.yaml` |
-| `cfg-synth-platforms` | `name`, `pdk`, optional `corner` (first declared corner by default) and `dont-use-cells` |
-| `cfg-pnr-platforms` | `name`, `pdk`, optional `corner`, or `corners` (a list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; mutually exclusive with `corner`, and must not be empty). See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners); P&R fields include `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal`/`.clock`, `placement.density` / `placement.padding` / `placement.macro-halo` / `placement.macro-cell-halo`, and `dont-use-cells` |
-| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. Built-in default is `standard`. Precedence is per-run override, effort, tool config |
+| `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, and `rcx-rules`. `cell-gds` takes one path or a list, each resolved on its own. Paths resolve from `root_config.yaml` |
+| `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
+| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
+| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `openroad.run`, and `openroad.pre-sta-tcl` settings. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-The process-dependent P&R keys are all optional, and a config that omits them gets the behaviour the flow had before they existed:
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, and `placement.macro-cell-halo`.
+
+The process-dependent P&R keys are all optional:
 
 | Key | Where | Behavior |
 |---|---|---|
-| `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, `> 0` and `<= 1`. Default `0.7` |
+| `placement.density` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement target density, greater than 0 and at most 1. Default `0.7` |
 | `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
-| `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns kept between two macros and between a macro and each core edge by the macro packer, a non-negative distance. Default `20.0`, which is what `pdngen` needs to repair a channel on sky130hd |
-| `placement.macro-cell-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Standard-cell keep-out in microns around each placed macro, on every side: a hard placement blockage over the macro grown by this distance, so no cell abuts a macro edge. A non-negative distance; default `1.0`, and `0` places no blockage |
-| `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` / `?` wildcards only), one per list entry. The PDK's list is excluded by both synthesis and P&R; a `cfg-synth-platforms` list only by synthesis and a `cfg-pnr-platforms` list only by P&R. A platform's list is added to its PDK's (PDK entries first, duplicates dropped), never replacing it. P&R fails a run whose routed design still instantiates an excluded cell. Empty by default |
-| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid; P&R sources it and calls `pdngen`. Unset by default |
-| `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef` and times its final reports on it; a `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
-| `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list of them. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
+| `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns between two macros and between a macro and each core edge, kept by the macro packer. Non-negative; default `20.0`, which `pdngen` needs to repair a channel on sky130hd |
+| `placement.macro-cell-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Standard-cell keep-out in microns on every side of each placed macro, applied as a hard placement blockage. Non-negative; default `1.0`; `0` places no blockage |
+| `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
+| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
+| `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
+| `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 
-A `placement:` block on a P&R platform overrides its PDK's field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
+A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
 
-For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only and must be booleans; `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design relying on `(* keep_hierarchy *)` for mapping needs. In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`; unknown keys warn and are ignored, while a non-mapping override or wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
+`dont-use-cells` scope:
 
-`static-functions`, `conflicting-drivers`, and `unresolved-interfaces` are correctness gates on the Yosys elaboration stage, which both the `yosys` and the `openroad` backend use. Omit an option to take its default:
+- The PDK's list is excluded by both synthesis and P&R. A `cfg-synth-platforms` list applies only to synthesis, and a `cfg-pnr-platforms` list only to P&R.
+- A platform's list is added to its PDK's, PDK entries first with duplicates dropped. It never replaces it.
+- P&R fails a run whose routed design still instantiates an excluded cell.
+
+For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only booleans. `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design that relies on `(* keep_hierarchy *)` for mapping needs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
+
+In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs.
+
+`static-functions`, `conflicting-drivers`, and `unresolved-interfaces` are correctness gates on the Yosys elaboration stage, which the `yosys` and `openroad` backends both use. Omit an option to take its default. An unrecognized value is fatal.
 
 | Option | Values | Default | Behavior |
 |---|---|---|---|
-| `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Before Yosys starts, scans the filelist's sources and the headers they `` `include ``, for `function`/`task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`; `warn` logs one warning per finding and records `static_function_findings` in the result envelope and machine output; `allow` skips the scan |
-| `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run when the log contains Yosys `multiple conflicting drivers` warnings, reporting the count and the log path. Warnings whose drivers are all tristate buffers and module ports are a working multi-driver bus and are not counted |
-| `unresolved-interfaces` | `error`, `warn`, `allow` | `warn` | After Yosys exits, reports each ``Could not find interface instance for `<inst>' in `<module>'`` warning, de-duplicated across the repeated `hierarchy` passes. `read_verilog` cannot bind an interface instance to a child's interface port and falls back to per-child `<child>$interfaces$<interface>` modules, which drops the instance's own port connections — an interface carrying `clk` or `rst_n` leaves them undriven. `warn` logs one `synth.unresolved_interface` per instance and records `unresolved_interfaces` in the result envelope and machine output; `error` fails the run and drops the netlist; `allow` skips the scan. `frontend: slang` binds the instance and never emits the warning |
+| `static-functions` | `error`, `warn`, `allow` | `error` with `frontend: slang`, `warn` with `frontend: verilog` | Before Yosys starts, scans the filelist sources and the headers they `` `include `` for `function` or `task` declarations with no explicit `automatic` lifetime. `error` fails the run and names each `file:line: function <name>`. `warn` logs one warning per finding and records `static_function_findings` in the result envelope and machine output. `allow` skips the scan |
+| `conflicting-drivers` | `error`, `allow` | `error` | After Yosys exits, fails the run if its log contains `multiple conflicting drivers` warnings, reporting the count and the log path. Warnings whose drivers are all tristate buffers and module ports are a working bus and are not counted |
+| `unresolved-interfaces` | `error`, `warn`, `allow` | `warn` | After Yosys exits, reports each ``Could not find interface instance for `<inst>' in `<module>'`` warning, de-duplicated across `hierarchy` passes. `read_verilog` cannot bind an interface instance to a child's interface port, which leaves signals such as `clk` or `rst_n` undriven. `warn` logs one `synth.unresolved_interface` per instance and records `unresolved_interfaces` in the result envelope and machine output. `error` fails the run and drops the netlist. `allow` skips the scan. `frontend: slang` binds the instance and never warns |
 
-The scan resolves `` `include `` against the including file's directory and then the filelist's `+incdir+` entries, and evaluates `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` against exactly the macros Yosys is given: the filelist's `+define+` entries, then the run's `defines:` (which win on conflict), plus what the selected frontend predefines — `SYNTHESIS` and `YOSYS` for `read_verilog`, `SYNTHESIS` and slang's built-ins for `read_slang`. A bare `+define+X` takes the frontend's meaning of a valueless macro (empty under `read_verilog`, `1` under slang). A run whose `defines:` override a filelist entry logs one `synth.filelist_defines_overridden` warning naming both values. The macro table follows `single-unit`: reset per source by default, shared across sources when slang reads them as one compilation unit. `` `undefineall `` follows the frontend too — slang re-applies the command-line macros, `read_verilog` does not. An unrecognized value for any of these options is fatal. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
+The `static-functions` scan follows the same macro and include rules Yosys does. See [Synthesis](../concepts/synthesis.md#gate-static-lifetime-subroutines).
+
+- `` `include `` resolves against the including file's directory, then the filelist's `+incdir+` entries.
+- `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else ``, and `` `endif `` are evaluated against the macros Yosys is given: the filelist's `+define+` entries, then the run's `defines:` (which win on conflict), plus the frontend's predefined macros. Those are `SYNTHESIS` and `YOSYS` for `read_verilog`, and `SYNTHESIS` plus slang's built-ins for `read_slang`.
+- A bare `+define+X` takes the frontend's meaning of a valueless macro: empty under `read_verilog`, `1` under slang.
+- A run whose `defines:` override a filelist entry logs one `synth.filelist_defines_overridden` warning naming both values.
+- The macro table is reset per source by default and shared across sources when `single-unit` makes slang read them as one compilation unit.
+- `` `undefineall `` follows the frontend: slang re-applies the command-line macros, `read_verilog` does not.
 
 ### FPGA tools and platforms
 
@@ -204,7 +221,7 @@ cfg-fpga-platforms:
 | Field | Requirement | Meaning |
 |---|---|---|
 | `cfg-fpga-tools[].name` | Required | Tool entry and backend name, normally `vivado` or `openxc7` |
-| `cfg-fpga-tools[].tool` | Required | Executable or candidate list; relative paths anchor to `root_config.yaml` |
+| `cfg-fpga-tools[].tool` | Required | Executable or candidate list. Relative paths anchor to `root_config.yaml` |
 | `cfg-fpga-platforms[].name` | Required | Platform identifier used by `fpga.yaml` |
 | `cfg-fpga-platforms[].part` | Required | Complete FPGA device part |
 | `cfg-fpga-platforms[].board` | Default empty | Informational board name |
@@ -226,7 +243,7 @@ cfg-fpv-tools:
       solver-versions: {yices: "2.6.4", z3: "4.13.0"}
 ```
 
-`cfg-fpv-tools` entries contain `name`, `tool`, and optional `opts.timeout`, `opts.extra-args`, `opts.plugin-path`, and `opts.solver-versions`. Solver pins are exact; supported names are `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, and `abc`. A mismatch is fatal. See [Formal Property Verification](../concepts/fpv.md).
+A `cfg-fpv-tools` entry has `name`, `tool`, and optional `opts.timeout`, `opts.extra-args`, `opts.plugin-path`, and `opts.solver-versions`. Solver pins are exact and a mismatch is fatal. The supported solver names are `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, and `abc`. See [Formal Property Verification](../concepts/fpv.md).
 
 Other flows use the same `name` plus executable `tool` pattern in their `cfg-*-tools` block. A flow may use its `tool` value directly as a bare executable when its backend supports that fallback.
 
@@ -247,7 +264,14 @@ cfg-tools:
 
 `cfg-rtl-reg.reg-cfg-path` is the fallback when `regression.yaml` is absent from the current directory. Optional flow fallbacks are `elab-reg-cfg-path`, `synth-reg-cfg-path`, `power-reg-cfg-path`, `fpga-reg-cfg-path`, `cdc-reg-cfg-path`, `fpv-reg-cfg-path`, and `lint-reg-cfg-path`. Relative paths resolve from `root_config.yaml`. A root-local manifest takes precedence over its fallback.
 
-`cfg-rtl-reg.shared-build-root` is optional and is not a manifest: it is the persistent directory shared builds are cached under, replacing the in-tree `artefacts/.shared-builds/` so the cache survives a workspace wipe. Relative paths resolve from the project root; `~` and `$VAR` are expanded. `--shared-build-root` overrides it, and `RTL_BUDDY_SHARED_BUILD_ROOT` sits between the two. It applies only with `--share-build` (which `--dispatch` implies), and enabling or disabling it recompiles each shared build once. See [Persistent build cache](../concepts/tests.md#persistent-build-cache).
+`cfg-rtl-reg.shared-build-root` is optional and is not a manifest. It is the persistent directory that shared builds are cached under, replacing the in-tree `artefacts/.shared-builds/` so the cache survives a workspace wipe.
+
+- Relative paths resolve from the project root. `~` and `$VAR` are expanded.
+- `--shared-build-root` overrides it. `RTL_BUDDY_SHARED_BUILD_ROOT` sits between the two.
+- It applies only with `--share-build`, which `--dispatch` implies.
+- Enabling or disabling it recompiles each shared build once.
+
+See [Persistent build cache](../concepts/tests.md#persistent-build-cache).
 
 ### Parallel dispatch
 
@@ -285,33 +309,87 @@ cfg-dispatch:
 
 | Field | Default and validation |
 |---|---|
-| `backend` | `local`; values are `local`, `local-parallel`, `slurm`. Applies automatically to regression, elaboration regression, and randtest; `rb test` and `rb elab` require an explicit `--dispatch` |
-| `jobs` | `min(4, CPU count)`; positive local-parallel global pool size; CLI `--jobs` wins |
+| `backend` | `local`; values are `local`, `local-parallel`, `slurm`. Applies automatically to regression, elaboration regression, and randtest. `rb test` and `rb elab` need an explicit `--dispatch` |
+| `jobs` | `min(4, CPU count)`; a positive size for the local-parallel global pool. CLI `--jobs` wins |
 | `resources.cpus` | 1; positive integer |
 | `resources.mem` | Optional Slurm memory value |
-| `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`; an integer from YAML sexagesimal parsing is fatal |
-| `resources.modes` | Unset; `{<builder mode>: {cpus, mem, time}}`, applied over the fully resolved base value for the run's `--builder-mode`, least specific layer first, so any mode block beats every base field (`test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`). Available on every reservation block: this one, `compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`. Omitted fields and unnamed modes inherit, so a mode no block names reserves the base value. Mode names are free text — your `cfg-rtl-builder.builder-opts` keys — but must be strings, so quote `on`/`no`/`yes`. Fields go through the same validators as the base ones, including the quoted-`time` rule. `parallel`, `split-verilate`, a nested `modes:`, and any unknown key are rejected at load, unlike an unknown key beside them in `resources:`; this block reaches the compile reservation too, since `resources` is its least specific layer |
-| `compile.modes` | Unset; `resources.modes` plus a `verilate` sub-block, so `compile.modes.<mode>.verilate.{cpus,mem,time}` sizes the verilate job of a split suite under that mode. Any `verilate` key beats any `compile` key and, within each, any mode block beats every base field. A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields. `modes:` is rejected inside `compile.verilate` — write `compile.modes.<mode>.verilate` — and on an elaboration profile's `resources`, which resolves without a builder mode. Not part of the compile fingerprint |
-| `compile` | Inherits `resources`; reservation for the build, or folded field-by-field into workers that compile locally. Where verilation is split into its own Slurm job it sizes the C++ build job alone and `compile.verilate` sizes the other. A suite's own top-level `compile:` block in `tests.yaml` layers over this field by field, `parallel` and `split-verilate` included. Those two blocks are the only ones that take `parallel` or `split-verilate`; both keys are meaningless in a per-test or per-testbench `resources:` block and are discarded there |
-| `compile.parallel` | 1; integer, must be at least 1. Distinct builds the suite's build job compiles concurrently. Multiplies only that job's `cpus` reservation, capped at the suite's planned test count; `mem` and `time` are submitted as written. Above 1 the job runs every config's `preproc` before any builder starts, so no hook may mutate another config's inputs. Overridden by a suite's own `compile.parallel` where that suite sets one. Inert where a builder compiles inside its own simulation job, since one such job is one serial build |
-| `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded; `mem` and `time` default to the resolved `compile` values. Layers field by field over the same three layers as the rest of `compile`, including a testbench's own `compile.verilate`, and is aggregated over a suite's distinct builds by the same rules. Ignored where the split does not apply |
-| `compile.split-verilate` | `true`; splits a Verilator suite's build job into a verilate job and a C++ build job chained on `afterok`. A suite's own `compile.split-verilate` overrides it; a testbench block rejects the key, as it rejects `parallel`. Slurm only — `local-parallel` never splits |
-| `sbatch-args` | Empty list; appended verbatim and therefore overrides duplicate generated flags. Any argument here that sets the job's cpu request — `-c`/`--cpus-per-task`, or the task/node counts that raise it (`-n`/`--ntasks`, `--ntasks-per-node`, `-N`/`--nodes`) — supersedes the resolved `cpus`, so CPU right-sizing falls back to the scheduler's `ReqCPUS` for that run and its `cpus` advice names this key rather than the masked `resources.cpus` / `compile.cpus`. Within one option the last occurrence wins, as it does for sbatch; distinct options combine instead, and the advice then names them all and leaves the combining rule to sbatch rather than claiming a product. Only a lone `-c`/`--cpus-per-task` is offered the suggested value; the task/node counts are told to be decomposed. A direct `--cpus-per-task` override also disables the compile `cpus` floor, which bounds a reservation sbatch never saw; a task or node count leaves that flag in force, so the floor is kept. The `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE` and `SBATCH_NODES` environment variables count the same way, since the submit inherits them (command line beats environment, and the environment is never sanitized). A GPU count (`--gpus`/`-G`, `--gpus-per-node`, `--gpus-per-socket`, a gpu `--gres`, or their `SBATCH_*` forms) together with `--ntasks-per-gpu` and no `--ntasks` also counts, since sbatch derives the task count from that pair. Node-selection constraints (`--threads-per-core`, `-B`), placement maxima (`--ntasks-per-core`, `--ntasks-per-socket`, and `--ntasks-per-gpu` on its own), `--exclusive` and `SBATCH_CPUS_PER_TASK` are not overrides — the generated `--cpus-per-task` still states the request; `--cpus-per-gpu` is not either, since Slurm rejects it alongside the `--cpus-per-task` every job carries. Two exceptions to "appended last", on the build job and on the verilate job of a split suite: each one's `--dependency` is emitted after these and composes the configured expression with the shared-build dedup (and, for the build job, with its gate on the verilate job), and each one's `--job-name` is emitted after these because that name is what the dedup serialises on — a `--job-name` / `-J` here therefore does not rename either job (it still renames simulation jobs) |
+| `resources.time` | `"01:00:00"`; quote it. Accepted Slurm forms are minutes, `MM:SS`, `HH:MM:SS`, and `DD-HH[:MM[:SS]]`. An unquoted value that YAML parses as an integer is fatal |
+| `resources.modes` | Unset; `{<builder mode>: {cpus, mem, time}}`. Per-mode reservation; see [Per-mode reservations](#per-mode-reservations) |
+| `compile` | Inherits `resources`. Reserves the build, or is folded field by field into workers that compile locally. A suite's top-level `compile:` in `tests.yaml` layers over it field by field. Where verilation is split into its own job, it sizes the C++ build job alone |
+| `compile.modes` | Unset; like `resources.modes`, plus a `verilate` sub-block: `compile.modes.<mode>.verilate.{cpus,mem,time}` |
+| `compile.parallel` | 1; integer of at least 1. Number of distinct builds the suite's build job compiles concurrently. A suite's own `compile.parallel` overrides it. See below |
+| `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded. `mem` and `time` default to the resolved `compile` values. Ignored where the split does not apply |
+| `compile.split-verilate` | `true`; splits a Verilator suite's build job into a verilate job and a C++ build job chained on `afterok`. A suite's own `compile.split-verilate` overrides it; Slurm only, since `local-parallel` never splits |
+| `sbatch-args` | Empty list. Appended verbatim after the generated flags, so it overrides duplicates. See [`sbatch-args` behavior](#sbatch-args-behavior) |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
-| `max-array-size` | Unset; the cluster's Slurm `MaxArraySize`, read from `scontrol show config` when unset. Setting it does not suppress the probe: the probe is the only source of `max-array-tasks`, which still applies. Must be at least 2. Slurm's largest array task index is one **below** it, so `1001` allows 1000 elements per array; a resource group larger than that is split across several arrays instead of being refused by sbatch. Set it where the submit host cannot run `scontrol`, or to split groups more finely |
-| `max-array-tasks` | Unset; the cluster's `SchedulerParameters=max_array_tasks`, read from `scontrol show config` when unset. Must be at least 1. Unlike `max-array-size` it is an inclusive **count** of the tasks one array may hold, so `1000` allows 1000 elements. Set it where the submit host cannot run `scontrol` and the cluster caps tasks-per-array below `MaxArraySize`. Each ceiling layers independently — configured value over probed value — and the slice size is the smaller of whichever are known, so this field alone still splits a group when `MaxArraySize` cannot be resolved |
-| `orphans` | `warn`; values are `warn`, `cancel`, `adopt`. What the next run does about an interrupted run's jobs that are still queued or running, found from the `artefacts/.dispatch/run-<pid>-<token>.json` manifest the interrupted head wrote: name them and submit anyway, `scancel` them first (verified, and fatal if they survive it), or collect them instead of submitting. CLI `--orphans` wins. `adopt` needs exactly one complete matching orphan — same test config, backend, expanded tests in the same order, an identical plan down to plusdefines and the resolved seeds, the same resolved per-job reservation (so a changed `cfg-dispatch.resources` refuses), and the same invocation options (`--builder-mode`, `--builder`, `--extra-sim-timeout`, shared-build root, `--rebuild`) — and is fatal otherwise, including for a record left mid-submission. Only consulted for a scheduler-backed backend; elsewhere the value is ignored with a warning, and an explicit `--orphans adopt` is fatal |
+| `max-array-size` | Unset; read from the cluster's `MaxArraySize` via `scontrol show config`. Must be at least 2. Slurm's largest task index is one below it, so `1001` allows 1000 elements per array. See [Array limits](#array-limits) |
+| `max-array-tasks` | Unset; read from the cluster's `SchedulerParameters=max_array_tasks`. Must be at least 1, and is an inclusive count of tasks per array, so `1000` allows 1000 elements. See [Array limits](#array-limits) |
+| `orphans` | `warn`; values are `warn`, `cancel`, `adopt`. What the next run does about an interrupted run's jobs that are still queued or running. CLI `--orphans` wins. See [Orphaned jobs](#orphaned-jobs) |
 | `poll-interval` | Positive seconds between backend polls |
-| `progress-interval` | 60; non-negative seconds between console updates; 0 disables console progress |
+| `progress-interval` | 60; non-negative seconds between console updates. 0 disables console progress |
 | `max-wait` | Unset; positive seconds per collection round. Expiry fails the run and cancels outstanding jobs |
 | `retry.attempts` | 0; extra attempts after the first |
-| `retry.backoff-sec` / `backoff-max-sec` | 60 / 600; non-negative and max must not be below initial backoff |
-| `retry.jitter` | 0.5; must be in `[0, 1)` |
+| `retry.backoff-sec` / `backoff-max-sec` | 60 / 600; non-negative, and the maximum must not be below the initial backoff |
+| `retry.jitter` | 0.5; in `[0, 1)` |
 | `retry.classifiers` | `[license-queue]`; unknown classifiers are fatal |
 | `rightsize.report` | true |
-| `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5; lower `over-threshold` to shorten the `reduce` list on a run where most tests fit |
+| `rightsize.over-threshold` / `near-limit` / `margin` | 0.5 / 0.9 / 1.5. Lower `over-threshold` to shorten the `reduce` list on a run where most tests fit |
 
-Local-parallel ignores scheduler memory/time reservations and produces no right-sizing advice; an elaboration profile's `cpus` still sizes its pyslang worker, and `compile.parallel` still applies to simulation builds as concurrency inside the build job. Retry applies only to simulation jobs with license-queue evidence; Slurm additionally requires `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` and a successful build. See [Parallel dispatch](../concepts/dispatch.md).
+`compile.parallel` multiplies only the build job's `cpus` reservation, capped at the suite's planned test count. `mem` and `time` are submitted as written. Above 1, the job runs every config's `preproc` before any builder starts, so no hook may change another config's inputs. It has no effect where a builder compiles inside its own simulation job, since that job is one serial build.
+
+`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are discarded; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+
+### Per-mode reservations
+
+A `modes:` block resizes a reservation for the run's `--builder-mode`.
+
+- It is available on every reservation block: `cfg-dispatch.resources`, `cfg-dispatch.compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`.
+- The base value resolves first. The mode block then applies over the resolved result, least specific layer first, so any mode block beats every base field: `test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`.
+- `cfg-dispatch.resources.modes` also sizes the compile reservation for that mode, because `resources` is the least specific layer of `compile`. To size only the build, put the mode under `cfg-dispatch.compile.modes`.
+- Within a compile block, any `verilate` key beats any `compile` key, and within each, any mode block beats every base field. `compile.modes.<mode>.verilate` is therefore the most specific verilate value.
+- Omitted fields and unnamed modes inherit, so a mode that no block names reserves the base value.
+- Mode names are free text, normally your `cfg-rtl-builder.builder-opts` keys, but they must be strings. Quote `on`, `no`, and `yes`.
+- Fields use the base validators, including the quoted-`time` rule.
+- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` block instead discards an unknown key without a warning, so a misspelled field such as `memory:` reserves nothing.
+- `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
+- A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields.
+- A mode block is not part of the compile fingerprint.
+
+See [Size a reservation per builder mode](../concepts/dispatch.md#size-a-reservation-per-builder-mode).
+
+### `sbatch-args` behavior
+
+- The build job and the verilate job of a split suite emit their own `--dependency` after `sbatch-args`, composing your expression with the shared-build dedup. They also emit `--job-name` after it, because the dedup serialises on that name. A `--job-name` or `-J` here therefore does not rename those two jobs. It still renames simulation jobs.
+- An argument that sets the job's CPU request supersedes the resolved `cpus`. These are `-c` / `--cpus-per-task`, the task and node counts `-n` / `--ntasks`, `--ntasks-per-node`, and `-N` / `--nodes`, and a GPU count (`--gpus` / `-G`, `--gpus-per-node`, `--gpus-per-socket`, or a GPU `--gres`) combined with `--ntasks-per-gpu` and no `--ntasks`. The `SBATCH_NTASKS`, `SBATCH_NTASKS_PER_NODE`, and `SBATCH_NODES` environment variables count the same way, with the command line winning over the environment.
+- CPU right-sizing then uses the scheduler's `ReqCPUS` for that run, and its `cpus` advice names `sbatch-args` instead of `resources.cpus` or `compile.cpus`. A direct `--cpus-per-task` also disables the compile `cpus` floor.
+- Not overrides: `--threads-per-core`, `-B`, `--ntasks-per-core`, `--ntasks-per-socket`, a lone `--ntasks-per-gpu`, `--exclusive`, `--cpus-per-gpu`, and `SBATCH_CPUS_PER_TASK`.
+
+See [Requested cpus versus allocated cpus](../concepts/dispatch.md#requested-cpus-versus-allocated-cpus) for the advice text.
+
+### Array limits
+
+Slurm refuses an array larger than its limits, so rtl_buddy splits a larger resource group into several arrays. Each limit is read from `scontrol show config` unless set here, and the slice size is the smaller of the known limits.
+
+- `max-array-size` and `max-array-tasks` layer independently, configured value over probed value. Setting one does not suppress the probe for the other.
+- Set them where the submit host cannot run `scontrol`, or to split groups more finely. Set `max-array-tasks` where the cluster caps tasks per array below `MaxArraySize`.
+- `max-array-tasks` alone still splits a group when `MaxArraySize` cannot be resolved.
+
+### Orphaned jobs
+
+The next run finds an interrupted run's still-live jobs from the `artefacts/.dispatch/run-<pid>-<token>.json` manifest that run's head wrote.
+
+- `warn` names them and submits anyway.
+- `cancel` runs `scancel` on them first. The cancel is verified and fatal if the jobs survive it.
+- `adopt` collects them instead of submitting. It needs exactly one complete orphan whose test config, backend, tests, plan, resolved reservations, and invocation options all match this run, and is fatal otherwise, including for a record left mid-submission.
+- Only scheduler-backed backends consult it. Elsewhere the value is ignored with a warning, and an explicit `--orphans adopt` is fatal.
+
+See [Interrupted runs](../concepts/dispatch.md#interrupted-runs-warn-cancel-adopt).
+
+### Backend differences
+
+`local-parallel` ignores scheduler memory and time reservations and produces no right-sizing advice. An elaboration profile's `cpus` still sizes its pyslang worker, and `compile.parallel` still applies to simulation builds.
+
+Retry applies only to simulation jobs with license-queue evidence. Slurm additionally requires a `TIMEOUT`, `NODE_FAIL`, or `PREEMPTED` state and a successful build. See [Parallel dispatch](../concepts/dispatch.md).
 
 ### XPLR experiment storage
 
@@ -330,11 +408,11 @@ cfg-xplr:
 | Field | Default and validation |
 |---|---|
 | `commit-mode` | `auto`; values are `auto` and `self-managed` |
-| `source-scope` | `["."]`; must be a non-empty list with no blank path |
+| `source-scope` | `["."]`; a non-empty list with no blank path |
 | `disk-high-watermark-gb` | 50.0; non-negative garbage-collection threshold |
 | `disk-hard-cap-gb` | 80.0; non-negative and not below the high watermark |
 | `eviction-policy` | `keep-frontier`; values are `keep-frontier`, `oldest-first`, and `manual` |
-| `worktree-root` | `artefacts/xplr/worktrees`; must be non-blank. Relative paths resolve from the project root |
+| `worktree-root` | `artefacts/xplr/worktrees`; non-blank. Relative paths resolve from the project root |
 
 Unknown keys and malformed values are fatal. When `root_config.yaml` or `cfg-xplr` is absent, XPLR uses these defaults. Keep `worktree-root` under a gitignored path so experiment worktrees do not dirty the project. See [Design-space exploration](../concepts/xplr.md).
 
@@ -370,31 +448,43 @@ models:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `name` | Required | Model identifier; must be unique across every `models.yaml`, not only within one, and regardless of `graph:`. Must start with a letter, digit or underscore and contain only letters, digits, underscore, dot or hyphen |
-| `filelist` | Required | Filelist entries resolved from `models.yaml` |
-| `desc` | Required | Human-readable description |
+| `name` | Required | Model identifier. Unique across every `models.yaml`, regardless of `graph:`. See [Model names](#model-names) |
+| `filelist` | Required | Filelist entries resolved from `models.yaml`. See [Filelists](#filelists) |
+| `desc` | Optional | Human-readable description |
 | `spec` | Optional | `specs.yaml` path for `rb spec`; no simulation effect |
+| `axi_bundles` | Optional | `axi-bundles.yaml` path relative to `models.yaml`, written by `rb axi-profile discover` |
+| `axi_monitor_out` | Optional | Path relative to `models.yaml` where `rb axi-profile gen-monitor` writes the monitor |
+| `cdc` | Optional | `cdc.yaml` path relative to `models.yaml`, optionally with `#analysis_name`. `rb hub` reads it for the clock-domain overlay |
 | `synth` | Optional | Synthesis ownership pointer, optionally with `#entry`; no current runtime consumer |
 | `tests` | Optional | Test-suite ownership pointer, optionally with `#entry`; no current runtime consumer |
-| `graph` | Optional | `false` opts the model out of `rb graph build`'s design tier; default `true` |
-| `top` | Optional | Root module of the filelist when it is not named after the model; default `name`. Letters, digits and underscore only (no `$`), and unique across the graphable models `rb graph build` selects |
-| `elaborations` | Optional, default empty | Named pyslang profile deltas used by `rb elab --profile` and `rb elab-regression`; the model remains directly elaborable without this field |
+| `graph` | Optional | `false` opts the model out of the `rb graph build` design tier. Default `true` |
+| `top` | Optional | Root module of the filelist when it is not named after the model. Default `name`. See [Model top](#model-top) |
+| `elaborations` | Optional, default empty | Named pyslang profile deltas used by `rb elab --profile` and `rb elab-regression`. The model stays directly elaborable without them |
 
-`top` is the model's root module everywhere rtl_buddy elaborates it, and it is binding, not advisory: a model has one root module, and a model whose name is not a module was already broken in every one of these flows. It roots `rb hier`, `rb hier-query`, and `rb axi-profile`, it roots the `rb graph build` design-tier export, it is the target of the graph's `model --maps_to--> module:` edge, and it is the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model. Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`. Setting `top` therefore changes artefact names that embed it — the FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
+### Model names
 
-Models in a `rb graph build` selection must not collide, and the build refuses either collision before invoking the exporter, naming both models and both `models.yaml` files.
+A model name is also a directory name (`artefacts/hier/<name>/`, `artefacts/graph/design/<name>/`, and the per-model directory every flow writes). It is checked at load time: it must start with a letter, digit, or underscore, and contain only letters, digits, underscore, dot, or hyphen. Path separators, absolute paths, `.`, and `..` are refused.
 
-A model name is also a directory name — `artefacts/hier/<name>/`, `artefacts/graph/design/<name>/`, and the per-model directory every flow writes — so it is restricted to a single safe path segment and rejected at load time otherwise. Path separators, absolute paths, `.` and `..` are refused.
+No two models may share a `name`, including models with `graph: false`. Per-model artefact paths and every selector (`--model NAME`, a test's `model:`, a back-pointer) are keyed on the name, so a duplicate silently shadows the other entry. A duplicate within one file is rejected by the loader. `rb graph build` refuses a duplicate across the files it selects before invoking the exporter, naming both models and both `models.yaml` files; rename one entry.
 
-`top` is checked at load time too, against a stricter rule: a letter or underscore, then letters, digits or underscore. It does not stay in HDL — the FPGA flows name the bitstream `<top>.bit`, and the Yosys, Vivado and OpenROAD generators interpolate it into Tcl unquoted — so a value carrying a path separator, a newline or a shell or Tcl metacharacter is refused rather than escaped per tool. That is narrower than SystemVerilog allows, deliberately: `$` is legal in an SV identifier but substitutes in Tcl, so `synth_design -top foo$bar` would elaborate a different module than the YAML names; and escaped identifiers (`\name `) can carry `/` and `;`. A top that really needs either has to be renamed, or wrapped in a module whose name does not.
+### Model top
 
-**No two models may share a `name`, opted out or not.** Every per-model artefact path is keyed on it, so two exports overwrite each other in `artefacts/graph/design/<name>/` and `artefacts/hier/<name>/` while the tier reports both as built. Distinct `top:` values do not make that safe, and neither does `graph: false`: a name is also how every selector spells a model — `--model NAME`, a test's `model:`, a back-pointer — so a duplicate shadows the other entry in any lookup by name, silently. Rename one of them. A duplicate within one file is already rejected by the loader; this is the across-files half of the same rule.
+`top` is the model's root module in every flow and is binding, not advisory. It roots `rb hier`, `rb hier-query`, `rb axi-profile`, and the `rb graph build` design-tier export, and it is the target of the graph's `model --maps_to--> module:` edge. It is also the default top of a `cdc.yaml`, `synth.yaml`, `lint.yaml`, `fpga.yaml`, `fpv.yaml`, or `mut.yaml` run against the model.
 
-**No two models that would both be exported may share a top.** `module:<top>` is a global graph id and DUT ids are never suite-qualified, so two such exports merge into a single hybrid hierarchy rather than staying apart. Give them distinct roots, or set `graph: false` on the one that is not the design of record — an opted-out model is never exported, so it claims no graph id.
+- Only `fpv.yaml` and `mut.yaml` have a `top:` field of their own; where one is set it wins, because a formal checker top lives in the run's own `properties:`.
+- Setting `top` changes artefact names that embed it. The FPGA bitstream is `<top>.bit`, and OpenROAD's design name follows the synthesis top.
+- `top` is checked at load time: a letter or underscore, then letters, digits, or underscores. It is interpolated unquoted into Tcl and used in artefact names, so a path separator, newline, `$`, shell or Tcl metacharacter, or SystemVerilog escaped identifier is refused rather than escaped per tool. Rename such a module, or wrap it in one with a plain name.
 
-Models the build is not selecting are not considered by either rule.
+### Graph opt-out and top collisions
 
-Set `graph: false` for a model with no elaborable root — an SV `interface` published as a library entry, or a filelist of vendored IP with no module named after the model. `rb graph build` then records the model, and every testbench and non-simulation run rooted at it, under the design tier's `skipped` list instead of attempting an export that can only fail, and removes any `artefacts/graph/design/<model>/` a previous build left behind. The config tier still emits the model node, so `spec:` and test cross-references keep resolving; it carries `graph: false` and no `maps_to` edge. The opt-out is design-tier-only: `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and still fail if its root does not elaborate. Prefer `top:` when the filelist does elaborate and only the root module name differs.
+Models that `rb graph build` would both export must not share a `top`. `module:<top>` is a global graph id and DUT ids are not suite-qualified, so two such exports merge into one hybrid hierarchy. The build refuses this before invoking the exporter and names both models and both `models.yaml` files. Give the models distinct roots, or set `graph: false` on the one that is not the design of record. Models outside the build's selection are not considered.
+
+Set `graph: false` for a model with no elaborable root, such as an SV `interface` published as a library entry or a filelist of vendored IP with no module named after the model.
+
+- `rb graph build` records the model, and every testbench and non-simulation run rooted at it, in the design tier's `skipped` list. It also removes any `artefacts/graph/design/<model>/` left by an earlier build.
+- The config tier still emits the model node, so `spec:` and test cross-references resolve. The node carries `graph: false` and no `maps_to` edge.
+- The opt-out affects only the design tier. `rb hier`, `rb hier-query`, and `rb axi-profile` still run against the model and fail if its root does not elaborate.
+- Prefer `top:` when the filelist elaborates and only the root module name differs.
 
 ```yaml
 models:
@@ -408,38 +498,49 @@ models:
     top: axi_xbar
 ```
 
-Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Environment variables in entries are expanded. Every path-valued entry, including `+incdir+` and `-y` search directories, resolves against the directory of the filelist that declares it, so a filelist pulled in with `-F` can carry the include path its own sources need. `+define+NAME[=VALUE]` declares a preprocessor macro; several may share one entry with `+` separators, so a value cannot contain `+`.
+### Filelists
 
-Not every flow honors `+incdir+` and `+define+`. Simulation and model elaboration apply both. Synthesis (`read_verilog -I` / `read_slang -I`, on both yosys backends), FPGA (openXC7's `read_verilog -I`, Vivado's `synth_design -include_dirs`), and the Vivado CDC tool forward every `+incdir+` when they read the generated filelist back, each directory resolved against the filelist that declared it. rtl-buddy-cdc — in `rb cdc` and in the hub's domain-map build — has no include-path option, so a filelist `+incdir+` cannot reach it; the run logs `cdc.filelist_incdirs_unsupported` naming the directories and the analyzer's own `Cannot find include file` follows if a header resolves only through them. `rb synth` applies `+define+` entries, with the synth.yaml entry's `defines:` taking precedence on conflict (warned as `synth.filelist_defines_overridden`). Renderer-only flows drop definitions.
+Filelists support `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and source paths. Environment variables in entries are expanded.
+
+- Every path-valued entry, including `+incdir+` and `-y` directories, resolves against the directory of the filelist that declares it. A filelist pulled in with `-F` can therefore carry the include path its own sources need.
+- `+define+NAME[=VALUE]` declares a preprocessor macro. Several may share one entry separated by `+`, so a value cannot contain `+`.
+
+Flows differ in which entries they honor:
+
+- Simulation and model elaboration apply `+incdir+` and `+define+`.
+- Synthesis (`read_verilog -I` and `read_slang -I`, on both yosys backends), FPGA (openXC7's `read_verilog -I`, Vivado's `synth_design -include_dirs`), and the Vivado CDC tool forward every `+incdir+`, each directory resolved against the filelist that declared it.
+- `rb cdc` and the hub's domain-map build use rtl-buddy-cdc, which has no include-path option. The run logs `cdc.filelist_incdirs_unsupported` naming the directories, and the analyzer's own `Cannot find include file` error follows if a header resolves only through them.
+- `rb synth` applies `+define+` entries. The `synth.yaml` entry's `defines:` win on conflict and log `synth.filelist_defines_overridden`.
+- Renderer-only flows drop definitions.
 
 ### Elaboration profiles
 
-A profile is a delta on its containing model, not another model reference. Paths in `prepend_sources`, `append_sources`, and `include_dirs` resolve from `models.yaml`. Top precedence is profile `top`, then model `top`, then model `name`. Profile names are unique ignoring case, and every case variant of `base` is reserved so artifact paths remain portable to case-insensitive filesystems.
+A profile is a delta on its containing model, not another model reference. Paths in `prepend_sources`, `append_sources`, and `include_dirs` resolve from `models.yaml`. Top precedence is profile `top`, then model `top`, then model `name`. Profile names are unique ignoring case, and every case variant of `base` is reserved so artifact paths stay portable to case-insensitive filesystems.
 
 | Field | Default and validation |
 |---|---|
-| `name` | Required, unique within the model, and a safe single path segment; `base` is reserved for the bare-model artifact |
+| `name` | Required, unique within the model, and a safe single path segment. `base` is reserved for the bare-model artifact |
 | `desc` | Optional description |
 | `top` | Model top; optional simple SystemVerilog identifier |
 | `reglvl` | 0; non-negative integer used by `elab-regression` |
 | `prepend_sources` / `append_sources` | Empty; source or filelist entries placed before or after the model's expanded filelist |
 | `include_dirs` | Empty; extra include directories placed before the model filelist |
-| `defines` | Empty map of identifier to string, integer, boolean, or null. Boolean values render as `1`/`0`; null defines only the name. String values cannot be empty or contain whitespace or `+`. Profile definitions take precedence over same-named definitions in the model filelist |
+| `defines` | Empty map of identifier to string, integer, boolean, or null. Booleans render as `1`/`0`; null defines only the name. String values cannot be empty or contain whitespace or `+`. Profile definitions win over same-named definitions in the model filelist |
 | `parameters` | Empty map of top-level parameter overrides. String values are SystemVerilog expression text; booleans render as `1`/`0`. Unknown and local parameter names fail elaboration |
 | `vcs_compat` | false; enables slang VCS compatibility mode |
 | `single_unit` | false; parses primary sources as one compilation unit |
 | `libraries_inherit_macros` | false; requires `single_unit: true` and shares primary-unit macros with library sources |
 | `timescale` | Unset; command-line timescale such as `1ns/1ps` |
-| `max_parse_depth` | Unset, so slang's own 1024-level parser nesting limit applies; an integer from 1 to 65536. Raise it for generated RTL whose single expression nests deeper than the default, such as a long conditional or concatenation chain |
+| `max_parse_depth` | Unset, so slang's 1024-level parser nesting limit applies. An integer from 1 to 65536; raise it for generated RTL with a deeply nested single expression, such as a long conditional or concatenation chain |
 | `ignored_directives` | Empty; directive names for slang to ignore |
-| `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. These cannot suppress hard compilation errors |
-| `resources` | Inherits `cfg-dispatch.resources` field by field; `cpus` must be positive and also controls pyslang worker threads |
+| `warnings` | Empty; warning controls without the `-W` prefix, such as `all`, `none`, `no-unused`, or `error=unused`. They cannot suppress hard compilation errors |
+| `resources` | Inherits `cfg-dispatch.resources` field by field. `cpus` must be positive and also sets pyslang worker threads |
 
 `rb elab MODEL -c models.yaml` runs the base model. `rb elab MODEL --profile NAME -c models.yaml` applies one profile. Outputs are `artefacts/elab/<model>/<base-or-profile>/elab.f`, `elab.log`, and `result.json`. See [Model Elaboration](../concepts/elaboration.md).
 
 ## elab_regression.yaml
 
-The regression manifest explicitly lists model configuration files and runs every named profile they contain. Bare models are not synthesized into implicit profiles.
+The manifest lists model configuration files and runs every named profile they contain. Bare models are not run as implicit profiles.
 
 ```yaml
 rtl-buddy-filetype: elab_reg_config
@@ -448,11 +549,15 @@ model-configs:
   - design/peripherals/models.yaml
 ```
 
-`model-configs` must be non-empty, paths resolve from the manifest, duplicate paths and profiles that would share an artifact directory are rejected with case-insensitive path comparison, and the selected files must contain at least one profile. `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`. Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
+- `model-configs` must be non-empty, and its paths resolve from the manifest.
+- Duplicate paths, and profiles that would share an artifact directory, are rejected. Path comparison is case-insensitive.
+- The selected files must contain at least one profile.
+- `rb elab-regression` applies `--reg-level` and records higher-level profiles as `SKIP`.
+- Discovery checks `./elab_regression.yaml` before `cfg-rtl-reg.elab-reg-cfg-path`.
 
 ## tests.yaml
 
-Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build jobs and how many builds each runs at once.
+Required top-level keys are `rtl-buddy-filetype: test_config`, `testbenches`, and `tests`. Optional top-level `builder` selects the suite default, and optional top-level `compile` sizes this suite's dispatched build jobs.
 
 ```yaml
 rtl-buddy-filetype: test_config
@@ -482,7 +587,11 @@ Top-level fields:
 | `testbenches` | Required | Testbench definitions |
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
-| `compile` | Optional | This suite's **whole-job** dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block of `{cpus, mem, time}` sizing the verilate job where the split applies, and a [`modes`](#parallel-dispatch) sub-block sizing all of those per builder mode. Layered field by field over `cfg-dispatch.compile`, which is layered over `cfg-dispatch.resources`, and overridden per build by a testbench's own `compile`; an omitted field inherits, and neither build-phase job is ever reserved below this. Sizes the suite's build jobs, and the compile half of a simulation job that compiles for itself. `split-verilate: false` runs one build job instead. Not part of the compile fingerprint, so it never invalidates a shared build stamp |
+| `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
+
+The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself.
+
+The suite value is the floor for both the verilate job and the build job of a split suite; `split-verilate: false` runs one build job instead. It is not part of the compile fingerprint, so it never invalidates a shared build stamp.
 
 Testbench fields:
 
@@ -490,10 +599,18 @@ Testbench fields:
 |---|---|---|
 | `name` | Required | Testbench identifier |
 | `filelist` | Required | Sources appended to the model filelist |
-| `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](#parallel-dispatch) sub-block of the same three fields per builder mode; inherited by tests |
-| `compile` | Optional | This testbench's **per-build** dispatch compile reservation: `cpus`, `mem`, quoted `time`, a `verilate` sub-block of the same three fields, and a [`modes`](#parallel-dispatch) sub-block sizing them per builder mode. Layered field by field over the suite's top-level `compile`, which is layered over `cfg-dispatch.compile`; an omitted field inherits. The suite's build job aggregates these over the builds its plan will run — largest `cpus`, summed `mem` over the `parallel` builds that overlap, and a `time` equal to the makespan of a `parallel`-worker queue — then floors the result at the suite-level whole-job value. One reservation per distinct `(testbench, plusdefines, builder, model, assertions)` among the planned tests, and per test for a builder that cannot share a build or a test with a `preproc:` hook; a testbench with no block enters no `cpus`/`time` sum, but once any build states its own `mem` the others contribute the whole-job figure to the memory overlap. Every field must be greater than zero. A simulation job that compiles for itself uses its own testbench's value. Each phase of a split build aggregates its own field set the same way. `parallel` and `split-verilate` are rejected here, and inside any `modes` block: both are job-wide |
-| `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Passed to the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Not defaulted to `name` |
-| `cocotb.module` | Required for cocotb | Python module name or list passed as `COCOTB_TEST_MODULES` |
+| `resources` | Optional | Dispatch `cpus`, `mem`, and quoted `time`, plus a [`modes`](#per-mode-reservations) sub-block. Inherited by tests |
+| `compile` | Optional | This testbench's per-build dispatch compile reservation. See below |
+| `toplevel` | Required for cocotb and SystemC, optional otherwise | Module the compile elaborates from. Not defaulted to `name`. See [Elaboration top](#elaboration-top) |
+| `cocotb.module` | Required for cocotb | Python module name or list, passed as `COCOTB_TEST_MODULES` |
+
+A testbench `compile` holds `cpus`, `mem`, quoted `time`, a `verilate` sub-block of the same three fields, and a [`modes`](#per-mode-reservations) sub-block.
+
+- It layers field by field over the suite's `compile`, then `cfg-dispatch.compile`. Every field must be greater than zero.
+- `parallel` and `split-verilate` are rejected here and inside any `modes` block, because both are job-wide.
+- The suite's build job aggregates these blocks over the builds its plan runs (largest `cpus`, summed `mem` across overlapping builds, `time` as the makespan of a `parallel`-worker queue) and floors the result at the suite-level value. Each phase of a split build aggregates its own fields the same way. A simulation job that compiles for itself uses its own testbench's value.
+
+See [Set compile resources per suite and testbench](../concepts/dispatch.md#set-compile-resources-per-suite-and-testbench) for the aggregation rules.
 
 Test fields:
 
@@ -509,34 +626,40 @@ Test fields:
 | `plusargs` | Optional map | `KEY: VALUE` becomes `+KEY=VALUE`; a null value becomes `+KEY` |
 | `plusdefines` | Optional map | `KEY: VALUE` becomes `+define+KEY=VALUE`; a null value becomes `+define+KEY` |
 | `sim_timeout` | Default 60 | Seconds per simulation run |
-| `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use for timing or command-cycle stimulus that must remain unchanged |
-| `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. The hook may read it with `test_cfg.get_plusarg(NAME)` or use `test_cfg.get_resolved_seed()`; RTL Buddy passes the same value to the simulator. `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed` when this field is set because their seed is otherwise unavailable before preprocessing |
+| `sim-rand-seed` | Optional | Fixed runtime seed from 1 through 2147483647. Overrides `--master-seed`, `--rnd-new`, and `--rnd-last`; use it for timing or command-cycle stimulus that must not change |
+| `sim-rand-seed-plusarg` | Optional | Plusarg name that receives the fixed, master-derived, or builder-default seed before `preproc` runs. A hook reads it with `test_cfg.get_plusarg(NAME)` or `test_cfg.get_resolved_seed()`. With this field set, `--rnd-new` and `--rnd-last` require a fixed `sim-rand-seed`, because their seed is not available before preprocessing |
 | `uvm.max_warns` / `uvm.max_errors` | Optional | Thresholds whose excess fails the test |
 | `sweep.path` | Optional | Expansion hook path |
 | `preproc.path` | Optional | Precompile hook path |
 | `postproc.path` | Accepted, not executed | Custom postprocessing is unavailable |
 | `covers` | Optional list | Specification coverage IDs; no simulation effect |
-| `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#parallel-dispatch) sub-block sizes it per builder mode and is the most specific such layer |
-| `assertions` | Default false | Enables Verilator `--assert` and user coverage; other builders warn and ignore it |
+| `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#per-mode-reservations) sub-block is the most specific such layer |
+| `assertions` | Default false | Enables Verilator `--assert` and user coverage. Other builders warn and ignore it |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
 <a id="selecting-the-simulator-builder"></a>
 
 Builder precedence is CLI `--builder`, test `builder`, suite `builder`, then the active platform default. A `reglvl` map resolves against the effective builder.
 
-Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, use `--builder` for coverage runs to keep simulation and coverage family selection consistent.
+Coverage processing uses the platform-selected builder unless `--builder` is supplied. If a suite or test overrides the builder, pass `--builder` on coverage runs so simulation and coverage select the same family.
+
+### Elaboration top
 
 <a id="pinning-the-elaboration-top"></a>
 
-A testbench `toplevel:` roots the compile at that module: it is passed as Verilator `--top-module`, VCS `-top`, or Icarus `-s`. Without one, the simulator elects a top from filelist order: Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`. Declaring `toplevel:` fixes both, and a testbench missing from the composed filelist then fails at compile instead of silently producing a differently-named model. It is not defaulted to the testbench `name`, which is a config label rather than a module.
+A testbench `toplevel:` roots the compile at that module. It is passed as Verilator `--top-module`, VCS `-top`, or Icarus `-s`, and to cocotb as `COCOTB_TOPLEVEL`. Other simulator families get no top flag. It is not defaulted to the testbench `name`, which is a config label rather than a module.
 
-For a plain SystemVerilog testbench, `toplevel:` names the **testbench**, not the DUT it instantiates. A `toplevel:` left over from when the field was only graph metadata and points at the DUT will compile and run, and report `NA`; see [Known Issues](../known-issues.md).
+- Without `toplevel:`, the simulator elects a top from filelist order. Verilator takes the first ordinary (non-`-v`) entry, so recomposing a model filelist renames the model and every emitted C++ file, and an ordinary input carrying a module nothing instantiates fails the build with `MULTITOP`.
+- With `toplevel:`, a testbench missing from the composed filelist fails at compile.
+- For a plain SystemVerilog testbench, `toplevel:` names the testbench, not the DUT it instantiates. A `toplevel:` that points at the DUT compiles and runs but reports `NA`; see [Known Issues](../known-issues.md).
+- A top pinned in the builder's `compile-time` opts wins, in any spelling the family accepts. Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). A disagreement logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb follow the same rule.
+- The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` values do not share a build.
 
-A top pinned in the builder's `compile-time` opts wins over `toplevel:`, in any spelling the family accepts — Verilator takes `--top-module`, `-top-module`, `--top`, and `-top`, and Icarus accepts the module glued to the flag (`-stb`). A disagreement between the two logs `compile.toplevel_conflict` once per run, naming both tops. SystemC and cocotb testbenches follow the same rule: those backends emit their own top flag only when the builder pins none. Families other than Verilator, VCS, and Icarus get no top flag. The flag is part of the compile fingerprint, so two testbenches over one model with different `toplevel:` no longer share a build.
+### cocotb, hooks, and command root
 
-Cocotb supports Verilator, Icarus, and VCS. `cocotb` must be installed and `cocotb-config` available; unsupported families or a missing `toplevel` are fatal. rtl_buddy reads `cocotb_results.xml`; cocotb tests do not need PASS/FAIL console markers.
+Cocotb supports Verilator, Icarus, and VCS. `cocotb` must be installed and `cocotb-config` available. An unsupported family or a missing `toplevel` is fatal. rtl_buddy reads `cocotb_results.xml`, so cocotb tests do not need PASS/FAIL console markers.
 
-Hooks receive the paths and variables documented in [Test plugins](../concepts/plugins.md). Generated outputs, logs, and artefacts use the directory containing `tests.yaml` as the command root; invocation cwd does not change YAML path meaning.
+Hooks receive the paths and variables documented in [Test plugins](../concepts/plugins.md). Generated outputs, logs, and artefacts use the directory containing `tests.yaml` as the command root. The invocation cwd does not change YAML path meaning.
 
 ## synth.yaml
 
@@ -566,12 +689,12 @@ syntheses:
 | `params` | Optional map | Top-level parameter overrides |
 | `defines` | Optional map | Verilog preprocessor definitions |
 | `platform` | Optional | `cfg-synth-platforms` entry; enables technology mapping |
-| `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF/Liberty files appended after platform data |
-| `blocks` | Optional list | Hardened blocks the design instances. Each is `name` (the module), `pnr` (a `harden: true` P&R run) and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`, required). The abstract's `.lib` and `.lef` are appended to `lib-paths` / `lef-paths`; the model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
+| `lef-paths` / `lib-paths` | Optional lists | Block-specific LEF and Liberty files, appended after platform data |
+| `blocks` | Optional list | Hardened blocks the design instances. Each has `name` (the module), `pnr` (a `harden: true` P&R run), and `pnr-path` (its `pnr.yaml`, relative to `synth.yaml`); all three are required. The abstract's `.lib` and `.lef` are appended to `lib-paths` and `lef-paths`. The model's filelist must still leave the module a blackbox. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Optional map | Per-tool snake-case overrides: `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`, `best_effort_hierarchy`, `static_functions`, `conflicting_drivers` |
-| `effort` | Default `standard` | `cfg-synth-efforts` entry; CLI `--effort` wins |
-| `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`; no effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `effort` | Default `standard` | `cfg-synth-efforts` entry. CLI `--effort` wins |
+| `threads` | Default unset (1) | OpenROAD worker threads for the `tool: openroad` timing stage, as in `pnr.yaml`. No effect on Yosys. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
 `tool: yosys` writes RTLIL without a platform and a mapped netlist with one. `tool: openroad` requires platform LEF data and runs Yosys elaboration before OpenROAD timing analysis. An effort with `openroad.run: false` uses only the Yosys stage. See [Synthesis](../concepts/synthesis.md).
@@ -585,7 +708,7 @@ rtl-buddy-filetype: synth_reg_config
 synth-configs: [design/example_block/synth/synth.yaml]
 ```
 
-Paths resolve from the manifest. Each suite retains the command root of its `synth.yaml`; `rb synth-regression` filters entries by `--reg-level`.
+Paths resolve from the manifest. Each suite keeps the command root of its `synth.yaml`. `rb synth-regression` filters entries by `--reg-level`.
 
 ## pnr.yaml
 
@@ -621,23 +744,33 @@ runs:
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
 | `gds-paths` | Optional | Layout of the macros `lef-paths` names, relative to `pnr.yaml`. P&R never reads it; KLayout stream-out does |
-| `blocks` | Optional | Hardened blocks instanced as hard macros. Each is `name` (the module as instanced), `pnr` (a `harden: true` run) and optional `pnr-path` (its `pnr.yaml`, relative to this one; default this file). The abstract's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`. A missing abstract, or one built for another technology LEF or corner Liberty, fails the run before OpenROAD. Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
-| `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete; `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
-| `gds-allow-empty` | Optional | Cell names or `fnmatch` globs that are empty on purpose, matched case-sensitively. Such a cell is not missing in either mode |
-| `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped to a detected Slurm or affinity allocation with a warning. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
-| `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`: write a stage-named ODB, DEF and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. Unset renders the flow unchanged. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
-| `harden` | Default `false` | Publish the routed result as a hard-macro abstract under `artefacts/<run>/abstract/`: `<top>.lef`, `<top>.lib` (OpenSTA timing model), `<top>.gds` and `abstract.manifest.json`. Implies `--gds` with `gds-mode: strict`; needs a single-corner platform. Unset renders the flow unchanged. See [Harden a block](../concepts/pnr.md#harden-a-block) |
+| `blocks` | Optional | Hardened blocks instanced as hard macros. Each has `name` (the module as instanced), `pnr` (a `harden: true` run), and optional `pnr-path` (its `pnr.yaml`, relative to this one; default this file). The abstract's LEF, Liberty, and GDS are appended to `lef-paths`, `lib-paths`, and `gds-paths`. Needs a single-corner platform. See [Assemble hardened blocks](../concepts/pnr.md#assemble-hardened-blocks) |
+| `gds-mode` | Default `preview` | `strict` fails the run when a requested export is not delivered complete. `preview` keeps an incomplete layout and reports it. `--gds-mode` overrides |
+| `gds-allow-empty` | Optional | Cell names or `fnmatch` globs, matched case-sensitively, that are empty on purpose. Such a cell is not missing in either mode |
+| `threads` | Default unset (1) | OpenROAD worker threads: a positive integer, or `auto` for the CPUs of the current allocation (1 outside one). Clamped with a warning to a detected Slurm or affinity allocation. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
+| `checkpoints` | Default `false` | `true`, a stage name, or a list of `floorplan`, `place`, `cts`, `global_route`. Writes a stage-named ODB, DEF, and SDC (plus route guides and segments after `global_route`) under `artefacts/<run>/checkpoints/<run-id>/`, with a manifest and a `progress.jsonl` of step events. `[]` keeps progress only. See [Keep stage checkpoints](../concepts/pnr.md#keep-stage-checkpoints) |
+| `harden` | Default `false` | Publishes the routed result as a hard-macro abstract under `artefacts/<run>/abstract/`: `<top>.lef`, `<top>.lib` (OpenSTA timing model), `<top>.gds`, and `abstract.manifest.json`. Implies `--gds` with `gds-mode: strict`; needs a single-corner platform. See [Harden a block](../concepts/pnr.md#harden-a-block) |
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
-| `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left` or `upper-right`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
-| `floorplan.macro-placement` | Default `pack` | Who places the hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`). `macro-anchor` cannot be set with `rtl-mp`, and `rtl-mp` keeps macros out of every blockage type. See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
-| `floorplan.blockages` | Optional | List of standard-cell placement blockages. Each is `rect: [x0, y0, x1, y1]` in microns, die coordinates (`x0 < x1`, `y0 < y1`, non-negative), `type: hard` (default), `soft` or `partial`, and for `partial` only, `max-density` strictly between 0 and 1 (honoured by global placement only; legalization clears a partial blockage like a hard one). Needs OpenROAD 26Q1+. Macros are kept out of `hard` blockages |
+| `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left`, or `upper-right`. Cannot be set with `macro-placement: rtl-mp`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
+| `floorplan.macro-placement` | Default `pack` | Who places hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`, which keeps macros out of every blockage type). See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
+| `floorplan.blockages` | Optional | List of standard-cell placement blockages. See below |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie/fill cells, CTS buffer, and routing layers. With `--gds`, KLayout stream-out reads the PDK's `cell-gds` plus the run's `gds-paths`, and is given the technology LEF, the PDK macro LEF and the run's `lef-paths`; a configured input that is missing stops the export. `gds-mode` decides whether a cell with no layout at all fails the run or is reported as an incomplete preview. `rb pnr-export` reads the same keys over a result that is already routed, without running P&R. See [Place and Route](../concepts/pnr.md#stream-out-inputs), [Stream-out completeness](../concepts/pnr.md#stream-out-completeness) and [Export a saved result](../concepts/pnr.md#export-a-saved-result).
+Each `floorplan.blockages` entry has:
+
+- `rect: [x0, y0, x1, y1]` in microns, in die coordinates, non-negative, with `x0 < x1` and `y0 < y1`.
+- `type: hard` (default), `soft`, or `partial`.
+- For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
+
+Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages.
+
+The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie and fill cells, CTS buffer, and routing layers.
+
+With `--gds`, KLayout stream-out reads the PDK's `cell-gds` plus the run's `gds-paths`, and is given the technology LEF, the PDK macro LEF, and the run's `lef-paths`. A configured input that is missing stops the export. `gds-mode` decides whether a cell with no layout fails the run or is reported as an incomplete preview. `rb pnr-export` reads the same keys over an already routed result. See [Place and Route](../concepts/pnr.md#stream-out-inputs), [Stream-out completeness](../concepts/pnr.md#stream-out-completeness), and [Export a saved result](../concepts/pnr.md#export-a-saved-result).
 
 ## power.yaml
 
@@ -668,22 +801,22 @@ runs:
 | `netlist-source` | Default `synth` | `synth` or `pnr` |
 | `synth`, `synth-path` | Required for synth source | Upstream synthesis entry and YAML path |
 | `pnr`, `pnr-path` | Required for P&R source | Upstream P&R entry and YAML path |
-| `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory this run publishes `phys-model.json` into |
-| `constraints` | Required for synth source | SDC path; for P&R source defaults to routed SDC |
+| `phys-run` | Optional, synth source only | Synthesis run in `synth-path` whose artefact directory receives this run's `phys-model.json`. A run name, never a path |
+| `constraints` | Required for synth source | SDC path. For P&R source it defaults to the routed SDC |
 | `platform` | Required | `cfg-pnr-platforms` entry |
-| `lib-paths` | Optional | Extra macro Liberty, relative to `power.yaml`, appended after what the referenced run declares |
+| `lib-paths` | Optional | Extra macro Liberty files relative to `power.yaml`, appended after what the referenced run declares |
 | `threads` | Default unset (1) | OpenROAD worker threads, as in `pnr.yaml`. See [OpenROAD threads](../concepts/pnr.md#openroad-threads) |
 | `activity.saif` / `.vcd` | Mutually exclusive | Activity trace path |
-| `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF/VCD |
+| `activity.scope` | Only with a trace | OpenROAD trace scope; invalid without SAIF or VCD |
 | `activity.default-toggle-rate` | Default 0.1 | Synthetic toggle rate for dynamic mode without a trace |
 | `activity.default-static-prob` | Default 0.5 | Synthetic static probability |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-Hard-macro Liberty is inherited from the run this one reads: a `pnr` source takes the P&R entry's `lib-paths`, a `synth` source takes the synthesis entry's `lib-paths` and `lef-paths`. `lib-paths` here adds to that list rather than replacing it, and a configured file that is not on disk fails the run before OpenROAD starts. See [Give hard macros a library](../concepts/power.md#give-hard-macros-a-library).
+A P&R source reads the routed ODB and estimates parasitics from global routing. A synthesis source reads the generated netlist. Without `phys-run`, the physical model is written into this run's own `artefacts/<name>/`, so it merges with a synthesis run's half only when both write there.
 
-P&R source reads the routed ODB and estimates parasitics from global routing; synthesis source reads the generated netlist. Without `phys-run` the physical model is published into this run's own `artefacts/<name>/`, so it merges with a synthesis' half only when both runs write there; `phys-run` names the synthesis run to publish beside instead and is a run name, never a path. See [Power Analysis](../concepts/power.md) and [Pair the model with a synthesis run](../concepts/power.md#pair-the-model-with-a-synthesis-run).
+Hard-macro Liberty is inherited from the run this one reads: a `pnr` source takes the P&R entry's `lib-paths`, and a `synth` source takes the synthesis entry's `lib-paths` and `lef-paths`. `lib-paths` here adds to that list. A configured file that is not on disk fails the run before OpenROAD starts. See [Power Analysis](../concepts/power.md), [Pair the model with a synthesis run](../concepts/power.md#pair-the-model-with-a-synthesis-run), and [Give hard macros a library](../concepts/power.md#give-hard-macros-a-library).
 
 ## power_regression.yaml
 
@@ -694,7 +827,7 @@ rtl-buddy-filetype: power_reg_config
 power-configs: [power/demo/power.yaml]
 ```
 
-Paths resolve from the manifest. Each suite retains the command root of its `power.yaml`; `rb power-regression` filters entries by `--reg-level`.
+Paths resolve from the manifest. Each suite keeps the command root of its `power.yaml`. `rb power-regression` filters entries by `--reg-level`.
 
 ## fpga.yaml
 
@@ -720,16 +853,16 @@ runs:
 | `model_path` | Required | `models.yaml` path relative to `fpga.yaml` |
 | `part` | Exactly one of part/platform | Complete device part declared in the run |
 | `platform` | Exactly one of part/platform | `cfg-fpga-platforms` entry supplying the part and default XDC |
-| `tool` | Default `vivado` | Registered backend: `vivado` or `openxc7`; unknown values are fatal |
+| `tool` | Default `vivado` | Registered backend: `vivado` or `openxc7`. Unknown values are fatal |
 | `xdc` | Default empty | Run-specific constraint paths relative to `fpga.yaml` |
 | `reglvl` | Default 0 | Regression level |
 | `tool_overrides` | Optional map | Backend-specific overrides keyed by tool name |
-| `require-timing-met` | Default false | Fail a passing routed run when the backend explicitly reports timing unmet; no effect when timing status is unavailable |
+| `require-timing-met` | Default false | Fails a passing routed run when the backend explicitly reports timing unmet. No effect when timing status is unavailable |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-Setting both `part` and `platform`, or neither, is fatal. A platform requires `root_config.yaml`; its XDC files are read first and the run's files afterward.
+Setting both `part` and `platform`, or neither, is fatal. A platform requires `root_config.yaml`. Its XDC files are read first and the run's files afterward.
 
-For `openxc7`, `tool_overrides.openxc7` accepts `chipdb`, `prjxray_db`, `yosys`, `nextpnr`, `fasm2frames`, and `xc7frames2bit`. `CHIPDB` and `PRJXRAY_DB_DIR` provide the database fallbacks. The openXC7 backend accepts only Xilinx 7-series parts. See [FPGA Implementation](../concepts/fpga.md) for setup, commands, and result metrics.
+For `openxc7`, `tool_overrides.openxc7` accepts `chipdb`, `prjxray_db`, `yosys`, `nextpnr`, `fasm2frames`, and `xc7frames2bit`. The `CHIPDB` and `PRJXRAY_DB_DIR` environment variables provide database fallbacks. The openXC7 backend accepts only Xilinx 7-series parts. See [FPGA Implementation](../concepts/fpga.md) for setup, commands, and result metrics.
 
 ## fpga_regression.yaml
 
@@ -740,7 +873,7 @@ rtl-buddy-filetype: fpga_reg_config
 fpga-configs: [fpga/counter/fpga.yaml]
 ```
 
-Paths resolve from the manifest. Each suite retains the command root of its `fpga.yaml`; `rb fpga-regression` filters entries by `--reg-level`. Discovery checks `./fpga_regression.yaml` before `cfg-rtl-reg.fpga-reg-cfg-path`.
+Paths resolve from the manifest. Each suite keeps the command root of its `fpga.yaml`. `rb fpga-regression` filters entries by `--reg-level`. Discovery checks `./fpga_regression.yaml` before `cfg-rtl-reg.fpga-reg-cfg-path`.
 
 ## cdc.yaml
 
@@ -769,8 +902,8 @@ analyses:
 | `constraints` | Required | SDC path relative to `cdc.yaml` |
 | `desc` | Required | Human-readable description |
 | `waivers` | Optional | Waiver path relative to `cdc.yaml` |
-| `frontend` | Optional | Forwarded analyzer frontend |
-| `single_unit` | Default false | Forward `--single-unit` for one preprocessor compilation unit |
+| `frontend` | Optional | Analyzer frontend, forwarded as given |
+| `single_unit` | Default false | Forwards `--single-unit` for one preprocessor compilation unit |
 | `blackbox` | Optional list | Module names forwarded with `--blackbox` |
 | `recognized-syncs` | Optional list | Instance regular expressions accepted as synchronizers |
 | `reglvl` | Optional | Regression level |
@@ -788,7 +921,7 @@ rtl-buddy-filetype: cdc_reg_config
 cdc-configs: [lint/cdc/demo/cdc.yaml]
 ```
 
-Paths resolve from the manifest. Each suite retains the command root of its `cdc.yaml`; `rb cdc-regression` filters analyses by `--reg-level`. Discovery checks `./cdc_regression.yaml` before `cfg-rtl-reg.cdc-reg-cfg-path`.
+Paths resolve from the manifest. Each suite keeps the command root of its `cdc.yaml`. `rb cdc-regression` filters analyses by `--reg-level`. Discovery checks `./cdc_regression.yaml` before `cfg-rtl-reg.cdc-reg-cfg-path`.
 
 ## lint.yaml
 
@@ -812,7 +945,7 @@ checks:
 | `model_path` | Required | `models.yaml` relative to `lint.yaml` |
 | `desc` | Required | Human-readable description |
 | `exclude` | Optional list | Additional `fnmatch` globs; `*` may cross `/` |
-| `extra_args` | Optional list | Appended after `cfg-verible.extra_args.lint`; later duplicate flags win |
+| `extra_args` | Optional list | Appended after `cfg-verible.extra_args.lint`. Later duplicate flags win |
 | `reglvl` | Optional | Regression level |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
@@ -857,26 +990,26 @@ verifications:
 | `tool` | Required | Backend and `cfg-fpv-tools` entry; only `sby` is supported |
 | `model` | Required | Model name |
 | `model_path` | Required | `models.yaml` relative to `fpv.yaml` |
-| `top` | Default model | Elaboration top; letters, digits and underscore only (no `$`), same rule as a `models.yaml` `top` |
-| `properties` | Optional | Property files relative to `fpv.yaml`; may be omitted for in-RTL FORMAL properties |
+| `top` | Default model | Elaboration top. Wins over the model's `top` and follows the [same rule](#model-top) |
+| `properties` | Optional | Property files relative to `fpv.yaml`. May be omitted for in-RTL FORMAL properties |
 | `constraints` | Optional | One environment-assumption file, read before properties |
 | `mode` | Default `bmc` | `bmc`, `prove`, `cover`, or `live` |
 | `depth` | Default 20 | Proof depth |
 | `engines` | Default `[smtbmc yices]` | SymbiYosys engine specifications |
-| `params` | Optional map | Top-level parameter overrides applied to proof, vacuity, and COI elaboration |
+| `params` | Optional map | Top-level parameter overrides, applied to proof, vacuity, and COI elaboration |
 | `reglvl` | Optional | Regression level |
 | `covers` | Optional list | Specification coverage IDs; no proof effect |
 | `tool_overrides` | Optional map | Per-tool `timeout` and `extra_args` |
-| `vacuity` | Default true for bmc/prove | Derive antecedent reachability covers; default false for cover/live |
-| `coi` | Default true | Run cone-of-influence and dead-assume analysis |
-| `frontend` | Default `verilog` | `verilog` or `slang`; slang requires the configured plugin |
+| `vacuity` | Default true for bmc/prove, false for cover/live | Derives antecedent reachability covers |
+| `coi` | Default true | Runs cone-of-influence and dead-assume analysis |
+| `frontend` | Default `verilog` | `verilog` or `slang`. Slang requires the configured plugin |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-A verification's own `top` wins over the model's, and it is checked at load time against the [same rule](#modelsyaml) a `models.yaml` `top` is: it reaches the generated yosys script (`prep -top <top>`), the `chparam` lines and the `bind_to` construction unquoted, so a path separator, a newline, a `$` or an escaped identifier is refused rather than escaped per generator. A `mut.yaml` `top` is checked the same way.
+Design sources, constraints, and properties are read in that order.
 
-Parameter names must be identifiers. Values may be integers, booleans, or strings containing whitespace-free SystemVerilog literal text; string parameters need embedded quotes, for example `MODE: '"small"'`. YAML boolean-like keys such as unquoted `on` and invalid values are rejected. The verilog frontend uses `chparam`; slang applies `-G` during elaboration.
+Parameter names must be identifiers. Values are integers, booleans, or strings of whitespace-free SystemVerilog literal text. A string parameter needs embedded quotes, for example `MODE: '"small"'`. Boolean-like keys such as an unquoted `on`, and invalid values, are rejected. The verilog frontend applies parameters with `chparam`, and slang applies `-G` during elaboration.
 
-Design sources, constraints, and properties are read in that order. See [Formal Property Verification](../concepts/fpv.md) for frontend behavior, proof-quality checks, artefacts, and counterexamples.
+An `fpv.yaml` `top` and a `mut.yaml` `top` are checked at load time by the same rule as a model `top`. See [Formal Property Verification](../concepts/fpv.md) for frontend behavior, proof-quality checks, artefacts, and counterexamples.
 
 ## fpv_regression.yaml
 
@@ -887,7 +1020,7 @@ rtl-buddy-filetype: fpv_reg_config
 fpv-configs: [design/example_block/fpv/fpv.yaml]
 ```
 
-Paths resolve from the manifest. Each suite retains the command root of its `fpv.yaml`; `rb fpv-regression` filters entries by `--reg-level`.
+Paths resolve from the manifest. Each suite keeps the command root of its `fpv.yaml`. `rb fpv-regression` filters entries by `--reg-level`.
 
 ## mut.yaml
 
@@ -916,18 +1049,23 @@ budget:
 | `verify.fpv_config` / `.verification` | Pair | FPV oracle config and entry |
 | `verify.test_config` | Optional | Simulation oracle suite |
 | `verify.tests` | Default all | Selected simulation tests |
-| `verify.assertions` | Default true | Enable Verilator assertions for simulation oracle |
+| `verify.assertions` | Default true | Enables Verilator assertions for the simulation oracle |
 | `name` | Default model | Campaign and artefact name |
-| `top` | Default model | Top module the FPV oracle elaborates; letters, digits and underscore only (no `$`), same rule as a `models.yaml` `top` |
+| `top` | Default model | Top module the FPV oracle elaborates. Follows the [same rule](#model-top) as a model `top` |
 | `budget.max_mutants` | Default 100 | Global campaign cap |
 | `budget.per_file_cap` | Default null | Per-scoped-file cap |
 | `budget.time_budget_minutes` | Default null | Wall-clock cap |
 | `budget.schedule` | Default `sequential` | `sequential` or `round_robin` |
 | `scope.include` / `.exclude` | Default empty | Case-sensitive `fnmatch` globs over instance and source paths; `**` is not recursive |
 
-A campaign's own `top` wins over both the model's and the oracle verification's, and it is applied to the baseline proof and to every mutant proof alike — the two verdicts are only comparable when elaborated from the same root module. Only the FPV oracle elaborates a top: the simulation oracle runs the suite's own testbenches, so a campaign that configures only that oracle logs `mut_config.top_override_unused` and ignores the value.
+At least one oracle is required, and `fpv_config` requires `verification`. `design_file` and every scoped file must stay within the model directory.
 
-At least one oracle is required; `fpv_config` requires `verification`. Empty scope mutates `design_file` without the viewer. Non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match. `design_file` and every scoped file must remain within the model directory. See [Mutation Testing](../concepts/mut.md).
+- An empty scope mutates `design_file` without the viewer.
+- A non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match.
+- A campaign's `top` wins over the model's and the oracle verification's. It applies to the baseline proof and every mutant proof, since their verdicts are comparable only when elaborated from the same root.
+- Only the FPV oracle elaborates a top. A campaign that configures only the simulation oracle logs `mut_config.top_override_unused` and ignores `top`.
+
+See [Mutation Testing](../concepts/mut.md).
 
 ## specs.yaml
 
@@ -946,7 +1084,7 @@ blocks:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `blocks[].name` | Required | Block identifier matched to model name in multi-block specs |
+| `blocks[].name` | Required | Block identifier, matched to model name in multi-block specs |
 | `blocks[].desc` | Required | Human-readable description |
 | `blocks[].docs` | Optional list | Markdown paths relative to `specs.yaml` |
 | `blocks[].coverage-items` | Default empty | Functional coverage item list |
