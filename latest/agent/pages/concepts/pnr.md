@@ -164,6 +164,22 @@ When the macros do not fit, the error says what was tried — the halo, the larg
 
 A design with no macros is unaffected: the packer's procedures are defined in `pnr.tcl` and never called.
 
+### RTL-MP macro placement
+
+`floorplan.macro-placement: rtl-mp` hands the macros to OpenROAD's hierarchical macro placer, `rtl_macro_placer` (RTL-MP), instead of the packer:
+
+```yaml
+    floorplan:
+      utilization: 0.45
+      macro-placement: rtl-mp     # default pack
+```
+
+RTL-MP clusters the netlist, then places macros by connectivity and wirelength, rotating them where that helps. It keeps `placement.macro-halo` around every macro (through `set_macro_base_halo`, or `-halo_width`/`-halo_height` on an OpenROAD that predates it), keeps macros out of every placement blockage already in the floorplan (`soft` and `partial` ones included, which the packer lets macros sit on), and treats the IO pins, which the flow places later, as clusters on the boundary. The macros come out `LOCKED`, snapped to the track grid. Its reports go to `artefacts/<run>/rtlmp/`. [`macro-cell-halo`](#tune-the-process-dependent-steps) still applies afterwards, and the power grid is built around wherever it put them.
+
+- **When to use it.** The packer puts macros where their sizes allow; RTL-MP puts them where the netlist wants them. On the sky130hd assembly in the project template it placed the two hardened partitions and the SRAM with setup slack about 0.8 ns better than the packer (+2.77 against +2.00 ns), at 0 DRCs and a connected power grid. It is also the placer for a flat netlist with many memories, where the order the packer fills rows in has nothing to do with the logic.
+- **What it does not take.** `macro-anchor` steers the packer only, so setting it with `rtl-mp` is a configuration error rather than a silent no-op. A macro's location is RTL-MP's answer and changes when the netlist does; pin a macro with the packer when a neighbour's pin plan depends on where it is.
+- **A hardened block.** `macro-placement` is part of a hardened block's configuration digest when it is `rtl-mp`, so switching placer makes the block's abstract stale. A block that keeps the default keeps the digest it had before the key existed.
+
 ### Floorplan controls
 
 Three optional `floorplan` keys steer where macros and standard cells may go (#105). A run that sets none of them renders the flow it always did.
@@ -189,8 +205,8 @@ Three optional `floorplan` keys steer where macros and standard cells may go (#1
 | `type` | Effect |
 | --- | --- |
 | `hard` (default) | No standard cell is placed inside. The macro packer also keeps every macro out of it: a macro that would overlap one moves along its row past it, and a row it leaves no room in is skipped. No halo is kept to a blockage. |
-| `soft` | Global placement keeps standard cells out; later repair and legalization may still use the area. Macros may sit on it. |
-| `partial` | Global placement caps the cell density inside at `max-density`, a fraction strictly between 0 and 1. The cap is **global placement's only**: OpenROAD's detailed placer treats every non-soft blockage as fully blocked, so the legalization passes that follow move the cells out again and the area ends up behaving like a `hard` one for standard cells. Macros may sit on it. |
+| `soft` | Global placement keeps standard cells out; later repair and legalization may still use the area. Macros may sit on it, except under [`macro-placement: rtl-mp`](#rtl-mp-macro-placement). |
+| `partial` | Global placement caps the cell density inside at `max-density`, a fraction strictly between 0 and 1. The cap is **global placement's only**: OpenROAD's detailed placer treats every non-soft blockage as fully blocked, so the legalization passes that follow move the cells out again and the area ends up behaving like a `hard` one for standard cells. Macros may sit on it, except under [`macro-placement: rtl-mp`](#rtl-mp-macro-placement). |
 
 The flow creates them with OpenROAD's `create_blockage` right after the floorplan, ahead of macro and global placement. A malformed rectangle (`x0 >= x1`, `y0 >= y1`, a side under 0.001 µm, a negative or non-finite coordinate, not four numbers), an unknown type, or a `max-density` on anything but a `partial` blockage fails when `pnr.yaml` loads; a rectangle outside the die fails in OpenROAD. `create_blockage` first shipped in OpenROAD 26Q1, so a run with blockages fails at setup on an older build. When hard blockages leave the macros no room, the no-fit error says how many blockages it avoided and lists moving one among the fixes.
 
@@ -344,11 +360,33 @@ syntheses:
 
 Each entry resolves to the `abstract/` its `harden: true` run published. P&R appends the abstract's `.lef`, `.lib` and `.gds` to the run's `lef-paths`, `lib-paths` and `gds-paths`, so the flow script, the stream-out manifest and the result fingerprints take the block exactly as they take a hand-wired macro. Synthesis appends the `.lib` and `.lef` to its own lists. The result's `blocks` field lists each consumed block with its run, abstract directory, manifest, the `{path, size, sha256}` fingerprints of the three views it read, and whether it was stale.
 
-- **Build the blocks first.** A block's run is never started from here. With no abstract — never run, or its last run failed — the consuming run fails before its tool starts, naming the block and the `rb pnr` command that builds it. Synthesis of the top reads the block's Liberty model, so it too runs after the block is hardened.
+- **Build the blocks first.** A named run never starts a block's run. With no abstract — never run, or its last run failed — the consuming run fails before its tool starts, naming the block and the `rb pnr` command that builds it. Synthesis of the top reads the block's Liberty model, so it too runs after the block is hardened. `rb pnr` with no run name does the ordering for you; see [Run a whole hierarchy](#run-a-whole-hierarchy).
 - **Same technology and corner.** A block may be hardened on its own block-level platform (see [Block power-grid convention](#block-power-grid-convention)), but its technology LEF and corner Liberty must be the ones the consuming run uses, compared by content. Otherwise the run fails with a platform/corner mismatch. A multi-corner P&R platform cannot consume single-corner abstracts.
 - **Stale abstracts are refused.** Before the tool starts, every input the block's manifest recorded — its RTL sources, netlist, SDC, Liberty and LEF files, pin and PDN snippets — and the three published views are fingerprinted again and compared by content, and the block's configuration is rebuilt from its `pnr.yaml` and platform and compared by digest. Any difference fails the consuming run, naming the block, what changed, and the `rb pnr` command that re-hardens it. Timestamps are never used: a checkout or a copy rewrites them in any order. `--accept-stale` on `rb pnr` or `rb synth` consumes a stale abstract anyway; the result description then says `stale block abstract(s) accepted: <names>`, and that block's row in the result has `stale: true` and the list of changes.
 - **Blackbox the module in the netlist.** `blocks:` supplies the block's views; it does not change what the model's filelist compiles. The top's filelist has to leave the block's module a blackbox, typically a port-only stub, as it would for any hard macro.
 - **Power.** The abstract Liberty has no power data, so a parent's `rb power` reports the block as drawing nothing (see [Harden a block](#harden-a-block)).
+
+### Run a whole hierarchy
+
+`rb pnr` with no run name runs every entry in the `pnr.yaml`, with each block's run before the runs that consume it:
+
+- **Order.** Runs are sorted by their `blocks:` edges. Where the edges leave a choice, a run keeps its place in the file, so a `pnr.yaml` with no `blocks:` runs in file order as it always has.
+- **Other files.** A block whose `pnr-path` is another `pnr.yaml` is pulled into the plan ahead of its consumer, and so are that block's own blocks. A pulled-in run writes to its own suite's `artefacts/`, takes that tree's lock, and its row in the results carries a `suite` key.
+- **A failed block.** A run whose block failed, including an expected failure under `xfail`, is not attempted: neither published an abstract. It is reported as `FAIL` with `fail_stage: blocked`, a description naming the block, and a `blocked_by` list; an `xfail` marker does not excuse it. Runs that do not depend on the failed block still run, and a run is blocked through any number of levels.
+- **A skipped run.** A block skipped by `-l` does not block its consumer, which uses the abstract already published, as a named run would. A run `-l` deselects is `SKIP` whatever its blocks did.
+- **Configuration errors.** A cycle in `blocks:` (`pnr blocks: cycle: a -> b -> a`), a block naming a run its `pnr.yaml` does not define, a `pnr-path` that does not exist, or two runs that would write the same `artefacts/<run>` directory (two `pnr.yaml` files in one directory defining the same run name) stops the command before anything runs.
+
+On its own this orders P&R only. The top's synthesis reads the blocks' abstracts, so on a clean tree it has to run between the blocks' P&R and the top's. `--synth` does that: each P&R run's upstream synthesis runs just before it, once per synthesis however many P&R runs read it, and regardless of the synthesis entry's own `reglvl`. A whole hierarchy then builds from nothing in one command:
+
+```sh
+rb pnr -c pnr/top/pnr.yaml --synth
+```
+
+With `--synth`, a run also waits for the blocks its synthesis entry names under its own `blocks:`, pulled in like the run's own blocks, because that synthesis reads their abstracts. Every synthesis the plan will run is resolved before the first run starts, so a misspelt `synth:` stops the command up front rather than after its blocks' P&R.
+
+`-j N` runs up to `N` P&R runs at once. Each run starts, in plan order, as soon as every block it names has finished, so independent blocks harden side by side and a top still waits for all of its own. Results are reported in plan order. Each run is a whole OpenROAD session with its own [`threads:`](#openroad-threads), so size the two together; the default, `-j 1`, runs the plan one run at a time. A synthesis two runs share still runs once — the second waits for it. Every artefact tree the plan writes is locked before the first run starts. A run that crashes rather than failing is reported as `FAIL` with `fail_stage: error` and the exception in its description, blocks its consumers, and leaves every other run's row in the results, with or without `-j`.
+
+A synthesis that does not pass fails its P&R run with `fail_stage: synth`, which blocks that run's consumers like any failed block. Each P&R row carries the synthesis it ran as `synth` (`name`, `suite`, `result`, `desc`). `--accept-stale` applies to the syntheses as well.
 
 ## Run P&R
 

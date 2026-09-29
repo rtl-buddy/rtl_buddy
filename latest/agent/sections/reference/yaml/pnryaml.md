@@ -42,6 +42,7 @@ runs:
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
 | `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left` or `upper-right`. See [Floorplan controls](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#floorplan-controls) |
+| `floorplan.macro-placement` | Default `pack` | Who places the hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`). `macro-anchor` cannot be set with `rtl-mp`, and `rtl-mp` keeps macros out of every blockage type. See [RTL-MP macro placement](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#rtl-mp-macro-placement) |
 | `floorplan.blockages` | Optional | List of standard-cell placement blockages. Each is `rect: [x0, y0, x1, y1]` in microns, die coordinates (`x0 < x1`, `y0 < y1`, non-negative), `type: hard` (default), `soft` or `partial`, and for `partial` only, `max-density` strictly between 0 and 1 (honoured by global placement only; legalization clears a partial blockage like a hard one). Needs OpenROAD 26Q1+. Macros are kept out of `hard` blockages |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
