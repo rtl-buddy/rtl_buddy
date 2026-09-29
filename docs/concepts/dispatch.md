@@ -210,6 +210,28 @@ When `sbatch-args` selects a cluster (`-M name` or `--clusters=name`), or `SBATC
 
 With several clusters selected (`--clusters=a,b` or `all`), Slurm picks the cluster at submit and no single array limit applies. Set `cfg-dispatch.max-array-size`, or `max-array-tasks` alone if that is the ceiling you know. The `dispatch.build_job_deduped` warning that names the job being waited on is not printed. The build job is still submitted with singleton, but a site with `disable_remote_singleton` may not serialise across clusters.
 
+## Tag job names for one caller
+
+Set `RTL_BUDDY_JOB_TAG` to prefix every Slurm job name an invocation submits with the tag and `:`. A CI system that submits as the same user as developers uses it to find one pipeline's jobs. The tag leads because default `squeue` output shows only the first eight characters of a name.
+
+```bash
+RTL_BUDDY_JOB_TAG=ci-1234-1 rb regression -c regression.yaml --dispatch slurm
+squeue --me --noheader --format='%i %j' | grep ' ci-1234-1:'
+sacct -X --noheader --format=JobID,JobName%80,State | grep ' ci-1234-1:'
+```
+
+| Job | Untagged name | Tagged name |
+|---|---|---|
+| Build | `rb-build-<hash>` | `<tag>:rb-build-<hash>` |
+| Verilate | `rb-verilate-<hash>` | `<tag>:rb-verilate-<hash>` |
+| Single simulation or elaboration | `rb:<name>` | `<tag>:rb:<name>` |
+| Array | `rb:<first>+<N>[/<slice>]` | `<tag>:rb:<first>+<N>[/<slice>]` |
+
+- A tag is 1 to 64 characters from `A-Z a-z 0-9 . _ -`. Any other value fails the command with exit code 2 and `dispatch.job_tag_invalid` before anything is submitted. Unset or empty leaves names untagged.
+- Build jobs serialise per user, tag and suite. A tagged CI run and an untagged developer run of one suite do not wait for each other; if they share a build tree, the build lock serialises them instead.
+- The tag is independent of `--run-tag`, which never changes a job name, and does not affect [adoption](#interrupted-runs-warn-cancel-adopt). A `--job-name` in `sbatch-args` replaces a simulation job's whole name, tag included.
+- `local-parallel` names no jobs and ignores the variable.
+
 ## Reuse shared builds and force a rebuild
 
 A shared build is reused when no tracked input under the project root has changed. Inputs are compared by content, so a `preproc` hook that regenerates a file identically still reuses the build. See [Sharing compiled builds](tests.md#sharing-compiled-builds-across-tests).
@@ -217,8 +239,8 @@ A shared build is reused when no tracked input under the project root has change
 - `compile.build_reused` names the reused directory and its age; the test's `compile.log` adds the command a rebuild would run.
 - `--rebuild` compiles even where the build would be reused, once per build directory per run. Under dispatch the build job performs the rebuild, or the simulation jobs do when the suite has no build job.
 - `compile.build_lock_wait` means another process is compiling into the same directory. It is not a hang.
-- Build jobs are named `rb-build-<hash>` from the suite directory and use `--dependency=singleton`, so one build job per suite runs at a time per cluster. A re-run after `Ctrl-C` waits for the interrupted build job, then reuses its build if the inputs are unchanged. Concurrent `--run-tag` runs of one suite serialise their builds while their simulations overlap.
-- A `--dependency` in `sbatch-args` or `SBATCH_DEPENDENCY` is combined with the singleton (`afterok:7,singleton`). An expression using `?` cannot be combined, so the singleton is dropped. A `--job-name` in `sbatch-args` renames simulation jobs only.
+- Build jobs are named `rb-build-<hash>` from the suite directory, behind any [job tag](#tag-job-names-for-one-caller), and use `--dependency=singleton`, so one build job per suite and tag runs at a time per cluster. A re-run after `Ctrl-C` waits for the interrupted build job, then reuses its build if the inputs are unchanged. Concurrent `--run-tag` runs of one suite serialise their builds while their simulations overlap.
+- A `--dependency` in `sbatch-args` or `SBATCH_DEPENDENCY` is combined with the singleton (`afterok:7,singleton`). An expression using `?` cannot be combined, so the singleton is dropped. A `--job-name` in `sbatch-args` renames simulation jobs only, replacing any job tag.
 - A site with `DependencyParameters=disable_remote_singleton` may not serialise across clusters. Pin one cluster with `-M` in `sbatch-args`, or see [known issues](../known-issues.md).
 - When a build fails, Slurm removes the dependent jobs. Override with `--kill-on-invalid-dep=no` in `sbatch-args`.
 

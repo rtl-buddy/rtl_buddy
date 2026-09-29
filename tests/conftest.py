@@ -26,6 +26,12 @@ def clean_environ():
 
 
 @pytest.fixture(autouse=True)
+def no_inherited_job_tag(monkeypatch):
+    """A CI host exporting ``RTL_BUDDY_JOB_TAG`` would rename every job."""
+    monkeypatch.delenv("RTL_BUDDY_JOB_TAG", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def reset_cancellation_latch():
     """Un-latch ``process_utils`` cancellation between tests.
 

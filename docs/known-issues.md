@@ -182,7 +182,7 @@ Unshared builds have no lock, so do not run such a suite twice at once.
 
 ## Slurm serialises build jobs of the same suite
 
-Build jobs of one suite run one at a time per user and cluster, so an unrelated run of the same suite waits for an earlier one (`dispatch.build_job_deduped`). Two users sharing a tree rely on the [flock](#shared-build-locking). A federation with `DependencyParameters=disable_remote_singleton` does not serialise across clusters; pin one with `-M`. See [Troubleshoot builds](concepts/dispatch.md#troubleshoot-builds) for a build job that stays `PENDING`.
+Build jobs of one suite run one at a time per user, [job tag](concepts/dispatch.md#tag-job-names-for-one-caller) and cluster, so an unrelated run of the same suite under the same tag, or both untagged, waits for an earlier one (`dispatch.build_job_deduped`). `--run-tag` does not separate them. Two users, or two runs under different job tags, sharing a tree rely on the [flock](#shared-build-locking). A federation with `DependencyParameters=disable_remote_singleton` does not serialise across clusters; pin one with `-M`. See [Troubleshoot builds](concepts/dispatch.md#troubleshoot-builds) for a build job that stays `PENDING`.
 
 ## A different rtl_buddy version does not reuse shared builds
 
