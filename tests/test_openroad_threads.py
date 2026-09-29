@@ -1,4 +1,4 @@
-"""OpenROAD thread count: validation, allocation cap, emitted Tcl (#654)."""
+"""OpenROAD thread count: validation, allocation cap, emitted Tcl."""
 
 import logging
 from contextlib import nullcontext
@@ -24,10 +24,6 @@ from rtl_buddy.errors import FatalRtlBuddyError
 
 _NO_ALLOCATION = (None, None)
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
 
 @pytest.mark.parametrize("value", [None, 1, 8, 128, AUTO])
 def test_validate_accepts_positive_ints_auto_and_unset(value):
@@ -36,8 +32,7 @@ def test_validate_accepts_positive_ints_auto_and_unset(value):
 
 @pytest.mark.parametrize(
     "value",
-    # 0 is OpenROAD's spelling of "every host core"; a bool is an int to
-    # Python; "8" is a quoted string, "max" OpenROAD's own keyword.
+    # 0 is OpenROAD's spelling of "every host core"; a bool is an int to Python; "8" is a quoted string and "max" is OpenROAD's own keyword.
     [0, -1, -8, True, False, "8", "max", "AUTO", "", 2.0],
 )
 def test_validate_rejects_everything_else(value):
@@ -114,11 +109,6 @@ def test_power_and_synth_entries_validate_threads_too(tmp_path):
         synth.initialise(str(tmp_path))
 
 
-# ---------------------------------------------------------------------------
-# Allocation detection
-# ---------------------------------------------------------------------------
-
-
 def test_no_scheduler_and_full_affinity_is_no_allocation():
     assert detect_allocation({}, affinity=12, cpu_count=12) == _NO_ALLOCATION
     assert detect_allocation({}, affinity=None, cpu_count=12) == _NO_ALLOCATION
@@ -169,11 +159,6 @@ def test_live_detection_reads_the_process_environment(monkeypatch):
     assert detect_allocation() == (5, "SLURM_CPUS_PER_TASK")
 
 
-# ---------------------------------------------------------------------------
-# Planning
-# ---------------------------------------------------------------------------
-
-
 def _capture_events(monkeypatch):
     events: list[tuple[int, str, dict]] = []
     real = openroad_threads.log_event
@@ -191,7 +176,7 @@ def test_unset_emits_nothing_and_records_one_thread(monkeypatch):
     plan = plan_threads(None, flow="pnr", run="r", allocation=(8, "SLURM_CPUS_ON_NODE"))
     assert plan.tcl() == ""
     assert plan.count == 1
-    # An allocation alone never raises the count: unset stays deterministic.
+    # An allocation alone never raises the count; unset stays deterministic.
     assert plan.fields() == {
         "requested": None,
         "effective": 1,
@@ -248,7 +233,7 @@ def test_auto_without_an_allocation_is_one_thread_not_every_core():
 
 
 def test_openroads_own_report_wins_as_the_effective_count():
-    """OpenROAD clamps to hardware concurrency by itself (ORD-0030)."""
+    """OpenROAD clamps to hardware concurrency itself (ORD-0030)."""
     plan = plan_threads(64, flow="pnr", run="r", allocation=_NO_ALLOCATION)
     assert plan.fields(reported=12)["effective"] == 12
 
@@ -261,11 +246,6 @@ def test_parse_reported_threads_takes_the_last_report():
     )
     assert parse_reported_threads(log) == 4
     assert parse_reported_threads("no such line\n") is None
-
-
-# ---------------------------------------------------------------------------
-# rb pnr: emitted Tcl and recorded provenance
-# ---------------------------------------------------------------------------
 
 
 def _platform(tmp_path):
@@ -337,8 +317,7 @@ def _script(tmp_path, threads):
 def test_unset_threads_leaves_the_pnr_script_unchanged(tmp_path, no_allocation):
     text = _script(tmp_path, None)
     assert "set_thread_count" not in text
-    # The placeholder line collapses to the blank line that was always
-    # there, so the script is byte-identical to the pre-#654 one.
+    # The placeholder line collapses to the blank line that was always there, so the script is unchanged when no thread count is set.
     assert 'file mkdir $OUT_DIR\n\nputs ">>> Reading Liberty + LEF"' in text
 
 
@@ -427,6 +406,6 @@ def test_pnr_machine_row_carries_openroad_threads():
 
 
 def test_a_count_in_the_log_is_ignored_when_none_was_set():
-    """With nothing emitted OpenROAD logs no count: one in the log is stale."""
+    """With nothing emitted OpenROAD logs no count; one in the log is stale."""
     plan = plan_threads(None, flow="pnr", run="r", allocation=_NO_ALLOCATION)
     assert plan.fields(reported=8)["effective"] == 1

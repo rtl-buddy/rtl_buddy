@@ -1,10 +1,6 @@
-"""Tests for ``rtl_buddy.hub.viewer_http`` — the HTTP + WS layer.
+"""Tests for ``rtl_buddy.hub.viewer_http``, the HTTP and WS layer.
 
-The ``ViewerServer`` is wired up against a real ``HubServer`` running
-on a sibling port so the WS proxy exercises actual handshake +
-broadcast through the live hub dispatch. HTTP tests cover the
-placeholder body, hub-address injection, and the optional viewer
-bundle path.
+A ``ViewerServer`` runs against a real ``HubServer`` on a sibling port. HTTP tests cover the placeholder body, hub-address injection and the optional viewer bundle.
 """
 
 from __future__ import annotations
@@ -35,16 +31,11 @@ from rtl_buddy.hub.viewer_http import (
 )
 
 
-# ---------------------------------------------------------------------------
-# render_index_html
-# ---------------------------------------------------------------------------
-
-
 def test_render_index_html_injects_hub_addr():
     body = render_index_html(bundle_index=None, hub_addr="127.0.0.1:54321")
     assert b"window.__RTL_BUDDY_HUB__" in body
     assert b"127.0.0.1:54321" in body
-    # Placeholder marker should have been removed:
+    # The placeholder marker is removed:
     assert b"%HUB_INJECTION%" not in body
 
 
@@ -69,7 +60,7 @@ def test_render_index_html_falls_back_to_placeholder(tmp_path: Path):
 
 
 def test_placeholder_html_contains_injection_marker():
-    """The marker must exist so render_index_html can do a direct replace."""
+    """The marker exists so render_index_html can replace it directly."""
 
     assert "%HUB_INJECTION%" in PLACEHOLDER_HTML
 
@@ -85,11 +76,6 @@ def test_render_index_html_injects_view_url_when_provided():
 def test_render_index_html_omits_view_url_when_absent():
     body = render_index_html(bundle_index=None, hub_addr="127.0.0.1:1")
     assert b"__RTL_BUDDY_VIEW_URL__" not in body
-
-
-# ---------------------------------------------------------------------------
-# combined HubServer + ViewerServer fixture
-# ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
@@ -115,11 +101,6 @@ async def hub_and_viewer() -> AsyncIterator[tuple[HubServer, ViewerServer]]:
                 pass
 
 
-# ---------------------------------------------------------------------------
-# HTTP
-# ---------------------------------------------------------------------------
-
-
 def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=2.0) as resp:
@@ -134,7 +115,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _http_get_no_redirect(url: str) -> tuple[int, dict[str, str]]:
-    """GET ``url``, returning the first response even if it is a 3xx."""
+    """GET ``url`` and return the first response, even a 3xx."""
 
     opener = urllib.request.build_opener(_NoRedirect)
     try:
@@ -146,8 +127,7 @@ def _http_get_no_redirect(url: str) -> tuple[int, dict[str, str]]:
 
 @pytest.mark.asyncio
 async def test_http_view_route_returns_placeholder(hub_and_viewer):
-    """The SPA lives at ``/sch`` since #423 (``/view`` since #398, ``/``
-    before that) — ``/`` is the landing."""
+    """The SPA is served at ``/sch``; ``/`` is the landing."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/sch"
@@ -175,11 +155,7 @@ async def test_http_trailing_slash_redirects_to_canonical_route(
 ):
     """``<page>/`` is a 307 to ``<page>``.
 
-    The SPA bundle's asset references are relative (Vite ``base: ''``,
-    which rtl-buddy-view needs for ``embed.py``'s standalone HTML), so
-    a page served at ``/sch/`` resolves them to ``/sch/assets/…`` and
-    never loads. Canonicalising the URL is what keeps one spelling —
-    and one asset path — for every app page.
+    The SPA bundle's asset references are relative, so a page at ``/sch/`` would resolve them to ``/sch/assets/…`` and fail to load. One canonical spelling gives each asset one path.
     """
 
     _hub, viewer = hub_and_viewer
@@ -187,14 +163,13 @@ async def test_http_trailing_slash_redirects_to_canonical_route(
     status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
     assert status == 307
     assert headers.get("Location") == route
-    # 307-not-301 is the whole argument for reusing a pinned port across
-    # projects, so the header that makes it true is part of the contract.
+    # 307, not 301, so a pinned port can be reused across projects; the header is part of the contract.
     assert headers.get("Cache-Control") == "no-store"
 
 
 @pytest.mark.asyncio
 async def test_http_trailing_slash_redirect_preserves_query(hub_and_viewer):
-    """``/sch/?view=…`` must not lose the query on the way to ``/sch``."""
+    """``/sch/?view=…`` keeps its query when redirected to ``/sch``."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/sch/?view=/view.json&model=alu"
@@ -216,11 +191,9 @@ async def test_http_trailing_slash_redirect_preserves_query(hub_and_viewer):
 async def test_http_legacy_page_routes_redirect_to_the_tla_spelling(
     hub_and_viewer, legacy: str, canonical: str
 ):
-    """The pre-#423 page spellings still answer, with a 307.
+    """The old page spellings answer with a 307.
 
-    Note the trailing-slash rows: a request is normalised **once**, so
-    ``/graph/`` lands on ``/gph`` directly rather than bouncing through
-    ``/graph`` and costing a second round-trip.
+    A request is normalised once, so ``/graph/`` lands on ``/gph`` directly.
     """
 
     _hub, viewer = hub_and_viewer
@@ -233,9 +206,7 @@ async def test_http_legacy_page_routes_redirect_to_the_tla_spelling(
 
 @pytest.mark.asyncio
 async def test_http_legacy_redirect_preserves_the_query(hub_and_viewer):
-    """A bookmarked ``/view?view=…`` must arrive at ``/sch`` with its
-    query intact — the SPA reads ``?view=`` to know what to load, so
-    dropping it would turn a working bookmark into an empty canvas."""
+    """A legacy ``/view?view=…`` arrives at ``/sch`` with its query intact."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/view?view=/view.json&model=alu"
@@ -247,23 +218,19 @@ async def test_http_legacy_redirect_preserves_the_query(hub_and_viewer):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["/view.json", "/graph.json", "/cov.json"])
 async def test_http_data_routes_are_not_renamed(hub_and_viewer, route: str):
-    """Only PAGE routes moved. ``/view.json`` in particular keeps its
-    name because the ``view`` hub-protocol origin does — renaming a page
-    does not get to touch the wire contract."""
+    """Only page routes are renamed; data routes such as ``/view.json`` keep their names."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}{route}"
     status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
-    # Whatever these answer (200/404/409 depending on artefacts), they
-    # must never be a redirect to a renamed spelling.
+    # Whatever these answer (200/404/409 depending on artefacts), it is never a redirect to a renamed spelling.
     assert status != 307
     assert "Location" not in headers
 
 
 @pytest.mark.asyncio
 async def test_http_cov_source_is_not_swept_up_by_the_page_rename(hub_and_viewer):
-    """``/cov/source`` is a data route living under a page route's
-    prefix — the canonicaliser must not touch it."""
+    """``/cov/source`` is a data route under a page route's prefix and is not canonicalised."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/cov/source?path=x.sv"
@@ -273,9 +240,7 @@ async def test_http_cov_source_is_not_swept_up_by_the_page_rename(hub_and_viewer
 
 
 def test_the_landing_cards_name_the_routes_their_modules_serve():
-    """The app-card registry spells the routes as literals to keep
-    `landing_page` free of the heavy `graph_page` import, so this is
-    what stops the two drifting."""
+    """The app-card registry spells routes as literals to keep `landing_page` from importing `graph_page`; this test catches drift."""
 
     from rtl_buddy.hub import cov_page, graph_page, landing_page
 
@@ -287,7 +252,7 @@ def test_the_landing_cards_name_the_routes_their_modules_serve():
 
 @pytest.mark.asyncio
 async def test_http_landing_slash_is_not_redirected(hub_and_viewer):
-    """``/`` is already canonical — it must serve, not bounce."""
+    """``/`` is canonical and is served, not redirected."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/"
@@ -298,7 +263,7 @@ async def test_http_landing_slash_is_not_redirected(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_http_unknown_trailing_slash_path_still_404s(hub_and_viewer):
-    """Only the three app routes canonicalise; nothing else is invented."""
+    """Only the three app routes canonicalise."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/nope/"
@@ -329,10 +294,7 @@ async def test_http_404_for_unknown_path(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_http_view_json_409_when_path_unset(hub_and_viewer):
-    """No view_json_path configured → 409 no_active_model (not a 500,
-    not an empty 200, and not a plain-text body): the route exists and
-    the hub is healthy, there is just nothing selected yet
-    (rtl-buddy-view#130)."""
+    """With no view_json_path configured, /view.json returns 409 no_active_model as JSON: the hub is healthy and nothing is selected."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/view.json"
@@ -351,7 +313,7 @@ async def test_http_view_json_409_when_path_unset(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_http_view_json_409_when_file_missing(tmp_path: Path):
-    """view_json_path set but file doesn't exist → 409, same shape."""
+    """A view_json_path whose file is missing returns 409 with the same shape."""
 
     hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     hub_host, hub_port = await hub.start()
@@ -386,8 +348,7 @@ async def test_http_view_json_409_when_file_missing(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_http_view_json_served_when_configured(tmp_path: Path):
-    """view_json_path points at an existing file → 200 with that JSON body
-    + index.html gets the __RTL_BUDDY_VIEW_URL__ injection."""
+    """An existing view_json_path returns 200 with that JSON, and index.html gets the __RTL_BUDDY_VIEW_URL__ injection."""
 
     view_json = tmp_path / "view.json"
     view_json.write_text(
@@ -413,7 +374,7 @@ async def test_http_view_json_served_when_configured(tmp_path: Path):
         assert "application/json" in headers.get("Content-Type", "")
         assert body == view_json.read_bytes()
 
-        # Bonus: the SPA route gets the auto-load preamble.
+        # The SPA route gets the auto-load preamble.
         url_root = f"http://127.0.0.1:{viewer.http_port}/sch"
         _status, _, root_body = await asyncio.to_thread(_http_get, url_root)
         assert b"window.__RTL_BUDDY_VIEW_URL__" in root_body
@@ -431,7 +392,7 @@ async def test_http_view_json_served_when_configured(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_http_serves_static_from_bundle(tmp_path: Path):
-    """When --viewer-bundle is a directory, static files under it are served."""
+    """With --viewer-bundle a directory, static files under it are served."""
 
     bundle = tmp_path / "dist"
     bundle.mkdir()
@@ -454,8 +415,7 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
         assert b"bundle index" in body
         assert b"window.__RTL_BUDDY_HUB__" in body
 
-        # ``/index.html`` stays an alias for the injected bundle index —
-        # never the raw file _serve_static would hand back.
+        # ``/index.html`` stays an alias for the injected bundle index, never the raw file.
         url_alias = f"http://127.0.0.1:{viewer.http_port}/index.html"
         status, _, body = await asyncio.to_thread(_http_get, url_alias)
         assert status == 200
@@ -467,19 +427,13 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
         assert "text/css" in headers.get("Content-Type", "")
         assert body == b"body{}"
 
-        # ``/sch/`` follows through to the injected index, and the
-        # relative ``./assets/app.css`` in it resolves against ``/sch``
-        # — i.e. to the URL asserted above, not ``/sch/assets/app.css``.
-        # ``/sch`` is root-level exactly as ``/view`` was, so the rename
-        # does not move where those relative references land.
+        # ``/sch/`` redirects to the injected index, where the relative ``./assets/app.css`` resolves against ``/sch``.
         url_slash = f"http://127.0.0.1:{viewer.http_port}/sch/"
         status, _, body = await asyncio.to_thread(_http_get, url_slash)
         assert status == 200
         assert b"window.__RTL_BUDDY_HUB__" in body
 
-        # And the fix is the redirect, not a second mount of the assets
-        # one level deeper: the nested spelling stays a 404 so each
-        # asset keeps exactly one URL.
+        # The nested ``/sch/assets/...`` spelling stays a 404 so each asset has one URL.
         url_nested = f"http://127.0.0.1:{viewer.http_port}/sch/assets/app.css"
         try:
             await asyncio.to_thread(_http_get, url_nested)
@@ -515,9 +469,7 @@ async def test_http_rejects_path_traversal_in_bundle(tmp_path: Path):
     await viewer.start()
     vtask = asyncio.create_task(viewer.serve_forever())
     try:
-        # urllib normalises ".." before sending, so we open a raw socket
-        # and send "GET /../secret.txt" verbatim to exercise the
-        # server-side traversal guard.
+        # urllib normalises ".." before sending, so use a raw socket to send "GET /../secret.txt" verbatim to the traversal guard.
         reader, writer = await asyncio.open_connection("127.0.0.1", viewer.http_port)
         writer.write(b"GET /../secret.txt HTTP/1.1\r\nHost: x\r\n\r\n")
         await writer.drain()
@@ -534,7 +486,7 @@ async def test_http_rejects_path_traversal_in_bundle(tmp_path: Path):
             await writer.wait_closed()
         except Exception:
             pass
-        # Whatever the server returns, it MUST NOT be the secret body.
+        # Whatever the server returns, it must not be the secret body.
         assert b"nope" not in data
     finally:
         await viewer.shutdown()
@@ -545,11 +497,6 @@ async def test_http_rejects_path_traversal_in_bundle(tmp_path: Path):
                 await t
             except (asyncio.CancelledError, Exception):
                 pass
-
-
-# ---------------------------------------------------------------------------
-# WebSocket proxying
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -574,7 +521,7 @@ async def test_ws_hello_welcome_round_trip(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_ws_broadcast_reaches_ws_client(hub_and_viewer):
-    """A TCP client's broadcast should arrive at the WS client via the proxy."""
+    """A TCP client's broadcast reaches the WS client via the proxy."""
 
     hub, viewer = hub_and_viewer
     ws_url = f"ws://127.0.0.1:{viewer.http_port}/ws"
@@ -604,7 +551,7 @@ async def test_ws_broadcast_reaches_ws_client(hub_and_viewer):
         await writer.drain()
         await reader.readline()  # welcome
 
-        # WS view → broadcast a selection. Should reach the TCP wave client.
+        # WS view broadcasts a selection; the TCP wave client receives it.
         evt = Envelope(
             origin=Origin.VIEW,
             kind=Kind.EVENT,
@@ -652,9 +599,9 @@ async def test_ws_close_unregisters(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_ws_with_no_hub_upstream_closes_cleanly():
-    """WS server should close the WS when the hub TCP upstream is unreachable."""
+    """The WS server closes the WS when the hub TCP upstream is unreachable."""
 
-    # ViewerServer pointed at a TCP port nothing is listening on.
+    # ViewerServer points at a TCP port nothing listens on.
     viewer = ViewerServer(hub_host="127.0.0.1", hub_port=1, http_port=0)
     await viewer.start()
     vtask = asyncio.create_task(viewer.serve_forever())
@@ -672,19 +619,13 @@ async def test_ws_with_no_hub_upstream_closes_cleanly():
             pass
 
 
-# ---------------------------------------------------------------------------
-# /models + /view.json?model= (issue #174)
-# ---------------------------------------------------------------------------
-
-
 import json as _json
 
 
 def _http_get_allow_4xx(
     url: str,
 ) -> tuple[int, dict[str, str], bytes]:
-    """Helper that doesn't raise on 4xx — handy for the
-    ?model=unknown / 400 path that urllib turns into HTTPError."""
+    """GET that returns 4xx responses instead of raising HTTPError."""
     try:
         return _http_get(url)
     except urllib.error.HTTPError as exc:
@@ -708,8 +649,7 @@ async def _viewer_with_project(
     initial_model: str | None = None,
     models_file_pin: Path | None = None,
 ) -> tuple[HubServer, ViewerServer, asyncio.Task, asyncio.Task]:
-    """Spin up a hub + viewer wired to ``tmp_path`` as the project root,
-    so /models discovery + ?model= switching work."""
+    """Start a hub and viewer with ``tmp_path`` as the project root, for /models discovery and ?model= switching."""
     hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     hub_host, hub_port = await hub.start()
     hub_task = asyncio.create_task(hub.serve_forever())
@@ -776,7 +716,7 @@ async def test_models_endpoint_reports_active_model(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_models_endpoint_honours_models_file_pin(tmp_path: Path):
-    """--models-file PATH at start → /models enumerates only that file."""
+    """--models-file PATH at start limits /models to that file."""
     pinned = tmp_path / "block_a" / "models.yaml"
     _write_models_yaml(pinned, [{"name": "alpha"}])
     _write_models_yaml(tmp_path / "block_b" / "models.yaml", [{"name": "beta"}])
@@ -808,8 +748,7 @@ async def test_models_endpoint_has_cdc_false_when_field_missing(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_models_endpoint_has_cdc_false_when_cdc_file_missing(tmp_path: Path):
-    """Field set but the referenced cdc.yaml doesn't exist → has_cdc=false.
-    Fails at list time, not at switch time."""
+    """A model field referencing a missing cdc.yaml gives has_cdc=false at list time."""
     _write_models_yaml(
         tmp_path / "models.yaml",
         [{"name": "demo", "cdc": "../nope/cdc.yaml"}],
@@ -826,9 +765,7 @@ async def test_models_endpoint_has_cdc_false_when_cdc_file_missing(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_view_json_query_param_unknown_model_404(tmp_path: Path):
-    """A name that resolves to no model → 404 ``unknown_model`` as JSON
-    (rtl-buddy-view#130). The name is echoed back so the SPA can name it
-    in the placeholder without re-parsing the prose."""
+    """An unknown model name returns 404 ``unknown_model`` as JSON, echoing the name."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "alpha"}])
     hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
@@ -841,8 +778,7 @@ async def test_view_json_query_param_unknown_model_404(tmp_path: Path):
         assert payload["error"]["kind"] == "unknown_model"
         assert payload["error"]["model"] == "no_such"
         assert "no_such" in payload["error"]["message"]
-        # Summary only — the loader's multi-line candidate list stays in
-        # the hub log, not in the SPA's one-line banner.
+        # Summary only; the loader's multi-line candidate list stays in the hub log.
         assert "\n" not in payload["error"]["message"]
     finally:
         await _teardown(hub, viewer, hub_task, vtask)
@@ -852,16 +788,9 @@ async def test_view_json_query_param_unknown_model_404(tmp_path: Path):
 async def test_view_json_query_param_flips_active_model_and_broadcasts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """End-to-end happy path:
-    1. ?model=demo runs build_view_json (mocked) and serves the result.
-    2. active_model flips in memory.
-    3. .rtl-buddy/hub.json gains active_model.
-    4. view_changed event broadcast to connected WS clients.
-    """
+    """?model=demo builds the view (mocked), serves it, flips active_model in memory, adds active_model to .rtl-buddy/hub.json, and broadcasts view_changed to WS clients."""
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
-    # Pre-seed a discovery record so update_active_model has something
-    # to rewrite (the test doesn't go through cmd_start, which is
-    # what normally creates this).
+    # Pre-seed a discovery record for update_active_model to rewrite; the test bypasses cmd_start, which normally creates it.
     from rtl_buddy.hub import discovery
 
     discovery.write_record(
@@ -871,8 +800,7 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
         server_version="0.0.0+test",
     )
 
-    # Stub the view-builder so the test doesn't need rtl-buddy-view
-    # on PATH.
+    # Stub the view builder so rtl-buddy-view is not needed on PATH.
     from rtl_buddy.hub import view_builder
 
     captured_view = tmp_path / ".rtl-buddy" / "cache" / "view-demo.json"
@@ -886,12 +814,10 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
 
     hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
     try:
-        # Wire up a WS client that will register as `view` so it gets
-        # the broadcast. Use the hub_server's broadcast machinery
-        # which only sends to registered clients.
+        # A WS client registered as `view` receives the broadcast.
         ws_url = f"ws://127.0.0.1:{viewer.http_port}/ws"
         async with websockets.connect(ws_url) as ws:
-            # Register as `view` so we'll receive broadcasts.
+            # Register as `view` to receive broadcasts.
             await ws.send(encode(_hello("view")))
             welcome = decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
             assert welcome.type == "welcome"
@@ -901,7 +827,7 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
             status, _, _ = await asyncio.to_thread(_http_get, url)
             assert status == 200
 
-            # view_changed should arrive on the WS.
+            # view_changed arrives on the WS.
             event = decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
             assert event.type == "view_changed"
             assert event.kind == Kind.EVENT
@@ -910,9 +836,7 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
                 "model": "demo",
                 "models_file": str(tmp_path / "models.yaml"),
                 "view_url": "/view.json?model=demo",
-                # rtl-buddy-view #99 / 6b: explicit mode marker so
-                # SPA clients route the event through the right
-                # action without inferring mode from the URL.
+                # The event carries an explicit mode marker so SPA clients do not infer mode from the URL.
                 "view_mode": "dut",
             }
 
@@ -930,9 +854,7 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
 async def test_view_json_no_query_serves_active_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """After ?model=demo flipped active_model, GET /view.json (no query)
-    should return the same bytes — preserves backwards-compat for
-    pre-feature SPAs that only know how to fetch /view.json."""
+    """After ?model=demo flips active_model, a bare GET /view.json returns the same bytes."""
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     from rtl_buddy.hub import view_builder
 
@@ -960,9 +882,7 @@ async def test_view_json_no_query_serves_active_model(
 async def test_concurrent_same_model_requests_serialise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Two ?model=demo requests racing on a cold cache should only
-    invoke build_view_json ONCE — the per-model lock makes the second
-    request wait for the first."""
+    """Two racing ?model=demo requests on a cold cache both build, one at a time under the per-model lock."""
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     from rtl_buddy.hub import view_builder
 
@@ -971,8 +891,7 @@ async def test_concurrent_same_model_requests_serialise(
 
     def fake_build(*, project_root, model_cfg, axi_perf_source=None):
         call_count["n"] += 1
-        # Block long enough that the second request piles up behind
-        # the lock, then release.
+        # Block long enough for the second request to queue behind the lock, then release.
         import time
 
         time.sleep(0.05)
@@ -992,19 +911,14 @@ async def test_concurrent_same_model_requests_serialise(
         )
         assert r1[0] == 200
         assert r2[0] == 200
-        # The second one was supposed to wait for the lock, but
-        # build_view_json is idempotent at the cache layer — so it
-        # ran twice (once per lock acquisition) without racing. The
-        # lock's job is to prevent concurrent writes to the same
-        # file, not to deduplicate calls. Both rebuilds touched the
-        # same cache path safely.
+        # The lock prevents concurrent writes to one cache file; it does not deduplicate calls, so the build ran twice without racing.
         assert call_count["n"] == 2
     finally:
         await _teardown(hub, viewer, hub_task, vtask)
 
 
 def _hello(client: str) -> Envelope:
-    """Build a minimal hello envelope so the WS test can register."""
+    """Build a minimal hello envelope to register the WS client."""
     return Envelope(
         origin=Origin(client),
         kind=Kind.REQUEST,
@@ -1018,20 +932,12 @@ def _hello(client: str) -> Envelope:
     )
 
 
-# ---------------------------------------------------------------------------
-# /tests + /view.json?test= (rtl-buddy-view #99 / 6b)
-# ---------------------------------------------------------------------------
-
-
 def _write_tests_yaml(
     path: Path,
     testbenches: list[dict],
     tests: list[dict],
 ) -> None:
-    """Write a minimal tests.yaml. Each testbench needs ``name`` +
-    ``filelist`` (+ optional ``toplevel``); each test needs ``name``,
-    ``model``, ``model_path``, ``testbench``, and the boilerplate
-    set of optional ``None`` fields that serde requires."""
+    """Write a minimal tests.yaml with the required testbench and test fields."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = ["rtl-buddy-filetype: test_config", "testbenches:"]
     for tb in testbenches:
@@ -1042,8 +948,7 @@ def _write_tests_yaml(
     lines.append("tests:")
     for t in tests:
         lines.append(f"  - name: {t['name']}")
-        # ``desc`` is required (non-optional) on TestConfigFile —
-        # serde refuses an empty value.
+        # ``desc`` is required on TestConfigFile; serde refuses an empty value.
         lines.append(f"    desc: {t.get('desc', 'test fixture entry')}")
         lines.append(f"    model: {t['model']}")
         lines.append(f"    model_path: {t.get('model_path', 'models.yaml')}")
@@ -1057,8 +962,7 @@ def _write_tests_yaml(
 
 @pytest.mark.asyncio
 async def test_tests_endpoint_lists_tests_from_discovery(tmp_path: Path):
-    """``GET /tests`` walks every tests.yaml and reports each entry's
-    resolved ``(model, tb)`` pair."""
+    """``GET /tests`` walks every tests.yaml and reports each entry's resolved ``(model, tb)`` pair."""
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     _write_tests_yaml(
         tmp_path / "tests.yaml",
@@ -1077,8 +981,7 @@ async def test_tests_endpoint_lists_tests_from_discovery(tmp_path: Path):
         payload = _json.loads(body)
         names = [t["name"] for t in payload["tests"]]
         assert sorted(names) == ["t1", "t2"]
-        # Each entry carries the resolved model + tb so the SPA
-        # picker can label options without an extra round-trip.
+        # Each entry carries the resolved model and tb so the SPA picker can label options.
         for t in payload["tests"]:
             assert t["model"] == "demo"
             assert t["tb"] == "tb_basic"
@@ -1089,8 +992,7 @@ async def test_tests_endpoint_lists_tests_from_discovery(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_tests_endpoint_empty_when_no_tests_yaml(tmp_path: Path):
-    """Standalone / no-tests deployments → empty list. The SPA's
-    DUT/TB toggle stays hidden in that case."""
+    """Without any tests.yaml, /tests returns an empty list."""
     hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
     try:
         url = f"http://127.0.0.1:{viewer.http_port}/tests"
@@ -1124,12 +1026,7 @@ async def test_view_json_query_test_param_unknown_400(tmp_path: Path):
 async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """End-to-end TB-view switch:
-    1. ?test=t1 resolves the test (model + tb pair).
-    2. build_view_json is invoked with the test_cfg (mocked).
-    3. active_test + active_model flip in memory.
-    4. view_changed event broadcast with view_mode='tb' + test + tb.
-    """
+    """?test=t1 resolves the test, calls build_view_json (mocked) with its test_cfg, flips active_test and active_model in memory, and broadcasts view_changed with view_mode='tb', test and tb."""
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     _write_tests_yaml(
         tmp_path / "tests.yaml",
@@ -1190,9 +1087,7 @@ async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
         assert captured["model"] == "demo"
         assert captured["test_cfg"] is not None
         assert captured["test_cfg"].name == "t1"
-        # The builder must be anchored at the suite dir (where tests.yaml
-        # lives) so the TB filelist's relative entries resolve — not the
-        # hub's process cwd. Regression guard for the ?test= 500.
+        # The builder is anchored at the suite dir (where tests.yaml lives), not the hub's cwd, so relative TB filelist entries resolve.
         assert captured["test_suite_dir"] == tmp_path
     finally:
         await _teardown(hub, viewer, hub_task, vtask)
@@ -1202,9 +1097,7 @@ async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
 async def test_view_json_test_param_disambiguated_by_tests_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A test name shared by multiple suites is ambiguous on its own
-    (400), but ``?test=NAME&tests_file=PATH`` pins the owning suite. The
-    ``tests_file`` is confined to the hub's project_root."""
+    """A test name shared by several suites returns 400; ``?test=NAME&tests_file=PATH`` pins the suite. ``tests_file`` is confined to the hub's project_root."""
     from urllib.parse import quote
 
     (tmp_path / "suiteA").mkdir()
@@ -1247,7 +1140,7 @@ async def test_view_json_test_param_disambiguated_by_tests_file(
     try:
         base = f"http://127.0.0.1:{viewer.http_port}/view.json"
 
-        # 1. Ambiguous without tests_file → 400.
+        # 1. Ambiguous without tests_file: 400.
         status, _, body = await asyncio.to_thread(
             _http_get_allow_4xx, f"{base}?test=smoke"
         )
@@ -1278,8 +1171,7 @@ async def test_view_json_test_param_disambiguated_by_tests_file(
 async def test_switch_model_clears_active_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Switching back from TB → DUT view clears active_test so the
-    next bare ``GET /view.json`` returns the DUT bytes."""
+    """Switching from TB back to DUT clears active_test, so a bare ``GET /view.json`` returns the DUT bytes."""
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     from rtl_buddy.hub import view_builder
 
@@ -1296,7 +1188,7 @@ async def test_switch_model_clears_active_test(
 
     hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
     try:
-        # Pretend a TB view was previously selected.
+        # Pretend a TB view was selected.
         viewer.active_test = "t_old"
         url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
         await asyncio.to_thread(_http_get, url)
@@ -1306,13 +1198,8 @@ async def test_switch_model_clears_active_test(
         await _teardown(hub, viewer, hub_task, vtask)
 
 
-# ---------------------------------------------------------------------------
-# structured view errors + model health (rtl-buddy-view#130)
-# ---------------------------------------------------------------------------
-
-
 def _fail_build_view_json(monkeypatch: pytest.MonkeyPatch, message: str):
-    """Make ``build_view_json`` fail the way a refusing renderer does."""
+    """Make ``build_view_json`` fail like a refusing renderer."""
 
     from rtl_buddy.hub import view_builder
     from rtl_buddy.errors import FatalRtlBuddyError
@@ -1334,11 +1221,7 @@ def _hier_log(root: Path, model: str, lines: list[str]) -> Path:
 async def test_view_json_generation_failure_is_structured_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A failing generation → 500 with the pinned JSON shape: kind,
-    model, one-line message, absolute log path, and the log tail as a
-    list of lines. The SPA renders the tail verbatim, so this shape is
-    a contract with rtl-buddy-view#130 — not an implementation detail.
-    """
+    """A failed generation returns 500 with JSON: kind, model, one-line message, absolute log path, and the log tail as a list of lines. The SPA renders the tail verbatim."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "apb_intf"}])
     log = _hier_log(
@@ -1370,9 +1253,9 @@ async def test_view_json_generation_failure_is_structured_json(
             "$ rtl-buddy-view --top apb_intf --filelist hier.f",
             "hierarchy: top module 'apb_intf' not found. Known modules: []",
         ]
-        # Exactly the five keys the SPA is built against.
+        # Exactly the five keys the SPA expects.
         assert set(err) == {"kind", "model", "message", "log_path", "log_tail"}
-        # A failure must NOT promote the model to active.
+        # A failure does not promote the model to active.
         assert viewer.active_model is None
     finally:
         await _teardown(hub, viewer, hub_task, vtask)
@@ -1382,7 +1265,7 @@ async def test_view_json_generation_failure_is_structured_json(
 async def test_view_json_failure_log_tail_is_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A 500-line log yields the last ``LOG_TAIL_LINES`` lines only."""
+    """A 500-line log yields only the last ``LOG_TAIL_LINES`` lines."""
 
     from rtl_buddy.hub.viewer_http import LOG_TAIL_LINES
 
@@ -1407,9 +1290,7 @@ async def test_view_json_failure_log_tail_is_bounded(
 async def test_view_json_failure_without_log_still_answers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """No hier.log on disk (the failure happened before the subprocess
-    ran) → empty tail and a derived path, never a second failure on the
-    failure path."""
+    """With no hier.log on disk, the tail is empty and the path derived; there is no second failure."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     _fail_build_view_json(monkeypatch, "rb hub --model demo: filelist entry missing")
@@ -1432,10 +1313,7 @@ async def test_view_json_failure_without_log_still_answers(
 async def test_bare_view_json_replays_the_active_model_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Payload consistency: once a model is active and its regeneration
-    fails, the bare ``GET /view.json`` answers with the SAME
-    ``view_generation_failed`` body the ``?model=`` path returned — not
-    a ``409``, and not stale bytes."""
+    """When the active model's regeneration fails, a bare ``GET /view.json`` returns the same ``view_generation_failed`` body as ``?model=``, not a 409 or stale bytes."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     log = _hier_log(tmp_path, "demo", ["boom"])
@@ -1450,7 +1328,7 @@ async def test_bare_view_json_replays_the_active_model_failure(
             _http_get_allow_4xx, named
         )
         assert named_status == 500
-        # The hub is now pointed at ``demo`` even though the build failed.
+        # The hub points at ``demo`` even though the build failed.
         viewer.active_model = "demo"
         bare = f"http://127.0.0.1:{viewer.http_port}/view.json"
         bare_status, _, bare_body = await asyncio.to_thread(_http_get_allow_4xx, bare)
@@ -1464,8 +1342,7 @@ async def test_bare_view_json_replays_the_active_model_failure(
 async def test_models_view_status_never_built_then_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``/models`` health transitions: never_built → failed, with the
-    one-line error attached and no ``stale_cache`` (nothing cached)."""
+    """``/models`` health goes never_built to failed, with the one-line error and no ``stale_cache``."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
 
@@ -1500,9 +1377,7 @@ async def test_models_view_status_never_built_then_failed(
 async def test_models_view_status_ok_after_successful_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """failed → ok: a later successful generation clears the remembered
-    failure, and the cached file alone is enough for ``ok`` on a model
-    nobody asked for this session."""
+    """A later successful generation clears the remembered failure (failed to ok), and a cached file alone gives ``ok`` for a model not requested this session."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}, {"name": "other"}])
     from rtl_buddy.hub import view_builder
@@ -1539,8 +1414,7 @@ async def test_models_view_status_ok_after_successful_build(
         assert by_name["demo"]["view_status"] == "ok"
         assert "error" not in by_name["demo"]
 
-        # A cache file written for a model this session never touched is
-        # itself the ``ok`` signal — that is what survives a hub restart.
+        # A cache file for a model this session never touched gives ``ok``; this survives a hub restart.
         other_cache = view_builder.view_json_path(tmp_path, "other")
         other_cache.write_text('{"schema_version":"1.0","top":"other"}')
         _status, _, body = await asyncio.to_thread(_http_get, models_url)
@@ -1554,9 +1428,7 @@ async def test_models_view_status_ok_after_successful_build(
 async def test_models_view_status_failed_with_stale_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A cached view from BEFORE a later failure is ``failed`` plus
-    ``stale_cache: true`` — servable bytes that no longer reflect the
-    sources must not read as healthy."""
+    """A cached view from before a later failure is ``failed`` with ``stale_cache: true``."""
 
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
     from rtl_buddy.hub import view_builder
@@ -1574,7 +1446,7 @@ async def test_models_view_status_failed_with_stale_cache(
     try:
         models_url = f"http://127.0.0.1:{viewer.http_port}/models"
         _status, _, body = await asyncio.to_thread(_http_get, models_url)
-        # Cache alone → ok.
+        # Cache alone gives ok.
         assert _json.loads(body)["models"][0]["view_status"] == "ok"
 
         view_url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
@@ -1590,8 +1462,7 @@ async def test_models_view_status_failed_with_stale_cache(
 
 @pytest.mark.asyncio
 async def test_view_json_model_without_project_root_is_structured(tmp_path: Path):
-    """``?model=`` on a hub with no project root keeps the envelope —
-    the SPA never has to parse a plain-text body."""
+    """``?model=`` on a hub with no project root still returns the JSON envelope."""
 
     hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     hub_host, hub_port = await hub.start()

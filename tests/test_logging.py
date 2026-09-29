@@ -105,8 +105,7 @@ def test_human_toplevel_conflict_names_both_tops(tmp_path):
 
 
 def test_human_toplevel_conflict_without_a_value_says_so(tmp_path):
-    # A bare configured flag (trailing `--top`, or one followed by another
-    # option) has no module to name; the line must not read "None".
+    # A bare configured flag (trailing `--top`, or one followed by another option) names no module; the line must not read "None".
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
     logger = logging.getLogger("rtl_buddy.tests")
@@ -327,12 +326,7 @@ def test_root_callback_accepts_print_failures_only(minimal_project):
 def test_render_summary_escapes_user_data_in_the_rich_table(
     tmp_path, monkeypatch, capsys
 ):
-    """Data is data, not Rich markup (#520).
-
-    A rightsize edit hint reads `tests[name=alpha].resources.cpus`, and Rich
-    parses `[name=alpha]` as a style tag and drops it — the human table then
-    hides which test the hint names while `--machine` shows it in full.
-    """
+    """Data is data, not Rich markup: `tests[name=alpha].resources.cpus` in a rightsize hint must not be parsed as a style tag."""
     monkeypatch.setenv("COLUMNS", "400")  # keep the row on one line
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
@@ -351,16 +345,12 @@ def test_render_summary_escapes_user_data_in_the_rich_table(
     assert "t[0]" in stderr
     assert "Reservation Advice [reserved vs used]" in stderr
     assert "apply by editing tests[name=alpha]" in stderr
-    # The escape is Rich's own: it must not leak into what the user reads.
+    # The escape is Rich's own and must not leak into what the user reads.
     assert "\\[" not in stderr
 
 
 def test_render_summary_keeps_brackets_on_the_machine_console(tmp_path, capsys):
-    """The machine path echoes plain lines through Rich too (#520).
-
-    The JSON event carries the raw strings; the console echo beside it must
-    not quietly disagree with them, and must not carry escape backslashes.
-    """
+    """The machine path echoes plain lines through Rich too; the echo must match the JSON event and carry no escape backslashes."""
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(machine=True, color=False, log_path=log_path)
     logger = logging.getLogger("rtl_buddy.tests.machine")
@@ -461,7 +451,7 @@ def test_show_git_rev_is_best_effort(monkeypatch):
 
 
 def test_git_metadata_status_takes_no_optional_locks(monkeypatch):
-    """#581: reading status must not take .git/index.lock."""
+    """Reading git status must not take .git/index.lock."""
     rb = RtlBuddy(name="rtl_buddy")
     seen = []
 
@@ -481,7 +471,7 @@ def test_git_metadata_status_takes_no_optional_locks(monkeypatch):
 
 
 def test_git_metadata_survives_no_optional_locks(tmp_path):
-    """The flag must not change the reported branch/commit/counts."""
+    """The no-optional-locks flag does not change the reported branch, commit or counts."""
     repo = tmp_path / "repo"
     repo.mkdir()
     env = {
@@ -523,7 +513,7 @@ def test_git_metadata_survives_no_optional_locks(tmp_path):
 
 
 def test_git_metadata_pins_the_project_root(tmp_path, monkeypatch):
-    """#581: git metadata describes the project, not the inherited cwd."""
+    """Git metadata describes the project root, not the inherited cwd."""
     project = tmp_path / "project"
     project.mkdir()
     elsewhere = tmp_path / "elsewhere"
@@ -546,7 +536,7 @@ def test_git_metadata_pins_the_project_root(tmp_path, monkeypatch):
 
 
 def test_git_metadata_root_resolves_once_per_invocation(tmp_path, monkeypatch):
-    """Banner and machine envelope must not disagree about the root."""
+    """Banner and machine envelope agree on the root."""
     first = tmp_path / "first"
     first.mkdir()
     second = tmp_path / "second"
@@ -562,13 +552,13 @@ def test_git_metadata_root_resolves_once_per_invocation(tmp_path, monkeypatch):
 
 
 def test_git_metadata_root_falls_back_to_inherited_cwd(tmp_path):
-    """No root_cfg: inherit the cwd and let git walk up, as before."""
+    """With no root_cfg, git inherits the cwd and walks up."""
     rb = RtlBuddy(name="rtl_buddy")
     assert rb._project_root_for_git() is None
 
 
 def test_git_metadata_root_resolution_is_silent(caplog):
-    """Resolving must not log; machine mode parses stdout as JSON."""
+    """Resolving the root must not log; machine mode parses stdout as JSON."""
     rb = RtlBuddy(name="rtl_buddy")
     with caplog.at_level(logging.DEBUG):
         rb._project_root_for_git()
@@ -584,8 +574,7 @@ def test_root_options_ignores_forwarded_help_args_after_double_dash(monkeypatch)
 
     rb.root_options(fake_ctx)
 
-    # Root config is now built lazily in _enter_command_context, so we
-    # only verify the callback completed past the help-arg detection.
+    # Root config is built lazily in _enter_command_context; only verify the callback got past help-arg detection.
     assert rb._pending_invoked_subcommand == "verible"
 
 
@@ -641,13 +630,9 @@ def test_vlog_filelist_entries_are_relative_to_output_dir(tmp_path):
 
 
 def test_vlog_filelist_write_is_atomic_for_concurrent_writers(tmp_path):
-    """Concurrent writers of one run.f must never expose a truncated file.
+    """Concurrent writers of one run.f never expose a truncated file.
 
-    `artefacts/<test>/run.f` is per TEST, so every element of a dispatched
-    array for the same test rewrites it at once — and share-build reads it
-    straight back to fingerprint the compile. A reader that lands inside a
-    truncate window hashes an empty filelist to a different compile key and
-    recompiles instead of reusing the shared build (#358).
+    `artefacts/<test>/run.f` is per test and share-build reads it back to fingerprint the compile, so a truncated read would produce a different compile key and a needless recompile.
     """
     import threading
 
@@ -688,11 +673,11 @@ def test_vlog_filelist_write_is_atomic_for_concurrent_writers(tmp_path):
         stop.set()
         reader.join()
 
-    # Every observation is a whole file, never a truncated one.
+    # Every observation is a whole file.
     assert seen, "reader never observed the filelist"
     assert all("../../design/rtl.sv" in text for text in seen)
     assert not any(text == "" for text in seen)
-    # No temp files left behind for the builder to trip on.
+    # No temp files are left behind.
     assert [p.name for p in output_path.parent.iterdir()] == ["run.f"]
 
 
@@ -721,9 +706,7 @@ def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
 
 
 def test_verible_path_missing_is_debug_only(tmp_path, monkeypatch):
-    # A host with verible on PATH would take the #439 fallback (available,
-    # WARNING) instead of the missing-everywhere path this test asserts —
-    # stub the lookup so the test does not depend on what is installed.
+    # Stub the lookup: a host with verible on PATH would take the available-with-WARNING fallback instead of the missing-everywhere path asserted here.
     monkeypatch.setattr("rtl_buddy.config.verible.shutil.which", lambda _n: None)
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
@@ -761,9 +744,6 @@ def test_verible_stdout_is_preserved_verbatim(monkeypatch):
     assert stderr.getvalue() == ""
 
 
-# ------------------------------------- #435: console-visible INFO events
-
-
 def _attach_caplog(caplog):
     """Re-attach caplog's handler, which setup_logging() clears."""
     logging.getLogger().addHandler(caplog.handler)
@@ -771,11 +751,9 @@ def _attach_caplog(caplog):
 
 
 def test_log_console_event_prints_once_at_default_verbosity(tmp_path, capsys, caplog):
-    """The event a CI console must see, without being logged as a warning.
+    """A console-visible INFO event prints once at default verbosity without being logged as a warning.
 
-    The console handler sits at WARNING by default, so a plain INFO event
-    reaches the log file and nothing else — which is how a dispatched
-    regression stayed silent for half an hour (#435).
+    The console handler is at WARNING by default, so a plain INFO event would reach only the log file.
     """
     from rtl_buddy.logging_utils import log_console_event
 
@@ -803,12 +781,7 @@ def test_log_console_event_prints_once_at_default_verbosity(tmp_path, capsys, ca
 
 
 def test_log_console_event_prints_in_machine_mode_too(tmp_path, capsys, caplog):
-    """An agent's transcript needs the liveness line for the reason CI does.
-
-    Machine mode's console is the same WARNING-gated stream rendering the
-    human message (the JSON Lines are the file log's), so the line is
-    printed there as well; the JSONL record still carries the event.
-    """
+    """The console-visible line is printed in machine mode too; the JSONL record still carries the event."""
     from rtl_buddy.logging_utils import log_console_event
 
     log_path = tmp_path / "rtl_buddy.log"
@@ -840,7 +813,7 @@ def test_log_console_event_prints_in_machine_mode_too(tmp_path, capsys, caplog):
 
 
 def test_log_console_event_is_not_printed_twice_under_verbose(tmp_path, capsys):
-    """`-v` already shows INFO: the direct print must stand down."""
+    """`-v` already shows INFO, so the direct print stands down."""
     from rtl_buddy.logging_utils import log_console_event
 
     setup_logging(verbose=True, color=False, log_path=tmp_path / "rtl_buddy.log")
@@ -860,18 +833,14 @@ def test_log_console_event_is_not_printed_twice_under_verbose(tmp_path, capsys):
 def test_task_status_does_not_start_a_live_display_off_the_main_thread(
     tmp_path, monkeypatch
 ):
-    """Rich allows one Live per console; a second raises LiveError (#495).
+    """``task_status`` does not start a Rich Live display off the main thread.
 
-    The build job compiles distinct builds on worker threads, so the check
-    lives in ``task_status`` rather than at its call sites — every threaded
-    caller inherits it, and a worker announces its phase the way a
-    non-terminal run already does.
+    Rich allows one Live per console and a second raises LiveError. The build job runs on worker threads, so the check is in ``task_status`` and workers announce their phase as a non-terminal run does.
     """
     from rtl_buddy import logging_utils
 
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
-    # Pretend we are on a terminal, which is the only case that would try
-    # to open a Live display at all.
+    # Pretend to be on a terminal, the only case that opens a Live display.
     monkeypatch.setattr(logging_utils, "_should_use_rich_console", lambda: True)
 
     def exploding_status(*args, **kwargs):

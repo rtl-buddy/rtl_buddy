@@ -1,13 +1,4 @@
-"""End-to-end tests for the four additions in #178:
-
-1. ``resolve_wave_to_view`` request type.
-2. ``state_snapshot`` request type.
-3. Welcome-time replay of cached selection/cursor/scope.
-4. ``rtl_buddy.hub.client.HubClient`` reusable client.
-
-The CLI surface in ``rtl_buddy.hub.send`` is covered separately in
-``test_hub_send_cli.py``.
-"""
+"""End-to-end tests for ``resolve_wave_to_view``, ``state_snapshot``, welcome-time replay of cached state, and ``rtl_buddy.hub.client.HubClient``."""
 
 from __future__ import annotations
 
@@ -94,8 +85,7 @@ async def server_with_resolver(tmp_path: Path) -> AsyncIterator[HubServer]:
 
 @pytest_asyncio.fixture
 async def bare_server() -> AsyncIterator[HubServer]:
-    """A server with no resolver — exercises the state_snapshot path
-    that must not require resolver configuration."""
+    """Return a server with no resolver."""
 
     s = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     await s.start()
@@ -112,7 +102,7 @@ async def bare_server() -> AsyncIterator[HubServer]:
 
 
 class _Client:
-    """Async mock client. Same shape as test_hub_resolve_e2e."""
+    """Async mock client."""
 
     def __init__(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -150,11 +140,6 @@ class _Client:
             await self.writer.wait_closed()
         except Exception:
             pass
-
-
-# ---------------------------------------------------------------------------
-# (1) resolve_wave_to_view
-# ---------------------------------------------------------------------------
 
 
 async def test_resolve_wave_to_view_round_trip(server_with_resolver: HubServer):
@@ -202,16 +187,7 @@ async def test_resolve_wave_to_view_unknown_scope_unresolvable(
 async def test_resolve_wave_to_view_missing_scope_bad_request(
     server_with_resolver: HubServer,
 ):
-    """Server-side defense in depth: a non-validating client (one that
-    bypasses the schema and writes raw bytes) sending a payload missing
-    ``wave_scope`` gets ``bad_request`` back instead of crashing the
-    handler.
-
-    The schema validator at the server's decode boundary catches the
-    malformed envelope first, so the error is produced by the dispatch
-    loop's catch-all rather than the handler's own guard — both paths
-    return ``bad_request``, the handler guard is intentional defense in
-    depth in case the schema is ever loosened."""
+    """A payload missing ``wave_scope`` gets ``bad_request`` from a client that bypasses schema validation."""
 
     import json as _json
     import uuid
@@ -242,14 +218,8 @@ async def test_resolve_wave_to_view_missing_scope_bad_request(
         await c.close()
 
 
-# ---------------------------------------------------------------------------
-# (2) state_snapshot
-# ---------------------------------------------------------------------------
-
-
 async def test_state_snapshot_empty_on_fresh_server(bare_server: HubServer):
-    """No events have fired; all event-derived fields must be null,
-    peers reflects only the connected snapshot caller."""
+    """A fresh server reports null for every event-derived field; peers holds only the snapshot caller."""
 
     c = await _Client.connect(bare_server.host, bare_server.port)
     try:
@@ -339,14 +309,11 @@ async def test_state_snapshot_after_events(bare_server: HubServer):
         # Let the server process the broadcasts.
         await asyncio.sleep(0.05)
 
-        # Use a third connection for the snapshot so we don't have to
-        # demultiplex against broadcast traffic on view/wave.
+        # Use a third connection so the snapshot is not mixed with view/wave broadcast traffic.
         snap = await _Client.connect(bare_server.host, bare_server.port)
         try:
             await snap.hello(Origin.CLI)
-            # `welcome` arrived; the cached state is replayed next as
-            # selection_changed + cursor_time_changed + scope_changed +
-            # diagnostics_set (no signal_selection in this test). Drain.
+            # After `welcome` the cached state is replayed: selection_changed, cursor_time_changed, scope_changed, diagnostics_set. Drain.
             for _ in range(4):
                 await snap.recv()
             req = Envelope(
@@ -381,8 +348,7 @@ async def test_state_snapshot_after_events(bare_server: HubServer):
 
 
 async def test_state_snapshot_does_not_require_resolver(bare_server: HubServer):
-    """state_snapshot must succeed even when the hub has no resolver
-    (the snapshot is pure HubState — no view.json involved)."""
+    """state_snapshot succeeds when the hub has no resolver."""
 
     c = await _Client.connect(bare_server.host, bare_server.port)
     try:
@@ -398,20 +364,14 @@ async def test_state_snapshot_does_not_require_resolver(bare_server: HubServer):
         await c.send(req)
         resp = await c.recv()
         assert resp.kind is Kind.RESPONSE
-        # active_model is None — nothing set it on this bare server.
+        # active_model is None; nothing set it on this bare server.
         assert resp.payload["active_model"] is None
     finally:
         await c.close()
 
 
-# ---------------------------------------------------------------------------
-# (3) welcome-time replay
-# ---------------------------------------------------------------------------
-
-
 async def test_welcome_replays_cached_state_to_late_joiner(bare_server: HubServer):
-    """A peer that arrives mid-session receives the cached events,
-    not a broadcast — existing peers don't see duplicates."""
+    """A late joiner receives the cached events by unicast; existing peers see no duplicates."""
 
     view = await _Client.connect(bare_server.host, bare_server.port)
     wave = await _Client.connect(bare_server.host, bare_server.port)
@@ -438,19 +398,17 @@ async def test_welcome_replays_cached_state_to_late_joiner(bare_server: HubServe
                 payload={"t_fs": "12500000"},
             )
         )
-        # Drain the broadcasts so view/wave's recv queues are clean
-        # before the late-joiner arrives.
+        # Drain the broadcasts so view/wave recv queues are clean before the late joiner arrives.
         await wave.recv()  # selection_changed (origin: view; wave is not view)
         await view.recv()  # cursor_time_changed (origin: wave; view is not wave)
 
-        # Late joiner — should receive cached state in unicast.
+        # Late joiner receives the cached state by unicast.
         src = await _Client.connect(bare_server.host, bare_server.port)
         try:
             welcome = await src.hello(Origin.SRC)
             assert welcome.type == "welcome"
 
-            # Order: selection_changed, then cursor_time_changed (no signal_selection
-            # or scope_changed cached). diagnostics are last but none were set.
+            # Order: selection_changed, cursor_time_changed; no signal_selection, scope_changed or diagnostics were cached.
             e1 = await src.recv()
             e2 = await src.recv()
             kinds = {e.type for e in (e1, e2)}
@@ -459,8 +417,7 @@ async def test_welcome_replays_cached_state_to_late_joiner(bare_server: HubServe
             assert replayed_origins["selection_changed"] is Origin.VIEW
             assert replayed_origins["cursor_time_changed"] is Origin.WAVE
 
-            # Existing peers must NOT have received a duplicate broadcast
-            # of the cached state (peer_joined for src is fine).
+            # Existing peers must not receive a duplicate broadcast of the cached state (peer_joined for src is fine).
             joined = await wave.recv(timeout=0.5)
             assert joined.type == "peer_joined"
             joined = await view.recv(timeout=0.5)
@@ -477,9 +434,7 @@ async def test_welcome_replays_cached_state_to_late_joiner(bare_server: HubServe
 
 
 async def test_welcome_replays_cleared_diagnostics(bare_server: HubServer):
-    """A diagnostics_set with empty items is a 'cleared source' record
-    and must replay (otherwise late joiners would never learn that a
-    previously-loud source went quiet)."""
+    """A diagnostics_set with empty items records a cleared source and is replayed."""
 
     view = await _Client.connect(bare_server.host, bare_server.port)
     try:
@@ -530,11 +485,6 @@ async def test_welcome_replays_cleared_diagnostics(bare_server: HubServer):
         await view.close()
 
 
-# ---------------------------------------------------------------------------
-# (4) HubClient against a real server, driven via discovery
-# ---------------------------------------------------------------------------
-
-
 def _write_discovery(project_root: Path, host: str, port: int, pid: int) -> None:
     project_root.mkdir(parents=True, exist_ok=True)
     rb_dir = project_root / ".rtl-buddy"
@@ -551,8 +501,7 @@ def _write_discovery(project_root: Path, host: str, port: int, pid: int) -> None
 async def test_hub_client_round_trip(
     bare_server: HubServer, tmp_path: Path, monkeypatch
 ):
-    """HubClient.connect uses discovery; once attached, request/emit
-    behave like the WaveHubBridge unit tests."""
+    """HubClient.connect finds the hub by discovery; request and emit then behave as in the WaveHubBridge unit tests."""
 
     import os
 
@@ -560,8 +509,7 @@ async def test_hub_client_round_trip(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_BUDDY_HUB", raising=False)
 
-    # HubClient.connect is sync; run it off the event loop so the
-    # asyncio server can answer.
+    # HubClient.connect is synchronous; run it off the event loop so the asyncio server can answer.
     result: dict = {}
 
     def _drive() -> None:

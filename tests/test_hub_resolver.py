@@ -18,13 +18,8 @@ from rtl_buddy.hub.resolver import (
 )
 
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
 def _sample_view_json(top: str = "counter") -> dict:
-    """Mirrors the live rtl-buddy-view JSON output shape (counter fixture)."""
+    """Return the live rtl-buddy-view JSON output shape (counter fixture)."""
 
     return {
         "schema_version": "1.0",
@@ -103,11 +98,6 @@ def _write_view_json(tmp_path: Path, payload: dict | None = None) -> Path:
     return p
 
 
-# ---------------------------------------------------------------------------
-# ViewModel.from_dict
-# ---------------------------------------------------------------------------
-
-
 def test_from_dict_parses_minimal_payload(tmp_path: Path):
     model = ViewModel.from_dict(_sample_view_json())
     assert model.top == "counter"
@@ -164,11 +154,6 @@ def test_from_dict_skips_malformed_node_entries():
     u_y = model.nodes_by_path["counter.u_y"]
     assert u_y.port_connections == (("go", "go"),)
     assert u_y.location is None
-
-
-# ---------------------------------------------------------------------------
-# view ↔ wave transforms
-# ---------------------------------------------------------------------------
 
 
 def test_view_to_wave_strips_top_and_prepends_prefix(tmp_path: Path):
@@ -236,11 +221,6 @@ def test_wave_to_view_returns_none_when_path_unknown(tmp_path: Path):
     assert resolver.wave_to_view("tb.dut.u_dbg") is None
 
 
-# ---------------------------------------------------------------------------
-# view → src
-# ---------------------------------------------------------------------------
-
-
 def test_view_to_src_returns_anchor(tmp_path: Path):
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path), tb_prefix="tb.dut."
@@ -263,16 +243,8 @@ def test_view_to_src_returns_none_without_view_json(tmp_path: Path):
     assert resolver.view_to_src("counter.u_ff") is None
 
 
-# ---------------------------------------------------------------------------
-# canonical view-json-v1 schema (top + id + source) parsing
-# ---------------------------------------------------------------------------
-
-
 def _canonical_view_json() -> dict:
-    """Matches rtl-buddy-view's documented schema (view-json-v1.md):
-    flat ``top``, per-node ``id`` + ``source`` with start+end positions,
-    ``ports`` (not legacy ``port_connections``), ``{from, to}`` edges.
-    """
+    """Return a payload in the view-json-v1 schema: flat ``top``, per-node ``id`` and ``source``, ``ports``, ``{from, to}`` edges."""
     return {
         "schema_version": "1.0",
         "tool": {"name": "rtl-buddy-view", "version": "0.1.0"},
@@ -311,9 +283,7 @@ def _canonical_view_json() -> dict:
 
 
 def test_from_dict_parses_canonical_schema():
-    """The schema rtl-buddy-view actually emits — `top`, `id`, `source`,
-    `ports`, `{from, to}` edges. The legacy fixture covered the other
-    branch."""
+    """Parse the view-json-v1 schema."""
 
     model = ViewModel.from_dict(_canonical_view_json())
     assert model.top == "counter"
@@ -326,11 +296,6 @@ def test_from_dict_parses_canonical_schema():
     assert model.edges_parent_to_children["counter"] == ("counter.u_ff",)
 
 
-# ---------------------------------------------------------------------------
-# src → view  (cursor file/line/col → instance path)
-# ---------------------------------------------------------------------------
-
-
 def _write_canonical(tmp_path: Path) -> Path:
     out = tmp_path / "view.json"
     out.write_text(json.dumps(_canonical_view_json()))
@@ -339,8 +304,7 @@ def _write_canonical(tmp_path: Path) -> Path:
 
 def test_src_to_view_returns_containing_instance(tmp_path: Path):
     resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
-    # Line 22 falls inside u_ff's [20, 25] range AND counter's [5, 50]
-    # range. Both qualify; the smaller (u_ff) wins on the size tiebreak.
+    # Line 22 is inside u_ff [20, 25] and counter [5, 50]; the smaller range wins.
     matches = resolver.src_to_view(file="/abs/rtl/counter.sv", line=22)
     assert matches == ("counter.u_ff", "counter")
 
@@ -349,14 +313,12 @@ def test_src_to_view_returns_outer_instance_when_only_outer_matches(
     tmp_path: Path,
 ):
     resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
-    # Line 7 is inside counter's [5, 50] but outside u_ff's [20, 25].
     matches = resolver.src_to_view(file="/abs/rtl/counter.sv", line=7)
     assert matches == ("counter",)
 
 
 def test_src_to_view_empty_when_line_outside_all_ranges(tmp_path: Path):
     resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
-    # Line 999 is past every node's end_line.
     assert resolver.src_to_view(file="/abs/rtl/counter.sv", line=999) == ()
 
 
@@ -366,9 +328,7 @@ def test_src_to_view_empty_when_file_does_not_match(tmp_path: Path):
 
 
 def test_src_to_view_normalises_path(tmp_path: Path):
-    # The cursor's file is an absolute path; view.json's `source.file`
-    # was emitted as a relative path. Resolver normalises both via
-    # Path.resolve() so they compare equal.
+    # Cursor file is absolute and view.json ``source.file`` is relative; both resolve to the same path.
     rel = tmp_path / "rtl"
     rel.mkdir()
     (rel / "counter.sv").write_text("// content")
@@ -396,11 +356,6 @@ def test_src_to_view_empty_without_view_json():
     assert resolver.src_to_view(file="/abs/rtl/x.sv", line=1) == ()
 
 
-# ---------------------------------------------------------------------------
-# signal → drivers
-# ---------------------------------------------------------------------------
-
-
 def test_signal_drivers_finds_unique_match(tmp_path: Path):
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path), tb_prefix="tb.dut."
@@ -410,7 +365,7 @@ def test_signal_drivers_finds_unique_match(tmp_path: Path):
 
 
 def test_signal_drivers_returns_all_drivers(tmp_path: Path):
-    """Two instances port-connected to the same signal name collapse to a list."""
+    """Two instances connected to the same signal name give a list of drivers."""
 
     payload = _sample_view_json()
     payload["nodes"].append(
@@ -453,21 +408,15 @@ def test_signal_drivers_with_bad_wave_scope_returns_empty(tmp_path: Path):
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path), tb_prefix="tb.dut."
     )
-    # Wave path that doesn't start with tb_prefix.
+    # Wave path outside tb_prefix.
     assert resolver.signal_drivers(signal="q", wave_scope="other.foo") == ()
-
-
-# ---------------------------------------------------------------------------
-# lazy loading / mtime-driven reload
-# ---------------------------------------------------------------------------
 
 
 def test_resolver_returns_none_when_file_missing(tmp_path: Path):
     resolver = resolver_from_paths(
         view_json_path=tmp_path / "absent.json", tb_prefix="tb.dut."
     )
-    # No view.json → view_to_wave falls through to best-effort path.
-    # (This is the documented "no resolver loaded" fallback.)
+    # No view.json: view_to_wave falls back to the best-effort path.
     assert resolver.view_to_src("counter.u_ff") is None
     assert resolver.signal_drivers(signal="q", wave_scope="tb.dut.") == ()
 
@@ -477,7 +426,7 @@ def test_resolver_reloads_on_mtime_change(tmp_path: Path):
     resolver = resolver_from_paths(view_json_path=p, tb_prefix="tb.dut.")
     assert resolver.view_to_src("counter.u_ff") is not None
 
-    # Replace the file with a different top — bump mtime to force reload.
+    # Different top; bump mtime to force a reload.
     new_payload = _sample_view_json(top="adder")
     p.write_text(json.dumps(new_payload), encoding="utf-8")
     import os, time
@@ -492,7 +441,7 @@ def test_resolver_swallows_malformed_view_json(tmp_path: Path):
     p = tmp_path / "view.json"
     p.write_text("{not json", encoding="utf-8")
     resolver = resolver_from_paths(view_json_path=p, tb_prefix="tb.dut.")
-    # Bad payload → resolver acts like view.json is absent.
+    # Bad payload: the resolver behaves as if view.json is absent.
     assert resolver.view_to_src("counter.u_ff") is None
 
 
@@ -519,15 +468,8 @@ def test_default_view_json_path_layout(tmp_path: Path):
     assert default_view_json_path(tmp_path) == tmp_path / ".rtl-buddy" / "view.json"
 
 
-# ---------------------------------------------------------------------------
-# TB-rooted view.json — identity wave↔view mapping (#99 / 6b)
-# ---------------------------------------------------------------------------
-
-
 def _tb_view_json(top: str = "tb_top") -> dict:
-    """v1.1 TB-rooted payload: ``top == tb_top`` (the rendered root
-    IS the testbench). DUT instance lives under ``<top>.u_dut`` and
-    the renderer recorded ``dut_top`` for the SPA boundary."""
+    """Return a v1.1 TB-rooted payload: ``top == tb_top``, the DUT under ``<top>.u_dut``, and ``dut_top`` recorded."""
     return {
         "schema_version": "1.1",
         "tool": {"name": "rtl-buddy-view", "version": "0.1.0"},
@@ -556,23 +498,17 @@ def test_from_dict_records_tb_top_and_dut_top_when_present():
 
 
 def test_from_dict_tb_rooted_false_when_tb_top_absent():
-    """v1.0 payloads (no tb_top) → DUT-rooted → identity mapping
-    bypass does not kick in. Same for v1.1 payloads where --top was
-    passed alone (tb_top=null)."""
+    """Payloads without ``tb_top`` (v1.0, or v1.1 with ``tb_top=null``) are not TB-rooted."""
     model = ViewModel.from_dict(_sample_view_json())
     assert model.tb_top is None
     assert model.tb_rooted is False
 
 
 def test_view_to_wave_identity_when_tb_rooted(tmp_path: Path):
-    """TB-rooted view.json → view path IS the wave path, no
-    ``tb_prefix`` prepend even when one is configured. The renderer
-    elaborated from the TB top so the names match what surfer
-    already advertises."""
+    """In a TB-rooted view the view path is the wave path; ``tb_prefix`` is not prepended."""
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
-        # Configured tb_prefix is deliberately set — it MUST be
-        # bypassed when the view is TB-rooted.
+        # tb_prefix is set on purpose; a TB-rooted view must bypass it.
         tb_prefix="tb.dut.",
     )
     assert resolver.view_to_wave("tb_top.u_dut") == "tb_top.u_dut"
@@ -581,9 +517,7 @@ def test_view_to_wave_identity_when_tb_rooted(tmp_path: Path):
 
 
 def test_view_to_wave_unknown_path_returns_none_in_tb_rooted_mode(tmp_path: Path):
-    """Even in identity mode, the resolver still gates on node
-    existence — a stale request for a path that isn't in the view
-    returns None rather than passing through a guess."""
+    """In TB-rooted mode an unknown view path still returns None."""
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
         tb_prefix="tb.dut.",
@@ -592,22 +526,19 @@ def test_view_to_wave_unknown_path_returns_none_in_tb_rooted_mode(tmp_path: Path
 
 
 def test_wave_to_view_identity_when_tb_rooted(tmp_path: Path):
-    """Symmetric: wave path → view path is identity, no prefix
-    strip, gated on node existence."""
+    """In a TB-rooted view the wave path is the view path, with no prefix strip, gated on node existence."""
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
         tb_prefix="tb.dut.",
     )
     assert resolver.wave_to_view("tb_top.u_dut") == "tb_top.u_dut"
     assert resolver.wave_to_view("tb_top.u_dut.u_leaf") == "tb_top.u_dut.u_leaf"
-    # Unknown path → None (not a guess), matching the DUT-rooted contract.
+    # Unknown path returns None, as in DUT-rooted mode.
     assert resolver.wave_to_view("tb_top.nothing") is None
 
 
 def test_tb_rooted_aliases_still_win(tmp_path: Path):
-    """Signal aliases consulted before the identity short-circuit
-    so projects with legacy renames keep working in TB-rooted mode.
-    """
+    """Signal aliases apply before the TB-rooted identity mapping."""
     resolver = resolver_from_paths(
         view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
         tb_prefix="tb.dut.",
@@ -620,9 +551,7 @@ def test_tb_rooted_aliases_still_win(tmp_path: Path):
 
 
 def test_view_model_from_dict_rejects_a_non_object_top_level():
-    """A `view.json` whose top level is a list parses as valid JSON and then
-    raised `AttributeError` on `.get` — not the `ResolverError` the caller
-    handles, so a hub request died on it instead of degrading (#469)."""
+    """A view.json whose top level is not an object raises ``ResolverError``."""
     from rtl_buddy.hub.resolver import ResolverError, ViewModel
 
     with pytest.raises(ResolverError, match="not an object"):

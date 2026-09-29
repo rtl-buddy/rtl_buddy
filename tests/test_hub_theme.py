@@ -1,16 +1,6 @@
-"""Tests for the hub's shared token sheet + brand assets (#398).
+"""Tests for the hub's shared token sheet and brand assets.
 
-Three things can go wrong with a sheet like this and nothing else can:
-
-1. The three palette blocks (``:root``, the dark media query, the two
-   ``[data-theme]`` overrides) drift apart. The overrides are generated,
-   so the guard is "the checked-in file is what the generator writes" —
-   a hand-edit of the tail fails here rather than in a screenshot.
-2. A token every app depends on quietly disappears. The vocabulary the
-   apps consume is pinned by name.
-3. The routes stop being same-origin-safe: a pane that cannot load the
-   sheet, or an assets route that can be talked into reading outside its
-   directory.
+They guard against palette blocks drifting apart (the checked-in file must equal the generator output), a token the apps consume disappearing, and routes that break same-origin loading or read outside their directory.
 """
 
 from __future__ import annotations
@@ -30,18 +20,8 @@ from rtl_buddy.hub.server import HubServer
 from rtl_buddy.hub.viewer_http import PLACEHOLDER_HTML, ViewerServer
 
 
-# ---------------------------------------------------------------------------
-# generation
-# ---------------------------------------------------------------------------
-
-
 def test_generated_blocks_are_up_to_date():
-    """``theme.css`` == what ``python -m rtl_buddy.hub.theme`` writes.
-
-    This is the whole anti-drift mechanism: edit the palette in
-    ``:root`` or the dark media query, re-run the generator, commit. A
-    hand-written ``[data-theme]`` block fails here.
-    """
+    """``theme.css`` equals what ``python -m rtl_buddy.hub.theme`` writes, so a hand-written ``[data-theme]`` block fails."""
 
     source = theme.read_theme_source()
     assert theme.build_theme_css(source) == source
@@ -55,9 +35,7 @@ def test_generation_is_idempotent():
 
 
 def test_override_blocks_cover_every_dark_token():
-    """Both directions, same key set — that is what "wins in BOTH
-    directions" means: a light pin must beat the media query and a dark
-    pin must beat the ``:root`` defaults."""
+    """The light and dark override blocks have the same key set, so a light pin beats the media query and a dark pin beats the ``:root`` defaults."""
 
     css = theme.THEME_CSS
     light, dark = theme.parse_palettes(css.split(theme.GENERATED_MARKER)[0])
@@ -76,18 +54,13 @@ def test_override_blocks_cover_every_dark_token():
 
 
 def test_regenerate_entry_point_is_source_checkout_only():
-    """``python -m rtl_buddy.hub.theme`` rewrites the sheet in place, which
-    is only meaningful (or safe) in a git checkout — against an installed
-    wheel it would rewrite site-packages. The guard the entry point uses
-    must say yes here, in the source tree the tests run from."""
+    """``python -m rtl_buddy.hub.theme`` rewrites the sheet in place, which is only safe in a git checkout; the entry-point guard must pass in the source tree."""
 
     assert theme.in_source_checkout() is True
 
 
 def test_theme_tokens_the_apps_consume_exist():
-    """The vocabulary #398 fixed, by name. Renaming one is a two-repo
-    change (the schematic SPA adopts the same sheet in Phase 0b), so it must
-    not happen by accident."""
+    """The token names the apps consume exist; renaming one also changes the schematic SPA."""
 
     css = theme.THEME_CSS
     for token in (
@@ -137,7 +110,7 @@ def test_theme_tokens_the_apps_consume_exist():
 
 
 def test_light_is_the_default():
-    """``:root`` is light; dark arrives via the media query only."""
+    """``:root`` is light; dark comes only from the media query."""
 
     light, dark = theme.parse_palettes(theme.THEME_CSS.split(theme.GENERATED_MARKER)[0])
     assert dict(light)["--bg"] == "#f8fafc"
@@ -147,8 +120,7 @@ def test_light_is_the_default():
 
 
 def test_brand_colours_are_never_the_accent_or_a_status():
-    """The brand green is a saturated yellow-green that fails as text on
-    white; the sheet says so and the values must keep saying so."""
+    """The brand green fails as text on white, so brand colours are never the accent or a status colour."""
 
     light, _dark = theme.parse_palettes(
         theme.THEME_CSS.split(theme.GENERATED_MARKER)[0]
@@ -159,15 +131,8 @@ def test_brand_colours_are_never_the_accent_or_a_status():
         assert values[token] not in brand, token
 
 
-# ---------------------------------------------------------------------------
-# assets
-# ---------------------------------------------------------------------------
-
-
 def test_vendored_assets_are_present_and_small():
-    """Vendored because the art repo is private and panes stay
-    same-origin; small because identity marks must not cost more than a
-    web font would have."""
+    """Assets are vendored so panes stay same-origin, and small so identity marks stay cheap."""
 
     names = theme.asset_names()
     for name in (theme.FAVICON_16, theme.FAVICON_32, theme.LOGO_80, theme.MASCOT_240):
@@ -184,7 +149,7 @@ def test_asset_lookup_refuses_anything_not_shipped():
 
 
 def test_every_hub_page_links_the_favicon():
-    """Landing, graph pane, coverage pane, and the no-bundle placeholder."""
+    """Landing, graph pane, coverage pane, and the no-bundle placeholder link the favicon."""
 
     for page in _hub_pages().values():
         assert theme.FAVICON_16 in page
@@ -192,20 +157,7 @@ def test_every_hub_page_links_the_favicon():
         assert theme.THEME_CSS_ROUTE in page
 
 
-# ---------------------------------------------------------------------------
-# the inline fallbacks the pages carry
-# ---------------------------------------------------------------------------
-#
-# Every hub page repeats a few token values inline so a sheet that 404s
-# (an old hub serving a new pane) degrades to a plain page instead of an
-# unreadable one. Two ways that goes wrong, both silent in a screenshot
-# of the default theme:
-#
-#   * the fallback OUT-RANKS the sheet. `:root` ties with `:root`, so
-#     document order decides — a fallback after the link permanently
-#     shadows the sheet, dark media query and all.
-#   * the fallback goes STALE. It is a hand-written copy of the palette;
-#     nothing else notices when the sheet moves and it does not.
+# Hub pages repeat a few token values inline as a fallback for a 404ing sheet. The fallback must not shadow the sheet (`:root` ties, so document order decides) and must not go stale.
 
 _STYLE_RE = re.compile(r"<style>(?P<body>.*?)</style>", re.S)
 _PAGE_ROOT_BLOCK_RE = re.compile(r":root \{(?P<body>[^{}]*)\}")
@@ -219,7 +171,7 @@ PAGE_NAMES = ("landing", "graph", "cov", "placeholder")
 
 
 def _hub_pages() -> dict[str, str]:
-    """Every HTML document the hub itself serves, rendered."""
+    """Return every HTML document the hub serves, rendered."""
 
     return {
         "landing": landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode(
@@ -236,7 +188,7 @@ def _stylesheet_link() -> str:
 
 
 def _css(fragment: str) -> str:
-    """The CSS in a fragment of HTML, comments stripped."""
+    """Return the CSS in a fragment of HTML, comments stripped."""
 
     css = "\n".join(m.group("body") for m in _STYLE_RE.finditer(fragment))
     return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
@@ -251,16 +203,9 @@ def _light_palette() -> dict[str, str]:
 
 @pytest.mark.parametrize("name", PAGE_NAMES)
 def test_inline_fallbacks_never_shadow_the_sheet(name: str):
-    """No ``:root`` block may re-declare a sheet token AFTER the link.
+    """No ``:root`` block may re-declare a sheet token after the link.
 
-    Both selectors are ``:root`` — equal specificity, so the later one
-    wins. An inline block placed after the link therefore beats
-    ``theme.css`` outright, including its
-    ``@media (prefers-color-scheme: dark)`` values, and dark mode dies
-    on that page while a ``data-theme`` attribute (higher specificity)
-    keeps working — which is exactly the failure a string-presence test
-    cannot see. Page-local tokens the sheet does not define (the graph
-    pane's ``--edge``) are fine after the link; they shadow nothing.
+    A later inline ``:root`` block beats ``theme.css``, including its dark media query, while ``data-theme`` keeps working. Page-local tokens the sheet does not define are fine.
     """
 
     page = _hub_pages()[name]
@@ -279,14 +224,9 @@ def test_inline_fallbacks_never_shadow_the_sheet(name: str):
 
 @pytest.mark.parametrize("name", PAGE_NAMES)
 def test_inline_fallback_values_match_the_sheet(name: str):
-    """A fallback that has gone stale is worse than none: it is a second
-    palette nobody knows exists.
+    """Inline fallbacks must match the sheet.
 
-    Exact for ``:root`` fallback blocks, which are wholesale copies of
-    the palette. For the ``var(--token, fallback)`` form only colours
-    are pinned — that form is also used for deliberate generic
-    degradations (``var(--font-sans, system-ui)``), which are not copies
-    and must not be forced to match.
+    ``:root`` fallback blocks match exactly. For ``var(--token, fallback)`` only colours are pinned; generic fallbacks like ``var(--font-sans, system-ui)`` are not copies.
     """
 
     page = _hub_pages()[name]
@@ -307,11 +247,6 @@ def test_inline_fallback_values_match_the_sheet(name: str):
         assert value == shared[token], f"{name}: var({token}) fallback is stale"
         checked += 1
     assert checked, f"{name}: no inline fallback found to check"
-
-
-# ---------------------------------------------------------------------------
-# routes
-# ---------------------------------------------------------------------------
 
 
 def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
@@ -352,9 +287,7 @@ async def test_theme_css_route(hub_and_viewer: ViewerServer):
     status, headers, body = await asyncio.to_thread(_http_get, url)
     assert status == 200
     assert "text/css" in headers.get("Content-Type", "")
-    # Same cache policy as every other hub body: the pane HTML is read
-    # once at import, so a stale sheet in a browser cache would outlive
-    # the hub that shipped it.
+    # Same cache policy as every other hub body: pane HTML is read once at import, so a stale browser-cached sheet would outlive the hub.
     assert headers.get("Cache-Control") == "no-store"
     assert body == theme.theme_css_bytes()
 
