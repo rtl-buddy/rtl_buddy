@@ -1,29 +1,6 @@
-"""Background detach for ``rb hub start --daemon`` (issue #387).
+"""Detach ``rb hub start --daemon`` into a background process.
 
-``--daemon`` used to be a stub: it printed "not implemented yet" and
-then ran the server in the foreground, so the command blocked forever.
-From a non-tty agent shell that reads as a hang, and because the
-foreground loop deletes its own ``hub.json`` on shutdown, the discovery
-record vanished again the moment the caller's timeout killed it — which
-is why the bug report says hub.json was "never written".
-
-Detaching by ``os.fork()`` alone was rejected. By the time
-``rb hub start`` reaches this point the interpreter has imported Typer,
-Rich, the whole ``rtl_buddy`` config stack and (on the ``--serve-viewer``
-path) is about to probe ``importlib.metadata`` for the SPA bundle. A
-fork without an exec hands the child a copy of that state including any
-locks held by another thread, and on macOS a forked process that touches
-the already-initialised Objective-C runtime is explicitly unsupported —
-both classic sources of exactly the silent hang this issue reports.
-
-So the daemon is spawned **fork + exec**: :func:`spawn_detached` runs a
-fresh ``python -m rtl_buddy hub start --foreground ...`` in its own
-session with stdio bound to ``hub.log``. That settles the ordering
-question structurally — viewer-bundle discovery, ``--viewer-bundle``
-resolution and every other import happen in the exec'd child, *after*
-the detach, in exactly the code path ``--foreground`` already exercises.
-The parent then waits for the child to publish ``hub.json`` so
-``rb hub start --daemon`` only returns once the hub is really up.
+The daemon is a fresh ``python -m rtl_buddy hub start --foreground`` in its own session with stdio bound to ``hub.log``. The parent waits for the child to publish ``hub.json``.
 """
 
 from __future__ import annotations
@@ -37,11 +14,6 @@ from pathlib import Path
 from . import discovery
 
 
-# How long the parent waits for the detached child to publish its
-# discovery record before giving up. Generous: on a cold interpreter
-# the child has to import the whole rtl_buddy stack plus (optionally)
-# the viewer SPA package before it binds. Overridable for tests and for
-# very slow network filesystems.
 DEFAULT_READY_TIMEOUT_S = 30.0
 READY_TIMEOUT_ENV = "RTL_BUDDY_HUB_DAEMON_TIMEOUT"
 
@@ -49,12 +21,7 @@ _POLL_INTERVAL_S = 0.05
 
 
 class DaemonStartError(Exception):
-    """The detached hub failed to come up.
-
-    ``log_tail`` carries the last few lines the child wrote to
-    ``hub.log`` so the CLI can show the real error (a bad ``--model``, a
-    busy port) instead of a bare timeout.
-    """
+    """The detached hub failed to start. ``log_tail`` holds the last lines of ``hub.log``."""
 
     def __init__(self, message: str, *, log_tail: str = "") -> None:
         super().__init__(message)
@@ -62,7 +29,7 @@ class DaemonStartError(Exception):
 
 
 def ready_timeout_s() -> float:
-    """Seconds to wait for ``hub.json``; ``$RTL_BUDDY_HUB_DAEMON_TIMEOUT``."""
+    """Return the seconds to wait for ``hub.json``, from ``$RTL_BUDDY_HUB_DAEMON_TIMEOUT`` or the default."""
     raw = os.environ.get(READY_TIMEOUT_ENV)
     if not raw:
         return DEFAULT_READY_TIMEOUT_S
@@ -86,15 +53,7 @@ def build_daemon_argv(
 ) -> list[str]:
     """Build the child command line for a detached ``rb hub start``.
 
-    Pure function so the flag round-trip is unit-testable without
-    spawning anything. ``--foreground`` is always present and always
-    first among the flags: the child must never re-enter this module,
-    or a typo here becomes a spawn loop.
-
-    ``python -m rtl_buddy`` rather than the ``rb`` console script so the
-    daemon runs under the same interpreter as its parent even from a
-    venv that isn't on ``PATH`` (same reasoning as
-    :func:`rtl_buddy.hub.launchagent.render_plist`).
+    ``--foreground`` is always passed so the child never re-enters the daemon path. It runs ``python -m rtl_buddy`` under the parent's interpreter.
     """
     argv = [
         python or sys.executable,
@@ -127,17 +86,7 @@ def spawn_detached(
     project_root: Path,
     log_path: Path,
 ) -> subprocess.Popen[bytes]:
-    """Start ``argv`` in its own session with stdio bound to ``log_path``.
-
-    * ``start_new_session=True`` — the child leads a new session and has
-      no controlling terminal, so it survives the parent shell exiting
-      and never competes for the tty (or, under a non-tty agent shell,
-      never inherits a pipe whose reader goes away).
-    * stdin is ``/dev/null`` — a detached server that blocks on a read
-      is the other half of this bug class.
-    * stdout/stderr append to ``hub.log``, which is what the startup
-      banner has always advertised and nothing previously wrote.
-    """
+    """Start ``argv`` in a new session with stdin from ``/dev/null`` and stdout/stderr appended to ``log_path``."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("ab")
     try:
@@ -151,13 +100,12 @@ def spawn_detached(
             close_fds=True,
         )
     finally:
-        # The child holds its own dup of the fd; the parent is about to
-        # exit and must not keep the log file open.
+        # The child has its own copy of the fd.
         log_handle.close()
 
 
 def tail_log(log_path: Path, *, lines: int = 20) -> str:
-    """Last ``lines`` of ``log_path``, or ``""`` when unreadable."""
+    """Return the last ``lines`` lines of ``log_path``, or ``""`` when unreadable."""
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -172,17 +120,10 @@ def wait_for_record(
     log_path: Path,
     timeout_s: float | None = None,
 ) -> discovery.HubRecord:
-    """Block until the detached child publishes its ``hub.json``.
+    """Block until the child publishes a ``hub.json`` carrying its own PID.
 
-    The record must carry the child's own PID: a stale file left behind
-    by a crashed hub would otherwise be mistaken for a successful start.
-
-    Raises :class:`DaemonStartError` when the child exits first (with the
-    log tail attached, so the user sees the child's real error) or when
-    the timeout expires.
+    Raises :class:`DaemonStartError`, with the log tail attached, when the child exits first or the timeout expires.
     """
-    # Resolved once: reading the env var again in the timeout message below
-    # would report a number the deadline was not computed from.
     effective_timeout_s = timeout_s if timeout_s is not None else ready_timeout_s()
     deadline = time.monotonic() + effective_timeout_s
     while True:
@@ -192,10 +133,7 @@ def wait_for_record(
 
         exit_code = proc.poll()
         if exit_code is not None:
-            # One last look: the child may have written the record and
-            # exited between our read and this poll (a fast crash after
-            # a successful bind still leaves a usable record behind, but
-            # a genuine failure leaves nothing).
+            # The child may have written the record between the read and the poll.
             record = discovery.read_record(project_root)
             if record is not None and record.pid == proc.pid:
                 return record
@@ -223,12 +161,7 @@ def start_detached(
     timeout_s: float | None = None,
     **argv_kwargs: object,
 ) -> discovery.HubRecord:
-    """Spawn a detached hub and return its published discovery record.
-
-    Convenience wrapper over :func:`build_daemon_argv`,
-    :func:`spawn_detached` and :func:`wait_for_record` — the shape the
-    CLI uses.
-    """
+    """Spawn a detached hub and return its discovery record."""
     argv = build_daemon_argv(**argv_kwargs)  # type: ignore[arg-type]
     proc = spawn_detached(argv, project_root=project_root, log_path=log_path)
     try:
@@ -236,9 +169,7 @@ def start_detached(
             project_root, proc=proc, log_path=log_path, timeout_s=timeout_s
         )
     except DaemonStartError:
-        # Never leave a half-started daemon wedged in the background:
-        # if it's still alive but hasn't published, it can't be found by
-        # `rb hub stop` either.
+        # A live child without a record cannot be found by `rb hub stop`.
         if proc.poll() is None:
             proc.terminate()
         raise

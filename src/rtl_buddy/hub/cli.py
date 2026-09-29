@@ -1,18 +1,4 @@
-"""``rb hub`` Typer subcommand surface.
-
-Phase 10b ships in slices; this module covers the CLI plumbing for all
-of the user-facing entry points so the muscle memory locks in early.
-The server-side commands (``start``, ``stop``) currently exercise only
-the discovery + config layers — the asyncio server lands in PR 2.
-
-Command summary (per §4.1 of the protocol spec):
-
-* ``rb hub start``    — bind, write ``.rtl-buddy/hub.json``, run loop.
-* ``rb hub stop``     — SIGTERM the PID in ``hub.json``.
-* ``rb hub status``   — print the current discovery record + liveness.
-* ``rb hub log``      — tail ``.rtl-buddy/hub.log``.
-* ``rb hub config validate`` — schema-check ``.rtl-buddy/hub.toml``.
-"""
+"""``rb hub`` subcommands: start, stop, status, log, config validate, send and the macOS LaunchAgent."""
 
 from __future__ import annotations
 
@@ -46,18 +32,13 @@ app = typer.Typer(help="manage the rtl-buddy-hub daemon", no_args_is_help=True)
 config_app = typer.Typer(help="hub.toml utilities", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 
-from . import send as _send  # noqa: E402 — keep imports clustered after `app`
+from . import send as _send  # noqa: E402
 
 app.add_typer(_send.send_app, name="send")
 
 
 def _resolve_project_root() -> Path:
-    """Find the rtl-buddy project root for the current invocation.
-
-    The hub is strictly per-project (§4.1 / §4.7). Failing here with a
-    pointer at ``rb`` discovery rules is more useful than a downstream
-    "no such file" error from the discovery layer.
-    """
+    """Return the project root, or raise a fatal error saying the hub is per-project."""
 
     try:
         return discover_project_root()
@@ -79,9 +60,8 @@ def cmd_start(
         typer.Option(
             "--foreground/--daemon",
             help=(
-                "Run in the foreground (default). --daemon detaches the "
-                "hub into its own session, redirects its output to "
-                "hub.log, and returns as soon as .rtl-buddy/hub.json is "
+                "Run in the foreground (default). --daemon detaches the hub, "
+                "logs to hub.log, and returns once .rtl-buddy/hub.json is "
                 "published."
             ),
         ),
@@ -91,10 +71,9 @@ def cmd_start(
         typer.Option(
             "--serve-viewer/--no-serve-viewer",
             help=(
-                "Also serve the viewer HTTP+WebSocket layer at the http_port. "
-                "When no --viewer-bundle is given, the hub auto-discovers the "
-                "SPA shipped by rtl-buddy-view (if installed) and falls back "
-                "to a placeholder page if neither is available."
+                "Also serve the viewer over HTTP and WebSocket. Without "
+                "--viewer-bundle, uses the SPA from an installed "
+                "rtl-buddy-view, else a placeholder page."
             ),
         ),
     ] = False,
@@ -103,11 +82,8 @@ def cmd_start(
         typer.Option(
             "--viewer-bundle",
             help=(
-                "Override the auto-discovered SPA with this path (directory "
-                "containing index.html, or a path to a single index.html). "
-                "Use this when iterating on the SPA from a checkout — the "
-                "auto-discovered bundle ships with the installed wheel and "
-                "won't reflect uncommitted viewer/ changes. Only used with "
+                "SPA to serve instead of the installed one: a directory "
+                "containing index.html, or an index.html path. Requires "
                 "--serve-viewer."
             ),
         ),
@@ -118,9 +94,7 @@ def cmd_start(
             "--listen-port",
             help=(
                 "TCP port for adapter peers (nvim, rb wave). Overrides "
-                "[hub].listen_port from hub.toml. 0 = OS-assigned. Pin to a "
-                "specific number so peers' discovery records stay stable "
-                "across restarts."
+                "[hub].listen_port in hub.toml. 0 = OS-assigned."
             ),
             min=0,
             max=65535,
@@ -131,10 +105,9 @@ def cmd_start(
         typer.Option(
             "--http-port",
             help=(
-                "HTTP/WS port for the browser-side SPA. Overrides "
-                "[hub].http_port from hub.toml. 0 = OS-assigned. Pin to a "
-                "specific number so the SPA URL stays the same across "
-                "restarts. Only used with --serve-viewer."
+                "HTTP/WebSocket port for the browser SPA. Overrides "
+                "[hub].http_port in hub.toml. 0 = OS-assigned. Only used "
+                "with --serve-viewer."
             ),
             min=0,
             max=65535,
@@ -145,10 +118,9 @@ def cmd_start(
         typer.Option(
             "--model",
             help=(
-                "Generate view.json on hub start for this model name (looked "
-                "up in models.yaml), avoiding a separate `rb hier` invocation. "
-                "When unset the hub falls back to [mapping].view_json from "
-                "hub.toml. Requires --serve-viewer."
+                "Model name (from models.yaml) to generate view.json for at "
+                "start, instead of running `rb hier`. Without it the hub uses "
+                "[mapping].view_json from hub.toml. Requires --serve-viewer."
             ),
         ),
     ] = None,
@@ -157,9 +129,8 @@ def cmd_start(
         typer.Option(
             "--models-file",
             help=(
-                "Explicit models.yaml that owns the --model entry. Skips the "
-                "project-tree discovery walk. Use this to disambiguate when "
-                "the same model name exists in more than one models.yaml."
+                "models.yaml that holds the --model entry, skipping discovery. "
+                "Use it when several models.yaml files define the same name."
             ),
         ),
     ] = None,
@@ -168,29 +139,16 @@ def cmd_start(
         typer.Option(
             "--axi-perf-from",
             help=(
-                "Path to an axi-perf.json (output of `rb axi-profile run`). "
-                "The hub bakes its per-bundle/interconnect throughput overlay "
-                "into every generated view.json AND records the source's "
-                "test/suite_dir so the SPA's 'Open in marimo' button skips "
-                "its prompt. Use the canonical "
-                "<suite>/artefacts/axi/<test>/axi-perf.json layout so the "
-                "test/suite_dir derivation lands. Only used with "
+                "axi-perf.json from `rb axi-profile run`, whose throughput "
+                "overlay is added to every generated view.json. The layout "
+                "<suite>/artefacts/axi/<test>/axi-perf.json also lets the SPA "
+                "'Open in marimo' button skip its prompt. Only used with "
                 "--serve-viewer."
             ),
         ),
     ] = None,
 ) -> None:
-    """Bind, write ``hub.json``, run the server loop.
-
-    Preflight (project root, config, conflict check) runs before the
-    asyncio loop starts so a misconfigured project fails immediately
-    rather than hanging in an event loop. The loop exits cleanly on
-    SIGINT / SIGTERM / ``rb hub stop`` and removes its discovery file.
-
-    With ``--daemon`` the preflight still runs here, then the real work
-    is re-launched detached (see :mod:`rtl_buddy.hub.daemonize`) and
-    this process returns once the child has published ``hub.json``.
-    """
+    """Run preflight checks, then start the hub loop (``--foreground``) or a detached hub (``--daemon``)."""
 
     if viewer_bundle is not None and not serve_viewer:
         emit_console_text(
@@ -198,9 +156,6 @@ def cmd_start(
             style="yellow",
         )
     if model is not None and not serve_viewer:
-        # The view.json is only served by the viewer HTTP layer;
-        # generating it without --serve-viewer would silently
-        # discard the work. Fail loud instead.
         raise FatalRtlBuddyError(
             "rb hub start --model: requires --serve-viewer "
             "(the generated view.json is only served via the SPA HTTP layer)."
@@ -214,9 +169,7 @@ def cmd_start(
     project_root = _resolve_project_root()
     cfg = _resolve_config(project_root)
 
-    # CLI flags override hub.toml — the user typed them on this invocation
-    # and we should trust that over the on-disk default. Frozen config so
-    # we rebuild via dataclasses.replace.
+    # CLI flags override hub.toml.
     if listen_port is not None or http_port is not None:
         import dataclasses
 
@@ -237,13 +190,6 @@ def cmd_start(
             existing.pid, discovery.discovery_path(project_root)
         )
 
-    # When --model is given, resolve and generate the view.json
-    # before the asyncio loop starts so a missing model or a tool
-    # failure surfaces synchronously with a clear error, not as a
-    # 404 the user discovers in the browser later.
-    # Up-front existence check on --axi-perf-from so the user gets a
-    # clear error before the hub binds its sockets, not later on the
-    # first SPA refresh.
     if axi_perf_from is not None and not axi_perf_from.is_file():
         emit_console_text(
             f"--axi-perf-from: file not found: {axi_perf_from}", style="red"
@@ -251,23 +197,7 @@ def cmd_start(
         raise typer.Exit(code=2)
 
     if not foreground:
-        # Detach *before* any of the expensive start-up work below.
-        # Everything from here down — view.json generation, viewer-bundle
-        # discovery, socket binds — then happens in the exec'd child on
-        # the ordinary --foreground path, which is both fork-safe (see
-        # daemonize's module docstring) and the code path already under
-        # test. The parent only waits for hub.json to appear.
-        #
-        # Path arguments are absolutised at the handoff. Typer hands them
-        # over unresolved, and the child runs with `cwd=project_root`, so a
-        # relative `--viewer-bundle ../../../viewer/dist` given from a
-        # `verif/` subdirectory would mean one thing in the foreground and a
-        # different (usually non-existent) thing in the daemon. Worse for
-        # `--axi-perf-from`, whose existence check above runs against the
-        # invocation cwd: without this, the preflight would no longer be
-        # guarding the file the child opens. Guidelines: explicit CLI paths
-        # stay relative to `invocation_cwd`, and a path handed to another
-        # process is made absolute.
+        # Paths are made absolute because the child runs with cwd=project_root.
         _start_daemon(
             project_root,
             cfg,
@@ -336,15 +266,7 @@ def _start_daemon(
     models_file: Path | None,
     axi_perf_from: Path | None,
 ) -> None:
-    """``rb hub start --daemon``: detach, wait for readiness, report.
-
-    Returning before the hub is actually listening would just move the
-    race into the user's next command (``rb hub status`` / an adapter
-    connecting), so the parent blocks on ``hub.json`` — usually well
-    under a second — and prints the same URLs the foreground banner
-    does. A child that dies first surfaces with its ``hub.log`` tail
-    rather than a bare exit code.
-    """
+    """Start a detached hub, wait for ``hub.json``, and print its URLs or the ``hub.log`` tail on failure."""
 
     log_path = (project_root / cfg.hub.log_path).resolve()
     try:
@@ -441,9 +363,6 @@ def cmd_status() -> None:
     emit_console_text(f"  pid            : {record.pid}")
     emit_console_text(f"  tcp            : {record.tcp}")
     if record.http_port is not None:
-        # Two URLs since #398 split them: ``/`` is the landing that lists
-        # every app, ``/sch`` is the schematic SPA that used to be ``/``
-        # (and was ``/view`` until #423 — that spelling still 307s here).
         emit_console_text(f"  hub_url        : http://127.0.0.1:{record.http_port}/")
         emit_console_text(
             f"  viewer_url     : http://127.0.0.1:{record.http_port}"
@@ -457,11 +376,7 @@ def cmd_status() -> None:
     if not live:
         raise typer.Exit(code=1)
 
-    # Live hub: query the registry over TCP and render per-peer state.
-    # A connect / hello failure is a peer-level note, not a fatal — the
-    # hub may still be running but mid-shutdown, or have just accepted
-    # another CLI client (origin-cli dedup, §3.2). The user sees the
-    # underlying error verbatim either way.
+    # A failed peer query is reported, not fatal: the hub may be shutting down.
     host, _, port_str = record.tcp.rpartition(":")
     try:
         port = int(port_str)
@@ -568,12 +483,9 @@ def cmd_config_validate(
     help="install the macOS LaunchAgent so the hub auto-starts at login",
 )
 def cmd_install_launchagent() -> None:
-    """Render and ``launchctl load`` the user-level LaunchAgent.
+    """Install and load a per-project LaunchAgent for the current project.
 
-    Runs from the current project root — the agent is project-scoped,
-    so multiple projects each install their own agent under a unique
-    plist path. Re-run after moving the project; the old plist needs
-    a manual ``rb hub uninstall-launchagent`` from the prior location.
+    After moving a project, run ``rb hub uninstall-launchagent`` from the old location.
     """
     try:
         project_root = _resolve_project_root()
@@ -603,7 +515,7 @@ def cmd_install_launchagent() -> None:
     help="remove the macOS LaunchAgent",
 )
 def cmd_uninstall_launchagent() -> None:
-    """``launchctl unload`` and delete the plist."""
+    """Unload the LaunchAgent and delete its plist."""
     try:
         removed = launchagent.uninstall()
     except launchagent.LaunchAgentUnsupportedError as exc:

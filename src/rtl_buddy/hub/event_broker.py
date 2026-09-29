@@ -1,20 +1,6 @@
-"""In-memory pub/sub broker for SPA↔notebook state sync.
+"""In-memory pub/sub broker relaying state-sync messages between the SPA and spawned marimo notebooks.
 
-Used by Phase 3 of the marimo umbrella (axi-profiler #16): the SPA's
-``AxiPerfView`` and a spawned marimo notebook each open a WebSocket
-to ``/api/events/sync``; clicking a bundle in the SPA reaches the
-notebook and brushing a time window in the notebook reaches the SPA.
-
-The broker treats every message as an opaque string. Topic routing
-and echo suppression (via a ``source`` field) live in the clients —
-the broker just relays each inbound message to every *other*
-connected client. Keeps the schema versionable without re-deploying
-the hub.
-
-Slow clients get bounded outbound queues: when full, the oldest
-queued message is dropped to make room. State-sync messages are
-throwaway — a stale ``selection`` is worthless once a fresh one has
-already arrived.
+Messages are opaque strings; each is relayed to every connected client except the sender. Topic routing and echo suppression are the clients' job.
 """
 
 from __future__ import annotations
@@ -28,19 +14,13 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
-# Per-client outbound queue depth. 64 is enough to absorb a burst
-# from a chatty publisher without ballooning memory if a single slow
-# subscriber stalls.
+# Per-client outbound queue depth.
 _CLIENT_QUEUE_MAX = 64
 
 
 @dataclass
 class BrokerClient:
-    """Handle the broker hands back to a connected WS handler.
-
-    The handler reads ``queue`` to forward messages downstream; the
-    broker writes to ``queue`` for every inbound from any peer.
-    """
+    """A connected client: the broker writes relayed messages to ``queue`` for the WebSocket handler to forward."""
 
     queue: asyncio.Queue[str] = field(
         default_factory=lambda: asyncio.Queue(maxsize=_CLIENT_QUEUE_MAX)
@@ -49,7 +29,7 @@ class BrokerClient:
 
 
 class EventBroker:
-    """Process-wide pub/sub fanout. Not thread-safe; single asyncio loop."""
+    """Pub/sub fan-out for one asyncio loop; not thread-safe."""
 
     def __init__(self) -> None:
         self._clients: dict[int, BrokerClient] = {}
@@ -84,11 +64,9 @@ class EventBroker:
         )
 
     def broadcast(self, sender_id: int, message: str) -> None:
-        """Push ``message`` to every connected client except ``sender_id``.
+        """Queue ``message`` for every client except ``sender_id``.
 
-        Drops the oldest queued message for any client whose queue
-        is full; logs a single warning per overflow event so a stuck
-        consumer is visible without flooding the log.
+        When a client's queue is full, its oldest message is dropped, since a stale sync message is worthless.
         """
         for client_id, client in self._clients.items():
             if client_id == sender_id:
@@ -102,10 +80,7 @@ class EventBroker:
             return
         except asyncio.QueueFull:
             pass
-        # Drop oldest, retry once. A second failure would require a
-        # concurrent producer on the same queue, which we don't have
-        # (single-loop), so the bare ``put_nowait`` below should always
-        # succeed.
+        # Single loop: nothing else can refill the queue, so the final put_nowait succeeds.
         try:
             client.queue.get_nowait()
         except asyncio.QueueEmpty:  # pragma: no cover - racy
