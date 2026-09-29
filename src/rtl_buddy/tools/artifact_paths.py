@@ -450,8 +450,9 @@ def clear_managed_outputs(
         protected pattern, together with the names ``own_flow`` claimed on earlier runs
         (:func:`read_owned_ledger`), so a changed top leaves nothing behind.
       own_flow: identity of the producing flow, e.g. ``"fpga-openxc7"``. It enables the
-        ledger, whose claims are per flow. The ledger is then replaced by this run's
-        ``own``, which retires inherited names once cleared. Without it, ``own`` applies to this call only.
+        per-flow ledger. When ``own`` is non-empty, the ledger is replaced by this run's
+        ``own``, which retires inherited names once cleared; with an empty ``own`` the
+        existing claim is kept. Without ``own_flow``, ``own`` applies to this call only.
       keep: exact filenames to leave alone even when they match a suffix.
         :data:`PROTECTED_OUTPUT_PATTERNS` are always kept. ``own`` overrides both.
 
