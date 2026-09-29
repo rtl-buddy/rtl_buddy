@@ -2,128 +2,66 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""What shaped a run, beside what it measured (rtl-buddy/rtl_buddy#568).
+"""What shaped a run, beside what it measured.
 
-The model says what a synthesis or a power analysis *measured*. This
-module is the other question a project with more than one run has to
-answer: **which run is this**. Two shapes, and the derivations that read
-them back.
+Two blocks tell the runs of one project apart. The **activity block**
+(power only) records what drove the switching: the source resolved by
+:meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source`
+(``default``, ``synthetic``, ``saif`` or ``vcd``), plus the trace, its
+sha256 and the scope for a trace source, or the toggle/duty pair for a
+synthetic one. The **config block** (both halves) records the platform,
+effort, constraints file and hash, and a short digest of the effective
+tool options.
 
-**The activity block** (power only). A power number is meaningless
-without the switching activity behind it: 697 µW of static leakage and
-697 µW driven by a SAIF trace from a named test are different
-measurements of different things, and until now the model recorded
-neither. :func:`activity_block` writes down what
-:meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source` resolved
-— ``default``, ``synthetic``, ``saif`` or ``vcd`` — together with the
-trace, its sha256 and the scope a run that read one used, and the
-toggle/duty pair a synthetic one used. Each detail is recorded only for the source that
-consumed it: a config keeps fields the run it describes never reads,
-and a block that repeated them would report a stimulus nothing applied.
+**What feeds the options digest.** Each producer hands
+:func:`options_digest` exactly what its own generated script consumes.
+The mapping is rendered as canonical JSON and sha256'd, keeping
+:data:`OPTIONS_DIGEST_CHARS` hex characters. A field the script ignores
+must not be in it, and one the script reads must be. The digest is over
+effective values, so two configs that resolve to the same options are one
+experiment.
 
-**The config block** (both halves). Two experiments of one design share
-a ``top``, and auto-generated variants share everything a run name would
-tell you apart. :func:`config_block` records the platform, the
-constraints file and its hash, and a short digest over the effective
-tool options — enough to read ``nangate45 / timing-opt`` apart from
-``nangate45 / area-opt`` without decoding run names.
+* Yosys synthesis
+  (:meth:`~rtl_buddy.tools.synth_yosys.YosysSynth._phys_options`): the
+  elaboration subset
+  (:func:`~rtl_buddy.tools.synth_yosys.elaboration_fingerprint`), the
+  resolved ``synth-args``, parameters and defines, and which branch the
+  script took. A mapped run adds the ABC delay target from the SDC and
+  the resolved Liberty list and omits ``abc-args``. An unmapped run adds
+  ``abc-args`` and neither of the others. ``strategy`` is in neither.
+* OpenROAD synthesis
+  (:meth:`~rtl_buddy.tools.synth_openroad.OpenRoadSynth._publish_phys_model`):
+  the elaboration subset with ``synth-args`` taken from the effort, the
+  command ``strategy`` maps to, the sha256 of the effort's pre-STA Tcl
+  (:func:`text_sha256`), the resolved LEF list and the resolved Liberty
+  list. Both lists include the config's own ``lib-paths`` and
+  ``lef-paths`` on top of the platform's. ``abc-args`` is omitted.
+* Power analysis: tool name, netlist source, the upstream identity,
+  the technology, mode, activity source and register level. The upstream
+  identity is the netlist sha256 for ``netlist-source: synth`` and the
+  ODB's project-relative path for ``pnr``
+  (:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._upstream_identity`).
+  The technology is the Liberty and LEF files the generated Tcl names, in
+  script order, fingerprinted with
+  :func:`~rtl_buddy.tools.synth_yosys.library_fingerprint`
+  (:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._phys_technology`).
+  ``tool_overrides`` is not included because no power backend reads it.
 
-**What feeds the options digest**, exactly: the mapping its producer
-hands :func:`options_digest`, rendered as canonical JSON (sorted keys,
-no whitespace, and nothing that JSON cannot render) and sha256'd to
-:data:`OPTIONS_DIGEST_CHARS` hex characters.
-
-Each producer hands over what *its own generated script consumes*, and
-no more. That is the whole discipline. A digest over a resolved
-dataclass tells two runs apart by fields the script never looks at,
-which reports a difference the netlist cannot have; and a digest that
-omits what the script does read — an argument the script takes from
-somewhere other than those options — misses a difference the netlist
-does have. Per backend, derived from the script writers:
-
-*Yosys synthesis* (:meth:`YosysSynth._phys_options
-<rtl_buddy.tools.synth_yosys.YosysSynth._phys_options>`). The shared
-elaboration subset (:func:`~rtl_buddy.tools.synth_yosys.elaboration_fingerprint`:
-frontend, the three resolved correctness-gate modes, and under ``slang``
-the plugin path and ``--single-unit``), the resolved ``synth-args``,
-the elaboration parameters and defines, and which branch the script
-took. A **mapped** run adds the ABC delay target parsed out of the SDC
-and the resolved Liberty list, and drops ``abc-args``, which its
-hard-coded ABC script ignores; an **unmapped** run emits ``abc
-<abc-args>``, has no delay target and reads no Liberty, so it does the
-reverse. ``strategy`` is in neither — no Yosys script line reads it.
-
-*OpenROAD synthesis* (:meth:`OpenRoadSynth._publish_phys_model
-<rtl_buddy.tools.synth_openroad.OpenRoadSynth._publish_phys_model>`).
-The same elaboration subset, with ``synth-args`` taken from the
-**effort** and not from the resolved tool options, because that is
-where stage 1 takes it from; ``abc-args`` from neither source, since
-stage 1's ABC script is hard-coded. Stage 2 contributes three things —
-the command ``strategy`` maps to, the sha256 of the effort's pre-STA
-Tcl, and the resolved LEF list ``_write_or_script`` reads — and the
-resolved Liberty list sits above both stages, since stage 1 maps
-against it and stage 2 times against it. The two library lists are not
-determined by ``platform`` alone: a config's own ``lib-paths`` /
-``lef-paths`` are appended to the platform's, and with no platform they
-are the whole of it.
-
-*Power analysis.* Tool name, netlist source, the identity of the
-upstream run it read, the resolved technology the script reads, mode,
-activity source and register level. The upstream identity is the netlist
-sha256 for a ``netlist-source: synth`` run and the resolved ODB's
-project-relative path for a ``netlist-source: pnr`` one, because
-``netlist_source`` names the kind of upstream and not which one
-(:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._upstream_identity`).
-The technology is the Liberty and the one or two LEFs the generated Tcl
-names, in script order and through the same
-:func:`~rtl_buddy.tools.synth_yosys.library_fingerprint` the synthesis
-backends use: ``platform`` is a *name*, and an entry repointed at
-another corner is the same name, so two analyses of two technologies
-fingerprinted identically
-(:meth:`~rtl_buddy.tools.power_openroad.OpenRoadPower._phys_technology`).
-
-The digest is over the *effective* values, not the files they came
-from: two configs that spell one setting differently and resolve to the
-same options are one experiment, which is the comparison a reader
-wants. The pre-STA Tcl is hashed rather than embedded for the same
-reason a constraints file is (:func:`text_sha256`) — it is content, it
-has no path, and it is pages long.
-
-**When the hashes are taken.** Not at publication. The constraints
-digest in the config block, and the trace digest in the activity block,
-are captured by the producer *before* it launches its tool and confirmed
+**When hashes are taken.** The constraints digest and the trace digest
+are captured by the producer before it launches its tool and confirmed
 by :func:`~rtl_buddy.phys.publish.confirm_digest` when the tool returns.
-A digest computed at publication identifies whatever is at the path
-minutes later — a routed SDC replaced by a concurrent ``rb pnr``, a
-source SDC edited while the synthesis ran, a ``dump.saif`` rewritten by
-the next run of the test behind it — and records the replacement as the
-bytes the run consumed, which is the one substitution the digest exists
-to catch. A file that moved underneath the run records ``null`` and
-earns a warning: neither hash is the answer, and a digest nothing can
-vouch for is worse than none.
+A file that changed during the run records ``null`` and earns a warning.
 
-That cuts both ways, and it is why the power flow's ``tool_overrides``
-is *not* in there: no power backend reads the field, so two analyses
-that differ only in it are the same analysis, and digesting it would
-report a difference the numbers cannot have. Only what a backend
-actually resolved and used belongs in the mapping it hands over.
+Nothing here gates the merge. The netlist hash in
+:func:`rtl_buddy.phys.model.may_inherit_other_half` decides whether two
+halves describe one design; these blocks only tell runs apart in a
+listing.
 
-Nothing here is a claim about correctness, and nothing here gates the
-merge. The netlist hash in
-:func:`rtl_buddy.phys.model.may_inherit_other_half` is what decides
-whether two halves describe one design, and it is strictly stronger
-than any config comparison: the same options can produce two netlists
-(a source edit in between) and two option sets can produce one. These
-blocks are for *telling runs apart* in a listing.
-
-**Derived, not recorded.** Two labels and two identities are computed
-on read rather than stored, so the wording can improve without
-rewriting documents already on disk: :func:`activity_label` and
-:func:`config_summary` phrase a block for a table or a dropdown,
+**Derived on read, not stored.** :func:`activity_label` and
+:func:`config_summary` phrase a block for a table or dropdown,
 :func:`trace_test` names the test whose artefact directory a trace came
-out of, and :func:`experiment_for` names the ``rb xplr`` experiment a
-manifest sits under. All four answer ``None`` when the evidence is not
-there — an unlabelled run is reported as unlabelled, never guessed at.
+from, and :func:`experiment_for` names the ``rb xplr`` experiment a
+manifest sits under. Each answers ``None`` when the evidence is missing.
 """
 
 from __future__ import annotations
@@ -144,9 +82,7 @@ from ..xplr.ledger import (
 
 logger = logging.getLogger(__name__)
 
-#: Every key of the config block, so a run that resolved none of them
-#: still writes them all. Stable keys, ``null`` for "not recorded" — the
-#: same rule the manifest's own blocks keep.
+#: Every key of the config block; ``null`` means "not recorded".
 CONFIG_KEYS = (
     "platform",
     "effort",
@@ -155,11 +91,8 @@ CONFIG_KEYS = (
     "options_sha256",
 )
 
-#: Every key of the activity block, likewise. ``source`` is the one to
-#: read first: it is
-#: :meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source`'s own
-#: vocabulary, and the other six are the detail behind whichever of the
-#: four it names.
+#: Every key of the activity block. ``source`` is the one to read first;
+#: the others are detail for the source that uses them.
 ACTIVITY_KEYS = (
     "source",
     "trace",
@@ -170,19 +103,13 @@ ACTIVITY_KEYS = (
     "duty",
 )
 
-#: How much of the options sha256 is kept. Long enough that two option
-#: sets in one project will not collide, short enough to sit in a table
-#: column and a dropdown entry beside the platform.
+#: Hex characters kept from the options sha256.
 OPTIONS_DIGEST_CHARS = 12
 
-#: What joins the parts of a rendered label. One spelling, because the
-#: CLI table, the pane's dropdown and the run header all use it and a
-#: reader comparing two surfaces should see one format.
+#: Joins the parts of a rendered label, on every surface.
 LABEL_SEPARATOR = " · "
 
-#: The activity sources that read a trace file, as opposed to the two
-#: that do not. Named because both :func:`activity_label` and the
-#: producers branch on the distinction.
+#: The activity sources that read a trace file.
 TRACE_SOURCES = ("saif", "vcd")
 
 
@@ -197,20 +124,10 @@ def config_block(
 ) -> dict:
     """The config fingerprint of one run, as the documents store it.
 
-    ``options`` is digested rather than stored: the mapping is the
-    backend's own resolved option set, which is long, tool-shaped and
-    of no use to a reader scanning a list of runs — what a reader needs
-    is whether two runs' options were the *same*, and a digest answers
-    that in a column. See this module's docstring for exactly what each
-    producer puts in it.
-
-    ``constraints`` is kept as it was handed in; the publish path makes
-    it project-relative before either document is written, for the same
-    reason every other path in a manifest is
-    (:func:`rtl_buddy.phys.manifest.project_relative`).
-
-    ``producer`` names who filled ``options``, and is only ever used to
-    say whose mapping could not be digested (:func:`options_digest`).
+    ``options`` is the backend's resolved option set and is stored as a
+    digest (:func:`options_digest`). ``constraints`` is stored as passed;
+    the publish path makes it project-relative. ``producer`` names the
+    caller for the log line when ``options`` cannot be digested.
     """
     return {
         "platform": platform or None,
@@ -232,45 +149,16 @@ def activity_block(
 ) -> dict:
     """What drove a power analysis' switching, as the documents store it.
 
-    ``test`` is not a parameter: it is derived from ``trace`` by
-    :func:`trace_test`, because the producer has no test object to ask —
-    a SAIF is a path in a power config, and the run that produced it
-    finished in another command, possibly on another day. The
-    derivation is from the artefact layout and is reported as ``null``
-    whenever the layout does not say.
+    ``test`` is derived from ``trace`` by :func:`trace_test`. Each detail
+    is recorded only for the source that used it: ``trace``,
+    ``trace_sha256``, ``test`` and ``scope`` for a trace source
+    (:data:`TRACE_SOURCES`), ``toggle_rate`` and ``duty`` for
+    ``synthetic``. A config keeps fields for sources it is not using, and
+    recording them would report a stimulus nothing applied.
 
-    ``toggle_rate`` and ``duty`` are recorded only for a run that
-    actually used them. A ``saif`` run carries the same two numbers in
-    its config — they are the defaults for signals the trace does not
-    cover — but recording them beside a trace would read as "this is
-    what drove the numbers", which is exactly the confusion the block
-    exists to end.
-
-    ``trace``, ``test`` and ``scope`` are gated the same way, on
-    :data:`TRACE_SOURCES`, and for the same reason. A config keeps its
-    ``activity.saif``/``activity.vcd``/``activity.scope`` across an edit
-    that turns the run static — commenting out ``mode: dynamic``, or a
-    variant generated from a base that had a trace — and
-    :meth:`~rtl_buddy.config.power.PowerConfig.get_activity_source` then
-    resolves ``default``. The Tcl emits no ``read_saif`` at all on that
-    run, so the trace was not read, the test did not drive it, and the
-    scope selected nothing; recording all three anyway put a named test
-    beside a leakage number and made two static runs that differ only in
-    a trace neither of them opened look like two different measurements.
-    A ``synthetic`` run is the same case with the other pair of fields.
-
-    ``trace_sha256`` identifies the trace by its *bytes*, and is taken by
-    the producer for the same reason ``constraints_sha256`` is
-    (:func:`config_block`): a path is a name, and a name is not an
-    identity. ``dump.saif`` is rewritten in place every time its test is
-    rerun, so a power run against a re-captured trace measures different
-    switching under a path that has not changed — and without the hash
-    the two runs' activity blocks are identical, which is the one thing
-    a fingerprint must not say about two different measurements. The
-    label does not carry it (a label is for a table cell, and twelve hex
-    characters of a SAIF are not what a reader is scanning for), but a
-    listing's activity block does, so the identity distinguishes what
-    the label cannot.
+    ``trace_sha256`` identifies the trace by content, because a trace is
+    rewritten in place when its test reruns. The producer captures it
+    before the tool runs (:func:`~rtl_buddy.phys.publish.confirm_digest`).
     """
     reads_trace = source in TRACE_SOURCES
     trace = str(trace) if trace and reads_trace else None
@@ -289,29 +177,12 @@ def activity_block(
 def options_digest(options, *, producer: str | None = None) -> str | None:
     """A short, deterministic digest of an effective option set.
 
-    Canonical JSON — keys sorted, no whitespace — so the same options
-    digest the same on every machine and in every Python. ``None`` for a
-    producer that passed nothing, which is the honest answer for a
-    backend that has no options to fingerprint rather than a digest of
-    the empty mapping.
-
-    **Strict, and ``None`` when it cannot be.** The rendering used to
-    fall back to ``repr`` for anything JSON could not take, which quietly
-    voids the promise above: ``repr`` of most objects embeds the address
-    they happen to live at, so the first non-primitive to reach an
-    options mapping would fingerprint the same run differently on every
-    invocation — and nothing about the digest says so, because a digest
-    of garbage looks exactly like a digest. Every producer today passes
-    JSON-safe values, so the fallback never fired; that is luck, and this
-    makes it a checked invariant instead. A mapping that will not render
-    is reported at DEBUG — naming ``producer`` and, where they can be
-    told apart, the keys that would not go — and digests to ``None``. An
-    absent fingerprint is honest about knowing nothing; an unstable
-    present one is not.
-
-    ``ValueError`` is caught alongside ``TypeError`` because a self-
-    referential mapping fails that way rather than as an unknown type,
-    and it is the same failure to a reader: no canonical rendering.
+    The digest is over canonical JSON (sorted keys, no whitespace), so it
+    is stable across machines. It is ``None`` for empty ``options`` and
+    for a mapping JSON cannot render, which is logged at DEBUG naming
+    ``producer`` and the offending keys. ``None`` is used instead of a
+    ``repr`` fallback because ``repr`` can embed object addresses and
+    would give the same run a different digest each time.
     """
     if not options:
         return None
@@ -331,18 +202,11 @@ def options_digest(options, *, producer: str | None = None) -> str | None:
 
 
 def text_sha256(text: str | None) -> str | None:
-    """The sha256 of a script fragment a run was shaped by.
+    """The sha256 of inline script text, such as an effort's ``pre-sta-tcl``.
 
     The counterpart of :func:`rtl_buddy.phys.publish.sha256_of` for
-    content that has no file: an effort's ``pre-sta-tcl`` is Tcl carried
-    inline in the root config, so there is no path to record and nothing
-    to hash by name. It goes into an options mapping as a hash rather
-    than as the text itself because the mapping is digested whole and a
-    floorplan snippet is pages long.
-
-    ``None`` for an empty fragment — a run with no pre-STA Tcl and a run
-    whose pre-STA Tcl is empty are the same run, and a digest of the
-    empty string would report them as two.
+    content with no file. ``None`` for empty text, so a run with no
+    fragment and one with an empty fragment are the same run.
     """
     if not text:
         return None
@@ -350,11 +214,10 @@ def text_sha256(text: str | None) -> str | None:
 
 
 def _unserialisable_keys(options) -> list[str]:
-    """Which of ``options``' values JSON would not take, for the DEBUG line.
+    """The sorted keys of ``options`` whose values JSON cannot render.
 
-    Empty when the mapping as a whole is what failed rather than any one
-    value — a key that is not a string, a cycle closed through several
-    entries — so the event says "these" only when it can.
+    Empty when the failure is in the mapping as a whole, such as a
+    non-string key or a cycle across several entries.
     """
     if not isinstance(options, dict):
         return []
@@ -370,15 +233,9 @@ def _unserialisable_keys(options) -> list[str]:
 def normalise_config(recorded) -> dict | None:
     """A stored config block with every key present, plus its ``summary``.
 
-    ``None`` when there is nothing recorded, which is what a document
-    written before #568 carries and what a half that never ran carries.
-    A reader must be able to tell "this run recorded no config" from
-    "this run recorded a config with nothing in it", so an empty-but-
-    present block comes back as a block of nulls rather than as
-    ``None``.
-
-    ``summary`` is derived here rather than stored; see the module
-    docstring.
+    ``None`` when nothing was recorded. An empty but present block comes
+    back as a block of nulls, so "no config recorded" and "config with
+    nothing in it" stay distinguishable.
     """
     if not isinstance(recorded, dict):
         return None
@@ -390,7 +247,7 @@ def normalise_config(recorded) -> dict | None:
 def normalise_activity(recorded) -> dict | None:
     """A stored activity block with every key present, plus its ``label``.
 
-    The same rule :func:`normalise_config` keeps, for the same reason.
+    ``None`` when nothing was recorded; see :func:`normalise_config`.
     """
     if not isinstance(recorded, dict):
         return None
@@ -402,11 +259,9 @@ def normalise_activity(recorded) -> dict | None:
 def activity_label(activity) -> str | None:
     """One line naming what drove a power run's switching.
 
-    Written for a table cell and a dropdown entry, so it is the shortest
-    phrase that still distinguishes the four sources: ``defaults`` for a
-    static run, the toggle and duty for a synthetic one, and the trace's
-    test — or its filename, when the layout does not name a test — for a
-    run that read one. ``None`` when the block records no source at all.
+    ``defaults`` for a static run, the toggle and duty for a synthetic
+    one, and the trace's test (or its filename) for a trace source.
+    ``None`` when no source is recorded.
     """
     if not isinstance(activity, dict):
         return None
@@ -430,11 +285,9 @@ def activity_label(activity) -> str | None:
 def config_summary(config) -> str | None:
     """One line naming the configuration a run was shaped by.
 
-    Platform, effort, a short prefix of the constraints hash and the
-    options digest, joined by :data:`LABEL_SEPARATOR` and with every
-    absent part left out. ``None`` when nothing was recorded — a summary
-    of an empty block would be an empty string, which reads in a table
-    cell as a value rather than as an absence.
+    Platform, effort, an 8-character prefix of the constraints hash and
+    the options digest, joined by :data:`LABEL_SEPARATOR` with absent
+    parts left out. ``None`` when nothing was recorded.
     """
     if not isinstance(config, dict):
         return None
@@ -452,14 +305,9 @@ def config_summary(config) -> str | None:
 def trace_test(trace) -> str | None:
     """The test whose artefact directory ``trace`` came out of, if any.
 
-    rtl_buddy writes a test's waveform into
-    ``<suite>/artefacts/<test>/``, and ``rb saif`` converts it in place,
-    so a SAIF at ``verif/demo/artefacts/csr_smoke/dump.saif`` was
-    produced by ``csr_smoke``. That is a *derivation from the layout*,
-    not a recorded fact: a trace kept anywhere else — a checked-in
-    golden, a path outside the project — answers ``None`` rather than
-    naming the directory it happens to sit in, because a directory that
-    is not an artefact directory is not a test.
+    Derived from the layout: a trace at
+    ``<suite>/artefacts/<test>/dump.saif`` came from ``<test>``. A trace
+    anywhere else answers ``None``.
     """
     if not trace:
         return None
@@ -473,28 +321,11 @@ def trace_test(trace) -> str | None:
 def experiment_for(manifest_path) -> dict | None:
     """The ``rb xplr`` experiment a manifest sits under, or ``None``.
 
-    The ledger is one directory per experiment under
-    ``artefacts/xplr/<exp-id>/`` (see :mod:`rtl_buddy.xplr.ledger`), so a
-    flow run inside one writes its artefacts — and its manifest —
-    somewhere below that directory. The id is therefore *derivable from
-    the path*, which is the cheap half and the half that always works:
-    it needs no read at all, and it holds for an experiment whose record
-    has not been written yet.
-
-    ``record.json`` is opened only for the label, and only when it is
-    right there: the experiment's ``hypothesis`` is the one field that
-    makes a listing readable, and the rest of the record is `rb xplr`'s
-    to report. A record that is missing, unreadable or has no hypothesis
-    costs the label and nothing else — the id still identifies the run.
-
-    The ledger's own reserved directory names are not experiments —
-    ``artefacts/xplr/worktrees`` is the default worktree root — but what
-    sits under that root is: `rb xplr materialize` checks an experiment
-    out at ``artefacts/xplr/worktrees/<exp-id>/``, and a flow run inside
-    that checkout writes its manifest below it. Returning ``None`` there
-    lost the id on exactly the reproducible runs, the ones materialized
-    from a pinned sha. :func:`_experiment_in_worktree` reads the id from
-    the component the reserved name shadows.
+    The id comes from the path ``artefacts/xplr/<exp-id>/...``. The
+    experiment's ``hypothesis`` from its ``record.json`` is read as the
+    label, when readable. A manifest inside a materialized checkout under
+    the reserved worktree directory is resolved by
+    :func:`_experiment_in_worktree`.
     """
     parts = Path(os.path.abspath(str(manifest_path))).parts
     for index in range(len(parts) - 2):
@@ -511,33 +342,11 @@ def experiment_for(manifest_path) -> dict | None:
 def _experiment_in_worktree(parts, index: int) -> dict | None:
     """The experiment whose materialized checkout a manifest sits in.
 
-    ``rb xplr materialize`` puts the worktree at
-    ``<worktree-root>/<exp-id>``, and the default ``worktree-root`` is
-    ``artefacts/xplr/worktrees`` — inside the ledger directory, one level
-    below where an experiment's own artefacts go. So a run inside a
-    materialized checkout writes to
-    ``artefacts/xplr/worktrees/<exp-id>/<suite>/artefacts/<run>/``, and
-    the id is one component further along than :func:`experiment_for`'s
-    first reading of the path.
-
-    Derived from the layout, like the id above it, but checked against
-    the ledger rather than taken on the path's word alone. Above, the
-    path *is* the experiment's ledger directory; here it is a checkout
-    beside one, so the corresponding statement is that the ledger has an
-    entry of that name. A directory under the worktree root that names
-    no experiment is reported unlabelled rather than invented into one.
-
-    The worktree sidecar (``worktree.json``, written by ``rb xplr
-    materialize`` beside the experiment's ``record.json``) is consulted
-    only to *refute*: it records the path the checkout was made at, so
-    one naming somewhere else says this directory is not that
-    experiment's worktree. Its absence refutes nothing — ``rb xplr
-    release`` deletes it, and the ledger entry still identifies the run.
-
-    A path that stops at the worktree root, or at a directory directly
-    under it, is not a run inside a checkout: a worktree holds a whole
-    project tree, so a manifest is always further down. Nor is one that
-    nests another reserved name under the root.
+    A checkout lives at ``artefacts/xplr/worktrees/<exp-id>/`` and holds a
+    whole project tree, so the manifest must be further down. The id is
+    accepted only when the ledger has an entry of that name and the
+    worktree sidecar, if present, does not name a different path
+    (:func:`_sidecar_names`). Otherwise ``None``.
     """
     if len(parts) <= index + 4:
         return None
@@ -555,11 +364,9 @@ def _experiment_in_worktree(parts, index: int) -> dict | None:
 def _sidecar_names(experiment_dir: Path, worktree: Path) -> bool:
     """Does this experiment's worktree sidecar agree with ``worktree``?
 
-    ``True`` when there is no sidecar to disagree with, for the reason
-    :func:`_experiment_in_worktree` gives: a listing may not refuse a row
-    because a bookkeeping file has been cleaned up. Read as plain JSON,
-    like :func:`_hypothesis` — a malformed sidecar is `rb xplr`'s to
-    report, not a reason to drop an id the path already gave.
+    ``True`` when the sidecar is missing, malformed or records no path,
+    since ``rb xplr release`` deletes it and only a conflicting path
+    refutes.
     """
     try:
         with open(experiment_dir / XPLR_WORKTREE_SIDECAR_NAME, encoding="utf-8") as fh:
@@ -577,10 +384,8 @@ def _sidecar_names(experiment_dir: Path, worktree: Path) -> bool:
 def _hypothesis(record_path) -> str | None:
     """The ``hypothesis`` of an experiment record, or ``None``.
 
-    Read as plain JSON rather than through
-    :func:`rtl_buddy.xplr.schema.loads_record`: this is a label on a
-    listing, and a record that fails validation is `rb xplr`'s problem
-    to report, not a reason for `rb phys runs` to refuse a row.
+    Read as plain JSON, not through the ``rb xplr`` schema, so an invalid
+    record still leaves the run listed.
     """
     try:
         with open(record_path, "r", encoding="utf-8") as fh:
@@ -594,7 +399,7 @@ def _hypothesis(record_path) -> str | None:
 
 
 def _number(value) -> str:
-    """A toggle rate or duty as a label spells it: no trailing zeros."""
+    """A toggle rate or duty for a label, without a trailing ``.0``."""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value)
