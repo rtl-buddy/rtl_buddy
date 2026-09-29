@@ -42,4 +42,12 @@ Each entry resolves to the `abstract/` its `harden: true` run published. P&R app
 - **A skipped run.** A block skipped by `-l` does not block its consumer, which uses the abstract already published, as a named run would. A run `-l` deselects is `SKIP` whatever its blocks did.
 - **Configuration errors.** A cycle in `blocks:` (`pnr blocks: cycle: a -> b -> a`), a block naming a run its `pnr.yaml` does not define, a `pnr-path` that does not exist, or two runs that would write the same `artefacts/<run>` directory (two `pnr.yaml` files in one directory defining the same run name) stops the command before anything runs.
 
-This orders P&R only. The top's synthesis reads the blocks' abstracts, so on a clean tree it has to run between the blocks' P&R and the top's.
+On its own this orders P&R only. The top's synthesis reads the blocks' abstracts, so on a clean tree it has to run between the blocks' P&R and the top's. `--synth` does that: each P&R run's upstream synthesis runs just before it, once per synthesis however many P&R runs read it, and regardless of the synthesis entry's own `reglvl`. A whole hierarchy then builds from nothing in one command:
+
+```sh
+rb pnr -c pnr/top/pnr.yaml --synth
+```
+
+With `--synth`, a run also waits for the blocks its synthesis entry names under its own `blocks:`, pulled in like the run's own blocks, because that synthesis reads their abstracts. Every synthesis the plan will run is resolved before the first run starts, so a misspelt `synth:` stops the command up front rather than after its blocks' P&R.
+
+A synthesis that does not pass fails its P&R run with `fail_stage: synth`, which blocks that run's consumers like any failed block. Each P&R row carries the synthesis it ran as `synth` (`name`, `suite`, `result`, `desc`). `--accept-stale` applies to the syntheses as well.

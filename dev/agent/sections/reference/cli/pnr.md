@@ -29,6 +29,10 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │ --accept-stale                            consume blocks: abstracts whose recorded   │
 │                                           inputs changed since they were hardened,   │
 │                                           qualifying the result instead of failing   │
+│ --synth                                   run each P&R run's upstream synthesis just │
+│                                           before it, once per synthesis — so a top   │
+│                                           built from blocks: is synthesized after    │
+│                                           its blocks are hardened                    │
 │ --help                                    Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
