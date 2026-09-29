@@ -83,8 +83,8 @@ def cmd_start(
             "--viewer-bundle",
             help=(
                 "SPA to serve instead of the installed one: a directory "
-                "containing index.html, or an index.html path. Requires "
-                "--serve-viewer."
+                "containing index.html, or an index.html path. Only used "
+                "with --serve-viewer."
             ),
         ),
     ] = None,
@@ -485,7 +485,8 @@ def cmd_config_validate(
 def cmd_install_launchagent() -> None:
     """Install and load a per-project LaunchAgent for the current project.
 
-    After moving a project, run ``rb hub uninstall-launchagent`` from the old location.
+    After moving a project, re-run this command and run ``rb hub uninstall-launchagent``
+    from the old location.
     """
     try:
         project_root = _resolve_project_root()
