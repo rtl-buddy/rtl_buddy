@@ -1,6 +1,6 @@
 """TCP client used by ``rb hub status`` to list the origins registered with a running hub.
 
-It connects, runs the ``hello`` handshake as :attr:`Origin.CLI`, reads the registry from the ``welcome``, and disconnects. Only one ``cli`` connection can be registered at a time, so a second concurrent ``rb hub status`` is refused.
+It connects, runs the ``hello`` handshake as :attr:`Origin.CLI`, reads the registry from the ``welcome``, and disconnects. Only one ``cli`` connection can be registered at a time, so a second concurrent ``rb hub status`` is refused with ``not_connected``.
 """
 
 from __future__ import annotations

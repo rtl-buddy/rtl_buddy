@@ -24,8 +24,7 @@
       --warn:        #b45309;
       --err:         #dc2626;
       --warn-bg:     #fef3c7;
-      /* Fallback heat-ramp tokens for a missing sheet; the sheet owns the real values.
-       * Fill: hsl(var(--heat-h), var(--heat-s), calc(--heat-l0 + (--heat-l1 - --heat-l0) * --f)). */
+      /* Fallback heat-ramp tokens for a missing sheet; the sheet owns the real values. */
       --heat-h:      18;
       --heat-s:      85%;
       --heat-l0:     96%;
@@ -307,8 +306,7 @@
   // Command that fills each half, matching HALF_PRODUCER in rtl_buddy/phys/query.py.
   var HALF_PRODUCER = { modules: 'rb synth', instances: 'rb power' };
 
-  // Instance rows built per render, and added by each "show more". /phy.json carries every row and sorting, filtering and totals use all of them;
-  // only the DOM is capped, because thousands of rows rebuilt on every keystroke freeze the tab. The modules table is not windowed.
+  // Only the DOM is capped, at rows per render and per "show more"; sorting, filtering and totals use every row.
   var INSTANCE_WINDOW = 500;
 
   var els = {
@@ -415,9 +413,7 @@
   // <<< derived-metrics
 
   // >>> row-ordering
-  // Ranking for both tables. Nulls sort last in both directions, as `_sort_key_desc` in rtl_buddy/phys/query.py does,
-  // and a column with a secondary metric (heaviest_modules keys on cell_count, area_um2, module) uses it before the name,
-  // so the order matches `rb phys summary`. Null-prototype object so column names like `constructor` are safe.
+  // Nulls sort last in both directions, and the secondary metric breaks ties before the name, as `_sort_key_desc` in rtl_buddy/phys/query.py does.
   var RANK_TIE_BREAK = Object.create(null);
   RANK_TIE_BREAK.cell_count = 'area_um2';
 
@@ -461,8 +457,7 @@
   // <<< row-window
 
   // >>> instance-counts
-  // module -> number of leaf instances carrying it, counted in one pass per payload (per-row scans are quadratic).
-  // Null-prototype map. Rows with no `module` count under no name, so the key set equals the liberty namespace.
+  // Null-prototype map so the key set equals the liberty namespace: rows with no `module` count under no name.
   function countByModule(rows) {
     var counts = Object.create(null);
     (rows || []).forEach(function (row) {
@@ -475,8 +470,7 @@
   // <<< instance-counts
 
   // >>> namespace-split
-  // Which halves' `module` column spells a name: `rtl` (synthesis rows), `liberty` (cell types of leaves), or both.
-  // Mirrors `phys.query.namespaces_of`, including the order (rtl, liberty); the summary payload has no per-module note, so the pane makes the test itself.
+  // Mirrors `phys.query.namespaces_of`, including the order (rtl, liberty).
   function namespacesOf(moduleRows, instanceRows, name) {
     var wanted = String(name);
     var spaces = [];
@@ -570,11 +564,7 @@
   // <<< run-selector
 
   // >>> path-normalise
-  // Instance-path separators: OpenSTA prints `/` and the schematic wire uses `.`. Tables and phys_focus matching use the model's spelling;
-  // conversion happens only at the two schematic-facing edges.
-  // An escaped identifier (`\gen[0].u_x`, ending at whitespace) is one name: its `/` and `.` are not separators, and its terminating space is dropped.
-  // A backslash that does not start a segment is not an escape.
-  // Mirrors `level_path` in rtl_buddy/phys/query.py with the wire separator; keep the two in step.
+  // Tables and phys_focus use the model's `/` spelling; convert to the wire `.` only at the schematic edges. Escaped identifiers are one name. Mirrors `level_path` in rtl_buddy/phys/query.py.
   function toWirePath(path) {
     var text = String(path == null ? '' : path), out = '', at = true, i = 0;
     while (i < text.length) {
@@ -594,10 +584,7 @@
     return out;
   }
 
-  // Roots: model rows are rootless (`u_sub/u_leaf`), schematic paths are rooted (`blk.u_sub.u_leaf`). Rows are never rewritten.
-  // Do not detect the spelling by prefix: under a top named `cpu`, the rootless row `cpu/alu` starts with the top's name.
-  // Outgoing (`withTop`) always prepends the top. Inbound (`inboundCandidates` + `findByPath`) tries the path as sent and with one leading level removed;
-  // the rows decide which matches. These take `top` as an argument to stay pure; an empty `top` means `toWirePath` only.
+  // Rows are never rewritten. Do not detect rooting by prefix: under a top named `cpu`, the rootless row `cpu/alu` starts with the top's name.
   function withTop(path, top) {
     var wire = toWirePath(path), root = toWirePath(top);
     return !root || !wire ? wire : root + '.' + wire;
@@ -611,7 +598,6 @@
     return rooted ? [stripped, wire] : [wire, stripped];
   }
 
-  // Compares two model spellings after levelling separators only; no case folding or prefix stripping.
   function samePath(a, b) {
     return !!a && !!b && toWirePath(a) === toWirePath(b);
   }
@@ -654,10 +640,7 @@
   var superseded = false;
 
   // >>> hello-payload
-  // Builds the hello payload. `takeover` is sent only on a retry after `not_connected`; the first hello omits it (read as false by _run_handshake in hub/server.py).
-  // Sending it always makes two tabs supersede each other in a loop.
-  // The same flow exists in graph_page.html, cov_page.html and the schematic SPA (rtl-buddy-sch useHub.js); change all four together.
-  // The client is the wire origin `phys`, not the `/phy` route or `phy` label.
+  // `takeover` is sent only on a retry after `not_connected`, or two tabs supersede each other in a loop. Same flow in graph_page.html, cov_page.html and rtl-buddy-sch useHub.js.
   function helloPayload(takeover) {
     var payload = {
       client: 'phys', version: '1.0.0', capabilities: ['phys_focus']
@@ -758,8 +741,7 @@
     }
   }
 
-  // Handles the two hub errors about this tab's registration; returns true when handled so the message area stays out of it.
-  // Same handling as graph_page.html, cov_page.html and the schematic SPA (rtl-buddy-sch useHub.js).
+  // Returns true when the error is handled here. Same handling as graph_page.html, cov_page.html and rtl-buddy-sch useHub.js.
   function handleHubError(payload) {
     // Superseded: show the take-back control and stop auto-reconnect, since winning the race would evict the other tab.
     if (payload.code === 'superseded') {
@@ -814,10 +796,7 @@
   }
 
   // >>> origin-labels
-  // Wire origin -> display name. The wire keeps `view`, `graph` and `phys`; users see `sch`, `gph` and `phy`.
-  // An origin with no entry is shown verbatim (`cov`).
-  // The same map is duplicated in graph_page.html, cov_page.html, landing_page.html and the schematic SPA (rtl-buddy-sch viewer/src/displayNames.js);
-  // change all five together. Checklist: rtl-buddy-sch docs/hub-protocol.md section 13.
+  // The same map is in graph_page.html, cov_page.html, landing_page.html and rtl-buddy-sch viewer/src/displayNames.js; change all five together.
   var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
 
   function originLabel(origin) {
@@ -848,10 +827,7 @@
   }
 
   // >>> version-label
-  // Version label shared by every hub app (graph_page.html, cov_page.html, landing_page.html, rtl-buddy-sch viewer/src/buildInfo.js); change all together.
-  // Input is a setuptools-scm version such as `6.26.2` or `6.26.2.dev13+g3f5b890e3.d20260806`. The label is the part before `+`,
-  // plus the first nine hex digits of the `g<sha>` run in the local segment; the `.dYYYYMMDD` date is dropped.
-  // A local segment without `g<hex>` gives the base alone.
+  // Shared by every hub app (graph_page.html, cov_page.html, landing_page.html, rtl-buddy-sch viewer/src/buildInfo.js); change all together.
   function versionLabel(raw) {
     var text = String(raw == null ? '' : raw);
     var plus = text.indexOf('+');
@@ -876,10 +852,7 @@
   }
 
   // >>> load-generation
-  // Which load a response belongs to. Fetches are not serialised and can return out of order, so each load takes the next token
-  // and a response, success or failure, applies only while it holds the latest one. A superseded response is dropped whole.
-  // The token is also the in-flight flag: an inbound phys_focus or selection_changed during a reload would resolve against the outgoing run's rows,
-  // so it is held in the pending slot and applied at ingest. `inFlight` stops counting once a newer load supersedes it.
+  // Fetches can return out of order: only the response holding the latest token applies. The token doubles as the in-flight flag.
   function nextGeneration(state) {
     state.generation = (state.generation || 0) + 1;
     state.inFlight = state.generation;
@@ -897,15 +870,13 @@
     return true;
   }
 
-  // Whether the rows on screen are about to be replaced.
   function loadInFlight(state) {
     return !!state.inFlight && state.inFlight === state.generation;
   }
   // <<< load-generation
 
   // >>> run-url
-  // Run URL and selector meaning. `null` (an empty selector value) is bare /phy.json, the newest manifest;
-  // picking the entry marked `newest` keeps following discovery instead of pinning today's newest directory (see `runValue`).
+  // An empty selector value is bare /phy.json; the `newest` entry uses it so a reload keeps following discovery.
   function requestedDir(value) {
     return value || null;
   }
@@ -936,8 +907,7 @@
     });
   }
 
-  // A load that came back 403, 404 or unreadable. With a model on screen this is a refused switch: keep the current run,
-  // put the selector back on it and report on the status line. With nothing on screen, show the empty state naming both commands.
+  // A refused switch with a model on screen keeps the current run; with nothing on screen it shows the empty state.
   function loadFailed(requested, message) {
     if (state.payload) {
       renderRunPicker();
@@ -949,8 +919,7 @@
     showEmpty(message);
   }
 
-  // Drop everything derived from a payload, so the empty state is true: no stale header, totals or halves, and inbound focus goes to the pending slot.
-  // The hub socket, peer list, takeover flags, metric pick and per-table sort are kept.
+  // Keeps the hub socket, peer list, takeover flags, metric pick and per-table sort.
   function forgetModel() {
     state.payload = null;
     state.identity = null;
@@ -1000,8 +969,7 @@
   }
 
   // >>> model-identity
-  // String to compare reloads by. The publication token when present, otherwise the manifest path plus design top.
-  // Counts, totals and rows are excluded: a rerun of the same run changes them, and that must not drop the reader's lens.
+  // Counts, totals and rows are excluded so a rerun of the same run keeps the reader's lens.
   function modelIdentity(payload) {
     if (!payload) { return null; }
     var token = payload.publication || (payload.hub && payload.hub.publication);
@@ -1014,8 +982,7 @@
   function ingest(payload) {
     els.empty.classList.remove('show');
     els.dash.hidden = false;
-    // A reload may land on a different model, and rootless names such as `u_sub/_64_` can coincide across models.
-    // The lens and selection belong to the old model, so drop them; the row-still-exists checks below cannot catch this.
+    // Rootless names can coincide across models, so a different model drops the lens and selection.
     var identity = modelIdentity(payload);
     var replaced = state.identity !== null && state.identity !== identity;
     state.identity = identity;
@@ -1154,9 +1121,7 @@
   }
 
   // >>> half-advice
-  // Whether the command that fills a missing half can merge with what is here. The merge needs the netlist hash both producers record
-  // (`may_inherit_other_half` in phys/model.py); a half without one (a `netlist-source: pnr` power run) is replaced, not merged.
-  // `halves[<half>].netlist_hash` echoes it. If both halves are absent there is nothing to preserve.
+  // Merging needs the netlist hash both producers record (`may_inherit_other_half` in phys/model.py); a half without one is replaced.
   function halfAdvice(payload, half) {
     var halves = (payload || {}).halves || {};
     var other = half === 'modules' ? 'instances' : 'modules';
@@ -1295,8 +1260,7 @@
   }
 
   // >>> filter-hides
-  // Whether the search box hides a row with searchable text `texts` (one column for a module row; path and cell for an instance).
-  // Shared by the renderers and by inbound focus, which clears the search when it would hide the focused row.
+  // Also used by inbound focus, which clears the search when it would hide the focused row.
   function filterHides(filter, texts) {
     if (!filter) { return false; }
     for (var i = 0; i < texts.length; i++) {
@@ -1420,8 +1384,7 @@
     return state.instanceCounts;
   }
 
-  // Print a count only for a name the leaves carry (`namespacesOf`'s liberty test on the count map's key set). Leaves carry Liberty cell names,
-  // so an RTL module name reads `—` (unmeasurable by this join), not a false 0. A name in both namespaces keeps its count and `collisionNote` explains.
+  // Leaves carry Liberty cell names, so an RTL module name reads `—` rather than a false 0.
   function instanceCount(module) {
     if (!halfPresent('instances')) { return '—'; }
     var counts = instanceCounts();
@@ -1550,9 +1513,7 @@
   // Anything that changes the row set (sort, filter, metric, lens, payload) resets the window to the first page. Selecting a row does not.
   function resetInstanceWindow() { state.shown = INSTANCE_WINDOW; }
 
-  // Explains an empty instance table under a module lens. Leaves carry Liberty cell names, so an RTL module name matches nothing;
-  // the summary payload has no per-module `instance_join` note, so the test is made here.
-  // Null when the lens is off, a search emptied the table, there is no power half, or the name matches rows.
+  // Leaves carry Liberty cell names, so an RTL module name matches nothing; null when the lens is off, searched empty, or the name matches rows.
   function joinMissNote() {
     if (state.module === null || state.filter) { return null; }
     var instances = rowsOf('instances');
@@ -1567,8 +1528,7 @@
       'lands. Liberty cells (DFF_X1, NAND2_X1) do resolve here.');
   }
 
-  // The reverse case: the lens name is in both namespaces, so the pane lists a Liberty cell type's instances under an RTL module's numbers.
-  // The note says they are two measurements; nothing is hidden or summed across them. Same call as `INSTANCE_JOIN_NAME_COLLISION` in `rb phys module`.
+  // The lens name is in both namespaces: the pane shows a Liberty cell type's instances under an RTL module's numbers, and says they are two measurements.
   function collisionNote() {
     if (state.module === null) { return null; }
     var spaces = namespacesOf(rowsOf('modules'), rowsOf('instances'),
@@ -1630,9 +1590,7 @@
     state.instance = path;
     renderInstances();
     if (!els.optSelect.checked) { note('instance ' + path); return; }
-    // `selection_changed`, since an instance path is the schematic's own coordinate. Separators become dots and the design top is put back on the front (`withTop`).
-    // The top is the physical model's. Nothing on the wire says which view the schematic shows, so a different top (for example `tb_blk`) misses silently;
-    // the status line reports the send, since a broadcast cannot hear a miss.
+    // A different design top than the physical model's misses silently; the status line reports the send.
     var wire = withTop(path, designTop());
     if (emit('selection_changed', { instance_path: wire })) {
       note('select ' + wire +

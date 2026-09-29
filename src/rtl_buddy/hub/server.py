@@ -1,6 +1,6 @@
 """asyncio TCP server for the hub: line-delimited JSON, one UTF-8 envelope per line (§2 of the protocol spec).
 
-It runs the ``hello``/``welcome`` handshake and keeps one client per :class:`Origin`. State events are broadcast to every client except the sender's origin and cached in :class:`HubState` (§6). Requests are routed to the client that owns the target origin, or answered by the hub itself (``resolve_*``, ``state_snapshot``), and responses are routed back by ``id``. Duplicate request ids within a bounded window are dropped.
+It runs the ``hello``/``welcome`` handshake and keeps one client per :class:`Origin`; a second ``hello`` for a registered origin is refused with ``not_connected`` unless it asks for takeover. State events are broadcast to every client except the sender's origin and cached in :class:`HubState` (§6). Requests are routed to the client that owns the target origin (``not_connected`` if none is registered), or answered by the hub itself (``resolve_*``, ``state_snapshot``), and responses are routed back by ``id``. Duplicate request ids within a bounded window are dropped.
 """
 
 from __future__ import annotations
