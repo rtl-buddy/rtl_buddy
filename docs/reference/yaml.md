@@ -345,10 +345,13 @@ A `modes:` block resizes a reservation for the run's `--builder-mode`.
 
 - It is available on every reservation block: `cfg-dispatch.resources`, `cfg-dispatch.compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`.
 - The base value resolves first. The mode block then applies over the resolved result, least specific layer first, so any mode block beats every base field: `test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`.
+- `cfg-dispatch.resources.modes` also sizes the compile reservation for that mode, because `resources` is the least specific layer of `compile`. To size only the build, put the mode under `cfg-dispatch.compile.modes`.
+- Within a compile block, any `verilate` key beats any `compile` key, and within each, any mode block beats every base field. `compile.modes.<mode>.verilate` is therefore the most specific verilate value.
 - Omitted fields and unnamed modes inherit, so a mode that no block names reserves the base value.
 - Mode names are free text, normally your `cfg-rtl-builder.builder-opts` keys, but they must be strings. Quote `on`, `no`, and `yes`.
 - Fields use the base validators, including the quoted-`time` rule.
-- `parallel`, `split-verilate`, a nested `modes:`, and unknown keys are rejected at load. `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
+- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` block instead discards an unknown key without a warning, so a misspelled field such as `memory:` reserves nothing.
+- `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
 - A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields.
 - A mode block is not part of the compile fingerprint.
 
@@ -369,7 +372,7 @@ Slurm refuses an array larger than its limits, so rtl_buddy splits a larger reso
 
 - `max-array-size` and `max-array-tasks` layer independently, configured value over probed value. Setting one does not suppress the probe for the other.
 - Set them where the submit host cannot run `scontrol`, or to split groups more finely. Set `max-array-tasks` where the cluster caps tasks per array below `MaxArraySize`.
-- This field alone still splits a group when `MaxArraySize` cannot be resolved.
+- `max-array-tasks` alone still splits a group when `MaxArraySize` cannot be resolved.
 
 ### Orphaned jobs
 
@@ -586,7 +589,9 @@ Top-level fields:
 | `builder` | Optional | Suite default builder name |
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
 
-The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself. It is not part of the compile fingerprint, so it never invalidates a shared build stamp.
+The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself.
+
+The suite value is the floor for both the verilate job and the build job of a split suite; `split-verilate: false` runs one build job instead. It is not part of the compile fingerprint, so it never invalidates a shared build stamp.
 
 Testbench fields:
 
@@ -603,7 +608,7 @@ A testbench `compile` holds `cpus`, `mem`, quoted `time`, a `verilate` sub-block
 
 - It layers field by field over the suite's `compile`, then `cfg-dispatch.compile`. Every field must be greater than zero.
 - `parallel` and `split-verilate` are rejected here and inside any `modes` block, because both are job-wide.
-- The suite's build job aggregates these blocks over the builds its plan runs (largest `cpus`, summed `mem` across overlapping builds, `time` as the makespan of a `parallel`-worker queue) and floors the result at the suite-level value. A simulation job that compiles for itself uses its own testbench's value.
+- The suite's build job aggregates these blocks over the builds its plan runs (largest `cpus`, summed `mem` across overlapping builds, `time` as the makespan of a `parallel`-worker queue) and floors the result at the suite-level value. Each phase of a split build aggregates its own fields the same way. A simulation job that compiles for itself uses its own testbench's value.
 
 See [Set compile resources per suite and testbench](../concepts/dispatch.md#set-compile-resources-per-suite-and-testbench) for the aggregation rules.
 
