@@ -1,27 +1,8 @@
-"""HTTP + WebSocket front-end for the rtl-buddy-hub viewer.
+"""HTTP and WebSocket front end for the rtl-buddy-hub viewer.
 
-Browsers can't speak the hub's raw TCP transport, so this module
-embeds an HTTP server alongside :mod:`rtl_buddy.hub.server` that:
-
-* serves the hub landing page at ``/`` and the rtl-buddy-view SPA
-  static bundle at ``/sch`` (rtl-buddy/rtl_buddy#398 — ``/`` was the
-  SPA until the hub grew a second app worth advertising; #423 moved it
-  again, to the app's short name, and left ``/view`` answering a 307),
-* injects the hub's host:port into the page via a
-  ``window.__RTL_BUDDY_HUB__`` script preamble (§4.4),
-* exposes the hub's JSON-message channel as a WebSocket at ``/ws``,
-  framed one envelope per WebSocket message.
-
-WebSocket connections proxy through to a fresh TCP connection on the
-hub's main listener. This keeps the dispatch layer transport-agnostic
-— a WS client looks just like any other TCP client to the core hub,
-so we don't fork the handshake / routing code between transports.
-
-The viewer SPA itself ships in rtl-buddy-view (Phase 5,
-``rtl-buddy/rtl-buddy-view#18``). Until that lands, ``--viewer-bundle``
-points at the build output's ``index.html``; without a bundle we
-serve a small placeholder that proves the HTTP + WS layer works
-end-to-end so client code can be wired against it today.
+Serves the hub landing page at ``/``, the rtl-buddy-view SPA bundle at ``/sch``, and the
+hub's JSON-envelope channel as a WebSocket at ``/ws``. Each WebSocket connection is
+proxied to a fresh TCP connection on the hub's main listener.
 """
 
 from __future__ import annotations
@@ -49,29 +30,21 @@ from .event_broker import EventBroker
 logger = logging.getLogger(__name__)
 
 
-# How many trailing lines of ``hier.log`` a ``view_generation_failed``
-# body carries. The SPA renders the tail verbatim in its "no view
-# available" placeholder (rtl-buddy-view#130), so this is a display
-# budget, not a diagnostic one: the whole point is that the recurring
-# causes (a top that never elaborated, an uninitialised vendor
-# submodule, a ``-v`` library entry) name themselves in the last few
-# renderer lines, and a longer tail scrolls the fix off the screen.
+# Trailing ``hier.log`` lines carried in a ``view_generation_failed`` body. The SPA
+# shows them verbatim, so this is a display budget: a longer tail scrolls the cause off
+# the screen.
 LOG_TAIL_LINES = 40
 
-# ``build_view_json`` reports the log it wrote as "see <path> for
-# details."  Reading the path back out of the message keeps one
-# producer of it — the DUT and TB artefact dirs differ, and a second
-# derivation here would be a second thing to keep in step.
+# Recovers the log path from the message ``build_view_json`` writes, so the path has one
+# producer.
 _LOG_PATH_RE = re.compile(r"see (?P<path>\S.*?\.log) for details")
 
 
 def _one_line(message: str) -> str:
     """First non-empty line of ``message``, whitespace-normalised.
 
-    The structured error's ``message`` is a *summary* — the SPA puts it
-    on one line above the log tail. Multi-line diagnostics (model
-    discovery lists every candidate name) keep their detail in the
-    log tail and in the hub log; only the headline travels here.
+    Only the headline travels in the error body; multi-line detail stays in the log tail
+    and the hub log.
     """
 
     for line in str(message).splitlines():
@@ -82,11 +55,7 @@ def _one_line(message: str) -> str:
 
 
 def _read_log_tail(log_path: Path, limit: int = LOG_TAIL_LINES) -> list[str]:
-    """Last ``limit`` lines of ``log_path``; ``[]`` when unreadable.
-
-    Never raises: a missing or unreadable log is a *thinner* error
-    payload, not a second failure on the failure path.
-    """
+    """Last ``limit`` lines of ``log_path``; ``[]`` when unreadable. Never raises."""
 
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -186,28 +155,17 @@ def render_index_html(
     cov_url: str | None = None,
     phys_url: str | None = None,
 ) -> bytes:
-    """Return the HTML body served at ``/view`` with hub address injected.
+    """Return the SPA HTML with the hub address injected.
 
-    When ``bundle_index`` points at an existing file, its contents are
-    served with the ``%HUB_INJECTION%`` placeholder (or a ``<head>``
-    insertion when the placeholder is absent) replaced by the script
-    preamble. Otherwise the built-in placeholder is served — same
-    injection rules.
+    Serves ``bundle_index`` when it is an existing file, otherwise the built-in
+    placeholder. The script preamble replaces ``%HUB_INJECTION%``, or is inserted after
+    ``<head>`` when the placeholder is absent.
 
-    When ``view_url`` is provided, ``window.__RTL_BUDDY_VIEW_URL__`` is
-    set alongside ``__RTL_BUDDY_HUB__`` so the SPA bootstrap can fetch
-    the view.json without the user passing ``?view=`` in the URL.
-
-    ``graph_url`` does the same for the design knowledge graph (#382):
-    it is set only when this hub has a built ``graph.json`` to serve, so
-    an SPA overlay can advertise the graph pane on presence of the
-    global instead of probing the endpoint and handling a 404.
-    ``cov_url`` is the identical arrangement for the coverage pane
-    (rtl-buddy/rtl_buddy#400), keyed on a discovered coverage manifest,
-    and ``phys_url`` for the synth+power pane (rtl-buddy/rtl_buddy#558),
-    keyed on a discovered physical manifest. The SPA pre-landed its
-    ``/phy`` app-switcher entry gated on that global, so the hub setting
-    it is what makes the entry appear.
+    ``view_url``, ``graph_url``, ``cov_url`` and ``phys_url`` set
+    ``window.__RTL_BUDDY_VIEW_URL__``, ``__RTL_BUDDY_GRAPH_URL__``,
+    ``__RTL_BUDDY_COV_URL__`` and ``__RTL_BUDDY_PHY_URL__`` when given. The hub passes
+    the graph, coverage and physical URLs only when the matching data exists, so the SPA
+    shows a pane's entry on the presence of the global.
     """
 
     if bundle_index is not None and bundle_index.is_file():
@@ -229,7 +187,6 @@ def render_index_html(
     if "%HUB_INJECTION%" in html:
         html = html.replace("%HUB_INJECTION%", preamble)
     else:
-        # Insert a <script> just after <head>; falls back to prefix if no <head>.
         injection = f"<script>{preamble}</script>"
         lowered = html.lower()
         head_idx = lowered.find("<head>")
@@ -242,13 +199,10 @@ def render_index_html(
 
 
 class ViewerServer:
-    """Serves the HTTP + ``/ws`` surface for the viewer SPA.
+    """Serves the HTTP and ``/ws`` surface for the viewer SPA on one asyncio port.
 
-    The HTTP request handler is wired into ``websockets.serve`` via the
-    ``process_request`` hook: a non-upgrade HTTP request gets a normal
-    HTTP response (the index page or a static asset); an upgrade
-    request proceeds through to the WebSocket handler. This lets one
-    asyncio port serve both transports.
+    Plain HTTP requests are answered from the ``process_request`` hook; upgrade requests
+    proceed to the WebSocket handlers.
     """
 
     def __init__(
@@ -271,60 +225,35 @@ class ViewerServer:
         self.http_port = http_port
         self.viewer_bundle = viewer_bundle
         self.view_json_path = view_json_path
-        # Runtime-switchable model state. ``active_model`` is the model
-        # currently served by ``GET /view.json`` with no query; flipped
-        # by SPA ``?model=`` requests via ``_set_active_model``.
+        # Model served by a bare ``GET /view.json``; changed by ``?model=`` requests.
         self.project_root = project_root
         self.active_model = initial_model
         self.models_file_pin = models_file_pin
-        # Optional axi-perf.json the hub bakes into every model's
-        # generated view.json (Phase 2.5 of the marimo umbrella).
-        # ``rb hub start --axi-perf-from PATH`` populates this; the
-        # path is forwarded to rtl-buddy-view via the
-        # ``--overlay axi-perf=…`` form so the SPA's "Open in
-        # marimo" button gets the test/suite_dir metadata for free.
+        # Optional axi-perf.json baked into every generated view.json (``rb hub start
+        # --axi-perf-from``).
         self.axi_perf_source = axi_perf_source
         self.hub_server = hub_server
-        # Mirror the active model onto HubState so the ``state_snapshot``
-        # request type can return it without reaching back into the HTTP
-        # layer. Safe when hub_server is None (tests).
+        # Mirrored onto HubState for ``state_snapshot``; hub_server is None in tests.
         if hub_server is not None:
             hub_server.state.active_model = initial_model
-        # Per-model lock map. Two ``?model=X`` requests racing on a
-        # cold cache funnel through one ``build_view_json`` call; two
-        # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
-        # are allocated lazily and never garbage-collected per session.
+        # Per-model locks: concurrent requests for one model share one
+        # ``build_view_json`` call, different models run in parallel.
         self._model_locks: dict[str, asyncio.Lock] = {}
-        # Per-model view-generation outcome for THIS hub session
-        # (rtl-buddy-view#130). ``{model: {"ok": bool, "message": str,
-        # "log_path": str, "log_tail": [str]}}``. Two readers: ``GET
-        # /models`` turns it into ``view_status``, and the bare ``GET
-        # /view.json`` replays a remembered failure so the named-model
-        # and active-model request paths answer with the same body.
-        # In memory only — a hub restart resets every model to what
-        # the cache on disk says, which is the honest answer after a
-        # restart anyway.
+        # Per-model view-generation outcome for this session, ``{model: {"ok",
+        # "message", "log_path", "log_tail"}}``. ``GET /models`` derives ``view_status``
+        # from it and a bare ``GET /view.json`` replays a remembered failure. In memory
+        # only.
         self._model_view_outcomes: dict[str, dict[str, Any]] = {}
-        # Per-test lock map for ``?test=NAME`` (TB view, #99 / 6b).
-        # Same race-prevention as ``_model_locks`` — two SPA clicks on
-        # the same test funnel through one build, two clicks on
-        # different tests run in parallel.
+        # Per-test locks for ``?test=``, same purpose as ``_model_locks``.
         self._test_locks: dict[str, asyncio.Lock] = {}
-        # Currently-active TB test (TB-view mode). None when the hub
-        # is serving a DUT view (default) or hasn't built any view
-        # yet. Flipped by ``?test=`` requests via
-        # ``_set_active_test``.
+        # Active TB test; None while serving a DUT view.
         self.active_test: str | None = None
-        # Marimo "Open in marimo" session cache (Phase 2.5).
-        # ``(test, suite_dir) → LaunchResult``. Repeat clicks reuse
-        # the cached entry when the spawned marimo is still alive
-        # (``os.kill(pid, 0)`` succeeds). Per-key lock funnels
-        # concurrent requests for the same notebook through one
-        # spawn — analogous to ``_model_locks`` for /view.json?model=.
+        # "Open in marimo" sessions, ``(test, suite_dir) -> LaunchResult``. A cached
+        # entry is reused while its pid is alive; a per-key lock stops concurrent
+        # requests from spawning duplicates.
         self._axi_notebook_sessions: dict[tuple[str, str], Any] = {}
         self._axi_notebook_locks: dict[tuple[str, str], asyncio.Lock] = {}
-        # Phase 3 SPA↔notebook sync. Opaque pub/sub — see
-        # ``event_broker.py`` for the relay semantics.
+        # SPA and notebook state sync; see ``event_broker.py``.
         self._event_broker = EventBroker()
         self._server: Any | None = None
         self._bundle_index = self._resolve_bundle_index(viewer_bundle)
@@ -348,12 +277,7 @@ class ViewerServer:
         return self.view_json_path is not None and self.view_json_path.is_file()
 
     def _has_graph_json(self) -> bool:
-        """Whether ``rb graph build`` has produced a graph for this root.
-
-        Re-checked per request (one ``stat``) so a graph built while the
-        hub is running is advertised without a restart — the same
-        per-request-walk rule ``/models`` and ``/tests`` follow.
-        """
+        """Whether ``rb graph build`` has produced a graph for this root."""
         if self.project_root is None:
             return False
         return graph_page.graph_files_present(self.project_root)
@@ -361,18 +285,9 @@ class ViewerServer:
     async def _has_cov_data(self) -> bool:
         """Whether any run under this root left a coverage manifest.
 
-        Same advertise-on-data-presence rule as ``_has_graph_json``, but
-        the lookup is a bounded walk rather than one ``stat`` (coverage
-        artefacts land wherever the command ran), so ``cov_page`` caches
-        the answer for a few seconds — see
-        :data:`~rtl_buddy.hub.cov_page.PRESENCE_TTL_SECONDS`.
-
-        Awaited in a thread, like every other ``/cov*`` handler here: the
-        TTL bounds how *often* a miss happens, not what one costs, and a
-        walk run on the event loop stalls the whole hub — including the
-        ``/ws`` fan-out — for its duration. On a tree with an
-        ``artefacts/`` directory from a finished regression that is not
-        a bounded pause.
+        The lookup is a tree walk, cached briefly by ``cov_page``
+        (:data:`~rtl_buddy.hub.cov_page.PRESENCE_TTL_SECONDS`). Await it in a thread: a
+        walk on the event loop stalls the whole hub, including the ``/ws`` fan-out.
         """
         if self.project_root is None:
             return False
@@ -381,13 +296,8 @@ class ViewerServer:
     async def _has_phys_data(self) -> bool:
         """Whether any run under this root left a physical manifest.
 
-        The coverage rule verbatim, and for a stronger version of the
-        same reason: a physical manifest lands in whatever
-        ``artefacts/<run>/`` the run was named into, so discovery cannot
-        even shortcut on a directory name — the filename is the only
-        marker and the walk is the whole search. Cached for a few
-        seconds by ``phys_page`` and awaited in a thread here, or a
-        landing poll would stall the ``/ws`` fan-out behind it.
+        Same rules as :meth:`_has_cov_data`: the manifest can be in any run directory,
+        so the walk is cached by ``phys_page`` and awaited in a thread.
         """
         if self.project_root is None:
             return False
@@ -426,11 +336,8 @@ class ViewerServer:
             pass
 
     async def shutdown(self) -> None:
-        # Reap the marimo subprocesses we spawned for /api/axi-profile/
-        # notebook before tearing down the HTTP server. Without this
-        # they survive hub restarts as orphans — each one holds an
-        # OS port and a marimo session that nobody can reach (the SPA
-        # only knows the URL via the now-dead hub).
+        # Reap the marimo processes spawned for the notebook endpoint; otherwise they
+        # outlive the hub as orphans.
         for key, session in list(self._axi_notebook_sessions.items()):
             _terminate_pid(session.pid)
             self._axi_notebook_sessions.pop(key, None)
@@ -443,42 +350,24 @@ class ViewerServer:
             pass
         self._server = None
 
-    # ------------------------------------------------------------------
     # HTTP
-    # ------------------------------------------------------------------
 
     async def _process_request(
         self, connection: ServerConnection, request: Request
     ) -> Response | None:
-        # Async because ``/view.json?model=`` runs ``build_view_json``
-        # in a thread (rtl-buddy-view is a blocking subprocess) under
-        # a per-model ``asyncio.Lock``. ``websockets.serve`` accepts
-        # both sync and async ``process_request`` callbacks.
+        # Async because ``/view.json?model=`` builds in a thread under a per-model
+        # ``asyncio.Lock``.
         raw_path, _, query_string = request.path.partition("?")
         path = raw_path
         query = parse_qs(query_string)
 
-        # WS upgrade?  Let websockets handle it.
         if request.headers.get("Upgrade", "").lower() == "websocket":
             if path in ("/ws", "/api/events/sync"):
                 return None
             return _http_response(connection, 404, b"unknown ws path")
 
-        # Plain HTTP.
-
-        # ``/sch/`` → ``/sch``, and the legacy ``/view`` → ``/sch``. The
-        # slashless spelling is canonical: the SPA bundle is built with
-        # Vite ``base: ''`` so every asset reference in its
-        # ``index.html`` is relative (``./assets/index-*.js``), which the
-        # browser resolves against the *directory* of the current URL.
-        # From ``/sch`` that is ``/assets/…`` and hits ``_serve_static``;
-        # from ``/sch/`` it becomes ``/sch/assets/…`` and 404s, leaving a
-        # shell that renders its chrome and then hangs on "Loading…".
-        # Redirecting rather than also mounting the assets one level
-        # deeper keeps one URL per asset, and rtl-buddy-view keeps the
-        # relative base it needs for ``embed.py``'s standalone ``file://``
-        # HTML. ``/sch`` is root-level exactly as ``/view`` was, so the
-        # relative resolution is unchanged by the rename.
+        # Redirects to the slashless spelling: the SPA bundle uses relative asset URLs,
+        # which resolve against the directory of the current URL and 404 from ``/sch/``.
         if redirect := self._canonical_route_redirect(connection, path, query_string):
             return redirect
 
@@ -506,10 +395,8 @@ class ViewerServer:
                 connection, path[len(theme.ASSETS_ROUTE_PREFIX) :]
             )
 
-        # ``/index.html`` stays an alias for the SPA: it is what the
-        # bundle's own relative links resolve to, and letting it fall
-        # through to ``_serve_static`` would serve the bundle's index
-        # WITHOUT the hub injection — an SPA that cannot find its hub.
+        # ``/index.html`` must be served with hub injection; the bundle's relative links
+        # resolve to it, and ``_serve_static`` would omit the injection.
         if path in (landing_page.VIEW_PAGE_ROUTE, "/index.html"):
             cov_available = await self._has_cov_data()
             phys_available = await self._has_phys_data()
@@ -563,11 +450,7 @@ class ViewerServer:
         if path == "/view.json":
             requested_test = query.get("test", [None])[0]
             if requested_test is not None:
-                # ``tests_file`` disambiguates when a test name is shared
-                # by multiple suites (e.g. ``smoke`` in several
-                # tests.yaml). The SPA echoes back the ``tests_file`` it
-                # got from ``GET /tests`` so the name resolves to exactly
-                # one suite instead of erroring as ambiguous.
+                # ``tests_file`` disambiguates a test name shared by several suites.
                 requested_tests_file = query.get("tests_file", [None])[0]
                 return await self._handle_view_json_for_test(
                     connection, requested_test, requested_tests_file
@@ -575,10 +458,8 @@ class ViewerServer:
             requested = query.get("model", [None])[0]
             if requested is not None:
                 return await self._handle_view_json_for_model(connection, requested)
-            # No ``?model=`` query → serve the active model.
             return self._serve_active_view_json(connection)
 
-        # Bundle static assets: only served when the bundle is a directory.
         if self.viewer_bundle and self.viewer_bundle.is_dir():
             static = self._serve_static(connection, path)
             if static is not None:
@@ -589,56 +470,32 @@ class ViewerServer:
     def _canonical_route_redirect(
         self, connection: ServerConnection, path: str, query_string: str
     ) -> Response | None:
-        """Send every non-canonical spelling of an app page to its canonical one.
+        """Redirect a non-canonical page path to its canonical spelling in one hop.
 
-        Two normalisations, applied in that order, so a request only ever
-        takes **one** hop no matter how it was spelled:
+        Drops a trailing slash (``/gph/`` to ``/gph``) and renames legacy page paths
+        (``/graph`` to ``/gph``, ``/view`` to ``/sch``). Returns None for everything
+        else, including the landing page and all JSON, asset and static routes.
 
-        1. a trailing slash is dropped (``/gph/`` → ``/gph``);
-        2. a legacy page path is renamed (``/graph`` → ``/gph``, ``/view``
-           → ``/sch``, #423) — so ``/graph/`` lands on ``/gph`` directly
-           rather than bouncing through ``/graph``.
-
-        Returns ``None`` for every other path, which is what keeps this
-        from touching anything but page routes: the landing page (``/``
-        *is* canonical), every JSON and asset route (``/view.json`` and
-        ``/graph.json`` are DATA routes and do not move — only pages were
-        renamed), ``/cov/source``, and bundle statics (a directory
-        request there has always been a 404).
-
-        The redirect is **temporary** (307) rather than permanent on
-        purpose: hub http ports are pinned and reused across projects,
-        and a 301 cached against ``127.0.0.1:<port>`` would outlive the
-        hub that issued it. That reasoning is doubly load-bearing for the
-        legacy renames, which a browser would otherwise pin against a
-        port a different project's hub will hold next week.
+        The redirect is 307, not 301: hub ports are reused across projects, and a cached
+        301 would outlive the hub that issued it.
         """
 
         target = path.rstrip("/")
         target = _LEGACY_PAGE_ROUTES.get(target, target)
         if target == path:
-            return None  # already canonical, and already slashless
+            return None
         if target not in _CANONICAL_PAGE_ROUTES:
             return None
         location = f"{target}?{query_string}" if query_string else target
         return _http_redirect(connection, location)
 
-    # ------------------------------------------------------------------
-    # / + /hub/* — landing, tokens, brand marks (issue #398)
-    # ------------------------------------------------------------------
+    # Landing page, tokens and brand marks
 
     async def _handle_hub_state(self, connection: ServerConnection) -> Response:
-        """``GET /hub/state.json`` — what the landing page renders.
+        """``GET /hub/state.json``: the landing page's state, recomputed per request.
 
-        Recomputed per request (two ``stat`` calls and a set read) for
-        the same reason ``/models`` walks per request: a graph built, or
-        a tab opened, while the landing is up must show up on its next
-        poll rather than on a hub restart.
-
-        Async because coverage presence is a tree walk on a cache miss
-        (see :meth:`_has_cov_data`), and this is the route the landing
-        page polls several times a minute — running that walk inline
-        would stall every other connection with it.
+        Async because coverage and physical presence are tree walks on a cache miss (see
+        :meth:`_has_cov_data`).
         """
 
         peers = (
@@ -660,9 +517,8 @@ class ViewerServer:
             active_model=self.active_model,
             active_test=self.active_test,
             peers=peers,
-            # The SPA route always answers — without a bundle it serves
-            # the placeholder, which explains itself — so the card is
-            # live either way and the note carries the caveat.
+            # Always live: without a bundle the route serves the self-explaining
+            # placeholder.
             view_available=True,
             view_note=(
                 None
@@ -683,12 +539,9 @@ class ViewerServer:
         )
 
     def _handle_asset(self, connection: ServerConnection, name: str) -> Response:
-        """``GET /hub/assets/<name>`` — the vendored brand marks.
+        """``GET /hub/assets/<name>``: a vendored brand mark.
 
-        ``name`` is matched against the shipped listing rather than
-        joined onto a path, so no traversal is possible here (unlike
-        ``_serve_static``, which has to resolve arbitrary bundle paths
-        and therefore carries its own containment check).
+        ``name`` is matched against the shipped listing, never joined onto a path.
         """
 
         body = theme.asset_bytes(name)
@@ -698,25 +551,15 @@ class ViewerServer:
             connection, 200, body, content_type=_guess_content_type(Path(name))
         )
 
-    # ------------------------------------------------------------------
-    # /graph + /graph.json (issue #382)
-    # ------------------------------------------------------------------
+    # /graph and /graph.json
 
     async def _handle_graph_page(self, connection: ServerConnection) -> Response:
-        """``GET /graph`` — the interactive design-knowledge-graph pane.
+        """``GET /graph``: the design-knowledge-graph pane.
 
-        Always 200, even with no graph built: the page's own empty state
-        names ``rb graph build``, which is more useful than a 404 body
-        the browser renders as a blank tab. The page is static; all the
-        data arrives from ``GET /graph.json`` — and, for the heat
-        overlay on its module nodes, from ``GET /phy.json``
-        (rtl-buddy/rtl_buddy#596).
-
-        The physical route is advertised off the **same presence probe
-        the landing page uses**, so a card that says there is a model
-        and a pane that says there is none cannot both be right. No
-        manifest means no injected URL, which the pane renders as a
-        muted heat control carrying the landing card's own wording.
+        Always 200; the page's empty state names ``rb graph build``. Data comes from
+        ``/graph.json`` and, for the heat overlay, ``/phy.json``. The physical URL is
+        injected under the same presence probe as the landing page, so the two cannot
+        disagree.
         """
 
         return _http_response(
@@ -732,13 +575,8 @@ class ViewerServer:
         )
 
     async def _handle_graph_json(self, connection: ServerConnection) -> Response:
-        """``GET /graph.json`` — the merged graph joined with the overlay.
-
-        Read off disk on every request rather than cached: the point of
-        the ``reload`` button is that ``rb graph build`` / ``rb graph
-        results`` in another terminal shows up here, and a cache keyed
-        on anything less than the file's own bytes would have to be
-        invalidated by exactly the events we cannot see.
+        """``GET /graph.json``: the merged graph plus overlay, read from disk per
+        request.
         """
 
         if self.project_root is None:
@@ -757,16 +595,11 @@ class ViewerServer:
         )
         return _http_response(connection, status, body, content_type="application/json")
 
-    # ------------------------------------------------------------------
-    # /cov + /cov.json + /cov/source (issue #400)
-    # ------------------------------------------------------------------
+    # /cov, /cov.json and /cov/source
 
     def _handle_cov_page(self, connection: ServerConnection) -> Response:
-        """``GET /cov`` — the interactive coverage pane.
-
-        Always 200, even with no coverage collected: the page's own
-        empty state names the command that produces some, which is more
-        useful than a 404 body the browser renders as a blank tab.
+        """``GET /cov``: the coverage pane. Always 200; the empty state names the
+        command.
         """
 
         return _http_response(
@@ -777,11 +610,8 @@ class ViewerServer:
         )
 
     async def _handle_cov_json(self, connection: ServerConnection) -> Response:
-        """``GET /cov.json`` — the newest run's coverage model.
-
-        Read off disk on every request, like ``/graph.json``: the point
-        of the reload button is that a regression finishing in another
-        terminal shows up here.
+        """``GET /cov.json``: the newest run's coverage model, read from disk per
+        request.
         """
 
         if self.project_root is None:
@@ -801,11 +631,9 @@ class ViewerServer:
     async def _handle_cov_source(
         self, connection: ServerConnection, query: dict[str, list[str]]
     ) -> Response:
-        """``GET /cov/source?path=…`` — one annotated file's text.
+        """``GET /cov/source?path=...``: one annotated file's text.
 
-        Not folded into ``/cov.json``: a model on a real design names
-        hundreds of files, and inlining every one of them would send tens
-        of megabytes to render one.
+        Served separately from ``/cov.json`` because a model names hundreds of files.
         """
 
         if self.project_root is None:
@@ -826,16 +654,11 @@ class ViewerServer:
         )
         return _http_response(connection, status, body, content_type="application/json")
 
-    # ------------------------------------------------------------------
-    # /phy + /phy.json (issue #558)
-    # ------------------------------------------------------------------
+    # /phy and /phy.json
 
     def _handle_phys_page(self, connection: ServerConnection) -> Response:
-        """``GET /phy`` — the interactive synth+power pane.
-
-        Always 200, even with no physical artefacts: the page's own
-        empty state names the two commands that produce some, which is
-        more useful than a 404 body the browser renders as a blank tab.
+        """``GET /phy``: the synth+power pane. Always 200; the empty state names the
+        commands.
         """
 
         return _http_response(
@@ -848,20 +671,12 @@ class ViewerServer:
     async def _handle_phys_json(
         self, connection: ServerConnection, query: dict[str, list[str]]
     ) -> Response:
-        """``GET /phy.json`` — one run's physical model.
+        """``GET /phy.json``: one run's physical model, read from disk on every request.
 
-        Read off disk on every request, like ``/cov.json``: the point of
-        the reload button is that a synthesis finishing in another
-        terminal shows up here.
-
-        ``?dir=<project-relative phys_dir>`` selects a run (#568); bare
-        ``/phy.json`` stays the newest manifest, so nothing about the
-        default changes. The value is validated against the project root
-        before anything is read — ``403`` outside it, ``404`` for a
-        directory with no manifest — by
-        :func:`rtl_buddy.hub.phys_page.contained_phys_dir`, which is
-        where the rule and its one documented divergence from the
-        coverage source route live.
+        ``?dir=<project-relative phys_dir>`` selects a run; bare ``/phy.json`` serves
+        the newest manifest. The directory is validated by
+        :func:`rtl_buddy.hub.phys_page.contained_phys_dir`: 403 outside the project
+        root, 404 without a manifest.
         """
 
         if self.project_root is None:
@@ -882,41 +697,22 @@ class ViewerServer:
         )
         return _http_response(connection, status, body, content_type="application/json")
 
-    # ------------------------------------------------------------------
-    # /models + /view.json?model= (issue #174)
-    # ------------------------------------------------------------------
+    # Models and /view.json
 
     async def _handle_axi_notebook(
         self, connection: ServerConnection, query: dict[str, list[str]]
     ) -> Response:
-        """``GET /api/axi-profile/notebook?test=NAME&suite_dir=PATH``.
+        """``GET /api/axi-profile/notebook?test=NAME&suite_dir=PATH``: launch a marimo
+        notebook.
 
-        Spawns ``rb axi-profile notebook --headless`` for the given
-        ``test`` (which must exist in ``<suite_dir>/tests.yaml``),
-        waits up to 30 s for marimo to print its URL, returns JSON.
-        The spawned marimo persists after this request completes —
-        it's the user's notebook session, intended to outlive the
-        single HTTP round-trip.
+        Spawns ``rb axi-profile notebook --headless`` for ``test`` (which must exist in
+        ``<suite_dir>/tests.yaml``) and waits up to 30 s for marimo to print its URL.
+        The marimo process outlives the request. A repeat request for the same ``(test,
+        suite_dir)`` reuses the cached process while its pid is alive.
 
-        Repeat clicks for the same ``(test, suite_dir)`` reuse the
-        cached marimo when its pid is still alive (single-instance
-        per notebook, Phase 2.5). When the cached marimo has died
-        the entry is dropped and a fresh one spawns.
-
-        Response::
-
-          {
-            "url":       "http://localhost:NNNN",
-            "pid":       12345,
-            "port":      NNNN,
-            "test":      "basic_traffic",
-            "suite_dir": "/abs/path/to/verif/demo_axi_2x2",
-            "reused":    false                            ← true when cache hit
-          }
-
-        Errors surface as JSON-bodied 4xx/5xx with a single ``error``
-        key. ``project_root`` must be set on the hub (always true when
-        started via ``rb hub start``).
+        Returns JSON ``{"url", "pid", "port", "test", "suite_dir", "reused"}``, where
+        ``reused`` is true on a cache hit. Errors are 4xx/5xx JSON bodies with a single
+        ``error`` key. Requires ``project_root`` on the hub.
         """
         import json as _json
 
@@ -932,16 +728,13 @@ class ViewerServer:
         test = (query.get("test") or [""])[0]
         suite_dir = (query.get("suite_dir") or [""])[0]
 
-        # Per-(test, suite_dir) lock funnels concurrent requests for
-        # the same notebook through one spawn. Without this, two SPA
-        # clicks within marimo's ~3 s startup window would both miss
-        # the cache and spawn duplicate processes on different ports.
+        # Serialises requests for one notebook; two clicks inside marimo's startup
+        # window would otherwise spawn duplicates.
         key = (test, suite_dir)
         lock = self._axi_notebook_locks.setdefault(key, asyncio.Lock())
         async with lock:
             cached = self._axi_notebook_sessions.get(key)
             if cached is not None and _is_pid_alive(cached.pid):
-                # Cache hit — return the same URL the user got last time.
                 body = _json.dumps(
                     {
                         "url": cached.url,
@@ -955,7 +748,6 @@ class ViewerServer:
                 return _http_response(
                     connection, 200, body, content_type="application/json"
                 )
-            # Cache miss or stale → drop the dead entry, spawn fresh.
             if cached is not None:
                 self._axi_notebook_sessions.pop(key, None)
             try:
@@ -976,10 +768,8 @@ class ViewerServer:
                     _json.dumps({"error": str(e)}).encode(),
                     content_type="application/json",
                 )
-            # Cache under the resolved key (suite_dir may have been
-            # normalised to an absolute path by the launcher's
-            # validator; use the request key so the next request with
-            # the same input hits the cache).
+            # Cache under the request key, not the launcher's normalised suite_dir, so a
+            # repeat request hits.
             self._axi_notebook_sessions[key] = result
             body = _json.dumps(
                 {
@@ -996,20 +786,16 @@ class ViewerServer:
             )
 
     async def _handle_models(self, connection: ServerConnection) -> Response:
-        """``GET /models`` — list every model the hub can serve.
+        """``GET /models``: every model the hub can serve, discovered per request.
 
-        Walks per-request so a freshly-edited ``models.yaml`` shows
-        up without restarting the hub. When ``--models-file`` was
-        pinned at start time, enumerates only that file.
+        Enumerates only the ``--models-file`` when one was pinned.
         """
 
         from . import model_discovery
         from ..config.model import ModelConfigLoader
 
         if self.project_root is None:
-            # ViewerServer started without project_root (e.g.
-            # standalone test) → only have the legacy single
-            # active model to report on.
+            # No project_root (standalone test): report only the active model.
             payload: dict[str, Any] = {"models": [], "active": self.active_model}
             return _http_response(
                 connection,
@@ -1026,9 +812,7 @@ class ViewerServer:
 
             entries: list[dict[str, Any]] = []
             for mf in files:
-                # Robust against malformed files: skip silently here
-                # (the user's primary models.yaml is presumably valid,
-                # discovery shouldn't 500 on a sibling project).
+                # Skip malformed sibling files rather than failing the listing.
                 try:
                     loader = ModelConfigLoader(str(mf))
                 except Exception:
@@ -1040,10 +824,8 @@ class ViewerServer:
                             "name": m.name,
                             "models_file": str(mf),
                             "has_cdc": self._model_has_resolvable_cdc(m),
-                            # Model health (rtl-buddy-view#130) so the
-                            # picker can badge a model that can never
-                            # elaborate, instead of letting the user
-                            # discover it via an empty canvas.
+                            # Model health, so the picker can badge a model that cannot
+                            # elaborate.
                             **self._view_status_fields(m.name),
                         }
                     )
@@ -1070,16 +852,10 @@ class ViewerServer:
         )
 
     async def _handle_tests(self, connection: ServerConnection) -> Response:
-        """``GET /tests`` — list every test the hub can serve (#99 / 6b).
+        """``GET /tests``: every test the hub can serve, discovered per request.
 
-        Walks per-request so a freshly-edited ``tests.yaml`` shows up
-        without restarting the hub. Each entry carries its resolved
-        ``(model, tb)`` pair so the SPA's TB-mode picker can label
-        options and skip an extra round-trip per click.
-
-        Empty list is the standalone / no-tests signal — the SPA's
-        DUT/TB toggle stays hidden in that case (matches the way
-        ``GET /models`` returns ``[]`` for standalone deployments).
+        Each entry carries its resolved ``(model, tb)`` pair. An empty list means
+        standalone, and the SPA hides its DUT/TB toggle.
         """
 
         from . import test_discovery
@@ -1129,10 +905,11 @@ class ViewerServer:
 
     @staticmethod
     def _model_has_resolvable_cdc(model_cfg: Any) -> bool:
-        """``has_cdc`` reflects end-to-end resolvability: the model
-        has a ``cdc:`` field AND the referenced file exists AND at
-        least one analysis resolves cleanly. Errors get swallowed so
-        the listing endpoint doesn't 500 on one broken pointer."""
+        """Whether the model has a ``cdc:`` field that resolves to at least one
+        analysis.
+
+        Errors count as False.
+        """
         if not getattr(model_cfg, "cdc", None):
             return False
         from .cdc_builder import _resolve_cdc_analysis
@@ -1142,9 +919,7 @@ class ViewerServer:
         except Exception:
             return False
 
-    # ------------------------------------------------------------------
-    # Structured view errors + model health (rtl-buddy-view#130)
-    # ------------------------------------------------------------------
+    # Structured view errors and model health
 
     @staticmethod
     def _error_response(
@@ -1154,12 +929,10 @@ class ViewerServer:
         message: str,
         **extra: Any,
     ) -> Response:
-        """Every ``/view.json`` failure body, in one shape.
+        """Build a ``/view.json`` failure body, ``{"error": {"kind", "message", ...}}``,
+        as JSON.
 
-        ``{"error": {"kind": ..., "message": ..., <extra>}}`` with
-        ``Content-Type: application/json``. The SPA branches on
-        ``kind`` — never on the status code and never on the prose —
-        so a new failure mode is a new ``kind`` and nothing else moves.
+        The SPA branches on ``kind``, not on the status code or message.
         """
 
         payload = {"error": {"kind": kind, "message": message, **extra}}
@@ -1173,10 +946,8 @@ class ViewerServer:
     def _view_generation_error(self, model: str, exc: Exception) -> dict[str, Any]:
         """Turn a failed generation into the remembered outcome record.
 
-        The record is both the ``500`` body's ``error`` object (minus
-        ``kind``) and what ``GET /models`` reads for ``view_status``,
-        so the two endpoints cannot disagree about why a model is
-        broken.
+        The record is the ``error`` object of the 500 body (minus ``kind``) and the
+        source of ``view_status`` in ``GET /models``.
         """
 
         message = _one_line(str(exc))
@@ -1184,9 +955,8 @@ class ViewerServer:
         if match:
             log_path = Path(match.group("path"))
         elif self.project_root is not None:
-            # Mirrors ``RtlBuddyView``'s artefact root for the failure
-            # modes that never reached the subprocess (a bad filelist,
-            # an unresolvable cdc: back-pointer) and so never named a log.
+            # Mirrors RtlBuddyView's artefact root for failures that never reached the
+            # subprocess.
             log_path = self.project_root / "artefacts" / "hier" / model / "hier.log"
         else:
             log_path = Path("hier.log")
@@ -1221,15 +991,12 @@ class ViewerServer:
         )
 
     def _view_status_fields(self, model_name: str) -> dict[str, Any]:
-        """``view_status`` (+ optional ``error``/``stale_cache``) for one
-        ``GET /models`` entry.
+        """``view_status`` (plus optional ``error`` and ``stale_cache``) for one ``GET
+        /models`` entry.
 
-        Three inputs, in precedence order: a remembered failure from
-        this session wins over everything (a model that just failed is
-        broken even though ``.rtl-buddy/cache/view-<m>.json`` may still
-        hold last week's tree — that combination is exactly what
-        ``stale_cache`` names); then a remembered success; then the
-        cache file, which is what carries ``ok`` across a hub restart.
+        Precedence: a remembered failure from this session, then a remembered success,
+        then the cache file. A failure with an existing cache file is reported as
+        ``stale_cache``.
         """
 
         from . import view_builder
@@ -1252,12 +1019,7 @@ class ViewerServer:
         return {"view_status": "never_built"}
 
     def _no_active_model_response(self, connection: ServerConnection) -> Response:
-        """Bare ``GET /view.json`` with nothing to serve.
-
-        ``409`` rather than ``404``: the route exists and the hub is
-        healthy, it just has no model selected — which is a state the
-        caller fixes (pick one from ``models_url``), not a wrong URL.
-        """
+        """Bare ``GET /view.json`` with no model selected: 409 ``no_active_model``."""
 
         log_event(
             logger,
@@ -1275,13 +1037,11 @@ class ViewerServer:
         )
 
     def _serve_active_view_json(self, connection: ServerConnection) -> Response:
-        """``GET /view.json`` with no query — serve the active model.
+        """``GET /view.json`` with no query: serve the active model.
 
-        Same three answers the ``?model=`` path gives, for the same
-        reasons: the bytes, the remembered failure for whatever model
-        is active, or ``no_active_model``. Falls back to the start-time
-        ``view.json`` (legacy path for pre-feature SPAs / embed.py
-        users) when no model has been selected yet.
+        Answers with the bytes, the remembered failure for the active model, or
+        ``no_active_model``. Falls back to the start-time ``view.json`` when no model
+        has been selected.
         """
 
         if self._has_view_json():
@@ -1304,16 +1064,12 @@ class ViewerServer:
     async def _handle_view_json_for_model(
         self, connection: ServerConnection, requested: str
     ) -> Response:
-        """``GET /view.json?model=NAME`` — build (or reuse) the per-
-        model view.json and serve it. Updates ``active_model`` on
-        success and broadcasts ``view_changed``.
+        """``GET /view.json?model=NAME``: build or reuse the model's view.json and serve
+        it.
 
-        Failures are structured JSON (rtl-buddy-view#130), never a
-        plain-text body: an unresolvable name is ``404 unknown_model``,
-        a renderer that refused to elaborate is ``500
-        view_generation_failed`` carrying the ``hier.log`` path and its
-        tail, because "which model, and what did the renderer say" is
-        the whole content of the SPA's failure placeholder.
+        On success sets the active model and broadcasts ``view_changed``. Failures are
+        structured JSON: 404 ``unknown_model`` for an unresolvable name, 500
+        ``view_generation_failed`` with the ``hier.log`` path and tail.
         """
 
         from . import model_discovery, view_builder
@@ -1328,8 +1084,7 @@ class ViewerServer:
                 model=requested,
             )
 
-        # Resolve to ModelConfig — honours ``--models-file`` pin if
-        # present so the start-time guard remains meaningful.
+        # Honours the ``--models-file`` pin.
         try:
             models_yaml, loader = model_discovery.resolve_model(
                 self.project_root,
@@ -1338,11 +1093,8 @@ class ViewerServer:
             )
             model_cfg = loader.get_model(requested)
         except FatalRtlBuddyError as exc:
-            # Every way a name fails to resolve to exactly one model
-            # lands here — absent, ambiguous across models.yaml files,
-            # or in a file that won't load. They are one state to the
-            # SPA ("this name will not give you a view"); the loader's
-            # own headline says which.
+            # Absent, ambiguous and unloadable names are one state to the SPA; the
+            # loader's headline says which.
             log_event(
                 logger,
                 logging.INFO,
@@ -1358,8 +1110,6 @@ class ViewerServer:
                 model=requested,
             )
 
-        # Per-model lock. Two concurrent ?model=requested requests
-        # serialise; one runs build_view_json, the other waits.
         lock = self._model_locks.setdefault(requested, asyncio.Lock())
         async with lock:
             try:
@@ -1370,11 +1120,8 @@ class ViewerServer:
                     axi_perf_source=self.axi_perf_source,
                 )
             except RtlBuddyError as exc:
-                # ``RtlBuddyError`` rather than ``FatalRtlBuddyError``
-                # so a ``FilelistError`` from the model filelist gets
-                # the same structured answer instead of escaping into
-                # the websockets layer's opaque fallback body (same
-                # reason the ``?test=`` path widened its catch).
+                # Catches ``RtlBuddyError`` so a ``FilelistError`` gets the same
+                # structured answer.
                 outcome = self._record_view_failure(
                     requested, self._view_generation_error(requested, exc)
                 )
@@ -1403,24 +1150,17 @@ class ViewerServer:
     async def _set_active_model(
         self, *, model_name: str, models_file: Path, view_path: Path
     ) -> None:
-        """Promote ``model_name`` to the active model: flip in-memory
-        state, update the discovery record, broadcast ``view_changed``.
-        Idempotent — calling with the already-active model is a no-op
-        beyond a redundant disk write.
+        """Make ``model_name`` the active model and broadcast ``view_changed``.
+        Idempotent.
         """
         from . import discovery
         from .protocol import Envelope, Kind, Origin, new_id
 
         self.active_model = model_name
-        # Switching to a DUT view clears any TB-mode selection so the
-        # next ``GET /view.json`` (no query) returns the DUT bytes and
-        # the SPA's segmented control reflects the actual mode.
+        # A DUT view clears any TB-mode selection.
         self.active_test = None
         if self.hub_server is not None:
             self.hub_server.state.active_model = model_name
-        # ``view_json_path`` now points at the per-model cache so
-        # ``GET /view.json`` (no query) returns the same bytes a
-        # ``?model=NAME`` request just received.
         self.view_json_path = view_path
 
         if self.project_root is not None:
@@ -1444,10 +1184,7 @@ class ViewerServer:
                     "model": model_name,
                     "models_file": str(models_file),
                     "view_url": f"/view.json?model={model_name}",
-                    # v1.1 protocol field (#99 / 6b): explicit
-                    # ``view_mode`` so SPA clients route the event
-                    # through the right action without inferring mode
-                    # from the URL. Legacy SPAs ignore unknown fields.
+                    # Explicit ``view_mode``; legacy SPAs ignore unknown fields.
                     "view_mode": "dut",
                 },
             )
@@ -1467,14 +1204,12 @@ class ViewerServer:
         requested: str,
         requested_tests_file: str | None = None,
     ) -> Response:
-        """``GET /view.json?test=NAME[&tests_file=PATH]`` — build (or
-        reuse) the TB-rooted view for the named test (#99 / 6b) and serve
-        it. Updates ``active_test`` + ``active_model`` on success and
-        broadcasts ``view_changed`` with ``view_mode='tb'``.
+        """``GET /view.json?test=NAME[&tests_file=PATH]``: build or reuse the TB-rooted
+        view and serve it.
 
-        ``tests_file`` (optional) pins the owning ``tests.yaml`` so a test
-        name shared across suites resolves unambiguously instead of
-        erroring with "matches multiple tests.yaml files".
+        On success sets the active test and model and broadcasts ``view_changed`` with
+        ``view_mode='tb'``. ``tests_file`` pins the owning ``tests.yaml`` when several
+        suites share the test name.
         """
 
         from . import test_discovery, view_builder
@@ -1491,9 +1226,7 @@ class ViewerServer:
         if requested_tests_file:
             candidate = Path(requested_tests_file).resolve()
             root = self.project_root.resolve()
-            # Confine to the hub's project_root — the param is
-            # client-supplied, so never let it read a tests.yaml outside
-            # the served tree.
+            # Client-supplied: confine to the hub's project_root.
             if not candidate.is_relative_to(root):
                 return _http_response(
                     connection,
@@ -1509,8 +1242,6 @@ class ViewerServer:
         except FatalRtlBuddyError as exc:
             return _http_response(connection, 400, str(exc).encode("utf-8"))
 
-        # Per-test lock funnels concurrent ?test=NAME requests through
-        # one build_view_json call (same shape as ``_model_locks``).
         lock = self._test_locks.setdefault(requested, asyncio.Lock())
         async with lock:
             try:
@@ -1520,17 +1251,13 @@ class ViewerServer:
                     model_cfg=test_cfg.get_model(),
                     axi_perf_source=self.axi_perf_source,
                     test_cfg=test_cfg,
-                    # The TB filelist entries are relative to the suite
-                    # dir (where ``tests.yaml`` lives), not the hub's
-                    # process cwd — anchor the merge there.
+                    # TB filelist entries are relative to the suite dir, not the hub's
+                    # cwd.
                     test_suite_dir=tests_yaml.parent,
                 )
             except RtlBuddyError as exc:
-                # ``RtlBuddyError`` (not just ``FatalRtlBuddyError``) so a
-                # ``FilelistError`` from the TB filelist merge surfaces as
-                # a clean 500 with the message rather than escaping to the
-                # websockets layer's opaque "Failed to open a WebSocket
-                # connection" fallback body.
+                # Catches ``RtlBuddyError`` so a ``FilelistError`` becomes a clean 500
+                # with its message.
                 log_event(
                     logger,
                     logging.ERROR,
@@ -1564,12 +1291,10 @@ class ViewerServer:
         tb_name: str,
         view_path: Path,
     ) -> None:
-        """Promote ``test_name`` to the active TB view: flip in-memory
-        state and broadcast ``view_changed`` with ``view_mode='tb'``.
+        """Make ``test_name`` the active TB view and broadcast ``view_changed`` with
+        ``view_mode='tb'``.
 
-        The active model is also updated (the test pins both) so the
-        DUT picker reflects what's resolved under the hood.
-        Idempotent.
+        Also sets the active model, since the test pins both. Idempotent.
         """
         from .protocol import Envelope, Kind, Origin, new_id
 
@@ -1577,7 +1302,6 @@ class ViewerServer:
         self.active_model = model_name
         if self.hub_server is not None:
             self.hub_server.state.active_model = model_name
-        # ``view_json_path`` now points at the per-(model, tb) cache.
         self.view_json_path = view_path
 
         if self.hub_server is not None:
@@ -1621,16 +1345,11 @@ class ViewerServer:
             content_type=_guess_content_type(target),
         )
 
-    # ------------------------------------------------------------------
     # WebSocket
-    # ------------------------------------------------------------------
 
     async def _handle_ws(self, ws: Any) -> None:
-        """Dispatch the WS handler by path.
-
-        ``/ws`` proxies hub envelopes (legacy). ``/api/events/sync``
-        joins the in-memory pub/sub broker for SPA↔notebook state
-        sync (Phase 3).
+        """Dispatch by path: ``/ws`` proxies hub envelopes, ``/api/events/sync`` joins
+        the broker.
         """
         raw_path = getattr(getattr(ws, "request", None), "path", "/ws")
         path, _, _ = raw_path.partition("?")
@@ -1640,12 +1359,10 @@ class ViewerServer:
         await self._handle_ws_envelope_proxy(ws)
 
     async def _handle_event_sync_ws(self, ws: Any) -> None:
-        """Bridge a WS client to the in-memory ``EventBroker``.
+        """Bridge a WebSocket client to the in-memory ``EventBroker``.
 
-        Every inbound message is broadcast to every other client.
-        The client's own outbound queue is drained by the writer
-        task. Disconnect cancels both tasks and removes the client
-        from the broker.
+        Every inbound message is broadcast to the other clients. Disconnect cancels the
+        reader and writer tasks and removes the client.
         """
         client_id, client = self._event_broker.add_client(name="ws")
 
@@ -1688,12 +1405,11 @@ class ViewerServer:
             self._event_broker.remove_client(client_id)
 
     async def _handle_ws_envelope_proxy(self, ws: Any) -> None:
-        """Proxy a WS connection to the hub's TCP port.
+        """Proxy a WebSocket connection to the hub's TCP port.
 
-        Each WebSocket message is one hub envelope. Inbound (WS → hub)
-        becomes a line-delimited write; outbound (hub → WS) splits on
-        newlines so a hub broadcast turns into one WS message per
-        envelope.
+        One WebSocket message is one hub envelope: inbound messages become
+        line-delimited writes, and outbound output is split on newlines into one message
+        per envelope.
         """
 
         try:
@@ -1761,12 +1477,7 @@ class ViewerServer:
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """``os.kill(pid, 0)`` raises ProcessLookupError when the pid no
-    longer exists and PermissionError when it exists but belongs to
-    a different user. We only spawn marimo as the hub's own uid, so
-    PermissionError shouldn't fire in practice; treat any signal
-    failure as "dead" to avoid sticky stale entries.
-    """
+    """Whether ``pid`` exists. Any signal failure counts as dead."""
     import os
     import signal
 
@@ -1774,21 +1485,13 @@ def _is_pid_alive(pid: int) -> bool:
         os.kill(pid, 0)
     except (ProcessLookupError, PermissionError, OSError):
         return False
-    # signal.SIG_DFL is just here to keep linters happy about the
-    # import being intentional even when only os.kill is used.
+    # Keeps the signal import in use.
     del signal
     return True
 
 
 def _terminate_pid(pid: int) -> None:
-    """Best-effort SIGTERM. Used during hub shutdown to clean up the
-    marimos we spawned for the SPA's "Open in marimo" flow.
-
-    No SIGKILL escalation, no wait — the hub is shutting down and
-    we don't want to block on a marimo process that's hung. The OS
-    will reap the orphan if SIGTERM fails to land within the kernel
-    grace period.
-    """
+    """Best-effort SIGTERM at hub shutdown, with no escalation or wait."""
     import os
     import signal
 
@@ -1805,7 +1508,7 @@ def _http_response(
     *,
     content_type: str = "application/octet-stream",
 ) -> Response:
-    """Build an HTTP response with arbitrary bytes (text or binary)."""
+    """Build an HTTP response from text or binary bytes."""
 
     headers = Headers()
     headers["Content-Type"] = content_type
@@ -1847,9 +1550,8 @@ _REASON_PHRASES = {
 }
 
 
-# The app pages, in their canonical spelling. Only HTML routes belong
-# here — the JSON and asset routes are fetched by code that spells them
-# exactly, and none of them was renamed.
+# App page routes in canonical spelling. HTML routes only; JSON and asset routes are
+# fetched by exact path.
 _CANONICAL_PAGE_ROUTES = frozenset(
     {
         landing_page.VIEW_PAGE_ROUTE,
@@ -1859,10 +1561,9 @@ _CANONICAL_PAGE_ROUTES = frozenset(
     }
 )
 
-# Pre-#423 page spellings → their canonical replacement. Page routes
-# only: the ``view`` hub-protocol origin, ``/view.json``, ``/graph.json``,
-# ``/cov.json`` and ``/phy.json`` are wire and data contracts and are NOT
-# in here.
+# Legacy page paths and their canonical replacements. Page routes only; ``/view.json``,
+# ``/graph.json``, ``/cov.json``, ``/phy.json`` and the ``view`` protocol origin are
+# unchanged.
 _LEGACY_PAGE_ROUTES = {
     landing_page.LEGACY_VIEW_PAGE_ROUTE: landing_page.VIEW_PAGE_ROUTE,
     graph_page.LEGACY_GRAPH_PAGE_ROUTE: graph_page.GRAPH_PAGE_ROUTE,
