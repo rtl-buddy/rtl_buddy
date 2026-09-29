@@ -21,7 +21,7 @@ def _walk_yaml_files(root: str, filename: str) -> list[str]:
 
 
 def discover_spec_configs(root: str) -> list[SpecConfig]:
-    """Walk `root` and load every specs.yaml with rtl-buddy-filetype: spec_config."""
+    """Load every specs.yaml under `root` whose filetype is spec_config."""
     configs = []
     for path in _walk_yaml_files(root, "specs.yaml"):
         try:
@@ -42,12 +42,12 @@ def discover_spec_configs(root: str) -> list[SpecConfig]:
 def all_spec_blocks(
     spec_configs: list[SpecConfig],
 ) -> list[tuple[SpecConfig, SpecBlock]]:
-    """Flatten all (SpecConfig, SpecBlock) pairs across all loaded spec configs."""
+    """Return every (SpecConfig, SpecBlock) pair across `spec_configs`."""
     return [(cfg, block) for cfg in spec_configs for block in cfg.get_blocks()]
 
 
 def discover_model_configs(root: str) -> list[tuple[str, ModelConfig]]:
-    """Walk `root`, load every models.yaml, return (models_yaml_path, ModelConfig) pairs."""
+    """Load every models.yaml under `root` as (models_yaml_path, ModelConfig) pairs."""
     results = []
     for path in _walk_yaml_files(root, "models.yaml"):
         try:
@@ -63,7 +63,7 @@ def discover_model_configs(root: str) -> list[tuple[str, ModelConfig]]:
 
 
 def discover_suite_tests(root: str) -> tuple[list[tuple[str, object]], list[str]]:
-    """Walk `root`, load every tests.yaml, return loaded tests and failed paths."""
+    """Load every tests.yaml under `root`; return the loaded tests and the paths that failed."""
     results = []
     failures = []
     for path in _walk_yaml_files(root, "tests.yaml"):
@@ -82,21 +82,11 @@ def discover_suite_tests(root: str) -> tuple[list[tuple[str, object]], list[str]
 def discover_fpv_verifications(
     project_root: str,
 ) -> tuple[list[tuple[str, object]], list[str]]:
-    """Every fpv run ``<project_root>/fpv_regression.yaml`` lists.
+    """Return the fpv runs listed in ``<project_root>/fpv_regression.yaml``, plus the paths that failed to load.
 
-    The formal flow's counterpart of :func:`discover_suite_tests`: an fpv
-    run may declare ``covers:`` exactly as a test does, so ``rb spec
-    check-coverage`` has to see the runs to count them. Discovery is by
-    the root-level filename convention — the same one the design
-    knowledge graph's flow provenance uses — because the suites live
-    under ``fpv/``, which no ``verif/`` walk reaches.
-
-    Returns ``(entries, failures)``: ``(fpv_yaml_path, FpvConfig)`` pairs
-    (duck-typing the ``(tests_yaml_path, TestConfig)`` shape
-    :func:`build_coverage_map` consumes — both carry ``name`` and
-    ``covers``), plus the paths that failed to load. A missing
-    ``fpv_regression.yaml`` is a project without a formal flow, not an
-    error.
+    Entries are ``(fpv_yaml_path, FpvConfig)`` pairs, shaped like the ``(tests_yaml_path, TestConfig)``
+    pairs :func:`build_coverage_map` consumes. A project without ``fpv_regression.yaml`` yields no
+    entries and no failures.
     """
     reg_path = os.path.join(str(project_root), "fpv_regression.yaml")
     if not os.path.isfile(reg_path):
@@ -122,10 +112,7 @@ def discover_fpv_verifications(
 def build_coverage_map(
     suite_tests: list[tuple[str, object]],
 ) -> dict[str, list[tuple[str, str]]]:
-    """
-    Build a map of coverage-item-id → [(tests_yaml_path, test_name), ...].
-    Only includes tests that have a non-empty `covers` list.
-    """
+    """Map each coverage-item id to the ``(tests_yaml_path, test_name)`` pairs that cover it."""
     cov_map: dict[str, list[tuple[str, str]]] = {}
     for tests_path, test in suite_tests:
         covers = getattr(test, "covers", None) or []
@@ -138,17 +125,12 @@ def build_spec_to_models_map(
     spec_configs: list[SpecConfig],
     model_entries: list[tuple[str, ModelConfig]],
 ) -> dict[str, list[tuple[str, str]]]:
-    """
-    Map "spec_path::block_name" → [(models_yaml_path, model_name), ...] for models
-    that reference a spec via their `spec:` field.
+    """Map ``"spec_path::block_name"`` to the ``(models_yaml_path, model_name)`` pairs whose `spec:` field references it.
 
-    A model is matched to a specific block by name (model.name == block.name).
-    If the referenced spec file has only one block, that block is used regardless of name.
+    A model matches the block with its own name; if the spec file has a single block, that block matches regardless of name.
     """
-    # build lookup: absolute spec path → SpecConfig
     spec_path_to_cfg = {cfg.get_path(): cfg for cfg in spec_configs}
 
-    # initialise result keyed by "path::block_name"
     result: dict[str, list[tuple[str, str]]] = {}
     for cfg in spec_configs:
         for block in cfg.get_blocks():
@@ -164,7 +146,6 @@ def build_spec_to_models_map(
             continue
 
         blocks = cfg.get_blocks()
-        # match by name; fall back to single-block file
         matched = cfg.get_block(model.name)
         if matched is None and len(blocks) == 1:
             matched = blocks[0]

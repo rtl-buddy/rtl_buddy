@@ -3,15 +3,11 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-surfer_wcp: WCP client for Surfer waveform viewer.
+"""WCP client for the Surfer waveform viewer.
 
-rtl-buddy acts as the WCP client (TCP listener). Surfer connects out using
---wcp-initiate <port>. After handshake, Surfer sends goto_declaration events
-when the user right-clicks a signal; rtl-buddy resolves the variable to a
-source file and opens it in the configured editor. If the event includes a
-cursor timestamp, the signal value is read from the FST/VCD waveform and
-printed to the console before the editor opens.
+rtl-buddy listens on TCP and Surfer connects with ``--wcp-initiate <port>``. On a
+``goto_declaration`` event rtl-buddy opens the variable's source in the configured editor,
+first printing the signal value at the cursor time when the event carries one.
 """
 
 import json
@@ -39,11 +35,6 @@ _WCP_VERSION = "0"  # Surfer only accepts version "0"
 _RECV_BUF = 4096
 
 
-# ---------------------------------------------------------------------------
-# Frame I/O helpers
-# ---------------------------------------------------------------------------
-
-
 class _FrameReader:
     """Read null-byte delimited JSON frames from a socket."""
 
@@ -66,25 +57,11 @@ def _send_frame(sock: socket.socket, obj: dict) -> None:
     sock.sendall(data)
 
 
-# ---------------------------------------------------------------------------
-# Waveform value reader
-# ---------------------------------------------------------------------------
-
-
 class WaveformValueReader:
-    """
-    Look up signal values at a specific FST timestamp using pywellen.
+    """Read signal values at a timestamp from a trace via the pywellen >=0.25 random-access API.
 
-    The pywellen Waveform is loaded lazily on the first query and reused.
-    A genuine lookup miss (signal absent from the dump, or no value yet at the
-    cursor time) returns None quietly. An *unexpected* pywellen error — e.g. an
-    API/version mismatch — is logged once at ERROR and then returns None, so a
-    broken trace reader surfaces loudly instead of silently blanking every
-    annotation.
-
-    Targets the pywellen >=0.25 random-access API: ``wf[path]`` resolves a
-    hierarchical name to a ``Var`` (or ``Scope``), ``Var.signal`` lazily loads
-    the signal body, and ``Signal.value_at(t)`` is an O(log n) point query.
+    The waveform loads lazily on the first query. A lookup miss returns None quietly; an
+    unexpected pywellen error is logged once at ERROR and also returns None.
     """
 
     def __init__(self, fst_path: str):
@@ -93,11 +70,9 @@ class WaveformValueReader:
         self._api_break_logged = False
 
     def check(self) -> None:
-        """Validate the trace path and the pywellen API surface up front.
+        """Raise FatalRtlBuddyError if the trace is missing or pywellen lacks the required API.
 
-        Cheap (no waveform load). Raises FatalRtlBuddyError so a missing
-        trace or an out-of-range pywellen fails loudly before Surfer starts,
-        instead of silently blanking annotations mid-run (#263).
+        Does not load the waveform.
         """
         if not os.path.isfile(self._fst_path):
             log_event(
@@ -115,7 +90,7 @@ class WaveformValueReader:
 
             if not os.path.isfile(self._fst_path):
                 raise FileNotFoundError(self._fst_path)
-            # pywellen emits terminal capability queries to stderr on load; suppress them
+            # pywellen writes terminal capability queries to stderr on load; suppress them.
             import sys
 
             old_stderr = sys.stderr
@@ -128,12 +103,7 @@ class WaveformValueReader:
         return self._waveform
 
     def _log_api_break(self, exc: Exception) -> None:
-        """Log an unexpected pywellen error once, loudly, then stay silent.
-
-        Separates a real trace-reader/API break from an ordinary
-        signal-not-found miss, so a future pywellen rewrite cannot blank
-        annotations without leaving a trace in the log.
-        """
+        """Log an unexpected pywellen error once, so an API break is distinguishable from a lookup miss."""
         if self._api_break_logged:
             return
         self._api_break_logged = True
@@ -146,16 +116,13 @@ class WaveformValueReader:
         )
 
     def _value_at(self, wf, path: str, timestamp: int) -> str | None:
-        """Resolve *path* and read its value at *timestamp*.
+        """Return the value of *path* at *timestamp*, or None.
 
-        Returns None for a genuine lookup miss (signal not in the dump, or no
-        value yet at *timestamp*); logs once and returns None for any other
-        (unexpected) pywellen error.
+        None means a lookup miss (signal absent, or no value yet at *timestamp*) or, after one
+        ERROR log, an unexpected pywellen error.
         """
         if timestamp < 0:
-            # Before time zero nothing has a value. pywellen takes an unsigned
-            # time and raises OverflowError on a negative one, which would
-            # otherwise be reported below as an API break.
+            # Before time zero nothing has a value; pywellen raises OverflowError on negative times.
             return None
         try:
             var = wf[path]
@@ -164,8 +131,7 @@ class WaveformValueReader:
         try:
             value = var.signal.value_at(timestamp)
         except Exception as exc:
-            # Not a lookup miss: the pywellen API itself misbehaved. Surface it
-            # loudly (once) rather than silently blanking the annotation.
+            # The pywellen API itself misbehaved; log it once instead of blanking the annotation.
             self._log_api_break(exc)
             return None
         return None if value is None else str(value)
@@ -188,8 +154,7 @@ class WaveformValueReader:
             item = wf[scope_path]
         except KeyError:
             return []
-        # A hierarchical path can resolve to a Var rather than a Scope; only a
-        # Scope exposes vars(). Guard so a non-scope path yields [], not an error.
+        # A path can resolve to a Var, which has no vars(); return [] for it.
         vars_of = getattr(item, "vars", None)
         if vars_of is None:
             return []
@@ -213,34 +178,24 @@ class WaveformValueReader:
         return out
 
 
-# ---------------------------------------------------------------------------
-# Scope annotation cache
-# ---------------------------------------------------------------------------
-
-
 def _instance_name(variable: str) -> str:
-    """Return the instance/scope component of a hierarchical signal path.
+    """Return the instance component of a hierarchical signal path.
 
-    'tb_top.i_prog_mon.clk' → 'i_prog_mon'
-    'tb_top.clk'            → 'tb_top'
+    'tb_top.i_prog_mon.clk' -> 'i_prog_mon'; 'tb_top.clk' -> 'tb_top'.
     """
     parts = variable.split(".")
     return parts[-2] if len(parts) >= 2 else parts[0]
 
 
 class ScopeAnnotationCache:
-    """
-    Builds and caches a mapping of {full_fst_path → (file, lineno)} for all
-    signals in a given FST scope, using a single bulk grep.
+    """Map full FST signal paths in one scope to (file, lineno) using a single bulk grep.
 
-    Built once per goto_declaration event; reused on every cursor_moved.
+    Built once per goto_declaration event and reused on every cursor_moved.
     """
 
     def __init__(
         self, scope_path: str, signals: list[tuple[str, str]], sv_files: list[str]
     ):
-        # signals: [(name, full_fst_path), ...]
-        # path_map: {full_fst_path: (filepath, lineno)}
         self.scope_path = scope_path
         self.path_map: dict[str, tuple[str, int]] = {}
         if signals and sv_files:
@@ -260,7 +215,7 @@ class ScopeAnnotationCache:
             )
         except (subprocess.TimeoutExpired, OSError):
             return
-        # file:line:content → first hit per signal name wins
+        # Format is file:line:content; the first hit per signal name wins.
         name_to_loc: dict[str, tuple[str, int]] = {}
         for line in result.stdout.splitlines():
             parts = line.split(":", 2)
@@ -277,7 +232,6 @@ class ScopeAnnotationCache:
                     r"\b" + re.escape(name) + r"\b", content
                 ):
                     name_to_loc[name] = (filepath, lineno)
-        # map full_fst_path → (filepath, lineno)
         for name, full_path in signals:
             if name in name_to_loc:
                 self.path_map[full_path] = name_to_loc[name]
@@ -287,18 +241,11 @@ class ScopeAnnotationCache:
         return [(p, f, lineno) for p, (f, lineno) in self.path_map.items()]
 
 
-# ---------------------------------------------------------------------------
-# Source resolver
-# ---------------------------------------------------------------------------
-
-
 class SurferSourceResolver:
-    """
-    Resolve a WCP variable path (e.g. "tb_top.i_dut_2.z_bus") to a source
-    file and line number by grepping the model's SV source files.
+    """Resolve a WCP variable path (e.g. "tb_top.i_dut_2.z_bus") to a source file and line.
 
-    Source files are derived from the test's ModelConfig filelist, not from
-    root_config, so the search is scoped to the relevant design block.
+    Searches the SV sources from the test's ModelConfig filelist, not root_config, so the search
+    is limited to the relevant design block.
     """
 
     def __init__(self, test_cfg: "TestConfig", suite_dir: str):
@@ -320,13 +267,11 @@ class SurferSourceResolver:
             name="wcp_resolver", model_cfg=model_cfg, output_path="/dev/null"
         )
 
-        # Model source files (resolved from models.yaml location)
         model_fpath = os.path.abspath(model_cfg.get_model_path() or ".")
         model_entries = fl._extract(
             model_cfg.get_filelist(), unroll=True, fpath=model_fpath
         )
 
-        # Testbench source files (resolved from suite dir)
         tb_fpath = os.path.join(suite_dir, "tests.yaml")
         tb_entries = fl._extract(tb_cfg.get_filelist(), unroll=True, fpath=tb_fpath)
 
@@ -338,16 +283,14 @@ class SurferSourceResolver:
         return sv_files
 
     def resolve(self, variable: str) -> tuple[str, int] | None:
-        """
-        Resolve a hierarchical variable path to (filepath, lineno).
+        """Resolve a hierarchical variable path to (filepath, lineno).
 
-        Tries the rightmost component (signal name) first, then the second-to-last
-        (instance/module component) as a fallback.
+        Tries the signal name (last component) first, then the instance component before it.
         """
         parts = variable.split(".")
         candidates = [parts[-1]]
         if len(parts) >= 2:
-            # Strip trailing digits from instance name to approximate module name
+            # Trailing digits are stripped from the instance name to approximate the module name.
             mod_candidate = re.sub(r"_\d+$", "", parts[-2])
             if mod_candidate not in candidates:
                 candidates.append(mod_candidate)
@@ -398,11 +341,6 @@ class SurferSourceResolver:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Editor launcher
-# ---------------------------------------------------------------------------
-
-
 class EditorLauncher:
     """Open a source file at a given line in the configured editor."""
 
@@ -428,7 +366,7 @@ class EditorLauncher:
         cmd = self._surfer_cfg.format_editor_cmd(filepath, lineno)
         ctrl_sock = self._surfer_cfg.resolved_ctrl_sock
         if sock:
-            # First launch: tell nvim to listen so future calls can reuse it
+            # First launch: start nvim listening so later calls can reuse it.
             os.makedirs(os.path.dirname(sock), exist_ok=True)
             cmd = cmd + f" --listen {shlex.quote(sock)}"
 
@@ -473,7 +411,7 @@ class EditorLauncher:
     def _nvim_exec_lua(sock_path: str, lua: str) -> None:
         """Execute a Lua chunk in a running nvim silently via --remote-expr nvim_exec2."""
         expanded = os.path.expanduser(sock_path)
-        # Wrap in a double-quoted Vimscript string; escape \ and " for that context.
+        # Wrap in a double-quoted Vimscript string, escaping \ and ".
         vs = lua.replace("\\", "\\\\").replace('"', '\\"')
         subprocess.Popen(
             [
@@ -496,7 +434,7 @@ class EditorLauncher:
         vim_path = (
             filepath.replace("\\", "\\\\").replace(" ", "\\ ").replace('"', '\\"')
         )
-        # File navigation still needs --remote-send (no expr equivalent for :e)
+        # :e has no expr equivalent, so navigation uses --remote-send.
         subprocess.Popen(
             [
                 "nvim",
@@ -540,8 +478,7 @@ class EditorLauncher:
     ) -> None:
         """Push virtual text for all scope signals silently.
 
-        Each annotation is (lineno, value, filepath). Extmarks are set in the
-        correct buffer for each file; lines out of range are silently skipped.
+        Each annotation is (lineno, value, filepath). Out-of-range lines are skipped.
         """
         entries = []
         for lineno, value, filepath in annotations:
@@ -605,21 +542,12 @@ class EditorLauncher:
         subprocess.Popen(["osascript", "-e", applescript])
 
 
-# ---------------------------------------------------------------------------
-# Wave control server (nvim → rtl-buddy → Surfer)
-# ---------------------------------------------------------------------------
-
-
 class WaveControlServer:
-    """
-    Unix-domain socket server that lets external tools (e.g. nvim) send
-    commands to a running rb wave session.
+    """Unix-domain socket server that lets external tools (e.g. nvim) control a running rb wave session.
 
-    Accepts newline-delimited JSON on the socket path configured by ctrl-sock.
-    Supported commands:
-      {"cmd": "add_variable", "name": "<signal_name>"}
-        — resolves the signal against the active scope cache and adds it to
-          Surfer's waveform view via the live WCP connection.
+    Accepts newline-delimited JSON on the ``ctrl-sock`` path. Supported command:
+    ``{"cmd": "add_variable", "name": "<signal_name>"}`` resolves the signal against the active scope
+    cache and adds it to Surfer over the WCP connection.
     """
 
     def __init__(self, sock_path: str, listener: "SurferWcpListener"):
@@ -684,16 +612,11 @@ class WaveControlServer:
                     self._listener.add_variable_to_surfer(name)
 
 
-# ---------------------------------------------------------------------------
-# WCP listener (rtl-buddy is the WCP client; Surfer connects via --wcp-initiate)
-# ---------------------------------------------------------------------------
-
-
 class SurferWcpListener:
-    """
-    TCP listener that accepts a single connection from Surfer (--wcp-initiate).
-    Performs the WCP handshake then dispatches goto_declaration events to the
-    source resolver and editor launcher.
+    """TCP listener for a single Surfer connection (``--wcp-initiate``).
+
+    Performs the WCP handshake, then dispatches goto_declaration events to the source resolver and
+    editor launcher.
     """
 
     def __init__(
@@ -720,23 +643,11 @@ class SurferWcpListener:
             None  # live connection to Surfer for sending commands
         )
         self.event_observer: "Callable[[str, dict], None] | None" = None
-        """Optional callback invoked for relevant WCP events. The hub-bridge
-        adapter sets this; the listener stays free of hub awareness."""
+        """Optional callback for relevant WCP events; the hub-bridge adapter sets it."""
 
-        # Ordered list of pending reply waiters. WCP has no request IDs, so
-        # the only correlation guarantee is "responses arrive in send order".
-        # A caller registers a waiter right after sending a command; the WCP
-        # reader thread fills the first compatible waiter when a frame lands.
-        #
-        # Two frame kinds resolve a waiter:
-        #   * a ``response`` frame whose ``command`` is in the waiter's
-        #     ``commands`` set (surfer tags named responses with the command
-        #     name; shared acks carry ``command == "ack"``), or
-        #   * an ``error`` frame, which has no command to correlate on — it
-        #     fills the first waiter that opted into errors (``accept_error``).
-        # Because hub-driven commands are handled serially on the bridge
-        # reader thread, at most one error-accepting waiter is outstanding at
-        # a time in practice, so first-match is the right correlation.
+        # WCP has no request IDs, so replies are matched in send order. A ``response`` frame fills the
+        # first waiter whose ``commands`` contains its ``command``. An ``error`` frame carries no command
+        # and fills the first waiter with ``accept_error``.
         self._waiters: list[dict] = []
         self._waiters_lock = threading.Lock()
 
@@ -761,7 +672,7 @@ class SurferWcpListener:
 
     def _wait_waiter(self, waiter: dict, timeout: float) -> dict | None:
         if not waiter["event"].wait(timeout):
-            # Reclaim the slot so a late frame doesn't fill a stale waiter.
+            # Reclaim the slot so a late frame does not fill a stale waiter.
             with self._waiters_lock:
                 try:
                     self._waiters.remove(waiter)
@@ -773,12 +684,9 @@ class SurferWcpListener:
     def await_response(self, command: str, timeout: float = 2.0) -> dict | None:
         """Wait for the next response frame whose ``command`` matches.
 
-        The caller is responsible for calling this *immediately after*
-        sending the matching WCP command so the send-order correlation
-        across callers stays consistent. Returns the response dict (with
-        ``command`` and any payload fields), or ``None`` on timeout. Error
-        frames do not resolve this waiter — use :meth:`await_reply` when the
-        caller wants to surface surfer-side rejections.
+        Call immediately after sending the matching command so send-order correlation holds.
+        Returns the response dict, or None on timeout. Error frames do not resolve this waiter;
+        use :meth:`await_reply` to see surfer-side rejections.
         """
         waiter = self._register_waiter({command}, accept_error=False)
         result = self._wait_waiter(waiter, timeout)
@@ -789,12 +697,10 @@ class SurferWcpListener:
     def await_reply(
         self, commands: "set[str]", timeout: float = 2.0
     ) -> "tuple[str, dict] | None":
-        """Wait for the next response (``command`` in *commands*) or error.
+        """Wait for the next response (``command`` in *commands*) or error frame.
 
-        Returns ``("response", msg)`` on a matching response frame,
-        ``("error", msg)`` when surfer rejects the command, or ``None`` on
-        timeout. The error case has no command correlation (WCP errors carry
-        no command field), so this relies on commands being driven serially.
+        Returns ``("response", msg)``, ``("error", msg)`` when surfer rejects the command, or None
+        on timeout. Errors carry no command, so this relies on commands being driven serially.
         """
         waiter = self._register_waiter(set(commands), accept_error=True)
         result = self._wait_waiter(waiter, timeout)
@@ -840,13 +746,15 @@ class SurferWcpListener:
             {"type": "command", "command": "add_variables", "variables": [full_path]}
         )
         log_event(logger, logging.INFO, "wcp.add_variable", name=name, path=full_path)
-        # Re-annotate all scope signals so existing ones aren't wiped
+        # Re-annotate all scope signals so existing ones are not wiped.
         if self._last_timestamp is not None and self._value_reader is not None:
             self._push_scope_values(self._last_timestamp)
 
     def bind(self) -> int:
-        """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
-        Call before launching Surfer so the port is ready when Surfer connects."""
+        """Bind the TCP socket and return its port (OS-assigned when wcp_port=0).
+
+        Call before launching Surfer.
+        """
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind(("127.0.0.1", self._surfer_cfg.wcp_port))
@@ -873,9 +781,7 @@ class SurferWcpListener:
                     logger, logging.WARNING, "wcp.connection_lost", reason=str(exc)
                 )
             except FatalRtlBuddyError as exc:
-                # The lazy waveform open can fail here (present-but-corrupt
-                # trace) — tear down gracefully instead of dying with a
-                # listener-thread traceback (#263).
+                # The lazy waveform open can fail on a corrupt trace; shut down instead of raising in the thread.
                 log_event(logger, logging.ERROR, "wcp.fatal_error", error=str(exc))
                 self.stop()
             finally:
@@ -893,9 +799,7 @@ class SurferWcpListener:
         self._wcp_conn = conn
         reader = _FrameReader(conn)
 
-        # Send our greeting first — Surfer (WCP server) waits for the client greeting
-        # before sending its own. Surfer then sets goto_declaration capability and
-        # shows "Go to declaration" in the right-click menu.
+        # Surfer waits for the client greeting before sending its own.
         _send_frame(
             conn,
             {
@@ -905,12 +809,10 @@ class SurferWcpListener:
             },
         )
 
-        # Receive Surfer's greeting in response
         greeting = reader.read()
         if greeting.get("type") != "greeting":
             raise ConnectionError(f"Expected greeting, got: {greeting.get('type')}")
 
-        # Event loop
         while not self._stop.is_set():
             msg = reader.read()
             if msg.get("type") == "event" and msg.get("event") == "goto_declaration":
@@ -997,7 +899,7 @@ class SurferWcpListener:
         if self._scope_cache is not None:
             self._push_scope_values(timestamp)
         elif self._last_decl is not None:
-            # fallback: single-signal update until cache is ready
+            # Single-signal update until the cache is ready.
             variable, lineno = self._last_decl
             raw = self._value_reader.get_value(variable, timestamp)
             if raw is not None:
@@ -1036,7 +938,7 @@ class SurferWcpListener:
         sock = self._surfer_cfg.resolved_editor_sock
         if not sock:
             return
-        # On first goto_declaration nvim is just starting; wait up to 5s for the socket.
+        # nvim is still starting on the first goto_declaration; wait up to 5s for its socket.
         if not EditorLauncher._nvim_socket_alive(sock):
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
@@ -1050,8 +952,7 @@ class SurferWcpListener:
         values = self._value_reader.get_values_bulk(full_paths, timestamp)
         inst = self._scope_cache.scope_path.split(".")[-1]
 
-        # Group signals by source line; two signals on the same line are combined
-        # into a single annotation: "a=1'b0  b=1'b1 [inst]"
+        # Signals on the same source line share one annotation: "a=1'b0  b=1'b1 [inst]".
         line_groups: dict[tuple[str, int], list[tuple[str, str]]] = {}
         for full_path, filepath, lineno in self._scope_cache.items():
             if full_path in values:
