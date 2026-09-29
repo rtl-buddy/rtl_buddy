@@ -1,24 +1,6 @@
-"""``<project_root>/.rtl-buddy/hub.json`` — per-project hub discovery.
+"""Per-project hub discovery through ``<project_root>/.rtl-buddy/hub.json``.
 
-Lifecycle in plain English (matches §4.1, §4.2 of the protocol spec):
-
-1. **Startup**: the hub writes a ``HubRecord`` to disk containing its
-   PID, TCP listen address, ``rtl_buddy`` version, and an ISO-8601
-   start timestamp. The file is per-project (in
-   ``<project_root>/.rtl-buddy/``); there is no user-global fallback.
-2. **Discovery**: clients walk up from their CWD until they find the
-   ``.rtl-buddy/hub.json`` and connect. The
-   ``$RTL_BUDDY_HUB`` env var overrides the file lookup (useful for
-   tests, scripted launches, and child processes the hub spawns).
-3. **Shutdown**: on clean exit the hub deletes the file *only if its
-   PID still matches* — that way a crashed-and-replaced hub doesn't
-   clobber the live one's file.
-4. **Conflict detection**: starting a second hub for the same project
-   fails fast (the in-memory record points at a still-live PID).
-
-The module is small on purpose — discovery is the one piece of
-hub-state every adapter touches, so it has to be obvious to read and
-hard to corrupt.
+The hub writes the file at startup and deletes it on clean exit only if the PID still matches. Clients walk up from the current directory to find it; ``$RTL_BUDDY_HUB`` overrides the lookup. A second hub cannot start while the recorded PID is live.
 """
 
 from __future__ import annotations
@@ -39,11 +21,11 @@ ENV_OVERRIDE = "RTL_BUDDY_HUB"
 
 
 class HubDiscoveryError(Exception):
-    """Raised when the on-disk discovery file is unreadable or malformed."""
+    """``hub.json`` is unreadable or malformed."""
 
 
 class HubAlreadyRunningError(HubDiscoveryError):
-    """Raised when a hub start is attempted while another is live for the project."""
+    """Another hub is already live for the project."""
 
     def __init__(self, pid: int, path: Path) -> None:
         super().__init__(
@@ -58,17 +40,7 @@ class HubAlreadyRunningError(HubDiscoveryError):
 class HubRecord:
     """The contents of ``hub.json``.
 
-    Kept intentionally narrow; anything that's not needed by a client
-    to *connect* belongs in the runtime log, not in the discovery file.
-
-    ``http_port`` is present only when the hub was started with
-    ``--serve-viewer``; it carries the bound port of the viewer HTTP+WS
-    layer so users can ``open http://localhost:<http_port>/``.
-
-    ``active_model`` mirrors the in-process active model on the hub —
-    the one serving ``GET /view.json`` with no query. Set at start time
-    by ``rb hub start --model``, updated when the SPA flips via
-    ``?model=NAME``. ``None`` until the first model loads.
+    ``http_port`` is set only when the hub serves the viewer. ``active_model`` is the model served by ``GET /view.json`` without a query; it is ``None`` until a model loads.
     """
 
     v: int
@@ -82,8 +54,7 @@ class HubRecord:
 
     def to_dict(self) -> dict[str, object]:
         out = asdict(self)
-        # Keep optional fields off the wire when absent so older readers
-        # don't trip on unexpected keys.
+        # Absent optional fields are omitted from the file.
         if self.http_port is None:
             out.pop("http_port", None)
         if self.active_model is None:
@@ -92,7 +63,7 @@ class HubRecord:
 
 
 def hub_dir(project_root: Path) -> Path:
-    """Return ``<project_root>/.rtl-buddy/`` (does not create it)."""
+    """Return ``<project_root>/.rtl-buddy/`` without creating it."""
 
     return project_root / HUB_DIR_NAME
 
@@ -120,11 +91,9 @@ def write_record(
     http_port: int | None = None,
     active_model: str | None = None,
 ) -> HubRecord:
-    """Write ``hub.json`` after enforcing the one-hub-per-project rule.
+    """Write ``hub.json`` atomically.
 
-    Uses an atomic ``rename`` so a reader will never see a half-written
-    file. Raises :class:`HubAlreadyRunningError` if a live record already
-    exists for this project.
+    Raises :class:`HubAlreadyRunningError` if a live record already exists for the project.
     """
 
     ensure_hub_dir(project_root)
@@ -152,15 +121,9 @@ def write_record(
 
 
 def update_active_model(project_root: Path, active_model: str | None) -> bool:
-    """Rewrite ``hub.json`` in place with a new ``active_model`` value.
+    """Set ``active_model`` in ``hub.json``, keeping the other fields.
 
-    Used by the viewer HTTP layer on ``?model=`` switch. Reads the
-    existing record (keeping every other field intact), atomic-replaces
-    the file, returns ``True`` on success / ``False`` when there's no
-    discovery file to update (e.g. hub started without writing one).
-
-    Does not validate liveness — the caller is the live hub process by
-    definition.
+    Returns ``False`` when there is no discovery file. Does not check liveness.
     """
 
     target = discovery_path(project_root)
@@ -190,12 +153,7 @@ def read_record(project_root: Path) -> HubRecord | None:
 
 
 def delete_record_if_owner(project_root: Path, *, expected_pid: int) -> bool:
-    """Remove ``hub.json`` iff its ``pid`` matches ``expected_pid``.
-
-    Returns ``True`` when the file was deleted. The PID check prevents
-    a stale shutdown handler from clobbering a fresh hub that grabbed
-    the file in between (the "crashed and replaced" race).
-    """
+    """Remove ``hub.json`` only if its ``pid`` is ``expected_pid``. Returns whether it was deleted."""
 
     target = discovery_path(project_root)
     current = _read_record_if_present(target)
@@ -209,22 +167,13 @@ def delete_record_if_owner(project_root: Path, *, expected_pid: int) -> bool:
 
 
 def env_override() -> str | None:
-    """Return ``$RTL_BUDDY_HUB`` if set, else ``None``.
-
-    The override is a literal ``host:port`` string; callers parse it.
-    """
+    """Return the ``$RTL_BUDDY_HUB`` ``host:port`` string, or ``None`` when unset."""
 
     return os.environ.get(ENV_OVERRIDE) or None
 
 
 def find_project_root_with_hub(start: Path) -> Path | None:
-    """Walk up from ``start`` looking for ``.rtl-buddy/hub.json``.
-
-    Used by clients (the nvim plugin, ``rb wave``, the CLI's
-    ``rb hub status`` outside the start directory) to locate the hub
-    without a hard-coded project path. Returns the directory containing
-    ``.rtl-buddy/`` or ``None``.
-    """
+    """Walk up from ``start`` and return the first directory containing ``.rtl-buddy/hub.json``, or ``None``."""
 
     candidate = start.resolve()
     while True:
@@ -272,13 +221,7 @@ def _read_record_if_present(path: Path) -> HubRecord | None:
 
 
 def _pid_is_live(pid: int) -> bool:
-    """Return ``True`` if ``pid`` names a live process owned by anyone.
-
-    Uses ``os.kill(pid, 0)``: signal 0 doesn't actually deliver, but
-    POSIX requires the caller to have permission to signal the target
-    (or get EPERM, which still confirms liveness). Windows would need a
-    different path, but the hub is POSIX-only in v1.
-    """
+    """Return whether ``pid`` is a live process, including one owned by another user (POSIX only)."""
 
     if pid <= 0:
         return False
@@ -293,12 +236,7 @@ def _pid_is_live(pid: int) -> bool:
 
 
 def signal_process(pid: int, *, sig: int = signal_module.SIGTERM) -> None:
-    """Send ``sig`` to ``pid``.
-
-    Thin wrapper kept here so ``rb hub stop`` doesn't have to import
-    ``signal`` directly; the discovery module owns the
-    "talk to the running hub by PID" concern.
-    """
+    """Send ``sig`` to ``pid``."""
 
     os.kill(pid, sig)
 

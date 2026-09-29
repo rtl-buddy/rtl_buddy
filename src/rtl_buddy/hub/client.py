@@ -1,27 +1,6 @@
-"""Reusable hub TCP client.
+"""Synchronous TCP client for the hub protocol, used by ``rb hub send`` and other short-lived peers.
 
-Shared between :mod:`rtl_buddy.tools.wave_hub_bridge` (which keeps its
-own thin layer for the wave-side WCP observer) and the ``rb hub send``
-CLI in :mod:`rtl_buddy.hub.send`. Any future programmatic peer
-(scripts, agents, CI guardrails) should reach for :class:`HubClient`
-rather than reach into the wave bridge or hand-roll envelopes.
-
-Why sync I/O: the consumers here are short-lived CLI calls and
-sync-threaded utilities like the wave adapter. Embedding asyncio for a
-single one-shot envelope round-trip adds plumbing nobody needs. The
-asyncio server in :mod:`rtl_buddy.hub.server` is its own world; this
-module talks to it over TCP exactly the way the SPA's WebSocket layer
-does.
-
-Discovery follows §4.2 of the protocol spec:
-
-1. ``$RTL_BUDDY_HUB`` env override (``host:port``)
-2. ``.rtl-buddy/hub.json`` walking up from CWD (or an explicit
-   ``project_root`` argument)
-
-When no hub is reachable, :func:`HubClient.connect` raises
-:class:`HubUnavailable` — callers decide whether that's fatal or a
-graceful "no hub, no-op" path.
+Discovery order: the ``$RTL_BUDDY_HUB`` override (``host:port``), then ``.rtl-buddy/hub.json`` found by walking up from the current directory or ``project_root``.
 """
 
 from __future__ import annotations
@@ -53,35 +32,32 @@ logger = logging.getLogger(__name__)
 
 
 HELLO_TIMEOUT_SECONDS = 2.0
-"""Read deadline for the welcome reply during connect."""
+"""Read deadline for the welcome reply."""
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
-"""Block this long on a response before timing out the request."""
+"""Default seconds to wait for a response."""
 
 
 class HubUnavailable(RuntimeError):
-    """No live hub for the current project / no override env var."""
+    """No live hub was found for the project."""
 
 
 class HubClientError(RuntimeError):
-    """Handshake failure or transport-level error after connect."""
+    """Handshake or transport failure."""
 
 
 @dataclass(frozen=True)
 class Welcome:
-    """Decoded handshake response from the hub."""
+    """Decoded welcome reply."""
 
     server_version: str
     registered_clients: tuple[str, ...]
 
 
 class HubClient:
-    """Sync TCP client speaking the v1 hub protocol.
+    """Sync TCP client for the v1 hub protocol.
 
-    Construct via :meth:`connect` (or the :func:`connect` context
-    manager); the reader thread starts automatically. Send events with
-    :meth:`emit`, request/response with :meth:`request`, and observe
-    inbound events with :meth:`drain_events` / :meth:`wait_event`.
+    Create it with :meth:`connect` or the :func:`connect` context manager. Send events with :meth:`emit`, requests with :meth:`request`, and read inbound events with :meth:`drain_events` or :meth:`wait_event`.
     """
 
     def __init__(self, sock: socket.socket) -> None:
@@ -111,10 +87,9 @@ class HubClient:
         client_version: str = "0.1.0",
         capabilities: tuple[str, ...] = (),
     ) -> "HubClient":
-        """Discover, connect, and complete the hello/welcome handshake.
+        """Find the hub, connect and complete the hello/welcome handshake.
 
-        Raises :class:`HubUnavailable` if no hub is reachable, or
-        :class:`HubClientError` on a handshake-level failure.
+        Raises :class:`HubUnavailable` if no hub is found, or :class:`HubClientError` on a connect or handshake failure.
         """
 
         addr = _discover_hub_addr(project_root=project_root)
@@ -147,7 +122,7 @@ class HubClient:
         return client
 
     def close(self) -> None:
-        """Send a polite ``bye`` (best effort), close the socket, join."""
+        """Send a best-effort ``bye``, close the socket and stop the reader."""
 
         if self._stop.is_set():
             return
@@ -189,7 +164,7 @@ class HubClient:
     def emit(
         self, type_: str, payload: dict[str, Any], *, origin: Origin = Origin.CLI
     ) -> str:
-        """Fire-and-forget an event. Returns the new envelope id."""
+        """Send an event without waiting for a reply and return its envelope id."""
 
         env = Envelope(
             origin=origin,
@@ -209,11 +184,9 @@ class HubClient:
         origin: Origin = Origin.CLI,
         timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> Envelope:
-        """Send a request, block for the matching response/error.
+        """Send a request and block for the reply.
 
-        Returns the response envelope on success, or an envelope with
-        ``kind=Kind.ERROR`` carrying the hub's error payload. Raises
-        :class:`TimeoutError` if no reply arrives within ``timeout``.
+        Returns the response envelope, or an envelope with ``kind=Kind.ERROR`` carrying the hub's error. Raises :class:`TimeoutError` if no reply arrives within ``timeout`` seconds.
         """
 
         env = Envelope(
@@ -232,7 +205,6 @@ class HubClient:
                 )
                 if reply is not None:
                     return reply
-            # Wait for the reader to signal a new reply (or timeout).
             self._reply_event.wait(timeout=max(0.0, deadline - time.time()))
             self._reply_event.clear()
         raise TimeoutError(f"no reply to {type_!r} within {timeout}s")
@@ -242,7 +214,7 @@ class HubClient:
     # ------------------------------------------------------------------
 
     def drain_events(self) -> list[Envelope]:
-        """Return + clear every event received since the last drain."""
+        """Return and clear the events received since the last drain."""
 
         with self._lock:
             out = list(self._events)
@@ -250,7 +222,7 @@ class HubClient:
             return out
 
     def wait_event(self, type_: str, *, timeout: float = 2.0) -> Envelope:
-        """Block until an event matching ``type_`` is observed."""
+        """Block until an event of ``type_`` arrives and return it. Raises :class:`TimeoutError`."""
 
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -362,7 +334,7 @@ class HubClient:
 
 
 def _discover_hub_addr(*, project_root: Path | None) -> tuple[str, int] | None:
-    """Resolve hub address per §4.2: env override, then per-project."""
+    """Return the hub ``(host, port)`` from ``$RTL_BUDDY_HUB`` or the project's hub record, or ``None``."""
 
     env = discovery.env_override()
     if env:
@@ -407,7 +379,7 @@ def _discover_hub_addr(*, project_root: Path | None) -> tuple[str, int] | None:
 
 @contextmanager
 def connect(**kwargs: Any) -> Iterator[HubClient]:
-    """Shortcut: ``with hub.client.connect() as h: h.emit(...)``."""
+    """Context manager around :meth:`HubClient.connect` that closes the client on exit."""
 
     client = HubClient.connect(**kwargs)
     try:

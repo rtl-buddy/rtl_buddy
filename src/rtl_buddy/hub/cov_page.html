@@ -7,20 +7,10 @@
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
   <!--
-    Served by rtl_buddy.hub.cov_page at GET /cov (rtl-buddy/rtl_buddy#400).
-
-    Offline on purpose: no CDN, no web font, no build step — the hub is
-    routinely run on machines with no route off localhost. The one
-    stylesheet link is same-origin (/hub/theme.css, served by this same
-    hub process, rtl-buddy/rtl_buddy#398); the block below repeats only
-    the tokens the page cannot render without, as a fallback for a sheet
-    that 404s (an old hub serving a new pane).
-
-    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
-    select :root, so they tie on specificity and document order decides
-    — a fallback placed after the link would permanently shadow the
-    sheet, including its @media (prefers-color-scheme: dark) block, and
-    every later palette edit would silently stop reaching this pane.
+    Served by rtl_buddy.hub.cov_page at GET /cov. Loads no external resources.
+    The fallback tokens below repeat the ones the page cannot render without, in case
+    /hub/theme.css 404s. They must stay BEFORE the sheet link: both select :root, so a
+    later block would override the sheet, including its dark-mode block.
   -->
   <style>
     :root {
@@ -37,11 +27,7 @@
       --ok:          #16a34a;
       --warn:        #b45309;
       --err:         #dc2626;
-      /* Coverage ramp: the continuous fill is
-         hsl(pct * 1.2, var(--tint-s), var(--cov-l)), so these are the
-         tokens that have to survive a missing sheet or every tint goes
-         black. Shared with the graph pane since #402 — the saturation
-         used to be page-local here, which is one ramp in two places. */
+      /* Coverage ramp: the fill is hsl(pct * 1.2, --tint-s, --cov-l), so these must survive a missing sheet. */
       --tint-s:      70%;
       --cov-l:       82%;
       --cov-none:    #e5e7eb;
@@ -55,23 +41,18 @@
   </style>
   <link rel="stylesheet" href="/hub/theme.css">
   <style>
-    /* Page-local derivations of the shared tokens. Nothing here may
-       re-declare a sheet token: both blocks select :root, so a
-       re-declaration after the link would out-rank the sheet. */
+    /* Page-local derivations of the shared tokens. */
+    /* Do not re-declare a sheet token here: both blocks select :root, so a later one would out-rank the sheet. */
     :root {
       --gutter:   3.2rem; /* line-number column */
       --markcol:  8rem;   /* hard cap on ONE metric column */
-      /* The two ends of the same ramp `.tint` uses, named so a bit cell
-         can paint one direction per half. Derived from --cov-l rather
-         than taken from the sheet's --cov-0/--cov-100 for the reason
-         the fallback block exists: --cov-l is the token the page
-         repeats, so these still track the theme when the sheet 404s. */
+      /* Ends of the .tint ramp, one per half of a bit cell. */
+      /* Derived from --cov-l so they still track the theme when the sheet 404s. */
       --tgl-hit:  hsl(120, var(--tint-s), var(--cov-l));
       --tgl-miss: hsl(0,   var(--tint-s), var(--cov-l));
     }
     * { box-sizing: border-box; }
-    /* The panes below set `display` on the very elements the script
-       toggles with `hidden`, and an id beats the UA sheet's [hidden]. */
+    /* [hidden] must beat the display set on the ids below. */
     [hidden] { display: none !important; }
     html, body { height: 100%; margin: 0; }
     body {
@@ -117,8 +98,7 @@
       width: 24rem; flex: none; border-right: 1px solid var(--line);
       background: var(--panel); overflow: auto; padding: .6rem .5rem;
     }
-    /* #content no longer scrolls as a whole: the file view owns its own
-       scroller so the docked detail panel can sit outside it. */
+    /* The file view owns its scroller so the docked detail panel can sit outside it. */
     section#content {
       flex: 1 1 auto; min-width: 0; min-height: 0; position: relative;
       display: flex; flex-direction: column;
@@ -198,8 +178,7 @@
       color: var(--fg-muted); white-space: nowrap;
     }
     .pill.hot { border-color: var(--accent); color: var(--accent); }
-    /* The elaboration lens: buttons joined into one strip, so it reads
-       as one choice with one answer rather than as three actions. */
+    /* Elaboration lens: buttons joined into one strip, read as one choice. */
     .seg { display: inline-flex; }
     .seg button {
       padding: 0 .4rem; font-size: var(--fs-small); color: var(--fg-muted);
@@ -217,20 +196,15 @@
       margin: .45rem 0 .2rem; font-size: var(--fs-small);
     }
     .elab-head:first-child { margin-top: 0; }
-    /* A clickable pill answers on hover the way the buttons and the
-       switcher links do, so "this does something" is visible before
-       the click rather than after it. */
+    /* Clickable pills show hover feedback like the buttons and switcher links. */
     .pill.act { cursor: pointer; }
     .pill.act:hover { border-color: var(--accent); color: var(--accent); }
-    /* The cross-app row in the file header: the pane's own buttons, one
-       size down, because they are about the open file rather than about
-       the pane. */
+    /* Cross-app row in the file header: smaller buttons, since they act on the open file. */
     .actions { display: inline-flex; gap: .25rem; flex-wrap: wrap; }
     .actions button { font-size: var(--fs-small); padding: .1rem .4rem; }
     button:disabled { opacity: .45; cursor: default; }
     button:disabled:hover { border-color: var(--line); }
-    /* Pinned first row of the tests table: the merged view is a
-       destination, not one of the tests. */
+    /* Pinned first row of the tests table: the merged view. */
     tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }
     tr.row.all-tests td:first-child { font-style: italic; }
     table#src { font-size: var(--fs-base); }
@@ -243,21 +217,14 @@
     table#src td.marks { width: 1%; white-space: nowrap; }
     table#src td.code { width: 100%; overflow-wrap: normal; }
     table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
-    /* Every metric gets a column, and every column is capped and
-       clipped on purpose. One 32-bit bus declaration is 64 toggle
-       points on a single line; rendering a chip each pushed the code
-       column off the right of the screen. The cap lives on an inner
-       block because a max-width on a `td` is advisory in auto table
-       layout — as an inner block's it caps the column's intrinsic
-       contribution, so nothing in a cell can widen it. */
+    /* Every metric gets a capped, clipped column: one 32-bit bus is 64 toggle points and would push the code off screen. */
+    /* The cap is on an inner block because max-width on a td is advisory in auto table layout. */
     table#src td.marks { text-align: right; padding: 0 .3rem; }
     table#src td.marks .marks-in {
       display: flex; gap: .15rem; align-items: center; justify-content: flex-end;
       max-width: var(--markcol); overflow: hidden; white-space: nowrap;
     }
-    /* The `L` column is a count, not a badge. Hover is the peek (the
-       title lists the per-test hits), the click is the read — the same
-       docked panel every other column's badge opens. */
+    /* The L column is a hit count, not a badge: hover lists per-test hits, click opens the detail panel. */
     table#src td.hits {
       color: var(--fg-muted); font-size: var(--fs-small); padding: 0 .35rem;
     }
@@ -289,10 +256,7 @@
     .mark.badge { font-variant-numeric: tabular-nums; }
     .mark.badge.open { outline: 1px solid var(--accent); }
 
-    /* -- docked detail panel: what the marks column no longer carries --
-       Docked rather than inline under the line: a badge on the last
-       visible line of a long file would otherwise open its detail below
-       the fold, and reading it meant scrolling the line away. */
+    /* -- docked detail panel: outside the code scroller so it stays visible -- */
     #detail {
       flex: none; display: flex; flex-direction: column; min-height: 0;
       max-height: 40vh; background: var(--panel);
@@ -306,13 +270,10 @@
     #detail-head .where { font-weight: 600; color: var(--fg); }
     #detail-head button { padding: 0 .35rem; line-height: 1.3; }
     #detail-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; padding: 0 .75rem .5rem; }
-    /* The open line keeps its place in the code while its panel is up —
-       on the code cell only, or it would paint over the hit tint in the
-       very column the panel may have been opened from. */
+    /* The open line is marked on the code cell only, so the hit tint in the other columns stays. */
     table#src tr.open td.code { background: var(--panel-2); }
     table#src tr.open td.no { box-shadow: inset 2px 0 0 var(--accent); }
-    /* A declaration line can carry a dozen signals; wrapping keeps the
-       panel a few lines tall instead of a dozen. */
+    /* Wrap so a declaration with many signals stays a few lines tall. */
     .tgs { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 1.6rem; }
     .tg { margin: .3rem 0 0; }
     .tg-head {
@@ -323,10 +284,7 @@
     .tg-range, .tg-sum { color: var(--fg-muted); }
     .tg-rows { margin-top: .15rem; }
     .tg-row { display: flex; gap: 1px; margin-bottom: 2px; }
-    /* One cell per bit, both directions in it: the top half is 0→1 and
-       the bottom half 1→0, each half either the ramp's covered end or
-       its uncovered end. A bit covered both ways therefore reads as one
-       solid block, and a half-toggled bit is visibly half. */
+    /* One cell per bit: top half is 0→1, bottom half 1→0, each in the ramp's covered or uncovered colour. */
     .bit {
       width: .72rem; height: .72rem; flex: none; border-radius: 1px;
       cursor: pointer;
@@ -337,13 +295,12 @@
     .bit.up { --dir-up: var(--tgl-hit); }
     .bit.down { --dir-down: var(--tgl-hit); }
     .bit.absent { background: var(--cov-none); cursor: default; }
-    /* Byte boundary, so a wide bus is countable without a ruler. */
+    /* Byte boundary. */
     .bit.sep { margin-right: .3rem; }
     .bit:hover { outline: 1px solid var(--fg-muted); }
     .bit.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
     .tg-chips { margin-top: .35rem; }
-    /* The attribution of a point clicked in the grid above it: same
-       panel, so the grid you clicked in stays on screen. */
+    /* Attribution of a clicked point, in the same panel as its grid. */
     #point {
       border-top: 1px dashed var(--line); margin-top: .4rem;
       padding: .35rem 0 0; font-size: var(--fs-small);
@@ -356,16 +313,12 @@
       padding: .3rem .75rem; color: var(--fg-muted);
       display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
     }
-    /* Shared hub chrome: connection dot + one vocabulary
-       (connected / connecting… / offline) — docs/concepts/hub.md. */
+    /* Shared hub chrome: connection dot and status words (connected / connecting… / offline), see docs/concepts/hub.md. */
     .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
     .dot.connected { background: var(--ok); }
     .dot.connecting { background: var(--warn); }
     .dot.offline { background: var(--err); }
-    /* A fourth strip state, and the only one that is also a control:
-       another tab of THIS pane took the hub slot, and the words are the
-       way back (`showSuperseded`). Not a status word — it says what
-       happened and what a click will do. */
+    /* Fourth status state, also a control: another cov tab took the hub slot and a click takes it back (showSuperseded). */
     .take-back {
       color: var(--err); font-weight: 600;
       cursor: pointer; text-decoration: underline;
@@ -431,12 +384,8 @@
           <thead id="src-head"></thead><tbody id="src-body"></tbody>
         </table></div>
         <!--
-          Docked, i.e. OUTSIDE #src-scroll: the detail of a line near the
-          bottom of a long file used to open below that line, inside the
-          same scroller, so opening it scrolled it out of sight. It is a
-          sibling of the code area instead, and the attribution of a
-          point clicked inside it stacks in the same panel — one home for
-          "what is on this line", not two panels racing for the bottom.
+          Outside #src-scroll so the panel stays visible for lines near the bottom of a long file.
+          The attribution of a clicked point stacks in the same panel.
         -->
         <div id="detail" hidden>
           <div id="detail-head"></div>
@@ -465,12 +414,9 @@
   var COV_URL = window.__RTL_BUDDY_COV_URL__ || '/cov.json';
   var SOURCE_URL = window.__RTL_BUDDY_COV_SOURCE_URL__ || '/cov/source';
 
-  // Metric order is authoritative from `hub.metrics` when served; this
-  // is the fallback for a payload from an older hub.
+  // Fallback for a payload without hub.metrics.
   var METRICS = ['line', 'branch', 'toggle', 'expression', 'cover'];
-  //: The metric the pane opens on. Toggle is where the holes are on a
-  //  real run — line and branch are usually near 100% by the time
-  //  anybody opens this — so it is the useful first ranking.
+  // Metric the pane opens on: toggle is where the holes usually are.
   var DEFAULT_METRIC = 'toggle';
   var METRIC_INITIAL = {
     line: 'L', branch: 'B', toggle: 'T', expression: 'E', cover: 'C'
@@ -544,9 +490,7 @@
   function pct(ratio) {
     return ratio == null ? '—' : (ratio * 100).toFixed(1) + '%';
   }
-  // The shared ramp: hue 0 (red) at nothing covered, 120 (green) at all
-  // of it. Saturation and lightness come from the token sheet, which is
-  // what makes the same fill legible in both themes.
+  // Hue 0 (red) at nothing covered to 120 (green) at all; saturation and lightness come from the theme tokens.
   function tint(node, ratio) {
     if (ratio == null) { node.classList.add('tint', 'none'); return node; }
     node.classList.add('tint');
@@ -574,34 +518,16 @@
   // ---------------------------------------------------------------
 
   var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
-  // Set when a hello was refused because the cov slot was taken, so the
-  // NEXT hello asks the hub to evict the incumbent. Cleared on welcome,
-  // so a later reconnect starts polite again.
+  // Set when a hello was refused because the cov slot was taken; the next hello asks to evict the incumbent. Cleared on welcome.
   var pendingTakeover = false;
-  // The hub kicked this tab out because a NEWER coverage tab registered.
-  // Racing back would only kick that tab out in turn — two tabs evicting
-  // each other every retry is exactly the defect this state exists to
-  // stop — so auto-reconnect stands down until the user asks for the
-  // slot back.
+  // Set when the hub evicted this tab for a newer cov tab. Reconnecting would evict that tab in turn, so retries stop
+  // until the user takes the slot back.
   var superseded = false;
 
   // >>> hello-payload
-  // The hello payload, built rather than inlined so the takeover rule is
-  // one pure function.
-  //
-  // `takeover` is opt-in PER HELLO. The first hello of a connection is
-  // polite — the field is omitted entirely, which `_run_handshake` in
-  // hub/server.py reads as false — and only a retry, after the hub
-  // answered `not_connected: cov client already registered`, asks it to
-  // evict whoever holds the slot. Sending it unconditionally is what
-  // made two tabs of this pane supersede each other in a loop.
-  //
-  // Same flow as the schematic SPA (rtl-buddy-view,
-  // viewer/src/composables/useHub.js — its `_pendingTakeover` /
-  // `superseded` handling), hand-duplicated here because a pane is a
-  // self-contained single file by design; graph_page.html carries the
-  // same helper with its own client and capabilities. Change the rule in
-  // one and change it in all three, or the tabs start fighting again.
+  // Takeover is opt-in per hello: the first hello omits it, and only a retry after
+  // `not_connected: cov client already registered` sets it. Same flow as the schematic SPA
+  // (viewer/src/composables/useHub.js) and graph_page.html; change all three together.
   function helloPayload(takeover) {
     var payload = {
       client: 'cov', version: '1.0.0', capabilities: ['cov_focus']
@@ -630,9 +556,7 @@
     });
     ws.addEventListener('close', function () {
       wsReady = false;
-      // The hub closes the socket right after superseding us. That close
-      // must not repaint the strip over the take-back affordance, and
-      // must not restart the retry loop.
+      // The hub closes the socket after superseding us; do not repaint the strip or retry.
       if (superseded) { return; }
       els.wsDot.className = 'dot offline';
       els.wsStatus.textContent = 'offline';
@@ -664,8 +588,7 @@
 
   function applyEnvelope(env) {
     if (!env || typeof env !== 'object') { return; }
-    // Correlation is by echoed `id`: a response carries the request's
-    // own id (there is no separate in_reply_to field on the wire).
+    // Responses carry the request's own id; there is no in_reply_to field.
     if ((env.kind === 'response' || env.kind === 'error') && pending[env.id]) {
       var cb = pending[env.id]; delete pending[env.id];
       cb(env);
@@ -673,7 +596,6 @@
     switch (env.type) {
       case 'welcome':
         wsReady = true; retryMs = 500;
-        // Hello accepted — the next reconnect starts polite again.
         pendingTakeover = false;
         clearTakeBack();
         els.wsDot.className = 'dot connected';
@@ -683,8 +605,7 @@
         break;
       case 'peer_joined':
       case 'bye':
-        // Cheap refresh: ask the hub who is connected rather than
-        // maintaining a shadow registry that can drift.
+        // Ask the hub who is connected instead of tracking peers locally.
         request('state_snapshot', {}, function (reply) {
           if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
         });
@@ -695,8 +616,6 @@
         break;
       case 'source_focused':
         if (env.origin === 'cov') { break; }
-        // Exact: the editor's cursor is a file and a line, which is
-        // precisely how this model is keyed.
         focusFile(env.payload && env.payload.file,
                   { line: env.payload && env.payload.line, emit: false });
         break;
@@ -712,31 +631,18 @@
     }
   }
 
-  // The two hub errors that are about this tab's REGISTRATION rather
-  // than about a request it made. Returns true when the error has been
-  // dealt with here, in which case the message area stays out of it —
-  // one event, one surface.
-  //
-  // Mirrors the schematic SPA's `error` case (rtl-buddy-view,
-  // viewer/src/composables/useHub.js); graph_page.html carries the same
-  // handler. One one-client-per-origin rule, three apps that have to
-  // obey it identically.
+  // Handles the two hub errors about this tab's registration, not about a request. Returns true when handled.
+  // Same rule as the schematic SPA and graph_page.html.
   function handleHubError(payload) {
-    // Superseded: a newer coverage tab owns the slot now. The strip says
-    // so and offers the way back; auto-reconnect stops, because winning
-    // the race back would only evict that tab.
+    // A newer cov tab owns the slot: show the take-back control and stop reconnecting.
     if (payload.code === 'superseded') {
       superseded = true;
       showSuperseded();
       if (ws) { try { ws.close(); } catch (e) { /* already gone */ } }
       return true;
     }
-    // The polite hello lost to an incumbent. Ask once more, this time
-    // asking the hub to evict it. Once, not in a loop: if the takeover
-    // hello fails too, the next error falls through to the message area.
-    // The hub drops the socket after refusing a hello, so this send
-    // usually goes nowhere and the flag rides the reconnect instead —
-    // both routes end in the same takeover hello.
+    // The polite hello lost to an incumbent: retry once, asking to evict it. The hub drops the socket after
+    // refusing, so the flag usually rides the reconnect instead.
     if (payload.code === 'not_connected' && !pendingTakeover &&
         /already registered/i.test(payload.message || '')) {
       pendingTakeover = true;
@@ -768,9 +674,7 @@
     els.wsStatus.removeAttribute('tabindex');
   }
 
-  // The user asking for the slot back. The other tab still holds it, so
-  // the hello that reclaims it has to ask for the takeover the first
-  // hello deliberately did not.
+  // The user asked for the slot back, so this hello requests the takeover.
   function takeBack() {
     if (!superseded) { return; }
     superseded = false;
@@ -784,28 +688,10 @@
   }
 
   // >>> origin-labels
-  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
-  // WIRE vocabulary and it does not move for a rebrand: the schematic
-  // app registers as `view`, the graph pane as `graph` and the phys
-  // pane as `phys`, and all three keep doing so until protocol v2.
-  // Their DISPLAY names are `sch`, `gph` and `phy` (rtl-buddy-sch,
-  // rtl-buddy-gph, rtl-buddy-phys), so this map is the seam, and
-  // every place an origin reaches a user goes through it -- the peer
-  // strip below, the header switcher's sibling labels and the
-  // `send -> X` buttons. An origin with no entry is shown verbatim
-  // (this pane's own `cov` among them), which is what keeps a peer from
-  // a newer hub legible instead of blank.
-  //
-  // It is also the one knob for a short name: change `gph` here and
-  // every graph label in this file follows.
-  //
-  // A pane is a self-contained single file by design, so this helper is
-  // hand-duplicated into graph_page.html, landing_page.html and
-  // phys_page.html beside it, and the SPA keeps its own copy under the
-  // same contract (rtl-buddy-sch, viewer/src/displayNames.js). Change
-  // the map in one and change it in all five, or the tabs start
-  // calling the same peer different things. The cross-repo checklist is
-  // rtl-buddy-sch docs/hub-protocol.md section 13.
+  // Wire origin -> displayed name. The wire names (view, graph, phys) stay fixed until protocol v2, so every
+  // origin shown to a user goes through this map; an unknown origin is shown verbatim.
+  // Hand-duplicated in graph_page.html, landing_page.html, phys_page.html and the SPA
+  // (rtl-buddy-sch viewer/src/displayNames.js); change all five together (rtl-buddy-sch docs/hub-protocol.md section 13).
   var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
 
   function originLabel(origin) {
@@ -815,10 +701,7 @@
   }
   // <<< origin-labels
 
-  // The switcher's sibling links carry `data-origin`, so their labels
-  // come from the map too (outside the markers: this one touches the
-  // DOM). The text in the markup is what a person reading the file
-  // sees; this is what the browser shows.
+  // Sibling links carry data-origin so their labels come from the map too.
   function relabelSwitcher() {
     var links = document.querySelectorAll('.switcher a[data-origin]');
     for (var i = 0; i < links.length; i++) {
@@ -826,10 +709,7 @@
     }
   }
 
-  // The latest peer list, kept rather than only printed: the file
-  // header's cross-app row asks it which sibling apps are open, and
-  // "send" to an app nobody is running is a click with no effect and no
-  // explanation.
+  // The latest peer list; the file header's cross-app row uses it to enable its buttons.
   var peers = [];
 
   function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
@@ -841,35 +721,14 @@
     peers = next;
     els.peers.textContent =
       'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
-    // An app that just opened (or just closed) changes which of the file
-    // header's buttons are live, and the user is looking at that row
-    // right now — repaint it rather than leaving it a click behind.
-    // Only the row: re-rendering the file would throw away the scroll
-    // position and the open detail panel over a peer coming and going.
+    // Repaint only the cross-app row on a peer change; a full re-render would lose the scroll position and open panel.
     if (changed) { refreshActions(); }
   }
 
   // >>> version-label
-  // One version label, said the same way by all three hub apps: this
-  // pane, graph_page.html beside it, and the schematic SPA (rtl-buddy-view,
-  // viewer/src/buildInfo.js). A pane is a self-contained single file by
-  // design, so this helper is hand-duplicated from graph_page.html
-  // rather than shared, and the SPA keeps its own copy under the same
-  // contract. Change the rule in one and change it in all three, or the
-  // three tabs start disagreeing about which build is running.
-  //
-  // The input is rtl_buddy's own version as setuptools-scm writes it:
-  // `6.26.2` from a release tag, `6.26.2.dev13+g3f5b890e3.d20260806`
-  // from anything built past one. Everything before `+` is the version
-  // a person quotes. The local segment after it carries the git SHA as
-  // a `g`-prefixed hex run, alongside a `.dYYYYMMDD` build date that
-  // says nothing the SHA does not — so the SHA is the payload, the date
-  // is dropped, and nine hex digits is as much of a SHA as anyone
-  // actually reads.
-  //
-  // A local segment with no `g<hex>` run is not an error — `1.0+local`
-  // is a legal version — it simply has no build to point at, and the
-  // base alone is the label.
+  // Same rule in graph_page.html and the SPA (viewer/src/buildInfo.js); change all three together.
+  // Input is setuptools-scm's version, e.g. `6.26.2.dev13+g3f5b890e3.d20260806`. The label is the base plus
+  // up to nine digits of the `g<hex>` SHA in the local segment; without one it is the base alone.
   function versionLabel(raw) {
     var text = String(raw == null ? '' : raw);
     var plus = text.indexOf('+');
@@ -881,11 +740,8 @@
   }
   // <<< version-label
 
-  // Re-read on every welcome, not just the first: a reconnect can land
-  // on a hub that was restarted on a newer build, and a label frozen at
-  // the version of the first connection would then be quietly wrong.
-  // Kept so the strip's tooltip can be restored after a state that
-  // borrowed it (`showSuperseded` explains itself there instead).
+  // Re-read on every welcome: a reconnect can reach a hub restarted on another build.
+  // Kept to restore the strip tooltip after showSuperseded.
   var hubTitle = '';
 
   function setHubVersion(raw) {
@@ -918,8 +774,7 @@
     els.file.hidden = true;
     clear(els.dash);
     clear(els.emptyMsg);
-    // The one piece of artwork this pane carries: a small mascot on the
-    // "no data yet" panel, per the hub's identity-marks-only rule.
+    // Small mascot on the "no data yet" panel.
     var art = document.createElement('img');
     art.src = '/hub/assets/rtl-buddy-mascot-240.png';
     art.width = 120; art.height = 120; art.alt = '';
@@ -948,10 +803,7 @@
     var hub = payload.hub || {};
     if (Array.isArray(hub.metrics) && hub.metrics.length) { METRICS = hub.metrics; }
     if (hub.source_route) { SOURCE_URL = hub.source_route; }
-    // Only when the user has not picked one: a reload must not undo a
-    // choice, but a first load has to land on something with points in
-    // it (an .info-only run has no toggles at all, and opening on an
-    // empty column reads as a broken pane, not as a missing metric).
+    // Keep the user's metric across reloads; otherwise open on one that has points (an .info-only run has no toggles).
     if (!state.metric || METRICS.indexOf(state.metric) < 0) {
       state.metric = initialMetric(payload);
     }
@@ -986,11 +838,7 @@
     });
     if (p.simulator) { parts.push(p.simulator); }
     els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
-    // The header's percentages are per elaboration, like every figure in
-    // this pane. The source-point figure — one point per source
-    // location, covered when any elaboration hit it (#637) — rides in
-    // the tooltip: the pane's tables are all per-elaboration and a
-    // second number in the header would not say which was which.
+    // Header percentages are per elaboration like the rest of the pane; the source-point totals go in the tooltip.
     var hint = p.manifest ? 'from ' + p.manifest : '';
     var collapsed = p.source_totals;
     if (collapsed) {
@@ -1025,9 +873,7 @@
       var opt = elem('option', null, metric);
       opt.value = metric;
       var t = (state.payload.totals || {})[metric] || {};
-      // A metric no record carried is kept but marked: "0 found" is a
-      // fact about the run (an .info-only fallback has no toggles), not
-      // a coverage hole, and hiding it would look like the latter.
+      // A metric with no points is marked "(none)" instead of hidden, so it is not mistaken for a coverage hole.
       if (!t.found) { opt.textContent = metric + ' (none)'; }
       els.metric.appendChild(opt);
     });
@@ -1036,32 +882,16 @@
 
   // --- pure helpers, no DOM and no state -----------------------------
   // >>> module-names
-  // The coverage model keys modules on the name the SIMULATOR
-  // elaborated — verilator appends a mangled parameterisation suffix,
-  // so `ip_async_fifo` compiled once is `ip_async_fifo__DB13` and
-  // compiled twice is `ip_cdc_handshake__W13` and `ip_cdc_handshake__Wc`.
-  // The design graph keys on the SOURCE name (`module:ip_async_fifo`),
-  // which is also the name a person reads in `design/common/*.sv`. One
-  // trailing `__<alnum>` group is the entire difference between the two
-  // vocabularies, so it is stripped exactly once, and only when a
-  // non-empty base survives — `__A8` on its own is a whole name, not a
-  // suffix.
-  //
-  // The python end of this wire is rtl_buddy/graph/coverage.py
-  // (`base_module_name` / `_resolve_module_node`, used by
-  // `_design_entries` to join model module names onto `module:<name>`
-  // graph ids and to report the leftovers in
-  // `summary.unmatched_modules`). It is THIS rule, exact-first and
-  // stripped-second; if one side changes, the other changes with it.
+  // The model keys modules on the simulator's elaborated name (`ip_async_fifo__DB13`); the graph and source use
+  // the source name. One trailing `__<alnum>` group is the difference: strip it once, only if a non-empty base remains.
+  // Matches base_module_name in rtl_buddy/graph/coverage.py; change both together.
   function baseModuleName(name) {
     var text = String(name == null ? '' : name);
     var base = text.replace(/__[A-Za-z0-9]+$/, '');
     return base || text;
   }
 
-  // The elaborated names of one file, collapsed onto the source names a
-  // reader recognises: two parameterisations of one module are one chip
-  // that remembers both, in first-seen order.
+  // Collapse elaborated names onto source names: parameterisations of one module become one chip, in first-seen order.
   function moduleChips(names) {
     var chips = [], byBase = Object.create(null);
     (names || []).forEach(function (name) {
@@ -1073,11 +903,7 @@
     return chips;
   }
 
-  // Which elaborated module a sender's `module:<name>` means, or null.
-  // Exact first, so a project whose module really is called `a__b`
-  // still wins over any stripped near-miss; stripped equality second,
-  // so a sender speaking the graph's source vocabulary lands. Ties go
-  // to the first name given, which is why callers pass a sorted list.
+  // Resolve a sender's module name to an elaborated name, or null. Exact match first, then stripped match; ties go to the first name.
   function resolveModuleName(known, name) {
     var wanted = String(name == null ? '' : name);
     if (!wanted) { return null; }
@@ -1092,13 +918,8 @@
   // <<< module-names
 
   // >>> elaboration-lens
-  // Builds on `baseModuleName` above — sliced separately, evaluated
-  // together.
-  //
-  // The elaborated modules one file's points were recorded against.
-  // Verilator's LINE points carry no module at all — line coverage is
-  // per source line, merged across every elaboration — so `line` never
-  // contributes and is never scoped by the lens below.
+  // Builds on `baseModuleName`. The elaborated modules a file's points were recorded against.
+  // `line` points carry no module, so they never contribute and are never scoped by the lens.
   function elaborationsOf(row, metrics) {
     var names = [], seen = Object.create(null);
     (metrics || []).forEach(function (metric) {
@@ -1112,12 +933,8 @@
     return names.sort();
   }
 
-  // Labels for the elaboration lens. When every elaboration in the file
-  // is of the SAME module the base is the same word repeated on every
-  // segment, so the label is the parameterisation suffix alone (`W13`)
-  // and the un-parameterised one keeps its plain name; when the file
-  // holds several modules the base is the information, so the label is
-  // the whole name. The full name is the tooltip either way.
+  // Lens labels: the parameterisation suffix alone (`W13`) when all elaborations are of one module, else the full name.
+  // The tooltip is always the full name.
   function elaborationSegments(names) {
     var uniq = [], seen = Object.create(null);
     (names || []).forEach(function (name) {
@@ -1145,10 +962,7 @@
     });
   }
 
-  // One cell's entries split per elaboration, each with its own hit
-  // count — the breakdown the detail panel heads its groups with.
-  // `hits` is passed in rather than closed over so this stays pure:
-  // what counts as a hit depends on the test lens.
+  // Split a cell's entries per elaboration, with a hit count each. `hits` is passed in to keep this pure.
   function elaborationGroups(entries, hits) {
     var groups = [], byName = Object.create(null);
     (entries || []).forEach(function (entry) {
@@ -1188,18 +1002,8 @@
 
   // --- pure helper, no DOM and no state ------------------------------
   // >>> file-ordering
-  // The file list ranks by the SELECTED metric, not by the one the
-  // payload happened to be ordered on. Same rule as `coldest_first` in
-  // rtl_buddy/cov/query.py — files with no points of the metric last
-  // (silent, not cold), then ratio ascending, then absolute misses
-  // descending — so on `line`, the metric the builder ranks on, the
-  // pane and `rb cov summary` produce the same list.
-  //
-  // The one difference is the final tie-break: ties keep the payload's
-  // own order rather than re-deciding on path. For `line` that IS the
-  // builder's path tie-break, because the payload arrives in the
-  // builder's order; for every other metric it means the list cannot
-  // jitter between renders.
+  // Rank by the selected metric, by the same rule as `coldest_first` in rtl_buddy/cov/query.py: files with no points last,
+  // then ratio ascending, then misses descending. Remaining ties keep the payload order.
   function coldestFirst(rows, metric) {
     return (rows || []).map(function (row, index) {
       var totals = (row && row.totals && row.totals[metric]) || {};
@@ -1242,8 +1046,7 @@
       var t = totalsOf(row, state.metric);
       var li = elem('li');
       li.classList.toggle('sel', state.file === row.path);
-      // The path is rendered right-to-left so a long path truncates at
-      // its useless end: `…/rtl/fifo/fifo_wr.sv`, not `design/rtl/fi…`.
+      // Right-to-left so a long path truncates at its start.
       var path = elem('span', 'path', row.path);
       path.title = row.path + (row.modules && row.modules.length
         ? '  ·  ' + row.modules.join(', ') : '');
@@ -1260,11 +1063,10 @@
   }
 
   // ---------------------------------------------------------------
-  // tests table — the attribution the Coverview fork existed to render
+  // tests table
   // ---------------------------------------------------------------
 
-  // The attribution filter is a lens, and a lens you cannot take off is
-  // a mode — every way of changing it goes through here.
+  // Every change to the test lens goes through here.
   function setLens(name) {
     if (state.test === name) { return; }
     state.test = name;
@@ -1275,12 +1077,7 @@
       : 'attribution: all tests (merged)');
   }
 
-  // The second lens: one elaboration of a parameterised module. A file
-  // compiled twice (`ip_cdc_handshake__W13` and `__Wc`) has two sets of
-  // branch/toggle/expression/cover points on the same source lines, and
-  // merged they answer "is this line covered somewhere" when the
-  // question was "is it covered in the configuration I care about".
-  // Composes with the test lens: both on intersects them.
+  // Elaboration lens: count only one elaboration of a parameterised module. Composes with the test lens as an intersection.
   function setElab(name) {
     if (state.elab === name) { return; }
     state.elab = name || null;
@@ -1324,8 +1121,7 @@
     return seg ? seg.label : String(name || '');
   }
 
-  // Wearing the lens is the abnormal state, so say so where the numbers
-  // are, and make saying it the way out.
+  // Shown where the numbers are; clicking it clears the lens.
   function lensPill() {
     var pill = elem('span', 'pill hot act', 'lens: ' + state.test + ' ×');
     pill.title = 'Only what ' + state.test +
@@ -1351,9 +1147,7 @@
     METRICS.forEach(function (m) { htr.appendChild(elem('th', null, METRIC_INITIAL[m])); });
     thead.appendChild(htr); table.appendChild(thead);
     var tbody = document.createElement('tbody');
-    // Merged is what the pane shows by default, and "click the selected
-    // test again" was the only way back to it — a gesture you had to
-    // already know. This row is the way back, and it is always there.
+    // The always-present way back to the merged view.
     var all = elem('tr', 'row all-tests');
     all.classList.toggle('sel', !state.test);
     var allName = elem('td', null, 'all tests (merged)');
@@ -1377,8 +1171,7 @@
         var td = elem('td', null, t.found ? pct(t.ratio) : '—');
         tr.appendChild(td);
       });
-      // Second click clears too: the gesture predates the row above and
-      // people have it in their fingers.
+      // A second click on the selected test also clears the lens.
       tr.addEventListener('click', function () {
         setLens(state.test === row.name ? null : row.name);
       });
@@ -1474,10 +1267,7 @@
       note('no coverage recorded for ' + path, 'warn');
       return false;
     }
-    // A line number only means something within one file, so the open
-    // detail panel does not survive a change of file — and neither does
-    // the elaboration lens, which names a module the next file may not
-    // even contain.
+    // The detail panel and the elaboration lens do not survive a change of file.
     if (state.file !== path) {
       state.expandedLine = null;
       state.expandedMetric = null;
@@ -1505,9 +1295,7 @@
         return r.json().then(function (body) { return { ok: r.ok, body: body }; });
       })
       .then(function (res) {
-        // A missing source is not a failure of the coverage read: the
-        // points are still worth showing, so the annotation degrades to
-        // line numbers with no text rather than to an error page.
+        // A missing source degrades the annotation to line numbers without text.
         state.sources[path] = res.ok && Array.isArray(res.body.lines)
           ? res.body.lines : null;
         if (!res.ok) { note((res.body && res.body.error) || ('no source for ' + path), 'warn'); }
@@ -1532,15 +1320,10 @@
   }
 
   // --- pure helpers, no DOM and no state -----------------------------
-  // tests/test_hub_cov_page.py slices the source between these markers
-  // and evaluates it in node, so nothing between them may close over
-  // anything defined outside.
+  // tests/test_hub_cov_page.py evaluates the code between these markers in node, so it must not use anything outside them.
   // >>> toggle-grouping
-  // A verilator toggle point is `<base>[<bit>]:<dir>` — `clk:0->1`,
-  // `paddr[3]:1->0` — with the bit part absent for scalars. The base may
-  // itself contain brackets (`mem[1].data[0]`), so the bracket that
-  // indexes the bus is the LAST one before the colon, which is what the
-  // lazy first group buys.
+  // A toggle point is `<base>[<bit>]:<dir>` (`paddr[3]:1->0`; no bit for scalars). The base may contain brackets,
+  // so the bus index is the last bracket before the colon (the lazy first group).
   var TOGGLE_NAME = /^(.*?)(?:\[(\d+)\])?:(0->1|1->0)$/;
 
   function parseToggleName(name) {
@@ -1549,17 +1332,13 @@
     return { base: m[1], bit: m[2] == null ? null : parseInt(m[2], 10), dir: m[3] };
   }
 
-  // Collapse a line's toggle points into one group per base signal, each
-  // carrying one cell per bit ordered MSB first (so the grid reads like
-  // the declaration: LSB on the right). `total` counts DIRECTIONS, since
-  // a direction is what a toggle point actually is.
+  // One group per base signal, one cell per bit, MSB first so the grid reads like the declaration. `total` counts directions.
   function groupToggles(entries) {
     var groups = [], byKey = Object.create(null);
     (entries || []).forEach(function (entry) {
       var point = (entry && entry.point) || {};
       var parsed = parseToggleName(point.name);
-      // A name this pane cannot parse still has to be reachable, so it
-      // becomes its own one-cell group rather than being dropped.
+      // An unparseable name becomes its own one-cell group so it stays reachable.
       if (!parsed) { parsed = { base: String(point.name || '(unnamed)'), bit: null, dir: '0->1' }; }
       var key = (point.module || '') + ' ' + parsed.base;
       var group = byKey[key];
@@ -1591,17 +1370,14 @@
         return;
       }
       for (var b = group.max; b >= group.min; b--) {
-        // A bus with a hole in it (a point the database never emitted)
-        // keeps the bit's place, or every index right of the hole would
-        // silently shift.
+        // A hole in a bus keeps its place so the bits to its right do not shift.
         group.cells.push(group.byBit[String(b)] || { bit: b, up: null, down: null, absent: true });
       }
     });
     return groups;
   }
 
-  // Rows of 32 bits, MSB row first, so a 64-bit bus is two readable
-  // rows rather than one line that scrolls.
+  // Rows of 32 bits, MSB row first.
   function chunkBits(cells, per) {
     var rows = [], i;
     for (i = 0; i < cells.length; i += per) { rows.push(cells.slice(i, i + per)); }
@@ -1610,8 +1386,7 @@
   // <<< toggle-grouping
 
   function hitsFor(point) {
-    // With a test lens on, the number shown is that test's contribution
-    // — which is the whole question "what would I lose by dropping it".
+    // With a test lens on, show that test's hits.
     if (!state.test) { return point.hits || 0; }
     return ((point.tests || {})[state.test]) || 0;
   }
@@ -1627,30 +1402,25 @@
   // the marks column and its docked detail panel
   // ---------------------------------------------------------------
 
-  //: line number -> the entries of the file currently rendered, so the
-  //  detail panel can be built without re-walking the model.
+  //: line number -> entries of the rendered file.
   var lineMarks = Object.create(null);
 
-  //: line number -> that line's line-coverage point, same purpose.
+  //: line number -> that line's line-coverage point.
   var linePoints = Object.create(null);
 
-  // Toggle always collapses (a bus is dozens of points per line); other
-  // metrics collapse only when there is more than one of them, because a
-  // lone named chip never pushed anything off-screen and reads better.
+  // Toggle always collapses to a badge; other metrics only when a line has more than one point.
   function collapses(metric, list) {
     return metric === 'toggle' || list.length > 1;
   }
 
-  //: one line's points of one metric — one cell's worth.
+  //: One line's points of one metric.
   function entriesOn(lineNo, metric) {
     return (lineMarks[lineNo] || []).filter(function (entry) {
       return entry.metric === metric;
     });
   }
 
-  // The metric is the column (or the panel's header pill), so the chip
-  // carries the name alone — the initial in front of it was the same
-  // letter repeated down the whole column.
+  // The metric is the column, so the chip carries only the name.
   function namedMark(entry) {
     var h = hitsFor(entry.point);
     var mark = elem('span', 'mark' + (h > 0 ? '' : ' miss'),
@@ -1688,9 +1458,7 @@
     return badge;
   }
 
-  // One cell: this line's points of one metric, as a badge or — when
-  // there is a single named one — as its name. Empty when the line has
-  // none, which is most cells on most lines.
+  // One cell: a badge, or the point's name for a single named point. Empty for most lines.
   function renderCell(box, lineNo, metric) {
     var list = entriesOn(lineNo, metric);
     if (!list.length) { return; }
@@ -1701,8 +1469,7 @@
     box.appendChild(metricBadge(metric, list, lineNo));
   }
 
-  // Exactly one point's attribution is on show at a time, so exactly
-  // one cell or chip carries the selection.
+  // Exactly one point's attribution is shown, so exactly one cell or chip is selected.
   function selectDetail(node) {
     Array.prototype.forEach.call(
       document.querySelectorAll('.mark.sel, .bit.sel'),
@@ -1730,8 +1497,7 @@
         ((up && up.name === state.focusItem) || (down && down.name === state.focusItem))) {
       node.classList.add('sel');
     }
-    // The uncovered direction is the one worth opening when only one of
-    // them is; otherwise 0→1, so the click is predictable.
+    // Open the uncovered direction when only one is uncovered; otherwise 0→1.
     var pick = up;
     if (up && down && upHits > 0 && downHits === 0) { pick = down; }
     else if (up && down && downHits > 0 && upHits === 0) { pick = up; }
@@ -1766,8 +1532,7 @@
       var row = elem('div', 'tg-row');
       cells.forEach(function (cell, i) {
         var node = bitCell(group, cell);
-        // Byte boundary: the gap goes after the cell whose index is a
-        // multiple of 8, never after the last cell in the row.
+        // Byte gap after bits that are multiples of 8, except the last cell of a row.
         if (cell.bit != null && cell.bit % 8 === 0 && i < cells.length - 1) {
           node.classList.add('sep');
         }
@@ -1779,11 +1544,8 @@
     return wrap;
   }
 
-  // One line's points of one metric. With the lens off and the points
-  // coming from more than one elaboration, the panel says so instead of
-  // showing `3/6` and leaving the reader to guess that it is the same
-  // three points counted twice — each elaboration gets a subhead with
-  // its own score, and the subhead is the way into the lens.
+  // With the lens off and points from several elaborations, show a subhead with its own score per elaboration;
+  // the subhead enters the lens.
   function renderDetailBody(metric, entries) {
     var groups = state.elab ? null : elaborationGroups(entries, hitsFor);
     if (!groups || groups.length < 2) {
@@ -1804,8 +1566,7 @@
       });
       return grid;
     }
-    // Everything that is not a toggle keeps the named chips — they are
-    // few per line, and the name IS the information.
+    // Non-toggle metrics keep named chips: there are few per line and the name is the information.
     var chips = elem('div', 'tg-chips');
     entries.forEach(function (entry) { chips.appendChild(namedMark(entry)); });
     return chips;
@@ -1862,10 +1623,7 @@
     state.expandedMetric = null;
   }
 
-  // The row the panel belongs to keeps its place in the code, and is
-  // pulled back into what the panel left of the code area.
-  // Inspecting a cell must not also drive the editor and the
-  // schematic, which is what the row's own click does.
+  // Cell clicks only inspect; unlike a row click they do not drive the editor or the schematic.
   function bindCellClick(node, lineNo, metric) {
     node.addEventListener('click', function (ev) {
       ev.stopPropagation();
@@ -1906,9 +1664,7 @@
     return true;
   }
 
-  // One panel, and a line has up to five things to show in it, so the
-  // slot is a (line, metric) pair — "click the same badge again" has to
-  // tell `T` on line 19 from `B` on line 19.
+  // The slot is a (line, metric) pair, so a second click on the same badge closes the panel.
   function toggleDetail(lineNo, metric) {
     if (state.expandedLine === lineNo && state.expandedMetric === metric) {
       closeDetail();
@@ -1918,8 +1674,7 @@
     else { openDetail(lineNo, metric, {}); }
   }
 
-  // The hit-count column opens the same panel as a badge does — the
-  // tooltip is the peek, this is the read.
+  // The hit-count column opens the same panel as a badge.
   function openLineDetail(lineNo, opts) {
     opts = opts || {};
     closeDetail();
@@ -1936,11 +1691,7 @@
     return true;
   }
 
-  // A cov_focus can name a point (`paddr[3]:0->1`) that now lives inside
-  // a collapsed badge; the line it sits on is the one to open.
-  // Which cell a focused item lives in. Every metric has a column now,
-  // so a `cov_focus` item needs no `metric` hint to land — the point's
-  // own name says which column it is in.
+  // Find the (line, metric) cell holding the focused item; the point's name identifies its column.
   function focusedCell() {
     var found = null;
     if (!state.focusItem) { return null; }
@@ -1951,16 +1702,14 @@
         found = { line: parseInt(key, 10), metric: entry.metric };
       });
     });
-    // A lone named point is its own chip in the cell, already carrying
-    // the selection — there is no panel behind it to open.
+    // A lone named point is its own chip and has no panel to open.
     if (found && !collapses(found.metric, entriesOn(found.line, found.metric))) {
       return null;
     }
     return found;
   }
 
-  // The ranking metric, from the picker or from a click on a column
-  // header — the only thing the picker still drives is the file list.
+  // Set from the picker or a column header; ranks the file list.
   function setMetric(metric) {
     if (METRICS.indexOf(metric) < 0 || state.metric === metric) { return; }
     state.metric = metric;
@@ -1969,21 +1718,12 @@
     if (state.file) { renderFile(); }
   }
 
-  // A file's totals for one metric. Without a lens these are the
-  // model's own numbers, so the header agrees with `rb cov summary`;
-  // with one they are recounted through it, so the header agrees with
-  // the cells underneath it — which is the whole point of a lens.
-  //
-  // The two lenses differ in what they move. The test lens changes who
-  // HIT the points, never how many there are; the elaboration lens
-  // changes which points exist at all, so `found` is recounted too.
-  // Both on is the intersection: that test's hits on that
-  // elaboration's points.
+  // A file's totals for one metric. Without a lens these are the model's numbers (as in `rb cov summary`); with one they are
+  // recounted so the header matches the cells below. The test lens changes who hit the points; the elaboration lens changes
+  // which points exist, so `found` is recounted too. Both on is the intersection.
   function fileTotals(row, metric) {
     var t = totalsOf(row, metric);
-    // Verilator's line coverage is per source LINE and carries no
-    // module, so it is one number for every elaboration together and
-    // the elaboration lens deliberately leaves this column alone.
+    // Line coverage is per source line with no module, so the elaboration lens leaves it alone.
     var elab = metric === 'line' ? null : state.elab;
     if (!state.test && !elab) { return t; }
     if (!elab && !t.found) { return t; }
@@ -2002,10 +1742,7 @@
       var t = fileTotals(row, metric);
       var th = elem('th', 'mh' + (metric === state.metric ? ' sort' : ''));
       th.dataset.metric = metric;
-      // Two lines, because five columns of `L 41/55 75%` would push the
-      // code as far right as the per-point chips once did.
-      // Whole percent, not the dashboard's one decimal: five columns of
-      // `100.0%` is 5% of the window spent on a digit nobody reads here.
+      // Two lines and whole percents keep five columns narrow.
       th.appendChild(elem('div', 'mh-top',
         METRIC_INITIAL[metric] + ' ' +
         (t.found ? Math.round(t.ratio * 100) + '%' : '—')));
@@ -2037,13 +1774,8 @@
     back.addEventListener('click', showDashboard);
     els.fileHead.appendChild(back);
     els.fileHead.appendChild(elem('span', 'path', row.path));
-    // The chip reads in the design's vocabulary — the name in the file
-    // you are looking at — and carries the elaborated names it stands
-    // for in its tooltip; the graph is sent the source name, which is
-    // the only one it has a node for.
-    // The first chip is the file's primary module: chips come out in the
-    // model's first-seen order, so this is what the header reads left to
-    // right, and the send buttons must agree with the row above them.
+    // Chips show the source module name and list the elaborated names in the tooltip. The graph is sent the source name,
+    // the only one it has nodes for. The first chip is the primary module the send buttons use.
     var primary = null;
     moduleChips(row.modules).forEach(function (chip) {
       if (primary === null) { primary = chip.base; }
@@ -2058,18 +1790,12 @@
     actionsBase = primary;
     actionsEl = renderActions(actionsBase);
     els.fileHead.appendChild(actionsEl);
-    // The elaboration lens, and only when there is a choice to make: a
-    // segmented control on a file with one elaboration is a control
-    // that can only say what is already true.
+    // Show the lens control only when the file has more than one elaboration.
     var elabs = elaborationsOf(row, METRICS);
     if (state.elab && elabs.indexOf(state.elab) < 0) { state.elab = null; }
     if (elabs.length > 1) {
       els.fileHead.appendChild(elabControl(elaborationSegments(elabs)));
     }
-    // The per-metric totals used to be pills here. They are the source
-    // table's own header row now, directly above the columns they
-    // describe, and printing the same five numbers twice on one screen
-    // is how a reader learns to trust neither.
     if (state.test) { els.fileHead.appendChild(lensPill()); }
 
     var lines = state.sources[row.path];
@@ -2080,8 +1806,7 @@
     var marks = pointsByLine(row);
     lineMarks = marks;
     linePoints = byLine;
-    // The rows are about to be thrown away, so the panel's line
-    // highlight is too — it is re-opened below against the new rows.
+    // The rows are rebuilt below, so reset the open line and reopen it against the new rows.
     var reopen = state.expandedLine;
     var reopenMetric = state.expandedMetric;
     state.expandedLine = null;
@@ -2098,16 +1823,12 @@
       tr.dataset.line = String(n);
       tr.appendChild(elem('td', 'no', n));
 
-      // One column per metric, always, in the order the run reports
-      // them: which coverage a line has is a property of the line, not
-      // of what the picker happens to be ranking on.
+      // One column per metric, in the run's order, independent of the ranking metric.
       METRICS.forEach(function (metric) {
         var cell = elem('td', 'marks' + (metric === 'line' ? ' hits' : ''));
         cell.dataset.metric = metric;
         if (metric === 'line') {
-          // The `L` column IS the hit-count gutter: a count, not a
-          // badge, because "how many times did this line run" is the
-          // one number the annotation has always led with.
+          // The L column is a hit count, not a badge.
           var point = byLine[n];
           if (point) {
             var h = hitsFor(point);
@@ -2137,8 +1858,7 @@
     }
     closeDetail();
     if (target) { target.scrollIntoView({ block: 'center' }); }
-    // A focused point wins over whatever was open, and otherwise the
-    // panel survives a re-render (a lens change must not close it).
+    // A focused point wins over the open panel; otherwise the panel survives a re-render.
     var cell = focusedCell();
     var open = cell ? cell.line : reopen;
     var metric = cell ? cell.metric : reopenMetric;
@@ -2151,7 +1871,7 @@
     state.file = null;
     state.focusLine = null;
     state.focusItem = null;
-    // The elaboration lens only ever meant something inside one file.
+    // The elaboration lens applies within one file.
     state.elab = null;
     closeDetail();
     els.file.hidden = true;
@@ -2159,29 +1879,24 @@
     renderFiles();
   }
 
-  // The attribution of one point, docked in the same panel as the line
-  // detail it was clicked in — the grid you clicked stays on screen, and
-  // clicking another cell updates this section in place.
+  // One point's attribution, docked in the line's panel; clicking another cell updates it in place.
   function showPoint(metric, point) {
     clear(els.point);
     els.point.hidden = false;
     els.detail.hidden = false;
     if (!els.detailHead.firstChild) {
-      // A chip the marks column kept inline has no line panel behind it,
-      // so the panel still needs a header it can be closed from.
+      // A chip kept inline has no line panel, so create a header to close from.
       var where = elem('span', 'where',
         (state.file || '').split('/').pop() + ':' + point.line);
       where.title = state.file + ':' + point.line;
       els.detailHead.appendChild(where);
       appendDetailClose();
     }
-    // A line point has no name, and its metric is already in the
-    // panel's header — "line · line 69" reads like a stutter.
+    // Line points have no name, and the panel header already names the metric.
     var parts = [];
     if (metric !== 'line') { parts.push(metric); }
     if (point.name) { parts.push(point.name); }
-    // Displayed text is design vocabulary, tooltips carry the model's
-    // own key — the same split the file header's module chips make.
+    // Text uses the source module name; the tooltip carries the elaborated key.
     if (point.module) { parts.push(baseModuleName(point.module)); }
     parts.push('line ' + point.line, 'hits ' + (point.hits || 0));
     var head = elem('strong', null, parts.join(' · '));
@@ -2223,12 +1938,8 @@
     });
     var did = [];
     if (els.optSelect.checked) {
-      // `source_focused`, not `selection_changed`: this pane knows files
-      // and modules, never instance paths. The hub's resolver turns a
-      // file+line into the instance(s) whose source range contains it
-      // and broadcasts the derived `selection_changed` itself, which is
-      // the only way to reach the schematic without inventing a
-      // coordinate the coverage model does not have.
+      // source_focused, not selection_changed: this pane knows files and modules, not instance paths, so the hub's
+      // resolver derives the schematic selection.
       if (emit('source_focused', { file: state.file, line: line, col: 1 })) {
         did.push('focus ' + state.file + ':' + line);
       }
@@ -2250,13 +1961,7 @@
   }
 
   function focusModuleElsewhere(base) {
-    // The graph pane speaks node ids, and `module:<name>` is the id a
-    // design module carries there — so a module chip here lands on the
-    // same module there, and the graph pane's own module→instance rule
-    // takes it the rest of the way to the schematic. The name sent is
-    // the SOURCE name (`baseModuleName`): the graph is built from the
-    // source, so `module:ip_async_fifo__DB13` is a node nothing has,
-    // and a graph_focus miss is silent — the click looked broken.
+    // Send the source name (baseModuleName): the graph has no node for an elaborated name, and a graph_focus miss is silent.
     var name = baseModuleName(base);
     if (emit('graph_focus', { node: 'module:' + name })) {
       note('graph-focus module:' + name);
@@ -2270,19 +1975,9 @@
   // cross-app actions
   // ---------------------------------------------------------------
 
-  // Two controls per sibling app, because they answer two different
-  // questions. `send → X` puts the open file's module on the X tab that
-  // is already open and does not navigate. `open X ↗` emits the same
-  // envelope and THEN opens X in a new tab: the hub caches the latest
-  // graph_focus and replays it to each peer as it registers
-  // (`_replay_cached_state` in hub/server.py), so the fresh tab comes up
-  // already on that module. No deep links, no new wire types.
-  //
-  // Both apps are sent the SAME envelope, deliberately. `graph_focus
-  // {node:'module:<name>'}` is the graph pane's own vocabulary and the
-  // schematic SPA resolves `module:` targets as well, so the pair of buttons
-  // differ only in which tab they assume or open — the broadcast reaches
-  // whichever of the two is listening. The tooltips say so.
+  // `send → X` sends the open file's module to an already open X tab. Both apps get the same graph_focus envelope
+  // (`module:<name>`), which the graph pane and the schematic both understand. The hub replays the latest one to
+  // peers that register later (_replay_cached_state in hub/server.py).
   var APPS = [
     { origin: 'graph', prose: 'the graph pane' },
     { origin: 'view', prose: 'the schematic' }
@@ -2300,10 +1995,7 @@
     return b;
   }
 
-  // Sends only: opening an app fresh is the header switcher's job, so
-  // there is no open-↗ variant here (it was redundant with those links,
-  // and the hub replays its cached focus to late joiners anyway — send
-  // first, then open from the header, lands the same way).
+  // Sends only: opening an app is the header switcher's job, and the hub replays the cached focus to late joiners.
   function renderActions(base) {
     var box = elem('div', 'actions');
     APPS.forEach(function (app) {
@@ -2320,9 +2012,7 @@
     return box;
   }
 
-  // Rebuilt in place when the peer list moves. Only the row: re-rendering
-  // the file would throw away the scroll position and the open detail
-  // panel over a peer coming and going.
+  // Rebuilt in place when the peer list changes; re-rendering the file would lose the scroll position and open panel.
   var actionsEl = null, actionsBase = null;
 
   function refreshActions() {
@@ -2341,9 +2031,7 @@
     if (typeof path !== 'string' || !path) { return false; }
     var row = state.byPath[path];
     if (!row) {
-      // Absolute paths are accepted per the wire contract: the model
-      // keys files project-relative, so try a suffix match before
-      // calling it a miss.
+      // Absolute paths are accepted; the model keys project-relative paths, so try a suffix match.
       var hit = Object.keys(state.byPath).filter(function (known) {
         return path.endsWith('/' + known) || known.endsWith('/' + path);
       });
@@ -2353,10 +2041,7 @@
     return selectFile(path, { line: opts.line, item: opts.item, metric: opts.metric });
   }
 
-  // A sender may name the module either way round: the graph and the
-  // editor speak the source name, `rb cov` and this pane's own dropdown
-  // speak the elaborated one. Resolve to the elaborated name the model
-  // is keyed on before anything is filtered on it.
+  // Senders may name a module by source or elaborated name; resolve to the elaborated name before filtering.
   function focusModule(name, opts) {
     var known = Object.keys(state.modules).sort();
     var resolved = resolveModuleName(known, name);
@@ -2368,12 +2053,8 @@
     state.module = resolved;
     els.module.value = resolved;
     renderFiles();
-    // Naming an ELABORATION verbatim is asking about that one
-    // configuration, so the lens goes on; naming the module in the
-    // design's own vocabulary is asking about the module, all of it, so
-    // it comes off. On a file with a single elaboration the lens can
-    // only say what is already true — and its control is hidden there —
-    // so it stays off rather than becoming a mode with no way out.
+    // Naming an elaboration verbatim turns the lens on. Naming the module by its source name means the whole module, so the
+    // lens stays off, as it does when the file has a single elaboration (its control is hidden).
     var spans = elaborationsOf(rows[0], METRICS).length > 1;
     var elab = spans && resolved === String(name) ? resolved : null;
     return selectFile(rows[0].path, {
@@ -2381,12 +2062,8 @@
     });
   }
 
-  // The wire spells a test `test:<suite>#<name>` — that is the schema's
-  // own example, what `rb hub send cov-focus` documents, and the id the
-  // graph pane carries. The coverage model keys tests by the BARE name
-  // (`cov/model.py` writes `artefacts.name`), so the qualified form is
-  // matched by its fragment rather than missed outright. Exact first, so
-  // a run whose test really is called `a#b` still wins.
+  // The wire spells a test `test:<suite>#<name>` but the model keys the bare name, so match the fragment after `#`.
+  // Exact match first.
   function focusTest(name) {
     var rows = (state.payload && state.payload.tests) || [];
     function known(candidate) {
@@ -2406,8 +2083,7 @@
 
   function applyFocus(payload) {
     if (!state.payload) {
-      // The hub replays a cached focus on connect, which routinely wins
-      // the race against the model fetch; hold it rather than dropping it.
+      // The hub replays a cached focus on connect, usually before the model loads; hold it until then.
       state.pending = payload;
       return;
     }
@@ -2422,8 +2098,7 @@
     } else {
       ok = focusFile(target.indexOf('file:') === 0 ? target.slice(5) : target, opts);
     }
-    // A soft miss, like graph_focus: report it and keep the current
-    // focus rather than blanking the pane over a stale target.
+    // A miss is soft: report it and keep the current focus.
     note(ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run',
          ok ? null : 'warn');
   }
@@ -2431,17 +2106,12 @@
   function focusByInstancePath(ip) {
     if (Array.isArray(ip)) { ip = ip[0]; }
     if (typeof ip !== 'string' || !ip || !state.payload) { return; }
-    // A naming-convention heuristic, and a soft miss when it fails: the
-    // coverage model has modules, the schematic has instances, and
-    // nothing in either says which module an instance is of. Stripping
-    // the usual instance prefixes off the leaf is right often enough to
-    // be worth the zero cost of being wrong (nothing happens).
+    // Heuristic: strip common instance prefixes off the leaf and match a module. A miss does nothing.
     var leaf = ip.split('.').pop();
     var candidates = [leaf, leaf.replace(/^(u|i|inst|dut)_/, '')];
     var known = Object.keys(state.modules).sort();
     for (var i = 0; i < candidates.length; i++) {
-      // An instance name is a source-vocabulary name, so it is resolved
-      // the same way an inbound `module:` target is.
+      // Instance names are source names, resolved like an inbound module target.
       if (resolveModuleName(known, candidates[i]) !== null) {
         focusModule(candidates[i], {});
         return;
@@ -2474,9 +2144,7 @@
     state.sources = Object.create(null);
     load();
   });
-  // The strip's status word doubles as the take-back control while this
-  // tab is superseded; `takeBack` no-ops in every other state, so the
-  // listener is bound once here rather than added and removed.
+  // The status word doubles as the take-back control while superseded; takeBack does nothing otherwise.
   els.wsStatus.addEventListener('click', takeBack);
   els.wsStatus.addEventListener('keydown', function (ev) {
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
