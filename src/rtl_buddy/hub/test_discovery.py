@@ -1,16 +1,6 @@
-"""Test discovery for ``rb hub`` TB-view mode (#99 / 6b).
+"""Test discovery for ``rb hub`` TB-view mode.
 
-Walks the project tree for ``tests.yaml`` files, aggregates the
-named test entries with their resolved ``(model, tb)`` pair, and
-resolves a single match for an SPA-supplied ``?test=NAME`` request
-(with optional ``--tests-file`` pin).
-
-Mirrors :mod:`rtl_buddy.hub.model_discovery` for shape and skip
-rules — same conventional build/VCS dir exclusions, same git-
-worktree pruning, same alphabetical determinism. Keeping the two
-discoveries in lockstep makes the cross-file collision error
-messages familiar to anyone who's already debugged a ``--model``
-ambiguity.
+Finds ``tests.yaml`` files under the project root, lists their tests with the resolved ``(model, tb)`` pair, and resolves a ``?test=NAME`` request (optionally pinned by ``--tests-file``). Uses the same skip and ordering rules as :mod:`rtl_buddy.hub.model_discovery`.
 """
 
 from __future__ import annotations
@@ -30,10 +20,7 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
-# Mirror model_discovery._SKIP_DIRS exactly — vendored fixtures,
-# build outputs, VCS metadata. Keep these two lists in sync; any
-# divergence will surface as "model X has has_cdc but test Y can't
-# be found" surprises.
+# Must match model_discovery._SKIP_DIRS.
 _SKIP_DIRS = frozenset(
     {
         ".git",
@@ -64,12 +51,9 @@ class TestMatch:
 
 @dataclass(frozen=True)
 class TestEntry:
-    """A single advertised test for ``GET /tests`` listings.
+    """One test in a ``GET /tests`` listing.
 
-    Carries the resolved ``model`` and ``tb`` names so the SPA can
-    annotate each option and skip an extra round-trip per click. The
-    ``tests_file`` is the absolute path to the ``tests.yaml`` that
-    owns the entry; the SPA uses it as the picker's stable key.
+    ``tests_file`` is the absolute path of the owning ``tests.yaml``.
     """
 
     name: str
@@ -79,10 +63,7 @@ class TestEntry:
 
 
 def discover_tests_files(root: Path) -> list[Path]:
-    """Return every ``tests.yaml`` reachable under ``root``.
-
-    Same walk rules as :func:`model_discovery.discover_models_files`.
-    """
+    """Return every ``tests.yaml`` under ``root``, using the walk rules of :func:`model_discovery.discover_models_files`."""
 
     root_resolved = Path(root).resolve()
     results: list[Path] = []
@@ -100,14 +81,7 @@ def discover_tests_files(root: Path) -> list[Path]:
 
 
 def _read_test_entries(path: Path) -> list[TestEntry]:
-    """Best-effort enumeration without running the full SuiteConfig
-    initialiser. We need three fields per test (``name``, ``model``,
-    ``tb``); the rest of the test config (sweep scripts, plusargs,
-    UVM block) is irrelevant to the picker and might fail to
-    deserialize on a project's stale ``tests.yaml``. Falling back to
-    [] on parse error keeps the discovery walk robust to broken
-    sibling projects, matching :func:`model_discovery._read_model_names`.
-    """
+    """Return the tests in one file without building a full ``SuiteConfig``; an unparseable file yields ``[]``."""
 
     try:
         data = from_yaml(SuiteConfigFile, path.read_text())
@@ -120,12 +94,7 @@ def _read_test_entries(path: Path) -> list[TestEntry]:
             error=str(exc),
         )
         return []
-    # Map ``testbench`` field on each test to the actual TB name; the
-    # serde-side TestConfigFile keeps ``tb`` as a string reference,
-    # not a resolved object. Tests whose tb reference is missing are
-    # dropped — the same SuiteConfig initialiser would have raised
-    # ``testbench_missing``, so silently skipping here keeps the
-    # listing useful even when the suite has a broken test.
+    # Tests that reference an undefined testbench are skipped.
     tb_names = {tb.name for tb in data.testbenches}
     out: list[TestEntry] = []
     for t in data.tests:
@@ -143,10 +112,9 @@ def _read_test_entries(path: Path) -> list[TestEntry]:
 
 
 def list_tests(root: Path, tests_file: Path | None = None) -> list[TestEntry]:
-    """Enumerate every test in the project. With ``tests_file``
-    set, only that file is scanned (matches ``--tests-file`` pin
-    semantics on the CLI). Stable ordering: by tests-file path then
-    by test name within each file.
+    """List the tests in the project, or only in ``tests_file`` when given.
+
+    Ordered by file path, then by position within each file.
     """
 
     if tests_file is not None:
@@ -162,9 +130,7 @@ def list_tests(root: Path, tests_file: Path | None = None) -> list[TestEntry]:
 
 
 def find_matches(tests_files: list[Path], test_name: str) -> list[TestMatch]:
-    """Return every ``(tests_file, test_name)`` pair where ``tests_file``
-    contains an entry named ``test_name``.
-    """
+    """Return one match for each file in ``tests_files`` that defines ``test_name``."""
 
     matches: list[TestMatch] = []
     for tf in tests_files:
@@ -179,15 +145,9 @@ def resolve_test(
     *,
     tests_file: Path | None = None,
 ) -> tuple[Path, TestConfig]:
-    """Resolve ``test_name`` to the owning ``tests.yaml`` + resolved
-    :class:`TestConfig`.
+    """Resolve ``test_name`` to its ``tests.yaml`` and :class:`TestConfig`.
 
-    - ``tests_file`` set → load directly via SuiteConfig, no walk.
-    - ``tests_file`` unset → walk the project root; error on zero or
-      multiple matches with a guide pointing at ``--tests-file``.
-
-    Same shape as :func:`model_discovery.resolve_model` so the hub's
-    HTTP layer can share its error-translation logic.
+    With ``tests_file`` the file is loaded directly. Otherwise the project is searched, and zero or several matches raise ``FatalRtlBuddyError`` pointing at ``--tests-file``.
     """
 
     from ..config.suite import SuiteConfig

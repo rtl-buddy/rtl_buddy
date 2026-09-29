@@ -1,16 +1,11 @@
-/* rtl-buddy hub theme — single source of design tokens for every hub app
- * (landing, view SPA, graph pane, cov pane, phys pane). Served same-origin
- * by the hub at /hub/theme.css, so consuming it keeps a pane self-contained
- * in the sense that matters: no route off localhost.
+/* rtl-buddy hub theme: design tokens for every hub app, served same-origin
+ * at /hub/theme.css.
  *
- * LIGHT is the default; dark activates on prefers-color-scheme: dark or an
- * explicit data-theme attribute (the attribute wins in both directions).
+ * Light is the default; dark applies on prefers-color-scheme: dark or an
+ * explicit data-theme attribute, which wins in both directions.
  *
- * Type rule: mono for data (ids, paths, signals, numbers, machine values),
- * sans permitted for chrome and prose.
- *
- * Reconciled from the 2026-08-06 audits of graph_page.html and the
- * rtl-buddy-view viewer SPA.
+ * Type rule: mono for data (ids, paths, signals, numbers), sans for chrome
+ * and prose.
  */
 
 :root {
@@ -28,7 +23,7 @@
   --fg-muted:    #64748b;   /* secondary / labels */
   --fg-faint:    #94a3b8;   /* disabled / placeholders */
 
-  /* -- accent (one family; the SPA's indigo retires) ------------------ */
+  /* -- accent --------------------------------------------------------- */
   --accent:          #2563eb;  /* interactive: links, focus, selection */
   --accent-contrast: #ffffff;  /* text on accent-filled controls */
 
@@ -51,37 +46,28 @@
   --col-test-cocotb:   #557c0b;
   --col-other:         #6b7688;
 
-  /* -- coverage ramp (shared by schematic overlay, graph pane, cov app) */
+  /* -- coverage ramp (schematic overlay, graph pane, cov app) --------- */
   /* continuous fill: hsl(pct * 1.2, var(--tint-s), var(--cov-l))        */
-  --tint-s:   70%;         /* saturation — the ramp's other free term */
-  --cov-l:    82%;         /* the SPA's existing pastel ramp */
+  --tint-s:   70%;         /* saturation */
+  --cov-l:    82%;         /* lightness */
   --cov-none: #e5e7eb;     /* no-data */
   --cov-0:    hsl(0,   70%, 82%);
   --cov-50:   hsl(60,  70%, 82%);
   --cov-100:  hsl(120, 70%, 82%);
 
-  /* -- heat ramp (area + power; the phys pane, rtl_buddy#558) --------- */
-  /* SEQUENTIAL, unlike the coverage ramp above, because the quantity is:
-   * coverage has a bad end and a good end and earns a red-to-green hue
-   * sweep, while area and power only have "more". So the hue is fixed
-   * and the ramp runs on lightness — continuous fill:
-   *   hsl(var(--heat-h), var(--heat-s), calc(--heat-l0 -> --heat-l1))
-   * interpolated by a 0..1 fraction the consumer sets, which keeps the
-   * two endpoints here rather than in a pane's script.            */
-  --heat-h:    18;         /* one warm hue for the whole ramp */
+  /* -- heat ramp (area and power; phys pane) -------------------------- */
+  /* Fixed hue; lightness runs from --heat-l0 to --heat-l1 by a 0..1
+   * fraction the consumer sets.                                       */
+  --heat-h:    18;         /* hue */
   --heat-s:    85%;
-  --heat-l0:   96%;        /* a row that is a rounding error */
-  --heat-l1:   66%;        /* the row that owns the design */
+  --heat-l0:   96%;        /* smallest value */
+  --heat-l1:   66%;        /* largest value */
   --heat-none: #e5e7eb;    /* not measured — same grey as --cov-none */
 
-  /* -- brand (rtl-buddy-art: chip logo + series-3 mascot) -------------- */
-  /* Identity marks ONLY — the wordmark, the logo glyph, the favicon.
-   * Never the interactive accent (that stays --accent) and never mixed
-   * into status colours (--ok stays its own green: the brand green is a
-   * saturated yellow-green that fails as text on white).
-   * Artwork usage is minimal by decree: favicon on every page, a ~40px
-   * logo beside the landing wordmark, and at most a small (~120px)
-   * mascot in empty states. No heroes, no card art, no watermarks. */
+  /* -- brand (chip logo and mascot) ------------------------------------ */
+  /* Identity marks only (wordmark, logo, favicon); not for interactive
+   * or status colours. Artwork: favicon on every page, a ~40px logo by
+   * the landing wordmark, at most a ~120px mascot in empty states.     */
   --brand-ink:   #16232c;   /* logo chip / mascot outline charcoal */
   --brand-green: #4fb201;   /* logo check + pins (mascot nodes #6ab117) */
   --brand-red:   #e81603;   /* mascot cable */
@@ -143,9 +129,7 @@
     --cov-50:   hsl(60,  70%, 38%);
     --cov-100:  hsl(120, 70%, 38%);
 
-    /* The heat ramp inverts on dark: "more" is still darker-to-the-eye
-     * on light, but on a dark ground the loud end has to be the LIGHTER
-     * one or the heaviest row disappears into the page. */
+    /* On dark the largest value is the lighter end of the heat ramp. */
     --heat-h:    18;
     --heat-s:    60%;
     --heat-l0:   16%;
@@ -157,11 +141,8 @@
   }
 }
 
-/* explicit override beats the media query, both directions:
- * :root[data-theme="light"] { ...light values... }
- * :root[data-theme="dark"]  { ...dark values...  }
- * (generated, not hand-maintained, so the three blocks cannot drift)
- */
+/* The :root[data-theme="light"] and :root[data-theme="dark"] blocks below
+ * are generated from the two palettes above. */
 
 /* ==== generated below this line — `python -m rtl_buddy.hub.theme` rewrites it ==== */
 /* An app that pins its theme (a ?theme= param, a toggle, a host
