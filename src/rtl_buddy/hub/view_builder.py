@@ -1,17 +1,6 @@
-"""On-demand view.json generator for ``rb hub start --model NAME``.
+"""view.json generator for ``rb hub start --model NAME``.
 
-Wraps the existing ``RtlBuddyView`` subprocess wrapper. Result is
-written to a stable path under ``<project_root>/.rtl-buddy/cache/``
-so the HTTP server's ``/view.json`` endpoint can find it
-deterministically across hub restarts. The (re)generation runs
-synchronously at hub start; cache invalidation isn't modelled here
-because rtl-buddy-view itself is fast enough on the demo designs we
-target (~1-3s) and "restart hub to refresh design" is the expected
-workflow.
-
-If/when on-demand re-generation per HTTP request becomes desirable
-(model picker, file-watch refresh), wrap this builder in a
-content-hash cache; the layout was chosen to make that drop-in.
+Runs ``rtl-buddy-view`` through ``RtlBuddyView`` and writes the result to a stable path under ``<project_root>/.rtl-buddy/cache/``, where the HTTP server's ``/view.json`` endpoint finds it. Each call regenerates the file; nothing is cached across calls.
 """
 
 from __future__ import annotations
@@ -33,15 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 def _assert_view_schema_supported(out_path: Path, label: str) -> None:
-    """Floor the view.json contract at its major version.
+    """Raise ``FatalRtlBuddyError`` unless ``view.json`` is an object whose ``schema_version`` has a supported major version.
 
-    rtl_buddy pins no rtl-buddy-view version, so the package floor can't
-    guarantee the on-disk ``view.json`` shape. The renderer versions that
-    shape with a top-level ``schema_version`` (currently ``"1.1"``); 1.x
-    is forward-compatible (minor bumps add fields only), so we accept any
-    ``1.x`` and reject a future, breaking major before the SPA loads it.
-    Independent of the package version: a too-new renderer can be
-    installed against an old rtl_buddy and this still catches it.
+    Minor versions of the supported major are accepted.
     """
     try:
         raw = json.loads(out_path.read_text(encoding="utf-8"))
@@ -50,12 +33,7 @@ def _assert_view_schema_supported(out_path: Path, label: str) -> None:
             f"{label}: rtl-buddy-view produced an unreadable view.json "
             f"at {out_path} ({exc})."
         ) from exc
-    # Validate the shape before dereferencing it. `json.loads` succeeding
-    # only says the bytes were valid JSON: a top-level `[]` parses fine and
-    # then raises `AttributeError` on `.get` below — which is not the
-    # `FatalRtlBuddyError` the caller's cleanup catches, so the rejected file
-    # stayed at the active cache path and `_serve_active_view_json` served it
-    # with a 200 (#469).
+    # A non-object top level must raise FatalRtlBuddyError here, not AttributeError on .get.
     if not isinstance(raw, dict):
         raise FatalRtlBuddyError(
             f"{label}: rtl-buddy-view produced a view.json whose top level is "
@@ -79,36 +57,25 @@ def _assert_view_schema_supported(out_path: Path, label: str) -> None:
 
 
 def cache_dir(project_root: Path) -> Path:
-    """Cache lives under ``.rtl-buddy/cache/`` so it sits next to
-    hub.toml + hub.log — one project-local directory,
-    .gitignore-friendly via existing ``.rtl-buddy/`` ignores."""
+    """Return the view cache directory, ``<project_root>/.rtl-buddy/cache``."""
     return project_root / ".rtl-buddy" / "cache"
 
 
 def view_json_path(project_root: Path, model_name: str) -> Path:
-    """Per-model output path. Stable so the SPA's ``/view.json``
-    request always hits the same file regardless of generation state.
-    """
+    """Return the per-model ``view.json`` path."""
     return cache_dir(project_root) / f"view-{model_name}.json"
 
 
 def view_json_path_for_tb(project_root: Path, model_name: str, tb_name: str) -> Path:
-    """Per-(model, tb) output path for the TB-rooted view (#99 / 6b).
+    """Return the ``view.json`` path for a TB-rooted view.
 
-    Cache key is ``(model, tb)`` rather than the test name: two tests
-    that share a testbench elaborate to byte-identical trees, so they
-    should share the artefact and the second click is a hot-cache
-    hit. The path layout mirrors the artefact tree the CLI wrapper
-    writes (``artefacts/hier/<model>/tb/<tb>/hier.f``) so an
-    operator reading either side recognises the same key.
+    Keyed on ``(model, tb)`` rather than the test name, so tests sharing a testbench share the file.
     """
     return cache_dir(project_root) / f"view-{model_name}-tb-{tb_name}.json"
 
 
 def _resolve_viewer_executable() -> str:
-    """Locate the ``rtl-buddy-view`` binary or raise a clear error.
-    Same lookup convention as ``RtlBuddyView.run``.
-    """
+    """Return the ``rtl-buddy-view`` path from ``PATH``, or raise ``FatalRtlBuddyError``."""
     exe = shutil.which("rtl-buddy-view")
     if exe is None:
         raise FatalRtlBuddyError(
@@ -128,33 +95,13 @@ def build_view_json(
     test_cfg: TestConfig | None = None,
     test_suite_dir: Path | None = None,
 ) -> Path:
-    """Generate view.json for ``model_cfg`` at the stable cache path
-    and return it. Raises ``FatalRtlBuddyError`` when the
-    rtl-buddy-view subprocess fails — the hub treats a missing
-    view.json as a fatal startup error, not a degraded mode.
+    """Generate ``view.json`` for ``model_cfg`` and return its path.
 
-    When ``model_cfg.cdc`` is set, the builder first calls
-    ``cdc_builder.build_domain_map`` to produce the clock-domain map
-    via ``rtl-buddy-cdc --emit-domain-map`` and feeds the result as
-    ``--cdc-annotations`` to rtl-buddy-view. The SPA's clock overlay
-    toggle then has data to render against. Models without ``cdc:``
-    fall through to the no-overlay path unchanged.
+    Raises ``FatalRtlBuddyError`` when ``rtl-buddy-view`` fails or its output is unreadable or has an unsupported schema major version; the file is removed in those cases.
 
-    When ``axi_perf_source`` is supplied (via the hub's
-    ``--axi-perf-from`` start-up flag), the builder also passes
-    ``--overlay axi-perf=<path>`` so rtl-buddy-view bakes the
-    throughput overlay AND records the test/suite_dir metadata that
-    the SPA's "Open in marimo" button reads to skip its prompt
-    (Phase 2.5 of the marimo umbrella). When not supplied, the
-    no-overlay path runs unchanged.
-
-    When ``test_cfg`` is supplied (#99 / 6b), the renderer is invoked
-    in TB-rooted mode (``--tb-top <tb.toplevel>`` alongside the
-    existing ``--top <model.name>``) and the cache path keys on the
-    ``(model, tb)`` pair via :func:`view_json_path_for_tb`. The DUT-
-    side CDC overlay is unchanged — the domain map's instance paths
-    still resolve into the rendered tree because they live under the
-    DUT subtree, which appears in TB elaboration too.
+    - ``model_cfg.cdc`` set: a clock-domain map from ``cdc_builder.build_domain_map`` is passed as ``--cdc-annotations``.
+    - ``axi_perf_source`` set: passed as ``--overlay axi-perf=<path>``, which also records the test and suite dir for the SPA's "Open in marimo" button.
+    - ``test_cfg`` set: the viewer renders from the testbench top (``--tb-top``), and the output goes to the ``(model, tb)`` path from :func:`view_json_path_for_tb`.
     """
 
     cache = cache_dir(project_root)
@@ -169,14 +116,7 @@ def build_view_json(
         else f"rb hub --model {model_cfg.name}"
     )
 
-    # Before anything that can raise. `view.json` lives in the *persistent*
-    # `.rtl-buddy/cache/`, and `viewer_http._serve_active_view_json` serves
-    # whatever is at this path with a 200 — so a rebuild that dies in
-    # `build_domain_map` (a bad `cdc:` back-pointer) or in
-    # `_resolve_viewer_executable` (no viewer installed) would leave the SPA
-    # happily serving the previous build's hierarchy for the active model,
-    # with no indication that the rebuild failed (#469). Clearing first makes
-    # a failed rebuild show as a missing view rather than a stale one.
+    # Clear first: a failed rebuild must not leave the previous view.json to be served.
     removed = clear_stale_artefacts([out_path], owner=label)
     if removed:
         log_event(
@@ -187,9 +127,7 @@ def build_view_json(
             paths=removed,
         )
 
-    # Build the domain map before invoking the viewer so a misconfigured
-    # cdc: back-pointer fails before we spend cycles on rtl-buddy-view.
-    # Import locally to avoid a hub→cdc import cycle.
+    # Local import avoids a hub-to-cdc import cycle.
     from . import cdc_builder
 
     domain_map = cdc_builder.build_domain_map(
@@ -223,11 +161,7 @@ def build_view_json(
     )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():
-        # The renderer can write the file and *then* fail. Leaving a view.json
-        # from a build that errored is worse than leaving none: the hub
-        # remembers the failure, but `_serve_active_view_json` tests the file
-        # before it consults that memory and would answer 200 with the
-        # half-built bytes (#469).
+        # The renderer can write the file and then fail.
         clear_stale_artefacts([out_path], owner=label)
         raise FatalRtlBuddyError(
             f"{label}: rtl-buddy-view exited with "
@@ -238,13 +172,7 @@ def build_view_json(
     try:
         _assert_view_schema_supported(out_path, label)
     except Exception:
-        # Same reasoning: a view.json we have just rejected as unreadable or
-        # schema-incompatible must not stay on disk to be served anyway.
-        # Every exception, not just `FatalRtlBuddyError`: the validator
-        # dereferences the parsed JSON, so a shape it does not anticipate
-        # would otherwise leave the file at the active cache path for
-        # `_serve_active_view_json` to hand out with a 200. Re-raised at
-        # once, so nothing is masked.
+        # Catch every exception, not just FatalRtlBuddyError: a rejected file must not stay on disk.
         clear_stale_artefacts([out_path], owner=label)
         raise
     return out_path

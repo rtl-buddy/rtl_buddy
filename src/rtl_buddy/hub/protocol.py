@@ -1,32 +1,6 @@
-"""Wire envelope codec for the rtl-buddy-hub protocol v1.
+"""Wire envelope codec for hub protocol v1.
 
-The spec lives in ``docs/hub-protocol.md`` of the
-``rtl-buddy/rtl-buddy-sch`` repo and is enforced by the JSON Schema at
-``schemas/hub-protocol-v1.json`` (vendored alongside this module as
-:mod:`rtl_buddy.hub.schema`).
-
-This module exposes:
-
-* :data:`PROTOCOL_VERSION` — the integer ``v`` field shared by every
-  envelope; mismatch is a fatal protocol error.
-* :class:`Origin` / :class:`Kind` — the closed enums from the spec.
-* :class:`Envelope` — frozen dataclass mirroring §2 of the spec.
-* :func:`encode` / :func:`decode` — round-trip ``Envelope`` ↔ JSON
-  with schema validation on both sides.
-* :func:`new_id` — UUID4 generator used by message creators.
-
-The schema is loaded once at import time; both encode and decode call
-into the same validator so a malformed payload fails fast with a
-:class:`HubProtocolError`. The validator is intentionally strict
-(``additionalProperties: false`` on every payload object); unknown
-fields are caller bugs, not forward-compatibility points.
-
-Unknown ``type`` strings are NOT a schema error — §11 of the spec
-requires clients to silently drop unknown types so a v1 client and a
-future v1.1 hub can co-exist. The validator only enforces the envelope
-shape (``v``, ``id``, ``origin``, ``kind``, ``type``); ``type``-specific
-payload subschemas are matched conditionally via ``if/then`` and skip
-unknown types.
+The spec is ``docs/hub-protocol.md`` in ``rtl-buddy/rtl-buddy-sch``, enforced by the JSON Schema vendored as :mod:`rtl_buddy.hub.schema`. The schema is strict (``additionalProperties: false`` on payloads) and is applied on both :func:`encode` and :func:`decode`. Unknown ``type`` strings are valid; only the envelope shape is checked for them, and clients drop them (§11).
 """
 
 from __future__ import annotations
@@ -45,7 +19,7 @@ PROTOCOL_VERSION: int = 1
 
 
 class Origin(str, Enum):
-    """``origin`` field — the conceptual originator of a message."""
+    """The ``origin`` field: which client sent a message. The hub allows one client per origin."""
 
     VIEW = "view"
     WAVE = "wave"
@@ -53,43 +27,17 @@ class Origin(str, Enum):
     CLI = "cli"
     NOTEBOOK = "notebook"
     GRAPH = "graph"
-    """The hub-served design-knowledge-graph pane (``GET /gph``).
-
-    The ORIGIN stays ``graph`` though the page moved to ``/gph`` in
-    #423 — a page rename does not touch the wire.
-
-    Its own origin rather than a second ``view``: the graph pane and the
-    schematic SPA are meant to be open at the same time (clicking a
-    module in the graph *selects it in the schematic*), and the hub
-    allows one client per origin — sharing ``view`` would make the two
-    panes evict each other."""
+    """The design-knowledge-graph pane (``GET /gph``). Separate from ``view`` so both can be open at once."""
 
     COV = "cov"
-    """The hub-served coverage pane (``GET /cov``).
-
-    Its own origin for the same reason ``GRAPH`` has one: the point of
-    the pane is to drive the *other* panes — clicking a cold line opens
-    it in the editor and selects the instance in the schematic — so it
-    has to be open alongside them, and one client per origin means a
-    shared slot would evict whichever tab you looked at second."""
+    """The coverage pane (``GET /cov``). Separate origin so it can be open alongside the other panes."""
 
     PHYS = "phys"
-    """The hub-served synth+power pane (``GET /phy``).
-
-    Its own origin for the third time, and for the third time because
-    the pane's job is to drive the others: clicking the module that owns
-    the area selects it in the schematic and opens it in the editor, so
-    the phys tab is open *alongside* them rather than instead of one.
-    One client per origin means a shared ``view`` or ``cov`` slot would
-    have the two tabs evicting each other.
-
-    The ORIGIN is ``phys`` while the page is ``/phy`` and the label is
-    ``phy`` — the same split ``GRAPH``/``/gph`` already carries. A page
-    route and a display name are chrome; the wire is protocol v1."""
+    """The synth and power pane (``GET /phy``). The origin is ``phys`` although the route and label are ``phy``."""
 
 
 class Kind(str, Enum):
-    """``kind`` field — envelope category."""
+    """The ``kind`` field: envelope category."""
 
     EVENT = "event"
     REQUEST = "request"
@@ -100,10 +48,7 @@ class Kind(str, Enum):
 class HubProtocolError(Exception):
     """Raised when a wire payload violates the v1 envelope or schema.
 
-    Carries the offending JSON pointer in :attr:`json_pointer` when the
-    failure was reported by the JSON Schema validator (else ``""``).
-    Mirrors the ``bad_request`` error code from the protocol's error
-    catalog.
+    :attr:`json_pointer` is the failing location when the schema validator reported it, else ``""``.
     """
 
     def __init__(self, message: str, *, json_pointer: str = "") -> None:
@@ -113,12 +58,9 @@ class HubProtocolError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Envelope:
-    """A protocol message after parsing — mirrors §2 of the spec.
+    """A parsed protocol message (§2 of the spec).
 
-    ``id`` is the request/response correlation key and the dedupe key
-    for the loop-prevention LRU (§6). Callers SHOULD generate new IDs
-    with :func:`new_id`; the codec validates the canonical UUID shape
-    but does not generate IDs on its own.
+    ``id`` correlates requests and responses and is the loop-prevention dedupe key (§6). Generate it with :func:`new_id`; the codec validates but never generates it.
     """
 
     origin: Origin
@@ -166,11 +108,7 @@ _VALIDATOR: Draft202012Validator = Draft202012Validator(_SCHEMA)
 
 
 def schema() -> dict[str, Any]:
-    """Return a deep copy of the vendored JSON Schema.
-
-    Useful for tests that want to drift-check against the source-of-
-    truth copy in ``rtl-buddy-sch/schemas/hub-protocol-v1.json``.
-    """
+    """Return a deep copy of the vendored JSON Schema."""
 
     return json.loads(json.dumps(_SCHEMA))
 
@@ -188,13 +126,9 @@ def _validate(obj: dict[str, Any]) -> None:
 
 
 def decode(raw: str | bytes | dict[str, Any]) -> Envelope:
-    """Parse a wire payload into an :class:`Envelope`.
+    """Parse a JSON string, bytes or pre-parsed dict into an :class:`Envelope`.
 
-    Accepts either a JSON string/bytes (the line-delimited TCP
-    transport) or a pre-parsed dict (the WebSocket layer, which has
-    already framed). Raises :class:`HubProtocolError` if the payload is
-    not valid JSON, fails the schema, or carries the wrong protocol
-    version.
+    Raises :class:`HubProtocolError` if the payload is not valid JSON, fails the schema, or has the wrong protocol version.
     """
 
     if isinstance(raw, (str, bytes)):
@@ -227,13 +161,9 @@ def decode(raw: str | bytes | dict[str, Any]) -> Envelope:
 
 
 def encode(envelope: Envelope) -> str:
-    """Serialize an :class:`Envelope` to a wire-ready JSON string.
+    """Serialize an :class:`Envelope` to compact JSON without a trailing newline.
 
-    The line-delimited TCP transport expects exactly one envelope per
-    line; this function returns the JSON without a trailing newline so
-    the transport layer can frame consistently across NDJSON and
-    WebSocket. Validates against the schema before returning so a
-    bug in caller code surfaces here, not at the remote peer.
+    Raises :class:`HubProtocolError` if the envelope fails the schema.
     """
 
     obj = envelope.to_dict()
@@ -249,12 +179,9 @@ def make_error(
     context: dict[str, Any] | None = None,
     in_reply_to: str | None = None,
 ) -> Envelope:
-    """Construct an ``error`` envelope per §3 of the spec.
+    """Build an ``error`` envelope.
 
-    ``in_reply_to`` is the request ``id`` to echo back; when ``None``
-    (e.g. a spontaneous error not tied to a request) a fresh UUID is
-    generated. ``code`` MUST be one of the strings enumerated in the
-    spec's error table; otherwise the schema validator rejects it.
+    ``in_reply_to`` is the request ``id`` to echo; with ``None`` a fresh id is generated. ``code`` must be in the spec's error table or encoding fails.
     """
 
     payload: dict[str, Any] = {"code": code, "message": message}
@@ -275,7 +202,7 @@ def make_hello(
     version: str,
     capabilities: list[str],
 ) -> Envelope:
-    """Construct a ``hello`` request envelope (§4.3, §11)."""
+    """Build a ``hello`` request envelope."""
 
     return Envelope(
         origin=client,
@@ -296,7 +223,7 @@ def make_welcome(
     server_version: str,
     registered_clients: list[Origin],
 ) -> Envelope:
-    """Construct the hub's ``welcome`` response envelope (§4.3)."""
+    """Build the hub's ``welcome`` response envelope."""
 
     return Envelope(
         origin=Origin.CLI,
@@ -312,11 +239,7 @@ def make_welcome(
 
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
-    """One finding inside a ``diagnostics_set`` event payload.
-
-    The fields mirror the v1 schema; optional ones default to ``None``
-    and are stripped on the wire by :func:`make_diagnostics_set`.
-    """
+    """One finding in a ``diagnostics_set`` payload; ``None`` fields are omitted on the wire."""
 
     file: str
     line: int
@@ -327,11 +250,7 @@ class Diagnostic:
     end_col: int | None = None
     code: str | None = None
     instance_path: str | None = None
-    """Optional producer-side hint: the ``view.json`` instance path
-    this finding pertains to. When present, consumers can skip the
-    file+line range resolver — required for diagnostics reported
-    against an instantiated module's own body, since ``node.source``
-    only describes the instantiation site in the parent."""
+    """The ``view.json`` instance path this finding belongs to. Lets consumers skip file-and-line resolution, which cannot locate findings in an instantiated module's own body."""
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -359,12 +278,9 @@ def make_diagnostics_set(
     source: str,
     items: list[Diagnostic] | list[dict[str, Any]],
 ) -> Envelope:
-    """Construct a ``diagnostics_set`` event envelope.
+    """Build a ``diagnostics_set`` event envelope.
 
-    ``items`` may be a list of :class:`Diagnostic` dataclasses (which
-    get serialised) or already-dict-shaped payloads (passed through).
-    An empty list is the legal "clear all diagnostics for this source"
-    signal — see the v1 schema description for ``diagnostics_set``.
+    ``items`` holds :class:`Diagnostic` objects or ready-made dicts. An empty list clears the source's diagnostics.
     """
 
     payload_items: list[dict[str, Any]] = []

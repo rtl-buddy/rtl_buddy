@@ -1,18 +1,6 @@
-"""``rb hub send`` — one-shot CLI for driving the hub.
+"""``rb hub send``: one-shot commands that connect to the hub as origin ``cli``, send one envelope and exit.
 
-Each subcommand opens an :class:`~rtl_buddy.hub.client.HubClient`
-(origin ``cli``), sends one envelope, and exits. Requests block on
-the response and print the payload as JSON; events fire-and-forget by
-default. Exit codes follow the rest of ``rb``:
-
-* ``0`` — success.
-* ``1`` — graceful failure (hub returned ``error``, timeout, malformed
-  arguments).
-* ``2`` — no hub running for this project / ``$RTL_BUDDY_HUB`` unset.
-
-Aimed at agents and scripts; users mostly drive the hub through the
-SPA / surfer / nvim peers, but having a one-liner for every wire type
-keeps the protocol testable from a shell prompt.
+Requests print the response payload as JSON; events return immediately. Exit codes: 0 success, 1 failure (hub error, timeout, bad arguments), 2 no hub running.
 """
 
 from __future__ import annotations
@@ -42,13 +30,8 @@ send_app = typer.Typer(
 )
 
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
 def _open_or_exit() -> HubClient:
-    """Connect or exit with the appropriate code + message."""
+    """Connect to the hub, or exit with code 2 (no hub) or 1 (other client error)."""
 
     try:
         return HubClient.connect()
@@ -61,7 +44,7 @@ def _open_or_exit() -> HubClient:
 
 
 def _print_response(env: Envelope) -> None:
-    """Render the response/error payload as pretty JSON to stdout."""
+    """Print the response payload as JSON, or report an ``error`` envelope and exit 1."""
 
     payload = env.payload if isinstance(env.payload, dict) else {}
     if env.kind is Kind.ERROR:
@@ -76,34 +59,19 @@ def _print_response(env: Envelope) -> None:
 
 
 _COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
-"""``cov_focus.metric`` enum, mirroring the wire schema.
-
-Spelled here rather than imported from :data:`rtl_buddy.cov.raw.METRICS`
-so ``rb hub send`` keeps working against a hub whose model vocabulary has
-moved on — the wire contract is the schema, not the local model."""
+"""``cov_focus.metric`` enum from the wire schema, kept independent of :data:`rtl_buddy.cov.raw.METRICS`."""
 
 
 _PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
-"""``phys_focus.metric`` enum, mirroring the wire schema.
-
-Spelled here rather than derived from the physical model for the reason
-:data:`_COV_METRICS` is: the wire contract is the schema, and ``rb hub
-send`` has to keep working against a hub whose model vocabulary has
-moved on. ``dynamic`` is in the list although no model column carries
-it — it is internal + switching, summed by the pane.
-"""
+"""``phys_focus.metric`` enum from the wire schema, kept independent of the physical model."""
 
 
 _FILE_LINE_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
-"""Parses ``path/to/file.sv:42`` and ``path/to/file.sv:42:5``.
-
-Greedy ``.+?`` plus anchored ``\\d+`` for ``line`` lets Windows-style
-``C:\\path:42`` parse correctly — the colon after the drive letter
-isn't followed by a pure-digit ``line``."""
+"""Matches ``path/to/file.sv:42`` and ``path/to/file.sv:42:5``, including Windows drive-letter paths."""
 
 
 def _parse_file_line(spec: str) -> tuple[str, int, int]:
-    """``path/to/file.sv:42[:5]`` → ``("path/to/file.sv", 42, 5)``."""
+    """Parse ``file:line[:col]`` into ``(file, line, col)``; ``col`` defaults to 1."""
 
     m = _FILE_LINE_RE.match(spec)
     if m is None:
@@ -115,11 +83,7 @@ def _parse_file_line(spec: str) -> tuple[str, int, int]:
 
 
 def _parse_diag(spec: str) -> dict[str, object]:
-    """``file:line:severity:code:message...`` → diagnostic item dict.
-
-    Splits on the first four colons so the message can contain colons
-    freely (column attribution lives in ``rb hub send open`` instead).
-    """
+    """Parse ``file:line:severity:code:message`` into a diagnostic item; the message may contain colons."""
 
     parts = spec.split(":", 4)
     if len(parts) != 5:
@@ -148,11 +112,6 @@ def _parse_diag(spec: str) -> dict[str, object]:
         "code": code,
         "message": message,
     }
-
-
-# ---------------------------------------------------------------------------
-# state events (broadcast)
-# ---------------------------------------------------------------------------
 
 
 @send_app.command("select", help="Broadcast selection_changed{instance_path}.")
@@ -218,14 +177,11 @@ def cmd_open(
 @send_app.command(
     "graph-focus",
     help=(
-        "Broadcast graph_focus{node} — point the hub's design knowledge "
-        "graph pane (http://127.0.0.1:<http_port>/gph) at one node of "
-        "artefacts/graph/graph.json. NODE is a graph node id: "
-        "'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke', "
-        "'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` "
-        "returns and docs/concepts/graph.md lists. The hub caches the "
-        "focus and replays it to the pane on connect, so sending this "
-        "before the browser tab is open works."
+        "Broadcast graph_focus{node}: point the graph pane (/gph) at one node. "
+        "NODE is a graph node id as returned by `rb graph query`, such as "
+        "'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke' or "
+        "'covitem:dma#DMA-COV-1'. The hub replays the focus when the pane "
+        "connects, so it can be sent before the tab is open."
     ),
 )
 def cmd_graph_focus(
@@ -243,15 +199,12 @@ def cmd_graph_focus(
 @send_app.command(
     "cov-focus",
     help=(
-        "Broadcast cov_focus{target} — point the hub's coverage pane "
-        "(http://127.0.0.1:<http_port>/cov) at one target of the run's "
-        "coverage model. TARGET is prefixed: 'file:design/blk.sv', "
-        "'module:blk', or 'test:verif/blk#basic'; an unprefixed string "
-        "is read as a file path. --metric foregrounds one coverage kind, "
-        "--line scrolls a file target to a line, and --item names a "
-        "branch/toggle/expression bin or an SVA cover point. The hub "
-        "caches the focus and replays it to the pane on connect, so "
-        "sending this before the browser tab is open works."
+        "Broadcast cov_focus{target}: point the coverage pane (/cov) at one target. "
+        "TARGET is 'file:design/blk.sv', 'module:blk' or 'test:verif/blk#basic'; "
+        "an unprefixed string is a file path. --metric foregrounds one coverage "
+        "kind, --line scrolls a file target to a line, and --item names a bin or "
+        "SVA cover point. The hub replays the focus when the pane connects, so it "
+        "can be sent before the tab is open."
     ),
 )
 def cmd_cov_focus(
@@ -279,10 +232,7 @@ def cmd_cov_focus(
         ),
     ] = None,
 ) -> None:
-    # Emit what was validated, not the raw argument: the pane matches
-    # these strings, so a trailing space is a miss rather than a near
-    # miss, and the MCP ``cov_focus`` tool must put the same bytes on the
-    # wire for the same input.
+    # The pane matches these strings exactly, and the MCP cov_focus tool must send the same bytes.
     target = target.strip()
     if not target:
         raise typer.BadParameter("target must be non-empty")
@@ -295,8 +245,7 @@ def cmd_cov_focus(
         item = item.strip()
         if not item:
             raise typer.BadParameter("--item must be non-empty")
-    # Optional keys are omitted rather than sent as null: the wire schema
-    # is additionalProperties:false with no nullable hints.
+    # Omit unset keys: the wire schema has no nullable fields.
     payload: dict[str, object] = {"target": target}
     if metric is not None:
         payload["metric"] = metric
@@ -311,15 +260,12 @@ def cmd_cov_focus(
 @send_app.command(
     "phys-focus",
     help=(
-        "Broadcast phys_focus{target} — point the hub's synth+power pane "
-        "(http://127.0.0.1:<http_port>/phy) at one target of the run's "
-        "physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or "
-        "'module:alu'; an unprefixed string is read as an instance path. "
-        "--metric foregrounds one physical metric. The graph pane "
-        "(/gph) follows the same message: it turns its heat overlay on "
-        "and highlights the module the target belongs to. The hub caches "
-        "the focus and replays it to both on connect, so sending this "
-        "before the browser tabs are open works."
+        "Broadcast phys_focus{target}: point the synth and power pane (/phy) at one target. "
+        "TARGET is 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is an "
+        "instance path. --metric foregrounds one physical metric. The graph pane (/gph) "
+        "also follows: it turns on its heat overlay and highlights the target's module. "
+        "The hub replays the focus when either pane connects, so it can be sent before "
+        "the tabs are open."
     ),
 )
 def cmd_phys_focus(
@@ -335,10 +281,7 @@ def cmd_phys_focus(
         ),
     ] = None,
 ) -> None:
-    # Emit what was validated, not the raw argument — same rule as
-    # `cov-focus`: the pane matches these strings, so a trailing space is
-    # a miss rather than a near miss, and a later MCP `phys_focus` tool
-    # has to put the same bytes on the wire for the same input.
+    # The pane matches these strings exactly, and the MCP phys_focus tool must send the same bytes.
     target = target.strip()
     if not target:
         raise typer.BadParameter("target must be non-empty")
@@ -347,8 +290,7 @@ def cmd_phys_focus(
             f"metric must be one of {'/'.join(_PHYS_METRICS)}, got {metric!r}",
             param_hint="--metric",
         )
-    # Optional keys are omitted rather than sent as null: the wire schema
-    # is additionalProperties:false with no nullable hints.
+    # Omit unset keys: the wire schema has no nullable fields.
     payload: dict[str, object] = {"target": target}
     if metric is not None:
         payload["metric"] = metric
@@ -360,19 +302,16 @@ def cmd_phys_focus(
     "diagnose",
     help=(
         "Push a diagnostics_set bundle for SOURCE. Each ITEM is "
-        "<file>:<line>:<severity>:<code>:<message>. --clear sends an empty "
-        "set (clears any cached diagnostics from SOURCE). Use "
-        "--instance to attach a view.json instance_path hint that consumers "
-        "(the SPA's on-canvas badge layer in particular) use as a fast path "
-        "instead of the file+line resolver."
+        "<file>:<line>:<severity>:<code>:<message>. --clear sends an empty set, "
+        "clearing SOURCE's diagnostics. --instance attaches a view.json "
+        "instance_path so consumers skip file-and-line resolution."
     ),
 )
 def cmd_diagnose(
     source: Annotated[
         str,
         typer.Argument(
-            help="producer key (e.g. 'rtl-buddy-cdc', 'claude-analysis'); "
-            "latest-writer-wins per source on the hub's cache"
+            help="producer key, e.g. 'rtl-buddy-cdc'; a new push replaces the previous one for the same key"
         ),
     ],
     items: Annotated[
@@ -387,12 +326,7 @@ def cmd_diagnose(
         Optional[str],
         typer.Option(
             "--instance",
-            help=(
-                "Optional view.json instance_path to attach to every ITEM in "
-                "this push. Use when the producer knows which instance a finding "
-                "pertains to (most one-shot agent calls do); skip for batch "
-                "lint output where each item lives at a different file:line."
-            ),
+            help="view.json instance_path to attach to every ITEM in this push.",
         ),
     ] = None,
 ) -> None:
@@ -410,11 +344,6 @@ def cmd_diagnose(
             it["instance_path"] = instance_path
     with _open_or_exit() as h:
         h.emit("diagnostics_set", {"source": source, "items": parsed_items})
-
-
-# ---------------------------------------------------------------------------
-# hub-handled requests
-# ---------------------------------------------------------------------------
 
 
 @send_app.command(
@@ -468,11 +397,6 @@ def cmd_resolve_signal_to_view(
                 {"signal": signal, "wave_scope": wave_scope},
             )
         )
-
-
-# ---------------------------------------------------------------------------
-# peer-routed requests
-# ---------------------------------------------------------------------------
 
 
 @send_app.command(
@@ -625,8 +549,7 @@ def cmd_wave_move(
     with _open_or_exit() as h:
         target = to_index
         if before is not None:
-            # Resolve the target id to a visible index via a live item-list
-            # snapshot, then move the block to sit at that slot.
+            # Look up the item's current visible index.
             env = h.request("wave_get_items", {})
             if env.kind is Kind.ERROR:
                 return _print_response(env)
@@ -695,11 +618,8 @@ def cmd_view_pan(
 @send_app.command(
     "overlay",
     help=(
-        "Flip an overlay's enabled state on the SPA. Built-in NAMES "
-        "are 'clock', 'reset', 'axi-perf', 'wave'; an unknown name is "
-        "a no-op. Use --on / --off (default --on). Useful for agents "
-        "or scripted demos that want to direct the user's attention "
-        "to a specific overlay layer without a UI click."
+        "Enable or disable an overlay on the schematic. NAME is 'clock', 'reset', "
+        "'axi-perf' or 'wave'; an unknown name does nothing."
     ),
 )
 def cmd_view_overlay(
@@ -720,9 +640,7 @@ def cmd_view_overlay(
     "capture",
     help=(
         "Ask the schematic (rtl-buddy-sch) to snapshot the current graph and "
-        "write it to --out. Graph-only — surrounding panels are not "
-        "captured. Useful for agents that want to look at what the "
-        "user is seeing without a browser screenshot tool."
+        "write it to --out. Only the graph is captured, not the surrounding panels."
     ),
 )
 def cmd_capture(

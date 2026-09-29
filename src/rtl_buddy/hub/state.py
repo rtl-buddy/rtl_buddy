@@ -1,15 +1,6 @@
-"""In-memory selection / cursor / scope cache.
+"""One-slot cache per coordinate type (selection, cursor, scope, focus, diagnostics).
 
-The hub keeps a one-slot cache per coordinate type so a client that
-reconnects mid-session can ask "what is the current selection?"
-without forcing the other clients to re-broadcast. This is the
-minimum amount of server-side state required to keep cross-view sync
-useful across reconnects; everything else (the design tree, the
-waveform, the source files) is owned by the producers.
-
-This module ships the cache structures only — no observers, no
-broadcast plumbing. PR 2 (the WS/TCP server) layers an asyncio pub/sub
-on top.
+A client that connects mid-session reads the current values from here instead of asking the other clients to re-broadcast. The cache holds data only; the server does the broadcasting.
 """
 
 from __future__ import annotations
@@ -22,19 +13,17 @@ from .protocol import Origin
 
 @dataclass(frozen=True, slots=True)
 class Selection:
-    """Last broadcast ``selection_changed`` payload + its origin."""
+    """Last broadcast ``selection_changed`` payload and its origin."""
 
     instance_path: tuple[str, ...]
-    """Always a tuple — a single-path selection is length 1 and the
-    multi-driver collapse case (§7) is length > 1. Stored as a tuple
-    so the dataclass stays hashable / frozen."""
+    """One element for a single-path selection, several for a multi-driver collapse."""
 
     origin: Origin
 
 
 @dataclass(frozen=True, slots=True)
 class SignalSelection:
-    """Last broadcast ``signal_selected`` payload + its origin."""
+    """Last broadcast ``signal_selected`` payload and its origin."""
 
     signal: str
     wave_scope: str
@@ -43,12 +32,9 @@ class SignalSelection:
 
 @dataclass(frozen=True, slots=True)
 class CursorTime:
-    """Last broadcast ``cursor_time_changed`` payload + its origin.
+    """Last broadcast ``cursor_time_changed`` payload and its origin.
 
-    Time is preserved as the on-wire decimal string to avoid JSON
-    number precision loss; the only consumers of the numeric value are
-    surfer (which deserialises it itself) and resolvers that don't
-    care about the time at all.
+    ``t_fs`` stays the on-wire decimal string to avoid JSON number precision loss.
     """
 
     t_fs: str
@@ -57,7 +43,7 @@ class CursorTime:
 
 @dataclass(frozen=True, slots=True)
 class WaveScope:
-    """Last broadcast ``scope_changed`` payload + its origin."""
+    """Last broadcast ``scope_changed`` payload and its origin."""
 
     wave_scope: str
     origin: Origin
@@ -65,13 +51,9 @@ class WaveScope:
 
 @dataclass(frozen=True, slots=True)
 class GraphFocus:
-    """Last broadcast ``graph_focus`` payload + its origin.
+    """Last broadcast ``graph_focus`` payload and its origin.
 
-    Cached for the same reason a selection is: ``rb hub send graph-focus``
-    is most useful *before* the pane is open ("show me this node"), and
-    the replay on registration is what makes that ordering work — the
-    pane opens already focused instead of dropping the event that
-    preceded it.
+    Replayed on registration so a pane opened after ``rb hub send graph-focus`` starts focused.
     """
 
     node: str
@@ -80,17 +62,9 @@ class GraphFocus:
 
 @dataclass(frozen=True, slots=True)
 class CovFocus:
-    """Last broadcast ``cov_focus`` payload + its origin.
+    """Last broadcast ``cov_focus`` payload and its origin.
 
-    Cached for the same reason :class:`GraphFocus` is: ``rb hub send
-    cov-focus`` is at its most useful *before* the tab is open ("show me
-    what is cold in this block"), and the replay on registration is what
-    makes that ordering work.
-
-    The three optional narrowing hints ride along rather than being
-    dropped, so a replayed focus lands on the same line and metric the
-    original did — a replay that kept only ``target`` would silently
-    downgrade "this branch, on line 84" to "this file".
+    Replayed on registration like :class:`GraphFocus`. The optional ``metric``, ``line`` and ``item`` hints are kept so the replay lands on the same place as the original.
     """
 
     target: str
@@ -100,11 +74,7 @@ class CovFocus:
     item: Optional[str] = None
 
     def payload(self) -> dict[str, Any]:
-        """The on-wire payload, with unset hints omitted.
-
-        The schema is ``additionalProperties: false`` and every hint is
-        optional, so ``None`` has to be absent rather than null.
-        """
+        """The on-wire payload; unset hints are omitted, not null."""
 
         out: dict[str, Any] = {"target": self.target}
         if self.metric is not None:
@@ -118,19 +88,9 @@ class CovFocus:
 
 @dataclass(frozen=True, slots=True)
 class PhysFocus:
-    """Last broadcast ``phys_focus`` payload + its origin.
+    """Last broadcast ``phys_focus`` payload and its origin.
 
-    Cached for the same reason :class:`CovFocus` is: ``rb hub send
-    phys-focus`` is at its most useful *before* the tab is open ("show
-    me what owns the area in this block"), and the replay on
-    registration is what makes that ordering work.
-
-    One optional narrowing hint rather than coverage's three: an area or
-    power figure has no line and no bin, so ``metric`` — which of
-    cells/area/leakage/dynamic/total to foreground — is the only thing
-    left to say about a target. It rides along on the replay rather than
-    being dropped, or a replayed focus would silently downgrade "this
-    module, on leakage" to "this module".
+    Replayed on registration like :class:`GraphFocus`. The optional ``metric`` (cells, area, leakage, dynamic or total) is kept on replay.
     """
 
     target: str
@@ -138,11 +98,7 @@ class PhysFocus:
     metric: Optional[str] = None
 
     def payload(self) -> dict[str, Any]:
-        """The on-wire payload, with an unset metric omitted.
-
-        The schema is ``additionalProperties: false`` and ``metric`` is
-        optional, so ``None`` has to be absent rather than null.
-        """
+        """The on-wire payload; an unset metric is omitted, not null."""
 
         out: dict[str, Any] = {"target": self.target}
         if self.metric is not None:
@@ -154,10 +110,7 @@ class PhysFocus:
 class DiagnosticsBundle:
     """Last ``diagnostics_set`` payload for one producer ``source``.
 
-    Stored as the raw on-wire items so the server can replay them to
-    newly-connected clients verbatim. The empty-tuple case is a "this
-    source has been cleared" record — replaying it tells late joiners
-    to clear the source on their side too.
+    ``items`` holds the raw on-wire items for verbatim replay. An empty tuple records that the source was cleared.
     """
 
     items: tuple[dict[str, Any], ...]
@@ -168,10 +121,7 @@ class DiagnosticsBundle:
 class HubState:
     """One-slot cache per coordinate type.
 
-    Mutable on purpose; the server replaces fields wholesale when a new
-    state event is observed. Lock-free in this module — the asyncio
-    server in PR 2 holds the only writer task so no synchronisation is
-    needed there either.
+    Not thread-safe; the server's single writer task replaces fields wholesale.
     """
 
     selection: Optional[Selection] = None
@@ -186,18 +136,12 @@ class HubState:
     registered_clients: set[Origin] = field(default_factory=set)
 
     active_model: Optional[str] = None
-    """Currently-active model name when the hub is serving the viewer
-    HTTP layer and has been pointed at a model (via ``rb hub start
-    --model NAME`` or a SPA ``?model=`` switch). ``None`` when no
-    model is in play yet (e.g. the hub was started without
-    ``--serve-viewer`` or before any model has been selected).
+    """Active model name, or ``None`` when no model has been selected.
 
-    Owned by :class:`ViewerHTTP`; mirrored here so the ``state_snapshot``
-    request type and any other server-side consumer can read the
-    current model without reaching into the HTTP layer."""
+    Owned by :class:`ViewerHTTP`; mirrored here for ``state_snapshot``."""
 
     def reset(self) -> None:
-        """Clear all cached slots (used on ``waveforms_loaded`` and tests)."""
+        """Clear all cached slots except ``registered_clients`` and ``active_model``."""
 
         self.selection = None
         self.signal_selection = None
