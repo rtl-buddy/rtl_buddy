@@ -2,23 +2,12 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The MCP SDK boundary — the only module here that imports ``mcp``.
+"""The MCP SDK boundary: the only module here that imports ``mcp``.
 
-Everything the server *answers* lives in :mod:`rtl_buddy.mcp.toolset` as
-plain Python. This module does two things: transcribe those specs onto
-the wire, and run the stdio transport.
-
-The SDK is an **optional dependency** (``pip install rtl_buddy[mcp]``).
-It is imported lazily and behind :func:`require_sdk`, so a project that
-never serves MCP does not pay for it and — more to the point — an
-``import rtl_buddy`` on a machine without it does not explode.
-
-The SDK's own API moved between its 1.x and 2.x lines: 1.x registered
-handlers with ``@server.list_tools()`` decorators, 2.x passes
-``on_list_tools`` / ``on_call_tool`` to the constructor. Both are
-supported by :func:`build_server`, which is why the tool *definitions*
-are kept out of this file: a third API shape should cost one adapter,
-not a rewrite of the tools.
+It maps the specs from :mod:`rtl_buddy.mcp.toolset` onto the wire and runs the
+stdio transport. The SDK is optional (``pip install rtl_buddy[mcp]``) and is
+imported lazily behind :func:`require_sdk`. :func:`build_server` supports SDK
+1.x (decorators) and 2.x (constructor callbacks).
 """
 
 from __future__ import annotations
@@ -62,12 +51,7 @@ def sdk_version() -> str | None:
 
 
 def require_sdk() -> None:
-    """Fail with an actionable message when the SDK is absent.
-
-    A missing optional dependency is a configuration error, not a crash:
-    :class:`FatalRtlBuddyError` exits 2 with the install hint and the
-    reminder that ``--machine`` answers the same questions.
-    """
+    """Raise :class:`FatalRtlBuddyError` (exit 2) with an install hint when the SDK is absent."""
     if not sdk_available():
         raise FatalRtlBuddyError(_MISSING_SDK_HINT)
 
@@ -77,17 +61,15 @@ def _text_content(text: str) -> dict:
 
 
 def tool_payload(spec: ToolSpec) -> dict:
-    """One tool's wire form (camelCase, as MCP spells it)."""
+    """One tool's wire form, with camelCase keys."""
     return spec.to_mcp_dict()
 
 
 def result_payload(envelope: dict) -> dict:
     """A tool result on the wire.
 
-    The envelope goes out as one pretty-printed JSON text block *and* as
-    ``structuredContent``, because MCP hosts are split on which they
-    read. ``isError`` mirrors the envelope's ``ok`` so a host that only
-    looks at the flag still sees the failure.
+    The envelope is sent both as a JSON text block and as ``structuredContent``.
+    ``isError`` is the negation of the envelope's ``ok``.
     """
     return {
         "content": [_text_content(json.dumps(envelope, indent=2, ensure_ascii=True))],
@@ -117,10 +99,9 @@ def _rtl_buddy_version() -> str:
 
 
 def build_server(toolset: Toolset):
-    """Construct an SDK ``Server`` wired to ``toolset``.
+    """Return an SDK ``Server`` wired to ``toolset``.
 
-    Returns the SDK object. Raises :class:`FatalRtlBuddyError` when the
-    SDK is not installed.
+    Raises :class:`FatalRtlBuddyError` when the SDK is not installed.
     """
     require_sdk()
     import mcp.types as types
@@ -137,10 +118,7 @@ def build_server(toolset: Toolset):
 
     server_version = _rtl_buddy_version()
 
-    # --- SDK 1.x: handlers are registered with decorators --------------
-    # ``Server.list_tools`` is the 1.x decorator factory; 2.x dropped it
-    # in favour of constructor callbacks. Its presence is the version
-    # test — cheaper and more honest than parsing ``mcp.__version__``.
+    # ``Server.list_tools`` exists only in SDK 1.x; its presence is the version test.
     if not hasattr(Server, "list_tools"):
 
         async def on_list_tools(_ctx, _params=None):
@@ -176,9 +154,7 @@ def build_server(toolset: Toolset):
 def serve_stdio(toolset: Toolset) -> int:
     """Run the stdio MCP server until the client disconnects.
 
-    Blocking. Returns 0 on a clean shutdown, including the ``Ctrl-C`` /
-    host-hangup case, which is a normal end of session rather than a
-    failure.
+    Blocks. Returns 0 on clean shutdown, including ``Ctrl-C`` and host hangup.
     """
     require_sdk()
     import anyio

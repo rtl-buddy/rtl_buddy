@@ -1,4 +1,4 @@
-# Headless GDS -> PNG renderer driven by KLayout.
+# Headless GDS -> PNG renderer for KLayout.
 #
 # Invoked as:
 #   klayout -zz -nc \
@@ -6,8 +6,7 @@
 #     -rd out_png=... -rd width=2048 -rd height=2048 \
 #     -r tools/openroad/gds2png.py
 #
-# All inputs come in via klayout `-rd` globals; pya is the klayout
-# Python API, only available inside a klayout invocation.
+# Inputs are klayout `-rd` globals; `pya` exists only inside klayout.
 import pya  # noqa: F401 - provided by klayout -r runtime
 
 lv = pya.LayoutView()
