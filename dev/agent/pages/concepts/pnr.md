@@ -368,6 +368,8 @@ rb pnr -c pnr/top/pnr.yaml --synth
 
 With `--synth`, a run also waits for the blocks its synthesis entry names under its own `blocks:`, pulled in like the run's own blocks, because that synthesis reads their abstracts. Every synthesis the plan will run is resolved before the first run starts, so a misspelt `synth:` stops the command up front rather than after its blocks' P&R.
 
+`-j N` runs up to `N` P&R runs at once. Each run starts, in plan order, as soon as every block it names has finished, so independent blocks harden side by side and a top still waits for all of its own. Results are reported in plan order. Each run is a whole OpenROAD session with its own [`threads:`](#openroad-threads), so size the two together; the default, `-j 1`, runs the plan one run at a time. A synthesis two runs share still runs once — the second waits for it. Every artefact tree the plan writes is locked before the first run starts. A run that crashes rather than failing is reported as `FAIL` with `fail_stage: error` and the exception in its description, blocks its consumers, and leaves every other run's row in the results, with or without `-j`.
+
 A synthesis that does not pass fails its P&R run with `fail_stage: synth`, which blocks that run's consumers like any failed block. Each P&R row carries the synthesis it ran as `synth` (`name`, `suite`, `result`, `desc`). `--accept-stale` applies to the syntheses as well.
 
 ## Run P&R
