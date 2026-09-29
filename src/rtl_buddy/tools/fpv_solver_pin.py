@@ -1,16 +1,4 @@
-"""Solver version probing + pin enforcement for ``rb fpv``.
-
-When a user pins solver versions via ``cfg-fpv-tools.opts.solver-versions``
-(e.g. ``{yices: "2.6.4", z3: "4.13.0"}``), this module probes each
-binary on PATH and raises :class:`FatalRtlBuddyError` if the resolved
-version does not match the pin exactly.
-
-The motivation is reproducible CI: ``sby`` happily picks whatever
-solver binary it finds locally, and a runner with a different version
-can silently change proof outcomes (passes at depth N on one machine,
-times out on another). Pinning + hard-fail surfaces the drift instead
-of letting it ride.
-"""
+"""Probe solver binaries and enforce ``cfg-fpv-tools.opts.solver-versions`` pins for ``rb fpv``."""
 
 from __future__ import annotations
 
@@ -24,9 +12,7 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
-# How to probe each known solver. Each entry: (binary name, args,
-# regex that captures the version string from stdout+stderr). Add
-# entries here as new engines are exercised.
+# solver -> (binary, args, regex capturing the version from stdout+stderr)
 _PROBES: dict[str, tuple[str, list[str], str]] = {
     "yices": ("yices-smt2", ["--version"], r"Yices\s+(\S+)"),
     "z3": ("z3", ["--version"], r"Z3 version\s+(\S+)"),
@@ -38,13 +24,10 @@ _PROBES: dict[str, tuple[str, list[str], str]] = {
 
 
 def probe_solver_version(solver: str) -> str | None:
-    """Return the installed version of ``solver`` or ``None`` if absent.
+    """Return the installed version of ``solver`` (a ``solver-versions`` key), or ``None``.
 
-    ``solver`` is the short name used in the ``solver-versions`` pin
-    map (yices / z3 / boolector / bitwuzla / btormc / abc). Returns
-    ``None`` when the binary is missing, the probe times out, or the
-    version regex does not match — the caller treats all three as a
-    pin-check failure.
+    ``None`` means the solver is unknown, the binary is missing, the probe timed out
+    or the version output did not match.
     """
     if solver not in _PROBES:
         log_event(
@@ -78,12 +61,10 @@ def probe_solver_version(solver: str) -> str | None:
 
 
 def check_solver_pins(pins: dict[str, str]) -> dict[str, str]:
-    """Probe every pinned solver and raise on mismatch.
+    """Return the resolved version of every pinned solver.
 
-    Returns a map of resolved versions on success (useful for logging
-    into the run artefacts). Raises :class:`FatalRtlBuddyError` with a
-    single error listing every mismatch / missing solver — users want
-    one report, not N failures across reruns.
+    Raises:
+      FatalRtlBuddyError: one error listing every mismatched or unprobeable solver.
     """
     resolved: dict[str, str] = {}
     failures: list[str] = []
