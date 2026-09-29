@@ -56,7 +56,7 @@ def _rebase_section_links(
     site_url: str,
     base_url: str,
 ) -> str:
-    """Preserve link targets after moving a section away from its source page."""
+    """Rewrite relative links in a section to absolute site URLs."""
 
     def replace(match: re.Match[str]) -> str:
         destination = match.group("destination")
@@ -119,7 +119,7 @@ def export(
     site_url: str,
     base_url: str,
 ) -> dict:
-    """Write static agent resources and return the catalog payload."""
+    """Write the static agent resources under ``output`` and return the catalog."""
     output = output.resolve()
     if output == Path(output.anchor):
         raise ValueError("refusing to replace a filesystem root")
