@@ -12,11 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT = REPO_ROOT / "docs" / "reference" / "cli.md"
 
-# Top-level commands, in the same order `rtl-buddy --help` lists them. Each
-# command is rendered, then the generator auto-discovers and recurses into any
-# subcommands it exposes (so command groups like `axi-profile`, `mut`, `hub`,
-# `verible`, `skill`, `spec`, and `docs` get a section per subcommand without
-# this list having to enumerate them).
+# Top-level commands in `rtl-buddy --help` order. Subcommands are discovered by recursion.
 SUBCOMMANDS = [
     "test",
     "randtest",
@@ -87,13 +83,7 @@ def run_help(*args):
 
 
 def extract_subcommands(help_text):
-    """Parse subcommand names out of a Typer/Rich ``Commands`` help panel.
-
-    Returns the command names in the order they appear, or an empty list if the
-    command is a leaf (no ``Commands`` panel). Command rows start one space
-    after the box border; wrapped description lines are indented further and are
-    skipped, so multi-line descriptions do not produce phantom commands.
-    """
+    """Return the subcommand names in a Typer/Rich ``Commands`` help panel, or [] for a leaf."""
     cmds = []
     in_panel = False
     for line in help_text.splitlines():
@@ -110,7 +100,7 @@ def extract_subcommands(help_text):
 
 
 def scrub_help_text(help_text):
-    """Remove commands/options intentionally omitted from the docs reference."""
+    """Remove the cdc commands and options, which the reference omits."""
     lines = []
     skip_wrapped = False
     for line in help_text.splitlines():
@@ -132,10 +122,9 @@ def scrub_help_text(help_text):
 
 
 def emit_command(path, parts):
-    """Render ``path`` (a list of command words) and recurse into subcommands.
+    """Render ``path`` (a list of command words) and recurse into its subcommands.
 
-    A subcommand whose ``--help`` fails (e.g. it needs a connection) is skipped
-    rather than aborting the whole reference.
+    A subcommand whose ``--help`` fails is skipped with a warning.
     """
     try:
         help_text = run_help(*path)

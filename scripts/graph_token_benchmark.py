@@ -1,51 +1,21 @@
 #!/usr/bin/env python3
-"""Token-efficiency benchmark: graph queries vs raw-file context (#381).
+"""Token-efficiency benchmark: graph queries vs raw-file context.
 
-Graphify's ~70x tokens-per-query claim is measured on software corpora.
-This script measures *our* number, on an RTL project, before SKILL.md
-steers every agent at the graph.
+Six questions an agent asks about an RTL project are answered twice: through
+`rb --machine graph query|path|explain` against `artefacts/graph/graph.json`,
+and through filelist, grep and whole-file reads. Each answer is checked against
+a hand-written key (`EXPECTED_*`); a wrong route is reported as wrong.
 
-Six questions an agent actually asks are answered twice:
+Tokens are estimated as `len(text) // 4` over the commands typed plus the bytes
+read back. `rb graph build` is not counted because the graph is built once per
+source change.
 
-* the **graph route** — `rb --machine graph query|path|explain` against
-  `artefacts/graph/graph.json`, the surface #380 built;
-* the **raw route** — filelist / grep / whole-file reads, which is what
-  an agent does in a tree with no graph.
-
-Four of them are single-hop-ish lookups. The last two exist to test the
-structural hypothesis — that the graph pays off when the answer is a
-long chain or a transitive closure: a five-hop traceability walk
-(coverage item down to the golden model), and change impact on a piece
-of IP that half the tree instantiates.
-
-Both routes end in a machine-comparable answer, and both are checked
-against a hand-written key (`EXPECTED`, verified against the template
-sources by hand — see the per-task comments). A route that gets the
-answer wrong does not get to be the cheap one.
-
-Token proxy
------------
-`len(text) // 4`, applied to **every byte that crosses into the agent's
-context**: the command the agent types plus the bytes it reads back. No
-tokenizer is imported on purpose — a real BPE would tie the published
-number to one vendor's vocabulary and add a dependency, and the ratio
-between two routes is insensitive to the constant. Four characters per
-token is the usual English/JSON rule of thumb; identifier-dense JSON
-runs a little denser than that, and both routes pay the same bias.
-
-What is *not* counted: `rb graph build` itself. The graph is an index —
-it is built once per source change and amortized over every question,
-exactly like a `ctags` database. Its cost is reported separately in the
-header, not charged per query.
-
-Usage
------
+Usage:
     uv run python scripts/graph_token_benchmark.py --project /path/to/rtl-buddy-project-template
     uv run python scripts/graph_token_benchmark.py -p ... --markdown   # docs table
     uv run python scripts/graph_token_benchmark.py -p ... --json       # machine
 
-The project must have been through `rb graph build` (all tiers) and
-`rb graph results` first; the script refuses to guess.
+The project needs `rb graph build` (all tiers) and `rb graph results` first.
 """
 
 from __future__ import annotations
@@ -67,7 +37,7 @@ GRAPH_JSON = Path("artefacts/graph/graph.json")
 
 
 def approx_tokens(text: str) -> int:
-    """The documented proxy: four characters to a token, floor."""
+    """Estimate tokens as four characters to a token, rounded down."""
     return len(text) // CHARS_PER_TOKEN
 
 
@@ -78,7 +48,7 @@ def approx_tokens(text: str) -> int:
 
 @dataclass
 class Step:
-    """One thing the agent did, and everything it had to read back."""
+    """One command and the output read back."""
 
     command: str
     output: str
@@ -109,12 +79,9 @@ class RouteRun:
 
 
 class Route:
-    """Records every command a route runs and what it read back.
+    """Records every command a route runs and its output.
 
-    The rule both routes are held to: an answer may only be derived from
-    text this object handed back. Neither route is allowed to peek at
-    the project any other way — otherwise the token count stops being
-    the cost of the answer.
+    Routes may derive an answer only from text returned here.
     """
 
     def __init__(self, runner: Runner, name: str) -> None:
@@ -125,13 +92,9 @@ class Route:
 
     # -- graph route -------------------------------------------------
     def machine(self, *args: str) -> dict:
-        """`rb --machine <args>` -> the payload, with the cost recorded.
+        """Run `rb --machine <args>` and return the payload.
 
-        Repeating a command is free, on the same rule that makes a
-        second `read()` free: an agent does not re-run a query whose
-        answer is still in its transcript. It matters from the
-        change-impact task onwards, where the hub node of the walk is
-        also one of the roots the walk visits.
+        A repeated command is not charged again.
         """
         printed = "rb --machine " + " ".join(_quote(a) for a in args)
         if printed in self._asked:
@@ -155,7 +118,7 @@ class Route:
 
     # -- raw route ---------------------------------------------------
     def shell(self, argv: list[str], *, allow_fail: bool = True) -> str:
-        """A shell command an agent would run, and its output."""
+        """Run a shell command in the project and return its stdout."""
         proc = subprocess.run(
             argv,
             cwd=self.runner.project,
@@ -170,12 +133,7 @@ class Route:
         return out
 
     def read(self, rel: str) -> str:
-        """Read a whole file, the way an agent's file-read tool does.
-
-        A file already in the transcript is free the second time: an
-        agent does not re-read what it is still looking at, and charging
-        it twice would flatter the graph route.
-        """
+        """Read a whole file. A repeated read is not charged again."""
         if rel in self._read:
             return self._read[rel]
         text = (self.runner.project / rel).read_text()
@@ -184,7 +142,7 @@ class Route:
         return text
 
     def read_lines(self, rel: str, start: int, end: int) -> str:
-        """Read a cited span — the "locate in the graph, cite from source" half."""
+        """Read lines ``start`` to ``end`` (1-based, inclusive) of a file."""
         lines = (self.runner.project / rel).read_text().splitlines(keepends=True)
         text = "".join(lines[start - 1 : end])
         self.run.steps.append(Step(f"sed -n '{start},{end}p' {rel}", text))
@@ -206,17 +164,11 @@ class Runner:
 
 
 # ---------------------------------------------------------------------------
-# task 1 — trace a signal: driver + loads across the hierarchy
+# task 1: trace a signal, driver and loads across the hierarchy
 # ---------------------------------------------------------------------------
 #
 # "In demo_cdc_open_top, what drives rst_b_n and which instances load it?"
-#
-# Hand-checked against design/demo_cdc_open/demo_cdc_open_top.sv (and the
-# four child modules for the port directions):
-#   line 52-54  u_reset_sync_b (cdc_open_reset_sync) .rst_n  -> output -> DRIVER
-#   line 66-68  u_flag_sync    (cdc_open_sync)       .rst_n  -> input  -> load
-#   line 71-79  u_gray_bus     (cdc_open_gray_bus)   .dst_rst_n -> input -> load
-#   line 82-92  u_handshake    (cdc_open_handshake)  .dst_rst_n -> input -> load
+# The key is checked against design/demo_cdc_open/demo_cdc_open_top.sv.
 
 TRACE_TOP = "demo_cdc_open_top"
 TRACE_SIGNAL = "rst_b_n"
@@ -224,13 +176,10 @@ TOP_INSTANCE = f"inst:{TRACE_TOP}/{TRACE_TOP}"
 
 
 def trace_signal_graph(route: Route) -> dict:
-    """One explain for the parent, one per child, one per port hit.
+    """Explain the parent, each child, and each port hit.
 
-    There is no node for an internal net — `rst_b_n` exists in the graph
-    only as the `actual` on a `connects` edge — so the walk is: the top
-    instance's children, each child's `connects` edges, and then the
-    ports those edges land on, because a port's `dir` is what separates
-    the driver from the loads and only `explain` reports it.
+    An internal net has no node; it appears only as the `actual` on a
+    `connects` edge. Only `explain` reports a port's `dir`.
     """
     top = route.machine("graph", "explain", TOP_INSTANCE, "--no-results")
     children = [
@@ -258,7 +207,7 @@ def trace_signal_graph(route: Route) -> dict:
 
 
 def trace_signal_raw(route: Route) -> dict:
-    """grep for the net, read the parent, read every child module it binds."""
+    """grep for the net, read the parent and every child module it binds."""
     route.shell(["grep", "-rn", TRACE_SIGNAL, "design"])
     top_file = f"design/demo_cdc_open/{TRACE_TOP}.sv"
     top_text = route.read(top_file)
@@ -293,27 +242,20 @@ def _trace_answer(hits: list[tuple[str, str, str]]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# task 2 — which tests exercise block X, at which reglvl?
+# task 2: which tests exercise block X, at which reglvl
 # ---------------------------------------------------------------------------
 #
-# Hand-checked against verif/*/tests.yaml (every `model: "demo_tiny_alu"`):
-#   verif/demo_tiny_alu        basic, ops_sweep, flags, random   reglvl 0
-#   verif/demo_tiny_alu_cocotb cocotb_random, cocotb_flags       reglvl 1000
-#   verif/demo_tiny_alu_sc     basic_sc                          reglvl 0
-# demo_tiny_alu_subsys runs model demo_tiny_alu_subsys_top and is *not*
-# an answer — the name-substring trap this task exists to catch.
+# The key is checked against verif/*/tests.yaml. `demo_tiny_alu_subsys` runs
+# model `demo_tiny_alu_subsys_top` and is not an answer: a name-substring trap.
 
 BLOCK = "demo_tiny_alu"
 MODEL_NODE = f"model:design/{BLOCK}/models.yaml#{BLOCK}"
 
 
 def tests_for_block_graph(route: Route) -> dict:
-    """model -> testbenches (`exercises`) -> tests (`runs_on`) -> reglvl.
+    """Walk model -> testbenches (`exercises`) -> tests (`runs_on`) -> reglvl.
 
-    Started from the model node rather than a keyword search on purpose:
-    `--type test demo_tiny_alu` would also score the *subsys* tests,
-    and a name is not evidence. `reglvl` is a node attribute, so the
-    last hop costs one `explain` per test.
+    Starts from the model node because a keyword search would also match the subsys tests.
     """
     model = route.machine("graph", "explain", MODEL_NODE, "--no-results")
     benches = [
@@ -339,7 +281,7 @@ def tests_for_block_graph(route: Route) -> dict:
 
 
 def tests_for_block_raw(route: Route) -> dict:
-    """grep the verif tree for the model name, read every suite that hits."""
+    """grep the verif tree for the model name and read every suite that hits."""
     grep = route.shell(["grep", "-rl", BLOCK, "--include=tests.yaml", "verif"])
     answer: dict[str, object] = {}
     for path in sorted(line for line in grep.splitlines() if line.strip()):
@@ -352,13 +294,11 @@ def tests_for_block_raw(route: Route) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# task 3 — test -> coverage item -> spec doc -> golden model
+# task 3: test -> coverage item -> spec doc -> golden model
 # ---------------------------------------------------------------------------
 #
-# Hand-checked: SAND-FUNC-FLAG-C-ADD is declared by block demo_tiny_alu
-# (spec/demo_tiny_alu/specs.yaml), documented by spec/demo_tiny_alu/README.md,
-# claimed by verif/demo_tiny_alu#flags and verif/demo_tiny_alu_cocotb#cocotb_flags,
-# and the block's golden model is spec/demo_tiny_alu/tiny_alu_model.py.
+# The key is checked against spec/demo_tiny_alu/specs.yaml, the block README,
+# and the two tests.yaml files that claim the item.
 
 COVITEM = "SAND-FUNC-FLAG-C-ADD"
 
@@ -366,11 +306,8 @@ COVITEM = "SAND-FUNC-FLAG-C-ADD"
 def traceability_graph(route: Route) -> dict:
     """`query` the item, then `explain` the block that declares it.
 
-    Depth 1, not 2: at depth 2 the block's other fifteen coverage items
-    are nearer than the doc and the golden model and the 25-neighbour
-    budget truncates before reaching them — a bigger answer that is
-    also an incomplete one. Two calls that terminate is the honest
-    route.
+    Depth 1: at depth 2 the block's other coverage items exhaust the
+    neighbour budget before the doc and golden model are reached.
     """
     payload = route.machine(
         "graph", "query", f"which tests cover {COVITEM}", "--depth", "1", "--no-results"
@@ -410,7 +347,7 @@ def traceability_graph(route: Route) -> dict:
 
 
 def traceability_raw(route: Route) -> dict:
-    """grep the id, read the suites that claim it and the spec that declares it."""
+    """grep the id, then read the suites that claim it and the spec that declares it."""
     grep = route.shell(["grep", "-rn", COVITEM, "verif", "spec"])
     tests: list[str] = []
     spec_files: list[str] = []
@@ -453,31 +390,22 @@ def _trace_chain(
 
 
 # ---------------------------------------------------------------------------
-# task 4 — summarize a module's interface for reuse
+# task 4: summarize a module's interface
 # ---------------------------------------------------------------------------
 #
-# Hand-checked against design/demo_tiny_alu/demo_tiny_alu.sv lines 18-30:
-# 10 ports (clk, rst, op, a, b in; y, zf, cf, nf, vf out) and one
-# parameter, W.
+# The key is checked against design/demo_tiny_alu/demo_tiny_alu.sv: ten ports
+# and one parameter, W.
 
 IFACE_MODULE = "demo_tiny_alu"
 
 
 def interface_graph(route: Route) -> dict:
-    """Locate the ports in the graph; their `dir` rides on the match.
+    """Query the module's ports and parameters; a match carries the port's `dir`.
 
-    `--depth 0` because the neighbourhood of a port is its instance
-    connections, which this question does not ask about. Since #388 a
-    match summary carries the node's own attributes, so a port's `dir`
-    arrives with the match and the route no longer reads the source
-    span it used to need for the directions.
-
-    `--limit 20` for ten ports is not slack: no edge ties a port to its
-    module, so this is a substring search, and every
-    `port:demo_tiny_alu_subsys_*.…` scores exactly the same 12. The ten
-    real ones sort first (``.`` sorts before ``_``), so a limit of
-    twice the expected answer is what proves the list is complete —
-    the run stops seeing the prefix before the limit does.
+    `--limit 20` is deliberate. No edge ties a port to its module, so the
+    search is by substring and the `demo_tiny_alu_subsys_*` ports score the
+    same. The real ports sort first, so a limit above the expected count
+    shows the list is complete.
     """
     ports = route.machine(
         "graph",
@@ -524,7 +452,7 @@ def interface_graph(route: Route) -> dict:
 
 
 def interface_raw(route: Route) -> dict:
-    """grep for the module declaration, then read the file it lives in."""
+    """grep for the module declaration and read that file."""
     grep = route.shell(["grep", "-rn", f"^module {IFACE_MODULE}", "design"])
     files = sorted(
         {line.split(":", 1)[0] for line in grep.splitlines() if line.strip()}
@@ -540,15 +468,11 @@ def interface_raw(route: Route) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# task 5 — the deep chain: coverage item -> tests -> testbenches -> DUT -> spec
+# task 5: the deep chain, coverage item -> tests -> testbenches -> DUT -> spec
 # ---------------------------------------------------------------------------
 #
-# Task 3 asks the same corner of the project one hop deep — item to the
-# block that declares it, and everything hangs off the block. This one
-# refuses the shortcut and walks the chain an engineer actually follows
-# when a coverage hole shows up in a report: *who* claims this item,
-# *what* do they elaborate, *which* RTL is that, and *what* is it
-# checked against. Five hops, three tiers, two suites:
+# Task 3 stops at the block that declares the item. This task follows the
+# chain from a coverage hole to what checks it:
 #
 #   covitem:demo_tiny_alu#SAND-FUNC-OP-ADD
 #     <- covers      test:verif/demo_tiny_alu#basic
@@ -562,28 +486,15 @@ def interface_raw(route: Route) -> dict:
 #     -> documented_by doc:spec/demo_tiny_alu/README.md
 #     <- implements  golden:spec/demo_tiny_alu/tiny_alu_model.py
 #
-# Hand-checked against verif/demo_tiny_alu/tests.yaml (basic, ops_sweep
-# both list SAND-FUNC-OP-ADD under covers:, both testbench: tb_top),
-# verif/demo_tiny_alu_cocotb/tests.yaml (cocotb_random lists it,
-# testbench: tb_alu_random; cocotb_flags does not),
-# design/demo_tiny_alu/models.yaml, spec/demo_tiny_alu/specs.yaml and
-# the two files in spec/demo_tiny_alu/. The item was picked because it
-# fans out across two suites and two *kinds* of testbench — an SV
-# tb_top and a cocotb bench whose toplevel is the DUT itself.
+# The item spans two suites and two testbench kinds: an SV tb_top and a cocotb
+# bench whose toplevel is the DUT.
 
 DEEP_ITEM = "SAND-FUNC-OP-ADD"
 DEEP_ITEM_NODE = f"covitem:demo_tiny_alu#{DEEP_ITEM}"
 
 
 def deep_chain_graph(route: Route) -> dict:
-    """One `explain` per node on the chain — no query, no keyword search.
-
-    The item's node id is derivable from the block and the id, so the
-    walk starts with `explain` rather than the `query` task 3 uses: a
-    keyword search would only re-find a node the chain already names.
-    Each hop is a different edge type in a different direction, which is
-    the point — this is the shape of question the graph is *for*.
-    """
+    """`explain` each node on the chain, starting from the item's derivable node id."""
     item = route.machine("graph", "explain", DEEP_ITEM_NODE, "--no-results")
     tests = [
         edge["peer"]
@@ -623,8 +534,7 @@ def deep_chain_graph(route: Route) -> dict:
 
     duts: list[tuple[str, str]] = []
     for module in sorted(set(dut_modules)):
-        # A lean edge names the peer but not its file (#388); the file is
-        # one more lean explain of the module node itself.
+        # Edges name the peer but not its file; explain the module node for it.
         payload = route.machine("graph", "explain", module, "--no-results")
         duts.append((payload["node"]["label"], payload["node"]["file"]))
 
@@ -646,14 +556,10 @@ def deep_chain_graph(route: Route) -> dict:
 
 
 def deep_chain_raw(route: Route) -> dict:
-    """grep the id, then follow the same chain through the files.
+    """grep the id, then follow the chain through the files.
 
-    The one grep lands on both ends of the chain at once — the suites
-    that claim the item and the spec that declares it — so the route
-    goes straight to `specs.yaml` rather than routing through
-    `models.yaml` to find it. That is what an agent with the grep output
-    in front of it would do, and skipping a file makes the raw route
-    cheaper, not the graph route dearer.
+    The grep finds both the claiming suites and the declaring spec, so the
+    route reads `specs.yaml` directly instead of going through `models.yaml`.
     """
     grep = route.shell(["grep", "-rn", DEEP_ITEM, "verif", "spec"])
     suite_files: list[str] = []
@@ -682,8 +588,7 @@ def deep_chain_raw(route: Route) -> dict:
 
     duts: list[tuple[str, str]] = []
     if model_names:
-        # A model's name is its elaboration top, so the declaration is
-        # what names the file — the same one-grep move task 4 makes.
+        # A model's name is its elaboration top, so its declaration names the file.
         argv = ["grep", "-rn"]
         for name in sorted(set(model_names)):
             argv += ["-e", f"^module {name}"]
@@ -735,48 +640,32 @@ def _strip_prefix(value: str, prefix: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# task 6 — change impact on a piece of IP that half the tree instantiates
+# task 6: change impact on IP that half the tree instantiates
 # ---------------------------------------------------------------------------
 #
 # "`design/common/ip_cdc_sync.sv` changed — which runs must re-run?"
 #
-# Inclusion criterion, decided here and stated in the docs: a run counts
-# when (a) one of the **project-root** regression manifests claims its
-# suite — `regression.yaml`, `synth_regression.yaml`,
-# `fpv_regression.yaml`, `fpga_regression.yaml` — and (b) the
-# elaboration that run drives contains an `ip_cdc_sync` instance. So a
-# synthesis of an affected top counts as much as a simulation of one:
-# the netlist changes either way.
+# A run counts when a project-root regression manifest (`regression.yaml`,
+# `synth_regression.yaml`, `fpv_regression.yaml`, `fpga_regression.yaml`)
+# claims its suite and the elaboration it drives contains an `ip_cdc_sync`
+# instance. Synthesis of an affected top counts like simulation.
 #
-# The template's CDC analyses are out of scope for **both** routes, and
-# not by preference. `cdc_regression.yaml` lives at `lint/cdc/`, not the
-# project root, so the graph's flow discovery — which is by root
-# filename — never sees it, and there is no root manifest for the raw
-# route to read either. Three analyses would otherwise be in the answer:
-# `ip_cdc_handshake_lint`, `demo_tiny_alu_subsys_lint` and
-# `demo_cdc_mem_macro_lint` (lint/cdc/cdc.yaml). Recorded rather than
-# silently dropped.
+# The template's CDC analyses are out of scope for both routes:
+# `cdc_regression.yaml` is at `lint/cdc/`, so graph flow discovery, which goes
+# by root filename, never sees it. It would add `ip_cdc_handshake_lint`,
+# `demo_tiny_alu_subsys_lint` and `demo_cdc_mem_macro_lint`.
 #
-# Hand-checked against the sources. Instantiations of `ip_cdc_sync`:
-#   design/common/ip_cdc_handshake.sv:52,55       u_sync_req, u_sync_ack
-#   design/common/ip_async_fifo.sv:62,84          u_sync_rptr, u_sync_wptr
-#   design/demo_tiny_alu_subsys/..._top.sv:114,180  u_sync_src, u_sync_empty
-# and transitively, through those:
-#   design/demo_cdc_mem_macro/mem_subsys.sv:35    ip_cdc_handshake u_wr_hs
-#   design/demo_tiny_alu_subsys/..._synth_top.sv:41  ..._top u_inner
-# `design/demo_cdc_open/cdc_open_sync.sv` names it in a comment only and
-# is *not* a consumer — the false positive the raw route pays to read.
-# The six affected models are the entries in design/common/models.yaml
-# (all three), design/demo_tiny_alu_subsys/models.yaml (top and
-# synth_top, but not `demo_tiny_alu_subsys_compute`, which pulls only
-# the ALU) and design/demo_cdc_mem_macro/models.yaml (mem_subsys).
-# `mem_subsys` is affected and no root manifest runs anything on it —
-# its only consumer is the out-of-scope CDC analysis.
+# The key is checked against the sources. Direct instantiators are
+# `ip_cdc_handshake`, `ip_async_fifo` and `demo_tiny_alu_subsys_top`; transitive
+# ones are `mem_subsys` and `demo_tiny_alu_subsys_synth_top`.
+# `demo_tiny_alu_subsys_compute` pulls only the ALU and is not affected.
+# `cdc_open_sync.sv` names the IP only in a comment and is a false positive the
+# raw route pays to read. `mem_subsys` is affected but no root manifest runs it.
 
 IP_BLOCK = "ip_cdc_sync"
 IP_MODULE = f"module:{IP_BLOCK}"
 
-#: The project-root manifests that decide what "must run" even means.
+#: Project-root manifests that define which runs exist.
 RUN_MANIFESTS = (
     "regression.yaml",
     "synth_regression.yaml",
@@ -786,23 +675,13 @@ RUN_MANIFESTS = (
 
 
 def change_impact_graph(route: Route) -> dict:
-    """`instance_of` already *is* the transitive closure — no walk needed.
+    """Read the transitive closure from the module's `instance_of` edges.
 
-    This is the one question where the graph's shape does something grep
-    cannot. Elaboration has already flattened the hierarchy, so every
-    instance of `ip_cdc_sync` anywhere in the project hangs off the
-    module node by a single edge, and the first component of an
-    instance's id is the root that elaboration was exported from. One
-    call therefore yields the complete set of affected elaborations,
-    with no fixpoint iteration and no false positives.
-
-    What it does not yield is the config side, so the rest is one
-    `explain` per affected root (to pick up its `maps_to` model, its
-    `elaborates_as` testbench or its `targets` run) and one per
-    testbench (for `runs_on`). Reading the run off the module rather
-    than off the model is deliberate: a run is affected when its
-    *elaboration* is, and a cocotb bench elaborates as the DUT module
-    itself, so the module is where both kinds of testbench meet.
+    Elaboration flattens the hierarchy, so every instance hangs off the module
+    node and the first component of an instance id is its elaboration root.
+    Each root is then explained for its `maps_to` model, `elaborates_as`
+    testbench or `targets` run, and each testbench for `runs_on`. Runs are read
+    from the module because a cocotb bench elaborates as the DUT itself.
     """
     hub = route.machine("graph", "explain", IP_MODULE, "--no-results")
     roots = {
@@ -838,26 +717,17 @@ def change_impact_graph(route: Route) -> dict:
 
 
 def _elaboration_root(instance_id: str) -> str:
-    """`inst:<root>/<path>[@<suite>]` -> `module:<root>[@<suite>]`.
-
-    The suite qualification is appended to the whole id (#377), so it
-    has to come off before the path is split and go back on after.
-    """
+    """Map `inst:<root>/<path>[@<suite>]` to `module:<root>[@<suite>]`."""
     body, sep, suite = instance_id.partition("@")
     root = _strip_prefix(body, "inst:").split("/", 1)[0]
     return f"module:{root}" + (f"{sep}{suite}" if sep else "")
 
 
 def change_impact_raw(route: Route) -> dict:
-    """A grep fixpoint over the RTL, then the manifests, then the suites.
+    """Grep to a fixpoint over the RTL, then read the manifests and suites.
 
-    Three phases, and the first is the one that has no cheap version:
-    grep finds *textual* mentions of a module name, so the consumers of
-    a consumer need another round, and each round's cost is the files it
-    has to open to find out which module the mention was inside. It
-    terminates when a round adds no module — three rounds here — and it
-    opens two files (`cdc_open_sync.sv`, `cdc_open_handshake.sv`) whose
-    only mention of the IP is a comment.
+    Each round greps for the newly found module names and opens the files that
+    match, until a round adds no module.
     """
     closure = {IP_BLOCK}
     frontier = [IP_BLOCK]
@@ -887,8 +757,7 @@ def change_impact_raw(route: Route) -> dict:
         )
         closure.update(frontier)
 
-    # Which of those modules is a *model* — i.e. something a run can top
-    # out at — is only in models.yaml, one per design directory.
+    # Only models.yaml says which modules are models.
     models: list[str] = []
     for design_dir in sorted(
         {str(Path(file_of[m]).parent).replace(os.sep, "/") for m in closure}
@@ -896,7 +765,6 @@ def change_impact_raw(route: Route) -> dict:
         text = route.read(f"{design_dir}/models.yaml")
         models += [name for name in _model_entries(text) if name in closure]
 
-    # The manifests are what makes "must run" a finite question.
     suite_files: list[str] = []
     for manifest in RUN_MANIFESTS:
         suite_files += _manifest_entries(route.read(manifest))
@@ -918,13 +786,11 @@ def change_impact_raw(route: Route) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# the small amount of SystemVerilog / YAML parsing the raw route needs
+# SystemVerilog and YAML parsing for the raw route
 # ---------------------------------------------------------------------------
 #
-# This is what an agent does in its head after reading a file. It is
-# deliberately regex-thin: the benchmark charges the raw route for the
-# *bytes it had to read*, and how they are then interpreted costs no
-# tokens either way.
+# Regex-thin on purpose: the raw route is charged for the bytes it reads, not
+# for interpreting them.
 
 _COMMENT = re.compile(r"//[^\n]*")
 _MODULE_HEADER = re.compile(
@@ -944,7 +810,7 @@ def _strip_comments(text: str) -> str:
 
 
 def _module_ports(text: str) -> dict[str, list[tuple[str, str, str]]]:
-    """module name -> [(port, direction, declared type)]."""
+    """Map module name to [(port, direction, declared type)]."""
     out: dict[str, list[tuple[str, str, str]]] = {}
     body = _strip_comments(text)
     for match in _MODULE_HEADER.finditer(body):
@@ -982,14 +848,9 @@ def _module_params(text: str) -> dict[str, list[str]]:
 
 
 def _module_instantiations(text: str) -> dict[str, set[str]]:
-    """module name -> the set of module names instantiated in its body.
+    """Map module name to the module names instantiated in its body.
 
-    The body is everything between the header and the next `endmodule`,
-    which is enough because the template does not nest module
-    definitions. Instance recognition is `_INSTANCE`'s, so it depends on
-    the `u_` prefix convention the template follows throughout — the raw
-    route's answer is only as good as that convention, which is a real
-    property of grep-and-read and not a handicap invented here.
+    Assumes modules do not nest and instances use the `u_` prefix.
     """
     body = _strip_comments(text)
     out: dict[str, set[str]] = {}
@@ -1001,7 +862,7 @@ def _module_instantiations(text: str) -> dict[str, set[str]]:
 
 
 def _instance_bindings(text: str, signal: str) -> list[tuple[str, str, str]]:
-    """[(module, instance, formal)] for every port bound to `signal`."""
+    """Return [(module, instance, formal)] for every port bound to `signal`."""
     body = _strip_comments(text)
     found: list[tuple[str, str, str]] = []
     for match in _INSTANCE.finditer(body):
@@ -1030,7 +891,7 @@ _TEST_ENTRY = re.compile(r"^\s*-\s*name:\s*\"?(?P<name>[\w.\-]+)\"?", re.MULTILI
 
 
 def _yaml_section(text: str, key: str) -> str:
-    """The block of a tests.yaml under a top-level `tests:` / `testbenches:`."""
+    """Return the block under a top-level key such as `tests:` or `testbenches:`."""
     collecting = False
     buffer: list[str] = []
     for line in text.splitlines():
@@ -1045,7 +906,7 @@ def _yaml_section(text: str, key: str) -> str:
 
 
 def _entry_chunks(section: str) -> list[tuple[str, str]]:
-    """[(entry name, the YAML text of that entry)] in a list-of-mappings."""
+    """Split a list of mappings into [(entry name, entry text)]."""
     chunks: list[tuple[str, str]] = []
     starts = [m.start() for m in _TEST_ENTRY.finditer(section)]
     for index, start in enumerate(starts):
@@ -1061,11 +922,7 @@ def _scalar(chunk: str, key: str) -> str | None:
 
 
 def _test_records(text: str) -> list[dict]:
-    """Every entry under `tests:` in a tests.yaml, as a record.
-
-    One parser, five callers: the reglvl question wants `model` and
-    `reglvl`, the traceability chain wants `covers` and `testbench`.
-    """
+    """Parse every entry under `tests:` in a tests.yaml into a record."""
     if not text:
         return []
     records: list[dict] = []
@@ -1091,7 +948,7 @@ def _test_records(text: str) -> list[dict]:
 
 
 def _tests_with_covers(text: str) -> list[tuple[str, str | None, object, list[str]]]:
-    """[(test name, model, reglvl, covers)] out of a tests.yaml."""
+    """Return [(test name, model, reglvl, covers)] from a tests.yaml."""
     return [
         (r["name"], r["model"], r["reglvl"], r["covers"]) for r in _test_records(text)
     ]
@@ -1103,13 +960,12 @@ def _tests_in_yaml(text: str) -> list[tuple[str, str | None, object]]:
     ]
 
 
-#: The list key a run lives under, per flow. `rb <flow>-regression`
-#: knows these; an agent reading the files has to know them too.
+#: The list key a run lives under, per flow.
 RUN_SECTIONS = ("tests", "syntheses", "verifications", "analyses", "runs")
 
 
 def _runs_in_yaml(text: str) -> list[tuple[str, str | None]]:
-    """[(run name, model)] out of any flow's suite config."""
+    """Return [(run name, model)] from any flow's suite config."""
     runs: list[tuple[str, str | None]] = []
     for key in RUN_SECTIONS:
         for name, chunk in _entry_chunks(_yaml_section(text, key)):
@@ -1118,7 +974,7 @@ def _runs_in_yaml(text: str) -> list[tuple[str, str | None]]:
 
 
 def _model_entries(text: str) -> dict[str, str | None]:
-    """model name -> its `spec:` path, out of a models.yaml."""
+    """Map model name to its `spec:` path from a models.yaml."""
     return {
         name: _scalar(chunk, "spec")
         for name, chunk in _entry_chunks(_yaml_section(text, "models"))
@@ -1126,12 +982,12 @@ def _model_entries(text: str) -> dict[str, str | None]:
 
 
 def _manifest_entries(text: str) -> list[str]:
-    """The suite config paths a repo-level regression manifest lists."""
+    """Return the suite config paths a regression manifest lists."""
     return re.findall(r"^\s*-\s*\"?([\w./\-]+\.yaml)\"?", text, re.MULTILINE)
 
 
 def _spec_blocks(text: str) -> list[tuple[str, list[str], list[str]]]:
-    """[(block name, docs, coverage-item ids)] out of a specs.yaml."""
+    """Return [(block name, docs, coverage-item ids)] from a specs.yaml."""
     blocks: list[tuple[str, list[str], list[str]]] = []
     starts = [m.start() for m in re.finditer(r"^\s*-\s*name:", text, re.MULTILINE)]
     for index, start in enumerate(starts):
@@ -1146,7 +1002,7 @@ def _spec_blocks(text: str) -> list[tuple[str, list[str], list[str]]]:
 
 
 # ---------------------------------------------------------------------------
-# the task set
+# tasks
 # ---------------------------------------------------------------------------
 
 
@@ -1315,13 +1171,7 @@ TASKS = [
 
 
 def answer_floor(task: Task) -> int:
-    """The answer itself, as compact JSON — the floor either route could hit.
-
-    Reported next to both routes because it is the number that says
-    where a route's cost went: a route that spends 10 000 tokens
-    delivering a 60-token answer is not being taxed by the corpus, it is
-    being taxed by its own payload shape.
-    """
+    """Return the token count of the expected answer as compact JSON, the minimum either route could cost."""
     return approx_tokens(json.dumps(task.expected, separators=(",", ":")))
 
 

@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# Sync the shared label taxonomy (.github/labels.json) across all rtl-buddy repos.
+# Sync the label taxonomy in .github/labels.json to all rtl-buddy repos.
+# Run manually after editing labels.json; uses your own `gh` auth.
 #
-# This is a MANUAL step — run it locally with your own `gh` auth. Your local
-# token already has write access to every rtl-buddy repo, so no CI secret is
-# needed. Run it after editing labels.json (and commit the change).
-#
-# Usage:
-#   .github/sync-labels.sh             # upsert all labels into all repos (idempotent)
-#   .github/sync-labels.sh --dry-run   # show what would change, make no edits
-#   .github/sync-labels.sh --prune     # also delete managed labels absent from labels.json
-#                                       # (scoped to area/*, version/*, discussion only)
+#   .github/sync-labels.sh             # create or update all labels
+#   .github/sync-labels.sh --dry-run   # show changes, make none
+#   .github/sync-labels.sh --prune     # also delete area/*, version/* and discussion
+#                                      # labels that are not in labels.json
 set -euo pipefail
 
 OWNER=rtl-buddy
@@ -35,7 +31,6 @@ for repo in "${REPOS[@]}"; do
   target="$OWNER/$repo"
   echo "== $target =="
 
-  # upsert (create-or-update) every label from the source of truth
   jq -c '.[]' "$FILE" | while read -r row; do
     name=$(jq -r '.name'        <<<"$row")
     color=$(jq -r '.color'      <<<"$row")
@@ -48,7 +43,6 @@ for repo in "${REPOS[@]}"; do
     fi
   done
 
-  # optional prune: delete managed-namespace labels no longer in labels.json
   if $PRUNE; then
     comm -23 \
       <(gh label list --repo "$target" --limit 200 --json name --jq '.[].name' \

@@ -10,8 +10,8 @@ on:
       - 'src/**/*.py'
       - 'tests/**/*.py'
       - 'scripts/check-vendored-tokenizer.sh'
-  # No `branches:` filter — stacked PRs are based on their predecessor's
-  # branch, not on main, and a base filter would silently skip their checks.
+  # No `branches:` filter: stacked PRs target their predecessor branch, and a
+  # filter would skip their checks.
   pull_request:
     paths:
       - '.github/workflows/lint.yml'
@@ -52,10 +52,7 @@ jobs:
           echo ""
           echo "After that, every commit will run Ruff automatically."
 
-  # Advisory only: src/rtl_buddy/constraints/tcl_tokenizer.py is a verbatim
-  # copy of rtl-buddy-cdc's Tcl tokenizer at a pinned commit (#642). Drift is
-  # worth knowing about, but a GitHub outage or a rate-limited token must not
-  # block a PR — hence continue-on-error.
+  # Advisory: a GitHub outage or rate limit must not block a PR.
   vendored-tokenizer:
     runs-on: ubuntu-latest
     continue-on-error: true

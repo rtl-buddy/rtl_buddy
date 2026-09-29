@@ -13,11 +13,8 @@ on:
     types: [submitted]
 
 jobs:
-  # Maintainer gate. The default GITHUB_TOKEN cannot read org teams
-  # ("Resource not accessible by integration"), so gate on repo write
-  # access instead — in this org that access is granted via the
-  # maintainers team. An unauthorized actor (or a failed permission
-  # lookup) skips the claude job rather than failing the run.
+  # Gates on repo write access because GITHUB_TOKEN cannot read org teams.
+  # An unauthorized actor or a failed lookup skips the claude job.
   gate:
     if: |
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
@@ -133,10 +130,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           show_full_output: true
-          # Maintains a comment on the PR/issue that Claude updates with its
-          # result — the built-in channel for top-level feedback. Bash `gh`
-          # calls are gated by the action's sandbox and cannot post, so the
-          # comment MCP tools below are the only working write path.
+          # `gh` calls cannot post from the action sandbox; the comment MCP
+          # tools below are the only write path.
           track_progress: true
           additional_permissions: |
             actions: read

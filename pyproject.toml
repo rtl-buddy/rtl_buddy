@@ -12,18 +12,9 @@ dependencies = [
   "click >= 8.3.0",
   "pyserde[yaml] >= 0.27.0",
   "rich >= 14.0.0",
-  # pywellen is pre-1.0 and rewrites its public API on minor bumps: 0.25.0
-  # replaced the random-access surface tools/surfer_wcp.py (rb wave) and
-  # tools/saif_from_trace.py (rb saif) read traces with, which is why #264 had
-  # to pin <0.25. Both are ported to the 0.25 getter API, so that bound is
-  # lifted and replaced with a two-sided one:
-  #   floor 0.25.6 — 0.25.3 shipped the upstream streaming panic fix
-  #     (ekiwi/wellen 134) and .4-.6 are its follow-up patches, so the whole
-  #     supported range behaves; .6 is also the newest 0.25 (2026-07-21).
-  #   cap  <0.26   — the root-cause fix for #263: the next pre-1.0 rewrite
-  #     fails at the CI lock bump instead of silently in the field.
-  # tests/test_pywellen_api.py guards both halves (surface + this pin); keep it
-  # and tools/pywellen_compat.py in step with any change here. See #263, #267.
+  # pywellen is pre-1.0 and changes its API on minor bumps. The floor has the
+  # streaming panic fix; the cap makes the next rewrite fail at the lock bump.
+  # Keep tests/test_pywellen_api.py and tools/pywellen_compat.py in step with this pin.
   "pywellen >=0.25.6,<0.26",
   "jsonschema >= 4.21.0",
   "websockets >= 12.0",
@@ -64,42 +55,20 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# `rb elab` and `rb elab-regression`. Imported only by the isolated worker,
-# so the core CLI and every existing command remain usable without this extra.
+# `rb elab` and `rb elab-regression`; imported only by the isolated worker.
 elab = ["pyslang >= 10.0.0, <12"]
-# `rb mut` mutation testing. rtl-buddy-xeno is a library rtl_buddy
-# imports lazily (runner/mut_runner.py), not a subprocess tool, so it
-# installs into the same environment via this extra rather than via
-# `uv tool install`. The `>= 0.1.0` floor (first PyPI release) guards
-# against API drift -- e.g. the ExpectedChange -> Prediction rename in
-# rtl-buddy-xeno#5 -- at pip/uv resolve time. mut_runner repeats the
-# same floor at import time (_check_xeno_version) for git/editable
-# installs that bypass this resolve-time guard; keep the two in sync.
+# `rb mut`. rtl-buddy-xeno is imported as a library, so it must share the
+# environment. mut_runner repeats the version floor in _check_xeno_version;
+# keep the two in sync.
 mut = ["rtl-buddy-xeno[verible,slang] >= 0.1.0"]
-# `rb mcp`, the stdio Model Context Protocol server (#380). Optional on
-# purpose: MCP is a *second* agent surface, and everything it serves is
-# also reachable from the CLI with `--machine`, which needs no extra
-# dependency. `rtl_buddy.mcp.toolset` therefore imports no SDK at all --
-# only `rtl_buddy.mcp.server` does, lazily, behind `require_sdk()` -- so
-# an install without this extra still imports, still runs, and fails
-# only at `rb mcp` with an install hint. The `>= 1.2.0` floor is the
-# first SDK release with the low-level stdio server this uses; both the
-# 1.x decorator API and the 2.x constructor-callback API are supported
-# by `mcp/server.py:build_server`.
+# `rb mcp`, the stdio MCP server. Only `rtl_buddy.mcp.server` imports the SDK,
+# lazily; without this extra everything else works and `rb mcp` prints an
+# install hint. The floor is the first release with the low-level stdio server.
 mcp = ["mcp >= 1.2.0"]
-# The bundled binding-tier extractor for `rb graph build` (#391): the
-# clean-room implementation of the extract contract. A subprocess tool,
-# not a library import — it only needs to land on PATH in the same
-# environment, which an extra does fine. Was deliberately a dependency
-# GROUP while the extractor had no PyPI release (a wheel must never
-# advertise an extra pip cannot resolve — the v6.26.0 lesson, see
-# docs/known-issues.md); promoted to a real extra when
-# rtl-buddy-graph-extract 0.1.0 landed on PyPI
-# (rtl-buddy-graph-extract#1). The `>= 0.1.0` floor is the first
-# release implementing the extract contract this repo's
-# graph/extract.py drives. Guarded by
-# test_graph_extract_is_a_published_extra. Still optional at runtime:
-# `rb graph build` without it reports the binding tier as skipped.
+# Binding-tier extractor for `rb graph build`, run as a subprocess from PATH.
+# Without it `rb graph build` skips the binding tier. The floor is the first
+# release implementing the extract contract in graph/extract.py.
+# Every extra must resolve on PyPI; test_graph_extract_is_a_published_extra guards this.
 graph-extract = ["rtl-buddy-graph-extract >= 0.1.0"]
 
 [project.urls]
@@ -110,14 +79,9 @@ Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 [tool.hatch.version]
 source = "vcs"
 
-# Source distribution only needs the inputs a downstream installer
-# (pip, uv) actually requires: pyproject.toml, README.md, LICENSE, the
-# package source under src/, and docs/ (because the bundled skill
-# materializes them from the wheel). Dev/CI scaffolding (tests/,
-# scripts/, .github/, .agents/, .claude/, Docusaurus config, lock files,
-# AGENTS.md, CLAUDE.md, .pre-commit-config.yaml, pytest.ini,
-# CONTRIBUTORS) is not needed at install time and only inflates the
-# release tarball.
+# The sdist carries only what an installer needs: package source, README,
+# LICENSE and docs/ (the bundled skill materializes docs from the wheel).
+# Dev and CI scaffolding is excluded.
 [tool.hatch.build.targets.sdist]
 include = [
   "src/rtl_buddy",
@@ -143,9 +107,7 @@ test = [
   "pytest-cov>=6.0.0",
   "pytest-asyncio>=0.24.0",
   "pyslang>=10.0.0,<12",
-  # So CI actually exercises the `rb mcp` SDK boundary. The tests that
-  # need it still skip when it is absent (a contributor without the
-  # extra must not see red), but the skip must not be the CI outcome.
+  # Keeps the `rb mcp` tests from skipping in CI.
   "mcp>=1.2.0",
 ]
 dev = [
