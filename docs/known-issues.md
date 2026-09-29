@@ -78,8 +78,7 @@ When `sim_timeout` expires, the simulator can be killed before it flushes output
 
 Artifact-writing commands take `<artifact_root>/.rtl-buddy.lock` and fail at once if another process on the same host holds it.
 
-- A lock left by a dead process on this host is reclaimed by the next run with the warning `artifact_lock.reclaimed`.
-- A lock from another host is never reclaimed automatically. Clear it by hand once that machine is idle.
+- A lock left by a dead process on this host is reclaimed by the next run with the warning `artifact_lock.reclaimed`. A lock from another host is never reclaimed; clear it by hand once that machine is idle.
 - The lock does not coordinate different NFS hosts. Dispatched worker jobs skip it, so do not start another command against a tree with a dispatch run in flight.
 - A filesystem that cannot `flock` fails with `cannot lock this artefact tree`.
 
@@ -96,16 +95,18 @@ Give concurrent runs of one suite a [`--run-tag`](concepts/execution-context.md#
 
 ## Tool flows delete their previous outputs before running
 
-`rb cdc`, `rb synth`, `rb fpga`, `rb pnr` and `rb power` remove the outputs they are about to write (reports, netlists, DEF/ODB, GDS/PNG, bitstreams) before invoking the tool, and `rb hub` clears the `view.json` and domain map it caches under `.rtl-buddy/cache/`. A failed rerun therefore leaves no output instead of the previous run's. Copy out anything you want to compare first.
+`rb cdc`, `rb synth`, `rb fpga`, `rb pnr` and `rb power` remove the outputs they are about to write before invoking the tool, and `rb hub` clears the `view.json` and domain map it caches under `.rtl-buddy/cache/`. A failed rerun therefore leaves no output instead of the previous run's. Copy out anything you want to compare first.
 
 - A failed `rb synth` leaves no netlist, so `rb pnr` and `rb power` tell you to run `rb synth` first. `rb fpga` without `--bitstream` removes a previously built `<top>.bit`.
-- Clearing happens early, so a rerun that fails on a filelist or config error also leaves nothing. With the backend tool missing, `rb cdc`, `rb fpga` and `rb power` clear nothing; `rb synth` and `rb pnr` still do.
+- A rerun that fails early, on a filelist or config error, also leaves nothing. With the backend tool missing, only `rb synth` and `rb pnr` still clear.
+- A previous output that cannot be deleted (permissions, or a directory where the file belongs) fails the run with a fatal error. Fix the permissions or remove it by hand.
+- A `pnr` run failed by `gds-mode: strict` removes the GDS, PNG and report but keeps the routed DEF, netlist, SDC and ODB.
 
 Runs of different commands with the same name share one artifact directory. Give an FPGA run and a power run different names; both write `power.rpt`.
 
 ## local-parallel enforces only the job count
 
-The `local-parallel` backend ignores CPU, memory, time, array and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory. The build job uses one slot but runs `compile.parallel` compiles, so the ceiling is `jobs` times `compile.parallel`. `SIGKILL` of the head process can orphan `rb _test-job` children; find and stop them.
+The `local-parallel` backend ignores CPU, memory, time, array and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory. The build job uses one slot but runs `compile.parallel` compiles. `SIGKILL` of the head process can orphan `rb _test-job` children; find and stop them.
 
 ## Oversized resource groups are split into several arrays
 
@@ -127,7 +128,7 @@ A `resources:` block discards any key it does not define, with no warning. A typ
 
 One suite build job compiles every unique compile key, and under `--dispatch slurm` each simulation job starts as soon as its own key is built. `compile.parallel` compiles that many builds at once inside the job, so `compile.time` must cover the longest batch, not the serial total, and `compile.mem` the concurrent builds. Only `cpus` is scaled for you.
 
-- A Verilator suite splits into a verilate job and a C++ build job. `compile.verilate.time` and `compile.verilate.mem` cover the verilations, `compile.time` and `compile.mem` the builds. Raise `compile.verilate.mem` on `OUT_OF_MEMORY` during elaboration. `compile.split-verilate: false` returns to one job.
+- Under `--dispatch slurm`, a Verilator suite splits into a verilate job and a C++ build job. `compile.verilate.time` and `compile.verilate.mem` cover the verilations, `compile.time` and `compile.mem` the builds. Raise `compile.verilate.mem` on `OUT_OF_MEMORY` during elaboration. `compile.split-verilate: false` returns to one job.
 - Each build job reserves `cpus` times `min(parallel, planned tests)`, so twenty tests over three compile keys with `parallel: 8` reserves eight builds' worth of CPUs for three. Set `parallel` to the expected count of distinct builds and check the `(build job)` and `(verilate job)` rows of the reservation advice.
 
 ## Preprocessors run in every dispatched job
@@ -143,6 +144,7 @@ Simulation jobs skip recompilation when the build stamp validates. The stamp hol
 A simulation job whose stamp fails against a build the build job recorded as built does not recompile. It fails with `compile.build_stamp_rejected` and the stamp check's reason.
 
 - If the build job cannot write a stamp it logs the error `compile.stamp_write_failed`. Give the shared build directory's filesystem room and permissions, then rerun.
+- `build_job.group_leader_unstamped` warns that the first config of a compile key wrote no stamp, so the other configs of that key compiled again. Fix the directory as for `compile.stamp_write_failed`.
 - `compile.prebuilt_stamp_invalid` warns that a job recompiled and names what drifted. The usual cause is a `preproc` that writes different bytes on the simulation node than on the build node.
 - There is no per-test opt-out of the shared directory under `--dispatch`. A suite that cannot share compiles locally.
 
@@ -152,11 +154,11 @@ A design compile error is reported as `CompileFail`; infrastructure failures sta
 
 ## Slurm retry reuses artifact paths
 
-A retry overwrites the first attempt's simulation capture and per-job rtl_buddy log. Only `slurm-<tag>-retry<N>.log` stays per attempt, so diagnose retries from the scheduler logs. `max-wait` applies to each attempt. A later `--begin` in `sbatch-args` overrides rtl_buddy's retry delay, so remove it when you use retry backoff.
+A retry overwrites the first attempt's simulation capture and per-job rtl_buddy log. Only `slurm-<tag>-retry<N>.log` stays per attempt, so diagnose retries from the scheduler logs. `max-wait` applies to each attempt. A `--begin` in `sbatch-args` overrides the retry delay, so remove it when you use retry backoff.
 
 ## Slurm memory advice depends on accounting samples
 
-rtl_buddy requests one-second task accounting unless `sbatch-args` sets `--acctg-freq`. When the longest run ends within the sampling interval, `MaxRSS` is unreliable and memory advice is suppressed. Reduction advice needs at least 25% savings and has floors of five minutes and 128 MB, so a very small reservation gets none.
+rtl_buddy requests one-second task accounting unless `sbatch-args` sets `--acctg-freq`. When the longest run ends within the sampling interval, `MaxRSS` is unreliable and memory advice is suppressed. Reduction advice needs at least 25% savings and floors of five minutes and 128 MB, so a small reservation gets none.
 
 ## Generated `run.f` files are checkout-specific
 
@@ -176,9 +178,11 @@ A build stamp decides whether a shared build can be reused.
 - **Verilator** tracks the headers, libraries, standard includes and binary it reports consuming. Inputs under the project root are compared by content hash; inputs outside it, and any single input above 64 MB, by size and mtime.
 - **VCS and Icarus** report no dependencies, so their stamps list every file in each `+incdir+` and `-y` directory and compare content. Adding, removing or editing a file there rebuilds, even one nothing includes. Verilator also compares that listing by file name.
 
-The listing skips dot-directories, `artefacts/`, `.shared-builds/`, `obj_dir*` and rtl_buddy's own outputs such as `run.f` and `test.log`, so a project directory with one of those names under an include path is not tracked. An `+incdir+` on a large tree slows every reuse check.
+The listing skips dot-directories, `artefacts/`, `obj_dir*` and rtl_buddy's own outputs, so a project directory with one of those names under an include path is not tracked. An `+incdir+` on a large tree slows every reuse check.
 
-Environment variables, undeclared tool inputs and symlinked subdirectories are not tracked. Force a compile with `--rebuild`.
+Do not point `+incdir+` at a directory a simulator or tool writes into: its scratch files change the listing and every run recompiles.
+
+Environment variables, undeclared tool inputs and symlinked subdirectories are not tracked. For VCS and Icarus, an include resolved relative to the including file is also untracked. Force a compile with `--rebuild` after editing any of these.
 
 ## Shared-build locking
 
@@ -198,11 +202,11 @@ Under `--dispatch slurm`, the build job is named after the suite and submitted w
 - `singleton` is per user; two users sharing a tree rely on the [flock](#shared-build-locking).
 - With `DependencyParameters=disable_remote_singleton`, runs routed to different clusters are not serialised. Pin a cluster with `-M`.
 
-A build job that stays `PENDING` after that warning is usually waiting as intended. Check the job it waits on with `squeue -j <ids> -O JobID,State,Reason`. If it is `RUNNING`, or `PENDING` for a capacity reason (`Resources`, `Priority`), leave it: cancelling discards the build this run would reuse. `scancel` only a predecessor that will not finish, meaning held, unschedulable (`PartitionConfig`, `BadConstraints`) or abandoned.
+A build job that stays `PENDING` after that warning is usually waiting as intended. Check the job it waits on with `squeue -j <ids> -O JobID,State,Reason`. Leave it if it is `RUNNING` or `PENDING` for `Resources` or `Priority`: cancelling discards the build this run would reuse. `scancel` only a predecessor that is held, unschedulable (`PartitionConfig`, `BadConstraints`) or abandoned.
 
-## The first run after upgrading recompiles every shared build
+## A different rtl_buddy version does not reuse shared builds
 
-Stamps written by an older rtl_buddy cannot validate, so expect one rebuild per build directory after upgrading. On a partially upgraded cluster, builds keep recompiling until every host is upgraded. Use `--rebuild` to compile regardless, not a manual delete of `artefacts/.shared-builds/`.
+Build stamps written by another rtl_buddy version do not validate, so each build directory recompiles once, and repeatedly while hosts of one cluster run different versions. Use `--rebuild` to compile regardless, not a manual delete of `artefacts/.shared-builds/`.
 
 ## Yosys-backed flows do not support whitespace in paths
 
@@ -215,10 +219,10 @@ A `function` or `task` outside a class declared without `automatic` has one shar
 `rb synth` scans the filelist's sources and included headers before Yosys runs:
 
 - With `frontend: slang`, `static-functions: error` (the default) fails the run. The `verilog` frontend only warns.
-- Add `automatic` to the declaration, or set `static-functions: warn` to stage a migration. `static_function_findings` then appears in the machine output.
+- Add `automatic` to the declaration, or set `static-functions: warn` to stage a migration.
 - Yosys `multiple conflicting drivers` warnings fail the run unless `conflicting-drivers: allow` is set. Tristate buses are not counted.
 
-The scan is approximate: it reports declarations, so a subroutine with one call site can still fail, and it misses declarations produced by macros or in `-y` directories. When synth.yaml `defines:` overrides a filelist `+define+`, the run warns `synth.filelist_defines_overridden`, and simulation keeps the filelist's value. A bare `+define+X` is empty under `read_verilog` and `1` under slang, so write `+define+X=1`. See [Synthesis](concepts/synthesis.md#gate-static-lifetime-subroutines).
+The scan reports declarations, so a subroutine with one call site can still fail, and it misses declarations produced by macros or in `-y` directories. A synth.yaml `defines:` that overrides a filelist `+define+` warns `synth.filelist_defines_overridden`. See [Synthesis](concepts/synthesis.md#gate-static-lifetime-subroutines).
 
 ## read_verilog drops an interface instance's own port connections
 
@@ -239,14 +243,14 @@ The physical model's synthesis half holds RTL module names and its power half ho
 
 ## Phys pane and schematic selections cross only within one hierarchy
 
-Selections between the `/phy` pane and the `/sch` schematic are paths rooted at the physical model's top, and neither surface knows which design the other shows. A `/sch` showing a testbench around the DUT, or another design, selects nothing, with no message. Open the schematic on the synthesis `top:`. See [Physical Metrics](concepts/phys.md#browse-the-model-in-the-hub).
+Selections between the `/phy` pane and the `/sch` schematic are paths rooted at the physical model's top. A `/sch` showing a testbench around the DUT, or another design, selects nothing, with no message. Open the schematic on the synthesis `top:`. See [Physical Metrics](concepts/phys.md#browse-the-model-in-the-hub).
 
 ## Graph-pane heat attributes a leaf to the nearest instance the graph knows
 
 The `/gph` heat overlay rolls per-instance power up to the enclosing RTL module using the graph's design tier, so it is only as fine as that tier is complete.
 
-- If the run's `top:` is a wrapper the graph was not built for, or the graph was narrowed with `rb graph build --model`, no leaf power can be attributed. The status line says so and the pane paints cells and area only.
-- A row whose path runs through a level the graph lacks is attributed to the deepest level it has, which over-attributes that module.
+- If the run's `top:` is a wrapper the graph was not built for, or the graph was narrowed with `rb graph build --model`, no leaf power can be attributed. The pane paints cells and area only.
+- A row whose path runs through a level the graph lacks goes to the deepest level it has, which over-attributes that module.
 - A module's power is summed over every instantiation, while its cells and area are counted once.
 
 See [Design Knowledge Graph](concepts/graph.md#physical-heat-on-the-graph).
