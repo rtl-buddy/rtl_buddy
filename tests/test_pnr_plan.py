@@ -463,8 +463,8 @@ def test_synth_runs_each_synthesis_just_before_its_pnr(tmp_path, monkeypatch):
     assert synth["suite"] == str(tmp_path / "synth.yaml")
     row = RtlBuddy._pnr_result_row(rb, results["top"])
     assert row["synth"] == synth
-    locked = rb._artifact_locks.acquired
-    assert locked == [tmp_path / "artefacts"] * 2
+    # Taken up front, once per run that needs it (a re-acquire is a no-op).
+    assert set(rb._artifact_locks.acquired) == {tmp_path / "artefacts"}
 
 
 def test_a_failed_synthesis_fails_its_pnr_and_blocks_the_top(tmp_path, monkeypatch):
@@ -542,3 +542,157 @@ def test_synth_waits_for_the_blocks_its_synthesis_names(tmp_path, monkeypatch):
     assert _names(plain) == ["top"]
     assert _names(with_synth) == ["blk", "top"]
     assert [d.block for d in with_synth[1].deps] == ["b"]
+
+
+# --- rb pnr -j ------------------------------------------------------------------
+
+
+def test_independent_blocks_run_side_by_side_and_the_top_waits(tmp_path):
+    """Both blocks are inside `step` at once — neither can finish until the
+    other has started — and the top starts only after both finished."""
+    import threading
+
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _run("top", [("a", "a", None), ("b", "b", None)]),
+        _run("a"),
+        _run("b"),
+    )
+    both_started = threading.Barrier(2, timeout=10)
+    events = []
+    lock = threading.Lock()
+
+    def step(planned, outcomes):
+        with lock:
+            events.append(("start", planned.name, sorted(k[1] for k in outcomes)))
+        if planned.name in ("a", "b"):
+            both_started.wait()
+        with lock:
+            events.append(("end", planned.name))
+        return {"pnr_name": planned.name, "results": PnrPassResults(planned.name)}
+
+    rows = pnr_plan.run_plan(plan_pnr_runs(suite), step, jobs=4)
+
+    assert set(k[1] for k in rows) == {"a", "b", "top"}
+    top_start = next(e for e in events if e[:2] == ("start", "top"))
+    assert top_start[2] == ["a", "b"]
+    assert events.index(top_start) == 4
+
+
+def test_jobs_caps_how_many_run_at_once(tmp_path):
+    import threading
+    import time
+
+    suite = _suite(tmp_path / "pnr.yaml", *(_run(f"r{i}") for i in range(6)))
+    live = []
+    peak = []
+    lock = threading.Lock()
+
+    def step(planned, outcomes):
+        with lock:
+            live.append(planned.name)
+            peak.append(len(live))
+        time.sleep(0.02)
+        with lock:
+            live.remove(planned.name)
+        return {"pnr_name": planned.name, "results": PnrPassResults(planned.name)}
+
+    pnr_plan.run_plan(plan_pnr_runs(suite), step, jobs=2)
+
+    assert max(peak) == 2
+
+
+def test_parallel_results_come_back_in_plan_order_with_blocking(tmp_path, monkeypatch):
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _run("top", [("a", "a", None), ("b", "b", None)]),
+        _run("a"),
+        _run("b"),
+        _run("flat"),
+    )
+    rb, ran = _driver(monkeypatch, {"b": False})
+
+    results = rb._do_pnr_suite(suite, jobs=3)
+
+    assert [r["pnr_name"] for r in results] == ["a", "b", "top", "flat"]
+    assert sorted(ran) == ["a", "b", "flat"]
+    top = results[2]["results"].results
+    assert top["fail_stage"] == "blocked"
+    assert top["blocked_by"] == ["b"]
+
+
+def test_a_synthesis_two_parallel_runs_share_runs_once(tmp_path, monkeypatch):
+    import threading
+
+    _synth_yaml(tmp_path / "synth.yaml", "shared")
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _synth_run("x", "shared"),
+        _synth_run("y", "shared"),
+    )
+    rb, _ran, synths = _synth_driver(monkeypatch, {}, {})
+    inner = rb._do_synth_suite
+    gate = threading.Event()
+
+    def _slow(*args, **kw):
+        gate.wait(0.2)
+        return inner(*args, **kw)
+
+    rb._do_synth_suite = _slow
+
+    results = rb._do_pnr_suite(suite, run_synth=True, jobs=2)
+
+    assert synths == [("shared", False)]
+    assert all(r["results"].results["synth"]["name"] == "shared" for r in results)
+
+
+def test_once_map_computes_each_key_once_across_threads():
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls = []
+    once = pnr_plan.OnceMap()
+
+    def compute():
+        calls.append(1)
+        return "v"
+
+    with ThreadPoolExecutor(8) as pool:
+        values = list(pool.map(lambda _: once.get("k", compute), range(32)))
+
+    assert values == ["v"] * 32
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("jobs", [1, 3])
+def test_a_run_that_raises_is_its_own_fail_and_keeps_the_others(
+    tmp_path, monkeypatch, jobs
+):
+    """Under -j a sibling still in OpenROAD must not be thrown away with it."""
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _run("boom"),
+        _run("sibling"),
+        _run("top", [("b", "boom", None)]),
+    )
+    rb, ran = _driver(monkeypatch, {})
+    import rtl_buddy.rtl_buddy as rbmod
+
+    real = rbmod.PnrRunner
+
+    class _Raising(real):
+        def run(self):
+            if self.name == "boom":
+                raise RuntimeError("openroad segfaulted")
+            return super().run()
+
+    monkeypatch.setattr(rbmod, "PnrRunner", _Raising)
+
+    results = _by_name(rb._do_pnr_suite(suite, jobs=jobs))
+
+    boom = results["boom"]["results"].results
+    assert boom["result"] == "FAIL"
+    assert boom["fail_stage"] == "error"
+    assert "openroad segfaulted" in boom["desc"]
+    assert results["sibling"]["results"].is_pass()
+    assert results["top"]["results"].results["fail_stage"] == "blocked"
+    assert "sibling" in ran

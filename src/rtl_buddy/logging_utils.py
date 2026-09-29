@@ -1802,6 +1802,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'pnr "{fields.get("pnr")}": not run — block {blocks} did not '
                 "pass, so there is no abstract of it to assemble"
             )
+        case "pnr_suite.run_error":
+            return (
+                f'pnr "{fields.get("pnr")}": did not finish — '
+                f"{fields.get('error')}; the other runs' results are kept"
+            )
         # `rb pnr-export` (#618). Every one of these stops an export over a
         # saved result before KLayout is launched, and each says which of
         # the saved result's pieces is the problem — an export that runs on
