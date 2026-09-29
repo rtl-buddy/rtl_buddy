@@ -2,34 +2,13 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Per-run job manifest: what one head submitted, and whether it collected it (#521).
+"""Per-run job manifest: every job one head submitted, and whether it was collected.
 
-A head that is killed — Ctrl-C, a dropped SSH session, a login node
-reboot — takes every job id it held with it. The fleet does not die with
-it: the scheduler keeps running the simulations, writing their envelopes,
-and the next invocation of the same suite has no way to know they are
-there, so it submits a second fleet beside the first.
-
-The plan manifest beside this one (:mod:`.plan`) says what a run *meant*
-to do; the gates manifest (:mod:`.gates`) says which job holds which plan
-index, for the build job alone and only until it exits. Neither is a
-record of the run as a whole. This one is: it names every job the head
-submitted, the specs needed to rebuild their handles, and a ``status``
-that says whether anybody ever collected them.
-
-That makes the manifest — not the scheduler's job names — the identity of
-an interrupted run. Job names are not unique per run (two invocations of
-one suite submit the same names, which is exactly what the shared-build
-dedup relies on), so adopting by name could collect somebody else's
-fleet. A manifest is written by one head, carries that head's pid and its
-per-invocation ``run_token``, and the envelopes its jobs write carry the
-same token — so a run adopted from here collects its own results by
-identity, the same check a live head makes (#362).
-
-Nothing in this module raises on a manifest it cannot read. A run left by
-an older rtl_buddy, half-written by a head that was killed mid-``write``,
-or owned by another user is a manifest to skip, not a reason to fail a
-regression that has not submitted anything yet.
+If a head dies, its fleet keeps running. The manifest, identified by the
+head's ``run_token`` (also stamped into the jobs' envelopes), lets a later
+invocation find, adopt or cancel that fleet. Nothing here raises on an
+unreadable manifest; it is skipped. See :mod:`.plan` and :mod:`.gates` for the
+other per-run files.
 """
 
 import dataclasses
@@ -45,40 +24,26 @@ from .plan import run_scoped_path
 
 RUN_SCHEMA_VERSION = 1
 
-# The run's lifecycle, as the head records it.
-#
-# ``running`` is written the moment the fan-out is out and rewritten at
-# exactly two ends: ``collected`` when a head has read the fleet's
-# envelopes, ``cancelled`` when a head took the fleet down on its way out.
-# A manifest still saying ``running`` with nothing of it left in the queue
-# is what a dead head leaves behind, and the discovery below retires it as
-# ``stale`` so the next run does not probe the scheduler for it again.
-# Written BEFORE the first submission and held until the fan-out is out.
-# A head killed between its build job's `sbatch` and its last array used to
-# leave nothing at all on disk — the worst case of the three, because those
-# jobs are running and there is no record of them anywhere (#521 review).
-# The manifest is therefore created empty and grown handle by handle; this
-# status says "the ids below are accepted, but there may be more that never
-# got here". Live jobs under it are as much an orphan as under `running`,
-# so `warn` and `cancel` treat the two alike; only `adopt` refuses it,
-# because a partial fleet cannot be collected into a complete result.
+# Run lifecycle. ``submitting``: written before the first submission and held
+# until the fan-out is out, so a head killed midway leaves a record; the ids in
+# it are live but may be incomplete. ``warn`` and ``cancel`` treat it like
+# ``running``; ``adopt`` refuses it. ``running``: fan-out complete. ``collected``
+# and ``cancelled``: a head finished with the fleet. ``stale``: a ``running``
+# manifest with nothing left in the queue, retired by discovery.
 STATUS_SUBMITTING = "submitting"
 STATUS_RUNNING = "running"
 STATUS_COLLECTED = "collected"
 STATUS_CANCELLED = "cancelled"
 STATUS_STALE = "stale"
 
-# The statuses that mean "this head never finished with its fleet". Both are
-# probed; neither is settled.
+# Statuses probed for a live fleet.
 ACTIVE_STATUSES = (STATUS_SUBMITTING, STATUS_RUNNING)
 
 # Spec fields that are ``Path`` on the dataclass and ``str`` in JSON.
 _PATH_FIELDS = frozenset(
     {"result_json", "log_path", "plan_path", "build_result_json", "gates_json"}
 )
-# `verilate` and `build` are both BuildJobSpec (#593): what separates them
-# is the spec's own `phase`, and the kind exists so a manifest reads as the
-# fleet it records rather than as two jobs with one name.
+# `verilate` and `build` are both BuildJobSpec; the spec's `phase` tells them apart.
 _SPEC_TYPES = {
     "build": BuildJobSpec,
     "verilate": BuildJobSpec,
@@ -88,19 +53,12 @@ _SPEC_KINDS = {BuildJobSpec: "build", TestJobSpec: "test"}
 
 
 def run_manifest_path(dispatch_root, run_token) -> Path:
-    """This head's manifest path in ``dispatch_root``.
-
-    Named like every other per-invocation file in the directory
-    (``plan-``, ``build-result-``, ``gates-``), which is to say for the
-    head pid **and** its run token — see :func:`run_scoped_path` for why
-    the pid alone is not a name.
-    """
+    """This head's manifest path in ``dispatch_root``, named like :func:`run_scoped_path` files."""
     return run_scoped_path(dispatch_root, "run", run_token)
 
 
 def _encode(value):
-    """One spec field as JSON: paths stringify, enums flatten, nested
-    dataclasses (``JobResources``) become objects."""
+    """One spec field as JSON: paths become strings, enums values, dataclasses objects."""
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Enum):
@@ -128,11 +86,8 @@ def encode_spec(spec) -> dict:
 def decode_spec(payload):
     """Rebuild the spec :func:`encode_spec` wrote; raise on anything else.
 
-    Unknown keys are dropped and absent ones left at their dataclass
-    default, so a manifest written by a neighbouring rtl_buddy that has
-    one field more or fewer still rebuilds a usable spec rather than
-    failing the adoption outright. A missing *required* field does raise,
-    and the caller turns that into a skipped manifest.
+    Unknown keys are dropped and absent ones take the dataclass default. A
+    missing required field raises.
     """
     if not isinstance(payload, dict):
         raise ValueError("job spec is not a JSON object")
@@ -161,14 +116,8 @@ def decode_spec(payload):
 def json_safe_rows(rows) -> list[dict]:
     """The head's result rows, reduced to what JSON can hold.
 
-    ``results`` is dropped on purpose rather than serialised. At submit
-    time a runnable row's entry is a ``None`` placeholder the collector
-    fills in, and a skipped or setup-failed row's entry is a live
-    ``TestResults`` object that this file has no business reconstructing —
-    a head that adopts this run re-derives those rows from its own
-    expansion of the same suite. What stays is the row identity and the
-    submit-time reservation metadata, which is what reservation advice
-    needs and what an adopting head cannot recompute.
+    ``results`` is dropped; an adopting head re-derives it. Row identity and
+    submit-time reservation metadata are kept.
     """
     safe = []
     for row in rows:
@@ -188,7 +137,7 @@ def json_safe_rows(rows) -> list[dict]:
 def _atomic_write(path: Path, payload: dict) -> Path:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2))
-    tmp.replace(path)  # atomic: a scanning head never reads a partial manifest
+    tmp.replace(path)  # atomic: scanning heads never read a partial file
     return path
 
 
@@ -209,16 +158,9 @@ def write_run_manifest(
 ) -> Path:
     """Create one suite's run record; return ``path``.
 
-    Written BEFORE the first ``sbatch``, with no handles and
-    ``status: "submitting"``, and then grown by :func:`record_build_handle`
-    and :func:`record_pending_handles` as each submission is accepted —
-    because the window this file exists to cover starts at the first
-    submission, not at the last one. :func:`finish_submission` closes it.
-
-    A manifest that names only part of a fleet is exactly why
-    ``submitting`` is a distinct status: those ids are real and must be
-    cancellable, but they are not the whole run, so nothing may be
-    collected against them.
+    Written before the first submission with no handles and ``status:
+    "submitting"``, then grown by :func:`record_build_handle` and
+    :func:`record_pending_handles`; :func:`finish_submission` closes it.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -232,9 +174,6 @@ def write_run_manifest(
         "suite_config": str(suite_config),
         "plan": str(plan),
         "build": _handle_entry(build) if build is not None else None,
-        # The verilate half of a split compile (#593). Absent — not just
-        # null — in a manifest from before it, which `verilate_from` reads
-        # as "this run did not split".
         "verilate": _handle_entry(verilate) if verilate is not None else None,
         "pending": [
             dict(_handle_entry(handle), row=int(row)) for row, handle in pending
@@ -256,11 +195,7 @@ def _handle_entry(handle: JobHandle) -> dict:
 def _amend(path, mutate) -> str | None:
     """Read-modify-write one manifest; ``None`` on success, else why not.
 
-    Read-modify-write rather than a blind overwrite, because every other
-    field is the only record of what was submitted and a truncated manifest
-    would strand the fleet it names. Best effort throughout: a head whose
-    record cannot be grown has still submitted its jobs correctly, and the
-    console ids remain the manual route.
+    Best effort: a submission stays valid if its record cannot be grown.
     """
     payload, reason = load_run_manifest(path)
     if payload is None:
@@ -292,12 +227,7 @@ def record_verilate_handle(path, handle) -> str | None:
 
 
 def record_pending_handles(path, pending) -> str | None:
-    """Append one accepted group's ``[(row index, JobHandle)]``.
-
-    Appended per group rather than written once at the end: an array that
-    ``sbatch`` has accepted is running whether or not the head lives to
-    submit the next one.
-    """
+    """Append one accepted group's ``[(row index, JobHandle)]``."""
 
     def mutate(payload):
         payload["pending"].extend(
@@ -318,7 +248,7 @@ def finish_submission(path, submitted_at) -> str | None:
 
 
 def load_run_manifest(path) -> tuple[dict | None, str | None]:
-    """``(payload, why not)`` — read one manifest without ever raising."""
+    """Read one manifest as ``(payload, reason)`` without raising."""
     try:
         payload = json.loads(Path(path).read_text())
     except FileNotFoundError:
@@ -339,11 +269,7 @@ def load_run_manifest(path) -> tuple[dict | None, str | None]:
 
 
 def set_run_status(path, status) -> str | None:
-    """Rewrite one manifest's ``status``; ``None`` on success, else why not.
-
-    Best effort: a status that cannot be written costs the next run one
-    wasted ``squeue``, and nothing else.
-    """
+    """Rewrite one manifest's ``status``; ``None`` on success, else why not."""
 
     def mutate(payload):
         payload["status"] = status
@@ -352,12 +278,9 @@ def set_run_status(path, status) -> str | None:
 
 
 def update_pending_job_ids(path, pending) -> str | None:
-    """Re-point the manifest's ``pending`` at a retry round's job ids.
+    """Re-point ``pending`` at a retry round's new job ids, matched by row.
 
-    A retried job is a fresh submission with a fresh id, and the row it
-    belongs to is the identity that survives. Rows the round did not
-    touch keep the ids they had, so the manifest always names the fleet
-    that is actually outstanding.
+    Rows the round did not touch keep their ids.
     """
     replacement = {int(row): handle for row, handle in pending}
 
@@ -373,14 +296,9 @@ def update_pending_job_ids(path, pending) -> str | None:
 def _manifest_dirs(root: Path):
     """``root`` and the namespaced directories one level beneath it.
 
-    A regression whose suite configs share a directory writes each suite's
-    files into ``.dispatch/<namespace>/`` while a plain ``rb test`` on
-    either of them writes into ``.dispatch/`` itself (see
-    ``_dispatch_regression_namespaces``). Scanning only the directory this
-    invocation happens to compute therefore misses the other's records —
-    and the run that misses them is the one that submits a second fleet
-    beside a live one (#580 review). The suite config recorded in each
-    manifest is what keeps the widened scan honest.
+    A regression whose suites share a directory writes to ``.dispatch/<namespace>/``,
+    while a plain ``rb test`` writes to ``.dispatch/`` itself (see
+    ``_dispatch_regression_namespaces``).
     """
     yield root
     try:
@@ -393,35 +311,15 @@ def _manifest_dirs(root: Path):
 def discover_run_manifests(
     dispatch_root, *, run_token, suite_config=None
 ) -> list[tuple[Path, dict]]:
-    """Manifests under ``dispatch_root`` that claim to be running elsewhere.
+    """Manifests under ``dispatch_root`` whose status is ``submitting`` or ``running``.
 
-    This head's own manifests are excluded by ``run_token`` and by nothing
-    else. It writes one per suite in these directories, and a regression
-    would otherwise rediscover the suite it submitted a moment ago — but
-    the pid cannot do that job: pids are reused, so after a reboot this
-    head can legitimately carry the pid of the very run whose fleet is
-    still queued, and excluding by pid would hide it. The token is unique
-    per invocation and is shared by every suite of one run, which is
-    exactly the scope wanted (#521 review).
-
-    A manifest already marked ``collected``, ``cancelled`` or ``stale`` is
-    settled and needs no scheduler probe. ``submitting`` is not settled: it
-    is the record of a head that died *during* its fan-out, and the ids it
-    did get written are jobs somebody has to deal with.
-
-    ``suite_config`` narrows the scan to one suite's records — necessary
-    because it spans the namespaced directories beside this one, which
-    belong to the other configs of a co-located regression.
-
-    Sorted by path so a run with several orphans reports them in a stable
-    order — the message names them, and a set that reshuffles per
-    invocation is a message nobody can diff.
+    This head's own manifests are excluded by ``run_token``, not pid, since pids
+    are reused. ``suite_config`` narrows the scan to one suite. Results are
+    sorted by path.
     """
     found = []
     for directory in _manifest_dirs(Path(dispatch_root)):
         try:
-            # Both spellings: `run-<pid>.json` from a head that predates the
-            # token in the name, and `run-<pid>-<token>.json` from this one.
             candidates = sorted(directory.glob("run-*.json"))
         except OSError:
             continue
@@ -469,7 +367,7 @@ def build_from(payload) -> JobHandle | None:
 
 
 def verilate_from(payload) -> JobHandle | None:
-    """The manifest's verilate-job handle, or ``None`` where it had none (#593)."""
+    """The manifest's verilate-job handle, or ``None`` where it had none."""
     return _handle_from(payload, "verilate")
 
 
@@ -504,10 +402,8 @@ def pending_from(payload) -> list[tuple[int, JobHandle]]:
 def row_identities(payload) -> list[tuple]:
     """``(test name, run id)`` per recorded row, in the head's order.
 
-    The comparison an adoption stands on: the same suite planned the same
-    way produces the same list, including the skipped and setup-failed
-    rows, so a different ``-l``/``-s`` selection or an edited tests.yaml
-    is a mismatch rather than a fleet collected against the wrong rows.
+    Adoption compares this list, so a different ``-l``/``-s`` selection or an
+    edited tests.yaml is a mismatch.
     """
     return [
         (row.get("test_name"), row.get("randmode_i"))

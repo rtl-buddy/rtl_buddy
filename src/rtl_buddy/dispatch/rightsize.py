@@ -2,90 +2,36 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Reservation right-sizing analysis (#351 P3).
+"""Reservation right-sizing: per-test advice from the per-job ``sacct`` telemetry.
 
-Consumes the per-job ``sacct`` telemetry the collector attached to
-dispatched results (P2) and produces per-test advice: which resource is
-over- or under-reserved, by how much, and what to set it to. rtl-buddy
-reports and suggests; it never rewrites tests.yaml — each finding carries
-an edit hint naming the exact ``resources:`` field so an agent (or
-human) can apply it as a reviewable diff.
+Each finding says which resource is over- or under-reserved, by how much, and
+what to set it to, with an ``edit_hint`` naming the field to change. rtl-buddy
+never rewrites tests.yaml.
 
-Semantics:
-
-- Utilization is judged per *test*, not per run: the peak across the
-  test's run_ids/seeds in this invocation, so a suggestion covers the
-  worst observed run.
-- Below ``over-threshold`` → over-reserved (``reduce``); above
-  ``near-limit`` or a scheduler TIMEOUT / OUT_OF_MEMORY kill →
-  under-reserved (``raise``, with the kill taking precedence over
-  whatever numbers were captured). Suggested = peak × ``margin``,
-  rounded to scheduler-friendly units with sane floors.
-- Time advice needs trustworthy elapsed time: it is skipped for
-  non-Verilator simulator families because a VCS ``-licqueue`` wait
-  would masquerade as compute time (rtl-buddy/rtl_buddy#329), and
-  skipped when the limit is unknown.
-- Memory advice needs a peak that was actually sampled. ``MaxRSS`` is a
-  high-water mark over accounting samples, so a test whose longest run
-  finished inside one sampling interval was measured at most once and
-  reports near-zero — 17-27x below the truth on a site running the stock
-  30 s ``JobAcctGatherFrequency`` (rtl-buddy/rtl_buddy#365). Utilization-based
-  memory advice is suppressed for those tests and the omission is logged,
-  because a too-small ``mem`` gets the job OOM-killed: this is the one
-  resource where confidently wrong advice costs more than none. An
-  ``OUT_OF_MEMORY`` kill still raises, being a fact about the reservation
-  rather than a measurement of it — the same rule the ``TIMEOUT`` case
-  follows for time.
-- Cpu efficiency is measured against the *requested* cpus, not the
-  allocated ones (rtl-buddy/rtl_buddy#505). A site that allocates whole
-  cores reports ``AllocCPUS=2`` for a job that asked for one, so a
-  single-threaded test judged against the allocation cannot beat 0.5
-  efficiency and is advised down to the ``cpus: 1`` its tests.yaml already
-  says — every run, forever, because no edit can retire it. The request is
-  what a ``resources:`` field controls, so it is the denominator and it is
-  what a finding reports as ``reserved``; the allocated figure rides along
-  in ``allocated`` when it differs, so ``squeue``/``sacct`` still
-  reconcile. The denominator is preferably the reservation rtl-buddy itself
-  resolved and submitted, which is the request by construction and needs no
-  cooperation from the site; ``ReqCPUS`` and then ``AllocCPUS`` are the
-  fallbacks, for a caller that cannot supply it, for telemetry predating
-  the field, and for a ``cfg-dispatch.sbatch-args`` carrying its own
-  ``--cpus-per-task`` — appended after the generated flags, so it
-  supersedes the reservation rtl-buddy resolved. ``mem`` and ``time``
-  never had that exposure: they are judged against ``ReqMem`` and
-  ``TimelimitRaw``, which sacct reports from the allocation an override
-  actually produced.
-- Advice is labeled with the run count and regression level it was
-  derived from — a smoke-level run must not be used to shrink a
-  nightly test's reservation.
-- Advice names the field that actually *governs* the reservation
-  (rtl-buddy/rtl_buddy#358). A job whose builder cannot share a build
-  compiles inside itself, so its single allocation covers both phases and
-  was resolved as the per-field maximum of the sim and compile
-  reservations. Where the compile side won, editing the test's
-  ``resources:`` would change nothing — so the hint points at
-  ``cfg-dispatch.compile`` instead, and the finding is labeled
-  ``compile+sim`` to say the measurement spans both.
-- The suite's *build job* gets one row of its own, labeled ``compile``
-  (rtl-buddy/rtl_buddy#495). It owns no per-test row, so
-  :func:`analyze_build_reservation` reads its ``sacct`` entry directly and
-  asks the same two questions of it — wall clock against the limit, cpu
-  time against the allocation. Its cpus suggestion is divided back down by
-  the resolved ``compile.parallel``, because the field a project edits is
-  per-build while the reservation the head submitted was the product — and
-  its denominator is the requested cpus, for the same reason a test's is. Its
-  ``reduce`` needs the build envelope to say a compile actually ran: a
-  re-run of an unchanged suite short-circuits every build on its stamp, and
-  reading those seconds as "the compile is fast" would advise a limit the
-  next real RTL change times out against — which cancels the whole afterok
-  fan-out, the failure the build job's exit-0 contract exists to prevent.
-- Every suggestion for such a job is *reachable*: a ``reduce`` is clamped
-  up to the compile reservation, because the ``max`` will not let the
-  allocation go below it however far the test's own ``resources:`` are
-  trimmed. A suggestion the clamp pushes back to the current reservation
-  saves nothing and is dropped — advising a reduction that cannot happen
-  is worse than silence, since the agent loop reruns, sees the advice fail
-  to retire, and cannot tell that from a wrong suggestion.
+- Utilization is judged per test: the peak across its run_ids in this invocation.
+- Below ``over-threshold`` is over-reserved (``reduce``). Above ``near-limit``,
+  or after a scheduler TIMEOUT / OUT_OF_MEMORY kill, is under-reserved (``raise``);
+  a kill takes precedence over measured numbers. Suggested = peak x ``margin``,
+  rounded with floors.
+- Time advice is skipped for VCS builders (a ``-licqueue`` wait looks like compute
+  time) and when the time limit is unknown.
+- Memory advice is skipped for a test whose longest run finished inside one
+  accounting interval, because ``MaxRSS`` is a sampled high-water mark and
+  under-reports such jobs. The omission is logged. An OOM kill still raises.
+- Cpu efficiency is measured against the requested cpus, in preference order: the
+  reservation rtl-buddy submitted, ``ReqCPUS``, ``AllocCPUS``. A cpu
+  request in ``cfg-dispatch.sbatch-args`` overrides the submitted one. A finding's
+  ``reserved`` is the request and ``allocated`` the scheduler's figure when it differs.
+- Advice carries the run count and regression level it came from.
+- Advice names the field that governs the reservation. For a job that compiles
+  inside itself, the allocation is the per-field maximum of the sim and compile
+  reservations; where compile won, the hint points at ``cfg-dispatch.compile``
+  and the phase is ``compile+sim``.
+- The suite's build job gets its own row (``compile``), analysed by
+  :func:`analyze_build_reservation`. Its cpus suggestion is divided by
+  ``compile.parallel``, and a ``reduce`` requires evidence that a compile ran.
+- A suggestion for an in-job compile is clamped to the compile reservation; one
+  the clamp turns into no reduction is dropped.
 """
 
 import logging
@@ -107,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 _TIME_FLOOR_S = 300  # never suggest a limit under 5 minutes
 _MEM_FLOOR_BYTES = 128 * 2**20  # never suggest under 128M
-# A reduce suggestion must actually save something, or it is churn.
+# A reduce must save at least a quarter of the reservation.
 _REDUCE_KEEP_RATIO = 0.75
 
 
@@ -125,31 +71,15 @@ class RightsizeFinding:
     reg_level: int | None
     states: list = field(default_factory=list)
     edit_hint: dict = field(default_factory=dict)
-    # Which phases the job's single allocation had to cover: "sim" normally,
-    # "compile+sim" when the builder could not share a build and the compile
-    # therefore ran inside the job (#358).
+    # "sim", or "compile+sim" when the compile ran inside the job.
     phase: str = "sim"
-    # What the scheduler actually handed out, when that is not what the
-    # reservation asked for — a site allocating whole cores gives a job that
-    # requested 1 cpu 2 of them (#505). `reserved` is always the requested
-    # figure, because that is the one the named edit hint can move; this is
-    # additive, and None whenever the two agree or nothing reported an
-    # allocation. Only ever set on a `cpus` finding.
+    # The scheduler's allocation when it differs from `reserved`; cpus findings only.
     allocated: str | None = None
-    # How this row's `compile.parallel` is spelled — the suite's own
-    # `compile:` block where it set one, else the cfg-dispatch key (#547
-    # review). Only ever set on a build-job (`phase: compile`) row, and
-    # only so the rendered table's footnote can name the key a reader would
-    # edit. Deliberately NOT in `as_event()`: the machine payload's key set
-    # is a contract, and a machine reader already gets the same
-    # attribution, per field, in `edit_hint`.
+    # Key that sets this build-job row's `compile.parallel`, for the table footnote.
+    # Not in `as_event()`: the machine payload's key set is a contract.
     parallel_origin: str | None = None
-    # Set only where the reservation is an AGGREGATE of several builds and
-    # `suggested` therefore names ONE contributor's new value rather than
-    # the whole-job figure (#551). `suggested_total` keeps that figure —
-    # the number the job should end up reserving — and `aggregate_delta` is
-    # what was added to the contributor to reach it. Additive and None
-    # everywhere else, so an ordinary finding is unchanged.
+    # For an aggregated reservation, `suggested` is one contributor's new value;
+    # these give the whole-job figure and the amount added to that contributor.
     suggested_total: str | None = None
     aggregate_delta: str | None = None
 
@@ -176,33 +106,19 @@ class RightsizeFinding:
 
 
 def _is_arg_override(entry: str) -> bool:
-    """Did this override come from ``sbatch-args`` rather than the env?
+    """Did this override come from ``sbatch-args`` rather than the environment?
 
-    :func:`~rtl_buddy.config.dispatch.cpu_request_overrides` renders
-    arguments with their leading dash and environment variables as
-    ``NAME=value``, so the first character is the whole discriminator.
+    Arguments keep their leading dash; environment entries are ``NAME=value``.
     """
     return entry.startswith("-")
 
 
 def _replaces_the_per_task_cpus(entries: list) -> bool:
-    """Does this override REPLACE the generated ``--cpus-per-task``?
+    """Does this override replace the generated ``--cpus-per-task``?
 
-    Only a direct cpu count does. ``-c``/``--cpus-per-task`` in
-    ``sbatch-args`` is appended after the generated one and wins, so the
-    reservation rtl-buddy sized never reaches sbatch.
-
-    A task or node count does not: ``--ntasks=2`` leaves
-    ``--cpus-per-task=8`` exactly where it was and asks for two tasks OF
-    it, so the per-task reservation still applies and the job requests 16.
-    Treating the two alike is what let a compile floor of 8 be dropped
-    entirely under ``--ntasks=2``, and a whole-job suggestion below 8 is
-    then unreachable however far the task count is lowered — advice that
-    cannot retire, which is the whole subject of #505 (#505 review).
-
-    No environment entry can be direct: the only direct variable,
-    ``SBATCH_CPUS_PER_TASK``, is excluded because the generated flag beats
-    it on the command line.
+    Only a direct cpu count (``-c``/``--cpus-per-task``) does. A task or node
+    count multiplies the generated value instead, so the per-task field still
+    applies. No environment entry counts.
     """
     return any(
         _is_arg_override(e) and sbatch_arg_sets_cpu_count_directly(e) for e in entries
@@ -210,29 +126,12 @@ def _replaces_the_per_task_cpus(entries: list) -> bool:
 
 
 def _effective_cpus_floor(floor_cpus, cpus_override):
-    """The whole-job cpus floor a ``reduce`` may not suggest below.
+    """The cpus floor a ``reduce`` may not suggest below, or ``None`` if none applies.
 
-    ``floor_cpus`` is per task: it bounds the generated
-    ``--cpus-per-task``, because an in-job compile's allocation is
-    ``max(sim, compile)`` and no trimming of the test's own ``resources:``
-    takes it below the compile side.
-
-    A DIRECT cpu count in ``sbatch-args`` replaces that generated flag, so
-    the floor it bounded never reaches sbatch and there is nothing to clamp
-    to. A task or node count does not replace it — ``--ntasks=2`` leaves
-    ``--cpus-per-task=8`` alone and asks for two tasks of it — so the floor
-    still holds and must be kept (#505 review). Dropping it there let a
-    whole-job suggestion below 8 through, which no task count can reach:
-    even one task still costs 8 cpus, so the finding recurred on every run.
-
-    Kept *unscaled*, deliberately. The whole-job minimum is the per-task
-    floor times the tasks that must remain, and the task count is itself
-    one of the two levers this advice offers — a reader told to lower
-    ``--ntasks`` can go to one task. Multiplying by the tasks observed
-    would floor the suggestion at the current reservation and suppress
-    every reachable reduction, trading one kind of unretirable advice for
-    silence. So the bound is the per-task floor: below it nothing is
-    reachable, at or above it something is.
+    ``floor_cpus`` is per task. A direct cpu count in ``sbatch-args`` replaces
+    the generated flag, so the floor is dropped. A task or node count does not,
+    so the floor is kept, unscaled: task count is itself a lever, and scaling
+    would suppress every reachable reduction.
     """
     if not floor_cpus or not cpus_override:
         return floor_cpus
@@ -249,14 +148,9 @@ def _override_source(entries: list) -> str:
 
 
 def _join_args(quoted: list) -> str:
-    """``A``, ``B`` and ``C`` — a list, deliberately NOT a product.
+    """``A``, ``B`` and ``C``; a list, not a product.
 
-    An earlier wording said "the product of A x B", which is arithmetic
-    the note cannot back up: with ``--ntasks=8 --nodes=2
-    --ntasks-per-node=4 --cpus-per-task=2`` sbatch's own precedence makes
-    the request 16, not the product of all four (``--ntasks`` wins and
-    ``--ntasks-per-node`` degrades to a per-node maximum). The note names
-    the arguments and leaves the combining rule to sbatch (#505 review).
+    The note names the arguments and leaves the combining rule to sbatch.
     """
     if len(quoted) == 2:
         return f"{quoted[0]} and {quoted[1]}"
@@ -268,33 +162,17 @@ def _override_note(
 ) -> str:
     """Why a cpus finding names ``sbatch-args`` instead of a YAML field.
 
-    ``cfg-dispatch.sbatch-args`` is appended after the generated reservation
-    flags, so an argument there decides the job's cpu request — either
-    directly (``--cpus-per-task``) or as a task/node count that raises it
-    (``--ntasks``, ``--ntasks-per-node``, ``--nodes``). Advice that named
-    the masked field would be unappliable: the edit lands, the next job is
-    submitted with the same argument, and the finding returns (#505
-    review).
-
-    Only one shape can be handed the suggested number: a single
-    ``-c``/``--cpus-per-task``, which states the request outright. Two
-    shapes cannot. A lone task or node count is not a cpu count at all —
-    writing 3 into ``--ntasks`` asks for three tasks, not three cpus. And
-    where several arguments are present they combine by sbatch's own
-    precedence rules, which the note does not attempt to reproduce: it
-    names them and hands the decomposition back to the reader, who is the
-    only party that knows which one should shrink. Telling a reader to put
-    the figure into any single argument in either case would produce
-    exactly the unappliable advice this rule exists to prevent.
+    ``sbatch-args`` is appended after the generated flags, so a cpu request
+    there decides the job's request and a hint naming the YAML field would
+    not retire. Only a single ``-c``/``--cpus-per-task`` can take the suggested
+    number. A task or node count is not a cpu count, and several arguments
+    combine by sbatch's precedence, so the note hands the decomposition back
+    to the reader.
     """
     quoted = [f"`{arg}`" for arg in sbatch_args]
     source = _override_source(sbatch_args)
     if not _replaces_the_per_task_cpus(sbatch_args):
-        # Task and node counts leave the generated `--cpus-per-task` alone
-        # and ask for that many tasks OF it, so nothing is superseded: the
-        # per-task field is still in force and is still one of the two
-        # levers. Saying "supersedes" here would send a reader past the
-        # field they can actually edit (#505 review).
+        # Nothing is superseded: the per-task field still applies, so do not say "supersedes".
         verb = "multiplies" if len(quoted) == 1 else "multiply"
         decomposition = (
             f", so the request is {per_task} per task x {tasks} tasks"
@@ -339,50 +217,24 @@ def _aggregate(rows):
                 "runs": 0,
                 "states": [],
                 "builder": row.get("builder"),
-                # Set by the dispatch head for a job that compiles inside
-                # itself; governed_by then says which layer sized each field.
+                # Set for a job that compiles inside itself; governed_by names the layer per field.
                 "compile_in_job": bool(row.get("compile_in_job")),
                 "governed_by": row.get("governed_by") or {},
                 "compile_floor": row.get("compile_floor") or {},
-                # Which tests.yaml layer supplied each compile field for THIS
-                # test, and the testbench whose block did where that layer is
-                # the testbench one (#551). Per row rather than per suite,
-                # because a suite's testbenches can now size their compiles
-                # differently from one another.
+                # Per-row compile attribution: the tests.yaml layer and testbench per field.
                 "compile_origins": row.get("compile_origins"),
                 "compile_testbench": row.get("compile_testbench"),
-                # What the head resolved and submitted as `--cpus-per-task`
-                # for this test. It IS the request by construction, so it
-                # beats anything the scheduler reports back: `AllocCPUS` is
-                # post-rounding, and `ReqCPUS` is post-rounding too on a
-                # Slurm that normalizes it before accounting (#505).
+                # The `--cpus-per-task` the head submitted; it beats scheduler-reported figures.
                 "requested_cpus": row.get("requested_cpus"),
-                # The `sbatch-args` entries that superseded it, if any: the
-                # denominator falls back to the scheduler, and the edit hint
-                # has to name them rather than a YAML field they mask. More
-                # than one means they multiply, and no single one of them
-                # can be handed the suggestion (#505 review).
+                # `sbatch-args` cpu-request entries that superseded it, if any.
                 "cpus_override": row.get("cpus_override"),
-                # The `--cpus-per-task` the head actually submitted. Still
-                # in force under a task-count override, which multiplies it
-                # rather than replacing it — so it is what the compile floor
-                # bounds, and what the whole-job request decomposes into
-                # (#505 review).
+                # Still in force under a task-count override; the compile floor bounds it.
                 "submitted_cpus_per_task": row.get("submitted_cpus_per_task"),
-                # Which sim fields this run's builder mode governed, from
-                # config.dispatch.mode_governed_fields (#634): a hint about
-                # one of them has to name the `modes:` key, since a base
-                # field the mode block overrides would not move the
-                # reservation and the finding would come back next run.
+                # Sim fields governed by the builder mode; hints must name the `modes:` key.
                 "resource_modes": row.get("resource_modes") or {},
-                # ...all three taken from the first row that carries
-                # telemetry. Set when a later row disagrees: a retry is
-                # submitted into whatever environment the process holds by
-                # then, so when only some seeds of a test retried, their
-                # rows can describe a different request from the rest. The
-                # efficiency below is still maxed over every run, so one
-                # `reserved`/`edit_hint` cannot honestly describe them all
-                # and the cpus row is withheld instead (#505 review).
+                # The three cpus-request fields come from the first row with telemetry.
+                # True when a later row disagrees (e.g. a retry submitted under a
+                # changed environment); the cpus row is then withheld.
                 "cpus_request_mixed": False,
             },
         )
@@ -410,18 +262,8 @@ def _aggregate(rows):
             if value is None:
                 continue
             agg[key] = max(agg.get(key, 0), value)
-        # CPU efficiency is a RATIO, so it must be computed per run and the
-        # best (max) kept — deriving it from independently-maxed numerator
-        # and denominator would mix numbers from different seeds and could
-        # advise shrinking a reservation the busiest run actually saturated.
-        # ...and against the REQUESTED cpus, which is what the reservation
-        # asked for and the only number a tests.yaml edit moves. A site
-        # allocating whole cores hands out more than that, and rationing a
-        # single-threaded job against the surplus advises a reduction to the
-        # value already in the YAML (#505). Preference order: what the head
-        # submitted, then what the scheduler says was requested, then what it
-        # allocated — each step is one remove further from the field a
-        # project edits.
+        # A ratio: compute per run and keep the best, so one saturated run vetoes a reduce.
+        # Denominator preference: submitted request, scheduler ReqCPUS, AllocCPUS.
         cpus = (
             row.get("requested_cpus")
             or telemetry.get("req_cpus")
@@ -435,32 +277,19 @@ def _aggregate(rows):
     return per_test
 
 
-# The build job is not a test, but every finding needs a row label. A
-# parenthesised name cannot collide with a real test name.
+# Row labels for the build job and the verilate half of a split compile; the
+# parentheses keep them from colliding with test names.
 BUILD_JOB_ROW = "(build job)"
-# ...and the verilate half of a split compile, which is a second job with
-# a second reservation and so a second row (#593).
 VERILATE_JOB_ROW = "(verilate job)"
 
 
 def _compile_origin(origins, field):
-    """Which tests.yaml layer won one compile field, and whose block did.
+    """``(origin, testbench, key)`` for one compile field, or ``(None, None, None)`` if unset.
 
-    ``compile_origins`` arrives in two shapes, both from
-    :func:`~rtl_buddy.config.dispatch.compile_resource_origins`. A per-test
-    row carries the flat ``{field: "suite"|"testbench"}`` map — there the
-    governing testbench is the test's own, so naming it again would be
-    noise. The build job carries the nested
-    ``{field: {"origin": ..., "testbench": ..., "key": ...}}`` map, because
-    its reservation is a maximum over several testbenches and ``mem`` may
-    come from one while ``time`` comes from another (#551). Returns
-    ``(origin, testbench, key)`` for either, and ``(None, None, None)`` for
-    a field no tests.yaml layer set.
-
-    ``key`` is the dotted key INSIDE the ``compile:`` block that holds the
-    value — ``mem``, or ``verilate.mem`` for a verilate job's field the
-    ``verilate:`` sub-block won (#593). ``None`` means "the field's own
-    name", which is every compile field.
+    ``compile_origins`` is either a flat ``{field: "suite"|"testbench"}`` map (per-test
+    rows) or a nested ``{field: {"origin", "testbench", "key"}}`` map (build job).
+    ``key`` is the dotted key inside the ``compile:`` block, such as
+    ``verilate.mem``; ``None`` means the field's own name.
     """
     value = (origins or {}).get(field)
     if isinstance(value, dict):
@@ -474,12 +303,11 @@ def _compile_key(origins, field):
 
 
 def _compile_edit_path(origins, field, *, testbench=None):
-    """The tests.yaml key holding the compile value that WON, or ``None``.
+    """The tests.yaml key holding the winning compile value, or ``None``.
 
-    ``None`` means no tests.yaml layer set the field, so ``cfg-dispatch``
-    still governs it and the hint belongs in root_config.yaml. ``testbench``
-    is the fallback name for the flat per-test map, which records that a
-    testbench block won without repeating which one.
+    ``None`` means no tests.yaml layer set the field, so the hint belongs in
+    root_config.yaml. ``testbench`` names the testbench when the flat map
+    records only that a testbench block won.
     """
     origin, governing_tb, key = _compile_origin(origins, field)
     governing_tb = governing_tb or testbench
@@ -487,10 +315,7 @@ def _compile_edit_path(origins, field, *, testbench=None):
     if origin == "testbench" and governing_tb:
         return f"testbenches[name={governing_tb}].compile.{key}"
     if origin in ("suite", "testbench"):
-        # A testbench-governed field whose governing name went missing is a
-        # defensive case only — the head records the two together. The suite
-        # key at least lands the reader in the file that holds the block,
-        # which ``cfg-dispatch`` in root_config.yaml would not.
+        # Defensive: a testbench origin without a testbench name still lands in the right file.
         return f"compile.{key}"
     return None
 
@@ -498,17 +323,11 @@ def _compile_edit_path(origins, field, *, testbench=None):
 def _compile_paths(
     origins, field, key, *, suite_config_hint=None, root_config_hint=None
 ):
-    """Render one of a field's provenance lists as ``file:key`` paths.
+    """Render a provenance list of one field as ``file:key`` paths.
 
-    A build job's reservation is aggregated (#551), so two lists matter
-    besides the single edit target. ``sources`` is every place that
-    INDEPENDENTLY produces the winning number — two testbenches at the
-    same figure, or a block that exactly reaches the whole-job value the
-    suite states — where lowering one alone moves nothing.
-    ``contributors`` is every build whose value was ADDED to reach it,
-    where the number cannot be decomposed into an edit at all. Returns
-    ``[]`` for a provenance map that predates these lists, so an older
-    state dict degrades to today's advice rather than to silence.
+    ``key`` is ``sources`` (places that independently produce the winning
+    number, so lowering one alone moves nothing) or ``contributors`` (builds
+    whose values are added). Returns ``[]`` if the map has no such list.
     """
     entry = (origins or {}).get(field)
     if not isinstance(entry, dict):
@@ -518,10 +337,7 @@ def _compile_paths(
         path = _compile_edit_path(
             {field: source}, field, testbench=source.get("testbench")
         )
-        # Each path is rendered `file:key`, the way the `edit_hint` a reader
-        # would otherwise have got names both halves — a tie can straddle
-        # the suite's tests.yaml and root_config.yaml, and "compile.time"
-        # beside "cfg-dispatch.compile.time" is only half the answer.
+        # A tie can straddle tests.yaml and root_config.yaml, so name the file too.
         if path is None:
             path = f"cfg-dispatch.compile.{_compile_key({field: source}, field)}"
             config_file = root_config_hint
@@ -550,104 +366,36 @@ def analyze_build_reservation(
     sbatch_args_config_path=None,
     phase="compile",
 ):
-    """Right-size the *build job's* own reservation (#495).
+    """Right-size the build job's own reservation; returns a list of findings.
 
-    A suite's build job is one allocation running up to ``parallel``
-    concurrent Verilations, so it is the one job in a dispatched fleet that
-    ``analyze_suite_reservations`` cannot see: it owns no ``suite_results``
-    row, no test name, and no per-run peak. Its numbers still come from the
-    same ``sacct`` fields, so the advice is the same two questions asked of
-    one job — did it use its wall clock, and did it use its cpus.
+    The build job is one allocation running up to ``parallel`` concurrent
+    Verilations and has no per-test row. There is no memory advice (``MaxRSS``
+    under-reports short jobs) and no cpus ``raise``.
 
-    Two things are deliberately absent. There is no memory advice: MaxRSS
-    is a sampled high-water mark and a build job is exactly the kind of
-    short job #365 showed it under-reports, and a too-small ``mem`` gets
-    the compile OOM-killed. And there is no ``raise`` on cpus: cpu
-    efficiency below 1 means slots idled, never that more were needed.
-
-    ``compile_resources`` is the *per-build* reservation (the suite's own
-    ``compile:`` block over ``cfg-dispatch.compile``); the head multiplied
-    its cpus by ``parallel`` before submitting, and the field a project
-    edits is per-build — so cpus advice is only offered for a job that ran an
-    effective ``parallel`` of 1 (one slot, or one build record), where the
-    whole-job ratio and the per-build one are the same number. Above that
-    the ratio also carries the tail (unequal builds; a plan with fewer
-    distinct keys than slots), so dividing it by ``parallel`` can advise
-    shrinking the cpus the longest compile saturated, and there is no
-    per-compile cpu telemetry to tell the causes apart — the row is
-    withheld with reason ``parallel-utilization-ambiguous`` (#496 review).
-    Its resolved ``cpus`` is what the advice *names* as the current
-    per-build value, in preference to dividing AllocCPUS: a site where the
-    scheduler reports more cpus than were requested would otherwise be
-    shown a decomposition that does not match its YAML. The efficiency
-    ratio follows the same rule: its denominator is that resolved value
-    scaled by ``parallel`` — the job's own ``--cpus-per-task`` — then
-    ``ReqCPUS``, then ``AllocCPUS`` (#505). ``cpus_override`` withdraws
-    the first of those: ``cfg-dispatch.sbatch-args`` is appended after
-    the generated flags and wins, so an argument written there that sets
-    the cpu request means the resolved value was never submitted and may
-    state neither the ratio nor the decomposition. It is the LIST of such
-    arguments (see
-    :func:`~rtl_buddy.config.dispatch.sbatch_args_cpu_request_options`), so
-    the cpus row's ``edit_hint`` can name ``cfg-dispatch.sbatch-args``, say
-    which field it masks, and — where several of them multiply — decline to
-    put the suggestion on any one of them. ``sbatch_args_config_path`` is
-    the config file those arguments came from, which is the ``file`` such a
-    hint names: the backend is built once from the orchestration
-    root_config.yaml, so in a multi-root regression it is NOT
-    ``root_config_hint``, and naming the suite's root would send an agent to
-    edit a `cfg-dispatch` the backend never reads (#527). It falls back to
-    ``root_config_hint`` when the caller has no better answer. Empty
-    telemetry (a local-parallel backend reports none) yields no advice at
-    all.
-
-    ``compile_work`` is what the build envelope says the job actually did:
-    ``{"records": n, "compiled": n, "compiled_sec": float}``, or ``None``
-    when the head could not tell (no envelope, or one written before the
-    records existed). It is what separates *nothing to compile* from
-    *compiled fast* — on any re-run of an unchanged suite every build
-    short-circuits on its stamp, so the job is seconds long with near-zero
-    cpu time, and a naive reading advises a five-minute limit that the
-    next real RTL change TIMEOUTs against, taking the whole afterok
-    fan-out with it. So a ``reduce`` needs evidence that a compile ran;
-    ``raise`` is unconditional, being a fact about the reservation rather
-    than a measurement of the work. ``accounting_interval_s`` withholds
-    ``reduce`` for the same reason ``analyze_suite_reservations`` withholds
-    memory advice: ``TotalCPU`` is accumulated from usage samples, so a job
-    that finished inside one interval was measured at most once.
-
-    ``compile_origins`` says, per field, where the *winning* value came
-    from — ``{"mem": "suite"}`` when the suite's own ``compile:`` block set
-    it (#497), ``parallel`` included (#547) — and ``suite_config_hint`` is
-    that suite's tests.yaml path.
-    Together they decide which file an edit hint names: advice that says
-    "shrink ``cfg-dispatch.compile.mem``" is wrong for a field a suite
-    block overrides, because editing the root config would not move this
-    job's reservation at all. The map is computed by
-    :func:`~rtl_buddy.config.dispatch.compile_resource_origins` beside the
-    layering it mirrors and handed in — never guessed here from the
-    values, which cannot tell an override from a coincidence.
-
-    ``phase`` says which half of a split compile this job ran (#593):
-    ``"compile"`` for the build job, ``"verilate"`` for the verilate job
-    in front of it. It selects the row label and travels on every finding,
-    so a suite whose compile is split produces two build-job rows a reader
-    can tell apart. The keys an ``edit_hint`` names come from
-    ``compile_origins`` rather than from here — the verilate job's
-    provenance map spells its own ``verilate.<field>`` keys.
+    - ``compile_resources`` is the per-build reservation; the submitted cpus were
+      multiplied by ``parallel``. Cpus advice is offered only when the effective
+      parallel is 1, since above that the efficiency ratio also carries tail
+      effects (reason ``parallel-utilization-ambiguous``).
+    - ``cpus_override`` is the list of ``sbatch-args`` cpu-request entries, which
+      replace the resolved value; the cpus hint then names ``cfg-dispatch.sbatch-args``
+      in ``sbatch_args_config_path`` (default ``root_config_hint``).
+    - ``compile_work`` is ``{"records", "compiled", "compiled_sec"}`` from the build
+      envelope, or ``None``. A ``reduce`` requires ``compiled`` > 0, because a
+      re-run of an unchanged suite finishes in seconds on stamps. ``raise`` does not.
+      ``accounting_interval_s`` also withholds ``reduce`` for a job shorter than
+      one sample.
+    - ``compile_origins`` and ``suite_config_hint`` (the suite's tests.yaml) decide
+      which file an edit hint names, from
+      :func:`~rtl_buddy.config.dispatch.compile_resource_origins`.
+    - ``phase`` is ``"compile"`` or ``"verilate"`` (the first half of a split
+      compile); it selects the row label and travels on every finding.
     """
     if not build_telemetry:
         return []
     findings = []
     elapsed = build_telemetry.get("elapsed_s")
-    # Only a `reduce` is gated: it is the direction that can shrink a
-    # reservation below what the next run needs.
     compiled = (compile_work or {}).get("compiled") or 0
-    # Three answers, not two. No records at all means the head could not
-    # tell — the build job left no envelope (an OOM kill or a TIMEOUT still
-    # leaves the sacct row that got us here), or wrote one predating them.
-    # The gating treats unknown as no-reduce either way, but the recorded
-    # reason must not claim every build reused a stamp it never saw.
+    # Zero records means unknown (no envelope), which must not be logged as "all reused".
     records = (compile_work or {}).get("records") or 0
     undersampled = (
         accounting_interval_s is not None
@@ -656,10 +404,6 @@ def analyze_build_reservation(
     )
     may_reduce = bool(compiled) and not undersampled
     if not may_reduce:
-        # INFO, not WARNING: an all-reused build job is the normal shape of
-        # every re-run, and a warning per re-run is noise. It is still
-        # recorded, because "no advice" and "advice withheld" are different
-        # answers to look back at.
         log_event(
             logger,
             logging.INFO,
@@ -670,55 +414,30 @@ def analyze_build_reservation(
                 if undersampled
                 else ("no-compile-observed" if records else "no-build-records")
             ),
-            # None, not 0, when there was no envelope: the field keeps the
-            # same three-state meaning `compile_work` has.
             builds=(compile_work or {}).get("records"),
             compiled=compiled,
-            # How much of the reservation's wall clock was real compiling —
-            # the number that says "the job spent 55s of its 2h building",
-            # which sacct's elapsed alone cannot separate from queueing and
-            # stamp checks. Same three-state rule as `builds`: None when
-            # there was no envelope to measure.
             compiled_sec=(compile_work or {}).get("compiled_sec"),
             elapsed_s=elapsed,
             interval_s=accounting_interval_s,
         )
-    # BuildJobSpec's typed field (>= 1); clamped anyway because every
-    # cpus number below divides by it.
+    # Clamped because every cpus number below divides by it.
     parallel = max(1, parallel)
     state = build_telemetry.get("state")
     states = [state] if state else []
 
     origins = compile_origins or {}
-    # How this job's `compile.parallel` should be spelled wherever advice
-    # names it — the withheld line, the `cpus` note's lever sentence, and
-    # the advice table's footer, which the finding carries it up to. A
-    # suite's own block wins outright, so a reader sent to the root key
-    # would edit a value that moves this job not at all (#547 review).
+    # A suite's own `compile:` block wins, so name that key rather than the root one.
     parallel_key = compile_parallel_origin(
         origins.get("parallel") == "suite", suite_config_hint
     )
 
     alloc_cpus = build_telemetry.get("alloc_cpus")
-    # This job's generated `--cpus-per-task`: the resolved per-build cpus
-    # scaled by `parallel`. Still submitted under a task-count override,
-    # which asks for that many tasks OF it rather than replacing it, so it
-    # is what the request decomposes into (#505 review).
+    # The generated `--cpus-per-task`: per-build cpus x parallel.
     generated_per_task = (
         (compile_resources.cpus or 0) * parallel if compile_resources is not None else 0
     )
-    # What the head itself submitted, first: that generated value IS the
-    # request by construction and needs no cooperation from the site. A
-    # cluster allocating whole cores hands the job more than that, and
-    # rationing against the surplus advises a per-build value the config
-    # already holds (#505). `ReqCPUS` is the next best thing for a head that
-    # could not resolve the block, and the allocation the last (it is also
-    # the only one available to telemetry predating the field).
-    # ...unless an override is in force: a direct `--cpus-per-task` replaces
-    # the generated flag, and a task count multiplies it, so in neither case
-    # is the generated value the whole-job request. `ReqCPUS` is then the
-    # best available answer (#505 review) — and the decomposition below
-    # drops the same value for the same reason.
+    # Preference: submitted value, ReqCPUS, AllocCPUS. Any cpu override makes the
+    # generated value not the whole-job request, so it is skipped.
     submitted = 0 if cpus_override else generated_per_task
     cpus = submitted or build_telemetry.get("req_cpus") or alloc_cpus
     build_tasks = (
@@ -731,11 +450,7 @@ def analyze_build_reservation(
     )
 
     def hint(resource_field, note=None):
-        # `cfg-dispatch.sbatch-args` is appended after the generated
-        # reservation flags and wins, so an argument there that sets the cpu
-        # request masks every cpus field the layering below could name.
-        # Advice that named one would be unappliable, and would come back on
-        # the next run (#505 review).
+        # A cpu override in `sbatch-args` masks every cpus field named below.
         if resource_field == "cpus" and cpus_override:
             compile_path = _compile_edit_path(origins, "cpus")
             masked = (
@@ -743,10 +458,7 @@ def analyze_build_reservation(
                 if compile_path and suite_config_hint
                 else f"cfg-dispatch.compile.{_compile_key(origins, 'cpus')}"
             )
-            # An environment variable lives in no file, so there is nothing
-            # honest to point a `file` at; `sbatch-args` wins over it (the
-            # command line beats the environment) and is the actionable
-            # half whenever both are in play (#505 review).
+            # An environment variable has no file; `sbatch-args` beats it when both are set.
             from_args = any(_is_arg_override(e) for e in cpus_override)
             edit = {
                 "path": "cfg-dispatch.sbatch-args" if from_args else "env",
@@ -757,25 +469,13 @@ def analyze_build_reservation(
                     tasks=build_tasks,
                 ),
             }
-            # The config the ARGUMENTS came from — the backend's own, not
-            # necessarily this suite's root (#527). The fields below are
-            # suite-resolved and keep pointing at `root_config_hint`; only
-            # this one belongs to the backend, and a hint naming a
-            # `cfg-dispatch` it never reads would not retire the advice.
+            # The backend's config, which in a multi-root regression is not this suite's root.
             override_file = sbatch_args_config_path or root_config_hint
             if from_args and override_file:
                 edit["file"] = override_file
             return edit
-        # Point at whichever file — and key — holds the value that WON. A
-        # suite-level `compile:` block is more specific than cfg-dispatch and
-        # a testbench's own more specific still, so for a field either set,
-        # editing cfg-dispatch would move nothing (#497, #551). This job's
-        # reservation is the maximum over the planned testbenches, so the key
-        # named is the one that supplied THIS field, which for a two-geometry
-        # suite is the large entry's block and not the small one's.
-        # Otherwise cfg-dispatch lives in root_config.yaml, and without a
-        # path to it there is nothing honest to point at — a suite's
-        # tests.yaml does not govern a build job it does not override.
+        # Name the file and key that hold the winning value: a testbench block beats
+        # the suite block, which beats cfg-dispatch (root_config.yaml).
         compile_path = _compile_edit_path(origins, resource_field)
         if compile_path and suite_config_hint:
             edit = {"file": suite_config_hint, "path": compile_path}
@@ -796,45 +496,24 @@ def analyze_build_reservation(
         "reg_level": None,
         "states": states,
         "phase": phase,
-        # Carried on every build-job row, not just the cpus one: the
-        # footnote it feeds explains the row itself, and a table whose only
-        # build-job row is `time` still has a build job behind it.
         "parallel_origin": parallel_key,
     }
 
     def withheld_from_reduce(resource_field):
-        """Can a `reduce` for this field be written into one config value?
+        """True (and logs the reason) when a `reduce` cannot be written into one config value.
 
-        The build job's reservation is aggregated over the planned builds
-        (#551), which breaks that assumption in two distinct ways, and a
-        row the reader cannot apply is a row that comes back next run:
-
-        * the number is a SUM of several builds (``compile-aggregate``).
-          The suggestion is a whole-job figure, and writing it into any one
-          contributor's key leaves the aggregate where it was — telemetry
-          saying "30 minutes was enough" cannot become `time: 30m` on the
-          60-minute testbench. There is nothing honest to decompose it
-          into, so nothing is suggested (#551 review round 2).
-        * two sources produce it INDEPENDENTLY (``compile-origin-tied``) —
-          two testbenches at the same figure, or one that merely reaches
-          the whole-job floor. Lowering either alone moves nothing.
-
-        `raise` is unaffected either way: moving any one source up moves a
-        maximum up, and a sum with it.
+        Reasons: ``compile-aggregate`` (the reservation is a sum of several builds) and
+        ``compile-origin-tied`` (several sources produce the same number
+        independently). A `raise` is unaffected.
         """
         entry = origins.get(resource_field)
         if not isinstance(entry, dict):
             return False
-        # Counted from the lists, not from the rendered paths: two planned
-        # builds can share one YAML key and still add up twice, so the
-        # number of contributors is what says "this is a sum", while the
-        # paths are only how it is described.
+        # Count list entries, not paths: two builds can share one YAML key and still add up.
         for reason, key in (
             ("compile-aggregate", "contributors"),
             ("compile-origin-tied", "sources"),
         ):
-            # A single contributor is not a sum, and a single source is not
-            # a tie — both are the ordinary, appliable case.
             if len(entry.get(key) or []) <= 1:
                 continue
             paths = _compile_paths(
@@ -864,10 +543,7 @@ def analyze_build_reservation(
     def _rescheduled_total(entry, value):
         """The makespan this field's queue reaches with the key set to ``value``.
 
-        ``None`` when the provenance map carries no schedule — an older
-        state dict, or a field that is not a queue at all (``mem`` adds up
-        regardless of order) — in which case the caller keeps the
-        arithmetic it already had.
+        ``None`` when the provenance map has no schedule (e.g. ``mem``, which adds up).
         """
         schedule = entry.get("schedule")
         if not schedule:
@@ -882,18 +558,10 @@ def analyze_build_reservation(
     def raise_fields(resource_field, suggested_value, current_value, render):
         """Turn a whole-job `raise` into the contributor's own new value.
 
-        A summed reservation has no single field holding the total, so a
-        suggestion written verbatim into the contributor the hint names
-        re-aggregates PAST the target: 30 + 60 minutes reserved, a 135
-        target, and `135` in the 60-minute testbench gives 165 (#551
-        review round 3). What that key has to become is its own value plus
-        the shortfall, leaving every other contributor where it is —
-        60 + (135 - 90) = 105, which re-aggregates to exactly 135.
-
-        Returns the finding's suggestion fields. For anything that is not
-        an aggregate — and for a provenance map predating this, where the
-        whole-job figure is still the best answer — that is just
-        ``suggested``, exactly as before.
+        Writing the whole-job figure into one contributor of a summed reservation
+        overshoots, so the key is instead raised by the shortfall, split across
+        its occurrences and checked by re-scheduling the queue. Falls back to the
+        whole-job figure for non-aggregates and when no schedule reaches the target.
         """
         plain = {"suggested": render(suggested_value)}
         entry = origins.get(resource_field)
@@ -904,30 +572,16 @@ def analyze_build_reservation(
             return plain
         delta = suggested_value - current_value
         if delta <= 0:
-            # Only a `raise` is translated; a shortfall that is not one has
-            # nothing to add, and `reduce` is withheld for an aggregate.
             return plain
-        # One key can be several contributors: two builds of one testbench
-        # run back to back, and raising that key by the whole shortfall
-        # raises the total by TWICE it. Each occurrence carries its share
-        # (rounded up, so the target is reached rather than missed by the
-        # remainder) — #551 review round 5.
+        # One key can be several contributors; each takes its share, rounded up.
         primary = {"origin": entry.get("origin"), "testbench": entry.get("testbench")}
         occurrences = sum(
             1 for source in entry.get("contributors") or [] if source == primary
         )
         candidate = own + -(-delta // max(1, occurrences))
 
-        # ...and that arithmetic assumes the schedule survives the edit,
-        # which it need not. Raising one copy of a repeated build can push
-        # a later copy BEHIND a neighbour that was running alongside it,
-        # so the queue absorbs part of the raise: A=60, B=66, A=60 over two
-        # workers is a 120-minute makespan, and A=90 re-schedules to 156,
-        # not the 180 the arithmetic promised. A raise that under-delivers
-        # is the one shape this must never emit — it re-times-out and the
-        # advice looks applied (#551 review round 6). So the proposal is
-        # SCHEDULED, not predicted, and the remaining gap closed until it
-        # clears the target.
+        # Re-schedule the proposal: raising one copy can reorder the queue and absorb
+        # part of the raise. An under-delivering raise would time out again.
         reached = _rescheduled_total(entry, candidate)
         rounds = 0
         while reached is not None and reached < suggested_value and rounds < 8:
@@ -935,11 +589,7 @@ def analyze_build_reservation(
             reached = _rescheduled_total(entry, candidate)
             rounds += 1
         if reached is not None and reached < suggested_value:
-            # Still short after a bounded search: fall back to the whole-job
-            # figure, which is safe by construction — a build whose own time
-            # IS the target cannot finish before it, so the makespan cannot
-            # either. It over-reserves rather than under-reserves, and the
-            # reader still gets a number to write.
+            # The whole-job figure over-reserves but cannot under-deliver.
             return plain
         return {
             "suggested": render(candidate),
@@ -948,7 +598,7 @@ def analyze_build_reservation(
         }
 
     def with_aggregate(edit, override):
-        """Say in the hint what the translated number means, and why."""
+        """Add a hint note explaining an aggregate-translated suggestion."""
         if not override.get("suggested_total"):
             return edit
         edit = dict(edit)
@@ -980,9 +630,7 @@ def analyze_build_reservation(
         )
     elif limit and elapsed is not None:
         util = elapsed / limit
-        # `time` is NOT scaled by parallel — N concurrent builds take the
-        # wall clock of the longest, not of their sum — so this suggestion
-        # needs no division and says so by carrying no note.
+        # `time` is not scaled by parallel: concurrent builds take the longest one's wall clock.
         suggested_s = max(elapsed * rightsize_cfg.margin, _TIME_FLOOR_S)
         if util > rightsize_cfg.near_limit:
             raised = raise_fields("time", suggested_s, limit, format_time)
@@ -1019,26 +667,12 @@ def analyze_build_reservation(
 
     # --- cpus (efficiency; only ever suggests reducing) --------------
     cpu_time = build_telemetry.get("total_cpu_s")
-    # Whole-job cpu efficiency is a *per-build* number only when the job ran
-    # one build at a time. Above that it also carries the tail — builds of
-    # unequal length, and a plan with fewer distinct keys than slots, both
-    # leave reserved cpus idle while the longest compile saturates the ones
-    # it has — so dividing it by `parallel` can advise shrinking exactly the
-    # cpus that compile needed (#496 review). There is no per-compile cpu
-    # telemetry to separate the causes with (sacct accounts the job, not the
-    # thread group), so the advice is withheld rather than guessed at.
+    # Whole-job efficiency is per-build only for one build at a time; above that it
+    # includes tail idling and there is no per-compile cpu telemetry, so withhold.
     effective_parallel = min(parallel, records) if records else parallel
     if may_reduce and cpus and cpus > 1 and cpu_time is not None and elapsed:
-        # TotalCPU is summed over the job's steps, and elapsed is the wall
-        # clock of the whole parallel batch — which is exactly the ratio
-        # that says whether the scaled reservation was worth it.
         efficiency = cpu_time / (elapsed * cpus)
         if efficiency < rightsize_cfg.over_threshold and effective_parallel > 1:
-            # Same event as the reduce gating above, because it is the same
-            # question a reader asks of an empty row: nothing to say, or
-            # something withheld? Time advice is unaffected — N concurrent
-            # builds take the wall clock of the longest, so `elapsed`
-            # against `timelimit` means what it always did.
             log_event(
                 logger,
                 logging.INFO,
@@ -1052,37 +686,21 @@ def analyze_build_reservation(
                 interval_s=accounting_interval_s,
                 parallel=parallel,
                 efficiency=round(efficiency, 3),
-                # ...and which key to size, since the message says to size
-                # one: the suite's own where it set it (#547 review).
                 parallel_origin=parallel_key,
             )
         elif efficiency < rightsize_cfg.over_threshold and withheld_from_reduce("cpus"):
-            # Two planned builds asking for the same cpus, or one whose block
-            # merely reaches the whole-job value: no single edit lowers the
-            # maximum, so the row would not retire (#551 review).
+            # No single edit lowers the maximum; withheld_from_reduce has logged it.
             pass
         elif efficiency < rightsize_cfg.over_threshold:
             suggested_total = max(
                 1, math.ceil(cpus * efficiency * rightsize_cfg.margin)
             )
-            # `effective_parallel` is 1 here by the branch above, so this is
-            # the identity — kept as the division it is because that is what
-            # makes the invariant legible: the per-build figure is the
-            # whole-job one divided by the builds that were actually in
-            # flight, and the only case where those are knowably equal is
-            # one build at a time.
+            # `effective_parallel` is 1 here; the division states the invariant.
             suggested_per_build = max(
                 1, math.ceil(suggested_total / effective_parallel)
             )
-            # The decomposition is stated in terms of the value the project
-            # would edit, so it has to come from the head's own resolved
-            # `cfg-dispatch.compile.cpus` and not from AllocCPUS: a site
-            # whose sbatch-args or CR_CPU rounding makes Slurm report more
-            # cpus than were asked for would otherwise be told it reserved a
-            # per-build number it never wrote, and `suggested_per_build`
-            # could land on the value already in the YAML — advice that
-            # never retires. sacct is the fallback for a head that could not
-            # resolve the block at all.
+            # Prefer the head's resolved per-build cpus over AllocCPUS, which can be
+            # rounded up by the site and would state a number the YAML never held.
             resolved_per_build = (
                 getattr(compile_resources, "cpus", None)
                 if compile_resources is not None and not cpus_override
@@ -1090,18 +708,13 @@ def analyze_build_reservation(
             )
             per_build_now = resolved_per_build or math.ceil(cpus / parallel)
             requested_total = per_build_now * parallel
-            # Say both numbers rather than pick one: the reader needs the
-            # per-build figure to edit and the allocated figure to reconcile
-            # with `squeue`/`sacct`. Only when they differ — a matching pair
-            # explains nothing.
+            # Give the per-build figure to edit and the allocation to reconcile with sacct.
             alloc_clause = (
                 f" (the scheduler reported {alloc_cpus} allocated)"
                 if alloc_cpus and alloc_cpus != requested_total
                 else ""
             )
             if requested_total == cpus and parallel == 1:
-                # One build slot, so there is no product to decompose: the
-                # reservation IS the per-build figure.
                 decomposition = f"the build job reserved {per_build_now}{alloc_clause}"
             elif requested_total == cpus:
                 decomposition = (
@@ -1113,9 +726,7 @@ def analyze_build_reservation(
                     f"the build job asked for {requested_total} = "
                     f"{per_build_now} x compile.parallel {parallel}{alloc_clause}"
                 )
-            # The `parallel` lever only exists when it is above 1, and this
-            # advice is only reachable at an effective 1 — so the sentence
-            # is here for the one shape that has both: slots reserved for
+            # Only for parallel > 1 with an effective parallel of 1: slots reserved for
             # builds the plan never produced.
             lever = (
                 ""
@@ -1132,12 +743,7 @@ def analyze_build_reservation(
                 findings.append(
                     RightsizeFinding(
                         resource="cpus",
-                        # The scaled number the head actually asked for —
-                        # the request, not the allocation, so a whole-core
-                        # site is not shown a reservation it never wrote.
                         reserved=str(cpus),
-                        # ...with what the scheduler gave beside it, so
-                        # `squeue`/`sacct` still reconcile (#505).
                         allocated=(
                             str(alloc_cpus)
                             if alloc_cpus and alloc_cpus != cpus
@@ -1175,63 +781,37 @@ def analyze_suite_reservations(
 ):
     """Produce :class:`RightsizeFinding`s for one suite's dispatched rows.
 
-    ``simulator_family_of`` maps a builder name to its simulator family
-    (used to suppress time advice off Verilator, see module docstring);
-    ``None`` disables that suppression. ``root_config_path`` is where
-    ``cfg-dispatch`` lives, needed to hint at ``cfg-dispatch.compile`` for a
-    field the compile reservation governs (#358); without it those findings
-    fall back to the per-test hint. ``compile_origins`` says which of those
-    compile fields the suite's own ``compile:`` block won (#497) — a field
-    it set is named in the suite's tests.yaml instead, because
-    cfg-dispatch is the layer the suite block overrides and editing it
-    would leave the allocation exactly where it is, so the advice would
-    never retire. It is the suite-wide FALLBACK: a row that carries its own
-    ``compile_origins`` (every in-job compile the head sized) is attributed
-    from that instead, and a field its testbench's ``compile:`` block won is
-    named as ``testbenches[name=...].compile.<field>`` (#551).
-    ``accounting_interval_s`` is the
-    scheduler's usage-sampling interval, used to suppress memory advice
-    derived from a peak that was never sampled (#365); ``None`` disables
-    that suppression. ``sbatch_args_config_path`` is the config file the
-    backend's ``sbatch-args`` came from, named as the ``file`` of a hint
-    about a cpu override written there: the backend is instantiated once
-    from the orchestration root_config.yaml, so in a multi-root regression
-    that is a different file from ``root_config_path`` and an agent sent to
-    the suite's root would edit a ``cfg-dispatch`` nothing submits with
-    (#527). Falls back to ``root_config_path``.
+    - ``simulator_family_of`` maps a builder name to its simulator family, to
+      suppress time advice for VCS; ``None`` disables that.
+    - ``root_config_path`` is where ``cfg-dispatch`` lives, used for
+      ``cfg-dispatch.compile`` hints; without it those fall back to the per-test hint.
+    - ``compile_origins`` is the suite-wide fallback for which compile fields the
+      suite's ``compile:`` block won, which are then named in its tests.yaml. A
+      row's own ``compile_origins`` (in-job compiles) takes precedence and can name
+      ``testbenches[name=...].compile.<field>``.
+    - ``accounting_interval_s`` is the scheduler's usage-sampling interval, used
+      to suppress memory advice from an unsampled peak; ``None`` disables that.
+    - ``sbatch_args_config_path`` is the config the backend's ``sbatch-args``
+      came from, used as the ``file`` of a cpu-override hint; it differs from
+      ``root_config_path`` in a multi-root regression. Falls back to ``root_config_path``.
     """
     findings = []
     unsampled = []
     origins = compile_origins or {}
     for test, agg in _aggregate(suite_results).items():
         governed_by = agg["governed_by"]
-        # This test's own compile attribution where submit recorded one, the
-        # suite-wide map otherwise: a row predating per-testbench blocks, and
-        # every row whose job does not compile for itself, still resolve to
-        # the suite's layering (#551).
+        # The row's own compile attribution, else the suite-wide map.
         row_origins = agg.get("compile_origins") or origins
         row_testbench = agg.get("compile_testbench")
-        # An in-job compile's allocation is max(sim, compile), so no `reduce`
-        # can take it below the compile side however far the test's own
-        # resources: are trimmed. These are the floors each suggestion is
-        # clamped to; None where there is nothing to clamp against.
+        # An in-job compile's allocation is max(sim, compile); suggestions clamp to these floors.
         floor = agg["compile_floor"]
         floor_mem_b = mem_to_bytes(floor.get("mem"))
         floor_time_s = time_to_seconds(floor.get("time"))
         cpus_override = agg.get("cpus_override") or []
-        # The cpus floor is PER TASK — it bounds the generated
-        # `--cpus-per-task`. Whether an override reaches it depends on which
-        # kind it is, so the effective whole-job floor is resolved down in
-        # the cpus section, where the request it scales against is known.
+        # The cpus floor is per task; the effective floor depends on the override kind.
         floor_cpus_per_task = floor.get("cpus")
-        # The request, and how it decomposes. Resolved before `hint` so the
-        # override note can state "N per task x M tasks": a task-count
-        # override multiplies the generated `--cpus-per-task` instead of
-        # replacing it, so the per-task floor still holds and the whole-job
-        # floor is that many cpus in each task actually requested (#505
-        # review). The task count is an observation — the scheduler's own
-        # request divided by the flag the head submitted — not an attempt to
-        # reproduce sbatch's precedence across several options.
+        # Resolved before `hint` so the override note can say "N per task x M tasks".
+        # `tasks` is observed (request / submitted per-task flag), not derived from sbatch rules.
         alloc_cpus = agg.get("alloc_cpus")
         cpus = agg.get("requested_cpus") or agg.get("req_cpus") or alloc_cpus
         per_task = agg.get("submitted_cpus_per_task")
@@ -1250,17 +830,14 @@ def analyze_suite_reservations(
             "phase": "compile+sim" if agg["compile_in_job"] else "sim",
         }
 
-        # The `resources:` key each field is written at: its own name, or
-        # the per-mode one where this run's builder mode governed it (#634).
+        # The `resources:` key for a field: its own name, or `modes.<mode>.<field>`.
         row_modes = agg.get("resource_modes") or {}
 
         def _resources_key(field):
             mode = row_modes.get(field)
             return f"modes.{mode}.{field}" if mode else field
 
-        # The YAML field the override masks — named in the note so a reader
-        # can see what was superseded, resolved by the same layering the
-        # unmasked hint would have used.
+        # The YAML field that a cpu override masks, named in the note.
         compile_cpus_path = _compile_edit_path(
             row_origins, "cpus", testbench=row_testbench
         )
@@ -1281,20 +858,12 @@ def analyze_suite_reservations(
             _tasks=tasks,
             _origins=row_origins,
             _testbench=row_testbench,
-            # Bound like its neighbours, so the key a hint names is this
-            # row's even if the hint is rendered after the loop moves on.
+            # Bound at definition so a hint rendered later uses this row's key.
             _resources_key=_resources_key,
         ):
-            # `cfg-dispatch.sbatch-args` is appended after the generated
-            # reservation flags and wins, so an argument written there that
-            # sets the cpu request masks every cpus field in the YAML.
-            # Naming one of them would be advice that cannot be applied: the
-            # edit lands, the next job is submitted with the same override,
-            # and the finding comes back — the very shape #505 exists to
-            # stop.
+            # A cpu override in `sbatch-args` masks every cpus field in the YAML.
             if resource_field == "cpus" and _cpus_override:
-                # ...and an environment variable lives in no file, so the
-                # hint names the environment instead of a path to edit.
+                # An environment variable has no file, so name the environment.
                 from_args = any(_is_arg_override(e) for e in _cpus_override)
                 edit = {
                     "path": "cfg-dispatch.sbatch-args" if from_args else "env",
@@ -1305,26 +874,14 @@ def analyze_suite_reservations(
                         tasks=_tasks,
                     ),
                 }
-                # The file the ARGUMENTS live in, which is the config the
-                # backend was built from rather than this suite's root
-                # (#527): the two diverge in a multi-root regression, and
-                # only the backend's is what `sbatch` receives — so a hint
-                # naming the other one edits a `cfg-dispatch` that changes
-                # nothing and the finding comes back next run.
+                # The backend's config, which differs from this suite's root in a multi-root regression.
                 override_file = sbatch_args_config_path or root_config_path
                 if from_args and override_file:
                     edit["file"] = override_file
                 return edit
-            # A field the compile reservation won is masked by the max, so
-            # editing the test's resources: would not move the allocation.
+            # A field the compile reservation won is masked by the max.
             from_compile = from_compile or _governed_by.get(resource_field) == "compile"
-            # ...and of the files that can hold the compile reservation, the
-            # suite's own `compile:` block beats cfg-dispatch and this
-            # testbench's own block beats that, so a field is edited at the
-            # layer that actually won. Sending a project to
-            # cfg-dispatch.compile for a field a tests.yaml overrides would
-            # move nothing and the advice would come back every run (#497,
-            # #551).
+            # Edit at the layer that won: testbench block, suite block, then cfg-dispatch.
             compile_path = (
                 _compile_edit_path(_origins, resource_field, testbench=_testbench)
                 if from_compile
@@ -1351,18 +908,14 @@ def analyze_suite_reservations(
         killed_oom = "OUT_OF_MEMORY" in agg["states"]
 
         # --- time -----------------------------------------------------
-        # Denylist, not allowlist: a VCS -licqueue wait would masquerade as
-        # compute time (#329), so only the vcs family loses util-based time
-        # advice — Icarus/Questa/cocotb/future backends keep it. An
-        # unresolved builder (family None) is not vcs, so it keeps advice.
+        # Denylist: only VCS loses utilization-based time advice (-licqueue waits).
         time_util_ok = True
         if simulator_family_of is not None and agg.get("builder"):
             time_util_ok = simulator_family_of(agg["builder"]) != "vcs"
         limit = agg.get("timelimit_s")
         elapsed = agg.get("elapsed_s")
         if limit and killed_timeout:
-            # A TIMEOUT kill is a fact about the reservation, not a
-            # license-contaminated measurement — fires regardless of family.
+            # A TIMEOUT kill holds for every simulator family.
             findings.append(
                 RightsizeFinding(
                     resource="time",
@@ -1414,9 +967,7 @@ def analyze_suite_reservations(
         # --- memory ---------------------------------------------------
         req_mem = agg.get("req_mem_bytes")
         peak_rss = agg.get("max_rss_bytes")
-        # `elapsed` is already the peak across this test's runs, so a test
-        # is only unsampled when even its longest run finished inside one
-        # interval. Judged per test for the same reason utilization is.
+        # `elapsed` is the peak over runs: unsampled only if even the longest run was short.
         mem_sampled = not (
             accounting_interval_s
             and elapsed is not None
@@ -1437,11 +988,7 @@ def analyze_suite_reservations(
                     )
                 )
             elif peak_rss and not mem_sampled:
-                # Reported only here, where advice really was withheld. An
-                # OOM kill above still raises, a test with no reservation or
-                # no peak had nothing to advise from anyway, and naming any
-                # of those in "memory advice omitted" would contradict the
-                # message.
+                # Listed only where advice was really withheld.
                 unsampled.append(test)
             elif peak_rss:
                 util = peak_rss / req_mem
@@ -1482,27 +1029,11 @@ def analyze_suite_reservations(
                     )
 
         # --- cpus (efficiency; only ever suggests reducing) -----------
-        # Use the best per-run efficiency (computed in _aggregate), so a
-        # single fully-utilized run vetoes shrinking the reservation.
-        # The requested cpus, falling back to the allocation for telemetry
-        # that carries no request. Both the ratio and the reported
-        # `reserved` are the request: a site allocating whole cores gives a
-        # `cpus: 1` test 2, and advising it down to 1 from a `Reserved 2`
-        # the tests.yaml never said is advice that can never retire (#505).
-        # The head's own resolved reservation comes first — it is the
-        # `--cpus-per-task` that was submitted, so it is the request by
-        # construction and needs no cooperation from the site.
+        # Best per-run efficiency from _aggregate; the ratio and `reserved` use the request.
         efficiency = agg.get("cpu_efficiency")
         if cpus and cpus > 1 and efficiency is not None:
             if efficiency < rightsize_cfg.over_threshold and agg["cpus_request_mixed"]:
-                # The runs of this test were not all submitted with the same
-                # cpu request — a retry went out after the ambient `SBATCH_*`
-                # moved, so some seeds asked for something else. Efficiency is
-                # the peak across all of them, and one `reserved` plus one
-                # `edit_hint` cannot describe two different reservations: the
-                # row would pair a retried run's ratio with another run's
-                # lever. Withheld rather than guessed, the same answer
-                # `parallel-utilization-ambiguous` gives the build job.
+                # Runs had different cpu requests, so one `reserved` and `edit_hint` cannot fit.
                 log_event(
                     logger,
                     logging.INFO,
@@ -1519,18 +1050,12 @@ def analyze_suite_reservations(
                 cpus_floored = floor_cpus is not None and suggested_cpus < floor_cpus
                 if cpus_floored:
                     suggested_cpus = floor_cpus
-                # `< cpus` also drops the case where the floor pushed the
-                # suggestion back up to the current reservation: advising a
-                # reduction the allocation cannot make is worse than silence,
-                # because the agent loop reruns and sees it fail to retire.
+                # Also drops a suggestion the floor pushed back up to the current value.
                 if suggested_cpus < cpus:
                     findings.append(
                         RightsizeFinding(
                             resource="cpus",
                             reserved=str(cpus),
-                            # Additive, and only when the two differ: the
-                            # reader needs the requested figure to edit and
-                            # the allocated one to reconcile with `squeue`.
                             allocated=(
                                 str(alloc_cpus)
                                 if alloc_cpus and alloc_cpus != cpus
@@ -1545,8 +1070,7 @@ def analyze_suite_reservations(
                         )
                     )
     if unsampled:
-        # A silent gap reads as "nothing to advise", which is the wrong
-        # conclusion to leave an agent (or a person) with.
+        # Otherwise the gap reads as "nothing to advise".
         log_event(
             logger,
             logging.WARNING,
