@@ -18,18 +18,15 @@ RESULT_LEVEL = 25
 RESULT_LEVEL_NAME = "RESULT"
 DEFAULT_FILE_LOG = "rtl_buddy.log"
 
-# Tracks file log state across setup_logging / attach_file_log so callers
-# can attach the file handler once the command root is known.
+# File-log state shared by setup_logging and attach_file_log.
 _FILE_LOG_LEVEL: int | None = None
 _FILE_LOG_MACHINE: bool = False
-# Paths the current process has already opened. The first open of a
-# given path truncates (clearing stale state from a previous run); a
-# subsequent re-anchor to the same path appends so re-anchoring the log
-# (e.g. during regression's suite-by-suite loop) doesn't lose content.
+# Paths already opened in this process: the first open truncates, later re-anchors to
+# the same path append.
 _OPENED_LOG_PATHS: set[str] = set()
 
-# Verdicts a --print-failures-only console render drops, and the order a
-# summary tally lists verdicts in before falling back to alphabetical.
+# Verdicts hidden by --print-failures-only, and the order a summary tally lists
+# verdicts.
 _HIDDEN_VERDICTS = frozenset({"PASS", "SKIP", "XFAIL"})
 _VERDICT_ORDER = ("PASS", "FAIL", "XFAIL", "XPASS", "SKIP", "NA")
 _KNOWN_VERDICTS = frozenset(_VERDICT_ORDER)
@@ -47,18 +44,15 @@ class LoggingState:
     stdout_console: Console
     color: bool
     machine: bool
-    # The level the console handler was configured with. Recorded so
-    # log_console_event() can tell whether a record would already reach the
-    # console (and must therefore not be printed a second time).
+    # Level the console handler was set to; log_console_event() skips a record the
+    # console already shows.
     console_level: int = logging.WARNING
 
 
 _STATE: LoggingState | None = None
 
 
-# Prevents RESULT-level records from reaching the console handler.
-# render_summary() writes the Rich table directly to stderr instead, so
-# without this filter the summary would appear twice on the console.
+# Keeps RESULT records off the console; render_summary() prints the table itself.
 class _ExcludeResultFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return record.levelno != RESULT_LEVEL
@@ -123,20 +117,14 @@ def setup_logging(
     machine: bool = False,
     log_path: str | None = None,
 ) -> None:
-    """Initialize console logging (and optionally a file log).
+    """Initialize console logging, and the file log when ``log_path`` is given.
 
-    The file handler is attached only when ``log_path`` is provided. The
-    normal command path constructs the console handler here, then calls
-    :func:`attach_file_log` after the command's :class:`ExecutionContext`
-    is known so the log file lands under the command root, not the
-    invocation directory. Tests and ad-hoc callers may still pass
-    ``log_path`` directly.
+    Commands normally call :func:`attach_file_log` later, once the command root is
+    known.
     """
     register_logging_levels()
 
-    # A fresh setup_logging() starts a new invocation; clear the
-    # per-path truncate-vs-append memory so the first attach in this
-    # invocation truncates as expected.
+    # A new invocation: the first attach truncates again.
     _OPENED_LOG_PATHS.clear()
 
     root_logger = logging.getLogger()
@@ -188,12 +176,7 @@ def setup_logging(
 
 
 def attach_file_log(log_path: str | Path) -> None:
-    """Attach (or re-anchor) the rotating file handler at ``log_path``.
-
-    Idempotent: calling twice replaces the previous file handler so the
-    log file follows the command's resolved :class:`ExecutionContext`
-    even if an earlier code path opened one in a different location.
-    """
+    """Attach or re-anchor the file handler at ``log_path``, replacing any previous one."""
     if _FILE_LOG_LEVEL is None:
         raise RuntimeError(
             "attach_file_log() called before setup_logging(); "
@@ -207,10 +190,8 @@ def attach_file_log(log_path: str | Path) -> None:
             root_logger.removeHandler(handler)
             handler.close()
 
-    # First open of a path truncates (clears stale state from a prior
-    # invocation); subsequent re-anchors to the same path append so the
-    # regression orchestrator can re-anchor to dirname(regression.yaml)
-    # after iterating suites without losing earlier events.
+    # The first open of a path truncates; re-anchors to the same path append so the
+    # regression loop keeps earlier events.
     mode = "a" if resolved in _OPENED_LOG_PATHS else "w"
     _OPENED_LOG_PATHS.add(resolved)
     file_handler = logging.FileHandler(resolved, mode=mode)
@@ -247,13 +228,11 @@ def emit_console_text(
     soft_wrap: bool = False,
 ) -> None:
     console = get_stdout_console() if stream == "stdout" else get_stderr_console()
-    # Pass markup=False for text that may contain literal square brackets
-    # (e.g. exception messages with `pkg[extra]` install hints) so Rich
-    # doesn't swallow them as style tags.
+    # markup=False for text with literal square brackets (``pkg[extra]``), which Rich
+    # reads as style tags.
     #
-    # soft_wrap=True keeps a line whole: off a terminal Rich assumes 80
-    # columns and hard-wraps, which splits a log-style line (job ids, a
-    # progress report) across two console lines and defeats grepping it.
+    # soft_wrap=True keeps a log-style line whole; off a terminal Rich hard-wraps at 80
+    # columns, splitting job ids and progress lines.
     if is_machine_mode():
         console.print(text, highlight=False, markup=markup, soft_wrap=soft_wrap)
     else:
@@ -264,14 +243,10 @@ def emit_console_text(
 
 @contextmanager
 def task_status(message: str, *, spinner: str = "dots"):
-    """A spinner for a long phase, degrading to one plain line.
+    """Show a spinner for a long phase, or print one plain line.
 
-    The spinner is a Rich ``Live``, and a console allows exactly one of
-    those at a time — a second raises ``LiveError``. Since #495 a build job
-    compiles distinct builds on worker threads, so the spinner is confined
-    to the main thread; a worker announces its phase the way a non-terminal
-    run already does. The check lives here rather than at the call sites so
-    every future threaded caller inherits it.
+    The spinner is confined to the main thread, since a console allows only one Rich
+    ``Live``. Worker threads and non-terminal runs print the message instead.
     """
     if threading.current_thread() is threading.main_thread():
         if _should_use_rich_console():
@@ -303,12 +278,7 @@ def _format_duration(duration: Any) -> str | None:
 
 
 def _format_elapsed(seconds: Any) -> str:
-    """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``.
-
-    Distinct from :func:`_format_duration`, which reports a single phase's
-    cost to two decimals. A dispatch wait is measured in tens of minutes,
-    where ``754.00s`` is arithmetic the reader has to do.
-    """
+    """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``."""
     try:
         total = int(round(float(seconds)))
     except (TypeError, ValueError):
@@ -333,15 +303,10 @@ def _format_artifacts(fields: Mapping[str, Any]) -> str:
 
 
 def _build_location(fields: Mapping[str, Any]) -> str:
-    """Which spelling of a build directory the compile events show (#494).
+    """The build directory spelling the compile events show.
 
-    Both carry ``build_dir`` (the basename) and ``build_path`` (absolute).
-    A *shared* build lives at ``artefacts/.shared-builds/obj_dir_<key>``,
-    where the basename is the identity a reader compares against an ``ls``
-    of that directory, and a full path would bury it. An *unshared* build
-    lives at ``artefacts/<test>``, whose basename is the test name the line
-    already opens with — saying it twice tells the reader nothing and hides
-    where the build actually is, so that case shows the path.
+    A shared build shows the basename (``obj_dir_<key>``); an unshared build shows the
+    full path, since its basename repeats the test name.
     """
     if fields.get("shared", True):
         return str(fields.get("build_dir") or fields.get("build_path"))
@@ -351,10 +316,7 @@ def _build_location(fields: Mapping[str, Any]) -> str:
 def _sim_exit_phrase(fields: Mapping[str, Any]) -> str:
     """``exited 1`` / ``killed by signal 6`` for a sim-failure line.
 
-    The console twin of ``tools.vlog_post.describe_sim_exit``, spelled here
-    rather than imported: this module is below ``tools`` in the import
-    order, and a process killed by a signal reports a negative code that
-    "exited -6" would misreport (#546).
+    Mirrors ``tools.vlog_post.describe_sim_exit``, which this module cannot import.
     """
     code = fields.get("returncode")
     if isinstance(code, int) and code < 0:
@@ -380,8 +342,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"git: {fields.get('branch')} | commit {fields.get('commit')} | clean"
             )
         case "artifact_lock.contended":
-            # Deferred import: artifact_lock imports log_event from this
-            # module, so a top-level import here would be circular.
+            # Deferred: artifact_lock imports log_event from this module.
             from .artifact_lock import _describe_holder
 
             holder = _describe_holder(
@@ -418,8 +379,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             parallel = fields.get("parallel")
             requested = fields.get("parallel_requested")
             groups = fields.get("groups")
-            # The configs that reached the pool, and the ones that never got
-            # a compile key at all (a failed PRE or filelist probe).
+            # Configs that reached the pool, and those that never got a compile key.
             configs = fields.get("configs")
             unprepared = fields.get("unprepared")
             msg = f"Compiling {groups} distinct build(s), up to {parallel} at a time"
@@ -429,52 +389,37 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 and isinstance(groups, int)
                 and configs > groups
             ):
-                # The fewer-builds-than-tests case is the healthy one under
-                # --share-build, and saying only "3 distinct builds" for a
-                # 20-config plan reads as 17 configs having been dropped.
-                # Only the configs that actually joined a group are counted,
-                # so a setup failure is never reported as sharing (#576).
+                # Fewer builds than configs is the normal --share-build case; say so, or
+                # "3 distinct builds" for 20 configs reads as 17 dropped. Only configs
+                # that joined a group count.
                 notes.append(
                     f"{configs} configs share {groups} keys; siblings adopt "
                     "the leader's build"
                 )
             if isinstance(unprepared, int) and unprepared > 0:
-                # The rest of the drop, said rather than left as a gap
-                # between the plan and this line.
                 notes.append(f"{unprepared} failed preparation")
             if notes:
                 msg += f" ({'; '.join(notes)})"
             if isinstance(requested, int) and isinstance(parallel, int):
                 if requested > parallel:
-                    # The head reserved cpus for `requested` concurrent
-                    # builds; the suite has fewer distinct compile keys than
-                    # that, so the surplus is deliberate over-provisioning
-                    # and not a number to read off the right-sizing table.
+                    # The head reserved cpus for `requested` concurrent builds but the
+                    # suite has fewer distinct compile keys, so the surplus is
+                    # deliberate.
                     #
-                    # Name the layer that actually governs: a suite's own
-                    # `compile.parallel` beats cfg-dispatch's, and pointing
-                    # a reader at the root key would send them to a value
-                    # editing which moves this job not at all (#547). The
-                    # cfg-dispatch spelling is the fallback for a job log
-                    # written before the field existed.
+                    # Name the governing key: a suite's `compile.parallel` beats
+                    # cfg-dispatch's. The cfg-dispatch spelling is the fallback for
+                    # older job logs.
                     origin = fields.get("parallel_origin")
                     if not isinstance(origin, str) or not origin:
                         origin = "cfg-dispatch.compile.parallel"
-                    # Quote the number the named key actually holds. The head
-                    # caps the configured value by the suite's planned
-                    # configs before the job ever sees it, so `requested` can
-                    # be smaller than what the file says — and a line reading
-                    # "compile.parallel is 2" beside a tests.yaml saying 4
-                    # contradicts the very key it sends the reader to edit
-                    # (#547 review). Absent (an older job log), or equal:
-                    # the cap did not bite and there is nothing to explain.
+                    # Quote the number the named key holds. The head caps the configured
+                    # value by the planned configs, so `requested` can be below the
+                    # file's value.
                     configured = fields.get("parallel_configured")
                     capped = isinstance(configured, int) and configured > requested
                     msg += f" ({origin} is {configured if capped else requested}"
                     if capped:
-                        # `requested` is the planned-config count whenever the
-                        # cap bit: the head takes min(configured, planned), so
-                        # the plan is what it landed on.
+                        # When the cap bit, `requested` is the planned-config count.
                         msg += (
                             f", capped to {requested} by the {requested} "
                             "planned configs"
@@ -674,8 +619,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('build_job')} — counting it as a compile failure"
             )
         case "rightsize.build_advice_withheld":
-            # INFO, but the fallback renderer would drop the reason — and the
-            # reason is the entire content of the event.
+            # INFO level, but the fallback renderer would drop the reason.
             reason = fields.get("reason")
             if reason == "undersampled":
                 why = (
@@ -684,16 +628,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "cpu time was sampled at most once"
                 )
             elif reason == "parallel-utilization-ambiguous":
-                # Narrower than the others: only the cpus row is withheld,
-                # and only because a whole-job ratio is not a per-build one
-                # once slots can idle in the tail.
+                # Only the cpus row is withheld: a whole-job ratio is not per-build once
+                # slots idle.
                 #
-                # The line ends in an instruction, so it has to name the key
-                # that governs THIS job: a suite's own `compile.parallel`
-                # beats cfg-dispatch's, and sizing the root key would leave
-                # the suite's value in force and the advice withheld again
-                # next run (#547 review). The root spelling is the fallback
-                # for a job log written before the field existed.
+                # Name the key that governs this job (a suite's `compile.parallel` beats
+                # cfg-dispatch's); the root spelling is the fallback for older job logs.
                 origin = fields.get("parallel_origin")
                 if not isinstance(origin, str) or not origin:
                     origin = "cfg-dispatch.compile.parallel"
@@ -706,9 +645,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "against the suite's distinct compile keys first"
                 )
             elif reason == "compile-aggregate":
-                # The build job's reservation is a SUM over the planned
-                # builds, and a whole-job suggestion written into any one
-                # of them leaves the aggregate where it was (#551).
+                # The reservation sums the planned builds, so a whole-job suggestion in
+                # one of them leaves the total unchanged.
                 return (
                     f"{fields.get('suite')}: no {fields.get('resource')} "
                     "reduce advice for the build job: its reservation adds "
@@ -718,9 +656,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "not lower the total"
                 )
             elif reason == "compile-origin-tied":
-                # The build job's reservation is aggregated over the planned
-                # testbenches, so `max`/`sum` can land on the same number
-                # from two editable places at once (#551).
+                # The reservation aggregates over planned testbenches, so `max`/`sum`
+                # can land on one number from two editable places.
                 return (
                     f"{fields.get('suite')}: no {fields.get('resource')} "
                     "reduce advice for the build job: its reservation is "
@@ -729,9 +666,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "any one of them alone would leave it exactly where it is"
                 )
             elif reason == "no-build-records":
-                # Distinct from "nothing compiled": the job was accounted for
-                # (that is how we got here) but left no envelope to say what
-                # it did — the shape of a build job killed mid-compile.
+                # The job was accounted for but left no envelope, as after a build job
+                # killed mid-compile.
                 why = (
                     "it left no record of what it built, so its elapsed time "
                     "cannot be read as the cost of a compile"
@@ -767,8 +703,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "rightsize.request_from_scheduler":
             args = fields.get("overrides") or []
-            # Listed, not multiplied: several of them combine by sbatch's own
-            # precedence, which this line does not try to reproduce (#505).
+            # Listed, not multiplied: sbatch combines several by its own precedence,
+            # which this line does not reproduce.
             quoted = [f"`{a}`" for a in args]
             named = (
                 quoted[0]
@@ -794,9 +730,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "rightsize.mem_advice_unsampled":
             tests = fields.get("tests") or []
             interval = fields.get("interval_s")
-            # Reachable only when the user's own --acctg-freq set the rate,
-            # since dispatch otherwise requests task=1 — so name that as the
-            # cause rather than recommending the value they overrode.
+            # Reached only when the user's --acctg-freq set the rate (dispatch otherwise
+            # requests task=1); name that as the cause.
             if interval == float("inf"):
                 cause = "task accounting is disabled (--acctg-freq task=0)"
             else:
@@ -822,8 +757,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "runs locally"
             )
         case "dispatch.cancelled":
-            # The ids are the only route to a post-mortem once the head is
-            # gone, so an interrupted run leaves them on the console (#435).
+            # Job ids are the only route to a post-mortem once the head is gone.
             ids = fields.get("job_ids") or []
             id_note = f": {' '.join(map(str, ids))}" if ids else ""
             return (
@@ -831,11 +765,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"on the {fields.get('backend')} backend{id_note}"
             )
         case "dispatch.orphans_found":
-            # The default answer to an interrupted run, and the one that
-            # changes nothing — so the message has to carry both the
-            # evidence (which jobs, which run) and the two commands that act
-            # on it, or the user is told about a problem with no handle on
-            # it (#521).
+            # Default response to an interrupted run. It changes nothing, so the message
+            # carries the evidence and the two commands that act on it.
             ids = fields.get("job_ids") or []
             return (
                 f"dispatch: {fields.get('jobs')} job(s) from an earlier run of "
@@ -856,9 +787,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{' '.join(map(str, ids))}"
             )
         case "dispatch.orphans_cancel_failed":
-            # The run stops here, so this line has to carry everything a
-            # `scancel` by hand needs: which jobs, and how long we waited
-            # before deciding the cancellation had not taken (#521 review).
+            # The run stops here, so the line carries what a manual `scancel` needs: the
+            # jobs and how long the wait lasted.
             ids = fields.get("job_ids") or []
             return (
                 f"dispatch: {fields.get('jobs')} job(s) of the interrupted "
@@ -868,9 +798,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{' '.join(map(str, ids))}"
             )
         case "dispatch.orphans_adopted":
-            # The build job is a structured field but not repeated in the
-            # text: it is already one of the live ids listed here, and
-            # naming it twice reads as two different jobs.
+            # The build job is a structured field but is not repeated in the text; it is
+            # already one of the listed live ids.
             ids = fields.get("job_ids") or []
             return (
                 f"dispatch: adopting {fields.get('jobs')} job(s) from an "
@@ -931,9 +860,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{' '.join(map(str, ids))}"
             )
         case "dispatch.retry":
-            # Names the classifier, not just the delay: the whole point of
-            # the rule is that only a license-queue kill is retried, and a
-            # reader must be able to see which one fired (#405).
+            # Name the classifier: only a license-queue kill is retried.
             target_job = fields.get("test")
             if fields.get("run_id") is not None:
                 target_job = f"{target_job}:{fields.get('run_id')}"
@@ -944,9 +871,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"of {fields.get('attempts')}"
             )
         case "dispatch.retry_abandoned":
-            # The run is still scored — every row was written before the
-            # retry was attempted — so this is a warning about a lost
-            # second chance, not a lost regression (#405).
+            # The run is still scored; only the second chance was lost.
             return (
                 f"dispatch: giving up on retry attempt {fields.get('attempt')} for "
                 f"{fields.get('jobs')} job(s) on the {fields.get('backend')} "
@@ -958,11 +883,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             state_note = f" (scheduler state {state})" if state else ""
             attempt = fields.get("attempt")
             attempt_note = f" on attempt {attempt}" if attempt and attempt > 1 else ""
-            # A classified row is about to be resubmitted, so it is *not*
-            # counted as a failure yet — saying so would contradict the
-            # dispatch.retry line that follows it, and human mode is where
-            # a reader reconstructs the run (the fields are only legible
-            # under --machine otherwise) (#405 review).
+            # A row about to be resubmitted is not counted as a failure yet, consistent
+            # with the dispatch.retry line that follows.
             classifier = fields.get("retry_classifier")
             tail = (
                 f" — {classifier}, retrying"
@@ -997,10 +919,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
         case "hook.stdout":
-            # A hook's own print(), re-framed rather than dropped: the
-            # prefix says which script the line came from, since it is now
-            # interleaved with rtl_buddy's own console output on stderr
-            # instead of arriving as a contiguous block on stdout (#371).
+            # A hook's print(), re-framed with a script prefix because it
+            # interleaves with rtl_buddy output on stderr.
             stage = fields.get("stage")
             script = fields.get("script")
             name = Path(str(script)).name if script else "hook"
@@ -1030,10 +950,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
         case "compile.build_reused":
-            # Age first, toolchain second: the question a stale reuse
-            # raises is "was this built before my edit?", and the answer is
-            # the age (#494). An unknown age says so rather than being
-            # dropped — "reused, age unknown" is a fact worth reading.
+            # Age first: a stale reuse raises the question of whether the build predates
+            # an edit. An unknown age is stated.
             age = fields.get("stamp_age_sec")
             built = (
                 f"built {_format_elapsed(age)} ago"
@@ -1049,26 +967,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{_build_location(fields)} ({built}); nothing compiled"
             )
         case "compile.verilate_reused":
-            # The verilate job's counterpart of build_reused (#593): there is
-            # no stamp yet — nothing runnable to vouch for — so the marker
-            # is what says this key's front end has already run.
+            # Verilate-job counterpart of build_reused: there is no stamp yet, so the
+            # marker shows this key's front end already ran.
             return (
                 f"{target or 'compile'}: already verilated into "
                 f"{_build_location(fields)}; nothing to verilate"
             )
         case "compile.rebuild_forced":
-            # The counterpart of build_reused: with --rebuild the reader's
-            # question flips to "did it actually recompile?", and this is
-            # the line that answers it (once per build dir, #494).
+            # Counterpart of build_reused under --rebuild: says whether the build
+            # recompiled (once per build dir).
             return (
                 f"{target or 'compile'}: --rebuild given, compiling "
                 f"{_build_location(fields)} even though a stamp may validate"
             )
         case "compile.hash_root":
-            # DEBUG, but readable when asked for: which root gates content
-            # hashing decides whether an out-of-suite edit invalidates a
-            # stamp — the silent fallback is the wrong place for a raw
-            # dict (#494 review).
+            # DEBUG: the root that gates content hashing decides whether an out-of-suite
+            # edit invalidates a stamp.
             origin = (
                 "from root_config" if fields.get("derived") else "suite-dir fallback"
             )
@@ -1077,14 +991,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('project_root')} ({origin})"
             )
         case "compile.build_lock_wait":
-            # Named ahead of the wait, not after it: a compile can take
-            # minutes, and a job log that simply stops for them is
-            # indistinguishable from a hang (#494). The holder is whatever
-            # the lock file could tell us — advisory, possibly stale, and
-            # absent entirely when nobody had written it yet, which is why
-            # the sentence stands up without it.
-            # Deferred for the same reason as artifact_lock.contended
-            # above: artifact_lock imports log_event from this module.
+            # Logged before the wait so a long compile does not look like a hang. The
+            # holder comes from the lock file: advisory, possibly stale or absent, so
+            # the sentence stands without it.
+            #
+            # Deferred: artifact_lock imports log_event from this module.
             from .artifact_lock import _describe_holder
 
             holder = _describe_holder(
@@ -1094,9 +1005,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                     "started": fields.get("holder_started"),
                 }
             )
-            # Repeated every few minutes while the wait lasts, with the
-            # elapsed time appended from the second line on — the first
-            # says "this is a wait", the rest say "it is still a wait".
+            # Repeated every few minutes; elapsed time is appended from the second line
+            # on.
             waited = fields.get("waited_sec") or 0
             return (
                 f"{target or 'compile'}: waiting for another rtl-buddy "
@@ -1105,9 +1015,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 + (f" ({waited}s so far)" if waited else "")
             )
         case "compile.build_lock_unavailable":
-            # A filesystem that cannot flock (read-only, ENOLCK on some NFS
-            # mounts) must not fail the build — it loses the cross-process
-            # serialisation and says which guarantee went with it.
+            # A filesystem that cannot flock (read-only, some NFS) must not fail the
+            # build; say which guarantee is lost.
             return (
                 f"{target or 'compile'}: could not lock "
                 f"{_build_location(fields)} ({fields.get('error')}); "
@@ -1115,8 +1024,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "populating this build directory are not serialised"
             )
         case "compile.build_dir_scrubbed":
-            # Says why the C++ build that follows is a full one, not an
-            # incremental one: the objects were dropped, not the directory.
+            # The objects were dropped, not the directory, so the C++ build that follows
+            # is a full one.
             why = {
                 "rebuild": "--rebuild given",
                 "toolchain-changed": (
@@ -1142,12 +1051,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "it compiles per test"
             )
         case "compile.toplevel_conflict":
-            # WARNING, so it reaches a default console: a builder opt that
-            # names a different top than the testbench does is how a suite
-            # silently elaborates a design its config does not name.
-            # `configured` is absent when the configured flag is bare (a
-            # trailing `--top`, or one followed by another option) — say so
-            # rather than rendering the missing value as "None".
+            # WARNING: a builder opt naming a different top than the testbench silently
+            # elaborates the wrong design.
+            #
+            # `configured` is absent for a bare flag; say so instead of printing None.
             configured = fields.get("configured")
             pin = (
                 f"{fields.get('flag')} {configured}"
@@ -1172,8 +1079,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"queued and need cancelling by hand: {fields.get('error')}"
             )
         case "dispatch.build_submitted":
-            # `parallel` is only mentioned when it is doing something: at the
-            # default of 1 the line must read exactly as it did pre-#495.
+            # `parallel` is mentioned only above 1.
             parallel = fields.get("parallel") or 1
             concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
             return (
@@ -1181,9 +1087,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('suite_dir')}{concurrency}"
             )
         case "dispatch.verilate_submitted":
-            # The first half of a split compile (#593). Same shape as the
-            # build-job line above, because a reader watching the queue
-            # sees the two side by side.
+            # First half of a split compile; same shape as the build-job line.
             parallel = fields.get("parallel") or 1
             concurrency = f" ({parallel} builds at a time)" if parallel > 1 else ""
             return (
@@ -1191,16 +1095,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('suite_dir')}{concurrency}"
             )
         case "dispatch.build_job_deduped":
-            # WARNING, and the only line that explains why this run's build
-            # job sits PENDING behind a job the user did not submit in this
-            # invocation (#507).
+            # WARNING, and the only line explaining why this run's build job is PENDING
+            # behind a job from another invocation.
             ids = fields.get("job_ids")
             joined = ", ".join(ids) if isinstance(ids, list) else str(ids)
-            # "reuses it if the inputs are unchanged", not "reuses it":
-            # the waiting job revalidates the stamp under the build lock,
-            # and `--rebuild`, an edit, or a different builder makes that
-            # fail and compile — which is correct, and which a line
-            # promising reuse would have made look like a bug.
+            # "reuses it if the inputs are unchanged", not "reuses it": the waiting job
+            # revalidates the stamp under the build lock, and --rebuild, an edit or
+            # another builder makes it compile.
             return (
                 f"A shared build for {fields.get('suite_dir')} is already queued or "
                 f"running as job {joined}; this run's build job "
@@ -1218,9 +1119,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "dispatch.array_submitted":
             slices = fields.get("slices") or 1
-            # A group too big for one array is split (#509); say which piece
-            # this is, so the log shows the split rather than several
-            # unexplained arrays for one resource group.
+            # A group too big for one array is split; say which slice this is.
             piece = f" (slice {fields.get('slice')}/{slices})" if slices > 1 else ""
             return (
                 f"Submitted array job {fields.get('job_id')} "
@@ -1426,10 +1325,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"the executable is {fields.get('used')}"
             )
         case "compile.license_queued":
-            # The transcript is the evidence, but it is best-effort since
-            # #494 (an unwritable artefact tree must not fail a compile that
-            # passed), so an absent one drops the clause instead of printing
-            # "transcript: None".
+            # The transcript is best-effort; an absent one drops the clause instead of
+            # printing "transcript: None".
             transcript = fields.get("transcript")
             return (
                 f"{fields.get('test')}: compile waited in the VCS license queue — "
@@ -1675,9 +1572,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             truncated = fields.get("truncated") or 0
             if truncated:
                 listed += f"; and {truncated} more"
-            # Only slang miscompiles these. The legacy verilog frontend inlines
-            # per call site, so a user who opted into `error` there is being
-            # told about portability, not corruption.
+            # Only slang miscompiles these; the legacy verilog frontend inlines per call
+            # site, so `error` there is a portability notice.
             if fields.get("frontend") == "slang":
                 why = (
                     "the slang frontend shares one storage location per formal "
@@ -1794,8 +1690,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
             )
-        # A whole-suite `rb pnr` does not attempt a run whose blocks failed
-        # (#95): its abstract would be missing, or a stale one.
+        # A whole-suite `rb pnr` skips a run whose blocks failed: its abstract would be
+        # missing or stale.
         case "pnr_suite.blocked":
             blocks = ", ".join(f"'{b}'" for b in fields.get("blocks") or [])
             return (
@@ -1807,10 +1703,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'pnr "{fields.get("pnr")}": did not finish — '
                 f"{fields.get('error')}; the other runs' results are kept"
             )
-        # `rb pnr-export` (#618). Every one of these stops an export over a
-        # saved result before KLayout is launched, and each says which of
-        # the saved result's pieces is the problem — an export that runs on
-        # regardless writes a layout that merely looks produced.
+        # `rb pnr-export`: each of these stops the export before KLayout launches and
+        # names the piece of the saved result at fault.
         case "pnr_export.no_def":
             return (
                 f'pnr export "{fields.get("pnr")}": no routed DEF at '
@@ -1875,7 +1769,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('exe')} does not have; upgrade OpenROAD or drop "
                 "the blockages"
             )
-        # Hardened-block abstracts (#95).
+        # Hardened-block abstracts.
         case "pnr.harden_multi_corner":
             return (
                 f'P&R "{fields.get("pnr")}": harden: needs a single-corner '
@@ -1905,17 +1799,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('checkpoint')} cannot be exported: "
                 f"{fields.get('reason')}"
             )
-        # Stage checkpoints (#653). On a failed run they are the point, so
-        # the retained-checkpoint line says where they are and which step
-        # the run stopped in.
+        # Stage checkpoints: the retained-checkpoint line says where they are and which
+        # step the run stopped in.
         case "pnr.checkpoints_retained":
             stages = fields.get("stages") or []
             saved = (
                 f"last checkpoint {stages[-1]}" if stages else "no checkpoint written"
             )
-            # A step that finished "ok" is the last one the flow got
-            # through, not the one that failed: an untraced command after it
-            # (a blockage, a user Tcl snippet) is what stopped the run.
+            # A step that finished "ok" is the last one the flow got through; an
+            # untraced command after it (a blockage, a user Tcl snippet) stopped the
+            # run.
             step = fields.get("step") or "unknown"
             status = fields.get("step_status") or "unknown"
             where = (
@@ -1948,11 +1841,9 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'pnr export "{fields.get("pnr")}" did not deliver '
                 f"({fields.get('status')}): {fields.get('desc')}"
             )
-        # The stale half could not be withdrawn, and the reports behind it
-        # have already been cleared. Not a by-product failure to log and
-        # carry on past: the flows fail the run on this, because what is
-        # left in the artefact directory publishes rows over files that are
-        # gone (#560).
+        # The stale half could not be withdrawn and its reports are already cleared. The
+        # flows fail the run on this: the artefact directory would publish rows over
+        # missing files.
         case "synth.phys_half_stale":
             return (
                 f'synthesis "{fields.get("synth")}": the previous run\'s '
@@ -1961,9 +1852,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "has already been cleared, so this run stops rather than "
                 "leave them standing over it"
             )
-        # The two halves of rtl-buddy/rtl_buddy#627: a macro library the
-        # configuration named and the disk does not have, and a macro the
-        # analysis could say nothing about because no library covered it.
+        # A macro library the configuration named but the disk lacks, and a macro no
+        # library covered.
         case "power.missing_macro_inputs":
             missing = fields.get("missing") or []
             return (
@@ -1975,9 +1865,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "read_liberty of a path that is not there leaves the macro "
                 "reporting 0 W, so the run stops instead"
             )
-        # rtl-buddy/rtl_buddy#654: a configured OpenROAD thread count above
-        # the CPUs the scheduler granted, and a `threads:` value that is
-        # not a thread count.
+        # A configured OpenROAD thread count above the CPUs granted, and a `threads:`
+        # value that is not a thread count.
         case "openroad.threads_capped":
             return (
                 f'{fields.get("flow")} run "{fields.get("run")}": threads: '
@@ -2009,12 +1898,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "report behind them has already been cleared, so this run "
                 "stops rather than leave them standing over it"
             )
-        # Two outcomes share this event, and they are opposites. A null
-        # `error` is a publication that happened and came out short of its
-        # per-row half; a set `error` is a publication that did not happen
-        # at all — the `phys-publish.lock` wait timed out, the write failed
-        # — and nothing may then be said about what phys-model.json holds,
-        # because whatever is there belongs to some earlier run (#560).
+        # Two opposite outcomes share this event. A null `error` is a publication that
+        # came out short of its per-row half. A set `error` is no publication at all
+        # (lock timeout, write failure), so nothing may be said about what
+        # phys-model.json holds.
         case "synth.phys_model_incomplete" if fields.get("error"):
             return (
                 f'synthesis "{fields.get("synth")}": phys-model.json was not '
@@ -2184,9 +2071,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f".rtl-buddy/.env) or add a fallback candidate."
             )
         case "tool_version.platform_unknown":
-            # The one cfg-tools error a typo produces, so rtl_buddy.log must
-            # carry the same text the console gets from FatalRtlBuddyError
-            # rather than the dotted-event fallback (#439 review).
+            # The one cfg-tools error a typo produces: rtl_buddy.log must carry the
+            # console's FatalRtlBuddyError text, not the dotted-event fallback.
             return (
                 f"cfg-tools[{fields.get('name')}].platform: "
                 f'"{fields.get("entry_platform")}" is not a configured '
@@ -2555,9 +2441,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"every one is listed as RB-DONT-USE-VIOLATION in {fields.get('log')}"
             )
         case _:
-            # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
-            # This is fine for DEBUG/INFO events. Events logged at WARNING or above
-            # should have a dedicated case above so the user sees a clear message.
+            # Fallback for DEBUG/INFO events: "foo.bar" becomes "foo bar" plus select
+            # fields. WARNING and above need a dedicated case above.
             event_text = event.replace(".", " ")
             detail_parts = []
             for key in ("path", "suite", "builder", "mode", "error", "desc"):
@@ -2589,39 +2474,22 @@ def console_level() -> int:
 def log_console_event(
     logger: logging.Logger, level: int, event: str, /, **fields: Any
 ) -> None:
-    """:func:`log_event`, plus the human message on the console regardless.
+    """Like :func:`log_event`, and also print the human message on the console.
 
-    The console handler sits at WARNING unless ``-v``/``--debug`` raised it,
-    so an INFO event never reaches a CI console — which is where a long
-    dispatched run's log is the *only* artifact. Use this for the handful of
-    events that are a run's liveness signal (progress, the submitted job
-    ids): they are not warnings, so logging them at WARNING would be a lie,
-    and raising global verbosity to see them turns on DEBUG for everything
-    else in the one place that cannot afford it (#435).
+    The console handler sits at WARNING unless ``-v``/``--debug`` raised it, so an INFO
+    event never reaches a CI console, where a dispatched run's log may be the only
+    artifact. Use this only for liveness events (progress, submitted job ids) and for
+    output that was already on stdout and is being re-framed, such as hook ``print()``
+    capture. New chatter goes through ``log_event()``.
 
-    The second sanctioned case is output that was **already on stdout and is
-    being re-framed**, not newly added: hook ``print()`` capture (#371) moves
-    text the user could always see onto the log system, so a plain
-    ``log_event()`` would make it vanish at default verbosity — a regression
-    dressed up as a cleanup. Newly-invented chatter does not qualify; it goes
-    through ``log_event()`` and earns its console line with ``-v``.
-
-    ``render_summary`` already establishes the pattern — print to the
-    console AND keep the structured record — and this is its generalisation.
-    When the console *would* show ``level`` anyway the extra print is
-    skipped, so ``-v`` shows one line, not two.
-
-    ``--machine`` is deliberately no different: its console handler is the
-    same WARNING-gated stream (rendering the human message — the JSON Lines
-    go to the file log), and an agent driving a dispatched regression needs
-    the liveness line for exactly the reason CI does. The lines are
-    throttled at the source (``progress-interval``), so a transcript sees a
-    line a minute, not one per poll.
+    The print is skipped when the console would show ``level`` anyway, so ``-v`` shows
+    one line. ``--machine`` behaves the same: the console stays WARNING-gated and shows
+    the human message, and the JSON Lines go to the file log.
     """
     message = log_event(logger, level, event, **fields)
     if level < console_level():
-        # markup=False: job ids are rendered `1235_[1-40]`, and Rich would
-        # read the brackets as a style tag and swallow them.
+        # markup=False: job ids like `1235_[1-40]` contain brackets Rich reads as style
+        # tags.
         emit_console_text(message, markup=False, soft_wrap=True)
 
 
@@ -2726,10 +2594,8 @@ def render_summary(
             rows=rows,
             counts=counts or None,
         )
-        # markup=False for the same reason the table cells below are
-        # escaped: these lines carry user-derived strings (a rightsize edit
-        # hint reads `tests[name=alpha].resources.cpus`) and Rich would eat
-        # the brackets as a style tag (#520).
+        # markup=False, as for the table cells: these lines carry user strings with
+        # brackets (`tests[name=alpha].resources.cpus`).
         emit_console_text(
             "\n".join(
                 _plain_summary_lines(
@@ -2747,12 +2613,8 @@ def render_summary(
         )
     )
 
-    # Everything below is data, not markup: no caller builds a cell, title
-    # or caption out of Rich style tags, but plenty of them interpolate
-    # user strings that contain square brackets — a rightsize edit-hint
-    # path, a test name, a graph query. Rich parses `[name=alpha]` as a
-    # style tag and drops it, silently hiding which test a hint names, so
-    # escape the data and let the table own its own styling (#520).
+    # Cells, titles and captions are data, not markup: user strings such as
+    # `[name=alpha]` would be parsed as style tags, so escape them.
     caption = list(metadata or []) + footer
     table = Table(title=rich_escape(title))
     if caption:
