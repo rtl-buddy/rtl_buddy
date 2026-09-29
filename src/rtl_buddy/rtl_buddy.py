@@ -14944,7 +14944,7 @@ class RtlBuddy:
         """
         project_root, root = self._enter_xplr_context()
         self._artifact_locks.acquire(root, command="xplr release")
-        xplr_commands.get_experiment(root, exp_id)
+        xplr_commands.get_experiment(root, exp_id)  # raises on an unknown id
         info = xplr_gitprov.release(project_root, root, exp_id)
         if self.machine:
             self._emit_machine_result("xplr release", 0, **info)
