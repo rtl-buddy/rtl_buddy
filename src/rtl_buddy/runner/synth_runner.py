@@ -52,7 +52,7 @@ class SynthRunner:
             effort=effort_cfg.get_name(),
         )
 
-        # An openroad tool falls back to Yosys when the effort disables OpenROAD.
+        # Use OpenROAD when selected and the effort enables it; otherwise Yosys.
         if tool_name == "openroad" and effort_cfg.get_openroad_run():
             yosys_exe = "yosys"
             try:

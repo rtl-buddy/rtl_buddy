@@ -92,6 +92,7 @@ class FpgaPassResults(FpgaResults):
             self.results["drc_violations"] = drc_violations
         if drc_by_severity is not None:
             self.results["drc_by_severity"] = drc_by_severity
+        # {id, severity, description} dicts; informational, never affects the verdict.
         if methodology_warnings is not None:
             self.results["methodology_warnings"] = methodology_warnings
         # Set even when None: the key's presence marks the payload as bitstream-aware.

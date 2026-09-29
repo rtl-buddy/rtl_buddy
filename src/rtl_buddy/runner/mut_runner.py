@@ -326,8 +326,9 @@ class MutRunner:
     def _run_scoped(self, xeno) -> MutResults:
         """Run a multi-file campaign, mutating each scoped file in sorted order.
 
-        ``per_file_cap`` limits mutants per file, so ``max_mutants`` and the time budget apply to the whole campaign
-        and may truncate later files. The schedule applies per file.
+        ``per_file_cap`` limits mutants per file. ``max_mutants`` is a global ceiling and the campaign stops when it is
+        reached, even mid-file; the time budget also covers the whole campaign, so later files may be truncated. The
+        schedule applies per file.
         """
         kinds = self._kinds(xeno)
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
