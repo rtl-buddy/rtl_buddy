@@ -1,11 +1,4 @@
-"""End-to-end resolve_* tests: real ``HubServer`` + real ``Resolver``.
-
-These complement the unit-level ``test_hub_resolver.py`` (which pokes
-the resolver directly) and the broad ``test_hub_server.py`` (which
-runs the server without a resolver). Here we stand up both and drive
-the protocol over the wire to confirm the server's resolve dispatch
-matches the spec's request/response shapes.
-"""
+"""End-to-end resolve tests driving a real ``HubServer`` and ``Resolver`` over the wire."""
 
 from __future__ import annotations
 
@@ -26,7 +19,7 @@ from rtl_buddy.hub.server import HubServer
 pytestmark = pytest.mark.asyncio
 
 
-# Mirrors the rtl-buddy-view JSON contract today (counter fixture).
+# Mirrors the rtl-buddy-view JSON contract (counter fixture).
 _VIEW_JSON = {
     "schema_version": "1.0",
     "tool": {"name": "rtl-buddy-view", "version": "0.1.0"},
@@ -90,7 +83,7 @@ async def server_with_resolver(tmp_path: Path) -> AsyncIterator[HubServer]:
 
 
 class _Client:
-    """Local mock client. Mirrors tests/test_hub_server.py::MockClient."""
+    """Local mock client, as in tests/test_hub_server.py."""
 
     def __init__(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -128,11 +121,6 @@ class _Client:
             await self.writer.wait_closed()
         except Exception:
             pass
-
-
-# ---------------------------------------------------------------------------
-# resolve_view_to_wave
-# ---------------------------------------------------------------------------
 
 
 async def test_view_to_wave_round_trip(server_with_resolver: HubServer):
@@ -180,12 +168,7 @@ async def test_view_to_wave_unknown_path_returns_unresolvable(
 async def test_view_to_wave_missing_payload_returns_bad_request(
     server_with_resolver: HubServer,
 ):
-    """Server validation path: schema-rejecting payloads → bad_request.
-
-    The codec's encode would reject this on the client side, so we send
-    the raw wire bytes — that's the exposure surface a buggy or
-    non-Python client could realistically hit.
-    """
+    """Schema-rejected payloads sent as raw wire bytes get ``bad_request``."""
 
     c = await _Client.connect(server_with_resolver.host, server_with_resolver.port)
     try:
@@ -211,11 +194,6 @@ async def test_view_to_wave_missing_payload_returns_bad_request(
         assert err.payload["code"] == "bad_request"
     finally:
         await c.close()
-
-
-# ---------------------------------------------------------------------------
-# resolve_signal_to_view
-# ---------------------------------------------------------------------------
 
 
 async def test_signal_to_view_round_trip(server_with_resolver: HubServer):

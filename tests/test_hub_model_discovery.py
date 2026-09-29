@@ -1,9 +1,5 @@
-"""Tests for ``rb hub`` model discovery + resolution.
-
-Covers the discovery walk, name-collision error path, and the
-explicit ``--models-file`` override behaviour. The hub-side
-view-builder is mocked out — these tests pin the discovery contract
-without needing the rtl-buddy-view binary installed.
+"""Tests for ``rb hub`` model discovery and resolution, with the view builder mocked
+out.
 """
 
 from __future__ import annotations
@@ -53,8 +49,7 @@ def test_discover_models_files_finds_yaml_in_tree(tmp_path):
 
 
 def test_discover_models_files_skips_excluded_dirs(tmp_path):
-    """A models.yaml under .git/ / artefacts/ / node_modules/ is
-    fixture / vendored data, not a real candidate."""
+    """A models.yaml under .git/, artefacts/ or node_modules/ is not a candidate."""
     _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
     _write_models(tmp_path / ".git" / "models.yaml", _MODELS_YAML_B)
     _write_models(tmp_path / "artefacts" / "models.yaml", _MODELS_YAML_B)
@@ -64,11 +59,8 @@ def test_discover_models_files_skips_excluded_dirs(tmp_path):
 
 
 def test_discover_models_files_skips_nested_git_worktrees(tmp_path):
-    """A subdirectory whose ``.git`` is a file (the canonical worktree
-    marker) is a parallel checkout — its ``models.yaml`` files duplicate
-    the parent's and must not enter the candidate set."""
+    """A subdirectory whose ``.git`` is a file (a worktree) is skipped."""
     _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
-    # Simulate a worktree at .worktrees/feature-x/ with the project tree copied in.
     wt = tmp_path / ".worktrees" / "feature-x"
     (wt / ".git").parent.mkdir(parents=True, exist_ok=True)
     (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/feature-x\n")
@@ -79,8 +71,7 @@ def test_discover_models_files_skips_nested_git_worktrees(tmp_path):
 
 
 def test_discover_models_files_keeps_root_git_dir(tmp_path):
-    """The starting root's own .git/ (a *directory*, not a file) must not
-    trigger the worktree-skip path."""
+    """The starting root's own ``.git/`` directory does not trigger the worktree skip."""
     (tmp_path / ".git").mkdir()
     _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
     found = model_discovery.discover_models_files(tmp_path)
@@ -88,7 +79,7 @@ def test_discover_models_files_keeps_root_git_dir(tmp_path):
 
 
 def test_discover_models_files_returns_alphabetical_order(tmp_path):
-    """Order matters for collision-error messages — must be stable."""
+    """Candidate order is stable, since collision errors list it."""
     _write_models(tmp_path / "z_block" / "models.yaml", _MODELS_YAML_A)
     _write_models(tmp_path / "a_block" / "models.yaml", _MODELS_YAML_A)
     _write_models(tmp_path / "m_block" / "models.yaml", _MODELS_YAML_A)
@@ -111,19 +102,13 @@ def test_find_matches_zero_when_name_absent(tmp_path):
 
 
 def test_find_matches_tolerates_malformed_yaml(tmp_path):
-    """A parse error in a sibling models.yaml shouldn't blow up the
-    walk — we just don't return it as a match candidate."""
+    """A parse error in a sibling models.yaml is skipped rather than raised."""
     mf_good = _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
     mf_bad = _write_models(
         tmp_path / "block_b" / "models.yaml", "not: a valid: schema\n"
     )
     matches = model_discovery.find_matches([mf_good, mf_bad], "alpha")
     assert [m.models_file for m in matches] == [mf_good]
-
-
-# ---------------------------------------------------------------------------
-# resolve_model — the main public entry point
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_model_with_explicit_models_file(tmp_path):
@@ -162,14 +147,14 @@ def test_resolve_model_zero_matches_raises_with_candidates(tmp_path):
         model_discovery.resolve_model(tmp_path, "no_such_model")
     msg = str(excinfo.value)
     assert "no_such_model" in msg
-    # candidates listing helps the user spot a typo
     assert "alpha" in msg
     assert "beta" in msg
 
 
 def test_resolve_model_ambiguous_match_raises_with_paths(tmp_path):
-    """``beta`` lives in both files → error names both paths and
-    points at --models-file as the fix."""
+    """``beta`` in both files is an error naming both paths and pointing at
+    ``--models-file``.
+    """
     mf_a = _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
     mf_b = _write_models(tmp_path / "block_b" / "models.yaml", _MODELS_YAML_B)
     with pytest.raises(FatalRtlBuddyError) as excinfo:

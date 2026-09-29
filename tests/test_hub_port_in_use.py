@@ -1,9 +1,4 @@
-"""Tests for the EADDRINUSE clean-error path in ``rb hub start``.
-
-Pinning a port (via CLI flag or hub.toml) is common; landing on a port
-that's already held by another process should produce a one-line
-"port X already in use" message, not a websockets/asyncio traceback.
-"""
+"""Tests for the clean error when ``rb hub start`` finds its port already in use."""
 
 from __future__ import annotations
 
@@ -20,8 +15,7 @@ from rtl_buddy.hub.loop import _PortInUseError, _start_listener, serve
 
 @contextlib.contextmanager
 def _hold_port(port: int):
-    """Bind a TCP listener on (127.0.0.1, port) so any other bind on
-    the same port hits EADDRINUSE. Yields the port back."""
+    """Bind a listener on (127.0.0.1, port) and yield the port."""
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
     s.bind(("127.0.0.1", port))
@@ -34,7 +28,7 @@ def _hold_port(port: int):
 
 @pytest.mark.asyncio
 async def test_start_listener_translates_eaddrinuse_to_port_in_use():
-    """Direct exercise of the helper that wraps server/viewer .start()."""
+    """The helper wrapping server and viewer ``start()`` reports a bind conflict."""
 
     with _hold_port(0) as taken:
 
@@ -52,8 +46,7 @@ async def test_start_listener_translates_eaddrinuse_to_port_in_use():
 
 @pytest.mark.asyncio
 async def test_start_listener_passes_other_oserror_through():
-    """Non-EADDRINUSE OSErrors should propagate unchanged; we only
-    translate the specific bind-conflict case."""
+    """OSErrors other than EADDRINUSE propagate unchanged."""
 
     async def boom():
         raise OSError(13, "permission denied")
@@ -64,10 +57,9 @@ async def test_start_listener_passes_other_oserror_through():
 
 
 def test_serve_returns_1_and_emits_clean_message_on_eaddrinuse(tmp_path: Path, capfd):
-    """End-to-end: ``serve()`` with a pinned listen_port that's already
-    held returns exit code 1 and prints a one-line message — no
-    traceback. Mirrors what ``rb hub start --listen-port N`` does at
-    the CLI surface."""
+    """``serve()`` with an occupied pinned ``listen_port`` returns exit code 1 and a
+    one-line message without a traceback.
+    """
 
     with _hold_port(0) as taken:
         cfg = HubConfig(
@@ -78,8 +70,7 @@ def test_serve_returns_1_and_emits_clean_message_on_eaddrinuse(tmp_path: Path, c
 
     assert rc == 1
     out = "".join(capfd.readouterr().err.split())
-    # Either ordering of "TCP port" + the port number is fine; we just
-    # need the user-visible substring and no Traceback.
+    # Only the user-visible substring and the absence of a traceback matter.
     assert "TCPport" in out or f"TCPport{taken}" in out
     assert "alreadyinuse" in out
     assert "Traceback" not in out

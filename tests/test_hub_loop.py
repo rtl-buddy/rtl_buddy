@@ -1,12 +1,5 @@
-"""Integration test for ``rtl_buddy.hub.loop`` orchestration.
-
-The real ``loop.serve`` installs SIGINT/SIGTERM handlers and calls
-``asyncio.run``; the signal handlers require the asyncio loop to be on
-the main thread, which makes it awkward to test the full thing through
-``CliRunner``. This file exercises the same start → serve → shutdown
-sequence directly with asyncio primitives, so the lifecycle (discovery
-file writes + cleanup, listener teardown) is covered without forking
-the test runner.
+"""Tests for the ``rtl_buddy.hub.loop`` start, serve and shutdown sequence, driven with
+asyncio primitives instead of ``loop.serve``'s signal handlers.
 """
 
 from __future__ import annotations
@@ -26,7 +19,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_serve_lifecycle_writes_and_clears_discovery(tmp_path: Path):
-    """Mirrors what ``loop.serve`` does without the signal-handler half."""
+    """Run ``loop.serve``'s lifecycle without its signal handlers."""
 
     server = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     host, port = await server.start()
@@ -41,7 +34,6 @@ async def test_serve_lifecycle_writes_and_clears_discovery(tmp_path: Path):
 
     serve_task = asyncio.create_task(server.serve_forever())
 
-    # Exercise one round trip.
     reader, writer = await asyncio.open_connection(host, port)
     try:
         hello = Envelope(
@@ -74,11 +66,7 @@ async def test_serve_lifecycle_writes_and_clears_discovery(tmp_path: Path):
 
 
 async def test_server_refuses_to_double_bind(tmp_path: Path):
-    """Two servers on the same port → second .start() raises OSError.
-
-    Confirms that the listener does what the discovery layer's
-    "one hub per project" rule expects at the OS level.
-    """
+    """A second server on the same port raises OSError from ``start()``."""
 
     a = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     host, port = await a.start()
