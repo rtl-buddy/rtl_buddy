@@ -1,30 +1,10 @@
-"""Tests for #380 — the ``rb graph query`` / ``path`` / ``explain`` verbs.
+"""Tests for the ``rb graph query`` / ``path`` / ``explain`` verbs.
 
-The graph only earns its keep if an agent can interrogate it more
-cheaply than reading the tree, which means the answers have to be
-*complete* (context attached), *stable* (byte-identical across runs) and
-*citable* (file, line, and the command that quotes them).
-
-What these tests pin:
-
-* the acceptance criterion — "which tests cover coverage-item X and what
-  is their last status" is one command, with the results overlay joined
-  onto the neighbours;
-* matching is deterministic keyword scoring: type words steer but never
-  filter out the node the question is really about, and ties break on
-  the node id so two runs agree;
-* ``path`` is undirected by default (edge direction encodes role, not
-  reachability) and reports every shortest path it was asked for;
-* ``explain`` resolves both edge directions and hands back the
-  ``rb hier-query ... source-snippet`` citation for an instance node;
-* an unknown or ambiguous node reference fails loudly with candidates,
-  never by silently answering about a different node;
-* the ``--machine`` envelopes carry the payload the MCP surface reuses.
-
-The config-tier fixture is the graph under test, with a synthetic
-design tier merged in where module/instance/port nodes are needed —
-building a real design tier would need ``rtl-buddy-view`` on PATH, and
-these verbs are indifferent to which tier produced a node.
+The tests pin complete answers with the results overlay joined on, deterministic
+keyword scoring (ties break on node id), undirected ``path``, both-direction
+``explain`` with a source-snippet citation, loud failure on unknown or ambiguous
+nodes, and the ``--machine`` envelopes the MCP surface reuses. The graph under
+test is the config-tier fixture with a synthetic design tier merged in.
 """
 
 from __future__ import annotations
@@ -73,11 +53,10 @@ _LIVE: list[RtlBuddy] = []
 
 
 def _runner() -> tuple[CliRunner, RtlBuddy]:
-    """A fresh CLI object, with the previous one's artefact lock released.
+    """A fresh CLI object with the previous one's artefact lock released.
 
-    The lock is held for the whole process lifetime by design, so two
-    ``RtlBuddy`` instances in one test would contend with each other
-    rather than with a real concurrent run.
+    The lock is held for the process lifetime, so two ``RtlBuddy`` instances in one
+    test would contend with each other.
     """
     while _LIVE:
         _LIVE.pop()._artifact_locks.release_all()
@@ -87,7 +66,7 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
 
 
 def _build(project: Path, *extra: str) -> Path:
-    """Config-tier-only build; no viewer, no extractor, so it runs anywhere."""
+    """Config-tier-only build; needs no viewer or extractor."""
     runner, rb = _runner()
     result = runner.invoke(
         rb.app, ["graph", "build", "--no-design", "--no-extract", *extra]
@@ -116,12 +95,8 @@ def _refresh_results(project: Path) -> None:
 
 
 def _with_design_tier(graph_json: Path) -> None:
-    """Splice a minimal design tier into a config-only graph.
-
-    ``rb graph build`` would need ``rtl-buddy-view`` on PATH for this;
-    the query verbs care only that the nodes exist and carry the
-    contract's ids, so the cheap fake is the honest test.
-    """
+    """Splice a minimal design tier into a config-only graph; the verbs only need the
+    nodes and their ids."""
     graph = json.loads(graph_json.read_text())
     graph["nodes"] += [
         {
@@ -167,13 +142,12 @@ def _with_design_tier(graph_json: Path) -> None:
     graph_json.write_text(json.dumps(graph, indent=2))
 
 
-# ---------------------------------------------------------------------------
 # Tokenizing and scoring
-# ---------------------------------------------------------------------------
 
 
 def test_type_words_become_hints_not_search_terms():
-    """ "which tests cover A-COV-1" must score on the identifier alone."""
+    """Type words become hints: "which tests cover A-COV-1" scores on the identifier
+    alone."""
     terms, hints = tokenize("which tests cover A-COV-1")
 
     assert "test" in hints
@@ -182,7 +156,7 @@ def test_type_words_become_hints_not_search_terms():
 
 
 def test_a_type_word_promotes_but_never_conjures_a_match(graph_project: Path):
-    """A type preference reorders real matches; it never invents one."""
+    """A type word reorders real matches but never invents one."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
@@ -192,7 +166,7 @@ def test_a_type_word_promotes_but_never_conjures_a_match(graph_project: Path):
     assert graph_query.score_node(node, ["t_basic"], {"test"}) > graph_query.score_node(
         node, ["t_basic"], set()
     )
-    # No term hit at all: the type word alone leaves the score at zero.
+    # No term hit: the type word alone scores zero.
     assert graph_query.score_node(other, ["t_basic"], {"testbench"}) == 0
     assert ctx.index.node("test:verif/blk_a#t_basic") is not None
 
@@ -209,15 +183,13 @@ def test_matches_are_ordered_deterministically(graph_project: Path):
     assert scores == sorted(scores, reverse=True)
 
 
-# ---------------------------------------------------------------------------
 # The acceptance criterion
-# ---------------------------------------------------------------------------
 
 
 def test_one_query_answers_which_tests_cover_an_item_and_their_status(
     graph_project: Path,
 ):
-    """#380's acceptance criterion, in one round-trip."""
+    """One query answers which tests cover an item and their last status."""
     _build(graph_project)
     _seed_run(graph_project, "t_basic", status="PASS")
     _refresh_results(graph_project)
@@ -238,8 +210,7 @@ def test_one_query_answers_which_tests_cover_an_item_and_their_status(
         "test:verif/blk_a#t_basic",
         "test:verif/blk_a#t_cocotb",
     }
-    # The overlay is joined onto the neighbour, so the status arrives
-    # with the answer instead of costing a second command.
+    # The overlay is joined onto the neighbour.
     assert covering["test:verif/blk_a#t_basic"]["results"]["status"] == "PASS"
     assert "results" not in covering["test:verif/blk_a#t_cocotb"]
 
@@ -258,7 +229,7 @@ def test_no_results_flag_drops_the_overlay_join(graph_project: Path):
 
 
 def test_query_without_an_overlay_still_answers(graph_project: Path):
-    """A graph with no overlay is fully queryable — never an error."""
+    """A graph with no overlay is fully queryable."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
@@ -268,13 +239,12 @@ def test_query_without_an_overlay_still_answers(graph_project: Path):
     assert payload["matches"][0]["id"] == "covitem:blk_a#A-COV-1"
 
 
-# ---------------------------------------------------------------------------
 # Neighbourhood expansion
-# ---------------------------------------------------------------------------
 
 
 def test_expansion_follows_edges_in_both_directions(graph_project: Path):
-    """ "which tests cover X" reads `covers` backwards — it must."""
+    """Expansion follows edges in both directions, so "which tests cover X" reads
+    `covers` backwards."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
@@ -290,7 +260,7 @@ def test_expansion_follows_edges_in_both_directions(graph_project: Path):
 
 
 def test_neighbors_are_lean_references_by_default(graph_project: Path):
-    """A neighbour is id/label/type plus the joins — decide, then hop (#388)."""
+    """Neighbours are lean references by default: id, label, type and the joins."""
     _build(graph_project)
     _seed_run(graph_project, "t_basic", status="PASS")
     _refresh_results(graph_project)
@@ -310,7 +280,7 @@ def test_neighbors_are_lean_references_by_default(graph_project: Path):
             "distance",
             "via",
         }, neighbor
-    # The overlay join survives the diet: status still costs no second call.
+    # The overlay join survives.
     covering = {
         n["id"]: n
         for n in payload["matches"][0]["neighbors"]
@@ -336,7 +306,7 @@ def test_query_expand_restores_full_neighbor_summaries(graph_project: Path):
 
 
 def test_a_match_carries_its_own_attributes(graph_project: Path):
-    """Reading one reglvl/xfail no longer costs a whole explain (#388)."""
+    """A match carries its own attributes."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
@@ -348,7 +318,7 @@ def test_a_match_carries_its_own_attributes(graph_project: Path):
 
 
 def test_neighbor_truncation_reports_what_it_dropped(graph_project: Path):
-    """A cut answer must say what it lost — count and kinds, not a flag."""
+    """Neighbour truncation reports the count and kinds it dropped."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
@@ -363,14 +333,13 @@ def test_neighbor_truncation_reports_what_it_dropped(graph_project: Path):
 
 
 def test_explain_truncation_names_the_bucket_that_lost_edges(graph_project: Path):
-    """`explain` and `query` must spell "nothing was cut" the same way,
-    and a total alone cannot say which direction lost edges."""
+    """`explain` and `query` spell "nothing was cut" the same way, and name the bucket
+    that lost edges."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
     whole = graph_query.explain(ctx, "module:blk_a")
-    # Nothing dropped -> the key is absent, exactly as `neighbors_truncated`
-    # is absent, rather than a second spelling (`false`) of the same fact.
+    # Nothing dropped: the key is absent.
     assert "truncated" not in whole
 
     cut = graph_query.explain(ctx, "module:blk_a", limit=1)
@@ -382,8 +351,7 @@ def test_explain_truncation_names_the_bucket_that_lost_edges(graph_project: Path
         - len(cut["incoming"])
     )
     assert sum(truncated["kinds"].values()) == truncated["dropped"]
-    # kinds here are EDGE types, not node types — the vocabulary depends
-    # on the verb, which is why the docstring says so.
+    # Kinds here are edge types, not node types.
     assert set(truncated["kinds"]) <= {
         str(edge.get("type")) for edge in whole["outgoing"] + whole["incoming"]
     }
@@ -409,13 +377,11 @@ def test_depth_is_capped(graph_project: Path):
     assert payload["depth"] == graph_query.MAX_DEPTH
 
 
-# ---------------------------------------------------------------------------
 # path
-# ---------------------------------------------------------------------------
 
 
 def test_path_is_undirected_by_default(graph_project: Path):
-    """Suite -> test -> testbench runs one way; the question does not."""
+    """Path is undirected by default."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
@@ -451,7 +417,7 @@ def test_path_reports_the_edges_it_walked(graph_project: Path):
 
 
 def test_path_crosses_the_config_to_design_stitch(graph_project: Path):
-    """The config->design stitch is the whole point of one id namespace."""
+    """Path crosses the config->design stitch."""
     graph_json = _build(graph_project)
     _with_design_tier(graph_json)
     ctx = load_context(graph_project)
@@ -462,9 +428,7 @@ def test_path_crosses_the_config_to_design_stitch(graph_project: Path):
     assert "module:blk_a" == found["paths"][0]["nodes"][-1]["id"]
 
 
-# ---------------------------------------------------------------------------
 # explain
-# ---------------------------------------------------------------------------
 
 
 def test_explain_resolves_both_edge_directions_and_the_result(graph_project: Path):
@@ -480,16 +444,15 @@ def test_explain_resolves_both_edge_directions_and_the_result(graph_project: Pat
     assert payload["degree"]["in"]["declares"] == 1
     peers = {edge["peer"] for edge in payload["outgoing"]}
     assert "tb:verif/blk_a#tb_hdl" in peers
-    # Every edge names the far endpoint — id, label, type — so an agent
-    # can decide whether to hop without a second lookup; what it does
-    # NOT get by default is a full peer summary (#388).
+    # Every edge names the far endpoint (id, label, type); a full peer summary needs
+    # `--expand`.
     assert all(edge["peer_type"] for edge in payload["outgoing"])
     assert all(edge["peer_label"] for edge in payload["outgoing"])
     assert all("node" not in edge for edge in payload["outgoing"])
 
 
 def test_explain_expand_restores_the_full_peer_summaries(graph_project: Path):
-    """`--expand` is the pre-#388 payload: one round-trip, every peer whole."""
+    """`--expand` returns every peer whole."""
     _build(graph_project)
     _seed_run(graph_project, "t_basic", status="PASS")
     _refresh_results(graph_project)
@@ -500,20 +463,17 @@ def test_explain_expand_restores_the_full_peer_summaries(graph_project: Path):
     edge = next(e for e in payload["incoming"] if e.get("type") == "covers")
     assert edge["node"]["type"] == "test"
     assert edge["node"]["id"] == edge["peer"]
-    # The expanded peer carries its own attributes and its overlay join,
-    # so nothing that used to be in the payload needs a second call.
+    # The expanded peer carries its attributes and overlay join.
     covering = {e["peer"]: e for e in payload["incoming"] if e["type"] == "covers"}
     assert covering["test:verif/blk_a#t_basic"]["node"]["results"]["status"] == "PASS"
     assert covering["test:verif/blk_a#t_cocotb"]["node"]["attributes"]["xfail"] is True
 
 
 def test_explain_hands_back_a_runnable_source_snippet_command(graph_project: Path):
-    """Locate in the graph, cite from source — the payload does half.
+    """Explain returns a runnable source-snippet command.
 
-    ``-c`` comes from the config tier's ``maps_to`` edge — the *model*
-    stitch. Without it the command only runs from the models.yaml's own
-    directory, which is not a citation an agent invoked from the project
-    root can use.
+    ``-c`` comes from the config tier's ``maps_to`` edge (the model stitch), so the
+    command runs from the project root.
     """
     graph_json = _build(graph_project)
     _with_design_tier(graph_json)
@@ -530,13 +490,10 @@ def test_explain_hands_back_a_runnable_source_snippet_command(graph_project: Pat
 def test_the_cite_command_omits_c_when_no_model_declares_the_module(
     graph_project: Path,
 ):
-    """A design tier exported without a config tier still cites its file.
+    """The cite command omits ``-c`` when no model declares the module.
 
-    Dropping only ``maps_to`` leaves the fixture's ``elaborates_as`` edge
-    into ``module:blk_a`` standing, so this also pins the reason the
-    stitch is three verbs and not one: a testbench points at the same
-    module from a ``tests.yaml``, and a ``-c`` filled in from *that*
-    would hand back a command that cannot run.
+    Dropping ``maps_to`` leaves the ``elaborates_as`` edge standing; a ``-c`` taken
+    from a testbench's edge would give a command that cannot run.
     """
     graph_json = _build(graph_project)
     _with_design_tier(graph_json)
@@ -561,9 +518,7 @@ def test_explain_keeps_the_node_attributes_it_did_not_summarize(graph_project: P
     assert payload["node"]["type"] == "test"
 
 
-# ---------------------------------------------------------------------------
 # Node reference resolution
-# ---------------------------------------------------------------------------
 
 
 def test_a_bare_unambiguous_name_resolves(graph_project: Path):
@@ -574,23 +529,20 @@ def test_a_bare_unambiguous_name_resolves(graph_project: Path):
 
 
 def test_an_ambiguous_name_fails_with_its_candidates(graph_project: Path):
-    """Silently answering about the wrong blk_a is worse than asking."""
+    """An ambiguous name fails with its candidates."""
     _build(graph_project)
     ctx = load_context(graph_project)
 
     with pytest.raises(GraphQueryError) as excinfo:
         resolve_node(ctx, "blk_a")
 
-    # spec block, model, design-tier module, and one suite per flow that
-    # runs blk_a — sim, synth+cdc, fpv — all of which label themselves
-    # after the block.
+    # Spec block, model, module and one suite per flow all label themselves blk_a.
     assert "matches 6 nodes" in str(excinfo.value)
     assert "spec:blk_a" in excinfo.value.candidates
 
 
 def _collision_ctx(tmp_path: Path) -> graph_query.GraphContext:
-    """A minimal context holding two suite-qualified tb_top copies with
-    indexed labels, the shape `_index_collision_labels` emits."""
+    """A context holding two suite-qualified tb_top copies with indexed labels."""
     graph = {
         "nodes": [
             {
@@ -614,9 +566,7 @@ def _collision_ctx(tmp_path: Path) -> graph_query.GraphContext:
 
 
 def test_indexed_collision_labels_score_at_the_exact_name_tier():
-    """`tb_top(0)` tokenizes away from `tb_top`; base_label restores the
-    exact-label tier so the rubric is unchanged for the node class a
-    name query most likely means."""
+    """`tb_top(0)` scores at the exact-name tier through base_label."""
     indexed = {
         "id": "module:tb_top@verif/blk_a",
         "type": "module",
@@ -633,9 +583,8 @@ def test_indexed_collision_labels_score_at_the_exact_name_tier():
 def test_a_base_label_name_still_resolves_ambiguously_with_candidates(
     tmp_path: Path,
 ):
-    """`rb graph explain tb_top` on a collision must keep raising the
-    matches-N-use-a-full-id error — asking again beats answering about
-    the wrong copy — not fall through to the fuzzy did-you-mean path."""
+    """`rb graph explain tb_top` on a collision still raises the ambiguity error rather
+    than a did-you-mean."""
     ctx = _collision_ctx(tmp_path)
 
     with pytest.raises(GraphQueryError) as excinfo:
@@ -666,9 +615,7 @@ def test_a_missing_graph_names_the_command_that_makes_one(tmp_path: Path):
     assert "rb graph build" in str(excinfo.value)
 
 
-# ---------------------------------------------------------------------------
 # Overlay-only queries
-# ---------------------------------------------------------------------------
 
 
 def test_test_status_filters_by_name_and_verdict(graph_project: Path):
@@ -682,9 +629,7 @@ def test_test_status_filters_by_name_and_verdict(graph_project: Path):
     assert overlay_status(ctx)["statuses"] == {"PASS": 1}
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 
 
 def test_cli_query_machine_envelope(graph_project: Path):
@@ -708,7 +653,7 @@ def test_cli_query_machine_envelope(graph_project: Path):
 
 
 def test_cli_query_with_no_match_exits_one(graph_project: Path):
-    """A graceful no, not a crash: exit 1 so a shell loop can branch."""
+    """A query with no match exits 1."""
     _build(graph_project)
     runner, rb = _runner()
 
@@ -805,12 +750,7 @@ def test_cli_query_expand_flag_expands_the_neighbors(graph_project: Path):
 
 
 def test_the_read_verbs_do_not_take_the_artefact_lock(graph_project: Path):
-    """Querying must work *while* a regression is running in the tree.
-
-    The artefact lock is exclusive and held to process exit, so a read
-    verb that took it would fail exactly when an agent most wants to ask
-    the graph what it is looking at.
-    """
+    """Read verbs work while a regression holds the artefact lock."""
     _build(graph_project)
     runner, rb = _runner()  # drops the builder's lock before the holder takes it
     holder = RtlBuddy(name="test_graph_query_holder")

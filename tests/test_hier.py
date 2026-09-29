@@ -1,11 +1,7 @@
-"""Tests for the ``rb hier`` command + ``RtlBuddyView`` tool wrapper.
+"""Tests for the ``rb hier`` command and the ``RtlBuddyView`` tool wrapper.
 
-The real ``rtl-buddy-view`` binary is not on PATH in CI, so these
-tests stub it with a tiny shell script that records its argv and
-exits with a controllable status. This pins the CLI shape we promise
-to the downstream viewer (``--top``, ``--filelist``, ``--format``,
-``--output``, ``--frontend``, ``--cdc-annotations``, ``--rdc-annotations``,
-``--clock-legend``, ``--block-diagram``).
+``rtl-buddy-view`` is stubbed with a shell script that records its argv and
+exits with a controllable status, which pins the CLI shape promised to the viewer.
 """
 
 from __future__ import annotations
@@ -23,11 +19,8 @@ from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyView
 
-# The stub tools below run a here-doc Python snippet, so they need an
-# interpreter that actually exists: a bare ``python`` is absent from a
-# stock macOS PATH. Capture the real interpreter at import time -- one
-# test monkeypatches ``sys.executable`` to probe PATH-less resolution,
-# and the stubs must not inherit that fake path.
+# Stubs run a here-doc Python snippet, so capture the real interpreter at import time;
+# one test monkeypatches ``sys.executable``.
 _PYTHON = shlex.quote(sys.executable)
 
 
@@ -58,10 +51,8 @@ def _make_old_view(
 ) -> Path:
     """A fake viewer that predates ``option``.
 
-    Rejects the unknown option the way the viewer's Click/Typer parser
-    does — a message on stderr plus a non-zero exit — and, unless
-    ``version`` is None, answers ``--version`` so the wrapper's probe
-    has something to name in its error.
+    It rejects the unknown option with a stderr message and non-zero exit and, unless
+    ``version`` is None, answers ``--version``.
     """
     script = tmp_path / name
     version_branch = (
@@ -97,7 +88,7 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
     return CliRunner(), RtlBuddy(name="test_hier")
 
 
-# --- RtlBuddyView wrapper (unit) ------------------------------------------
+# RtlBuddyView wrapper (unit)
 
 
 def test_wrapper_builds_expected_argv_and_filelist(tmp_path: Path):
@@ -168,7 +159,7 @@ def test_wrapper_forwards_optional_flags(tmp_path: Path):
     assert "--clock-legend" in argv
 
 
-# --- --block-diagram (rtl-buddy-sch#160) ----------------------------------
+# --block-diagram
 
 
 def test_wrapper_forwards_block_diagram_when_set(tmp_path: Path):
@@ -187,9 +178,8 @@ def test_wrapper_forwards_block_diagram_when_set(tmp_path: Path):
 
 
 def test_wrapper_omits_block_diagram_when_unset(tmp_path: Path):
-    """Default off means the CLI we hand the renderer is byte-identical
-    to the pre-#160 contract — that is what keeps `rb hier` working
-    against every released viewer while the flag is still unreleased."""
+    """With the flag unset the renderer CLI is unchanged, so `rb hier` works against
+    every released viewer."""
     script, record = _make_fake_view(tmp_path)
     view = RtlBuddyView(
         name="t",
@@ -203,10 +193,8 @@ def test_wrapper_omits_block_diagram_when_unset(tmp_path: Path):
 
 
 def test_wrapper_old_viewer_rejects_block_diagram_with_clear_error(tmp_path: Path):
-    """A renderer that predates the flag exits non-zero with an
-    unknown-option complaint. The wrapper reads that back out of
-    hier.log and re-raises it naming the release to upgrade to, rather
-    than leaving the user with a bare exit code."""
+    """An old renderer's unknown-option failure is re-raised, naming the release to
+    upgrade to."""
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_BLOCK_DIAGRAM_MIN_VERSION
 
@@ -224,18 +212,15 @@ def test_wrapper_old_viewer_rejects_block_diagram_with_clear_error(tmp_path: Pat
     message = str(exc.value)
     assert "--block-diagram" in message
     assert VIEW_BLOCK_DIAGRAM_MIN_VERSION in message
-    # The probe names what is actually installed, so the user does not
-    # have to go find out themselves.
+    # The probe names the installed version.
     assert "0.7.1" in message
-    # ...and the raw renderer output is still cited, not swallowed.
+    # The raw renderer output is still cited.
     assert "hier.log" in message
 
 
 def test_wrapper_old_viewer_error_survives_a_failed_version_probe(tmp_path: Path):
-    """A viewer too old to answer `--version` is still diagnosed — the
-    probe is a nicety on this path, not the gate. (Pre-emptively gating
-    on the probe would refuse a dev/editable viewer that does carry the
-    feature.)"""
+    """A viewer too old to answer `--version` is still diagnosed; the probe is not a
+    gate."""
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_BLOCK_DIAGRAM_MIN_VERSION
 
@@ -255,10 +240,8 @@ def test_wrapper_old_viewer_error_survives_a_failed_version_probe(tmp_path: Path
 
 
 def test_wrapper_block_diagram_does_not_hijack_unrelated_failures(tmp_path: Path):
-    """An ordinary renderer failure (parse error, missing top) under
-    --block-diagram must keep propagating as an exit code. Only the
-    unknown-option signature is re-raised, or every real bug in a
-    block-diagram run would be reported as a version problem."""
+    """An ordinary renderer failure under --block-diagram propagates as an exit code;
+    only the unknown-option signature is re-raised."""
     script, _ = _make_fake_view(tmp_path, exit_code=1)
     view = RtlBuddyView(
         name="t",
@@ -272,14 +255,11 @@ def test_wrapper_block_diagram_does_not_hijack_unrelated_failures(tmp_path: Path
 
 
 def test_wrapper_block_diagram_does_not_claim_another_flags_rejection(tmp_path: Path):
-    """An unknown-option failure naming a *different* flag is not a
-    --block-diagram version problem, and must not be reported as one.
+    """An unknown-option failure naming another flag is not a --block-diagram version problem.
 
-    The trap this guards: hier.log opens with the echoed command line,
-    which repeats every flag we passed — so a naive search for
-    ``--block-diagram`` in "what the viewer said" matches whenever the
-    flag was set, whatever the viewer actually complained about. The
-    echo is subtracted before matching."""
+    hier.log opens with the echoed command line, which repeats every flag passed, so
+    the echo is subtracted before matching.
+    """
     script = _make_old_view(tmp_path, option="--clock-legend")
     view = RtlBuddyView(
         name="t",
@@ -290,14 +270,12 @@ def test_wrapper_block_diagram_does_not_claim_another_flags_rejection(tmp_path: 
         block_diagram=True,
         executable=str(script),
     )
-    # Propagates as an exit code; no misattributed version error.
+    # Propagates as an exit code with no misattributed version error.
     assert view.run() == 2
 
 
 def test_wrapper_forwards_axi_perf_annotations_as_overlay(tmp_path: Path):
-    """The hub uses --axi-perf-from to bake throughput overlays into
-    every model's generated view.json. Locks the new --overlay
-    axi-perf=PATH passthrough (Phase 2.5 of the marimo umbrella)."""
+    """--axi-perf-from is forwarded as ``--overlay axi-perf=PATH``."""
     src = tmp_path / "src" / "example.sv"
     src.parent.mkdir()
     src.write_text("module example; endmodule\n")
@@ -324,9 +302,7 @@ def test_wrapper_forwards_axi_perf_annotations_as_overlay(tmp_path: Path):
 
 
 def test_wrapper_rejects_missing_axi_perf_annotations(tmp_path: Path):
-    """File-existence check fires before the viewer is spawned so the
-    user gets a clean error, not a viewer-side overlay-load
-    backtrace."""
+    """A missing axi-perf file is rejected before the viewer is spawned."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     src = tmp_path / "src" / "example.sv"
@@ -419,9 +395,8 @@ def test_wrapper_rejects_missing_rdc_annotations(tmp_path: Path):
 
 
 def test_wrapper_rejects_missing_tool_path(tmp_path: Path):
-    """An absolute path that doesn't exist surfaces a friendly error,
-    not a subprocess FileNotFoundError traceback. Caught in real-world
-    use when rtl-buddy-view lives only in a venv that isn't on PATH."""
+    """A nonexistent absolute tool path gives a friendly error, not a FileNotFoundError
+    traceback."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     src = tmp_path / "src" / "example.sv"
@@ -443,8 +418,8 @@ def test_wrapper_rejects_missing_tool_path(tmp_path: Path):
 
 
 def test_wrapper_rejects_missing_tool_on_path(tmp_path: Path, monkeypatch):
-    """A bare command name that doesn't resolve through PATH gets the
-    same friendly treatment via ``shutil.which``."""
+    """A bare command name that does not resolve through PATH gets the same error via
+    ``shutil.which``."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     src = tmp_path / "src" / "example.sv"
@@ -455,7 +430,7 @@ def test_wrapper_rejects_missing_tool_on_path(tmp_path: Path, monkeypatch):
         filelist=[str(src)],
         path=str(tmp_path / "models.yaml"),
     )
-    # Empty PATH ensures the lookup fails deterministically.
+    # An empty PATH makes the lookup fail deterministically.
     monkeypatch.setenv("PATH", "")
     view = RtlBuddyView(
         name="t",
@@ -468,9 +443,8 @@ def test_wrapper_rejects_missing_tool_on_path(tmp_path: Path, monkeypatch):
 
 
 def test_wrapper_resolves_sibling_of_interpreter(tmp_path: Path, monkeypatch):
-    """A bare command name absent from PATH still resolves when the
-    binary sits next to ``sys.executable`` — rb invoked by absolute venv
-    path without activation must not lose the viewer that venv ships."""
+    """A bare name absent from PATH resolves when the binary sits next to
+    ``sys.executable``."""
     import sys as _sys
 
     bindir = tmp_path / "venvbin"
@@ -495,17 +469,16 @@ def test_wrapper_resolves_sibling_of_interpreter(tmp_path: Path, monkeypatch):
         suite_dir=str(tmp_path),
         executable="totally-fake-binary-xyz",
     )
-    # run() proceeds past resolution (the fake tool exits 0 with no
-    # output, which the wrapper reports as a tool failure downstream —
-    # anything but the "not found" FatalRtlBuddyError proves the point).
+    # Any exception other than the "not found" FatalRtlBuddyError shows that run() got
+    # past resolution.
     try:
         view.run()
-    except Exception as exc:  # noqa: BLE001 - only the message matters here
+    except Exception as exc:  # noqa: BLE001
         assert "not found" not in str(exc)
     assert view.executable == str(fake)
 
 
-# --- rb hier command (integration through Typer) --------------------------
+# rb hier command (integration through Typer)
 
 
 def test_rb_hier_invokes_stubbed_viewer(minimal_project: Path):
@@ -533,9 +506,8 @@ def test_rb_hier_invokes_stubbed_viewer(minimal_project: Path):
 
 
 def test_rb_hier_block_diagram_flag_reaches_the_renderer(minimal_project: Path):
-    """`rb hier <model> --format dot --block-diagram` is the whole point
-    of the plumbing: before #160 the wrapper forwarded a fixed flag list
-    and the mode was unreachable from rtl_buddy."""
+    """`rb hier <model> --format dot --block-diagram` reaches the renderer with the
+    flag."""
     script, record = _make_fake_view(minimal_project)
     runner, rb = _runner()
     result = runner.invoke(
@@ -581,8 +553,7 @@ def test_rb_hier_without_block_diagram_omits_it(minimal_project: Path):
 def test_rb_hier_block_diagram_on_old_viewer_reports_the_version(
     minimal_project: Path,
 ):
-    """End to end, the old-tool path exits non-zero with the actionable
-    message instead of a traceback."""
+    """The old-tool path exits non-zero with the actionable message, not a traceback."""
     from rtl_buddy.tools.hier_rtl_buddy_view import VIEW_BLOCK_DIAGRAM_MIN_VERSION
 
     script = _make_old_view(minimal_project, version="0.7.1")
@@ -608,8 +579,7 @@ def test_rb_hier_block_diagram_on_old_viewer_reports_the_version(
 
 
 def test_rb_hier_view_tb_forwards_block_diagram(minimal_project: Path):
-    """The TB-rooted branch builds its own RtlBuddyView — the flag has
-    to be threaded through both, not just the DUT path."""
+    """The TB-rooted branch also forwards --block-diagram."""
     script, record = _make_fake_view(minimal_project)
     runner, rb = _runner()
     result = runner.invoke(
@@ -666,15 +636,13 @@ def test_rb_hier_viewer_exit_propagates(minimal_project: Path):
     assert result.exit_code == 1
 
 
-# --- --view tb mode (rtl-buddy-view #99 / 6b) -----------------------------
+# --view tb mode
 
 
 def test_wrapper_emits_tb_top_and_caches_under_tb_subdir(tmp_path: Path):
-    """When ``test_cfg`` is supplied the wrapper forwards ``--tb-top
-    <tb.toplevel>`` alongside the existing ``--top <model>`` and the
-    generated filelist lands at ``artefacts/hier/<model>/tb/<tb>/hier.f``.
-    Two tests sharing the same TB therefore share the artefact (cache
-    key = (model, tb), not test name)."""
+    """With ``test_cfg`` the wrapper forwards ``--tb-top <tb.toplevel>`` beside ``--top
+    <model>`` and caches the filelist at ``artefacts/hier/<model>/tb/<tb>/hier.f``,
+    keyed by (model, tb)."""
     from rtl_buddy.config.test import TestbenchConfig, TestConfig
 
     src = tmp_path / "src" / "example.sv"
@@ -719,7 +687,7 @@ def test_wrapper_emits_tb_top_and_caches_under_tb_subdir(tmp_path: Path):
     assert view.run() == 0
 
     argv = json.loads(record.read_text())
-    # --top is still the DUT model; --tb-top is the TB toplevel.
+    # --top is the DUT model; --tb-top is the TB toplevel.
     assert argv[argv.index("--top") + 1] == "example"
     assert argv[argv.index("--tb-top") + 1] == "tb_top"
     # Filelist artefact landed under artefacts/hier/<model>/tb/<tb>/.
@@ -727,40 +695,32 @@ def test_wrapper_emits_tb_top_and_caches_under_tb_subdir(tmp_path: Path):
         tmp_path / "artefacts" / "hier" / "example" / "tb" / "tb_basic" / "hier.f"
     )
     assert expected_fl.is_file()
-    # The actual --filelist arg points at that exact file.
+    # --filelist points at that file.
     assert argv[argv.index("--filelist") + 1] == str(expected_fl)
 
 
 def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
-    """``+incdir+``, ``-y``, ``-v``, ``+libext+`` entries in the TB
-    filelist must not survive into rtl-buddy-view's hier.f. With
-    ``strip=True`` they'd otherwise be emitted as bare paths — rtl-
-    buddy-view then tries to open ``../../common`` as a source file
-    and crashes with IsADirectoryError (caught live against the DMA
-    fixture in rtl-buddy-ai-project after the toplevel: backfill)."""
+    """``+incdir+``, ``-y``, ``-v`` and ``+libext+`` entries in the TB filelist are
+    dropped from hier.f, since the viewer would open them as source files."""
     from rtl_buddy.config.test import TestbenchConfig, TestConfig
     from rtl_buddy.tools.hier_rtl_buddy_view import _is_non_source_filelist_line
 
-    # Unit-test the helper directly — the wrapper-level smoke test
-    # below covers the integration but only assertively when the test
-    # filelist parses cleanly.
+    # Unit-test the helper directly.
     assert _is_non_source_filelist_line("+incdir+../../common")
     assert _is_non_source_filelist_line("+libext+.sv+.v")
     assert _is_non_source_filelist_line("-y rtl/lib")
     assert _is_non_source_filelist_line("-v rtl/some.sv")
     assert not _is_non_source_filelist_line("tb_top.sv")
     assert not _is_non_source_filelist_line("rtl/example.sv")
-    # Verilator config/waiver files (``*.vlt``) are listed alongside
-    # sources but are not HDL — Verible exits non-zero on them, so they
-    # must be dropped before the merge.
+    # Verilator ``*.vlt`` files are not HDL and Verible fails on them, so they are
+    # dropped before the merge.
     assert _is_non_source_filelist_line("../../design/pp_axi.vlt")
     assert _is_non_source_filelist_line("waivers.vlt")
     assert not _is_non_source_filelist_line("axi_2x2.sv")
-    # Leading whitespace tolerated (matches the YAML loader's output).
+    # Leading whitespace is tolerated.
     assert _is_non_source_filelist_line("  +incdir+.")
 
-    # Wrapper integration: a TB filelist with mixed entries produces
-    # a hier.f containing only source paths.
+    # Wrapper integration: mixed entries produce a hier.f with only source paths.
     src = tmp_path / "src" / "example.sv"
     src.parent.mkdir()
     src.write_text("module example; endmodule\n")
@@ -806,8 +766,7 @@ def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
     fl = (
         tmp_path / "artefacts" / "hier" / "example" / "tb" / "tb_basic" / "hier.f"
     ).read_text()
-    # +incdir+ entries are filtered before the merge — no bare incdir
-    # path leaks into the rtl-buddy-view filelist.
+    # +incdir+ entries are filtered before the merge.
     assert str(incdir) not in fl
     assert "+incdir+" not in fl
     # The TB source file survives the filter.
@@ -815,17 +774,11 @@ def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
 
 
 def test_wrapper_drops_model_filelist_defines_from_hier_f(tmp_path: Path):
-    """A `+define+` in the MODEL's own filelist must not reach hier.f.
+    """A `+define+` in the model's own filelist does not reach hier.f.
 
-    The TB-side filter (`_is_non_source_filelist_line`) never sees the
-    model's entries — they go straight through `write_output(strip=True)`,
-    and #305 made `_process` skip the strip branch for defines so the
-    marker survives for the FPV consumers that read the file back. `rb
-    hier` does not read it back: it hands the path to rtl-buddy-view, which
-    opens every line as a source. So the skip has to happen at write time,
-    keyed on `strip` — otherwise the models this feature exists to unblock
-    are exactly the ones `rb hier` / `rb hier-query` / `rb graph build`
-    start failing on.
+    The write step skips defines when `strip` is set, since `rb hier` hands the
+    file to rtl-buddy-view, which opens every line as a source. The FPV consumers
+    that read the file back keep their defines.
     """
     src = tmp_path / "src" / "example.sv"
     src.parent.mkdir()
@@ -848,7 +801,7 @@ def test_wrapper_drops_model_filelist_defines_from_hier_f(tmp_path: Path):
     fl = (tmp_path / "artefacts" / "hier" / "example" / "hier.f").read_text()
     body = [ln for ln in fl.splitlines() if ln and not ln.startswith("//")]
     assert "+define+" not in fl
-    # ...and not as a bare `SYNTHESIS` line the renderer would try to open.
+    # Not as a bare `SYNTHESIS` line the renderer would try to open.
     assert "SYNTHESIS" not in fl
     assert "WIDTH=8" not in fl
     assert [ln for ln in body if ln.endswith("example.sv")]
@@ -856,9 +809,7 @@ def test_wrapper_drops_model_filelist_defines_from_hier_f(tmp_path: Path):
 
 
 def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):
-    """Sanity: when ``test_cfg`` is None (today's ``rb hier <model>``
-    path), the wrapper invokes the renderer with no ``--tb-top``
-    flag — byte-identical CLI to the v1.0 contract."""
+    """With ``test_cfg`` None the renderer gets no ``--tb-top``."""
     src = tmp_path / "src" / "example.sv"
     src.parent.mkdir()
     src.write_text("module example; endmodule\n")
@@ -880,13 +831,8 @@ def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):
 
 
 def test_wrapper_tb_top_defaults_to_tb_name_when_toplevel_unset(tmp_path: Path):
-    """A plain SystemVerilog testbench conventionally leaves ``toplevel``
-    unset (it's only consumed by cocotb/SystemC sims; Verilator auto-
-    detects the top). The view has no elaboration to auto-detect from, so
-    ``--tb-top`` falls back to the testbench config name — which by
-    convention is the TB's top module. Without this the view silently
-    rendered DUT-rooted and the SPA's "TB" toggle showed the DUT with no
-    AXI overlay."""
+    """``--tb-top`` falls back to the testbench config name when ``toplevel`` is unset,
+    as for a plain SystemVerilog testbench."""
     from rtl_buddy.config.test import TestbenchConfig, TestConfig
 
     src = tmp_path / "src" / "example.sv"
@@ -902,7 +848,7 @@ def test_wrapper_tb_top_defaults_to_tb_name_when_toplevel_unset(tmp_path: Path):
     tb = TestbenchConfig(
         name="tb_axi_2x2",
         filelist=[str(tb_src)],
-        toplevel=None,  # plain SV testbench — no explicit override
+        toplevel=None,  # plain SV testbench
     )
     test_cfg = TestConfig(
         name="basic",
@@ -929,17 +875,13 @@ def test_wrapper_tb_top_defaults_to_tb_name_when_toplevel_unset(tmp_path: Path):
     )
     assert view.run() == 0
     argv = json.loads(record.read_text())
-    # Falls back to the testbench config name as the TB top module.
+    # Falls back to the testbench config name.
     assert argv[argv.index("--tb-top") + 1] == "tb_axi_2x2"
 
 
 def test_wrapper_resolves_tb_filelist_against_test_suite_dir(tmp_path: Path):
-    """The TB filelist's relative entries are declared relative to the
-    suite dir (where ``tests.yaml`` lives), not the process cwd. When the
-    hub builds a TB view it runs from the project root, so it must pass
-    ``test_suite_dir`` to anchor the merge — otherwise a relative entry
-    like ``tb.sv`` resolves against cwd and fails with ``FilelistError``.
-    Regression guard for the hub ``?test=`` 500."""
+    """The TB filelist's relative entries resolve against ``test_suite_dir``, not the
+    cwd, or the merge raises ``FilelistError``."""
     from rtl_buddy.config.test import TestbenchConfig, TestConfig
     from rtl_buddy.errors import FilelistError
 
@@ -979,11 +921,11 @@ def test_wrapper_resolves_tb_filelist_against_test_suite_dir(tmp_path: Path):
 
     script, _ = _make_fake_view(tmp_path)
 
-    # Correct suite dir → the relative TB entry resolves and survives.
+    # Correct suite dir: the relative TB entry resolves.
     view = RtlBuddyView(
         name="t",
         model_cfg=model,
-        suite_dir=str(tmp_path),  # artefact root (the hub passes project root)
+        suite_dir=str(tmp_path),  # artefact root
         format="json",
         executable=str(script),
         test_cfg=_make_test_cfg(),
@@ -995,8 +937,7 @@ def test_wrapper_resolves_tb_filelist_against_test_suite_dir(tmp_path: Path):
     ).read_text()
     assert "tb.sv" in fl
 
-    # Wrong suite dir → the relative entry can't be found, surfacing the
-    # FilelistError the hub now translates into a clean 500.
+    # Wrong suite dir: the entry is not found and ``FilelistError`` surfaces.
     bad = RtlBuddyView(
         name="t",
         model_cfg=model,
@@ -1030,7 +971,7 @@ def test_rb_hier_view_tb_resolves_test_and_invokes_renderer(minimal_project: Pat
     )
     assert result.exit_code == 0, result.output
     argv = json.loads(record.read_text())
-    # ``basic`` test pins model=example (DUT) + tb=tb_basic (toplevel=tb_basic).
+    # ``basic`` pins model=example (DUT) and tb=tb_basic.
     assert argv[argv.index("--top") + 1] == "example"
     assert argv[argv.index("--tb-top") + 1] == "tb_basic"
     # Filelist landed under the (model, tb) cache path.
@@ -1046,8 +987,7 @@ def test_rb_hier_view_tb_resolves_test_and_invokes_renderer(minimal_project: Pat
 
 
 def test_rb_hier_view_must_be_dut_or_tb(minimal_project: Path):
-    """An unknown --view value surfaces as a FatalRtlBuddyError before
-    we shell out to the renderer."""
+    """An unknown --view value raises FatalRtlBuddyError before the renderer runs."""
     script, _ = _make_fake_view(minimal_project)
     runner, rb = _runner()
     result = runner.invoke(
@@ -1064,7 +1004,7 @@ def test_rb_hier_view_must_be_dut_or_tb(minimal_project: Path):
     assert result.exit_code != 0
 
 
-# --- RtlBuddyViewQuery wrapper (unit) --------------------------------------
+# RtlBuddyViewQuery wrapper (unit)
 
 
 def _query_model(tmp_path: Path) -> ModelConfig:
@@ -1079,8 +1019,7 @@ def _query_model(tmp_path: Path) -> ModelConfig:
 
 
 def test_query_wrapper_builds_expected_argv(tmp_path: Path):
-    """Pins the `query` CLI shape promised to the viewer:
-    ``query <verb> <arg> --top <model> --filelist <hier.f>``."""
+    """The argv is ``query <verb> <arg> --top <model> --filelist <hier.f>``."""
     from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
 
     script, record = _make_fake_view(tmp_path)
@@ -1142,9 +1081,7 @@ def test_query_wrapper_forwards_verb_specific_flags(tmp_path: Path):
 
 
 def test_query_wrapper_gates_flags_by_verb(tmp_path: Path):
-    """Verb-specific knobs are only forwarded to the verbs that accept
-    them — the viewer's own usage validation stays the single source
-    of truth, and a stray --context can't break find-module."""
+    """Verb-specific flags are forwarded only to verbs that accept them."""
     from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
 
     script, record = _make_fake_view(tmp_path)
@@ -1182,8 +1119,7 @@ def test_query_wrapper_rejects_unknown_verb(tmp_path: Path):
 
 
 def test_query_wrapper_propagates_exit_code(tmp_path: Path):
-    """A lookup miss exits 1 in the viewer; `rb hier-query` must not
-    flatten that to success."""
+    """A lookup miss exits 1 in the viewer and `rb hier-query` propagates it."""
     from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
 
     script, _ = _make_fake_view(tmp_path, exit_code=1)
@@ -1198,7 +1134,7 @@ def test_query_wrapper_propagates_exit_code(tmp_path: Path):
     assert view.run() == 1
 
 
-# --- rb hier-query command (integration through Typer) ---------------------
+# rb hier-query command (integration through Typer)
 
 
 def test_rb_hier_query_invokes_stubbed_viewer(minimal_project: Path):

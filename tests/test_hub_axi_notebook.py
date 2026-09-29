@@ -1,17 +1,9 @@
-"""Tests for the ``/api/axi-profile/notebook`` hub HTTP endpoint
-and its underlying launcher.
+"""Tests for the ``/api/axi-profile/notebook`` hub endpoint and its launcher.
 
-The endpoint spawns ``rb axi-profile notebook --headless`` (which
-forks marimo). We can't run the real marimo in CI — and don't need
-to — so the launcher's subprocess is monkeypatched to a fake that
-prints a URL line on stdout. That exercises every code path
-(stdout reader, URL regex, timeout, validation) without depending
-on the [notebook] extra being installed in the test env.
-
-The route-level tests poke ``_handle_axi_notebook`` directly with
-a stub ``ServerConnection`` rather than spinning up the full
-websockets server — the goal is to lock the route's contract
-(query parse, status codes, JSON body), not the IO plumbing.
+The launcher's subprocess is monkeypatched to a fake that prints a URL line, so
+the stdout reader, URL regex, timeout and validation run without marimo. Route
+tests call ``_handle_axi_notebook`` with a stub ``ServerConnection`` to pin the
+query parse, status codes and JSON body.
 """
 
 from __future__ import annotations
@@ -30,8 +22,7 @@ from rtl_buddy.hub.axi_notebook_launcher import AxiNotebookLaunchError
 
 
 def _write_suite(tmp_path: Path) -> Path:
-    """A barely-valid suite_dir — tests.yaml present so validation
-    doesn't reject it."""
+    """A minimal valid suite_dir: tests.yaml present."""
     suite = tmp_path / "verif" / "demo"
     suite.mkdir(parents=True)
     (suite / "tests.yaml").write_text(
@@ -41,17 +32,11 @@ def _write_suite(tmp_path: Path) -> Path:
 
 
 def _fake_marimo(tmp_path: Path, *, url: str | None, exit_after: bool = False) -> Path:
-    """Drop a Python script that mimics ``marimo edit``'s startup:
-    optionally print a URL line, optionally exit. Returned path is
-    executable so subprocess.Popen can run it.
+    """Drop a Python script mimicking ``marimo edit`` startup: optional URL line, optional exit.
 
-    Python (rather than a bash script + sleep) because the
-    shutdown-cleanup test SIGTERMs the spawned process and expects
-    it to exit promptly. Bash defers signals until its foreground
-    command finishes; even ``exec sleep`` was unreliable on busy
-    Linux CI runners. Python's ``signal.signal(SIGTERM, sys.exit)``
-    gives a deterministic immediate-exit on SIGTERM, mirroring
-    what real marimo does via tornado's signal hooks.
+    It is Python rather than bash because the shutdown-cleanup test SIGTERMs the
+    process and needs a prompt exit; bash defers signals and was unreliable on busy
+    CI runners.
     """
     sh = tmp_path / "fake_marimo.py"
     body = [
@@ -62,7 +47,7 @@ def _fake_marimo(tmp_path: Path, *, url: str | None, exit_after: bool = False) -
     if url:
         body.append(f"print('URL: {url}', flush=True)")
     if not exit_after:
-        # Block until SIGTERM (or SIGINT) lands; handler exits 0.
+        # Block until SIGTERM or SIGINT; the handler exits 0.
         body.append("signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))")
         body.append("signal.signal(signal.SIGINT, lambda *_: sys.exit(0))")
         body.append("time.sleep(60)")
@@ -110,8 +95,7 @@ def test_validate_suite_dir_accepts_valid_relative_path(tmp_path: Path) -> None:
 def test_launch_returns_url_when_subprocess_prints_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Happy path: a fake "marimo" prints the URL on stdout and the
-    launcher returns it without waiting for the process to exit."""
+    """The launcher returns the URL the fake marimo prints without waiting for exit."""
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url="http://localhost:31337")
 
@@ -130,8 +114,7 @@ def test_launch_returns_url_when_subprocess_prints_one(
     assert result.url == "http://localhost:31337"
     assert result.test == "basic"
     assert result.pid > 0
-    # Clean up the background fake_marimo so it doesn't hang around
-    # 60s after the test exits.
+    # Clean up the background fake_marimo.
     try:
         os.kill(result.pid, 9)
     except ProcessLookupError:
@@ -141,9 +124,8 @@ def test_launch_returns_url_when_subprocess_prints_one(
 def test_launch_propagates_events_url_to_subprocess_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Phase 3: when called with ``events_url``, the launcher exports
-    ``RB_HUB_EVENTS_URL`` so the spawned marimo can join the broker.
-    When omitted, no env var leaks through."""
+    """``events_url`` is exported as ``RB_HUB_EVENTS_URL`` to the subprocess; when
+    omitted, no env var leaks."""
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url="http://localhost:31337")
 
@@ -177,7 +159,7 @@ def test_launch_propagates_events_url_to_subprocess_env(
     except ProcessLookupError:
         pass
 
-    # Second pass without events_url — env stays clean.
+    # Second pass without events_url: env stays clean.
     captured.clear()
     result2 = asyncio.run(
         axi_notebook_launcher.launch(
@@ -197,9 +179,7 @@ def test_launch_propagates_events_url_to_subprocess_env(
 def test_launch_raises_when_subprocess_exits_before_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Crash-on-startup path: subprocess exits before printing the
-    URL line. Launcher surfaces a 500 with marimo's exit code in
-    the message so the SPA's error toast is actionable."""
+    """A subprocess exiting before the URL surfaces a 500 with marimo's exit code."""
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url=None, exit_after=True)
 
@@ -226,8 +206,7 @@ def test_launch_raises_when_subprocess_exits_before_url(
 def test_launch_times_out_when_subprocess_hangs_without_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Watchdog path: subprocess runs forever and never prints a URL.
-    Should kill the subprocess and return a 504."""
+    """A subprocess that never prints a URL is killed and returns a 504."""
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url=None)
 
@@ -253,8 +232,7 @@ def test_launch_times_out_when_subprocess_hangs_without_url(
 def test_launch_503_when_marimo_not_on_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Setup-error path: marimo binary not installed. Surfaces 503
-    with the [notebook] extra install hint."""
+    """A missing marimo binary surfaces a 503 with the [notebook] extra install hint."""
     _write_suite(tmp_path)
     monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: None)
     with pytest.raises(AxiNotebookLaunchError) as exc:
@@ -267,15 +245,11 @@ def test_launch_503_when_marimo_not_on_path(
     assert "[notebook]" in str(exc.value)
 
 
-# ---------------------------------------------------------------------------
 # Route-level smoke
-# ---------------------------------------------------------------------------
 
 
 class _StubConnection:
-    """Just enough of websockets' ServerConnection to satisfy
-    ``_http_response`` — which is the only thing the route handler
-    calls on it."""
+    """Enough of websockets' ServerConnection for ``_http_response``."""
 
     request: Any = None
 
@@ -317,8 +291,7 @@ def test_route_returns_500_when_project_root_unset(tmp_path: Path) -> None:
 def test_route_returns_json_url_on_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end at the route layer: with a working fake-marimo, the
-    handler returns a 200 + JSON containing the URL the SPA needs."""
+    """With a working fake marimo the route returns 200 and JSON with the URL."""
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url="http://localhost:31337")
     server = _make_viewer_server(tmp_path)
@@ -349,17 +322,14 @@ def test_route_returns_json_url_on_success(
         pass
 
 
-# ---------------------------------------------------------------------------
-# Session reuse + shutdown cleanup (Phase 2.5)
-# ---------------------------------------------------------------------------
+# Session reuse + shutdown cleanup
 
 
 def test_repeat_request_for_same_test_reuses_cached_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Second click on the SPA's "Open in marimo" button for the same
-    (test, suite_dir) returns the SAME url+pid+port. No duplicate
-    marimo spawn — locks the Phase 2.5 single-instance behaviour."""
+    """A repeat request for the same (test, suite_dir) returns the same url, pid and
+    port without a new spawn."""
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url="http://localhost:31337")
     server = _make_viewer_server(tmp_path)
@@ -394,12 +364,9 @@ def test_repeat_request_for_same_test_reuses_cached_session(
 def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the user manually killed the spawned marimo (or it crashed),
-    the next click should respawn instead of returning a dead URL.
+    """A cache entry whose pid is dead is dropped and respawned.
 
-    Mocks ``_is_pid_alive`` to force the "dead" branch rather than
-    racing the kernel — relying on real SIGKILL + reap timing was
-    flaky under CI scheduling latency.
+    ``_is_pid_alive`` is mocked; real SIGKILL and reap timing was flaky in CI.
     """
     from rtl_buddy.hub import viewer_http
 
@@ -418,7 +385,7 @@ def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
     first = json.loads(
         asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
     )
-    # Force the stale-cache branch deterministically.
+    # Force the stale-cache branch.
     monkeypatch.setattr(viewer_http, "_is_pid_alive", lambda pid: False)
 
     second = json.loads(
@@ -436,17 +403,10 @@ def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
 def test_shutdown_calls_terminate_on_every_session_and_clears_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ViewerServer.shutdown() SIGTERMs every spawned marimo and
-    clears the session cache. Without this, hub restarts orphan
-    marimos that nobody can reach.
+    """``ViewerServer.shutdown()`` SIGTERMs every spawned marimo and clears the session cache.
 
-    Mocks ``_terminate_pid`` to record what got called rather than
-    asserting on kernel signal-delivery timing — CI runners can take
-    seconds to deliver SIGTERM under load, which made an earlier
-    poll-the-PID version flaky. The actual signal-sending logic is
-    one line (``os.kill(pid, SIGTERM)``); the contract the hub
-    promises is "every session.pid in the cache is signalled and the
-    cache is cleared", which this assertion covers.
+    ``_terminate_pid`` is mocked to record calls; real signal delivery timing was
+    flaky under CI load.
     """
     from rtl_buddy.hub import viewer_http
 
@@ -480,8 +440,7 @@ def test_shutdown_calls_terminate_on_every_session_and_clears_cache(
     assert server._axi_notebook_sessions == {}
     assert terminated == [pid]
 
-    # Cleanup of the still-alive fake_marimo (the mock prevented the
-    # real SIGTERM from going out).
+    # Clean up the still-alive fake_marimo; the mock prevented the real SIGTERM.
     try:
         os.kill(pid, 9)
     except ProcessLookupError:
@@ -491,9 +450,7 @@ def test_shutdown_calls_terminate_on_every_session_and_clears_cache(
 def test_terminate_pid_sends_sigterm_to_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Direct unit test for the helper: locks the (pid, SIGTERM)
-    call shape so a regression that switches to SIGKILL or omits the
-    pid is caught immediately."""
+    """``_terminate_pid`` sends SIGTERM to the given pid."""
     import os as _os
     import signal
 
@@ -508,8 +465,7 @@ def test_terminate_pid_sends_sigterm_to_target(
 def test_terminate_pid_swallows_process_lookup_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Race: process already exited between cache-check and kill.
-    Helper must not raise — best-effort cleanup."""
+    """``_terminate_pid`` swallows a process that already exited."""
     import os as _os
 
     from rtl_buddy.hub import viewer_http
