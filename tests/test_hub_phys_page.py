@@ -2276,8 +2276,8 @@ def test_a_refused_switch_keeps_the_run_that_is_on_screen():
 
 
 def test_focus_applies_to_the_run_the_pane_is_showing():
-    """``phys_focus`` is unchanged on the wire: the pane addresses one run, chosen by
-    the reader.
+    """``phys_focus`` carries only the target and metric on the wire: the pane addresses
+    one run, chosen by the reader.
     """
 
     js = _page_js()

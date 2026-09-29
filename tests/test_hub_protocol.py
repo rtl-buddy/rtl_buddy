@@ -479,8 +479,7 @@ def test_diagnostics_set_rejects_line_zero():
         )
 
 
-# Directory names an owner checkout may have, newest first; the repo was renamed from
-# ``rtl-buddy-view``.
+# Directory names an owner checkout may have, newest first.
 _OWNER_REPO_DIRS = ("rtl-buddy-sch", "rtl-buddy-view")
 
 

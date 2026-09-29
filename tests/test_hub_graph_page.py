@@ -1938,8 +1938,10 @@ def test_the_peer_list_is_diffed_identically_in_both_panes():
 # pure join rules (run in ``node``) and the token-based ramp are tested; the painting is
 # checked manually.
 #
-# Manual check: with graph and synth artefacts, run ``rb hub start --serve-viewer``,
-# open ``/gph`` and tick ``heat``.
+# Manual check: in a project that has run ``rb graph build`` and ``rb synth`` (plus
+# ``rb power`` for the power metrics), run ``rb hub start --serve-viewer``, open ``/gph``
+# and tick ``heat``. Then ``rb hub send phys-focus instance:<leaf path from rb phys
+# summary>`` selects and centres the module that owns the leaf.
 
 
 def test_the_page_advertises_the_physical_data_route():

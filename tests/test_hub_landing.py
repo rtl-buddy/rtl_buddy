@@ -386,7 +386,7 @@ def test_each_card_carries_a_long_name_and_a_short_one():
     assert (apps["graph"]["name"], apps["graph"]["short"]) == ("rtl-buddy-graph", "gph")
     assert (apps["cov"]["name"], apps["cov"]["short"]) == ("rtl-buddy-coverage", "cov")
     assert (apps["phys"]["name"], apps["phys"]["short"]) == ("rtl-buddy-phys", "phy")
-    # The wire origin must stay unchanged or the "already open" join breaks.
+    # The wire origin is what the "already open" join matches on.
     assert [
         app["origin"]
         for app in (apps["view"], apps["graph"], apps["cov"], apps["phys"])
@@ -397,7 +397,7 @@ def test_each_card_carries_a_long_name_and_a_short_one():
         "phys",
     ]
     assert apps["phys"]["route"] == "/phy"
-    # The page route is the short name; the origin asserted above is unchanged.
+    # The page route is the short name, not the origin.
     assert apps["view"]["route"] == "/sch"
 
 
