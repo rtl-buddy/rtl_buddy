@@ -1,10 +1,6 @@
-"""
-Unit tests for the consolidated source-path resolver (#399).
+"""Unit tests for the consolidated source-path resolver.
 
-The resolver replaces three divergent copies (`vlog_cov._normalize_lcov_paths`,
-`vlog_cov._resolve_source_path`, `coverview._rewrite_sf_relative_to_project_root`).
-`tests/test_coverage_paths.py` guards the three call sites' behaviour; these
-cases pin the resolver's own contract, the hint ordering especially.
+`tests/test_coverage_paths.py` guards the call sites; these cases pin the resolver's own contract, especially the hint ordering.
 """
 
 from rtl_buddy.cov.source_paths import SourcePathResolver
@@ -49,7 +45,7 @@ def test_generated_trees_never_win_the_basename_search(tmp_path):
     real = suite_dir / "rtl" / "blk.sv"
     real.parent.mkdir(parents=True)
     real.write_text("module blk;\nendmodule\n")
-    # An annotate scratch copy of the same file, under a generated tree.
+    # An annotate scratch copy of the same file under a generated tree.
     stale = suite_dir / "artefacts" / "coverage_annotated" / "blk.sv"
     stale.parent.mkdir(parents=True)
     stale.write_text("module blk;\nendmodule\n")
@@ -60,18 +56,15 @@ def test_generated_trees_never_win_the_basename_search(tmp_path):
 
 
 def test_bare_basename_ignores_a_decoy_beside_the_raw_database(tmp_path):
-    """The direct-candidate stage must not run for a bare basename.
+    """A bare basename skips the direct-candidate stage.
 
-    For a raw database `base_dir` is the per-run artefact directory, so
-    `<base dir>/<name>` would hand a stale copy sitting next to
-    `coverage.dat` the win before the generated-tree filter ever looked
-    at it — the exact thing the module docstring forbids.
+    For a raw database `base_dir` is the per-run artefact directory, so a stale copy beside `coverage.dat` would win before the generated-tree filter ran.
     """
     repo_root, suite_dir, run_dir = _repo(tmp_path)
     real = suite_dir / "rtl" / "tb_top.sv"
     real.parent.mkdir(parents=True)
     real.write_text("module tb_top;\nendmodule\n")
-    # The decoy: an older copy left beside this run's `coverage.dat`.
+    # The decoy: an older copy beside this run's `coverage.dat`.
     (run_dir / "coverage.dat").write_text("# SystemC::Coverage-3\n")
     (run_dir / "tb_top.sv").write_text("module tb_top;  // stale\nendmodule\n")
 
@@ -97,8 +90,7 @@ def test_missing_file_keeps_the_base_anchored_reading_inside_the_project(tmp_pat
 def test_missing_file_outside_the_project_falls_back_to_the_stripped_reading(tmp_path):
     repo_root, _suite_dir, run_dir = _repo(tmp_path)
 
-    # Six levels up from the run directory lands above the project; the only
-    # useful reading left is the path with its `..` segments dropped.
+    # Six levels up lands above the project; the only useful reading left drops the `..` segments.
     resolution = SourcePathResolver(repo_root, base_dir=run_dir).resolve(
         "../../../../../../gone/missing.sv"
     )

@@ -1,40 +1,6 @@
-"""Tests for #336 — a compile-only run (``-E comp``) is a neutral early
-stop, not a pass and not a failure, and the process exit code is decoupled
-from the PASS/FAIL verdict.
+"""Tests for compile-only early stops and exit-code grading.
 
-There is no ``CompilePassResults`` class and no ``"COMPILED"`` result.
-A successful compile-only (or pre-only) early stop reports
-``EarlyStopResults`` (``src/rtl_buddy/runner/test_results.py``):
-``result: "NA"``, ``desc: "Stopped early at compile"`` (or the analogous
-preproc description). ``xfail._BASE_PASS`` is back to
-``("PASS", "SKIP", "XFAIL")`` — ``NA`` is not a pass.
-
-Instead, ``RtlBuddy._exit_code_from_results`` contributes exit 1 for a
-result only when it is *not* a pass *and* not an intentional early stop.
-Net effect:
-
-- ``PASS``/``SKIP``/``XFAIL``/non-strict ``XPASS`` (``is_pass()`` true) -> 0
-- ``NA`` from an intentional early stop (pre/comp/sim), which carries
-  ``early_stop: true`` -> 0
-- ``NA`` meaning "no verdict was produced" (#546) -> 1
-- ``FAIL`` (real sim failure, or ``CompileFailResults`` /
-  ``SimTimeoutResults`` / ``SetupFailResults`` / ``FilelistFailResults``)
-  -> 1
-- strict ``XPASS`` -> 1
-
-Rationale: the exit code reflects whether rtl_buddy and the tools ran
-properly, not the design-under-test verdict; an intentional early stop
-means "ran fine, hand checking required," so it must not fail the run.
-
-#546 split the two ``NA``s that #336 had lumped together. An aborted
-simulation produces no PASS/FAIL banner and so also reports ``NA``, and
-the blanket exemption made a dispatched run whose sim job exited 1 still
-exit 0. Only ``EarlyStopResults`` -- the stop rtl_buddy was asked for --
-carries ``early_stop: true``, and only that is exempt; an unknown ``NA``
-fails the run, on the in-process path and through a result envelope
-alike. A nonzero simulator exit with no verdict in its transcript is
-re-graded to ``FAIL`` by ``TestRunner`` before it ever gets that far.
-"""
+A successful early stop reports ``EarlyStopResults`` (``NA``, ``early_stop: true``) and exits 0, while an ``NA`` without the marker, ``FAIL`` and strict ``XPASS`` exit 1. A nonzero simulator exit with no verdict is re-graded to ``FAIL``."""
 
 from __future__ import annotations
 
@@ -61,8 +27,7 @@ from rtl_buddy.tools.vlog_post import VlogPost, grade_unknown_sim_exit
 from rtl_buddy.tools.vlog_sim import VlogSim
 
 
-# Aliased on import, like test_setup_failures.py: a bare ``TestResults`` /
-# ``TestRunner`` in a test module is collected as a test class by pytest.
+# Aliased on import: a bare ``TestResults`` or ``TestRunner`` in a test module is collected as a test class.
 def _unknown_na(name: str = "smoke") -> RtlBuddyTestResults:
     """The result an aborted simulation leaves: no verdict, no early stop."""
     return RtlBuddyTestResults(name, {"result": "NA", "desc": "test result unknown"})
@@ -71,9 +36,7 @@ def _unknown_na(name: str = "smoke") -> RtlBuddyTestResults:
 def _last_json(output: str) -> dict:
     """Parse the last non-empty stdout line as the machine-mode JSON envelope.
 
-    ``CliRunner`` interleaves stdout and stderr into ``result.output``, and
-    the compile progress text ("Compiling basic") precedes the JSON
-    envelope on the wire.
+    ``CliRunner`` interleaves stdout and stderr, and compile progress text precedes the envelope.
     """
     lines = [line for line in output.splitlines() if line.strip()]
     return json.loads(lines[-1])
@@ -94,8 +57,6 @@ def test_cli_compile_only_run_exits_zero_with_na_result_machine(
     assert results[0]["name"] == "basic"
     assert results[0]["result"] == "NA"
     assert results[0]["desc"] == "Stopped early at compile"
-    # The machine row carries the discriminator, so automation does not
-    # have to parse the human desc to tell this NA from an unknown one.
     assert results[0]["early_stop"] is True
 
 
@@ -109,7 +70,7 @@ def test_cli_compile_only_run_exits_zero_human(minimal_project: Path):
 def test_cli_pre_early_stop_exits_zero_with_na_result_machine(
     minimal_project: Path,
 ):
-    """The same NA/exit-0 treatment applies at the preproc early stop."""
+    """The preproc early stop also gives NA and exit 0."""
     runner = CliRunner()
     rb = RtlBuddy(name="test_pre_only_machine")
     result = runner.invoke(rb.app, ["--machine", "-E", "pre", "test", "basic"])
@@ -124,9 +85,7 @@ def test_cli_pre_early_stop_exits_zero_with_na_result_machine(
 
 
 class TestExitCodeDecoupledFromVerdict:
-    """Unit tests on ``RtlBuddy._exit_code_from_results`` — the core of the
-    #336 redesign. It takes a list of ``{"results": <TestResults>, ...}``
-    dicts and combines each result's contribution with bitwise OR."""
+    """Unit tests on ``RtlBuddy._exit_code_from_results``, which ORs each result's exit contribution."""
 
     def _exit_code(self, *results):
         rb = RtlBuddy(name="test_exit_code_decoupling")
@@ -160,11 +119,7 @@ class TestExitCodeDecoupledFromVerdict:
         )
 
     def test_unknown_na_is_exit_one(self):
-        """#546: an NA nobody asked for is an unknown outcome, so it fails.
-
-        The issue's reproducer verbatim -- ``is_pass()`` was already false
-        here; the exemption was throwing that away.
-        """
+        """An NA without the early-stop marker is an unknown outcome and exits 1."""
         result = _unknown_na()
         assert result.is_pass() is False
         assert self._exit_code(result) == 1
@@ -174,10 +129,7 @@ class TestExitCodeDecoupledFromVerdict:
 
 
 class TestEarlyStopSurvivesTheResultEnvelope:
-    """#546 through the dispatched path: the head grades a *loaded*
-    envelope, so the early-stop marker has to round-trip
-    ``write_result_json`` / ``load_result_json`` (``runner/result_io.py``)
-    or every dispatched compile-only run would start failing."""
+    """The early-stop marker survives ``write_result_json`` and ``load_result_json`` for dispatched runs."""
 
     def _round_trip(self, tmp_path: Path, results):
         path = write_result_json(
@@ -212,16 +164,14 @@ class TestEarlyStopSurvivesTheResultEnvelope:
         assert self._exit_code(loaded) == 0
 
     def test_unknown_na_envelope_is_exit_one(self, tmp_path: Path):
-        """The observed dispatched failure: the sim job's envelope says NA
-        with no early-stop marker, and the head must fail the run."""
+        """A sim job envelope with NA and no early-stop marker fails the run."""
         loaded = self._round_trip(tmp_path, _unknown_na())["result"]
         assert loaded.results["result"] == "NA"
         assert "early_stop" not in loaded.results
         assert self._exit_code(loaded) == 1
 
     def test_envelope_from_an_older_rtl_buddy_is_exit_one(self, tmp_path: Path):
-        """No marker at all (an envelope written before #546) reads as
-        unknown -- the safe side of an additive field."""
+        """An envelope without the marker reads as unknown and exits 1."""
         path = tmp_path / "old.json"
         path.write_text(
             json.dumps(
@@ -251,11 +201,9 @@ def _events(log_path: Path) -> list[dict]:
 
 
 class _AbortingSim:
-    """A sim whose executable dies without printing a verdict (#546).
+    """A sim whose executable dies without printing a verdict.
 
-    ``returncode`` is what the simulator exited with; ``transcript`` is
-    what it left in ``test.log``, post-processed by the real ``VlogPost``
-    so the NA under test is the one the tool actually produces.
+    ``returncode`` is the simulator's exit status; ``transcript`` is written to ``test.log`` and post-processed by the real ``VlogPost``.
     """
 
     def __init__(self, tmp_path: Path, *, returncode: int, transcript: str):
@@ -276,10 +224,7 @@ class _AbortingSim:
         return self._returncode
 
     def post(self, run_id=None, sim_returncode=None):
-        # Mirrors the contract ``VlogSim.post`` implements: parse the
-        # transcript, then grade an unknown verdict against the exit
-        # status the caller hands over, so the result is final before it
-        # is announced (#574 review).
+        # Mirrors ``VlogSim.post``: parse the transcript, then grade an unknown verdict against the exit status.
         results = VlogPost(name="basic", path=str(self._log)).get_results()
         grade_unknown_sim_exit(
             results.results, sim_returncode, test="basic", run_id=run_id
@@ -307,10 +252,7 @@ def _runner_with(sim, monkeypatch, *, run_id=None):
 
 
 class TestNonzeroSimExitWithoutVerdict:
-    """#546: a simulator that aborted (nonzero exit, no PASS/FAIL banner in
-    the transcript) is a failure, not an outcome to hand-check. A simulator
-    exit code is still not a verdict on its own, so a transcript that did
-    state one keeps it."""
+    """A simulator that aborts (nonzero exit, no PASS/FAIL banner) fails; a transcript that states a verdict keeps it."""
 
     def test_unmarked_abort_is_graded_fail(self, tmp_path: Path, monkeypatch):
         setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
@@ -334,9 +276,7 @@ class TestNonzeroSimExitWithoutVerdict:
         assert rb._exit_code_from_results([{"results": result}]) == 1
 
     def test_signal_death_names_the_signal(self, tmp_path: Path, monkeypatch):
-        """A simulator killed by a signal comes back negative (SIGABRT is
-        -6, which is what an abort looks like), and "exited -6" would
-        misreport it."""
+        """A signal death comes back negative (SIGABRT is -6), and the message names the signal."""
         setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
         sim = _AbortingSim(tmp_path, returncode=-6, transcript="Aborting...\n")
         result = _runner_with(sim, monkeypatch).run()
@@ -360,13 +300,9 @@ class TestNonzeroSimExitWithoutVerdict:
     def test_sim_stop_with_a_nonzero_exit_is_a_stage_failure(
         self, tmp_path: Path, monkeypatch
     ):
-        """Devin review on rtl_buddy#574: `-E sim` skips post-processing,
-        so a crashed simulator came back as a successful early stop.
+        """`-E sim` with a nonzero simulator exit is a stage failure.
 
-        Codex round 3: it is the *stage* that failed. Nothing read the
-        transcript here, so the row must not claim a verdict is missing —
-        `execute()` itself writes a FAIL banner and returns 1 when a
-        replayed seed is missing.
+        `-E sim` skips post-processing and nothing reads the transcript, so the row must not claim a verdict is missing.
         """
         log_path = tmp_path / "rtl_buddy.log"
         setup_logging(color=False, machine=True, log_path=log_path)
@@ -390,8 +326,7 @@ class TestNonzeroSimExitWithoutVerdict:
         assert len(stage) == 1
         assert stage[0]["returncode"] == 1
         assert stage[0]["stage"] == "sim"
-        # The transcript is never read on this path, so its own verdict is
-        # neither reported nor contradicted.
+        # The transcript is never read here, so its verdict is neither reported nor contradicted.
         assert "postproc.completed" not in [e.get("event") for e in events]
 
     def test_sim_stop_with_a_nonzero_exit_fails_each_run_of_a_multi_run(
@@ -431,10 +366,7 @@ class TestNonzeroSimExitWithoutVerdict:
         assert result.results["result"] == "PASS"
 
     def test_clean_exit_without_markers_stays_na(self, tmp_path: Path, monkeypatch):
-        """A simulator that exited 0 having said nothing is still unknown --
-        NA, reviewed by hand -- and re-grading it FAIL would be a new
-        verdict rule rather than the #546 fix. It fails the run either way
-        now, through the exit-code rule."""
+        """A simulator that exits 0 with no markers stays NA and fails the run through the exit-code rule."""
         setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
         sim = _AbortingSim(tmp_path, returncode=0, transcript="simulation done\n")
         result = _runner_with(sim, monkeypatch).run()
@@ -450,8 +382,7 @@ class TestNonzeroSimExitWithoutVerdict:
     def test_compile_only_stop_is_untouched_by_a_nonzero_exit(
         self, tmp_path: Path, monkeypatch
     ):
-        """The early stop returns before the simulation, so it keeps its
-        intentional NA and its exit 0."""
+        """A compile-only stop returns before simulation, so it keeps NA and exit 0."""
         setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
         sim = _AbortingSim(tmp_path, returncode=1, transcript="Aborting...\n")
         runner = _runner_with(sim, monkeypatch)
@@ -464,16 +395,13 @@ class TestNonzeroSimExitWithoutVerdict:
 
 
 class TestGradeUnknownSimExit:
-    """The one implementation of the rule, shared by ``VlogSim.post`` and
-    the ``-E sim`` stop. It reports whether it re-graded, so a caller can
-    tell a graded row from an untouched one."""
+    """The rule shared by ``VlogSim.post`` and the ``-E sim`` stop; it reports whether it re-graded."""
 
     def test_reports_whether_it_regraded(self):
         unknown = {"result": "NA", "desc": "test result unknown"}
         assert grade_unknown_sim_exit(unknown, 1, test="basic") is True
         assert unknown["result"] == "FAIL"
-        # Idempotent: the row is no longer unknown, so a second pass is a
-        # no-op rather than a desc that names the exit code twice.
+        # A second pass is a no-op, so the desc does not name the exit code twice.
         assert grade_unknown_sim_exit(unknown, 1, test="basic") is False
         assert unknown["desc"] == (
             "Sim exited 1 with no PASS/FAIL verdict in the transcript"
@@ -487,15 +415,10 @@ class TestGradeUnknownSimExit:
 
 
 class TestPostprocCompletedCarriesTheFinalVerdict:
-    """#574 review: ``postproc.completed`` is the authoritative record of a
-    run's verdict for JSONL consumers (``docs/agents.md``), so the
-    re-grading has to happen inside ``VlogSim.post`` — before that event
-    is emitted -- rather than afterwards in the runner. Otherwise the log
-    says ``NA`` while the envelope and the exit code say ``FAIL``."""
+    """``postproc.completed`` carries the final verdict, so re-grading happens inside ``VlogSim.post`` before the event."""
 
     def _sim(self, tmp_path: Path, transcript: str) -> VlogSim:
-        """A ``VlogSim`` reduced to what ``post()`` reads: the real method
-        under test, with the filesystem and config surface stubbed."""
+        """A ``VlogSim`` reduced to what ``post()`` reads, with filesystem and config stubbed."""
         log = tmp_path / "test.log"
         log.write_text(transcript)
         err = tmp_path / "test.err"
@@ -558,8 +481,7 @@ class TestPostprocCompletedCarriesTheFinalVerdict:
         assert completed[0]["result"] == "PASS"
 
     def test_no_returncode_offered_grades_nothing(self, tmp_path: Path):
-        """Every other caller of ``post()`` keeps the ``None`` default and
-        the behaviour it always had."""
+        """Callers that keep the ``None`` default get no re-grading."""
         log_path = tmp_path / "rtl_buddy.log"
         setup_logging(color=False, machine=True, log_path=log_path)
         results = self._sim(tmp_path, "Aborting...\n").post()
@@ -572,8 +494,7 @@ class TestPostprocCompletedCarriesTheFinalVerdict:
 
 
 def test_unknown_verdict_event_has_a_human_message():
-    """`sim.unknown_verdict` is logged at ERROR, so it needs a dedicated
-    console line rather than the generic fallback (#546)."""
+    """`sim.unknown_verdict` is logged at ERROR and needs a dedicated console line."""
     from rtl_buddy.logging_utils import _human_message
 
     exited = _human_message(
@@ -587,8 +508,7 @@ def test_unknown_verdict_event_has_a_human_message():
 
 
 def test_stage_failed_event_has_a_human_message():
-    """`sim.stage_failed` is the `-E sim` half of the pair and is logged at
-    ERROR too, so it needs its own console line (#574 review)."""
+    """`sim.stage_failed` is logged at ERROR and needs its own console line."""
     from rtl_buddy.logging_utils import _human_message
 
     exited = _human_message(
@@ -596,7 +516,7 @@ def test_stage_failed_event_has_a_human_message():
         {"test": "smoke", "run_id": None, "stage": "sim", "returncode": 1},
     )
     assert "smoke" in exited and "exited 1" in exited and "FAIL" in exited
-    # It must not claim the transcript has no verdict: nothing read it.
+    # The line must not claim the transcript has no verdict, since nothing read it.
     assert "no PASS/FAIL" not in exited
     signalled = _human_message(
         "sim.stage_failed", {"test": "smoke", "stage": "sim", "returncode": -6}

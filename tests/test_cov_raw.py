@@ -1,9 +1,6 @@
-"""
-Unit tests for the raw Verilator coverage database reader (#399).
+"""Unit tests for the raw Verilator coverage database reader.
 
-Toggle and expression detail exists only in `coverage.dat`:
-`verilator_coverage --write-info` folds both into anonymous `DA:` records.
-Record shapes match Verilator 5.049 output.
+Toggle and expression detail exists only in `coverage.dat`; `verilator_coverage --write-info` folds both into anonymous `DA:` records. Record shapes match Verilator 5.049.
 """
 
 from rtl_buddy.cov.raw import (
@@ -149,10 +146,10 @@ def test_line_points_key_on_the_line_alone_others_on_the_full_identity():
 
 
 def test_source_point_key_drops_only_the_elaborated_module():
-    """The #637 identity: `(file, type, line, point description)`, with the
-    column kept because `n` is a column in the *source* and so is the same
-    number in every elaboration of it — dropping it would fold one line's
-    toggle bits together."""
+    """The source point key is `(file, type, line, point description)`.
+
+    The column stays in the key because it is a source column, the same in every elaboration; dropping it would fold one line's toggle bits together.
+    """
     line_record = {"metric": LINE, "line": 7, "column": 1, "name": None, "module": "a"}
     toggle_a = {
         "metric": TOGGLE,
@@ -165,7 +162,7 @@ def test_source_point_key_drops_only_the_elaborated_module():
     other_bit = dict(toggle_a, column=9, name="q[1]")
 
     assert source_point_key(line_record) == point_key(line_record) == (7,)
-    # Two elaborations of one source point, one identity.
+    # Two elaborations of one source point share an identity.
     assert source_point_key(toggle_a) == source_point_key(toggle_b) == (7, 1, "q[0]")
     assert point_key(toggle_a) != point_key(toggle_b)
     # Two bits on one line stay two points.

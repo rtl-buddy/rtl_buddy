@@ -1,10 +1,6 @@
-"""`compile-time` tokens get variable expansion and a project-root spelling (#659).
+"""`compile-time` tokens get variable expansion and a project-root spelling.
 
-The compile runs from the test's artefact directory, which `--run-tag` moves
-one level deeper, so a relative path in a builder mode's `compile-time` named
-a different file per layout. These tests pin the expansion and that the
-project-root variable is rtl_buddy's own, not the caller's; the compile line
-and shared-build key are covered in test_shared_build.py.
+Tests pin the expansion and that the project-root variable is rtl_buddy's own, not the caller's. The compile line and shared-build key are covered in test_shared_build.py.
 """
 
 from rtl_buddy.config.rtl import expand_compile_opts
@@ -39,7 +35,7 @@ def test_environment_variables_and_home_expand(monkeypatch):
 
 
 def test_an_unset_variable_is_left_as_written(monkeypatch):
-    # POSIX expandvars leaves it, so a compiler that expands it still can.
+    # POSIX expandvars leaves an unset variable in place, so a compiler that expands it still can.
     monkeypatch.delenv("RB_TEST_UNSET_VAR", raising=False)
     assert expand_compile_opts(["${RB_TEST_UNSET_VAR}/x"], "/proj") == [
         "${RB_TEST_UNSET_VAR}/x"
