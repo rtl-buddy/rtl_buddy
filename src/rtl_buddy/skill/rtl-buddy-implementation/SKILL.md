@@ -14,93 +14,98 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
 ## Results before logs
 
 - Parse the machine payload first; use named artefact paths and logs for detail.
-- Keep named-run YAML and regression manifests distinct. Confirm with
-  `rb <flow> --help` rather than copying flags between flows.
-- A tool completing does not imply the design met its target. Report timing,
+- Keep named-run YAML and regression manifests distinct. Confirm flags with
+  `rb <flow> --help` rather than copying them between flows.
+- A tool completing does not mean the design met its target. Report timing,
   area, power, routing, and guardrail fields separately from command execution.
 - `synth`, `pnr`, `power`, `fpga`, `synth-regression`, `power-regression`, and
   `fpga-regression` exit 0 when every result counts as successful, 1 for any
   `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
   `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful. XPLR verbs exit 0
   on success and 2 on fatal errors.
-- `pnr-export` runs the KLayout export over a saved P&R result and starts no
-  P&R and no synthesis. There the export is the whole job, so any export that
-  was not delivered is a `FAIL` — unlike `rb pnr`, where a failed `preview`
-  export leaves the P&R verdict standing. A layout published with cells that
-  have no GDS stays a qualified pass in `preview` and is a `FAIL` in `strict`.
-  Read `gds_status` and `gds_missing_cells` before reporting a layout, and
-  `export_provenance` for the record of what was read.
-- OpenROAD runs single-threaded unless a `pnr.yaml`, `power.yaml` or
-  `synth.yaml` entry sets `threads:` (a count, or `auto` for the allocation).
-  A count above a Slurm/affinity allocation is clamped with
-  `openroad.threads_capped`; quote `openroad_threads.effective`, not the
+
+## P&R traps
+
+- **OpenROAD threads.** OpenROAD runs single-threaded unless a `pnr.yaml`,
+  `power.yaml` or `synth.yaml` entry sets `threads:` (a count, or `auto` for the
+  allocation). A count above the Slurm or affinity allocation is clamped with
+  `openroad.threads_capped`. Quote `openroad_threads.effective`, not the
   configured value.
-- A long or failing P&R can set `checkpoints: true` in `pnr.yaml`. A `FAIL` row
-  then carries `checkpoint_dir`, `checkpoint_stages` and `last_step`, and
-  `checkpoints/latest/progress.jsonl` shows the step a running or killed flow
-  is in. A checkpoint is never a routed or final result: report it as the
-  stage it names, and `pnr-export --checkpoint <stage>` labels its layout
-  `checkpoint_final: false`.
-- Hierarchical P&R: a `harden: true` run publishes a block's abstract, and a
-  top names it under `blocks:` (in `pnr.yaml` and its `synth.yaml` entry).
-  `rb pnr` with no run name runs blocks before the runs that consume them;
+- **Checkpoints.** For a long or failing P&R, set `checkpoints: true` in
+  `pnr.yaml`. A `FAIL` row then carries `checkpoint_dir`, `checkpoint_stages`
+  and `last_step`, and `checkpoints/latest/progress.jsonl` shows the step a
+  running or killed flow is in. A checkpoint is never a routed or final result:
+  report it as the stage it names. `pnr-export --checkpoint <stage>` labels its
+  layout `checkpoint_final: false`.
+- **`pnr-export`.** It runs the KLayout export over a saved P&R result and
+  starts no P&R or synthesis. The export is the whole job, so any export not
+  delivered is a `FAIL`, unlike `rb pnr`, where a failed `preview` export leaves
+  the P&R verdict standing. A layout published with cells that have no GDS is a
+  qualified pass in `preview` and a `FAIL` in `strict`. Read `gds_status` and
+  `gds_missing_cells` before reporting a layout, and `export_provenance` for
+  what was read.
+- **Block boundary planning.** Set `pin-constraints` (a Tcl path relative to
+  `pnr.yaml`) to run pin-region commands just before `place_pins`. Do not put
+  them in SDC, which is read before the die exists. `floorplan.macro-anchor`
+  keeps macros off a pin edge (the packer starts in that corner).
+  `floorplan.blockages` adds hard, soft or partial placement blockages, and
+  macros avoid the hard ones. `floorplan.macro-placement: rtl-mp` uses
+  OpenROAD's RTL-MP instead of the packer and excludes `macro-anchor`.
+
+## Hierarchical P&R
+
+- A `harden: true` run publishes a block's abstract. A top names it under
+  `blocks:` in `pnr.yaml` and in its `synth.yaml` entry.
+- `rb pnr` with no run name runs blocks before the runs that consume them.
   `--synth` also runs each upstream synthesis in that order, so a clean tree
-  builds in one command, and `-j N` hardens independent blocks side by side.
-  A run not attempted because a block failed is `FAIL` with
-  `fail_stage: blocked` and `blocked_by`: report the block, not the top. A
-  stale abstract fails naming the block and what changed; re-harden it rather
-  than reaching for `--accept-stale`. A block reports 0 W in `rb power` and is
-  listed in `unpowered_cells`; that total leaves out the blocks' own power.
+  builds in one command. `-j N` hardens independent blocks side by side.
+- A run not attempted because a block failed is `FAIL` with
+  `fail_stage: blocked` and `blocked_by`. Report the block, not the top.
+- A stale abstract fails naming the block and what changed. Re-harden the block
+  rather than reaching for `--accept-stale`.
+- A block reports 0 W in `rb power` and is listed in `unpowered_cells`, so the
+  total leaves out the blocks' own power.
 
 ## Synthesis correctness gates
 
-For block boundary planning, set `pnr.yaml`'s optional `pin-constraints` Tcl
-path relative to that YAML. It runs just before `place_pins`, which follows
-macro placement and the PDN. Do not place pin-region commands in SDC, which is
-read before the die exists. The default without the key remains unconstrained
-placement. Keep macros off a pin edge with `floorplan.macro-anchor` (the packer
-starts in that corner); `floorplan.blockages` adds hard/soft/partial placement
-blockages, and macros avoid the hard ones. `floorplan.macro-placement: rtl-mp`
-places macros with OpenROAD's RTL-MP instead of the packer (no anchor then).
-
 `rb synth` (both backends) gates three silent-corruption shapes before
-reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
-shares one storage location per formal across call sites; the gate names each
-`file:line: function <name>`, following `` `include ``s and honouring
-`` `ifdef ``. Fix the RTL by adding `automatic` — do not reach for
-`static-functions: allow`. This gate is new and defaults to `error` under
-`frontend: slang`, so a previously passing run can now fail; `warn` stages the
-migration. Yosys `multiple conflicting drivers` warnings fail the run under
-`conflicting-drivers: error` (a tristate bus is exempt); they mean a net folded
-to `x` and may have taken registers with it, so never report the area or gate
-count from such a run. `static_function_findings` in a passing result means the
-gate ran in `warn` mode and the netlist may still be wrong. A failed gate also
-deletes the netlist, so `rb pnr` / `rb power` cannot read it.
+reporting PPA.
 
-A `synth.unresolved_interface` warning means `read_verilog` could not bind a
-SystemVerilog interface instance to a child's interface port and fell back to
-a per-child `<child>$interfaces$<interface>` module. The interface's members
-still connect, but the instance's own port connections are dropped — an
-interface carrying `clk` or `rst_n` leaves them undriven and the subtree loses
-its clock. Check the netlist before quoting PPA from such a run, and prefer
-`frontend: slang`, which binds the instance. `unresolved-interfaces: error`
-makes it a failed run; the default is `warn` because the fallback is correct
-when the interface has no ports of its own, or none the subtree reads.
+- **Static-lifetime subroutines.** A `function` or `task` without an explicit
+  `automatic` lifetime shares one storage location per formal across call
+  sites. The gate names each `file:line: function <name>`. Fix the RTL by adding
+  `automatic`; do not use `static-functions: allow`. The gate defaults to
+  `error` under `frontend: slang`, so a run that passed before can fail. `warn`
+  stages the migration, and `static_function_findings` in a passing result means
+  the gate ran in `warn` mode and the netlist may still be wrong.
+- **Conflicting drivers.** Yosys `multiple conflicting drivers` warnings fail
+  the run under `conflicting-drivers: error` (a tristate bus is exempt). They
+  mean a net folded to `x` and may have taken registers with it. Never report
+  area or gate count from such a run.
+- **Unresolved interfaces.** A `synth.unresolved_interface` warning means
+  `read_verilog` could not bind an interface instance to a child's interface
+  port. The instance's own port connections are dropped, so an interface
+  carrying `clk` or `rst_n` leaves them undriven and the subtree loses its
+  clock. Check the netlist before quoting PPA, and prefer `frontend: slang`.
+  `unresolved-interfaces: error` fails the run; the default is `warn` because
+  the fallback is correct when the interface has no ports the subtree reads.
 
-A `synth.filelist_defines_overridden` warning means the synth.yaml entry's
-`defines:` set a macro the model filelist also defines, with a different
-value — synthesis elaborates with the synth.yaml value, simulation with the
-filelist's. Drop one of the two if the flows are meant to agree.
+A failed gate deletes the netlist, so `rb pnr` and `rb power` cannot read it.
+
+A `synth.filelist_defines_overridden` warning means the `synth.yaml` entry's
+`defines:` set a macro that the model filelist also defines with a different
+value. Synthesis uses the `synth.yaml` value and simulation uses the
+filelist's. Drop one of the two if the flows should agree.
 
 ## FPGA timing closure
 
 `timing_met: false` is a completed result, not necessarily a tool crash. Start
 with the worst failing path and `wns_ns`, form one hypothesis, make one focused
-RTL/constraint change, rerun, and compare the same metrics. Do not paper over a
-CDC or quasi-static path by relaxing the clock.
+RTL or constraint change, rerun, and compare the same metrics. Do not paper over
+a CDC or quasi-static path by relaxing the clock.
 
 Use `rb --machine docs show concepts/fpga` for the closure decision tree and
-`concepts/power` for completeness/coverage semantics.
+`concepts/power` for completeness and coverage semantics.
 
 ## XPLR
 
