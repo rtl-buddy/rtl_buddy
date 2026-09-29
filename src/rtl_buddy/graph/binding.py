@@ -2,63 +2,12 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Post-merge binding stage for the design knowledge graph (#378).
+"""Post-merge binding stage: ties cocotb tests and DPI symbols to the design hierarchy.
 
-The design tier knows the DUT hierarchy. The config tier knows which
-test runs on which testbench. Neither knows that
-``verif/demo_tiny_alu_cocotb/test_alu_random.py`` pokes
-``dut.a`` — and that is exactly the boundary the highest-value agent
-queries cross ("which tests drive this port?", "which golden model does
-this test check against?").
-
-This module closes it. It runs **after** the tiers are merged, because
-it needs both halves at once: the config tier's ``test`` /
-``testbench`` nodes tell it which Python module belongs to which
-toplevel, and the design tier's ``port:<top>.<name>`` nodes are what a
-``dut.<name>`` access has to resolve against.
-
-Four kinds of edge come out of it:
-
-``binds_to``   test -> Python module, and Python module -> DUT
-               ``module:`` node. Both straight out of ``tests.yaml``
-               (``cocotb: {module: M}`` and ``toplevel:``), so both
-               EXTRACTED.
-``imports``    Python module -> Python module, from a real ``ast``
-               parse of the import statements. This is what makes a
-               helper such as ``_alu_common.py`` reachable from the
-               test that uses it.
-``drives``     Python module -> ``port:``, from a ``dut.<name>``
-               attribute scan. EXTRACTED when ``<name>`` is a port of
-               the toplevel, INFERRED when it is not (a bus wrapper, an
-               internal signal, or a design tier that was not exported
-               so no port is known).
-``checks_against``  test -> ``golden_model``, when the cocotb module
-               imports a golden model — directly or through a helper.
-``implemented_by``  ``dpi_function`` -> the C/C++/Python source under
-               ``verif/`` or ``spec/`` that defines its C symbol
-               (rtl-buddy-sch 127). EXTRACTED only for a *definition
-               site* — a header's prototype and a caller both mention
-               the symbol, and neither implements it — so a mention
-               is INFERRED with ``resolved: false``, on the same
-               evidence ladder ``drives`` uses. This is the DPI leg of
-               the golden-model loop, alongside the cocotb
-               ``checks_against`` path. Graphs from extractors that
-               predate ``dpi_function`` nodes simply have none, and
-               the pass is a silent no-op — no version coupling.
-
-Two properties are load-bearing:
-
-* **It works without the extractor.** When one is installed its Python
-  nodes are reused (matched on the node's repo-relative ``file``), so
-  the two never emit competing ids for one file. When it is absent this
-  module synthesizes minimal ``py:<repo-rel path>`` nodes, which is what
-  keeps ``rb graph build`` useful on a machine that has never heard of
-  the extractor.
-* **Reach is transitive but honest.** ``test_alu_random.py`` never says
-  ``dut.a``; ``_alu_common.py`` does, and the test imports it. The
-  ``drives`` edge is emitted from *both* Python modules, but the
-  transitive one carries ``via`` naming the file the access really came
-  from, so a consumer can tell first-hand evidence from inherited.
+It runs after the tiers are merged because it needs the config tier's `test`/`testbench`
+nodes and the design tier's `port:<top>.<name>` nodes together. It works without the
+extractor: it reuses the extractor's Python nodes when present (matched on the
+repo-relative `file`) and otherwise synthesizes `py:<repo-rel path>` nodes.
 """
 
 from __future__ import annotations
@@ -74,27 +23,20 @@ from ..logging_utils import log_event
 
 logger = logging.getLogger(__name__)
 
-#: ``generator.tier`` / node ``tier`` stamped on everything this stage
-#: emits. It is the same tier the extractor contributes to — the binding tier
-#: has two producers, an optional external one and this one.
+# `tier` stamped on everything this stage emits; the extractor contributes to the same
+# tier.
 BINDING_TIER = "binding"
 
-#: Node type and id prefix for a synthesized Python module node. Used
-#: only when no existing node (the extractor's, typically) already claims the
-#: file; see :func:`_existing_python_nodes`.
+# Synthesized Python module node; used only when no other tier's node claims the file.
 PYTHON_MODULE_TYPE = "python_module"
 PY_NODE_PREFIX = "py:"
 
-#: Node type + id prefix synthesized for a non-Python source file a DPI
-#: symbol resolves to. Same claim-by-``file`` hand-off rule as
-#: :data:`PYTHON_MODULE_TYPE`.
+# Synthesized node for a non-Python source file a DPI symbol resolves to; same
+# claim-by-`file` rule.
 SOURCE_FILE_TYPE = "source_file"
 SRC_NODE_PREFIX = "src:"
 
-#: The design tier's node type for one ``import "DPI-C"`` /
-#: ``export "DPI-C"`` item (rtl-buddy-sch 127). Emitted by
-#: rtl-buddy-sch newer than v0.5.0; absent from older graphs, which is
-#: the norm this stage degrades gracefully to.
+# Design-tier node type for one `import "DPI-C"` / `export "DPI-C"` item.
 DPI_FUNCTION_TYPE = "dpi_function"
 
 BINDS_TO = "binds_to"
@@ -109,25 +51,22 @@ INFERRED = "INFERRED"
 BUILT = "built"
 SKIPPED = "skipped"
 
-#: The cocotb DUT handle is ``dut`` by overwhelming convention, and it is
-#: also the name helpers take it under (``async def drive(dut, ...)``).
-#: A ``@cocotb.test()`` function's first parameter is added to this set
-#: per file, so a suite that calls it ``alu`` still binds.
+# Default DUT handle name; a `@cocotb.test()` function's first parameter is added per
+# file.
 DEFAULT_HANDLE = "dut"
 
-#: Attributes of a cocotb handle that are the *handle API*, not a signal.
-#: Everything starting with ``_`` is dropped too.
+# Handle API attributes that are not signals. Names starting with `_` are dropped too.
 _HANDLE_API_ATTRS = frozenset(
     {"value", "setimmediatevalue", "get", "keys", "items", "log", "range"}
 )
 
-#: Guards against an import cycle or a pathological helper chain.
+# Bounds import cycles and long helper chains.
 _MAX_IMPORT_DEPTH = 8
 
-#: Largest Python file read during the scan.
+# Largest Python file read during the scan, in bytes.
 _MAX_SCAN_BYTES = 1 << 20
 
-#: Directories never descended into when collecting stage inputs.
+# Directories skipped when collecting stage inputs.
 _SKIP_DIRS = frozenset(
     {".git", "__pycache__", "artefacts", "obj_dir", "node_modules", "venv", ".venv"}
 )
@@ -135,10 +74,7 @@ _SKIP_DIRS = frozenset(
 _DUT_ACCESS_RE = re.compile(r"\bdut\.([A-Za-z_]\w*)")
 _IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][\w.]*)", re.MULTILINE)
 
-#: Non-Python suffixes the DPI symbol scan reads. C/C++ because that is
-#: what DPI links against; Python is already collected for the cocotb
-#: pass and is scanned too (a ctypes/cffi-backed model defines the
-#: symbol's Python side).
+# Non-Python suffixes read by the DPI symbol scan.
 _C_SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp")
 
 
@@ -151,12 +87,9 @@ _C_SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp")
 class PyScan:
     """What one Python file contributes to the binding stage.
 
-    Attributes:
-      path (Path): Absolute path scanned.
-      accesses (dict[str, int]): ``dut.<name>`` -> first line it appears on.
-      imports (list[str]): Module names imported, in source order.
-      parsed (bool): False when the file did not parse and the regex
-        fallback was used instead.
+    `accesses` maps `dut.<name>` to the first line it appears on. `imports` lists
+    imported module names in source order. `parsed` is False when the regex fallback was
+    used.
     """
 
     path: Path
@@ -166,7 +99,7 @@ class PyScan:
 
 
 def _decorator_name(node: ast.expr) -> str:
-    """Dotted name of a decorator expression (``cocotb.test()`` -> ``cocotb.test``)."""
+    """Return the dotted name of a decorator expression (`cocotb.test()` -> `cocotb.test`)."""
     if isinstance(node, ast.Call):
         node = node.func
     parts: list[str] = []
@@ -179,11 +112,9 @@ def _decorator_name(node: ast.expr) -> str:
 
 
 def _handle_names(tree: ast.AST) -> set[str]:
-    """DUT-handle parameter names in a module.
+    """Return the DUT-handle names in a module.
 
-    ``dut`` always counts. On top of that, the first parameter of every
-    ``@cocotb.test()`` function counts, because that is the DUT handle
-    whatever the author called it.
+    `dut`, plus the first parameter of every `@cocotb.test()` function.
     """
     handles = {DEFAULT_HANDLE}
     for node in ast.walk(tree):
@@ -205,12 +136,8 @@ def _is_signal_attr(name: str) -> bool:
 def scan_python_source(path: str | os.PathLike, text: str | None = None) -> PyScan:
     """Scan one Python file for DUT accesses and imports.
 
-    Uses :mod:`ast`, so ``dut.a`` is distinguished from the string
-    ``"dut.a"`` and from ``self.dut.a``, and the reported line is the
-    real one. A file that does not parse (a syntax error, a Python
-    version this interpreter predates) falls back to a regex sweep
-    rather than contributing nothing — the stage is best-effort by
-    charter.
+    Uses `ast`, so `dut.a` is told apart from the string `"dut.a"` and `self.dut.a`. A
+    file that does not parse falls back to a regex sweep.
     """
     target = Path(path)
     scan = PyScan(path=target)
@@ -240,9 +167,7 @@ def scan_python_source(path: str | os.PathLike, text: str | None = None) -> PySc
             for alias in node.names:
                 scan.imports.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            # Relative imports need a package context a cocotb suite
-            # does not have (cocotb puts the suite dir on sys.path and
-            # imports the module flat), so only absolute ones resolve.
+            # Only absolute imports resolve; cocotb imports the suite's modules flat.
             if not node.level and node.module:
                 scan.imports.append(node.module)
     scan.imports = list(dict.fromkeys(scan.imports))
@@ -261,14 +186,9 @@ def _read_text(path: Path) -> str | None:
 def collect_sources(
     verif_dir: str | os.PathLike | None, spec_dir: str | os.PathLike | None
 ) -> list[str]:
-    """Absolute paths of every source file the stage may read.
+    """Return absolute paths of every Python and C/C++ source the stage may read.
 
-    Python for the cocotb pass, plus C/C++ for the DPI symbol scan
-    (rtl-buddy-sch 127). A superset of what any single build actually
-    parses (only modules reachable from a ``cocotb:`` entry are), and
-    deliberately so: it is the fingerprint input list, and a file
-    becoming reachable must invalidate the cache just as much as an
-    edit to one already read.
+    A superset of what one build parses, because it is the fingerprint input list.
     """
     suffixes = (".py",) + _C_SOURCE_SUFFIXES
     found: list[str] = []
@@ -298,35 +218,31 @@ def _rel(project_root: Path, path: str | os.PathLike) -> str:
 
 @dataclass
 class _Index:
-    """Everything the stage needs to look up in the merged graph."""
+    """Lookups over the merged graph."""
 
     nodes: dict[str, dict] = dc_field(default_factory=dict)
-    #: ``module name -> {port names}``, from the design tier's ``port:`` nodes.
+    # Module name -> port names, from `port:` nodes.
     ports: dict[str, set[str]] = dc_field(default_factory=dict)
-    #: Toplevel of each testbench node id.
+    # Testbench node id -> toplevel.
     toplevel: dict[str, str] = dc_field(default_factory=dict)
-    #: ``test node id -> testbench node id``, from ``runs_on``.
+    # Test node id -> testbench node id, from `runs_on` links.
     runs_on: dict[str, str] = dc_field(default_factory=dict)
-    #: ``golden model stem -> node id``.
+    # Golden model stem -> node id.
     golden: dict[str, str] = dc_field(default_factory=dict)
-    #: ``repo-relative .py path -> existing node id`` (the extractor's, when present).
+    # Repo-relative `.py` path -> existing node id (the extractor's).
     python_nodes: dict[str, str] = dc_field(default_factory=dict)
-    #: ``repo-relative path -> golden_model node id`` — the preferred
-    #: ``implemented_by`` target when a DPI symbol resolves to a file
-    #: the config tier already models (that IS the golden-model loop).
+    # Repo-relative path -> `golden_model` node id; preferred `implemented_by` target.
     golden_files: dict[str, str] = dc_field(default_factory=dict)
-    #: ``dpi_function`` nodes from the design tier, in id order.
+    # `dpi_function` nodes from the design tier, in id order.
     dpi: list[dict] = dc_field(default_factory=list)
 
 
 def _existing_python_nodes(nodes: list[dict]) -> dict[str, str]:
-    """Node ids already claiming a ``.py`` file, keyed by that file.
+    """Return node ids already claiming a `.py` file, keyed by that file.
 
-    This is the extractor hand-off. The extractor names its Python
-    nodes however it likes; what both tools agree on is the
-    repo-relative path in ``file``, so that is the key. ``golden_model`` and ``spec_doc``
-    nodes are excluded — they are config-tier nodes about a file, not a
-    node *of* the Python module.
+    Other tiers name Python nodes freely, so the repo-relative `file` is the shared key.
+    `golden_model` and `spec_doc` nodes describe a file rather than being the module,
+    and are excluded.
     """
     found: dict[str, str] = {}
     for node in nodes:
@@ -409,15 +325,10 @@ class _Builder:
         confidence: str = EXTRACTED,
         **attrs,
     ) -> bool:
-        """Add a link, first sighting winning.
+        """Add a link unless `(source, target, type)` already exists; return True when new.
 
-        De-duplication is on ``(source, target, type)``, not on the whole
-        link the way :func:`rtl_buddy.graph.merge.merge_graphs` does it.
-        The difference matters here: a cocotb module that imports a
-        golden model *and* imports a helper that imports the same golden
-        model has one relationship, not two, and the walk is
-        breadth-first so the first sighting is the most direct evidence.
-        Returns True when the link was new.
+        This dedups more coarsely than `merge_graphs`, and the walk is breadth-first, so
+        the first sighting is the most direct evidence.
         """
         key = (source, target, link_type)
         if key in self.links:
@@ -443,25 +354,20 @@ class BindingStage:
     """Result of one binding pass.
 
     Attributes:
-      graph (dict): Node-link payload holding *only* this stage's nodes
-        and links, ready to be merged into the graph it was computed
-        from (and written to ``artefacts/graph/bind/graph.json``).
-      status (str): ``built`` or ``skipped``.
-      detail (str | None): Why, when ``skipped``.
-      tests (int): cocotb tests that got a ``binds_to`` edge.
-      modules (int): Python module nodes touched.
-      reused_ids (int): Of those, how many reused an id another tier
-        (the extractor) had already given the file.
-      drives (int): ``drives`` edges emitted.
-      extracted (int): Of those, how many matched a port exactly.
-      inferred (int): The rest.
-      checks (int): ``checks_against`` edges emitted.
-      dpi_functions (int): ``dpi_function`` import nodes the DPI pass
-        looked for an implementation of.
-      dpi_implemented (int): ``implemented_by`` edges emitted.
-      unresolved (list[dict]): cocotb modules whose file was not found,
-        ``dut.<name>`` accesses that matched no port, and DPI symbols
-        no source defined.
+      graph: Node-link payload holding only this stage's nodes and links.
+      status: `built` or `skipped`.
+      detail: Why, when `skipped`.
+      tests: cocotb tests that got a `binds_to` edge.
+      modules: Python module nodes touched.
+      reused_ids: Modules that reused an id another tier gave the file.
+      drives: `drives` edges emitted.
+      extracted: `drives` edges that matched a port exactly.
+      inferred: The remaining `drives` edges.
+      checks: `checks_against` edges emitted.
+      dpi_functions: `dpi_function` imports searched for an implementation.
+      dpi_implemented: `implemented_by` edges emitted.
+    unresolved: Missing cocotb module files, `dut.<name>` accesses that matched no port,
+    and DPI symbols no source defines.
     """
 
     graph: dict
@@ -504,8 +410,7 @@ class BindingStage:
         if self.detail:
             block["detail"] = self.detail
         if self.unresolved:
-            # Bounded: a suite with a typo'd handle must not blow up the
-            # sidecar.
+            # Bounded so a suite with a typo'd handle cannot bloat the sidecar.
             block["unresolved"] = self.unresolved[:50]
         return block
 
@@ -530,12 +435,10 @@ def _empty_graph(generator: dict) -> dict:
 
 
 def resolve_module_file(name: str, search_dirs: list[Path]) -> Path | None:
-    """File backing the import ``name``, searched the way cocotb sees it.
+    """Return the file backing the import `name`, or None.
 
-    ``rb test`` puts the suite directory on ``PYTHONPATH`` and hands
-    cocotb a flat module name, so the suite dir is the first search root
-    and the importing file's own directory the second. Both the module
-    (``x.py``) and package (``x/__init__.py``) forms resolve.
+    Searches the way cocotb sees it: `search_dirs` in order, for `x.py` then
+    `x/__init__.py`.
     """
     parts = name.split(".")
     for base in search_dirs:
@@ -561,30 +464,35 @@ def bind_python(
     verif_dir: str | os.PathLike | None = None,
     spec_dir: str | os.PathLike | None = None,
 ) -> BindingStage:
-    """Bind cocotb Python and DPI C symbols to the hierarchy in ``merged``.
+    """Bind cocotb Python and DPI C symbols to the hierarchy in `merged`.
+
+    Edges emitted:
+
+    - `binds_to`: test -> Python module, and Python module -> DUT `module:` node. Both
+      come from `tests.yaml` (`cocotb: {module: M}`, `toplevel:`) and are EXTRACTED.
+    - `imports`: Python module -> Python module, from an `ast` parse of the import
+      statements.
+    - `drives`: Python module -> `port:`, from a `dut.<name>` attribute scan. EXTRACTED
+      when `<name>` is a port of the toplevel, INFERRED otherwise. A helper module's
+      edge is repeated on the importing module with `via` naming the helper file, so
+      first-hand and inherited evidence stay distinguishable.
+    - `checks_against`: test -> `golden_model`, when the cocotb module imports one
+      directly or through a helper.
+    - `implemented_by`: `dpi_function` -> the source file defining its C symbol.
+      EXTRACTED for a definition site, INFERRED with `resolved: false` for a mention.
+      Graphs without `dpi_function` nodes skip this pass.
 
     Args:
-      merged: The merged graph, *after* the design and config tiers are
-        unioned. Read-only — the stage's contribution comes back in
-        :attr:`BindingStage.graph` for the caller to merge in, so the
-        pass stays a pure function of its input.
-      project_root: Directory holding ``root_config.yaml``. Every path in
-        a node id is relative to it.
-      generator: ``graph.generator`` block for the emitted graph.
-      verif_dir / spec_dir: Roots the DPI symbol scan reads C/C++/Python
-        sources from. Default to ``<project_root>/verif`` and
-        ``<project_root>/spec``.
+    merged: The merged graph after the design and config tiers are unioned. Not
+    modified; the contribution comes back in `BindingStage.graph`.
+    project_root: Directory holding `root_config.yaml`; node-id paths are relative to
+    it.
+      generator: `graph.generator` block for the emitted graph.
+    verif_dir, spec_dir: Roots for the DPI source scan. Default to
+    `<project_root>/verif` and `<project_root>/spec`.
 
-    Returns:
-      BindingStage: the contribution plus per-edge-class counts.
-
-    Never raises: an unparseable helper, a missing cocotb module, a
-    ``dut.<name>`` matching no port, a DPI symbol nothing defines are
-    all recorded and the rest of the pass continues.
-
-    A graph without ``dpi_function`` nodes — anything exported by
-    rtl-buddy-sch v0.5.0 or older — simply runs the cocotb pass alone;
-    the DPI stitch requires no particular extractor version.
+    Never raises: unparseable helpers, missing cocotb modules, accesses matching no port
+    and DPI symbols nothing defines are recorded in `unresolved` and the pass continues.
     """
     root = Path(os.path.realpath(str(project_root)))
     gen = generator or {"tool": "rtl_buddy", "tier": BINDING_TIER}
@@ -637,7 +545,7 @@ def bind_python(
 
 
 def _suite_dir_of(test_id: str) -> str:
-    """Suite directory encoded in a ``test:<suite dir>#<name>`` id."""
+    """Return the suite directory encoded in a `test:<suite dir>#<name>` id."""
     body = test_id[len("test:") :] if test_id.startswith("test:") else test_id
     return body.split("#", 1)[0]
 
@@ -686,8 +594,7 @@ def _bind_one_test(
         gb.add_link(test_id, node_id, BINDS_TO)
         bound = True
         if toplevel:
-            # The other half of the two-hop path test -> module: the
-            # Python module IS the testbench, so it binds to the DUT.
+            # The Python module is the testbench, so it binds to the DUT.
             gb.add_link(node_id, f"module:{toplevel}", BINDS_TO, toplevel=toplevel)
 
         if path is not None:
@@ -717,12 +624,10 @@ def _python_node(
     exists: bool = True,
     cocotb_module: bool = False,
 ) -> tuple[str, bool]:
-    """Node id for a Python file, reusing another tier's id when it has one.
+    """Return `(node id, reused)` for a Python file.
 
-    Returns ``(node id, reused)``. ``reused`` is the extractor hand-off
-    having fired: some other tier already emitted a node for this file,
-    so its id is adopted instead of a second ``py:`` node being invented
-    for the same thing.
+    Adopts another tier's node id for the file when it has one, so no second `py:` node
+    is invented.
     """
     reused = rel in index.python_nodes
     node_id = index.python_nodes.get(rel, PY_NODE_PREFIX + rel)
@@ -758,19 +663,12 @@ def _walk_module(
     ports: set[str] | None,
     scans: dict[Path, PyScan],
 ) -> None:
-    """Walk the cocotb module and its local imports, emitting the edges.
+    """Walk the cocotb module and its local imports breadth-first, emitting the edges.
 
-    The walk is breadth-first over *local* imports only — a module that
-    resolves to a file inside the project. ``import cocotb`` and
-    ``import random`` resolve to nothing here and are dropped, which is
-    the point: the graph is about this project, not its dependencies.
-
-    A golden model is the exception to "local file wins": it lives under
-    ``spec/`` and a cocotb suite reaches it through a runtime
-    ``sys.path`` insert, which no static resolver should try to emulate.
-    The config tier already emitted a ``golden_model`` node per
-    ``spec/<block>/<model>.py``, so an import whose name matches one of
-    those stems is bound to that node instead.
+    Only imports that resolve to a file inside the project are followed, so `import
+    cocotb` is dropped. A golden model is the exception: it lives under `spec/` and is
+    reached through a runtime `sys.path` insert, so an import whose name matches a
+    config-tier `golden_model` stem binds to that node instead.
     """
     queue: list[tuple[Path, str, int]] = [(entry_path, entry_node, 0)]
     seen: set[Path] = {entry_path}
@@ -784,8 +682,8 @@ def _walk_module(
         for name, line in sorted(scan.accesses.items()):
             _drive(gb, stage, toplevel, ports, node_id, name, line, rel, None)
             if via is not None:
-                # The same fact, inherited by the cocotb module through
-                # the helper. `via` is what says it is second-hand.
+                # The same fact, inherited by the cocotb module; `via` marks it
+                # second-hand.
                 _drive(gb, stage, toplevel, ports, entry_node, name, line, rel, via)
 
         if depth >= _MAX_IMPORT_DEPTH:
@@ -815,48 +713,22 @@ def _bind_dpi(
     verif_dir: str | os.PathLike | None,
     spec_dir: str | os.PathLike | None,
 ) -> None:
-    """``implemented_by`` edges: DPI C symbols -> the sources defining them.
+    """Add `implemented_by` edges from DPI import symbols to the sources defining them.
 
-    The design tier (rtl-buddy-sch 127) contributes one
-    ``dpi_function`` node per ``import "DPI-C"`` / ``export "DPI-C"``
-    item, keyed by C symbol. For every *imported* one — imports are the
-    C-implements-it direction; an export is implemented on the SV side,
-    so a C file naming it is a caller, not an implementation — the C
-    symbol is matched against the C/C++/Python sources under ``verif/``
-    and ``spec/``:
+    Only `direction: "import"` nodes bind; an export is implemented on the SV side, so a
+    C file naming it is a caller. A node with no direction is skipped. Each symbol is
+    matched against the C/C++/Python sources under `verif/` and `spec/`, with confidence
+    by rung:
 
-    Confidence follows the evidence, on the ladder :func:`_drive` uses —
-    ``EXTRACTED`` is reserved for a fact the scan actually established,
-    which for an implementation means a *definition site*, not a mention:
+    1. an exact-case definition (`<declarator> sym(...) {`, or `def sym(`) -> EXTRACTED;
+    2. an exact-case whole-word mention -> INFERRED, `resolved: false`;
+    3. a case-insensitive definition -> INFERRED;
+    4. a case-insensitive mention -> INFERRED, `resolved: false`.
 
-    1. an exact-case definition (``<declarator> sym(...) {``, or
-       ``def sym(`` in Python) -> EXTRACTED;
-    2. an exact-case whole-word *mention* -> INFERRED, ``resolved:
-       false`` — a header's declaration and a caller both look like this,
-       and neither implements anything;
-    3. a case-insensitive definition -> INFERRED (name similarity);
-    4. a case-insensitive mention -> INFERRED, ``resolved: false``.
-
-    The best rung present wins outright: the realistic project of
-    ``alu_ref.h`` declaring, ``alu_ref.c`` defining and ``tb_driver.c``
-    calling gets **one** edge — the definition — rather than three
-    equally confident ones an agent cannot choose between. Mentions
-    survive only when nothing defines the symbol at all.
-
-    Only ``direction: "import"`` binds. A node that omits the field is a
-    no-op rather than an assumed import: the extraction half is
-    unreleased, so a looser future extractor would otherwise silently
-    bind exports — the caller-vs-implementation confusion the export skip
-    exists to prevent — and this stage's whole design is to under-claim on
-    vocabulary it does not recognise.
-
-    The edge target reuses a node another tier already gave the file —
-    a ``golden_model`` first (a DPI reference model under ``spec/`` is
-    exactly the golden-model loop this closes), then the extractor's
-    Python node — and otherwise synthesizes ``py:``/``src:`` nodes the
-    same way the cocotb pass does. A symbol nothing defines is recorded
-    in ``unresolved``; a graph with no ``dpi_function`` nodes at all
-    (any extractor predating them) makes this a silent no-op.
+    The best rung present wins, so a header declaring, a `.c` defining and a driver
+    calling the symbol yield one edge, to the definition. The target is the file's
+    `golden_model` node, else the extractor's Python node, else a synthesized
+    `py:`/`src:` node. A symbol nothing defines goes to `unresolved`.
     """
     imports = [
         node
@@ -882,8 +754,7 @@ def _bind_dpi(
     sources = [
         Path(p)
         for p in collect_sources(verif_dir, spec_dir)
-        # ``resolve_module_file`` never leaves the project; the DPI scan
-        # must not either.
+        # The DPI scan, like `resolve_module_file`, must not leave the project.
         if _inside(root, Path(p))
     ]
     texts: list[tuple[Path, str]] = []
@@ -901,10 +772,8 @@ def _bind_dpi(
         stage.dpi_functions += 1
         exact = re.compile(rf"\b{re.escape(symbol)}\b")
         similar = re.compile(rf"\b{re.escape(symbol)}\b", re.IGNORECASE)
-        # (rung, path, offset, confidence, resolved). The rung ladder is
-        # what keeps `EXTRACTED` meaning *this file defines it*: a bare
-        # mention is a header's declaration or a caller, which is exactly
-        # the second-hand evidence `resolved: false` exists to mark.
+        # (rung, path, offset, confidence, resolved). The ladder keeps EXTRACTED meaning
+        # "this file defines it".
         matches: list[tuple[int, Path, int, str, bool | None]] = []
         for path, body in texts:
             offset = _definition_offset(path, body, symbol, ignore_case=False)
@@ -923,11 +792,8 @@ def _bind_dpi(
             if hit is not None:
                 matches.append((4, path, hit.start(), INFERRED, False))
         if matches:
-            # Best rung wins outright, so a project with `alu_ref.h`
-            # declaring, `alu_ref.c` defining and `tb_driver.c` calling
-            # gets one edge — the definition — instead of three equally
-            # confident ones. Mentions only survive when nothing defines
-            # the symbol at all, and say so with `resolved: false`.
+            # The best rung wins outright; mentions survive only when nothing defines
+            # the symbol.
             best = min(rung for rung, *_ in matches)
             matches = [m for m in matches if m[0] == best]
         if not matches:
@@ -957,10 +823,7 @@ def _bind_dpi(
                 stage.dpi_implemented += 1
 
 
-#: Words that, immediately before a `symbol(` occurrence, prove the
-#: occurrence is a *call* and not a declarator — `return add_ref(a, b) {`
-#: cannot happen, but `if (x) add_ref(a) {` shaped text can be produced by
-#: enough macro soup that the cheap guard is worth having.
+# A word before `symbol(` that proves the occurrence is a call, not a declarator.
 _CALL_PREFIX_WORDS = frozenset(
     {
         "if",
@@ -978,19 +841,16 @@ _CALL_PREFIX_WORDS = frozenset(
     }
 )
 
-#: A declarator's prefix on the definition line — a return type, possibly
-#: with qualifiers, pointers, namespaces or template arguments. Anything
-#: with an `=`, a `(` or a `,` in it is an expression, not a declarator.
+# A declarator prefix: a return type with optional qualifiers, pointers, namespaces or
+# template arguments. An `=`, `(` or `,` makes it an expression.
 _DECLARATOR_PREFIX = re.compile(r"[A-Za-z_][\w\s*&:<>\[\]]*")
 
 
 def _c_definition_offset(body: str, symbol: str, *, ignore_case: bool) -> int | None:
-    """Offset of a C-family *definition* of ``symbol``, or None.
+    """Return the offset of a C-family definition of `symbol`, or None.
 
-    A definition is `<declarator> symbol(<params>) {` — the brace is what
-    separates it from the declaration in a header and from the call site
-    in a driver, which are the two things a bare whole-word scan cannot
-    tell apart from an implementation.
+    A definition is `<declarator> symbol(<params>) {`; the brace separates it from a
+    header declaration and from a call site.
     """
     flags = re.IGNORECASE if ignore_case else 0
     for match in re.finditer(rf"\b{re.escape(symbol)}\b", body, flags):
@@ -998,8 +858,7 @@ def _c_definition_offset(body: str, symbol: str, *, ignore_case: bool) -> int | 
         stripped = rest.lstrip()
         if not stripped.startswith("("):
             continue
-        # Walk the parameter list; a `;` or `{` inside it means this was
-        # never a signature.
+        # A `;` or `{` inside the parameter list means this is not a signature.
         depth = 0
         end: int | None = None
         for idx in range(match.end() + (len(rest) - len(stripped)), len(body)):
@@ -1033,7 +892,7 @@ def _c_definition_offset(body: str, symbol: str, *, ignore_case: bool) -> int | 
 
 
 def _py_definition_offset(body: str, symbol: str, *, ignore_case: bool) -> int | None:
-    """Offset of a ``def symbol(`` / ``async def symbol(`` line, or None."""
+    """Return the offset of a `def symbol(` / `async def symbol(` line, or None."""
     flags = re.MULTILINE | (re.IGNORECASE if ignore_case else 0)
     match = re.search(
         rf"^[ \t]*(?:async[ \t]+)?def[ \t]+{re.escape(symbol)}[ \t]*\(", body, flags
@@ -1049,12 +908,10 @@ def _definition_offset(path: Path, body: str, symbol: str, *, ignore_case: bool)
 
 
 def _source_file_node(gb: _Builder, index: _Index, rel: str) -> str:
-    """Node id for a source file an ``implemented_by`` edge lands on.
+    """Return the node id for a source file an `implemented_by` edge lands on.
 
-    Reuse order: the config tier's ``golden_model`` node (pointing the
-    DPI function straight at the model closes the golden-model loop in
-    one hop), then any node another tier already gave the ``.py`` file,
-    then a synthesized ``py:`` / ``src:`` node.
+    Reuse order: the `golden_model` node, then any node another tier gave the `.py`
+    file, then a synthesized `py:`/`src:` node.
     """
     existing = index.golden_files.get(rel) or index.python_nodes.get(rel)
     if existing is not None:
@@ -1086,16 +943,15 @@ def _drive(
     file_rel: str,
     via: str | None,
 ) -> None:
-    """Emit one ``drives`` edge for a ``dut.<name>`` access.
+    """Emit one `drives` edge for a `dut.<name>` access.
 
-    Confidence is decided by the port table and nothing else:
+    Confidence comes from the port table:
 
-    * ``name`` is a port of the toplevel -> EXTRACTED;
-    * it differs only in case -> INFERRED, pointing at the real port;
-    * no port matches, or no design tier was exported so no port is
-      known -> INFERRED, pointing at ``port:<top>.<name>``, which may
-      well dangle. ``resolved: false`` marks the ones known not to be
-      ports so a consumer can filter them out.
+    - `name` is a port of the toplevel -> EXTRACTED.
+    - Differs only in case -> INFERRED, pointing at the real port.
+    - No port matches, or no design tier is present -> INFERRED, pointing at
+      `port:<top>.<name>`, which may dangle. `resolved: false` marks names known not to
+      be ports.
     """
     if not toplevel:
         return
@@ -1103,7 +959,7 @@ def _drive(
     confidence = INFERRED
     port_name = name
     if ports is None:
-        pass  # design tier absent: nothing to check the name against
+        pass  # design tier absent: no port names to check
     elif name in ports:
         confidence = EXTRACTED
     else:

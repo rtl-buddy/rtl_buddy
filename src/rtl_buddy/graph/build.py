@@ -2,45 +2,17 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""``rb graph build`` — assemble the merged design knowledge graph (#377).
+"""`rb graph build`: assemble the merged design knowledge graph.
 
-Three tiers, one file. This module owns the orchestration:
+Tiers: **design** (`rtl-buddy-view graph` per model, per testbench `toplevel:`, and per
+flow run whose `top:` only elaborates in the flow's own filelist), **config**
+(`extract_config_tier`) and **binding** (`rb-graph-extract`, when installed). They are
+unioned by `merge_graphs` into `artefacts/graph/graph.json` with provenance in
+`graph-meta.json`, then `bind_python` runs on the merged graph and its output is merged
+in.
 
-1. **design** — ``rtl-buddy-view graph`` once per model, reusing ``rb
-   hier``'s ``artefacts/hier/<model>/hier.f`` filelist machinery, plus
-   once per **testbench** rooted at its ``toplevel:`` (``--tb-top``),
-   reusing ``rb hier --view tb``'s DUT+TB filelist merge, plus once per
-   **flow run** whose ``top:`` only elaborates inside the flow's own
-   filelist (#385 — an fpv checker top over the model + ``properties:``);
-2. **config** — :func:`rtl_buddy.graph.extract_config_tier` over the
-   ``specs.yaml`` / ``models.yaml`` / ``tests.yaml`` trees;
-3. **binding** — the extractor's (``rb-graph-extract``) deterministic
-   pass over verif Python and spec markdown, only when the tool is
-   installed.
-
-The tiers are unioned by :func:`rtl_buddy.graph.merge.merge_graphs` and
-written to ``artefacts/graph/graph.json`` with provenance beside it in
-``graph-meta.json``.
-
-One stage runs *after* that union: :func:`rtl_buddy.graph.binding.bind_python`
-(#378), which ties each cocotb test to its Python module, that module to
-the DUT ``module:`` node, and its ``dut.<name>`` accesses to ``port:``
-nodes. It has to come last because it reads both halves of the merged
-graph at once, so its output is a fourth graph that is merged in on a
-second pass.
-
-Two properties are load-bearing:
-
-* **Optional tiers stay optional.** A missing extractor, an
-  unexportable model, an unloadable suite — each is recorded in the
-  meta sidecar and the envelope, and the graph is still written. Only
-  ``--strict`` turns those into a non-zero exit.
-* **A re-run with nothing changed is a no-op.** Every input is hashed
-  before any exporter runs, and the combined fingerprint (inputs +
-  tool versions + schema version) is compared against the one in
-  ``graph-meta.json``. Matching fingerprint plus an existing
-  ``graph.json`` means the build is skipped outright, which is why the
-  cheap filelist generation happens before the expensive parse.
+Optional tiers stay optional: failures are recorded and the graph is still written; only
+`--strict` exits non-zero. A re-run with an unchanged fingerprint is skipped.
 """
 
 from __future__ import annotations
@@ -93,45 +65,34 @@ logger = logging.getLogger(__name__)
 
 DESIGN_TIER = "design"
 
-#: Tier statuses. ``pending`` is internal — a tier that got as far as
-#: hashing its inputs but has not run yet. It resolves to ``built`` /
-#: ``failed`` once the exporter runs, or to ``cached`` when the
-#: fingerprint check short-circuits the build.
+# Tier statuses. `pending` is internal: inputs hashed, exporter not yet run.
 PENDING = "pending"
 BUILT = "built"
 CACHED = "cached"
 SKIPPED = "skipped"
 FAILED = "failed"
 
-#: Why a design-tier item is in ``skipped`` rather than ``failures``
-#: (#479). The reason string is part of ``graph-meta.json``, so it names
-#: the knob a reader has to change to get the export back.
+# Reason a design-tier item is in `skipped` rather than `failures`; it appears in
+# `graph-meta.json`, so it names the knob to change.
 GRAPH_OPT_OUT = "models.yaml `graph: false`"
 
-#: First ``rtl-buddy-view`` release carrying the ``graph`` subcommand.
-#: Owned by ``tool_manifest.py``, which declares it as the viewer's
-#: per-subcommand floor for ``graph`` so ``rb tool-check`` and the gate
-#: below read the same number (rtl_buddy#550). Re-exported here because
-#: this is where callers have always imported it from.
+# First `rtl-buddy-view` release with the `graph` subcommand. Owned by
+# `tool_manifest.py` so `rb tool-check` and the gate read the same number; re-exported
+# here.
 VIEW_GRAPH_MIN_VERSION = _VIEW_GRAPH_MIN_VERSION
 
-#: Where each tier's own export lands under ``artefacts/graph/``. Kept
-#: on disk (not just in memory) so a failed merge is debuggable and so
-#: the extractor's ``merge-graphs`` has real files to cross-check against.
+# Where each tier's export lands under `artefacts/graph/`. Kept on disk so a failed
+# merge is debuggable and the extractor cross-check has files.
 DESIGN_SUBDIR = "design"
-#: TB-rooted exports nest under their DUT: ``design/<model>/tb/<tb>``.
-#: Mirrors ``rb hier --view tb``'s ``artefacts/hier/<model>/tb/<tb>``
-#: filelist cache, which is where their sources come from.
+# TB-rooted exports nest under their DUT, `design/<model>/tb/<tb>`, mirroring the `rb
+# hier --view tb` filelist cache.
 TB_SUBDIR = "tb"
-#: Run-rooted exports (#385) nest the same way: ``design/<model>/run/<top>``,
-#: with the filelist cache at ``artefacts/hier/<model>/run/<top>``.
+# Run-rooted exports nest the same way: `design/<model>/run/<top>`.
 RUN_SUBDIR = "run"
 BINDING_FILE = "binding/graph.json"
 
-#: The in-process binding stage's own export (#378). Kept apart from
-#: ``binding/graph.json`` because that file is the extractor's — the binding
-#: *tier* has two producers and a merge surprise has to be traceable to
-#: exactly one of them.
+# The in-process binding stage's export, kept apart from `binding/graph.json` (the
+# extractor's) so a merge surprise traces to one producer.
 BIND_FILE = "bind/graph.json"
 
 
@@ -143,7 +104,7 @@ def _rtl_buddy_version() -> str:
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
-    """Leading (major, minor, patch) ints of a PEP 440 version string."""
+    """Return the leading (major, minor, patch) ints of a PEP 440 version string."""
     parts = []
     for segment in value.split(".")[:3]:
         match = re.match(r"\d+", segment)
@@ -152,34 +113,26 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 
 
 def _is_dev_build(value: str) -> bool:
-    """True for an untagged build (``0.3.1.dev1+g<sha>``, ``…+local``).
+    """Return True for an untagged build (`0.3.1.dev1+g<sha>`, `...+local`).
 
-    An editable install off a feature branch legitimately carries a
-    feature before the release that names it exists, so a dev build is
-    trusted over the floor: the alternative is that nobody can use
-    ``rb graph build`` until the view is tagged.
+    A dev build is trusted over the version floor, since an editable install off a
+    feature branch can carry a feature before its release exists.
     """
     return ".dev" in value or "+" in value
 
 
 def check_view_supports_graph(view_version: str | None) -> str | None:
-    """Reason the installed viewer can't export the design tier, or None.
+    """Return the reason the installed viewer cannot export the design tier, or None.
 
-    ``None`` version means the probe failed (an old build without
-    ``--version``); the subsequent invocation's exit code is then the
-    real gate, so don't pre-emptively refuse.
+    A `None` version means the probe failed (an old build without `--version`); the
+    invocation's exit code is then the real gate.
     """
     if view_version is None or _is_dev_build(view_version):
         return None
     if _version_tuple(view_version) < _version_tuple(VIEW_GRAPH_MIN_VERSION):
-        # The version quoted here came from `rtl-buddy-view --version`,
-        # which still prints the executable's own name — but the thing
-        # you install is the renamed `rtl-buddy-sch` dist
-        # (rtl-buddy-sch#157; `rtl-buddy-view` is frozen at 0.5.0, below
-        # every floor this file states). The uninstall leads because pip
-        # has no rename metadata: installing one over the other leaves
-        # two dists claiming the same console script. It is a no-op
-        # (warning, exit 0) when the old dist was never installed.
+        # `rtl-buddy-view --version` still prints the old executable name, but the
+        # installable dist is `rtl-buddy-sch`. The uninstall comes first because pip has
+        # no rename metadata and two dists would claim one console script.
         return (
             f"rtl-buddy-view {view_version} has no `graph` subcommand; "
             f"the design tier needs >= {VIEW_GRAPH_MIN_VERSION} "
@@ -194,20 +147,17 @@ class TierReport:
     """One tier's contribution to the build.
 
     Attributes:
-      tier (str): ``design`` / ``config`` / ``binding``.
-      status (str): ``built``, ``skipped`` or ``failed``.
-      detail (str | None): Why, when not ``built``.
-      inputs (list[dict]): ``{"path", "sha256"}`` of everything read.
-      nodes (int): Nodes contributed (before the union).
-      links (int): Links contributed (before the union).
-      generator (dict | None): The tier's own ``graph.generator`` block.
-      failures (list): Per-item failures that did not sink the tier.
-      skipped (list): Per-item opt-outs (#479) — a model marked
-        ``graph: false`` in models.yaml, and the testbench / flow-run
-        exports that would have re-elaborated it. Deliberately kept apart
-        from ``failures``: nothing went wrong, so it must not colour the
-        exit code under ``--strict`` or read as noise the project caused.
-      extra (dict): Tier-specific fields for the meta sidecar.
+      tier: `design`, `config` or `binding`.
+      status: `built`, `skipped` or `failed`.
+      detail: Why, when not `built`.
+      inputs: `{"path", "sha256"}` of everything read.
+      nodes, links: Contributed before the union.
+      generator: The tier's own `graph.generator` block.
+      failures: Per-item failures that did not sink the tier.
+    skipped: Per-item opt-outs (models with `graph: false` and the testbench and
+    flow-run exports over them). Kept apart from `failures` so they do not affect the
+    `--strict` exit code.
+      extra: Tier-specific fields for the meta sidecar.
     """
 
     tier: str
@@ -265,13 +215,10 @@ class TierReport:
         return block
 
     def row_detail(self) -> str:
-        """What the ``rb graph build`` summary table shows for this tier.
+        """Return what the `rb graph build` summary table shows for this tier.
 
-        A tier that did not run explains itself with ``detail``; one
-        that did is described by what it covered, so the DUT and TB
-        halves of the design tier are both visible without opening the
-        meta sidecar. Failures are counted the same way whichever half
-        they came from — they are per-item, and the tier is still built.
+        A tier that did not run gives its `detail`; one that did is described by what it
+        covered. Per-item failures are counted the same way for every half.
         """
         if self.detail:
             return self.detail
@@ -297,20 +244,18 @@ class TierReport:
 
 @dataclass
 class GraphBuild:
-    """Result of one ``rb graph build``.
+    """Result of one `rb graph build`.
 
     Attributes:
-      graph_path (Path): Written (or existing, when ``unchanged``)
-        ``graph.json``.
-      meta_path (Path): The ``graph-meta.json`` sidecar.
-      unchanged (bool): True when the fingerprint matched and nothing ran.
-      tiers (list[TierReport]): Per-tier outcome.
-      nodes (int): Nodes in the merged graph.
-      links (int): Links in the merged graph.
-      fingerprint (str): Combined input + tool-version hash.
-      merge (dict): Merge bookkeeping (strategy, stitch points, cross-check).
-      binding (dict): Post-merge binding-stage summary (#378).
-      graph (dict | None): The merged payload (None when ``unchanged``).
+      graph_path: Written (or existing, when `unchanged`) `graph.json`.
+      meta_path: The `graph-meta.json` sidecar.
+      unchanged: True when the fingerprint matched and nothing ran.
+      tiers: Per-tier outcome.
+      nodes, links: Counts in the merged graph.
+      fingerprint: Combined input and tool-version hash.
+      merge: Merge bookkeeping (strategy, stitch points, cross-check).
+      binding: Post-merge binding-stage summary.
+      graph: The merged payload (None when `unchanged`).
     """
 
     graph_path: Path
@@ -350,11 +295,10 @@ class GraphBuild:
 
 
 def models_from_regression(reg_path: str | os.PathLike) -> list[ModelConfig]:
-    """Every model referenced by the suites a regression config lists.
+    """Return every model referenced by the suites a regression config lists.
 
-    Goes through :class:`~rtl_buddy.config.reg.RegConfig`, so the graph
-    covers exactly what ``rb regression -c <file>`` would run — not a
-    parallel notion of "the models in this project".
+    Loads through `RegConfig`, so the graph covers what `rb regression -c <file>` would
+    run.
     """
     from ..config.reg import RegConfig
 
@@ -369,11 +313,9 @@ def models_from_regression(reg_path: str | os.PathLike) -> list[ModelConfig]:
 
 
 def models_from_design_tree(design_dir: str | os.PathLike) -> list[ModelConfig]:
-    """Every model declared by a ``models.yaml`` under ``design_dir``.
+    """Return every model declared by a `models.yaml` under `design_dir`.
 
-    The default selection: the config tier already covers this whole
-    tree, so exporting the same set keeps the two tiers talking about
-    the same design instead of a subset of it.
+    The default selection, matching the config tier's coverage of the same tree.
     """
     from ..tools.spec_trace import discover_model_configs
 
@@ -383,11 +325,8 @@ def models_from_design_tree(design_dir: str | os.PathLike) -> list[ModelConfig]:
 
 
 def _model_key(model: ModelConfig) -> str:
-    """Identity of a model across the two ways it can be reached.
-
-    A model found by walking ``design/`` and the same model reached
-    through a test's ``model_path:`` are the same thing; comparing the
-    ``ModelConfig`` objects would say otherwise.
+    """Return a model's identity across the two ways it can be reached (design-tree walk or
+    a test's `model_path:`).
     """
     return f"{os.path.realpath(model.path)}#{model.name}"
 
@@ -402,25 +341,17 @@ class TestbenchTarget:
     """One TB-rooted design-tier export.
 
     Attributes:
-      suite_rel (str): Repo-relative suite directory — the same string
-        the config tier puts in ``tb:<suite dir>#<name>``.
-      suite_dir (str): Absolute suite directory. Anchors the testbench
-        filelist's relative entries, exactly as the compile flow does.
-      tb_names (list[str]): Every ``testbenches:`` entry collapsed into
-        this export. The de-duplication key is what the viewer is handed
-        — model, filelist, top — and deliberately excludes the entry
-        *name*, so one suite declaring the same elaboration twice under
-        two names elaborates it once. Both names are kept: each is a
-        real ``tb:`` node the config tier emitted, owed its own stitch
-        and its own row in any per-item report.
-      tb_top (str): Module the export is rooted at — the testbench's
-        ``toplevel:`` when declared, else its name (the project
-        convention ``rb hier --view tb`` already relies on).
-      model (ModelConfig): The DUT whose filelist the TB filelist is
-        merged on top of.
-      test (TestConfig): The first test that names this testbench.
-        Carries the ``tb`` the exporter reads; nothing test-specific
-        (plusargs, sweeps) affects an elaborated hierarchy.
+    suite_rel: Repo-relative suite directory, as in the config tier's `tb:<suite
+    dir>#<name>`.
+    suite_dir: Absolute suite directory; anchors the testbench filelist's relative
+    entries.
+    tb_names: Every `testbenches:` entry collapsed into this export. De-duplication keys
+    on what the viewer is handed (model, filelist, top), not the entry name, but each
+    name is a real `tb:` node owed its own stitch and report row.
+    tb_top: Module the export is rooted at: `toplevel:` when declared, else the
+    testbench name.
+      model: The DUT whose filelist the TB filelist is merged onto.
+    test: The first test naming this testbench; it carries the `tb` the exporter reads.
     """
 
     suite_rel: str
@@ -432,32 +363,32 @@ class TestbenchTarget:
 
     @property
     def tb_name(self) -> str:
-        """The first testbench claiming this export — its short name."""
+        """Return the short name of the first testbench claiming this export."""
         return self.tb_names[0]
 
     @property
     def node_id(self) -> str:
-        """Config-tier ``tb:`` node this export belongs to."""
+        """Return the config-tier `tb:` node this export belongs to."""
         return testbench_id(self.suite_rel, self.tb_name)
 
     @property
     def label(self) -> str:
-        """``<suite dir>#<tb name>`` — how failures name this target."""
+        """Return `<suite dir>#<tb name>`, how failures name this target."""
         return f"{self.suite_rel}#{self.tb_name}"
 
     @property
     def node_ids(self) -> list[str]:
-        """One ``tb:`` node per collapsed testbench — each gets a stitch."""
+        """Return one `tb:` node id per collapsed testbench; each gets a stitch."""
         return [testbench_id(self.suite_rel, name) for name in self.tb_names]
 
     @property
     def labels(self) -> list[str]:
-        """One label per collapsed testbench, as ``node_ids`` is one id."""
+        """Return one label per collapsed testbench."""
         return [f"{self.suite_rel}#{name}" for name in self.tb_names]
 
     @property
     def stitch_type(self) -> str:
-        """Edge type of this target's config->design stitch."""
+        """Return the edge type of this target's config-to-design stitch."""
         return ELABORATES_AS
 
 
@@ -466,49 +397,26 @@ def testbenches_from_suites(
     verif_dir: str | os.PathLike,
     models: list[ModelConfig] | None = None,
 ) -> list[TestbenchTarget]:
-    """Every testbench worth a TB-rooted export, de-duplicated.
+    """Return every testbench worth a TB-rooted export, de-duplicated and sorted by `(suite
+    dir, testbench name)`.
 
-    Reads the same ``tests.yaml`` files the config tier reads, through
-    the same :class:`~rtl_buddy.config.suite.SuiteConfig` loader, so the
-    testbenches exported here are exactly the ones that got ``tb:``
-    nodes. A suite that fails to load is skipped silently — the config
-    tier already reports it, and reporting it twice would double-count
-    the failure in the envelope.
+    Reads the `tests.yaml` files the config tier reads through `SuiteConfig`, so exports
+    match the `tb:` nodes. A suite that fails to load is skipped silently; the config
+    tier already reports it.
 
-    Two testbenches are the same export when they resolve to the same
-    ``(model, suite dir, testbench filelist, tb top)``: that tuple is
-    the entire input to the viewer, so a second invocation could only
-    reproduce the first one's bytes. Names differing is not a
-    difference to the *exporter* — but it is one to the report, so every
-    collapsed name is remembered in ``tb_names`` and re-expanded by
-    ``node_ids`` and ``labels``. Exactly the rule
-    :func:`flow_runs_from_regressions` applies to runs.
+    Two testbenches are one export when they resolve to the same `(model, suite dir,
+    testbench filelist, tb top)`. Every collapsed name is kept in `tb_names`.
 
-    A testbench whose top is the DUT top (the model's ``top:`` when it
-    declares one, else its name) is dropped: ``--tb-top <that top>``
-    would re-elaborate exactly what the DUT export already covered. That
-    is the cocotb/SystemC case, where ``toplevel:`` is required *and*
-    names the DUT — there is no SV testbench above it to add.
-
-    That drop is conditional on the model being graphable. There is no
-    DUT export to defer to when the model opted out (#479), and the
-    contract is that *everything* rooted at an opted-out model is listed
-    under the design tier's ``skipped``. So a same-root testbench of an
-    opted-out model is returned here and refused one step later by
-    :func:`_split_opted_out`, which is what turns it into a skip record.
-    It is never exported either way — the two paths differ only in
-    whether the user is told.
+    A testbench whose top is the DUT top is dropped, since `--tb-top` would re-elaborate
+    the DUT export (the cocotb/SystemC case). The drop applies only to a graphable
+    model: a same-root testbench of an opted-out model is returned and refused later by
+    `_split_opted_out`, which records the skip.
 
     Args:
-      project_root: Root that ``suite_rel`` is relative to.
-      verif_dir: Tree walked for ``tests.yaml``.
-      models: When given, only testbenches whose model is in this list
-        are returned, so ``--model`` / ``--regression`` narrows the TB
-        exports the same way it narrows the DUT exports. ``None`` means
-        no filtering.
-
-    Returns:
-      list[TestbenchTarget]: sorted by ``(suite dir, testbench name)``.
+      project_root: Root that `suite_rel` is relative to.
+      verif_dir: Tree walked for `tests.yaml`.
+    models: When given, keep only testbenches of these models, so `--model` /
+    `--regression` narrows TB exports like DUT exports. `None` means no filtering.
     """
     from ..config.suite import SuiteConfig
     from ..tools.spec_trace import _walk_yaml_files
@@ -542,9 +450,8 @@ def testbenches_from_suites(
             )
             existing = by_key.get(key)
             if existing is not None:
-                # Same export, different `testbenches:` entry (or the
-                # same one reached through a second test). Remember the
-                # name; the export itself is already accounted for.
+                # Same export via another `testbenches:` entry or test: remember the
+                # name.
                 if tb.get_name() not in existing.tb_names:
                     existing.tb_names.append(tb.get_name())
                 continue
@@ -559,44 +466,33 @@ def testbenches_from_suites(
     return sorted(by_key.values(), key=lambda t: (t.suite_rel, t.tb_name))
 
 
-# ---------------------------------------------------------------------------
-# Flow-run selection (#385)
-#
-# A formal/synth/cdc run's `top:` often only elaborates inside the flow's
-# own filelist — the template's fpv checker tops live in `properties:`
-# files no models.yaml names — so the config tier's `targets` stitch would
-# dangle forever if the design tier only exported models and testbenches.
-# These runs get the TB treatment: one run-rooted export over the model
-# filelist plus the flow's own sources.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Flow-run selection
+# A formal/synth/cdc run's `top:` often elaborates only inside the flow's own
+# filelist (fpv checker tops live in `properties:` files), so the config tier's
+# `targets` stitch would dangle. These runs get one run-rooted export over the
+# model filelist plus the flow's own sources.
+# -----------------------------------------------------------------------
 
 
 @dataclass
 class FlowRunTarget:
     """One run-rooted design-tier export.
 
-    The flow-run counterpart of :class:`TestbenchTarget` — same duck
-    type where the qualification machinery is concerned (``suite_rel``,
-    ``node_id``, ``tb_top``, ``stitch_type``), different config-tier
-    node (``test:``, the run) and different stitch verb (``targets``).
+    The flow-run counterpart of `TestbenchTarget`: same duck type for qualification
+    (`suite_rel`, `node_id`, `tb_top`, `stitch_type`), but the config node is `test:`
+    and the stitch verb is `targets`.
 
     Attributes:
-      suite_rel (str): Repo-relative suite directory — the same string
-        the config tier puts in ``test:<suite dir>#<name>``.
-      suite_dir (str): Absolute suite directory, anchoring any relative
-        entries in ``sources``.
-      flow (str): Which flow owns the run (``fpv`` / ``synth`` / ...).
-      run_names (list[str]): Every run collapsed into this export — an
-        fpv suite proving one checker under ``bmc`` and ``prove``
-        elaborates it once, but each run's ``test:`` node still gets its
-        own stitch (a suite-qualified top would strand the twins'
-        declared edges otherwise).
-      top (str): The run's ``top:`` — the module the export is rooted at.
-      model (ModelConfig): The DUT whose filelist the flow sources are
-        merged on top of.
-      sources (list[str]): The flow's own HDL beyond the model filelist
-        (an fpv run's ``properties:`` + ``constraints:``; absolute paths,
-        the loaders resolve them against the suite dir).
+      suite_rel: Repo-relative suite directory, as in `test:<suite dir>#<name>`.
+      suite_dir: Absolute suite directory; anchors relative entries in `sources`.
+      flow: Owning flow (`fpv`, `synth`, ...).
+    run_names: Every run collapsed into this export; each run's `test:` node still gets
+    its own stitch.
+      top: The run's `top:`, the module the export is rooted at.
+      model: The DUT whose filelist the flow sources are merged onto.
+    sources: The flow's own HDL beyond the model filelist (an fpv run's `properties:`
+    and `constraints:`), as absolute paths.
     """
 
     suite_rel: str
@@ -609,61 +505,50 @@ class FlowRunTarget:
 
     @property
     def run_name(self) -> str:
-        """The first run claiming this export — its short name."""
+        """Return the short name of the first run claiming this export."""
         return self.run_names[0]
 
     @property
     def node_id(self) -> str:
-        """Config-tier ``test:`` node this export belongs to."""
+        """Return the config-tier `test:` node this export belongs to."""
         return test_id(self.suite_rel, self.run_name)
 
     @property
     def node_ids(self) -> list[str]:
-        """One ``test:`` node per collapsed run — each gets a stitch."""
+        """Return one `test:` node id per collapsed run; each gets a stitch."""
         return [test_id(self.suite_rel, name) for name in self.run_names]
 
     @property
     def label(self) -> str:
-        """``<suite dir>#<run name>`` — how failures name this target."""
+        """Return `<suite dir>#<run name>`, how failures name this target."""
         return f"{self.suite_rel}#{self.run_name}"
 
     @property
     def labels(self) -> list[str]:
-        """One label per collapsed run, the way ``node_ids`` is one id.
+        """Return one label per collapsed run.
 
-        De-duplication keeps a single export for runs that would produce
-        identical bytes, but each of them is a run the user wrote down.
-        A per-run record — a skip, here — has to name every one of them,
-        or a run silently disappears from the report because a twin
-        happened to sort first.
+        A per-run record such as a skip must name every run, or a twin that sorted later
+        vanishes from the report.
         """
         return [f"{self.suite_rel}#{name}" for name in self.run_names]
 
     @property
     def tb_top(self) -> str:
-        """The top the viewer is asked to elaborate from.
-
-        Named for the ``--tb-top`` mechanism it rides (and for the
-        qualification machinery, which handles TB and run targets
-        through one code path).
-        """
+        """Return the top the viewer is asked to elaborate from (the `--tb-top` value)."""
         return self.top
 
     @property
     def stitch_type(self) -> str:
-        """Edge type of this target's config->design stitch."""
+        """Return the edge type of this target's config-to-design stitch."""
         return TARGETS
 
 
 def _flow_run_sources(flow: str, entry) -> list[str]:
-    """The flow-owned HDL a run elaborates beyond the model filelist.
+    """Return the flow-owned HDL a run elaborates beyond the model filelist.
 
-    Only the formal flow has any today: ``properties:`` plus the
-    optional ``constraints:`` file, both SystemVerilog by contract and
-    both read into the sby script on top of the model sources — so the
-    export mirrors exactly what the proof elaborates. Synthesis and CDC
-    runs work the model filelist as-is (a ``cdc.yaml`` ``constraints:``
-    is an SDC, not HDL).
+    Only the formal flow has any: `properties:` plus optional `constraints:`, both read
+    into the sby script. Synthesis and CDC use the model filelist as-is (a `cdc.yaml`
+    `constraints:` is an SDC).
     """
     if flow != FLOW_FPV:
         return []
@@ -678,40 +563,23 @@ def flow_runs_from_regressions(
     project_root: str | os.PathLike,
     models: list[ModelConfig] | None = None,
 ) -> list[FlowRunTarget]:
-    """Every non-simulation run worth a run-rooted export, de-duplicated.
+    """Return every non-simulation run worth a run-rooted export, de-duplicated and sorted
+    by `(suite dir, run name)`.
 
-    Reads the same repo-level regression files the config tier reads,
-    through the same loaders (:func:`_collect_flows`), so the runs
-    exported here are exactly the ones that got ``test:`` nodes and
-    ``targets`` stitches.
+    Reads the regression files the config tier reads, through `_collect_flows`, so
+    exports match the `test:` nodes and `targets` stitches.
 
-    A run whose ``top:`` is the model's own root module is dropped: the
-    DUT export already covers that hierarchy, and today that is every
-    synth / cdc / fpga run (their ``get_top()`` is the model's by
-    construction). What remains is the formal case — a checker top
-    defined in the flow's own filelist.
+    A run whose `top:` is the model's root module is dropped because the DUT export
+    covers it (every synth, cdc and fpga run); what remains is formal checker tops. As
+    with testbenches, the drop applies only to a graphable model: an opted-out model's
+    runs are returned and refused by `_split_opted_out`, which records the skip.
 
-    As with :func:`testbenches_from_suites`, that drop applies only to a
-    graphable model: an opted-out one has no DUT export to defer to, and
-    its runs are owed a skip record (#479). They are returned here and
-    refused by :func:`_split_opted_out`, never exported.
-
-    Two runs are the same export when they resolve to the same
-    ``(suite dir, model, flow sources, top)``: that tuple is the entire
-    input to the viewer, exactly as testbench de-duplication reasons.
-    An fpv suite proving the same checker under ``bmc`` and ``prove``
-    elaborates it once — but every collapsed run is remembered in
-    ``run_names``, so each ``test:`` node still gets the observed
-    ``targets`` stitch the export produces.
+    Two runs are one export when they resolve to the same `(suite dir, model, flow
+    sources, top)`; every collapsed run is kept in `run_names`.
 
     Args:
       project_root: Root the regression files are discovered under.
-      models: When given, only runs against a model in this list are
-        returned — the same narrowing ``--model`` / ``--regression``
-        applies to the DUT and TB exports. ``None`` means no filtering.
-
-    Returns:
-      list[FlowRunTarget]: sorted by ``(suite dir, run name)``.
+    models: When given, keep only runs against these models. `None` means no filtering.
     """
     root = Path(os.path.realpath(str(project_root)))
     allowed = {_model_key(m) for m in models} if models is not None else None
@@ -761,7 +629,7 @@ def _design_exporters(
     view_executable: str,
     frontend: str | None,
 ) -> list[tuple[ModelConfig, RtlBuddyViewGraph]]:
-    """One exporter per model, with its filelist already written."""
+    """Return one exporter per model, with its filelist already written."""
     exporters = []
     for model in models:
         target = out_dir / DESIGN_SUBDIR / model.name / GRAPH_JSON_NAME
@@ -786,12 +654,10 @@ def _tb_exporters(
     view_executable: str,
     frontend: str | None,
 ) -> list[tuple[TestbenchTarget, RtlBuddyViewGraph]]:
-    """One TB-rooted exporter per testbench, output paths disambiguated.
+    """Return one TB-rooted exporter per testbench, with output paths disambiguated.
 
-    ``design/<model>/tb/<tb>`` is unique in every project that does not
-    name two testbenches in two suites identically *and* point them at
-    the same model; when one does, the later ones get a ``-2``, ``-3``
-    suffix rather than overwriting the first export.
+    `design/<model>/tb/<tb>` is unique unless two suites name a testbench identically
+    over the same model; later ones get a `-2`, `-3` suffix.
     """
     exporters = []
     used: set[str] = set()
@@ -824,14 +690,11 @@ def _flow_exporters(
     view_executable: str,
     frontend: str | None,
 ) -> list[tuple[FlowRunTarget, RtlBuddyViewGraph]]:
-    """One run-rooted exporter per flow run, output paths disambiguated.
+    """Return one run-rooted exporter per flow run, with output paths disambiguated.
 
-    ``design/<model>/run/<top>`` is keyed on the *top* rather than the
-    run name because the top is what de-duplication kept unique per
-    model — three verifications proving one checker are one export.
-    Two suites rooting different files at the same top under the same
-    model get a ``-2`` suffix rather than overwriting each other,
-    mirroring :func:`_tb_exporters`.
+    `design/<model>/run/<top>` is keyed on the top, which de-duplication kept unique per
+    model. Two suites rooting different files at the same top get a `-2` suffix, as in
+    `_tb_exporters`.
     """
     exporters = []
     used: set[str] = set()
@@ -859,29 +722,19 @@ def _flow_exporters(
 
 
 def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
-    """Partition TB / flow-run targets by their DUT's ``graph:`` flag (#479).
+    """Partition TB and flow-run targets by their DUT's `graph:` flag.
 
-    A ``graph: false`` model has no elaborable root, and both export
-    shapes still hand the viewer ``--top <model top>`` alongside their
-    own ``--tb-top`` — so a testbench or flow run over such a model
-    would fail for exactly the reason the model opted out. Skipping it
-    with a record of its own keeps the reason visible instead of
-    silently shrinking the tier.
-
-    One record per *declared* item, not per export: a flow-run target
-    collapses runs that would produce identical bytes, and the stitch
-    path already re-expands them (``node_ids``). The skip list does the
-    same through ``labels``, so an fpv suite proving one checker under
-    ``bmc`` and ``prove`` reports both as skipped rather than losing the
-    twin that did not happen to sort first.
+    A `graph: false` model has no elaborable root, and both export shapes still pass
+    `--top <model top>`, so its testbenches and runs would fail for the reason the model
+    opted out. They are skipped with a record instead. One record is written per
+    declared item, expanded through `labels`.
 
     Args:
-      targets: :class:`TestbenchTarget` / :class:`FlowRunTarget` list.
-      kind: ``"testbench"`` or ``"run"`` — the key the skip record uses,
-        matching the one its failure rows already use.
+      targets: `TestbenchTarget` / `FlowRunTarget` list.
+      kind: `"testbench"` or `"run"`, the key the skip record uses.
 
     Returns:
-      tuple: (targets to export, skip records for the rest).
+      (targets to export, skip records for the rest).
     """
     keep, skipped = [], []
     for target in targets:
@@ -900,50 +753,24 @@ def _split_opted_out(targets: list, kind: str) -> tuple[list, list[dict]]:
 
 
 def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
-    """Remove a model's design-tier exports when it opts out (#479).
+    """Remove a model's design-tier exports when it opts out; return True if anything was
+    removed.
 
-    The per-model export is a *durable* artefact: ``graph.json`` and the
-    viewer's ``graph-meta.json`` sidecar under
-    ``artefacts/graph/design/<name>/``, plus the TB- and run-rooted
-    exports nested beneath it. Nothing rewrites them but a later export
-    of the same model, so a model that was exported yesterday and
-    declares ``graph: false`` today would leave that hierarchy on disk,
-    fully readable, while the tier report and the merged graph both say
-    the model has none. The extractor's cross-check reads those files
-    directly, and so does anyone debugging a merge — a stale one is a
-    confident wrong answer.
+    The per-model export under `artefacts/graph/design/<name>/` (including nested `tb/`
+    and `run/` exports) is durable, so a model exported earlier that declares
+    `graph: false` would otherwise leave a readable stale hierarchy. Model names are
+    unique across the selection (`_reject_colliding_models`), so the subtree is this
+    model's own.
 
-    The whole ``design/<name>/`` subtree is the model's own: the DUT
-    export sits at its root and the ``tb/`` and ``run/`` exports nest
-    inside it, so removing the subtree removes exactly this model's
-    exports and nothing else. Model names are unique across the
-    selection (:func:`_reject_colliding_models`), so the directory
-    cannot be shared.
-
-    The path is re-checked before the delete, not merely composed. The
-    model name is validated where models.yaml is loaded
-    (:func:`~rtl_buddy.config.model.validate_model_name`), but this is
-    the one place in the graph build that *destroys* data, and a caller
-    who hands ``build_graph`` a hand-built :class:`ModelConfig` bypasses
-    that loader entirely. So the resolved target must still be a direct
-    child of ``design/``: that rules out a name that normalises upwards,
-    an absolute one, and a ``design/<name>`` that is a symlink pointing
-    somewhere else — none of which ``rmtree`` would think twice about.
-
-    Returns:
-      bool: True when something was actually removed.
+    The path is re-checked before the delete because this is the one place the build
+    destroys data and a hand-built `ModelConfig` bypasses name validation: the target
+    must still be a direct child of `design/` (no upward-normalising name, absolute path
+    or symlink).
 
     Raises:
-      FatalRtlBuddyError: when the target is not a direct child of the
-        design-export directory, or when the directory is there and cannot be
-        removed. Swallowing that would be the worst of both worlds — the
-        merged graph and the sidecar would say the model was skipped
-        while its old hierarchy stayed on disk and readable, which is
-        exactly the state this retraction exists to prevent. An
-        unwritable output directory is already the kind of setup problem
-        ``build_graph`` propagates rather than degrades. ``rmtree`` is
-        also not atomic — it removes what it can before failing — so a
-        swallowed error can leave a partial tree that no build produced.
+    FatalRtlBuddyError: when the target is not a direct child of the design-export
+    directory, or cannot be removed. The error is not swallowed because `rmtree` is not
+    atomic and a silent failure would leave a stale tree that contradicts the report.
     """
     design_root = out_dir / DESIGN_SUBDIR
     target = design_root / model.name
@@ -988,34 +815,22 @@ def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
 
 
 def _model_ident(project_root: Path, model: ModelConfig) -> str:
-    """A model's whole design-tier identity, for the build fingerprint.
+    """Return a model's design-tier identity for the build fingerprint:
+    `<models.yaml>#<name> top=<root module> graph=<bool>`.
 
-    ``<models.yaml>#<name> top=<root module> graph=<bool>``. The
-    fingerprint's counterpart to :func:`_model_key`, which keys on an
-    absolute realpath and so cannot go into a hash that has to reproduce
-    across checkouts and machines.
-
-    The *declaration* is part of the identity, not just where it lives.
-    A models.yaml under ``--design-dir`` is hashed by the config tier, so
-    editing it moves the fingerprint anyway — but one reached only
-    through a test's ``model_path:`` (a ``--regression`` selection can
-    name a model anywhere) is hashed by nothing. The design tier hashes
-    the model's *sources*, and neither ``top:`` nor ``graph:`` changes
-    those. Without them here, re-rooting such a model left the
-    fingerprint untouched and ``graph build`` served a cached graph
-    rooted at the module the model used to name (#479).
+    The counterpart of `_model_key`, using repo-relative paths so the hash reproduces
+    across checkouts. The declaration (`top:`, `graph:`) is included because a model
+    reached only through a test's `model_path:` is hashed by nothing else, and neither
+    field changes its sources.
     """
     rel = rel_path(project_root, model.path) if model.path else "?"
     return f"{rel}#{model.name} top={model.get_top()} graph={bool(model.graph)}"
 
 
 def _claimants(project_root: Path, models: list[ModelConfig]) -> str:
-    """``name (models.yaml), name (models.yaml)`` — who is in a collision.
+    """Return `name (models.yaml), ...` for the models in a collision.
 
-    The path is what makes the message actionable: the two entries are
-    in different files by construction (a collision *within* one
-    ``models.yaml`` never reaches here — the loader is already fatal on
-    a duplicate ``name:``), so the name alone would not say where to go.
+    The path is needed because the entries are in different files by construction.
     """
     return ", ".join(
         f"{m.name} ({rel_path(project_root, m.path) if m.path else '?'})"
@@ -1024,7 +839,7 @@ def _claimants(project_root: Path, models: list[ModelConfig]) -> str:
 
 
 def _grouped(models: list[ModelConfig], key) -> dict[str, list[ModelConfig]]:
-    """Models bucketed by ``key``, keeping only the buckets with a clash."""
+    """Bucket models by `key`, keeping only buckets with a clash."""
     buckets: dict[str, list[ModelConfig]] = {}
     for model in models:
         buckets.setdefault(key(model), []).append(model)
@@ -1034,61 +849,27 @@ def _grouped(models: list[ModelConfig], key) -> dict[str, list[ModelConfig]]:
 def _reject_colliding_models(
     project_root: Path, models: list[ModelConfig], graphable: list[ModelConfig]
 ) -> None:
-    """Refuse a design tier two models would land in the same slot (#479).
+    """Refuse a design tier in which two models would land in the same slot.
 
-    Two collisions, both of which produce a graph that reads as correct
-    and is not, and neither of which anything downstream can detect —
-    which is why both are refused here rather than reported afterwards.
+    - **Same `name:`**, checked across every model in scope, opted out or not. Per-model
+      artefact paths (`artefacts/graph/design/<name>/`, `artefacts/hier/<name>/`) are
+      keyed on the name, so the second model silently overwrites the first while both
+      report as built. `graph: false` is no way out: selectors identify models by name,
+      and an opted-out duplicate would shadow the graphable one.
+    - **Same top**, checked across graphable models only. Design-tier ids are global
+      (`module:<top>`, `inst:<top>/...`), so `merge_graphs` would produce one module
+      node with one model's file and both designs' children.
 
-    **Same ``name:``, checked across every model in scope, opted out or
-    not.** Every per-model artefact path is keyed on the model name: the
-    export lands in ``artefacts/graph/design/<name>/`` and its generated
-    filelist in ``artefacts/hier/<name>/``. Two models of one name in two
-    ``models.yaml`` files are distinct entries everywhere else
-    (``_model_key`` is realpath-qualified, and so are their ``model:``
-    node ids), so both are planned, both run, and the second silently
-    overwrites the first — while the tier reports both as built and the
-    merge takes whichever bytes survived. A duplicate *within* one file
-    is already fatal in
-    :class:`~rtl_buddy.config.model.ModelConfigLoader`; this is the
-    across-files half of that rule.
-
-    ``graph: false`` is not a way out of *this* half. A model name is how
-    every selector spells a model — ``rb graph build --model NAME``, a
-    test's ``model:``, a back-pointer — and none of them can say which of
-    two entries is meant. An opted-out duplicate is therefore still a
-    name two files are fighting over: it would shadow the graphable one
-    in a name-keyed lookup, silently, and the shadowing is invisible
-    afterwards because the surviving entry looks like the only one.
-
-    **Same top.** A design-tier export's ids are **global** by contract —
-    ``module:<top>``, ``inst:<top>/…`` — and DUT ids are deliberately the
-    one thing suite qualification never touches: they are the weld a TB
-    or run export merges onto (see the id-collision section below). So
-    two models exporting the same top do not produce two hierarchies.
-    :func:`~rtl_buddy.graph.merge.merge_graphs` keeps the first node's
-    attributes and unions both link sets, and what lands in
-    ``graph.json`` is one module node wearing one model's file and line
-    while instantiating both designs' children. ``top:`` is what makes
-    this reachable on purpose, but two same-named models have always
-    collided this way too.
-
-    Names are checked first: it is the more basic identity problem, and
-    when both hold, "rename one model" is the instruction that fixes
-    both.
-
-    The top half is graphable-only: a ``graph: false`` model is never
-    handed to the viewer, so it claims no graph id. Both halves see only
-    the *selected* models, so ``--model`` / ``-c`` narrow the check
-    exactly as they narrow the tier.
+    Names are checked first, since renaming one model fixes both. Both checks see only
+    the selected models.
 
     Args:
-      models: every model in scope, including the opted-out ones.
-      graphable: the subset that will actually be exported.
+      models: Every model in scope, including opted-out ones.
+      graphable: The subset that will be exported.
 
     Raises:
-      FatalRtlBuddyError: naming every model in the collision, the
-        ``models.yaml`` each comes from, and the ways out.
+    FatalRtlBuddyError: naming every model in the collision, the `models.yaml` each
+    comes from, and the ways out.
     """
     for name, claimants in _grouped(models, lambda m: m.name).items():
         log_event(
@@ -1143,14 +924,11 @@ def _reject_colliding_models(
 
 
 def _stitch_link(node_id: str, module_node_id: str, link_type: str) -> dict:
-    """``<config node> --elaborates_as|targets--> module:<top>``.
+    """Return `<config node> --elaborates_as|targets--> module:<top>`.
 
-    The observed twin of the config tier's declared stitch: a ``tb:``
-    node (or a flow run's ``test:`` node) is metadata about an
-    elaboration, and this edge says which design module that elaboration
-    is topped by. It is the same relation the model node's ``maps_to``
-    states, spelled with the source's own verb so a reader never has to
-    recover the source kind from the id prefix.
+    The observed twin of the config tier's declared stitch: it says which design module
+    the `tb:` node's (or flow run's) elaboration is topped by, using the source's own
+    verb.
     """
     return {
         "source": node_id,
@@ -1165,11 +943,9 @@ def _run_tb_tier(
     exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]],
     report: TierReport,
 ) -> list[tuple[TestbenchTarget, dict]]:
-    """Invoke the viewer per testbench; return the graphs that came back.
+    """Invoke the viewer per testbench and return the graphs that came back.
 
-    Failures are recorded per testbench exactly as the model loop
-    records them per model — one broken testbench costs its own
-    hierarchy, never the tier.
+    A broken testbench is recorded as a failure and costs only its own hierarchy.
     """
     pairs: list[tuple[TestbenchTarget, dict]] = []
     built: list[str] = []
@@ -1215,16 +991,10 @@ def _run_flow_tier(
     exporters: list[tuple[FlowRunTarget, RtlBuddyViewGraph]],
     report: TierReport,
 ) -> list[tuple[FlowRunTarget, dict]]:
-    """Invoke the viewer per flow run; return the graphs that came back.
+    """Invoke the viewer per flow run and return the graphs that came back.
 
-    Same contract as :func:`_run_tb_tier`: one broken run costs its own
-    hierarchy, never the tier, and its failure row names the run.
-
-    ``report.extra["flow_runs"]`` counts **exports**, not runs — a suite
-    proving one checker under ``bmc`` and ``prove`` elaborates it once —
-    so a collapsed export names its extra runs in parentheses rather than
-    letting a reader of ``graph-meta.json`` infer that the twin was
-    dropped. Every collapsed run still gets its own ``targets`` stitch.
+    Same contract as `_run_tb_tier`. `report.extra["flow_runs"]` counts exports, not
+    runs, so a collapsed export names its extra runs in parentheses.
     """
     pairs: list[tuple[FlowRunTarget, dict]] = []
     built: list[str] = []
@@ -1258,9 +1028,8 @@ def _run_flow_tier(
             report.failures.append({"run": target.label, "error": str(exc)})
             continue
         pairs.append((target, payload))
-        # One entry per *export*, not per run — but a de-duplicated export
-        # names every run it collapsed, so `graph-meta.json` never reads as
-        # if the twin had been dropped (it gets its own `targets` stitch).
+        # One entry per export; a de-duplicated export names every run it collapsed, so
+        # `graph-meta.json` does not read as if the twin were dropped.
         built.append(
             target.label
             if len(target.run_names) == 1
@@ -1272,37 +1041,25 @@ def _run_flow_tier(
     return pairs
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 # Testbench id collisions
-#
-# `module:<name>` is a *global* id by contract, but a SystemVerilog module
-# name is only unique inside one elaboration. Testbenches are where that
-# stops being a technicality: the conventional name for a testbench top is
-# `tb_top`, and a project with eight suites has eight different modules
-# called that, in eight different files. Unioned naively they become one
-# node that instantiates every DUT in the project, and one
-# `inst:tb_top/tb_top.i_dut` that is `instance_of` four different modules.
-# Those are not merge artefacts a consumer can filter out — they are
-# statements the graph makes that are false.
-#
-# So a TB export's ids are qualified with the suite that owns them when,
-# and only when, the same id is claimed by a different *file* somewhere
-# else in the design tier. DUT ids are never touched: they are the weld,
-# and the whole point of the TB export is that its `module:<dut>` is the
-# same node the DUT export produced.
-# ---------------------------------------------------------------------------
+# `module:<name>` is a global id, but a module name is unique only within one
+# elaboration, and every suite may have its own `tb_top`. Unioned naively they
+# become one node instantiating every DUT, which is false. A TB export's ids are
+# therefore suite-qualified when, and only when, a different file claims the same
+# id elsewhere in the design tier. DUT ids are never touched: they are the weld
+# between the DUT and TB exports.
+# -----------------------------------------------------------------------
 
-#: Separates a design-tier id from the suite that disambiguates it.
-#: ``@`` cannot appear in a module name or an instance path, so a
-#: qualified id is always decomposable and never collides with a real one.
+# Separates a design-tier id from the suite that disambiguates it. `@` cannot appear in
+# a module name or instance path.
 QUALIFIER_SEP = "@"
 
 
 def _ambiguous_ids(graphs: list[dict]) -> dict[str, list[str]]:
-    """Design-tier ids claimed by more than one source file.
+    """Return design-tier ids claimed by more than one source file.
 
-    Nodes without a ``file`` are ignored rather than guessed at: an id
-    with no evidence of where it came from is not evidence of a clash.
+    Nodes without a `file` are ignored.
     """
     files: dict[str, set[str]] = {}
     for graph in graphs:
@@ -1318,18 +1075,11 @@ def _qualify_graph(
 ) -> tuple[dict, dict[str, str]]:
     """Suite-qualify the ambiguous ids in one TB export.
 
-    Two things get qualified:
+    Qualified are any node whose id another file also claims, and every `inst:` node
+    whose root module is ambiguous (the instance id embeds its root).
 
-    * any node whose id another file also claims — the collision itself;
-    * every ``inst:`` node in the export, when its **root module** is one
-      of those. An instance id embeds the root it was reached from
-      (``inst:tb_top/tb_top.i_dut``), so if the root is ambiguous the
-      whole path is, including the parts that happen not to clash today.
-
-    Returns the rewritten graph (the on-disk per-testbench export is left
-    exactly as the viewer wrote it — qualification is a merge-time
-    decision, not a fact about the elaboration) and the id map that was
-    applied.
+    Returns the rewritten graph and the applied id map. The on-disk per-testbench export
+    is left as the viewer wrote it.
     """
     design = (graph.get("graph") or {}).get("design") or {}
     root_id = module_id(design.get("top") or "")
@@ -1352,9 +1102,7 @@ def _qualify_graph(
         if node_id in rename:
             node = dict(node)
             node["id"] = rename[node_id]
-            # Keep the name the design actually uses reachable: `label`
-            # is what `rb graph query` matches on, and an agent asking
-            # about `tb_top` must still find every one of them.
+            # Keep the original name reachable: `rb graph query` matches on `label`.
             node["unqualified_id"] = node_id
             node["qualified_by"] = qualifier
         nodes.append(node)
@@ -1373,11 +1121,10 @@ def _qualify_graph(
 
 
 def _collision_base_name(original: str) -> str | None:
-    """The module name behind a collision entry that gets an indexed label.
+    """Return the module name behind a collision entry that gets an indexed label, or None.
 
-    ``module:X`` and ``inst:X/X`` (the root scope of X's own elaboration)
-    both resolve to ``X``; anything else — ports, child instances — is
-    not label-indexed and returns None.
+    `module:X` and `inst:X/X` resolve to `X`; ports and child instances are not
+    label-indexed.
     """
     if original.startswith("module:"):
         return original[len("module:") :]
@@ -1389,29 +1136,15 @@ def _collision_base_name(original: str) -> str | None:
 
 
 def _index_collision_labels(graphs: list[dict], collisions: dict[str, dict]) -> None:
-    """Give each colliding testbench top a rendered label of ``name(i)``.
+    """Give each colliding testbench top a label `name(i)`.
 
-    Reusing a conventional top name (``tb_top``) across suites is a
-    supported pattern — the *ids* stay apart via the suite qualifier, but
-    N nodes all labelled ``tb_top`` are indistinguishable on the graph
-    pane. So the module node (and its root-scope instance) get a
-    deterministic short label ``tb_top(0)`` … ``tb_top(N-1)``.
+    Ids stay apart via the qualifier, but N nodes labelled `tb_top` are
+    indistinguishable in the pane. The index is keyed on (base name, qualifier) over the
+    union of the `module:X` and `inst:X/X` entries, so one suite gets one index on both.
+    Sorting by qualifier makes it stable across rebuilds.
 
-    The index is keyed on (base name, qualifier) and derived from the
-    **union** of the ``module:X`` and ``inst:X/X`` entries' qualifiers —
-    not per entry — because the two entries can carry different suite
-    sets (a suite where ``X`` is a module but not the elaboration top
-    joins the module entry only), and indexing them independently could
-    render one suite as ``tb_top(2)`` on the module and ``tb_top(1)`` on
-    its root instance. Keying on the qualifier makes the guarantee
-    structural. Sorting by qualifier = sorting by suite path, so the
-    index is stable across rebuilds.
-
-    The original name stays in ``base_label`` (and inside
-    ``unqualified_id``); query scoring and node resolution treat
-    ``base_label`` like ``label``, so ``tb_top`` still matches at the
-    exact-name tier. Deeper nodes (ports, child instances) keep their
-    own labels — they render nested under an indexed parent.
+    The original name stays in `base_label` (and `unqualified_id`), which query scoring
+    treats like `label`. Deeper nodes keep their own labels.
     """
     base_qualifiers: dict[str, set[str]] = {}
     for original, entry in collisions.items():
@@ -1461,15 +1194,12 @@ def _qualify_tb_graphs(
     pairs: list[tuple[TestbenchTarget | FlowRunTarget, dict]],
     report: TierReport,
 ) -> tuple[list[dict], list[dict]]:
-    """Resolve TB/run id collisions and emit the config -> ``module:`` stitches.
+    """Resolve TB and run id collisions and emit the config-to-`module:` stitches.
 
-    The stitch points at the top the viewer *actually* elaborated
-    (``graph.design.top``, which it auto-corrects when the ``--tb-top``
-    hint names no real module), after qualification — so the edge always
-    lands on a node that exists and is the right one. Its type is the
-    target's own verb: ``elaborates_as`` for a testbench, ``targets``
-    for a flow run — the qualification machinery is shared, the stitch
-    vocabulary is not.
+    The stitch points at the top the viewer actually elaborated (`graph.design.top`,
+    corrected when the `--tb-top` hint names no real module), after qualification. Its
+    type is the target's verb: `elaborates_as` for a testbench, `targets` for a flow
+    run.
     """
     ambiguous = _ambiguous_ids(model_graphs + [graph for _, graph in pairs])
     graphs: list[dict] = []
@@ -1480,9 +1210,8 @@ def _qualify_tb_graphs(
         graphs.append(qualified)
         design = (graph.get("graph") or {}).get("design") or {}
         root_id = module_id(design.get("top") or design.get("tb_top") or target.tb_top)
-        # One stitch per config node the export answers for: a flow-run
-        # export de-duplicated across several runs stitches each of their
-        # `test:` nodes, or a qualified top would strand the twins.
+        # One stitch per config node the export answers for, so a de-duplicated flow-run
+        # export stitches each run's `test:` node.
         for node_id in target.node_ids:
             stitches.append(
                 _stitch_link(node_id, rename.get(root_id, root_id), target.stitch_type)
@@ -1495,10 +1224,8 @@ def _qualify_tb_graphs(
             entry["qualified"].append(new_id)
     if collisions:
         for entry in collisions.values():
-            # Sorted + deduped is a *stated* property of the meta payload
-            # (docs/concepts/graph.md): it is what the label index derives
-            # from, so it is established here where the entry is built,
-            # not as a labelling side effect.
+            # Sorted and deduplicated is a stated property of the meta payload
+            # (docs/concepts/graph.md) and the label index derives from it.
             entry["qualified"] = sorted(set(entry["qualified"]))
         _index_collision_labels(graphs, collisions)
         report.extra["id_collisions"] = [collisions[k] for k in sorted(collisions)]
@@ -1517,7 +1244,7 @@ def _run_design_tier(
     exporters: list[tuple[ModelConfig, RtlBuddyViewGraph]],
     report: TierReport,
 ) -> list[dict]:
-    """Invoke the viewer per model; return the graphs that came back."""
+    """Invoke the viewer per model and return the graphs that came back."""
     graphs: list[dict] = []
     built: list[str] = []
     for model, exporter in exporters:
@@ -1582,42 +1309,37 @@ def build_graph(
     extract_version: str | None = None,
     force: bool = False,
 ) -> GraphBuild:
-    """Build (or refresh) the merged graph under ``artefacts/graph``.
+    """Build (or refresh) the merged graph under `artefacts/graph`.
+
+    Never raises for a tier that could not be built; inspect `failed_tiers()` /
+    `has_failures()`. Unrecoverable setup problems (unreadable regression config,
+    unwritable output directory, two graphable models rooted at the same module)
+    propagate.
 
     Args:
-      project_root: Directory holding ``root_config.yaml``. Node ids and
-        every path in the meta sidecar are relative to it.
-      models: Models to export in the design tier. ``None`` means every
-        model under ``design_dir``; an empty list means none.
-      spec_dir / verif_dir / design_dir: Search-root overrides, matching
-        ``extract_config_tier``'s defaults.
-      out_dir: Output directory. Defaults to ``<root>/artefacts/graph``.
-      view_executable / view_version: The ``rtl-buddy-view`` binary and
-        its probed version (used for the feature gate and fingerprint).
-      design: False skips the design tier entirely (config-only graph).
-      tb: False skips the TB-rooted half of the design tier — DUT
-        hierarchies only, no SV testbench modules or instances. It is a
-        cost switch, not a correctness one: every testbench doubles the
-        elaboration work for the design it sits on top of.
-      flow_tops: False skips the run-rooted exports (#385) — the
-        formal/synth/cdc run tops that only elaborate inside their
-        flow's own filelist. The same kind of cost switch as ``tb``.
-      bind: False skips the post-merge binding stage (#378) — no
-        ``binds_to`` / ``drives`` / ``checks_against`` edges.
-      extract_enabled: False skips the extractor's binding tier without
-        probing for the tool.
-      extract_cross_check: Run the extractor's ``merge-graphs`` and
-        compare against the internal union.
+    project_root: Directory holding `root_config.yaml`; node ids and meta paths are
+    relative to it.
+    models: Models to export in the design tier. `None` means every model under
+    `design_dir`; an empty list means none.
+    spec_dir, verif_dir, design_dir: Search-root overrides, matching
+    `extract_config_tier`.
+      out_dir: Output directory. Defaults to `<root>/artefacts/graph`.
+    view_executable, view_version: The `rtl-buddy-view` binary and its probed version
+    (feature gate and fingerprint).
+      design: False skips the design tier (config-only graph).
+    tb: False skips the TB-rooted exports (DUT hierarchies only). A cost switch, since
+    each testbench doubles elaboration work.
+      flow_tops: False skips the run-rooted exports. A cost switch like `tb`.
+    bind: False skips the post-merge binding stage (no `binds_to`, `drives` or
+    `checks_against` edges).
+    extract_enabled: False skips the extractor's binding tier without probing for the
+    tool.
+    extract_cross_check: Compare the extractor's `merge-graphs` against the internal
+    union.
       force: Rebuild even when the fingerprint is unchanged.
 
     Returns:
-      GraphBuild: paths, per-tier reports, and whether anything ran.
-
-    Never raises for a tier that could not be built — inspect
-    ``failed_tiers()`` / ``has_failures()``. Only a genuinely
-    unrecoverable setup problem (unreadable regression config, unwritable
-    output directory, two graphable models rooted at the same module)
-    propagates.
+      Paths, per-tier reports, and whether anything ran.
     """
     root = Path(os.path.realpath(str(project_root)))
     search_spec = Path(spec_dir) if spec_dir is not None else root / "spec"
@@ -1639,8 +1361,8 @@ def build_graph(
     exporters: list[tuple[ModelConfig, RtlBuddyViewGraph]] = []
     tb_exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]] = []
     flow_exporters: list[tuple[FlowRunTarget, RtlBuddyViewGraph]] = []
-    # What the design tier selected, kept outside the branches below so
-    # the fingerprint can see it whichever way the tier resolved.
+    # What the design tier selected, kept outside the branches so the fingerprint sees
+    # it either way.
     graphable: list[ModelConfig] = []
     tb_targets: list[TestbenchTarget] = []
     run_targets: list[FlowRunTarget] = []
@@ -1652,38 +1374,20 @@ def build_graph(
         design_report.status = SKIPPED
         design_report.detail = f"no models found under {rel_path(root, search_design)}"
     else:
-        # #479: a model that declares `graph: false` has no elaborable
-        # root — an SV `interface` published as a library entry, a
-        # filelist of vendored IP with no module named after the model.
-        # It is recorded as skipped and never handed to the viewer, so
-        # the project stops carrying a permanent failure row it cannot
-        # silence. The config tier still emits its `model:` node.
-        #
-        # The whole partition happens *before* the viewer version gate:
-        # what is left after it is the answer to "does this tier need the
-        # viewer at all", and an outdated viewer must not fail a tier that
-        # was never going to invoke it. Target discovery is config reading
-        # only — the config tier reads the same files a few lines below.
+        # A model with `graph: false` has no elaborable root (an SV interface, vendored
+        # IP). It is recorded as skipped and never handed to the viewer; the config tier
+        # still emits its `model:` node. The partition happens before the viewer version
+        # gate, so an outdated viewer cannot fail a tier that never invokes it.
         graphable = [model for model in models if model.graph]
-        # First, before anything is planned, exported *or deleted*: no two
-        # models in scope may share a name (their artefact paths and every
-        # name-keyed lookup collide, opt-out or not), and no two graphable
-        # ones may share a top (their graph ids collide).
-        #
-        # The ordering is load-bearing, not tidiness. `design/<name>/` is
-        # keyed on the name, so a colliding pair *shares* that directory —
-        # and the retraction below would delete it on the opted-out
-        # model's behalf before the collision was reported. The command
-        # would fail as intended and destroy the graphable model's export
-        # on the way out, for a configuration it never accepted.
+        # The collision check must run before anything is planned, exported or deleted:
+        # a colliding pair shares `design/<name>/`, and the retraction below would
+        # delete it on the opted-out model's behalf before the collision was reported.
         _reject_colliding_models(root, models, graphable)
         for model in models:
             if model.graph:
                 continue
             design_report.skipped.append({"model": model.name, "reason": GRAPH_OPT_OUT})
-            # The export is durable, so opting out has to retract it —
-            # otherwise `design/<name>/graph.json` keeps serving the
-            # hierarchy this build just declared the model does not have.
+            # The export is durable, so opting out must retract it.
             if _drop_stale_export(out, model):
                 log_event(
                     logger,
@@ -1705,9 +1409,8 @@ def build_graph(
 
         gate = check_view_supports_graph(view_version)
         if not (graphable or tb_targets or run_targets):
-            # Everything in scope opted out. Nothing broke, so the tier is
-            # skipped rather than failed — a project whose design dir holds
-            # only library models must still exit 0, whatever viewer it has.
+            # Everything in scope opted out: skipped, not failed, so a library-only
+            # project still exits 0.
             design_report.status = SKIPPED
             design_report.detail = (
                 f"every model in scope opted out ({len(design_report.skipped)} skipped)"
@@ -1734,10 +1437,9 @@ def build_graph(
                     continue
                 sources.extend(exporter.source_files())
                 exporters.append((model, exporter))
-            # TB-rooted exports are part of this tier: same exporter,
-            # same filelist machinery, one extra `--tb-top`. Their
-            # sources join the tier's input hashes, which is what keeps
-            # the no-op check honest when only a testbench changed.
+            # TB-rooted exports use the same exporter and filelist machinery with
+            # `--tb-top`. Their sources join the input hashes so a testbench-only change
+            # defeats the no-op check.
             if tb_targets:
                 for target, exporter in _tb_exporters(
                     root,
@@ -1755,11 +1457,9 @@ def build_graph(
                         continue
                     sources.extend(exporter.source_files())
                     tb_exporters.append((target, exporter))
-            # Run-rooted exports (#385): same tier, same filelist
-            # machinery, `--tb-top` carrying the run's `top:` over the
-            # model filelist + the flow's own sources. Those sources
-            # join the tier's input hashes too, so editing a properties
-            # file invalidates the cached graph.
+            # Run-rooted exports work the same way: `--tb-top` carries the run's `top:`
+            # over the model filelist plus the flow's sources, which join the input
+            # hashes.
             if run_targets:
                 for target, exporter in _flow_exporters(
                     root,
@@ -1779,9 +1479,8 @@ def build_graph(
                     flow_exporters.append((target, exporter))
             design_report.inputs = hash_inputs(root, sources)
             if not exporters and not tb_exporters and not flow_exporters:
-                # Reachable only when something in scope *was* graphable
-                # and none of it produced a filelist — the all-opted-out
-                # case short-circuited to SKIPPED before the gate above.
+                # Reached only when something graphable produced no filelist; the
+                # all-opted-out case skipped above.
                 design_report.status = FAILED
                 design_report.detail = "no model produced a filelist"
     reports[DESIGN_TIER] = design_report
@@ -1792,14 +1491,10 @@ def build_graph(
         spec_dir=str(search_spec),
         verif_dir=str(search_verif),
         design_dir=str(search_design),
-        # Only the models this build exports get a config->design stitch
-        # (#479). The config tier walks the whole `--design-dir`, so
-        # `--model` / `-c` leave it holding models the design tier will
-        # not cover — and `module:<top>` is a global id, so an unselected
-        # model sharing a selected one's `top:` would have its `maps_to`
-        # resolve against the *other* model's hierarchy after the merge.
-        # `--no-design` passes None: nothing is exported, so nothing can
-        # be falsely resolved to, and the stitches dangle as documented.
+        # Only models this build exports get a config-to-design stitch: `module:<top>`
+        # is global, so an unselected model sharing a selected one's `top:` would
+        # resolve against the other's hierarchy. `--no-design` passes None, so stitches
+        # dangle as documented.
         exported_models=graphable if design else None,
     )
     config_meta = (config.meta.get("tiers") or {}).get(CONFIG_TIER, {})
@@ -1835,33 +1530,20 @@ def build_graph(
         if not extract_inputs:
             binding_report.status = SKIPPED
             binding_report.detail = "no verif Python or spec markdown found"
-    # The in-process binding stage reads verif/spec Python (and C/C++, for
-    # the DPI symbol scan) whether or not an extractor is installed, so its
-    # inputs belong in the tier's hash list unconditionally: editing a cocotb
-    # test or a DPI reference model must invalidate the cache.
+    # The binding stage reads verif/spec Python (and C/C++ for DPI) with or without the
+    # extractor, so its inputs are always hashed.
     bind_inputs = collect_sources(search_verif, search_spec) if bind else []
     binding_report.inputs = hash_inputs(root, sorted(set(extract_inputs + bind_inputs)))
     reports[BINDING_TIER] = binding_report
 
     # --- no-op check ----------------------------------------------------
     tier_inputs = {name: report.inputs for name, report in reports.items()}
-    # What this invocation *chose* to cover, alongside what it read.
-    # Inputs alone are not enough to decide a re-run is a no-op: a design
-    # tier whose models all declared `graph: false` hashes nothing, so
-    # narrowing it with `--model` — or dropping `--tb` / `--flow-tops` —
-    # moves nothing in `tier_inputs`, the fingerprint matches, and the
-    # build hands back a `graph-meta.json` whose `skipped` list describes
-    # the *previous* invocation (#479). The selectors and the opt-out
-    # records are part of what the sidecar reports, so they are part of
-    # what makes it stale. Identities are repo-relative, so the
-    # fingerprint still reproduces across checkouts.
-    #
-    # `models` covers every *selected* model, opted out or not, and each
-    # entry carries its `top:` and `graph:`. Membership alone would in
-    # fact catch an opt-out — the model leaves the exported set and gains
-    # a skip record, and both are here — but that leans on two derived
-    # lists agreeing, where the declaration itself is the thing that
-    # changed. `top:` has no such indirect route at all.
+    # The selection and opt-out records are part of what the sidecar reports, so they
+    # belong in the no-op check: a design tier whose models all opted out hashes
+    # nothing, and narrowing it with `--model` or dropping `--tb` / `--flow-tops` would
+    # otherwise leave a stale `skipped` list. Identities are repo-relative. `models`
+    # covers every selected model with its `top:` and `graph:`, so a changed declaration
+    # is seen directly.
     selection = {
         DESIGN_TIER: {
             "enabled": design,
@@ -1924,8 +1606,8 @@ def build_graph(
             design_graphs += tb_graphs
         if design_graphs:
             design_report.status = BUILT
-            # One model is the common case; keep its envelope untouched
-            # rather than wrapping it in a merged-of-one.
+            # One model is the common case; keep its envelope rather than wrapping it in
+            # a merged-of-one.
             design_graph = (
                 design_graphs[0]
                 if len(design_graphs) == 1
@@ -1949,17 +1631,10 @@ def build_graph(
             design_report.status = FAILED
             design_report.detail = "no model exported successfully"
 
-    # The `tb:` node (and a flow run's `test:` node) belongs to the
-    # config tier, so its stitch to the hierarchy it elaborates is a
-    # config-tier link — the same asymmetry `model --maps_to--> module:`
-    # already has. It can only be written after the export, because only
-    # the export knows the top the viewer really elaborated (a testbench
-    # may declare no `toplevel:` at all) and whether that id had to be
-    # suite-qualified. Where both exist the export wins: the config
-    # tier's `toplevel:`- / `top:`-derived edge is a declaration, this
-    # one is an observation of the same thing. Matching is on (source,
-    # type) so a run's declared `targets` is replaced without touching
-    # its other edges.
+    # The `tb:` node (and a flow run's `test:` node) belongs to the config tier, so its
+    # stitch is a config-tier link written after the export, when the elaborated top and
+    # any suite qualification are known. The observed edge replaces the declared one,
+    # matched on (source, type), leaving the node's other edges alone.
     if tb_stitches:
         exported = {(link["source"], link["type"]) for link in tb_stitches}
         config.graph["links"] = [
@@ -1968,9 +1643,8 @@ def build_graph(
             if (link["source"], link["type"]) not in exported
         ]
         config.graph["links"].extend(tb_stitches)
-        # Restore the extractor's canonical ordering so the config
-        # tier's own file stays byte-identical across runs that changed
-        # nothing.
+        # Restore the extractor's canonical ordering so the config tier's file stays
+        # byte-identical across no-change runs.
         config.graph["links"].sort(
             key=lambda link: (link["source"], link["target"], link["type"])
         )
@@ -2018,13 +1692,10 @@ def build_graph(
     }
     merged = merge_graphs(tier_graphs, **merge_kwargs)
 
-    # --- binding stage (post-merge, #378) --------------------------------
-    #
-    # It runs *after* the union because it needs both halves at once: the
-    # config tier says which cocotb module belongs to which toplevel, the
-    # design tier owns the `port:` nodes a `dut.<name>` access resolves
-    # against. Its output is a fourth graph, re-merged in below, so the
-    # stage itself stays a pure function of the graph it was handed.
+    # --- binding stage (post-merge) --------------------------------------
+    # It runs after the union because it needs both halves: the config tier gives cocotb
+    # module to toplevel, the design tier owns the `port:` nodes. Its output is a fourth
+    # graph merged in below.
     binding_info: dict = {"status": SKIPPED, "detail": "disabled (--no-bind)"}
     if bind:
         stage = bind_python(
@@ -2054,17 +1725,16 @@ def build_graph(
                 drives=stage.drives,
                 inferred=stage.inferred,
                 checks=stage.checks,
-                # The DPI pass's counters ride the same line: this is the
-                # one event that tells a machine-mode consumer it ran.
+                # The DPI counters ride the same line; it is the one event that tells a
+                # machine-mode consumer the pass ran.
                 dpi=stage.dpi_functions,
                 implemented=stage.dpi_implemented,
             )
 
     merge_info: dict = {
         "strategy": "node-id-union",
-        # De-duplicated: the binding tier has two producers (the extractor and
-        # the post-merge stage) and contributes two graphs, but it is
-        # still one tier.
+        # Deduplicated: the extractor and the binding stage contribute two graphs to one
+        # tier.
         "tiers": list(dict.fromkeys(tier for tier, _ in tier_graphs)),
         "stitch_points": len(stitch_points(tier_graphs)),
         "dangling": dangling_targets(merged),
@@ -2133,17 +1803,9 @@ def _ordered(reports: dict[str, TierReport]) -> list[TierReport]:
 def _hydrate_from_meta(reports: dict[str, TierReport], stored_meta: dict) -> None:
     """Re-state a skipped build's tiers from the sidecar it is reusing.
 
-    Nothing ran, so the live reports only know what could be worked out
-    before the exporters would have been invoked: the config tier has
-    real counts (it is extracted to compute the fingerprint), the design
-    tier has none. Filling both in from ``graph-meta.json`` keeps the
-    envelope truthful about the ``graph.json`` on disk.
-
-    A tier that **failed** in the cached build stays failed — the
-    fingerprint matching only proves the inputs didn't move, and
-    reporting a still-broken tier as ``cached`` would turn a permanent
-    failure (viewer missing, model unparseable) into a green exit on
-    every run after the first.
+    The config tier has live counts; the design tier has none. A tier that failed in the
+    cached build stays failed, since a matching fingerprint only proves the inputs did
+    not move.
     """
     stored_tiers = stored_meta.get("tiers") or {}
     for name, report in reports.items():
@@ -2177,12 +1839,10 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _project_root_rel(project_root: Path, graph_path: Path) -> str:
-    """Project root relative to the merged graph file.
+    """Return the project root relative to the merged graph file.
 
-    Node ``file`` fields are project-relative, so a consumer holding only
-    ``graph.json`` gets back to the sources with
-    ``dirname(graph.json)/project_root_rel/<node file>``. The contracted
-    ``artefacts/graph/graph.json`` yields ``"../.."``.
+    The contracted `artefacts/graph/graph.json` yields `"../.."`. Node `file` fields
+    resolve as `dirname(graph.json)/project_root_rel/<node file>`.
     """
     try:
         return Path(

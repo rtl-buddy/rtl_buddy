@@ -2,25 +2,12 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The optional binding-tier extractor for ``rb graph build`` (#377/#391).
+"""Runs the optional binding-tier extractor (`rb-graph-extract`) for `rb graph build`.
 
-The extractor (`rtl-buddy-graph-extract`, a satellite package) contributes
-the **binding tier**: the Python-level structure of cocotb tests,
-preproc/postproc hooks and golden models, plus the section structure of
-the spec markdown. It is an *optional* dependency — with it absent
-``rb graph build`` still writes a design + config graph and says so in
-the envelope — so everything here is written to degrade instead of raise:
-
-* the tool is discovered through :mod:`rtl_buddy.tool_manifest`, the same
-  gate ``rb tool-check`` reports on;
-* a non-zero exit, a missing output file, or output that isn't node-link
-  JSON marks the tier ``failed`` with a reason and leaves the other tiers
-  intact.
-
-The argv shapes below are the producer/consumer contract, owned by
-rtl-buddy and restated in the extractor repo's
-``docs/extract-contract.md``; both suites assert it, so a drift on
-either side fails one of them. Change it in lockstep or not at all.
+The extractor is discovered through `rtl_buddy.tool_manifest`. Any failure (missing
+tool, non-zero exit, missing or non-node-link output) marks the tier `failed` with a
+reason and leaves the other tiers intact. The argv shapes are a contract with the
+extractor repo's `docs/extract-contract.md`; change both together.
 """
 
 from __future__ import annotations
@@ -37,30 +24,27 @@ from ..tool_manifest import check_tool, get_manifest
 
 logger = logging.getLogger(__name__)
 
-#: Manifest name of the bundled extractor package (rtl_buddy#391) and
-#: the binary it installs.
+# Manifest name of the extractor package and the binary it installs.
 GRAPH_EXTRACT_TOOL = "rtl-buddy-graph-extract"
 GRAPH_EXTRACT_BINARY = "rb-graph-extract"
 
-#: Subcommand that runs the deterministic extraction pass.
+# Subcommand for the deterministic extraction pass.
 EXTRACT_VERB = "extract"
 
-#: Subcommand that unions node-link graphs. Used only as a cross-check —
-#: ``rtl_buddy.graph.merge`` owns the merge that actually ships.
+# Subcommand that unions node-link graphs; used only as a cross-check of `merge.py`.
 MERGE_VERB = "merge-graphs"
 
-#: Emitted (and expected) envelope format.
+# Node-link envelope format.
 GRAPH_FORMAT = "node-link"
 
-#: Seconds before an extractor subprocess is abandoned. The pass is
-#: optional, so a hung tool must not hang the build.
+# Seconds before an extractor subprocess is abandoned.
 DEFAULT_TIMEOUT = 900
 
-#: Files handed to the deterministic pass, by tree.
+# Input suffixes by tree.
 VERIF_SUFFIXES = (".py",)
 SPEC_SUFFIXES = (".md",)
 
-#: Directories never descended into when collecting extractor inputs.
+# Directories skipped when collecting extractor inputs.
 _SKIP_DIRS = frozenset(
     {".git", "__pycache__", "artefacts", "obj_dir", "node_modules", "venv", ".venv"}
 )
@@ -70,11 +54,9 @@ _SKIP_DIRS = frozenset(
 class ExtractResult:
     """Outcome of one extractor invocation.
 
-    Attributes:
-      ok (bool): True when the graph was produced and parsed.
-      graph (dict | None): Parsed node-link payload when ``ok``.
-      detail (str | None): Human-readable reason when not ``ok``.
-      cmd (list[str]): argv actually executed (empty when nothing ran).
+    `ok` is True when the graph was produced and parsed. `graph` is the parsed node-link
+    payload when `ok`, `detail` the reason when not, and `cmd` the argv executed (empty
+    if nothing ran).
     """
 
     ok: bool
@@ -85,14 +67,10 @@ class ExtractResult:
 
 @dataclass(frozen=True)
 class ExtractorChoice:
-    """The binding-tier extractor `rb graph build` decided to run.
+    """The extractor `rb graph build` will run.
 
-    Attributes:
-      executable (str): binary handed to :func:`run_extract`.
-      version (str): probed version, or ``"unknown"`` for a tool that
-        is present but would not report one — either way the string
-        lands in the build fingerprint, so an upgrade invalidates the
-        cached build.
+    `version` is the probed version, or `"unknown"`; it enters the build fingerprint so
+    an upgrade invalidates the cached build.
     """
 
     executable: str
@@ -100,11 +78,11 @@ class ExtractorChoice:
 
 
 def resolve_extractor(root_cfg=None) -> ExtractorChoice | None:
-    """The bundled extractor when installed, else None (tier skipped)."""
+    """Return the extractor when installed, else None (tier skipped)."""
     spec = next(
         (s for s in get_manifest(root_cfg) if s.name == GRAPH_EXTRACT_TOOL), None
     )
-    if spec is None:  # pragma: no cover - manifest always carries it
+    if spec is None:  # pragma: no cover - the manifest always carries it
         return None
     status = check_tool(spec)
     if status.status == "missing":
@@ -115,11 +93,10 @@ def resolve_extractor(root_cfg=None) -> ExtractorChoice | None:
 def collect_inputs(
     verif_dir: str | os.PathLike | None, spec_dir: str | os.PathLike | None
 ) -> list[str]:
-    """Absolute paths of the verif Python and spec markdown the extractor reads.
+    """Return sorted absolute paths of the verif Python and spec markdown files the
+    extractor reads.
 
-    Deliberately narrow: the deterministic pass is about Python
-    structure and prose, and the RTL is already covered by the design
-    tier. Sorted so the resulting hash list is stable.
+    RTL is left to the design tier.
     """
     found: list[str] = []
     for root, suffixes in ((verif_dir, VERIF_SUFFIXES), (spec_dir, SPEC_SUFFIXES)):
@@ -136,7 +113,7 @@ def collect_inputs(
 def build_extract_cmd(
     executable: str, inputs: list[str], output: str | os.PathLike
 ) -> list[str]:
-    """argv for the extractor's deterministic extraction pass."""
+    """Return argv for the extraction pass."""
     return [
         executable,
         EXTRACT_VERB,
@@ -151,7 +128,7 @@ def build_extract_cmd(
 def build_merge_cmd(
     executable: str, inputs: list[str], output: str | os.PathLike
 ) -> list[str]:
-    """argv for the extractor's ``merge-graphs`` verb (cross-check only)."""
+    """Return argv for the `merge-graphs` cross-check."""
     return [
         executable,
         MERGE_VERB,
@@ -166,12 +143,11 @@ def build_merge_cmd(
 def _run(
     cmd: list[str], log_path: str | os.PathLike | None, cwd: str | None
 ) -> tuple[int, str]:
-    """Run ``cmd``, tee stderr into ``log_path``, return (rc, stderr tail).
+    """Run `cmd`, append its output to `log_path`, and return (returncode, last output
+    line).
 
-    Goes through :func:`~rtl_buddy.process_utils.run_managed_process`
-    rather than plain ``subprocess.run``: an extraction pass over a large
-    verif tree is a long-running tool invocation, and the optional tier
-    must not be able to strand a child process or hang the build.
+    Uses `run_managed_process` so a hung extractor cannot strand a child or hang the
+    build. Returns 127 when the binary is missing and 124 on timeout.
     """
     try:
         proc = run_managed_process(
@@ -193,7 +169,7 @@ def _run(
                 handle.write("$ " + " ".join(cmd) + "\n")
                 handle.write(proc.stdout or "")
                 handle.write(proc.stderr or "")
-        except OSError:  # pragma: no cover - log is best effort
+        except OSError:  # pragma: no cover - the log is best effort
             pass
     tail = (proc.stderr or proc.stdout or "").strip().splitlines()
     return proc.returncode, tail[-1] if tail else ""
@@ -219,11 +195,9 @@ def run_extract(
     log_path: str | os.PathLike | None = None,
     cwd: str | None = None,
 ) -> ExtractResult:
-    """Run the extractor's deterministic pass over ``inputs``.
+    """Run the extractor over `inputs`, writing `output`.
 
-    Never raises: a failure is reported through
-    :class:`ExtractResult` so the caller can mark the binding tier
-    failed and still write the merged design + config graph.
+    Never raises; failures are reported through `ExtractResult`.
     """
     if not inputs:
         return ExtractResult(ok=False, detail="no verif Python or spec markdown found")
@@ -253,12 +227,10 @@ def run_merge_cross_check(
     log_path: str | os.PathLike | None = None,
     cwd: str | None = None,
 ) -> dict:
-    """Compare the extractor's ``merge-graphs`` against the internal union.
+    """Compare the extractor's `merge-graphs` result with the internal union `internal`.
 
-    The internal merge is the one that ships — this only reports whether
-    the extractor's union agrees, so a divergence in either
-    implementation surfaces instead of hiding. The returned dict lands
-    in ``graph-meta.json`` under ``merge.extract_cross_check``.
+    Returns a status dict stored in `graph-meta.json` under `merge.extract_cross_check`.
+    The internal merge is the one that ships.
     """
     if len(tier_files) < 2:
         return {"status": "skipped", "detail": "fewer than two tier files"}
@@ -281,7 +253,7 @@ def run_merge_cross_check(
         "internal_links": len(internal.get("links") or []),
         "extract_links": len(graph.get("links") or []),
     }
-    # Bounded: a wholesale disagreement should not blow up the sidecar.
+    # Capped so a wholesale disagreement cannot bloat the sidecar.
     if only_internal:
         result["only_internal"] = only_internal[:20]
     if only_extract:

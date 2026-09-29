@@ -2,36 +2,14 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Config-tier extractor for the design knowledge graph (#376).
+"""Config-tier extractor for the design knowledge graph.
 
-``tests.yaml`` / ``models.yaml`` / ``specs.yaml`` already spell out the
-design <-> verif <-> spec relationships (``testbench:``, ``model:``,
-``covers:``, ``spec:``, ``docs:``, ``coverage-items``). This module turns
-them into graph nodes and edges *deterministically* — every link is
-tagged ``EXTRACTED``, nothing is inferred by an LLM.
-
-The repo-level regression files (``regression.yaml``,
-``synth_regression.yaml``, ``fpv_regression.yaml``, ``cdc_regression.yaml``,
-``fpga_regression.yaml``) add the one thing a suite config cannot say about
-itself: which *flow* runs it. Every suite, test and testbench node carries a
-``flow`` stamp, and the non-simulation flows' suites — which no ``verif/``
-walk would ever reach — become nodes of the same three types.
-
-Everything here reads through the existing loaders
-(:mod:`rtl_buddy.config.spec`, :mod:`~rtl_buddy.config.model`,
-:mod:`~rtl_buddy.config.suite`, and each flow's ``*RegConfig``) and the
-discovery helpers in
-:mod:`rtl_buddy.tools.spec_trace` that ``rb spec check-coverage`` and
-``rb spec check-design`` use, so the graph cannot disagree with those
-commands. There is no second YAML parser.
-
-The emitted envelope is NetworkX node-link JSON so the tiers can be
-merged by node-id union; see ``docs/concepts/graph.md`` for the shared
-contract. Volatile data (pass/fail, seeds, artefact paths) is
-deliberately absent — that is the results overlay's job (#379).
-
-No CLI is wired up here; ``rb graph ...`` arrives in #377. The entry
-points are :func:`build_config_tier` and :func:`extract_config_tier`.
+Turns `tests.yaml`, `models.yaml`, `specs.yaml` and the repo-level regression files into
+graph nodes and edges through the existing config loaders and
+`rtl_buddy.tools.spec_trace`, so the graph agrees with `rb spec check-coverage` and `rb
+spec check-design`. Every link is EXTRACTED and volatile run data stays out (see the
+results overlay). Entry points are `build_config_tier` and `extract_config_tier`; the
+envelope is documented in docs/concepts/graph.md.
 """
 
 from __future__ import annotations
@@ -68,76 +46,60 @@ from ..tools.spec_trace import (
 
 logger = logging.getLogger(__name__)
 
-#: Bumped whenever the node/edge vocabulary changes incompatibly.
+# Bumped when the node/edge vocabulary changes incompatibly.
 SCHEMA_VERSION = 1
 
-#: ``generator.tier`` value stamped on every graph this module produces.
+# `generator.tier` of graphs this module produces.
 CONFIG_TIER = "config"
 
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+# Defined in `tools.artifact_paths`, the bottom of the import graph; re-exported here
+# for consumers.
 from ..tools.artifact_paths import (  # noqa: E402
     GRAPH_JSON_NAME as GRAPH_JSON_NAME,
     GRAPH_META_NAME as GRAPH_META_NAME,
     run_artifact_root,
 )
 
-#: Confidence tag for links. The config tier is pure config readback, so
-#: every link it emits is EXTRACTED — INFERRED/AMBIGUOUS are reserved for
-#: the binding tier's ``dut.<signal>`` scan (#378).
+# Confidence tag for links. The config tier only reads config back, so every link is
+# EXTRACTED.
 EXTRACTED = "EXTRACTED"
 
-#: The three config->design stitches. Same relation ("this config thing
-#: is that design module"), same direction, same provenance rules — but
-#: three edge *types*, one per source kind, because the source kind is
-#: the thing a consumer keeps asking about and a single verb threw it
-#: away. Recovering it meant re-deriving it from the source id prefix at
-#: every read site, which is a fact the edge already knew.
+# The three config-to-design stitches: one edge type per source kind, so consumers need
+# not re-derive the kind from the source id prefix.
 MAPS_TO = "maps_to"  #: model -> the module it names
 ELABORATES_AS = "elaborates_as"  #: testbench -> the top it elaborates
 TARGETS = "targets"  #: non-simulation run -> its ``top:``
 
-#: Suffixes scanned when looking for verif-side references to a golden
-#: model. Text formats only; anything else is skipped unread.
+# Text suffixes scanned for verif-side references to a golden model.
 _VERIF_SOURCE_SUFFIXES = (".py", ".sv", ".svh", ".v", ".vh", ".yaml", ".yml", ".f")
 
-#: Directories never descended into while scanning verif sources.
+# Directories skipped while scanning verif sources.
 _SKIP_DIRS = frozenset(
     {".git", "__pycache__", "artefacts", "obj_dir", "node_modules", "venv", ".venv"}
 )
 
-#: Largest verif source file read during the golden-model reference scan.
+# Largest verif source file read by the golden-model reference scan, in bytes.
 _MAX_SCAN_BYTES = 1 << 20
 
 # ---------------------------------------------------------------------------
-# Flow provenance
-#
-# A project runs the same design through several flows, and each has its own
-# repo-level regression file listing the suites it owns. Those files are the
-# only place that says "this suite is a formal suite, that one is a CDC
-# suite" — a `tests.yaml` on its own does not know. Reading them here turns
-# `flow` into a node attribute, which is what lets a consumer (the hub pane,
-# #382) group by flow instead of by tier.
+# Flow provenance: repo-level regression files say which flow runs a suite, and
+# `flow` becomes a node attribute.
 # ---------------------------------------------------------------------------
 
-#: Simulation. `tests.yaml` suites under `verif/`, listed by `regression.yaml`.
+# Simulation: `tests.yaml` suites under `verif/`, listed by `regression.yaml`.
 FLOW_SIM = "sim"
-#: Synthesis. `synth.yaml` suites, listed by `synth_regression.yaml`.
+# Synthesis: `synth.yaml` suites, listed by `synth_regression.yaml`.
 FLOW_SYNTH = "synth"
-#: Formal property verification. `fpv.yaml` / `fpv_regression.yaml`.
+# Formal property verification: `fpv.yaml` / `fpv_regression.yaml`.
 FLOW_FPV = "fpv"
-#: CDC lint. `cdc.yaml` / `cdc_regression.yaml`.
+# CDC lint: `cdc.yaml` / `cdc_regression.yaml`.
 FLOW_CDC = "cdc"
-#: FPGA implementation. `fpga.yaml` / `fpga_regression.yaml`.
+# FPGA implementation: `fpga.yaml` / `fpga_regression.yaml`.
 FLOW_FPGA = "fpga"
-#: Style lint (verible). `lint.yaml` / `lint_regression.yaml`.
+# Style lint (verible): `lint.yaml` / `lint_regression.yaml`.
 FLOW_LINT = "lint"
 
-#: Flow assumed for a suite no repo-level regression file claims. A
-#: `tests.yaml` that simply is not wired into `regression.yaml` yet is still
-#: a simulation suite, and dropping it into an "unknown" bucket would hide
-#: the suites a project is in the middle of adding.
+# Flow of a suite no regression file claims; it is still a simulation suite.
 DEFAULT_FLOW = FLOW_SIM
 
 
@@ -145,10 +107,9 @@ DEFAULT_FLOW = FLOW_SIM
 class _FlowSource:
     """One repo-level regression file and how to walk what it lists.
 
-    ``entries`` is the accessor on each listed suite config that returns
-    that flow's runs (``get_syntheses``, ``get_verifications``, ...). The
-    simulation flow leaves it empty: its suites are already emitted by the
-    ``verif/`` walk, so ``regression.yaml`` only contributes the stamp.
+    `entries` is the accessor on each listed suite config that returns that flow's runs.
+    The simulation flow leaves it empty because the `verif/` walk already emits its
+    suites.
     """
 
     flow: str
@@ -157,12 +118,8 @@ class _FlowSource:
     entries: str = ""
 
 
-#: The flow sources, in the order they are read. Discovery is by filename at
-#: the project root, then by the flow's `cfg-rtl-reg` path from
-#: `root_config.yaml` — the same precedence `rb <flow>-regression` applies
-#: when no `-c` is passed, so a manifest kept away from the root (e.g.
-#: `cdc_regression.yaml` under `lint/cdc/`) is only visible to the graph
-#: if the command would find it too (#389).
+# Flow sources in read order. Discovery matches `rb <flow>-regression`: filename at the
+# project root, then the `cfg-rtl-reg` path from `root_config.yaml`.
 FLOW_SOURCES: tuple[_FlowSource, ...] = (
     _FlowSource(FLOW_SIM, "regression.yaml", RegConfig),
     _FlowSource(FLOW_SYNTH, "synth_regression.yaml", SynthRegConfig, "get_syntheses"),
@@ -181,11 +138,8 @@ def _tool_version() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Node ids
-#
-# Ids are the merge keys across tiers, so they are built here and nowhere
-# else. Every path component is repo-relative and posix-separated so an
-# id computed on macOS matches one computed on Linux.
+# Node ids: the merge keys across tiers, built only here. Paths are repo-relative
+# and posix-separated.
 # ---------------------------------------------------------------------------
 
 
@@ -222,12 +176,10 @@ def golden_model_id(path_rel: str) -> str:
 
 
 def module_id(module_name: str) -> str:
-    """Design-tier module id.
+    """Return the design-tier module id.
 
-    The config tier never *creates* these nodes — ``rtl-buddy-view``
-    owns them. It only points its three config->design stitches
-    (``maps_to`` / ``elaborates_as`` / ``targets``) at them, and the
-    shared id is what stitches the two tiers together at merge time.
+    The config tier never creates these nodes; it points its config-to-design stitches
+    (`maps_to`, `elaborates_as`, `targets`) at them.
     """
     return f"module:{module_name}"
 
@@ -239,7 +191,7 @@ def module_id(module_name: str) -> str:
 
 @dataclass
 class _GraphBuilder:
-    """Collects nodes and links, de-duplicating by id / by whole link."""
+    """Collects nodes and links, de-duplicating by id and by whole link."""
 
     nodes: dict[str, dict] = dc_field(default_factory=dict)
     links: dict[tuple[str, str, str], dict] = dc_field(default_factory=dict)
@@ -258,8 +210,7 @@ class _GraphBuilder:
                     second_type=node_type,
                 )
                 return node_id
-            # Same id, same type: fill in attributes the first sighting
-            # lacked rather than overwrite what it established.
+            # Same id and type: fill in missing attributes, keep the first sighting's.
             for key, value in clean.items():
                 existing.setdefault(key, value)
             return node_id
@@ -296,14 +247,12 @@ class ConfigTier:
     """Result of one config-tier extraction.
 
     Attributes:
-      graph (dict): NetworkX node-link JSON, ready to write as ``graph.json``.
-      meta (dict): provenance sidecar for ``graph-meta.json`` — generator
-        identity plus the content hash of every config file read. Kept out
-        of ``graph`` on purpose: hashes churn on every edit, and merging
-        tiers must not have to reconcile them.
-      suite_load_failures (list[str]): repo-relative ``tests.yaml`` paths
-        that failed to load. Extraction is best-effort, the same as
-        ``rb spec check-coverage``; callers decide whether to fail.
+      graph: Node-link JSON, ready to write as `graph.json`.
+    meta: Provenance sidecar for `graph-meta.json`: generator identity and the content
+    hash of every config file read. Kept out of `graph` because hashes churn on every
+    edit.
+    suite_load_failures: Repo-relative `tests.yaml` paths that failed to load.
+    Extraction is best-effort; callers decide whether to fail.
     """
 
     graph: dict
@@ -317,13 +266,10 @@ class ConfigTier:
 
 
 def _rel(project_root: Path, path: str | os.PathLike) -> str:
-    """Repo-relative, posix-separated path used inside node ids.
+    """Return a repo-relative posix path for use in node ids.
 
-    Both sides go through ``realpath`` first: a ``models.yaml`` reached
-    via ``../../design/x/models.yaml`` from a suite dir and the same file
-    found by the design-tree walk must produce one identical id, or the
-    ``exercises`` edge would dangle. Paths outside the project root are
-    returned absolute (they cannot be made repo-relative meaningfully).
+    Both sides go through `realpath`, so one file reached by two routes yields one id.
+    Paths outside the project root are returned absolute.
     """
     resolved = Path(os.path.realpath(str(path)))
     root = Path(os.path.realpath(str(project_root)))
@@ -336,12 +282,11 @@ def _rel(project_root: Path, path: str | os.PathLike) -> str:
 def default_graph_dir(
     project_root: str | os.PathLike, run_tag: str | None = None
 ) -> Path:
-    """``<project root>/artefacts/graph`` — the contracted output dir.
+    """Return `<project root>/artefacts/graph`.
 
-    ``run_tag`` moves it into that run's namespace (#541), where a
-    concurrent regression writes its own ``results-overlay.json``.
-    ``graph.json`` itself is NOT per-run — it describes the design, not a
-    run — so a tagged caller keeps reading the untagged directory for it.
+    `run_tag` moves it into that run's namespace, where a concurrent regression writes
+    its own `results-overlay.json`. `graph.json` is not per-run, so tagged callers still
+    read it from the untagged directory.
     """
     return run_artifact_root(project_root, run_tag) / "graph"
 
@@ -356,13 +301,12 @@ class _Flows:
     """What the repo-level regression files said.
 
     Attributes:
-      by_suite (dict[str, list[str]]): suite dir (repo-relative) -> the
-        flows that claim it, in :data:`FLOW_SOURCES` order.
-      suites (list[tuple[str, object, str]]): ``(flow, suite config,
-        entries accessor)`` for the non-simulation flows, whose suites are
-        not reachable from the ``verif/`` walk and must be emitted here.
-      inputs (list[str]): every file read, for the input hashes.
-      failures (list[str]): regression files that would not load.
+    by_suite: Suite dir (repo-relative) -> the flows that claim it, in `FLOW_SOURCES`
+    order.
+    suites: `(flow, suite config, entries accessor)` for the non-simulation flows, whose
+    suites the `verif/` walk cannot reach.
+      inputs: Every file read, for the input hashes.
+      failures: Regression files that would not load.
     """
 
     by_suite: dict[str, list[str]] = dc_field(default_factory=dict)
@@ -374,32 +318,25 @@ class _Flows:
 def _collect_flows(project_root: Path) -> _Flows:
     """Read every flow regression file the project declares.
 
-    Discovery per flow is root filename first (``<root>/<filename>``),
-    then the flow's ``cfg-rtl-reg`` path from ``root_config.yaml`` — the
-    precedence ``rb <flow>-regression`` applies when no ``-c`` is passed
-    (local file, then configured path), so the graph has no private,
-    stricter discovery rule (#389). Loading goes through each flow's own
-    ``*RegConfig``, which is the same class ``rb <flow>-regression``
-    constructs — so a suite this says is a CDC suite is one
-    ``rb cdc-regression`` would actually run. A file that will not load
-    is recorded and skipped: flow provenance is a labelling nicety, and
-    losing it must not cost a project its whole graph.
+    Discovery per flow is the root filename, then the `cfg-rtl-reg` path from
+    `root_config.yaml`, the same precedence `rb <flow>-regression` uses without `-c`.
+    Files load through each flow's own `*RegConfig`. A file that will not load is
+    recorded and skipped, so flow labels never cost a project its graph.
     """
     flows = _Flows()
     root_cfg_path = project_root / "root_config.yaml"
     reg_paths = load_reg_cfg_paths(root_cfg_path)
     if root_cfg_path.is_file():
-        # Wiring a manifest path into cfg-rtl-reg changes what the graph
-        # discovers, so `rb graph build`'s no-op check has to see the edit.
+        # The `cfg-rtl-reg` path changes what is discovered, so the no-op check must see
+        # it.
         flows.inputs.append(str(root_cfg_path))
     for source in FLOW_SOURCES:
         path = project_root / source.filename
         if not path.is_file():
             configured = resolve_reg_cfg_path(reg_paths, root_cfg_path, source.flow)
             if configured is None or not os.path.isfile(configured):
-                # Configured-but-missing is not a failure: reg-cfg-path
-                # defaults to "regression.yaml" in every template, and a
-                # project without one still has a valid (smaller) graph.
+                # A configured but missing file is not a failure; `regression.yaml` is
+                # the template default.
                 continue
             path = Path(configured)
         flows.inputs.append(str(path))
@@ -428,7 +365,7 @@ def _collect_flows(project_root: Path) -> _Flows:
 
 
 def _flow_attr(by_suite: dict[str, list[str]], suite_rel: str) -> str | list[str]:
-    """The ``flow`` stamp for one suite: a string, or a list when shared."""
+    """Return the `flow` stamp for one suite: a string, or a list when shared."""
     claimed = by_suite.get(suite_rel) or [DEFAULT_FLOW]
     return claimed[0] if len(claimed) == 1 else list(claimed)
 
@@ -439,12 +376,11 @@ def _flow_attr(by_suite: dict[str, list[str]], suite_rel: str) -> str | list[str
 
 
 def _block_dir_owner(cfg: SpecConfig, blocks: list[SpecBlock]) -> SpecBlock | None:
-    """Pick the block a ``specs.yaml``'s sibling files belong to.
+    """Pick the block a `specs.yaml`'s sibling files belong to.
 
-    Mirrors :func:`~rtl_buddy.tools.spec_trace.build_spec_to_models_map`:
-    a single-block file owns its directory outright; in a multi-block
-    file only a block named after the directory can claim it, because
-    nothing else in the config says which block a loose ``.py`` serves.
+    Mirrors `spec_trace.build_spec_to_models_map`: a single-block file owns its
+    directory; in a multi-block file only a block named after the directory can claim
+    it.
     """
     if len(blocks) == 1:
         return blocks[0]
@@ -465,7 +401,7 @@ def _read_text(path: Path) -> str | None:
 
 
 def _scan_verif_sources(verif_dir: str) -> list[tuple[str, str]]:
-    """Return ``(abs path, text)`` for every readable verif source file."""
+    """Return `(abs path, text)` for every readable verif source file."""
     sources: list[tuple[str, str]] = []
     for dirpath, dirnames, filenames in os.walk(verif_dir):
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
@@ -480,10 +416,9 @@ def _scan_verif_sources(verif_dir: str) -> list[tuple[str, str]]:
 
 
 def _golden_model_files(spec_dir: str) -> list[str]:
-    """Python files sitting next to a ``specs.yaml``, by convention golden models.
+    """Return the Python files next to a `specs.yaml`, by convention golden models.
 
-    Private modules (leading underscore, including ``__init__.py``) are
-    shared plumbing rather than a model of the block, so they are skipped.
+    Private modules (leading underscore, including `__init__.py`) are skipped.
     """
     found = []
     for name in sorted(os.listdir(spec_dir)):
@@ -496,11 +431,10 @@ def _golden_model_files(spec_dir: str) -> list[str]:
 
 
 def _referencing_files(stem: str, sources: list[tuple[str, str]]) -> list[str]:
-    """Absolute paths of verif sources naming ``stem`` as a whole word.
+    """Return absolute paths of verif sources naming `stem` as a whole word.
 
-    Catches both ``from tiny_alu_model import ...`` (cocotb / preproc
-    imports it after a ``sys.path`` insert) and a plain prose or plusarg
-    mention of ``tiny_alu_model.py`` in a SystemVerilog testbench.
+    Matches both imports (after a `sys.path` insert) and prose or plusarg mentions of
+    `<stem>.py`.
     """
     pattern = re.compile(rf"\b{re.escape(stem)}\b")
     return [path for path, text in sources if pattern.search(text)]
@@ -519,10 +453,9 @@ def _add_spec_nodes(
 ) -> dict[str, list[str]]:
     """Emit spec blocks, their docs, coverage items and golden models.
 
-    Returns a map of coverage-item id -> owning block names. An id may be
-    declared by more than one block; ``rb spec check-coverage`` matches
-    ``covers:`` entries on the bare id across every block, and the graph
-    reproduces that exactly (one ``covers`` edge per declaring block).
+    Returns a map of coverage-item id -> owning block names. An id declared by several
+    blocks gets one `covers` edge per block, as `rb spec check-coverage` matches
+    `covers:` on the bare id.
     """
     cov_owners: dict[str, list[str]] = {}
 
@@ -562,9 +495,8 @@ def _add_spec_nodes(
                     desc=item.desc,
                     block=block.name,
                 )
-                # `declares` is the suite->test/testbench containment edge;
-                # a block owning its coverage items is the same relation, so
-                # the vocabulary is reused rather than widened.
+                # `declares` is the containment edge; a block owning its coverage items
+                # reuses it.
                 gb.add_link(block_node, item_node, "declares")
                 cov_owners.setdefault(item.id, []).append(block.name)
 
@@ -590,38 +522,22 @@ def _add_spec_nodes(
 
 
 def _export_key(model) -> tuple[str, str]:
-    """A model's identity across the two ways it can be reached.
+    """Return a model's identity: the realpath of its `models.yaml` plus its `name:`.
 
-    The realpath of its ``models.yaml`` plus its ``name:`` — the same
-    pairing ``graph.build._model_key`` uses, and deliberately not the
-    ``model:`` node id, so the two sides cannot disagree about how a
-    path was made relative.
+    Matches `graph.build._model_key`, and avoids the `model:` node id so both sides make
+    paths relative the same way.
     """
     return (os.path.realpath(model.path) if model.path else "", model.name)
 
 
 def _exports_design(model, exported: frozenset[tuple[str, str]] | None) -> bool:
-    """True when this build's design tier will export ``model``'s hierarchy.
+    """Return True when this build's design tier will export `model`'s hierarchy.
 
-    Two reasons it will not, and they fail the same way if the config
-    tier ignores them (#479):
-
-    * the model declared ``graph: false``;
-    * the build is not selecting it — ``--model`` or ``-c`` narrowed the
-      design tier, but the config tier still walks the whole
-      ``--design-dir``.
-
-    Either way the design tier defines no ``module:`` node for it, so a
-    config->design stitch pointing at one is at best dangling and at
-    worst *false*: ``module:<top>`` is a global id, so an unselected
-    model whose ``top:`` matches a selected one's would have its
-    ``maps_to`` resolve against the other model's hierarchy and the graph
-    would state that B maps to A's design.
-
-    ``exported=None`` means "no selection to respect" — a config-only
-    build (``--no-design``) or a direct caller. Nothing is exported then,
-    so nothing can be falsely resolved *to*, and the stitches stay as
-    documented: dangling until a design tier supplies their targets.
+    It will not when the model declared `graph: false`, or when `--model` or `-c`
+    narrowed the design tier past it while the config tier still walks all of
+    `--design-dir`. A stitch to a module nobody defines dangles, or resolves against
+    another model's hierarchy when their `top:` matches. `exported=None` means no
+    selection to respect (`--no-design` or a direct caller), so stitches are kept.
     """
     if not model.graph:
         return False
@@ -639,8 +555,8 @@ def _add_model_nodes(
     for models_path, model in model_entries:
         _add_model_node(gb, project_root, models_path, model, exported)
 
-    # Reuse the exact mapping `rb spec check-design` reports, so a model
-    # that command calls "covered" is the same one linked here.
+    # Reuse the mapping `rb spec check-design` reports, so both agree on what is
+    # covered.
     spec_to_models = build_spec_to_models_map(spec_configs, model_entries)
     for key, models in spec_to_models.items():
         _, _, block_name = key.rpartition("::")
@@ -659,24 +575,12 @@ def _add_model_node(
     model,
     exported: frozenset[tuple[str, str]] | None = None,
 ) -> str:
-    """Emit one model node and its ``maps_to`` stitch to the design tier.
+    """Emit one model node and its `maps_to` stitch to the design tier.
 
-    A model the design tier is not going to export (#479) still gets its
-    node — spec and test cross-references point at it, and dropping it
-    would break them — but no ``maps_to``. That covers a ``graph: false``
-    model, whose whole point is that no module is named after it, and a
-    model this build did not select, which the config tier still walks
-    because it reads the whole ``--design-dir``.
-
-    The stitch is withheld rather than left to dangle because it can be
-    worse than dangling. ``module:<top>`` is a global id: an unselected
-    model whose ``top:`` matches a selected one's would have its
-    ``maps_to`` resolve, after the merge, against the *other* model's
-    exported hierarchy — and the graph would state that B maps to A's
-    design. See :func:`_exports_design`.
-
-    The ``graph:`` flag rides on the node so a consumer can tell an
-    opted-out model from one that is merely out of this build's scope.
+    A model the design tier will not export keeps its node, since spec and test edges
+    point at it, but gets no `maps_to`; see `_exports_design`. The `graph:` flag is
+    stored on the node so consumers can tell an opted-out model from one outside this
+    build's selection.
     """
     models_rel = _rel(project_root, models_path)
     node = gb.add_node(
@@ -687,10 +591,8 @@ def _add_model_node(
         desc=model.desc,
         graph=None if model.graph else False,
     )
-    # The config↔design stitch. `module:<top>` is a design-tier id that
-    # this tier does not define; it resolves when the tiers are merged,
-    # and stays dangling (harmless — node-link readers auto-create it) if
-    # only the config tier is exported.
+    # `module:<top>` is a design-tier id; it resolves at merge and stays dangling in a
+    # config-only export.
     if _exports_design(model, exported):
         gb.add_link(node, module_id(model.get_top()), MAPS_TO)
     return node
@@ -721,47 +623,28 @@ def _add_testbench_node(
         toplevel=tb.toplevel,
         kind=_testbench_kind(tb),
         cocotb_modules=tb.cocotb.get_modules() if tb.is_cocotb() else None,
-        # `kind` already says cocotb; `cocotb` is the flat boolean a
-        # consumer can test on a test node and a testbench node alike,
-        # without knowing which attribute each type spells it with.
+        # `cocotb` is a flat boolean testable on test and testbench nodes alike.
         cocotb=True if tb.is_cocotb() else None,
         flow=flow,
     )
     gb.add_link(suite_node, node, "declares")
-    # The testbench↔design stitch. Same relation as the model node's
-    # `maps_to` and same target namespace, but its own verb: `toplevel:`
-    # names the module the testbench *elaborates from*, so
-    # `module:<toplevel>` is where this metadata node meets the
-    # hierarchy `rb graph build` exports TB-rooted. Only emitted when
-    # `toplevel:` is actually declared — a plain SV testbench that
-    # leaves it out is topped by convention (the testbench's own name),
-    # and guessing here would be inference in a tier that is pure
-    # config readback. `rb graph build` adds that edge instead, from
-    # the top the viewer really elaborated.
-    #
-    # `unexported` says no test naming this testbench runs against a
-    # model this build will export (#479) — every one of them opted out,
-    # or was left out of the selection. The design tier drops such a TB
-    # export outright, so the declared edge would point at a `module:`
-    # node nothing is going to define, and if some *other* model exported
-    # a module of that name it would resolve against that one instead.
-    # The decision is per *testbench*, never per top name: two models can
-    # share a root module, and an exported model's testbench must keep
-    # its edge.
+    # The testbench-to-design stitch, emitted only when `toplevel:` is declared;
+    # guessing the top of a plain SV testbench would be inference, and `rb graph build`
+    # adds that edge from the elaborated top. `unexported` is true when no test on this
+    # testbench runs against a model this build exports; the edge is then skipped,
+    # because the design tier drops such a testbench export. The decision is per
+    # testbench, not per top name, since models can share a root module.
     if tb.toplevel and not unexported:
         gb.add_link(node, module_id(tb.toplevel), ELABORATES_AS)
     return node
 
 
 def _declared_testbenches(path: str) -> list[TestbenchConfig] | None:
-    """Every ``testbenches:`` entry in a suite, including unused ones.
+    """Return every `testbenches:` entry in a suite, including unused ones.
 
-    ``SuiteConfig`` only keeps testbenches that a test references, so a
-    declared-but-unused testbench would be invisible. Re-reading through
-    ``SuiteConfigFile`` (the same pyserde schema ``SuiteConfig`` uses —
-    still no second parser) recovers them. Returns None if the file does
-    not round-trip, in which case the caller falls back to the
-    test-derived set.
+    `SuiteConfig` keeps only referenced testbenches, so this re-reads through
+    `SuiteConfigFile`. Returns None if the file does not round-trip; the caller then
+    uses the test-derived set.
     """
     try:
         with open(path, "r") as handle:
@@ -808,14 +691,10 @@ def _add_suite_nodes(
             flow=flow,
         )
 
-        # Testbenches none of whose tests runs against a model this build
-        # exports (#479) — opted out, or outside the selection — keyed by
-        # testbench name so an exported model's testbench is unaffected
-        # even when the two models share a root module. Computed before
-        # any testbench node is emitted, because the declared-but-unused
-        # pass below runs first and `add_link` keeps the first sighting
-        # of an edge. A declared-but-unused testbench has no model to
-        # inherit anything from, so it keeps whatever it declares.
+        # Testbenches none of whose tests run against an exported model, keyed by name.
+        # Computed before any testbench node is emitted because the declared-but-unused
+        # pass below runs first and `add_link` keeps the first sighting. A
+        # declared-but-unused testbench keeps whatever it declares.
         tb_models: dict[str, list] = {}
         for test in suite.get_tests():
             tb_models.setdefault(test.get_testbench().get_name(), []).append(
@@ -859,9 +738,8 @@ def _add_suite_nodes(
                 test.get_name(),
                 file=tests_rel,
                 desc=test.desc,
-                # Raw `reglvl:` as written — an int, or the per-builder
-                # dict. Resolving it needs a builder, which is a run-time
-                # choice and has no place in a static graph.
+                # Raw `reglvl:` as written; resolving it needs a builder, a run-time
+                # choice.
                 reglvl=test._reglvl,
                 cocotb_modules=test.get_testbench().cocotb.get_modules()
                 if test.get_testbench().is_cocotb()
@@ -905,19 +783,11 @@ def _add_flow_suite_nodes(
 ) -> None:
     """Emit the non-simulation flows' suites and runs.
 
-    A `synth.yaml` / `fpv.yaml` / `cdc.yaml` / `fpga.yaml` is a suite of
-    named runs against a model, which is the same shape a `tests.yaml` has
-    — so it reuses the same node types and the same ids (`suite:<dir>`,
-    `test:<dir>#<name>`) rather than inventing a parallel vocabulary. Two
-    things differ: there is no testbench between the run and the model, so
-    `exercises` is emitted from the run itself; and a run's `top:` (which a
-    formal verification may override away from the model name) is the
-    run's own config->design stitch, `targets` — the same relation a
-    testbench's `elaborates_as` states, from a third kind of source.
-
-    `covers:` does not differ: an fpv run declaring one gets the same
-    run -> coverage-item edges a simulation test gets, which is what lets
-    a formal run reach the spec tier at all.
+    A `synth.yaml`, `fpv.yaml`, `cdc.yaml` or `fpga.yaml` suite has the same shape as
+    `tests.yaml`, so it reuses the node types and ids (`suite:<dir>`,
+    `test:<dir>#<name>`). There is no testbench, so `exercises` is emitted from the run,
+    and the run's `top:` gives its `targets` stitch. A `covers:` on an fpv run yields
+    the same run-to-coverage-item edges as a simulation test.
     """
     for flow, suite_cfg, entries_attr in flows.suites:
         cfg_path = suite_cfg.get_path()
@@ -941,33 +811,23 @@ def _add_flow_suite_nodes(
                 entry.get_name(),
                 file=cfg_rel,
                 desc=getattr(entry, "desc", None),
-                # Raw `reglvl:` as written, exactly as a simulation test
-                # node keeps it — resolving it needs a tool name.
+                # Raw `reglvl:` as written, as on a simulation test.
                 reglvl=getattr(entry, "_reglvl", None),
                 tool=entry.get_tool_name(),
                 toplevel=top,
-                # Reduced-configuration formal runs (#359) elaborate the top
-                # at overridden parameters — the run node says which, so a
-                # reader can tell two runs of the same top apart. `getattr`
-                # because only fpv entries carry the field.
+                # Parameter overrides of reduced-configuration formal runs tell runs of
+                # the same top apart. `getattr` because only fpv entries have the field.
                 params=getattr(entry, "params", None) or None,
                 flow=flow,
             )
             gb.add_link(suite_node, test_node, "declares")
             gb.add_link(test_node, model_node, "exercises")
-            # Every run over a model this build will not export inherits
-            # that (#479) — opted out, or outside the selection — whether
-            # it tops at the model's own root or at a checker of its own
-            # (the fpv shape): the design tier drops both export kinds for
-            # such a model, so either stitch would add a dangling target,
-            # or resolve against another model's module of the same name.
+            # Runs over a model this build does not export get neither stitch, whether
+            # they top at the model's root or at their own checker.
             if top and _exports_design(model, exported):
                 gb.add_link(test_node, module_id(top), TARGETS)
-            # An fpv run may declare `covers:` exactly as a test does
-            # (rtl-buddy/rtl_buddy#385) — same field, same edge, same
-            # fan-out to every declaring block. `getattr` because the
-            # other flows' entries have no such field (yet); a flow that
-            # grows one gets the edge for free.
+            # fpv runs may declare `covers:`. `getattr` because other flows' entries
+            # lack the field.
             for cov in getattr(entry, "covers", None) or []:
                 owners = cov_owners.get(cov)
                 if not owners:
@@ -989,7 +849,7 @@ def _add_flow_suite_nodes(
 
 
 def _hash_inputs(project_root: Path, paths: list[str]) -> list[dict]:
-    """Content hashes of every config file the extraction read."""
+    """Return content hashes of every config file the extraction read."""
     entries = []
     for path in sorted({os.path.realpath(p) for p in paths}):
         try:
@@ -1011,25 +871,17 @@ def extract_config_tier(
     """Extract the config tier of the design knowledge graph.
 
     Args:
-      project_root: Directory holding ``root_config.yaml``. All node ids
-        are relative to it.
-      spec_dir: Tree searched for ``specs.yaml``. Defaults to
-        ``<project_root>/spec`` — the same default as ``rb spec check-coverage``.
-      verif_dir: Tree searched for ``tests.yaml``. Defaults to ``<project_root>/verif``.
-      design_dir: Tree searched for ``models.yaml``. Defaults to ``<project_root>/design``.
-      exported_models: the models this build's design tier will export,
-        when there is a selection to respect. Config->design stitches are
-        emitted only for those, because a stitch naming a module no
-        design tier defines is dangling at best and, when another model
-        exported a module of that name, false (#479). ``None`` means "no
-        selection" — a config-only build or a direct caller — and every
-        graphable model is stitched, as documented.
+      project_root: Directory holding `root_config.yaml`; node ids are relative to it.
+      spec_dir: Tree searched for `specs.yaml`. Defaults to `<project_root>/spec`.
+      verif_dir: Tree searched for `tests.yaml`. Defaults to `<project_root>/verif`.
+      design_dir: Tree searched for `models.yaml`. Defaults to `<project_root>/design`.
+    exported_models: Models the design tier will export. Config-to-design stitches are
+    emitted only for these. `None` means no selection, and every graphable model is
+    stitched.
 
     Returns:
-      ConfigTier: graph, provenance meta, and any suites that failed to load.
-
-    A missing search directory is not an error — a project with no specs
-    yet still has a valid (smaller) graph.
+    The graph, provenance meta and any suites that failed to load. A missing search
+    directory is not an error.
     """
     root = Path(os.path.realpath(str(project_root)))
     search_spec = str(spec_dir) if spec_dir is not None else str(root / "spec")
@@ -1088,9 +940,8 @@ def extract_config_tier(
         if os.path.isdir(search_verif)
         else []
     )
-    # The regression files and the per-flow suites they list are inputs
-    # now: wiring a suite into `fpv_regression.yaml` changes the graph, so
-    # `rb graph build`'s no-op check has to see the edit.
+    # Regression files and their per-flow suites are inputs; the no-op check must see
+    # edits to them.
     inputs += flows.inputs
     meta = {
         "schema_version": SCHEMA_VERSION,
@@ -1115,10 +966,9 @@ def extract_config_tier(
 
 
 def build_config_tier(project_root: str | os.PathLike, **kwargs) -> dict:
-    """Config-tier ``graph.json`` payload for ``project_root``.
+    """Return the config-tier `graph.json` payload for `project_root`.
 
-    Thin wrapper over :func:`extract_config_tier` for callers that only
-    want the graph; keyword arguments are forwarded unchanged.
+    Wraps `extract_config_tier`; keyword arguments are forwarded.
     """
     return extract_config_tier(project_root, **kwargs).graph
 
@@ -1129,11 +979,9 @@ def build_config_tier(project_root: str | os.PathLike, **kwargs) -> dict:
 
 
 def serialize_graph(graph: dict) -> str:
-    """Render a graph (or meta) dict as canonical JSON text.
+    """Render a graph or meta dict as canonical JSON text.
 
-    Stable formatting — the extractor already sorts nodes and links — so
-    a re-export with no config change is a byte-identical file and shows
-    up as no diff.
+    Formatting is stable, so an unchanged config re-exports byte-identically.
     """
     return json.dumps(graph, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
 
@@ -1148,10 +996,10 @@ def _write_json(payload: dict, path: str | os.PathLike) -> Path:
 
 
 def write_graph_json(graph: dict, path: str | os.PathLike) -> Path:
-    """Write ``graph.json`` atomically, creating parent directories."""
+    """Write `graph.json` atomically, creating parent directories."""
     return _write_json(graph, path)
 
 
 def write_graph_meta(meta: dict, path: str | os.PathLike) -> Path:
-    """Write the ``graph-meta.json`` provenance sidecar atomically."""
+    """Write the `graph-meta.json` sidecar atomically."""
     return _write_json(meta, path)

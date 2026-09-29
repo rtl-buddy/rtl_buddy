@@ -2,52 +2,14 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Regression-results overlay for the design knowledge graph (#379).
+"""Regression-results overlay for the design knowledge graph.
 
-``graph.json`` answers *what exists and what covers what*. It must never
-answer *what passed last night* — status, seeds and artefact paths churn
-on every run, and baking them in would invalidate the build fingerprint
-and re-merge every tier for a result nobody asked the graph about.
-
-So the volatile half lives in a second file,
-``artefacts/graph/results-overlay.json``, keyed by the very same test
-node ids the config tier emits (``test:<suite dir>#<name>``). Refreshing
-it never touches ``graph.json``; a consumer joins the two on the id (see
-:func:`load_overlay` and :func:`overlay_for_node`, the hooks ``rb graph
-query`` uses in #380). This is the same split the rtl-buddy-view
-overlays (clock/reset/axi-perf/wave) already use: base artefact plus
-refreshable side-car.
-
-Everything here is read back off the disk the runner already writes:
-
-* the per-run **result envelope** (:mod:`rtl_buddy.runner.result_io`) —
-  status, ``run_token``, ``run_id``, and the ``rtl_buddy`` version that
-  produced it. Its file mtime is the entry's timestamp: the overlay never
-  stamps a wall clock of its own, so re-running ``rb graph results``
-  without re-running a test rewrites the same bytes.
-* the documented **artefact layout** (``docs/development/guidelines.md``)
-  — ``<suite>/artefacts/<test>/`` for a single run, plus
-  ``run-NNNN/`` per iteration of a ``randtest``, holding ``test.log``,
-  ``test.err``, ``test.randseed``, ``coverage.dat`` and the trace. A
-  ``run_tag`` scans one ``--run-tag`` run's tree instead
-  (``<suite>/artefacts/.runs/<tag>/``) and writes its overlay into that
-  run's graph directory, so two concurrent regressions each convert their
-  own results (#541).
-
-A test directory with no envelope still gets an entry: its artefact
-paths are real and useful, its status is ``UNKNOWN``. That is the
-honest answer for a tree written by an rtl_buddy older than the envelope,
-or a run that died before POST.
-
-Since #402 the overlay also carries the run's **coverage** join —
-per-test scalars beside the ``artefacts.coverage`` path, per-module
-ratios keyed to design node ids, and a declared-vs-observed verdict per
-``covitem:`` node. Those numbers are read out of the coverage model
-(#399) that the run already wrote — or, since #390, synthesized from
-the per-test raw databases this scan itself found, or joined by file
-from a merged LCOV ``.info`` named on the command line; nothing here
-ever invokes ``verilator_coverage``, which is what keeps a refresh with
-nothing re-run byte-identical. See :mod:`rtl_buddy.graph.coverage`.
+`graph.json` never holds status, seeds or artefact paths. They live in
+`artefacts/graph/results-overlay.json`, keyed by the config tier's test node ids
+(`test:<suite dir>#<name>`), and are joined with `load_overlay` and `overlay_for_node`.
+The overlay is built from result envelopes and the artefact layout, with no clock of its
+own, so a refresh with nothing re-run rewrites identical bytes. It also carries the
+coverage join.
 """
 
 from __future__ import annotations
@@ -83,42 +45,39 @@ from .coverage import COVERAGE_SOURCE_AUTO, CoverageJoin, join_coverage
 
 logger = logging.getLogger(__name__)
 
-#: Overlay file name, written next to ``graph.json``.
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+# Overlay file name, written next to `graph.json`.
+# Defined in `tools.artifact_paths`, the bottom of the import graph; re-exported here
+# for consumers.
 from ..tools.artifact_paths import (  # noqa: E402
     RESULTS_OVERLAY_NAME as RESULTS_OVERLAY_NAME,
 )
 
-#: ``rtl-buddy-filetype`` marker, so a loader can reject the wrong file.
+# `rtl-buddy-filetype` marker, so a loader can reject the wrong file.
 OVERLAY_FILETYPE = "graph_results_overlay"
 
-#: Bumped whenever an entry's shape changes incompatibly.
+# Bumped when an entry's shape changes incompatibly.
 OVERLAY_SCHEMA_VERSION = 1
 
-#: Status recorded for a test whose artefacts exist but whose result
-#: envelope does not. Never a value :class:`TestResults` itself produces.
+# Status of a test with artefacts but no result envelope; `TestResults` never produces
+# it.
 UNKNOWN = "UNKNOWN"
 
-#: Envelope-backed vs artefact-only provenance for one entry.
+# Provenance of one entry: from a result envelope, or from artefacts only.
 FROM_ENVELOPE = "result-envelope"
 FROM_ARTEFACTS = "artefacts"
 
-#: Directories under ``<suite>/artefacts/`` that are not a test's workspace.
-#: ``hier``/``axi`` are other commands' per-suite roots (guidelines →
-#: Command Roots); the dot-directories are dispatch and shared-build state.
+# Directories under `<suite>/artefacts/` that are not a test's workspace: other
+# commands' per-suite roots and graph/coverage output.
 _NON_TEST_DIRS = frozenset({"hier", "axi", "graph", "cov", "coverage"})
 
-#: Result-envelope file names inside one run scope. ``result.json`` is the
-#: in-process runner's; ``dispatch/result-<tag>.json`` is what ``rb
-#: _test-job`` writes for the head to collect (#351).
+# Result-envelope file names in one run scope: `result.json` from the in-process runner,
+# `dispatch/result-<tag>.json` from `rb _test-job`.
 _RESULT_JSON = RESULT_JSON_NAME
 _DISPATCH_DIR = "dispatch"
 
 
 def _flows_of(flow: object) -> set[str]:
-    """The ``flow`` attribute as a set — it is a string, or a list."""
+    """Return the `flow` attribute (a string or a list) as a set."""
     if flow is None:
         return {DEFAULT_FLOW}
     if isinstance(flow, str):
@@ -136,7 +95,7 @@ def _tool_version() -> str:
 
 
 def _rel(project_root: Path, path: str | os.PathLike) -> str:
-    """Repo-relative, posix-separated path — the form ids and paths use."""
+    """Return a repo-relative posix path."""
     resolved = Path(os.path.realpath(str(path)))
     root = Path(os.path.realpath(str(project_root)))
     try:
@@ -146,7 +105,7 @@ def _rel(project_root: Path, path: str | os.PathLike) -> str:
 
 
 def _iso(epoch: float) -> str:
-    """UTC ISO-8601 stamp for a file mtime, second resolution."""
+    """Return a UTC ISO-8601 stamp for a file mtime, to the second."""
     return (
         datetime.fromtimestamp(epoch, tz=timezone.utc)
         .replace(microsecond=0)
@@ -160,9 +119,9 @@ def results_overlay_path(
     out_dir: str | os.PathLike | None = None,
     run_tag: str | None = None,
 ) -> Path:
-    """``<out dir or artefacts/graph>/results-overlay.json``.
+    """Return `<out dir or artefacts/graph>/results-overlay.json`.
 
-    ``run_tag`` reads the overlay of one tagged run instead (#541).
+    `run_tag` selects the overlay of one tagged run.
     """
     base = (
         Path(out_dir)
@@ -179,7 +138,7 @@ def results_overlay_path(
 
 @dataclass
 class _Scope:
-    """One run's directory: the test root, or one ``run-NNNN`` under it."""
+    """One run's directory: the test root, or one `run-NNNN` under it."""
 
     run_id: int | None
     directory: Path
@@ -189,17 +148,16 @@ class _Scope:
 
 
 def _job_tag(run_id: int | None) -> str:
-    """Dispatch envelope tag for a run id — mirrors ``_dispatch_suite_submit``.
+    """Return the dispatch envelope tag for a run id, mirroring `_dispatch_suite_submit`.
 
-    Named for the *job*, not the run: ``--run-tag`` (#541) is a different
-    thing entirely — this one names one job's envelope inside a test's
-    ``dispatch/`` directory, that one names the whole artefact tree.
+    It names one job's envelope inside `dispatch/`, unlike `--run-tag`, which names the
+    whole artefact tree.
     """
     return "single" if run_id is None else f"{run_id:04d}"
 
 
 def _envelope_candidates(test_dir: Path, scope_dir: Path, run_id: int | None):
-    """Envelope paths for one run scope, most authoritative first."""
+    """Return envelope paths for one run scope, most authoritative first."""
     return [
         scope_dir / _RESULT_JSON,
         test_dir / _DISPATCH_DIR / f"result-{_job_tag(run_id)}.json",
@@ -207,12 +165,10 @@ def _envelope_candidates(test_dir: Path, scope_dir: Path, run_id: int | None):
 
 
 def _load_envelope(scope: _Scope, test_dir: Path) -> None:
-    """Attach the newest readable envelope for ``scope`` (or its error).
+    """Attach the newest readable envelope for `scope`, or its error.
 
-    Both producers can be present for one run — the in-process writer
-    always runs, and under ``--dispatch`` the job additionally writes the
-    envelope the head collects. Newest mtime wins so a replay through
-    either path is what the overlay reports.
+    The in-process writer and the dispatch job can both write one; the newest mtime
+    wins.
     """
     best: tuple[float, Path, dict] | None = None
     for path in _envelope_candidates(test_dir, scope.directory, scope.run_id):
@@ -233,12 +189,10 @@ def _load_envelope(scope: _Scope, test_dir: Path) -> None:
 
 
 def _artefacts(project_root: Path, scope_dir: Path, test_dir: Path) -> dict:
-    """Repo-relative paths of the artefacts this run scope actually has.
+    """Return repo-relative paths of the artefacts this run scope has.
 
-    Only existing files are listed: an absent key is the answer "this run
-    produced none", which is more useful than a path that 404s. Compile
-    outputs live in the test root even for a ``run-NNNN`` scope, because
-    one compile feeds every iteration.
+    Only existing files are listed. Compile outputs live in the test root even for a
+    `run-NNNN` scope, because one compile feeds every iteration.
     """
     found: dict[str, str] = {"dir": _rel(project_root, scope_dir)}
     for key, name in (
@@ -250,23 +204,15 @@ def _artefacts(project_root: Path, scope_dir: Path, test_dir: Path) -> dict:
         candidate = scope_dir / name
         if candidate.is_file():
             found[key] = _rel(project_root, candidate)
-    # Whichever dumper ran last wins, the same rule `rb wave` and `rb
-    # axi-profile` resolve a trace by.
+    # Whichever dumper ran last wins, as for `rb wave` and `rb axi-profile`.
     traces = [
         scope_dir / name for name in TRACE_CANDIDATES if (scope_dir / name).is_file()
     ]
     if traces:
         newest = max(traces, key=lambda p: p.stat().st_mtime)
         found["trace"] = _rel(project_root, newest)
-    # Two files, never one collapsed into the other (#498): `compile.log` is
-    # the build job's (or the only) compile, and `compile.retry.log` is the
-    # recompile a gated sim job ran after finding the build's stamp invalid.
-    # They fail for different reasons under different reservations, so a
-    # reader handed one when they wanted the other is misled. The compile
-    # log is test-scoped (one compile feeds every iteration); the retry log
-    # is RUN-scoped (#498 review round 6) — only the run whose retry failed
-    # wrote one, so it is looked up in the run's own directory and a
-    # sibling that never retried does not advertise it.
+    # `compile.log` (test-scoped) and `compile.retry.log` (run-scoped) stay separate:
+    # they fail for different reasons, and only the run whose retry failed wrote one.
     compile_log = test_dir / "compile.log"
     if compile_log.is_file():
         found["compile_log"] = _rel(project_root, compile_log)
@@ -277,10 +223,9 @@ def _artefacts(project_root: Path, scope_dir: Path, test_dir: Path) -> dict:
 
 
 def _read_randseed(scope_dir: Path) -> int | str | None:
-    """First line of ``test.randseed`` — the seed the sim ran with.
+    """Return the first line of `test.randseed`, the seed the sim ran with.
 
-    A one-line side-car, not a log: reading it is what lets an agent
-    replay a failure (``rb randtest -r N``) without opening anything.
+    It lets an agent replay a failure with `rb randtest -r N`.
     """
     path = scope_dir / "test.randseed"
     try:
@@ -297,12 +242,10 @@ def _read_randseed(scope_dir: Path) -> int | str | None:
 
 
 def _scope_timestamp(scope: _Scope, artefacts: dict, project_root: Path) -> str | None:
-    """When this run happened, taken from files — never from the clock.
+    """Return when this run happened, taken from files, never the clock.
 
-    The envelope's mtime is the moment the runner finished writing the
-    result, which is exactly the "last status" timestamp. Without an
-    envelope the newest listed artefact is the best available proxy and
-    the entry says so via ``source``.
+    The envelope's mtime is used; without an envelope the newest listed artefact is the
+    proxy and the entry says so via `source`.
     """
     if scope.envelope_path is not None:
         return _iso(scope.envelope_path.stat().st_mtime)
@@ -319,7 +262,7 @@ def _scope_timestamp(scope: _Scope, artefacts: dict, project_root: Path) -> str 
 
 
 def _scope_entry(project_root: Path, scope: _Scope, test_dir: Path) -> dict:
-    """One run's overlay record."""
+    """Return one run's overlay record."""
     artefacts = _artefacts(project_root, scope.directory, test_dir)
     entry: dict = {
         "run_id": scope.run_id,
@@ -338,20 +281,15 @@ def _scope_entry(project_root: Path, scope: _Scope, test_dir: Path) -> dict:
             entry["run_id"] = scope.envelope["run_id"]
         compile_record = results.get("compile")
         if isinstance(compile_record, dict):
-            # Only the three fields the overlay promises, in a fixed order,
-            # and only when the envelope carries them: a project whose runs
-            # predate the record gets no key at all, so a refresh with
-            # nothing re-run stays byte-identical (#379's whole point). The
-            # values come from the envelope, never from a clock here.
+            # Only the three promised fields, in fixed order, and only when the envelope
+            # carries them, so a refresh with nothing re-run stays byte-identical.
             block = {
                 "duration_sec": compile_record.get("duration_sec"),
                 "builder": compile_record.get("builder"),
                 "reused": compile_record.get("reused"),
             }
-            # An all-null block says nothing and is not the same as absent —
-            # it is what a config whose prepare() failed in the build job
-            # leaves behind, and the entry-level None filter below does not
-            # reach nested values. Drop it rather than publish three nulls.
+            # An all-null block (left by a config whose `prepare()` failed in the build
+            # job) is dropped; the entry-level None filter does not reach nested values.
             if any(v is not None for v in block.values()):
                 entry["compile"] = block
     seed = _read_randseed(scope.directory)
@@ -365,10 +303,9 @@ def _scope_entry(project_root: Path, scope: _Scope, test_dir: Path) -> dict:
 
 
 def _scopes(test_dir: Path) -> list[_Scope]:
-    """Run scopes under one test artefact dir, base run first.
+    """Return the run scopes under one test artefact dir, base run first.
 
-    ``run-NNNN`` is the ``randtest`` layout (guidelines → Artifact
-    Layout); a plain ``rb test`` writes straight into the test root.
+    `run-NNNN` is the `randtest` layout; a plain `rb test` writes into the test root.
     """
     scopes = [_Scope(run_id=None, directory=test_dir)]
     for child in sorted(test_dir.iterdir()):
@@ -401,15 +338,13 @@ class ResultsOverlay:
     """Result of one overlay refresh.
 
     Attributes:
-      overlay (dict): the ``results-overlay.json`` payload.
-      entries (dict): the ``tests`` block, keyed by test node id.
-      problems (list[dict]): envelopes that could not be read.
-      unmatched (list[str]): overlay ids with no node in the graph it was
-        refreshed against (only populated when a graph was supplied).
-      missing (list[str]): test nodes in that graph with no result at all.
-      path (Path | None): where the overlay was written, once it has been.
-      coverage (CoverageJoin | None): the coverage join, when one was
-        attempted. ``None`` means coverage was not asked for.
+      overlay: The `results-overlay.json` payload.
+      entries: The `tests` block, keyed by test node id.
+      problems: Envelopes that could not be read.
+      unmatched: Overlay ids with no node in the graph (only when a graph was supplied).
+      missing: Test nodes in that graph with no result.
+      path: Where the overlay was written, once it has been.
+      coverage: The coverage join; None means coverage was not asked for.
     """
 
     overlay: dict
@@ -430,19 +365,16 @@ class ResultsOverlay:
         return sum(1 for e in self.entries.values() if e.get("source") == FROM_ENVELOPE)
 
     def coverage_summary(self) -> dict | None:
-        """The coverage block's summary, or ``None`` when there is none."""
+        """Return the coverage block's summary, or None."""
         block = (self.coverage.block if self.coverage else None) or {}
         return block.get("summary")
 
 
 def _declared_test_names(tests_yaml: str) -> dict[str, str]:
-    """``sanitized artefact dir name -> declared test name`` for one suite.
+    """Return `sanitized artefact dir name -> declared test name` for one suite.
 
-    Read through :class:`~rtl_buddy.config.suite.SuiteConfig`, the same
-    loader ``rb test`` uses, so the overlay's ids cannot disagree with
-    the config tier's. Only needed for a directory whose envelope is
-    missing — an envelope carries the real (possibly sweep-expanded)
-    name itself.
+    Read through `SuiteConfig`, as `rb test` does. Needed only when an envelope is
+    missing, since an envelope carries the real (possibly sweep-expanded) name.
     """
     try:
         suite = SuiteConfig(tests_yaml)
@@ -455,13 +387,10 @@ def _declared_test_names(tests_yaml: str) -> dict[str, str]:
 
 
 def _test_name_for(test_dir: Path, scopes: list[_Scope], declared: dict[str, str]):
-    """The real test name behind a sanitized artefact directory.
+    """Return the real test name behind a sanitized artefact directory.
 
-    The envelope is authoritative — it records the name the runner ran,
-    including a sweep expansion the suite config alone cannot reproduce.
-    Falling back to the declared-name map un-sanitizes the common case;
-    failing that the directory name stands in, which at least keeps the
-    artefacts reachable.
+    The envelope is authoritative. Otherwise the declared-name map is used, and finally
+    the directory name.
     """
     for scope in scopes:
         if scope.envelope and scope.envelope.get("test"):
@@ -481,36 +410,26 @@ def collect_results(
 ) -> ResultsOverlay:
     """Scan every suite's artefacts and build the results overlay.
 
+    Never raises for a broken envelope; it lands in `problems`.
+
     Args:
-      project_root: Directory holding ``root_config.yaml``. Every id and
-        path in the overlay is relative to it.
-      verif_dir: Tree searched for ``tests.yaml``. Defaults to
-        ``<project_root>/verif`` — the config tier's default, so the two
-        files describe the same set of suites.
-      graph: An already-loaded ``graph.json``. Optional; when given, each
-        entry is cross-checked against it (``in_graph``) and the tests it
-        declares with no result at all are reported in ``missing``.
-      coverage: Join the run's coverage in (#402/#390). ``True`` (or
-        ``"auto"``) reads the newest ``cov_dir/manifest.json`` and falls
-        back to the per-test raw databases this scan itself found;
-        ``"model"`` reads the manifest only; any other string is a path
-        to a merged LCOV ``.info`` to ingest; ``False`` skips the join.
-        A tree with no coverage artefacts is not an error — the
-        ``coverage`` block is simply absent, which is also what keeps an
-        overlay written before this feature byte-identical.
-      cov_dir / cov_manifest: read coverage from here rather than from
-        the newest ``cov_dir/manifest.json`` under the project. Naming
-        either makes a failure to read it a reported problem.
-      run_tag: Scan one ``--run-tag`` namespace's tree
-        (``<suite>/artefacts/.runs/<tag>/``) instead of the flat one
-        (#541), so each of two concurrent regressions converts its own
-        results. ``None`` is the flat tree, unchanged.
+    project_root: Directory holding `root_config.yaml`; ids and paths are relative to
+    it.
+    verif_dir: Tree searched for `tests.yaml`. Defaults to `<project_root>/verif`, as
+    the config tier does.
+    graph: A loaded `graph.json`. When given, entries are cross-checked (`in_graph`) and
+    declared tests with no result are listed in `missing`.
+    coverage: `True` or `"auto"` reads the newest `cov_dir/manifest.json` and falls back
+    to per-test raw databases; `"model"` reads the manifest only; any other string is a
+    merged LCOV `.info` path; `False` skips the join. A tree with no coverage artefacts
+    leaves the `coverage` block absent.
+    cov_dir, cov_manifest: Read coverage from here instead. Naming either makes a read
+    failure a reported problem.
+    run_tag: Scan one `--run-tag` tree (`<suite>/artefacts/.runs/<tag>/`) instead of the
+    flat one.
 
     Returns:
-      ResultsOverlay: the payload plus the bookkeeping the CLI reports.
-
-    Never raises for a broken envelope — it lands in ``problems`` and the
-    rest of the overlay is still built.
+      The payload plus the bookkeeping the CLI reports.
     """
     root = Path(os.path.realpath(str(project_root)))
     search_verif = Path(verif_dir) if verif_dir is not None else root / "verif"
@@ -549,13 +468,9 @@ def collect_results(
     unmatched: list[str] = []
     missing: list[str] = []
     if graph is not None:
-        # Only *simulation* tests. The config tier also emits a `test`
-        # node per synthesis / formal / CDC / FPGA run (#376), and those
-        # leave no `artefacts/<test>/result.json` behind — counting them
-        # here would report every one of them `missing` and make
-        # `rb graph results --strict` fail on any project that runs more
-        # than one flow. A node with no `flow` at all predates the stamp
-        # and is a simulation test by the same default the stamp uses.
+        # Simulation tests only: synthesis, formal, CDC and FPGA runs leave no
+        # `result.json`, so counting them as `missing` would fail `--strict`. A node
+        # with no `flow` counts as simulation.
         graph_tests = {
             node["id"]
             for node in graph.get("nodes") or []
@@ -581,8 +496,7 @@ def collect_results(
             source=source,
         )
         problems.extend(join.problems)
-        # Beside `artefacts.coverage` — the path to the raw database was
-        # all an entry carried, and a path is not a number.
+        # Beside `artefacts.coverage`, which is only a path to the raw database.
         for node_id, scalars in join.per_test.items():
             entry = ordered.get(node_id)
             if entry is not None:
@@ -597,9 +511,8 @@ def collect_results(
             "command": "graph results",
         },
         "keyed_by": "test node id",
-        # Placed before the (long) per-test block so a human opening the
-        # file reads the verdict first. Filled in below; the key's
-        # position is fixed by this insertion, not by that assignment.
+        # Placed before the long per-test block so the verdict reads first; filled in
+        # below, and the key position is fixed here.
         "summary": {},
         "tests": ordered,
     }
@@ -641,19 +554,13 @@ def _test_entry(
     test_dir: Path,
     scopes: list[_Scope],
 ) -> dict | None:
-    """Fold one test's run scopes into a single overlay entry.
+    """Fold one test's run scopes into a single overlay entry, or None if this is not a
+    test directory.
 
-    The entry's top level is the **last** run: the newest timestamp wins,
-    tie-broken by the highest ``run_id``, so a ``randtest`` reports its
-    latest iteration while every iteration stays listed under ``runs``.
-
-    A scope that shows no evidence of a run — no envelope and not one
-    recognized artefact — contributes nothing, and a directory whose
-    every scope is empty is not a test at all. That positive test is what
-    keeps another command's per-suite workspace (an `fpv.yaml` living
-    beside a `tests.yaml`, say) out of the overlay: the deny-list in
-    :func:`_is_test_dir` names the cases known today, this catches the
-    rest. ``None`` means "not a test directory".
+    The top level is the last run (newest timestamp, then highest `run_id`); every
+    iteration stays under `runs`. A scope with no envelope and no recognized artefact
+    contributes nothing, which keeps other commands' per-suite workspaces out;
+    `_is_test_dir` names the known ones.
     """
     records = []
     for scope in scopes:
@@ -680,16 +587,15 @@ def _test_entry(
     return entry
 
 
-# ---------------------------------------------------------------------------
-# Writing / loading — the join hooks `rb graph query` (#380) uses
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# Writing and loading: the join hooks used by `rb graph query`
+# -----------------------------------------------------------------------
 
 
 def write_overlay(overlay: dict, path: str | os.PathLike) -> Path:
     """Write the overlay atomically, creating parent directories.
 
-    Formatting is stable and every collection is sorted, so refreshing an
-    overlay after a re-run diffs only where a result actually moved.
+    Output is stable and sorted.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -700,15 +606,10 @@ def write_overlay(overlay: dict, path: str | os.PathLike) -> Path:
 
 
 def load_overlay(path: str | os.PathLike) -> dict | None:
-    """Load an overlay, or ``None`` when there is none to load.
+    """Load an overlay, or None when there is none.
 
-    Accepts the file itself, the directory holding it, or a project root
-    (``<root>/artefacts/graph/results-overlay.json``), so a consumer that
-    only knows where ``graph.json`` is can ask for the overlay beside it
-    without rebuilding the path. Never raises: an absent, unreadable or
-    foreign file all mean "no results known", which is a state every
-    consumer has to handle anyway — the graph is queryable without an
-    overlay.
+    Accepts the file, the directory holding it, or a project root. Never raises; an
+    absent, unreadable or foreign file means no results are known.
     """
     candidate = Path(path)
     if candidate.is_dir():
@@ -740,12 +641,9 @@ def load_overlay(path: str | os.PathLike) -> dict | None:
 
 
 def overlay_for_node(overlay: dict | None, node_id: str) -> dict | None:
-    """The overlay entry for one node id, or ``None``.
+    """Return the overlay entry for one node id, or None.
 
-    *The* join hook: the overlay is keyed by node id precisely so a
-    consumer walking ``graph.json`` needs no name mangling, no suite
-    lookup and no knowledge of the artefact layout to answer "what
-    happened to this test". Non-test nodes simply have no entry.
+    Non-test nodes have no entry.
     """
     if not overlay:
         return None
@@ -753,13 +651,10 @@ def overlay_for_node(overlay: dict | None, node_id: str) -> dict | None:
 
 
 def annotate_graph(graph: dict, overlay: dict | None) -> int:
-    """Attach overlay entries to a graph's nodes **in memory**.
+    """Attach overlay entries to a graph's nodes in memory; return the count.
 
-    Returns the number of nodes annotated. The caller's ``graph`` dict is
-    mutated, never the file: ``graph.json`` on disk stays hash-stable
-    across overlay refreshes, which is the whole reason the overlay is a
-    separate file. Use this on a graph you just loaded and are about to
-    query or render, and do not write the result back to ``graph.json``.
+    The caller's dict is mutated, never the file. Do not write the result back to
+    `graph.json`.
     """
     if not overlay:
         return 0
@@ -774,12 +669,10 @@ def annotate_graph(graph: dict, overlay: dict | None) -> int:
 
 
 def graph_linkage(graph_dir: str | os.PathLike) -> dict:
-    """Which graph this overlay was refreshed against.
+    """Return which graph this overlay was refreshed against.
 
-    The ``graph-meta.json`` fingerprint is carried so a consumer can tell
-    an overlay refreshed against the current graph from one left behind
-    by an older build — without it, a stale overlay and a fresh one are
-    indistinguishable.
+    Carries the `graph-meta.json` fingerprint so a stale overlay can be told from a
+    fresh one.
     """
     directory = Path(graph_dir)
     graph_file = directory / GRAPH_JSON_NAME
@@ -804,18 +697,12 @@ def refresh_results_overlay(
     cov_manifest: str | os.PathLike | None = None,
     run_tag: str | None = None,
 ) -> ResultsOverlay:
-    """Collect results and write ``results-overlay.json``.
+    """Collect results and write `results-overlay.json`.
 
-    The one call behind ``rb graph results``. ``graph.json`` is read (for
-    the id cross-check, the fingerprint linkage and the coverage join)
-    and never written.
-
-    ``run_tag`` points the whole refresh at one run's tree (#541): the
-    scan reads ``<suite>/artefacts/.runs/<tag>/`` and the overlay is
-    written into that run's graph directory, so two concurrent
-    regressions convert their own results without overwriting each
-    other's. ``graph.json`` is NOT per-run and is still read from the
-    untagged ``artefacts/graph/`` unless ``--graph`` names another.
+    The call behind `rb graph results`. `graph.json` is read and never written.
+    `run_tag` points the refresh at one run's tree and writes the overlay into that
+    run's graph directory; `graph.json` is read from the untagged `artefacts/graph/`
+    unless `--graph` names another.
     """
     root = Path(os.path.realpath(str(project_root)))
     out = Path(out_dir) if out_dir is not None else default_graph_dir(root, run_tag)
@@ -842,9 +729,8 @@ def refresh_results_overlay(
         run_tag=run_tag,
     )
     linkage = {**graph_linkage(graph_file.parent), "path": _rel(root, graph_file)}
-    # Rebuilt rather than assigned into, so the linkage sits with the
-    # other header keys instead of trailing the per-test block, and the
-    # two long blocks (coverage, tests) come last in reading order.
+    # Rebuilt so the linkage sits with the header keys and the two long blocks
+    # (coverage, tests) come last.
     collected = result.overlay
     header = {
         k: v for k, v in collected.items() if k not in ("summary", "tests", "coverage")
