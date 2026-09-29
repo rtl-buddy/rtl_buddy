@@ -11385,6 +11385,8 @@ class RtlBuddy:
             # stopped it (#95).
             "fail_stage",
             "blocked_by",
+            # The upstream synthesis `rb pnr --synth` ran first (#95).
+            "synth",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11743,6 +11745,17 @@ class RtlBuddy:
                 ),
             ),
         ] = False,
+        run_synth: Annotated[
+            bool,
+            typer.Option(
+                "--synth",
+                help=(
+                    "run each P&R run's upstream synthesis just before it, once "
+                    "per synthesis — so a top built from blocks: is synthesized "
+                    "after its blocks are hardened"
+                ),
+            ),
+        ] = False,
     ):
         """run place-and-route"""
         ctx = self._enter_command_context(
@@ -11777,6 +11790,7 @@ class RtlBuddy:
             emit_png=emit_png,
             gds_mode=gds_mode,
             accept_stale=accept_stale,
+            run_synth=run_synth,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -11801,13 +11815,22 @@ class RtlBuddy:
         emit_png: bool = False,
         gds_mode: str | None = None,
         accept_stale: bool = False,
+        run_synth: bool = False,
     ):
         root_cfg = self.root_cfg
         suite_path = suite_cfg.get_path()
+        synth_outcomes = {}
+
+        def _selected(run):
+            level = run.get_reglvl(run.get_tool_name())
+            return reg_level is None or level <= reg_level
+
         if pnr_name is None:
             # The whole suite, blocks before the runs that consume them, and
             # the blocks it names in other pnr.yaml files pulled in (#95).
-            plan = plan_pnr_runs(suite_cfg)
+            plan = plan_pnr_runs(
+                suite_cfg, synth_blocks=_selected if run_synth else None
+            )
             log_event(
                 logger,
                 logging.INFO,
@@ -11824,6 +11847,13 @@ class RtlBuddy:
                 PlannedRun(suite_path=suite_path, cfg=run)
                 for run in suite_cfg.get_runs(pnr_name)
             ]
+        if run_synth:
+            # Every synthesis the plan will run, resolved now: a typo in a
+            # top's `synth:` stops the command here, not after its blocks
+            # have spent hours in P&R.
+            for planned in plan:
+                if _selected(planned.cfg):
+                    planned.cfg.resolve_synth_cfg()
         outcomes = {}
         results = []
         for planned in plan:
@@ -11885,6 +11915,27 @@ class RtlBuddy:
                 outcomes[planned.key] = res
                 results.append({**row, "results": res})
                 continue
+            synth_row = None
+            if run_synth:
+                synth_row = self._pnr_upstream_synth(
+                    run, synth_outcomes, accept_stale=accept_stale
+                )
+                if synth_row["result"] not in ("PASS", "XPASS"):
+                    # No netlist of this run's own to place: FAIL with a
+                    # stage an xfail marker never excuses, which blocks
+                    # whatever consumes it as a failed P&R would.
+                    res = PnrFailResults(
+                        name=f"{run.get_name()}/results",
+                        desc=(
+                            f"synthesis '{synth_row['name']}' did not pass: "
+                            f"{synth_row['desc']}"
+                        ),
+                        fail_stage="synth",
+                        fields={"synth": synth_row},
+                    )
+                    outcomes[planned.key] = res
+                    results.append({**row, "results": res})
+                    continue
             if planned.pulled_in:
                 # Its own artefact tree, locked like any `rb pnr -c` of it.
                 self._artifact_locks.acquire(
@@ -11904,9 +11955,40 @@ class RtlBuddy:
             res = runner.run()
             if run.is_xfail():
                 self._apply_xfail_logged(res, run, "pnr_suite.xfail")
+            if synth_row is not None:
+                res.results["synth"] = synth_row
             outcomes[planned.key] = res
             results.append({**row, "results": res})
         return results
+
+    def _pnr_upstream_synth(self, run, synth_outcomes, *, accept_stale=False):
+        """Run ``run``'s upstream synthesis for `rb pnr --synth` (#95), once.
+
+        Keyed by the synthesis, not the P&R run: two P&R runs of one
+        netlist (a flat run and its multi-corner twin, say) synthesize it
+        once. Run whatever its `reglvl` — the P&R run was selected, and
+        this is the netlist it places. Returns the row the P&R result
+        carries as `synth`.
+        """
+        synth_path = run.get_synth_suite_path()
+        key = (os.path.realpath(synth_path), run.get_synth_name())
+        if key not in synth_outcomes:
+            self._artifact_locks.acquire(
+                Path(synth_path).resolve().parent / "artefacts", command="pnr"
+            )
+            [synth] = self._do_synth_suite(
+                SynthSuiteConfig(synth_path),
+                synth_name=run.get_synth_name(),
+                accept_stale=accept_stale,
+            )
+            res = synth["results"].results
+            synth_outcomes[key] = {
+                "name": run.get_synth_name(),
+                "suite": synth_path,
+                "result": res.get("result"),
+                "desc": res.get("desc"),
+            }
+        return synth_outcomes[key]
 
     def _render_pnr_summary(self, title, pnr_results, *, metadata=None):
         has_cells = any("cell_count" in r["results"].results for r in pnr_results)
