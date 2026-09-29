@@ -2317,14 +2317,22 @@ def test_pnr_template_packs_macros_by_their_own_size():
     the result FIRM. The packing itself is tested in test_pnr_macro_pack.py."""
     from importlib.resources import files
 
+    from rtl_buddy.config.pnr import PnrFloorplan
+    from rtl_buddy.tools.pnr_openroad import _macro_place_block
+
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
     assert "[[$inst getMaster] isBlock]" in template
+    assert "{{ macro_place_block }}" in template
+    pack = _macro_place_block(
+        PnrFloorplan(utilization=0.5, aspect=1, core_margin=2), ""
+    )
     assert (
         "lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]"
-        in template
+        in pack
     )
-    assert "rb::macro_pack::solve \\" in template
-    assert "$inst setPlacementStatus FIRM" in template
+    assert "rb::macro_pack::solve \\" in pack
+    assert "$inst setPlacementStatus FIRM" in pack
+    assert "rtl_macro_placer" not in pack
     # No slot is sized for the largest macro any more (#626).
     assert "max_macro_w" not in template
     assert "slot_w" not in template
@@ -3643,3 +3651,95 @@ def test_pnr_flow_renders_a_configured_macro_cell_halo(tmp_path):
     text = _render_flow(tmp_path, _platform(pdk))
 
     assert "set MACRO_CELL_HALO 2.5\n" in text
+
+
+# --- macro-placement: rtl-mp (#95 step 5) ------------------------------------
+
+
+def _rtl_mp_yaml(tmp_path, floorplan_extra):
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(
+        _PNR_YAML.replace(
+            "      core-margin: 3.0\n",
+            "      core-margin: 3.0\n" + floorplan_extra,
+        )
+    )
+    return pnr_yaml
+
+
+def test_macro_placement_defaults_to_the_packer(tmp_path):
+    from rtl_buddy.config.pnr import MacroPlacement
+
+    run = PnrSuiteConfig(str(_rtl_mp_yaml(tmp_path, ""))).get_runs("demo_pnr")[0]
+
+    assert run.get_floorplan().macro_placement is MacroPlacement.PACK
+
+
+def test_macro_placement_rtl_mp_loads(tmp_path):
+    from rtl_buddy.config.pnr import MacroPlacement
+
+    pnr_yaml = _rtl_mp_yaml(tmp_path, "      macro-placement: rtl-mp\n")
+    run = PnrSuiteConfig(str(pnr_yaml)).get_runs("demo_pnr")[0]
+
+    assert run.get_floorplan().macro_placement is MacroPlacement.RTL_MP
+
+
+def test_an_unknown_macro_placement_is_refused_naming_the_choices(tmp_path):
+    pnr_yaml = _rtl_mp_yaml(tmp_path, "      macro-placement: grid\n")
+
+    with pytest.raises(
+        FatalRtlBuddyError, match=r"'grid' \(expected one of pack, rtl-mp\)"
+    ):
+        PnrSuiteConfig(str(pnr_yaml))
+
+
+def test_macro_anchor_with_rtl_mp_is_refused(tmp_path):
+    """The anchor steers the packer only; silently ignoring it would leave a
+    floorplan that does not say what it gets."""
+    pnr_yaml = _rtl_mp_yaml(
+        tmp_path,
+        "      macro-placement: rtl-mp\n      macro-anchor: upper-right\n",
+    )
+
+    with pytest.raises(FatalRtlBuddyError, match="macro-anchor' steers the packer"):
+        PnrSuiteConfig(str(pnr_yaml))
+
+
+def test_rtl_mp_renders_rtl_macro_placer_with_the_halo_both_ways():
+    from rtl_buddy.config.pnr import MacroPlacement, PnrFloorplan
+    from rtl_buddy.tools.pnr_openroad import _macro_place_block
+
+    fp = PnrFloorplan(
+        utilization=0.5,
+        aspect=1,
+        core_margin=2,
+        macro_placement=MacroPlacement.RTL_MP,
+    )
+    block = _macro_place_block(fp, " \\\n      upper-right")
+
+    assert "rb::macro_pack::solve" not in block
+    assert "upper-right" not in block
+    assert "set_macro_base_halo $MACRO_HALO $MACRO_HALO\n" in block
+    assert "rtl_macro_placer -report_directory $OUT_DIR/rtlmp" in block
+    assert "-halo_width $MACRO_HALO -halo_height $MACRO_HALO" in block
+    assert "[info commands set_macro_base_halo]" in block
+
+
+def test_rtl_mp_goes_into_the_abstract_digest_only_when_set(tmp_path):
+    """A block hardened before the key existed keeps its digest; one that
+    switches placer is a different block."""
+    from dataclasses import replace
+
+    from rtl_buddy.config.pnr import MacroPlacement
+    from rtl_buddy.tools import pnr_abstract
+
+    run = PnrSuiteConfig(str(_rtl_mp_yaml(tmp_path, ""))).get_runs("demo_pnr")[0]
+    platform = _platform(_make_pdk_cfg(tmp_path))
+    packed = pnr_abstract.abstract_config(run, platform)
+    assert "macro_placement" not in packed["floorplan"]
+
+    run.floorplan = replace(run.floorplan, macro_placement=MacroPlacement.RTL_MP)
+    placed = pnr_abstract.abstract_config(run, platform)
+
+    assert placed["floorplan"]["macro_placement"] == "rtl-mp"
+    assert pnr_abstract.config_digest(placed) != pnr_abstract.config_digest(packed)

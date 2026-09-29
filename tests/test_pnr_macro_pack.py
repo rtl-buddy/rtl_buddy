@@ -413,7 +413,17 @@ def test_the_rendered_flow_sources_the_packer_and_is_valid_tcl():
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
 
     assert "{{ macro_pack_procs }}" in template
-    assert "rb::macro_pack::solve \\" in template
+    # The call itself is the `pack` placement block, rendered into the
+    # template's `{{ macro_place_block }}` (#95).
+    from rtl_buddy.config.pnr import PnrFloorplan
+    from rtl_buddy.tools.pnr_openroad import _macro_place_block
+
+    assert "{{ macro_place_block }}" in template
+    pack = _macro_place_block(
+        PnrFloorplan(utilization=0.5, aspect=1, core_margin=2), ""
+    )
+    assert "rb::macro_pack::solve \\" in pack
+    assert "$footprints $halo_dbu $site_grid_dbu $dbu_per_micron]" in pack
     assert _run("set result [info args rb::macro_pack::solve]") == (
         "core macros halo grid dbu_per_micron anchor keepouts"
     )

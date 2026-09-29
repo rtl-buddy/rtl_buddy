@@ -74,23 +74,7 @@ foreach inst [$block getInsts] {
   if {[[$inst getMaster] isBlock]} { lappend macros $inst }
 }
 if {[llength $macros] > 0} {
-  set core [$block getCoreArea]
-  set halo_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}]
-  set footprints {}
-  foreach inst $macros {
-    set master [$inst getMaster]
-    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
-  }
-  set placement [rb::macro_pack::solve \
-      [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \
-      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{{ macro_pack_directives }}]
-  foreach inst $macros {
-    lassign [dict get $placement [$inst getName]] x y
-    $inst setLocation $x $y
-    $inst setPlacementStatus FIRM
-    puts ">>>   placed [$inst getName] at ($x, $y) DBU"
-  }
-  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, so
+{{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, so
   # no standard cell abuts a macro edge (#673). An abutting cell has its pins
   # inside met1 spacing of a hardened block's bloated obstruction, and the router
   # can only reach them with a Metal Spacing violation. A blockage, not
