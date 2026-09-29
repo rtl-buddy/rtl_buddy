@@ -45,18 +45,14 @@ class FpvPassResults(FpvResults):
         self.results["engines"] = list(engines) if engines is not None else []
         if runtime_s is not None:
             self.results["runtime_s"] = runtime_s
-        # per_engine carries the parsed `summary: engine_<N> ...`
-        # lines from sby's logfile.txt: list of dicts with idx, spec,
-        # verdict, trace_count. Empty when no logfile was produced.
+        # per_engine holds the `summary: engine_<N>` lines of sby's logfile.txt as dicts (idx, spec, verdict, trace_count).
         self.results["per_engine"] = list(per_engine) if per_engine is not None else []
 
 
 class FpvFailResults(FpvResults):
     """A failed verification.
 
-    ``fail_stage`` names a stage that failed *instead of* producing a
-    verdict on the design; such a failure is never excused by an xfail
-    marker (#553, #594). Leave it unset for the flow's own verdict.
+    Set ``fail_stage`` when a stage failed instead of producing a verdict on the design; an xfail marker never excuses such a failure.
     """
 
     def __init__(

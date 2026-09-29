@@ -33,8 +33,7 @@ class PnrRunner:
         self.accept_stale = accept_stale
         self.emit_gds = emit_gds
         self.emit_png = emit_png
-        # `None` leaves each run to its own `gds-mode:`; `--gds-mode`
-        # overrides every run in the invocation.
+        # `None` defers to each run's `gds-mode:`; otherwise it overrides every run.
         self.gds_mode = gds_mode
 
     def run(self) -> PnrResults:
@@ -82,18 +81,10 @@ class PnrRunner:
 
 
 class PnrExportRunner:
-    """Export one saved P&R result's layout, running no P&R at all (#618).
+    """Export one saved P&R result's layout without running P&R.
 
-    A sibling of :class:`PnrRunner` rather than a flag on it. The two share
-    the run selection and the backend object and nothing else, and what
-    keeps `rb pnr-export` from launching OpenROAD or synthesis is
-    structural: this calls :meth:`OpenRoadPnr.export_only`, never
-    :meth:`OpenRoadPnr.run`, and — unlike the runner above — it never even
-    resolves the P&R tool's executable, which is the point on a host where
-    the collateral arrived after the P&R did.
-
-    The unsupported-tool skip is kept, because the artefact layout the
-    export reads is the OpenROAD backend's.
+    Calls :meth:`OpenRoadPnr.export_only`, never :meth:`OpenRoadPnr.run`, and does not resolve the P&R tool's executable.
+    Only the OpenROAD backend is supported.
     """
 
     def __init__(
@@ -118,7 +109,6 @@ class PnrExportRunner:
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
         self.checkpoint = checkpoint
-        # A re-render is a PNG by definition; otherwise `--png` asks for one.
         self.emit_png = emit_png or png_only
         self.gds_mode = gds_mode
         self.def_path = def_path
@@ -159,8 +149,7 @@ class PnrExportRunner:
             emit_gds=True,
             emit_png=self.emit_png,
             gds_mode=self.gds_mode,
-            # An export streams the layouts that were routed; whether the
-            # blocks' sources have moved on since is the P&R run's question.
+            # Staleness of the blocks' sources is a P&R-run concern, not an export one.
             accept_stale=True,
             klayout_props=self.klayout_props,
             png_width=self.png_width,

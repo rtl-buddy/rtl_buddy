@@ -26,11 +26,7 @@ class LintResults:
 
 class LintPassResults(LintResults):
     def __init__(self, name, *, files: int, excluded: int = 0):
-        # A "pass" in style lint means: zero violations over the checked
-        # file set. Surface the file and excluded counts so the summary
-        # table can show what a clean run actually covered — a check
-        # whose excludes ate the interesting files reads as suspiciously
-        # cheap right in the table.
+        # PASS means zero violations; the file and excluded counts show what the run covered.
         desc = f"clean over {files} file(s)"
         if excluded:
             desc += f" ({excluded} excluded)"
@@ -46,9 +42,7 @@ class LintPassResults(LintResults):
 class LintFailResults(LintResults):
     """A failed check.
 
-    ``fail_stage`` names a stage that failed *instead of* producing a
-    verdict on the design; such a failure is never excused by an xfail
-    marker (#553, #594). Leave it unset for the flow's own verdict.
+    Set ``fail_stage`` when a stage failed instead of producing a verdict on the design; an xfail marker never excuses such a failure.
     """
 
     def __init__(

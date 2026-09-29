@@ -1,24 +1,7 @@
 """Mutation-campaign runner for ``rb mut``.
 
-Orchestrates the external ``rtl-buddy-xeno`` mutation engine against one
-or more kill oracles:
-
-1. enumerate / generate mutants of a single design file (xeno),
-2. materialise each mutant into an isolated copy of the model source
-   tree (the original design file is never touched),
-3. re-evaluate each configured oracle against the mutated tree:
-   - **FPV** — re-prove a named ``fpv.yaml`` verification (killed when
-     the verdict flips vs the unmutated baseline),
-   - **sim** — re-run a ``tests.yaml`` suite with SVA assertions
-     compiled in (killed when a test FAILs or an assertion fires),
-4. score ``killed`` (any oracle caught it) / ``survived`` (every oracle
-   passed) / ``errored`` (the mutant broke the build under every oracle,
-   so it can't be scored — dropped from the denominator).
-
-xeno is an optional dependency — it pulls in the Verible / pyslang
-toolchain via its ``[verible]`` / ``[slang]`` extras — so it is
-imported lazily here. ``rb mut`` is the only entry point that needs it;
-the rest of rtl_buddy (and its test suite) runs without it installed.
+Generates mutants with the external ``rtl-buddy-xeno`` engine, splices each into an isolated copy of the model source tree,
+and scores it against the configured FPV and sim oracles. xeno is optional and imported lazily.
 """
 
 from __future__ import annotations
@@ -44,13 +27,7 @@ from .mut_results import ERRORED, KILLED, SURVIVED, MutantOutcome, MutResults
 logger = logging.getLogger(__name__)
 
 
-# Minimum rtl-buddy-xeno release rb mut's bridge code targets. Kept in
-# sync with the `mut` extra's floor in pyproject.toml: bumping the xeno
-# API rb mut relies on (see the module docstring and the audit notes on
-# rtl-buddy/rtl_buddy#239) must bump both. The pyproject floor guards
-# pip/uv resolves; _check_xeno_version() repeats it at import time so a
-# too-old git/editable install fails with a friendly hint instead of an
-# obscure AttributeError deep inside a campaign.
+# Keep in sync with the floor of the `mut` extra in pyproject.toml.
 _XENO_MIN_VERSION = "0.1.0"
 
 
@@ -66,11 +43,7 @@ _XENO_INSTALL_HINT = (
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
-    """Leading (major, minor, patch) ints of a PEP 440 version string.
-
-    Enough for a floor comparison; non-numeric suffixes (rc/dev/+local)
-    are dropped, so a pre-release of the floor compares equal to it.
-    """
+    """Return the leading (major, minor, patch) ints of a PEP 440 version; suffixes such as rc/dev/+local are dropped."""
     parts = []
     for segment in version.split(".")[:3]:
         match = re.match(r"\d+", segment)
@@ -91,11 +64,8 @@ class MutRunner:
         self.root_cfg = root_cfg
         self.mut_cfg = mut_cfg
         self.work_dir = work_dir
-        # Builder mode handed to TestRunner for the sim oracle; unused by
-        # the FPV oracle. "debug" matches the rb-test default.
+        # Builder mode for the sim oracle's TestRunner; the FPV oracle ignores it.
         self.rtl_builder_mode = rtl_builder_mode
-
-    # --- xeno bridge --------------------------------------------------------
 
     @staticmethod
     def _load_xeno():
@@ -108,15 +78,9 @@ class MutRunner:
 
     @staticmethod
     def _check_xeno_version() -> None:
-        """Fail fast when a too-old rtl-buddy-xeno is installed.
+        """Raise when the installed rtl-buddy-xeno is older than ``_XENO_MIN_VERSION``.
 
-        The `mut` extra's `>=` floor in pyproject.toml guards pip/uv
-        resolves, but git and editable installs bypass it. This repeats
-        the floor at import time so xeno API drift below
-        ``_XENO_MIN_VERSION`` surfaces as a friendly hint, not an
-        AttributeError mid-campaign. Skipped when the installed version
-        can't be read (no distribution metadata -- e.g. the test stub);
-        there the resolve-time floor and a successful import stand in.
+        Git and editable installs bypass the pyproject floor. The check is skipped when no distribution metadata is available.
         """
         try:
             installed = importlib.metadata.version("rtl-buddy-xeno")
@@ -151,8 +115,6 @@ class MutRunner:
         budget = self.mut_cfg.budget
         count = budget.max_mutants
         if budget.per_file_cap is not None:
-            # Single design file == single scoped file for this slice, so the
-            # per-file cap is just a tighter ceiling on the total.
             count = min(count, budget.per_file_cap)
         return count
 
@@ -161,16 +123,10 @@ class MutRunner:
             return xeno.Schedule.ROUND_ROBIN
         return xeno.Schedule.SEQUENTIAL
 
-    # --- scope graph ingestion ----------------------------------------------
-
     def _scope_graph_json(self) -> dict:
-        """Run rtl-buddy-view (via the existing RtlBuddyView wrapper) to a
-        JSON file under the work dir and load it.
+        """Run rtl-buddy-view into ``hier.json`` under the work dir and load it.
 
-        Only called when ``self.mut_cfg.has_scope()``. ``RtlBuddyView.run()``
-        streams JSON to the ``--output`` file and returns a returncode (it
-        does NOT return stdout), so we read the file back. The wrapper raises
-        ``FatalRtlBuddyError`` if the binary is missing — let that propagate.
+        Only called when the campaign has a scope. Raises ``FatalRtlBuddyError`` if the binary is missing or the schema major version is not 1.
         """
         from ..tools.hier_rtl_buddy_view import RtlBuddyView
 
@@ -212,18 +168,12 @@ class MutRunner:
         return data
 
     def _scoped_source_files(self) -> list[str]:
-        """Resolve scope.include/exclude against the hier graph.
+        """Resolve scope include/exclude globs against the hier graph.
 
-        Glob-matches each include/exclude pattern (stdlib shell glob via
-        ``fnmatch``, case-sensitive on every platform) against THREE targets
-        per node: the dotted instance
-        path (``node["id"]``), the node's absolute source file, and that
-        file relative to the model dir. A node is in scope when include is
-        empty OR any include matches, and no exclude matches.
+        Each glob is matched against a node's dotted instance path, its absolute source file and that file relative to the model dir.
+        A node is in scope when include is empty or matches, and exclude does not match.
 
-        Returns the sorted, de-duplicated set of in-scope source files
-        (absolute paths). Raises ``FatalRtlBuddyError`` when the resolved
-        set is empty or any file escapes the model dir.
+        Returns the sorted, de-duplicated absolute source files. Raises ``FatalRtlBuddyError`` when none are selected or one lies outside the model dir.
         """
         inc = self.mut_cfg.get_scope_include()
         exc = self.mut_cfg.get_scope_exclude()
@@ -238,9 +188,7 @@ class MutRunner:
             abspath = os.path.normpath(os.path.abspath(src))
             rel = os.path.relpath(abspath, model_dir)
             targets = (node.get("id", ""), abspath, rel)
-            # fnmatchcase: case-sensitive on all platforms (fnmatch would
-            # case-fold on macOS), so a scope selects the same files in dev
-            # and CI.
+            # fnmatchcase, not fnmatch: fnmatch case-folds on some platforms.
             included = (not inc) or any(
                 fnmatch.fnmatchcase(t, p) for p in inc for t in targets
             )
@@ -272,8 +220,6 @@ class MutRunner:
         )
         return files
 
-    # --- list ---------------------------------------------------------------
-
     def list_candidates(self) -> list[dict]:
         """Enumerate candidate sites without mutating (``rb mut list``)."""
         xeno = self._load_xeno()
@@ -295,10 +241,7 @@ class MutRunner:
     def _list_candidates_scoped(self, xeno) -> list[dict]:
         """Enumerate candidate sites across every scoped source file.
 
-        Each candidate carries a model-relative ``file`` key so multi-file
-        output disambiguates which scoped file the site belongs to. The
-        per-file ``per_file_cap`` (one scoped file == one unit for this
-        slice) caps how many sites are reported per file.
+        Each candidate has a model-relative ``file`` key; ``per_file_cap`` limits the sites reported per file.
         """
         kinds = self._kinds(xeno)
         model_dir = self._model_dir()
@@ -323,8 +266,6 @@ class MutRunner:
                 n += 1
         return sites
 
-    # --- run ----------------------------------------------------------------
-
     def run(self) -> MutResults:
         xeno = self._load_xeno()
         if self.mut_cfg.has_scope():
@@ -335,10 +276,7 @@ class MutRunner:
         self._validate_design_in_model()
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
 
-        # Load + baseline each configured oracle. Baselines are expected to
-        # PASS on the unmutated design; a non-passing baseline means the
-        # oracle is broken (warn, but keep going — every mutant will then
-        # look "killed" and the user can see why).
+        # A non-PASS baseline only warns; every mutant then reads as killed.
         fpv_cfg = self._load_fpv_cfg() if self.mut_cfg.has_fpv_oracle() else None
         fpv_baseline = self._baseline_fpv(fpv_cfg) if fpv_cfg is not None else None
         sim_baseline = self._baseline_sim() if self.mut_cfg.has_sim_oracle() else None
@@ -386,26 +324,15 @@ class MutRunner:
         )
 
     def _run_scoped(self, xeno) -> MutResults:
-        """Multi-file campaign: resolve the scoped source files from the
-        hier graph, then mutate each one in turn, splicing every mutant back
-        into ITS origin file.
+        """Run a multi-file campaign, mutating each scoped file in sorted order.
 
-        Budget semantics for the scoped slice (one scoped file == one unit):
-          - ``per_file_cap`` caps mutants generated PER scoped file;
-          - ``max_mutants`` is a GLOBAL ceiling across all scoped files —
-            once it is reached the campaign stops, even mid-file;
-          - the time budget applies across the whole campaign;
-          - the schedule is applied independently per file.
-
-        Scoped files are processed in sorted order, so the global
-        ``max_mutants`` ceiling may truncate later files; users control
-        fairness via scope ordering / ``per_file_cap``.
+        ``per_file_cap`` limits mutants per file. ``max_mutants`` is a global ceiling and the campaign stops when it is
+        reached, even mid-file; the time budget also covers the whole campaign, so later files may be truncated. The
+        schedule applies per file.
         """
         kinds = self._kinds(xeno)
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
 
-        # Baseline each configured oracle on the unmutated design (same
-        # semantics as the single-file path).
         fpv_cfg = self._load_fpv_cfg() if self.mut_cfg.has_fpv_oracle() else None
         fpv_baseline = self._baseline_fpv(fpv_cfg) if fpv_cfg is not None else None
         sim_baseline = self._baseline_sim() if self.mut_cfg.has_sim_oracle() else None
@@ -479,8 +406,6 @@ class MutRunner:
             per_file=per_file,
         )
 
-    # --- mutant materialisation ---------------------------------------------
-
     def _model_dir(self) -> str:
         model = self.mut_cfg.get_model()
         if not model.path:
@@ -505,13 +430,9 @@ class MutRunner:
     def _materialise_mutant(
         self, mutant_id: str, mutant_sv: str, target_file: str | None = None
     ):
-        """Copy the model tree, splice in the mutant, return a per-mutant
-        ModelConfig pointing at the copy plus the mutant's work root.
+        """Copy the model tree, splice in the mutant, and return a per-mutant ModelConfig for the copy plus its work root.
 
-        ``target_file`` names the source file the mutant should be spliced
-        into (its origin file in a multi-file scoped campaign). When None
-        (the single-file / empty-scope path), it is the configured
-        ``design_file`` — keeping the no-scope behaviour byte-for-byte.
+        ``target_file`` is the file to splice into; None means the configured ``design_file``.
         """
         mutant_root = os.path.join(self.work_dir, mutant_id)
         model_src = os.path.join(mutant_root, "model_src")
@@ -529,20 +450,15 @@ class MutRunner:
         )
         return dataclasses.replace(orig_model, path=copied_models_yaml), mutant_root
 
-    # --- FPV oracle ---------------------------------------------------------
-
     def _load_fpv_cfg(self):
         from ..config.fpv import FpvSuiteConfig
 
         suite = FpvSuiteConfig(path=self.mut_cfg.fpv_config)
-        # Raises FatalRtlBuddyError if the named verification is absent.
         fpv_cfg = suite.get_verifications(self.mut_cfg.verification)[0]
         override = self.mut_cfg.get_top_override()
         if override is None or override == fpv_cfg.get_top():
             return fpv_cfg
-        # The campaign states its own top, so it wins over the oracle
-        # verification's for both the baseline and every mutant — they are
-        # only comparable when elaborated from the same root module.
+        # The campaign's top overrides the verification's so baseline and mutants share a root module.
         log_event(
             logger,
             logging.INFO,
@@ -587,8 +503,6 @@ class MutRunner:
         outcome = KILLED if verdict != baseline else SURVIVED
         return outcome, f"fpv={verdict}"
 
-    # --- sim oracle ---------------------------------------------------------
-
     def _sim_suite_dir(self) -> str:
         return os.path.dirname(os.path.abspath(self.mut_cfg.test_config))
 
@@ -618,9 +532,7 @@ class MutRunner:
 
     @staticmethod
     def _is_build_error(results) -> bool:
-        # A mutant that won't compile is "errored", not killed. These
-        # result classes all signal a failure *before* the design's
-        # behaviour was actually exercised.
+        # These failures occur before the design runs, so the mutant is errored, not killed.
         return type(results).__name__ in (
             "CompileFailResults",
             "FilelistFailResults",
@@ -651,8 +563,7 @@ class MutRunner:
     def _eval_sim(self, mutant_model, mutant_id):
         """Return (outcome, "sim=<verdict>") for the sim oracle.
 
-        Killed when any selected test FAILs or fires an assertion;
-        build failures are errored (dropped), not killed.
+        Killed when a selected test fails or an assertion fires; build failures are errored.
         """
         from ..config.suite import SuiteConfig
 
@@ -674,16 +585,12 @@ class MutRunner:
             return ERRORED, "sim=ERROR"
         return (KILLED if killed else SURVIVED), ("sim=FAIL" if killed else "sim=PASS")
 
-    # --- scoring ------------------------------------------------------------
-
     def _score_mutant(
         self, idx: int, mutant, fpv_cfg, fpv_baseline, target_file: str | None = None
     ) -> MutantOutcome:
         operator = mutant.kind.value
         mutant_id = f"m{idx:04d}_{operator}"
         predicted = sorted(getattr(mutant.prediction, "perturbs_signals", []) or [])
-        # Model-relative origin file, recorded only for scoped (multi-file)
-        # campaigns; empty for the single-file path (back-compat).
         file_rel = self._design_relpath(target_file) if target_file else ""
 
         try:
@@ -722,9 +629,7 @@ class MutRunner:
             per_outcomes.append(o)
             verdicts.append(v)
 
-        # Union semantics: killed if any oracle caught it; else survived if
-        # any oracle actually scored it; else errored (every oracle failed
-        # to build/evaluate the mutant).
+        # Killed if any oracle killed it, else survived if any scored it, else errored.
         if KILLED in per_outcomes:
             overall = KILLED
         elif SURVIVED in per_outcomes:
