@@ -129,7 +129,7 @@ The graph's run dropdown selects the same runs as this pane, and a `phys-focus` 
 
 - `phys_runs` takes `limit` and is where the `phys_dir` for the other tools comes from.
 - `phys_dir` and `manifest` are the tool arguments for `--phys-dir` and `--manifest`; a relative path resolves against the project root.
-- All four take `limit` with the flag's default (`0` for every row). `phys_summary` also takes `modules_limit` and `instances_limit`, an integer or `"none"`.
+- All four take `limit` with the same default as the CLI flag (the head of the ranking); `0` returns every row. `phys_summary` also takes `modules_limit` and `instances_limit`, an integer or `"none"`.
 - A `phys_focus` tool mirroring `rb hub send phys-focus` joins them when a live hub is discovered.
 
 ## Troubleshooting

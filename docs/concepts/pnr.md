@@ -252,7 +252,7 @@ runs:
 
 A count above the allocation is clamped to it with an `openroad.threads_capped` warning naming both numbers. Outside an allocation an explicit count is used as given.
 
-`--machine` output carries `openroad_threads` with the `requested`, `effective` and allocation values. The same rules apply to [`rb power`](power.md) and the OpenROAD stage of [`rb synth`](synthesis.md). Results are not bit-identical across thread counts.
+`--machine` output carries `openroad_threads` with the `requested`, `effective` and allocation values. The same rules apply to [`rb power`](power.md) and the OpenROAD stage of [`rb synth`](synthesis.md). Results are not guaranteed to be bit-identical across thread counts; compare DRC and slack if it matters.
 
 ## Keep stage checkpoints
 
@@ -410,7 +410,6 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **Blockages rejected at setup, or an older-OpenROAD warning.** Upgrade OpenROAD (25Q1 minimum, 26Q1 for blockages).
 - **`[ERROR PDN-0179] Unable to repair all channels`.** Raise `placement.macro-halo`.
 - **`N macros do not fit ...`.** Lower utilization, change the aspect ratio or lower `macro-halo`.
-- **`PPL-0015 Macro ... is not placed`.** Pin commands ran before macro placement. Keep them in `pin-constraints`, not SDC.
 - **`RSZ-0090` at a slow corner.** A single-Liberty macro limits that corner. Give it a Liberty per corner.
 - **`RB-DONT-USE-VIOLATION`.** The netlist instantiates an excluded cell. Change the RTL, synthesis or pattern.
 - **`STA-0122 cell '<pattern>' not found`.** A `dont-use-cells` pattern matches nothing.
@@ -420,3 +419,4 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`fail_stage: abstract`, or `harden:` refused.** A view could not be produced (read `pnr.log`), or the platform has several corners.
 - **A missing or stale abstract, or a platform/corner mismatch.** Run the `rb pnr` command the message names, run `rb pnr` with no run name, or pass `--accept-stale`.
 - **`fail_stage: blocked`.** A block the run consumes failed. Fix it first.
+- **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.
