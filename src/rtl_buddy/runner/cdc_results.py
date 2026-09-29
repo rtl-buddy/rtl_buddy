@@ -33,9 +33,7 @@ class CdcPassResults(CdcResults):
         suppressed: int = 0,
         crossings: int | None = None,
     ):
-        # A "pass" in CDC means: zero unsuppressed violations. We still
-        # surface the suppressed count and the crossing total so the
-        # summary table can show why a clean run is clean.
+        # PASS means zero unsuppressed violations; the counts explain a clean run.
         desc = "no rule violations"
         if suppressed:
             desc = f"no rule violations ({suppressed} suppressed)"
@@ -52,9 +50,7 @@ class CdcPassResults(CdcResults):
 class CdcFailResults(CdcResults):
     """A failed analysis.
 
-    ``fail_stage`` names a stage that failed *instead of* producing a
-    verdict on the design; such a failure is never excused by an xfail
-    marker (#553, #594). Leave it unset for the flow's own verdict.
+    Set ``fail_stage`` when a stage failed instead of producing a verdict on the design; an xfail marker never excuses such a failure.
     """
 
     def __init__(

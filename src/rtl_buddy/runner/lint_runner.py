@@ -1,18 +1,8 @@
-"""Per-check style-lint runner — drives verible-verilog-lint directly.
+"""Runs one style-lint check with the project's ``cfg-verible`` verible-verilog-lint.
 
-Unlike CDC there is no backend registry: the linter is always the
-project's routed ``cfg-verible`` entry, so the runner owns the whole
-subprocess. If a second style linter ever appears, split this the way
-``cdc_runner`` / ``tools/cdc_*`` did (registry keyed on a per-check
-``tool:`` field).
-
-A check's file set is the same expansion ``rb verible lint --model``
-applies: the model's bare source entries (``-v``/``-y`` library files
-and ``+`` directives dropped), filtered by the cfg-verible ``exclude``
-globs plus the check's own. The expanded list is written to
-``artefacts/<name>/lint.f`` and the linter's output to
-``artefacts/<name>/lint.log``, so a FAIL row in the summary always has
-the finding lines on disk next to the exact file set they came from.
+The check's file set is the model's bare source entries (``-v``/``-y`` library files and ``+`` directives dropped),
+minus the ``cfg-verible`` ``exclude`` globs and the check's own, as in ``rb verible lint --model``.
+The file set is written to ``artefacts/<name>/lint.f`` and the linter output to ``artefacts/<name>/lint.log``.
 """
 
 import logging
@@ -29,9 +19,7 @@ from .lint_results import LintFailResults, LintPassResults, LintResults
 
 logger = logging.getLogger(__name__)
 
-#: A verible finding line: ``path:line:col[-col]: message [rule]``. Also
-#: matches syntax-error lines (``path:line:col: syntax error at ...``),
-#: which is deliberate — an unparseable file fails a style gate too.
+#: A verible finding line, ``path:line:col[-col]: message [rule]``. Syntax-error lines match on purpose.
 _FINDING_RE = re.compile(r"^[^\s:][^:]*:\d+:")
 
 
@@ -40,23 +28,18 @@ class LintRunner:
         self.name = name
         self.root_cfg = root_cfg
         self.lint_cfg = lint_cfg
-        # The lint.yaml's directory: artefacts live under it, and the
-        # subprocess runs from it so the log's paths are suite-relative.
+        # The lint.yaml's directory; the subprocess runs here so log paths are suite-relative.
         self.suite_dir = suite_dir
 
         artefact_root = Path(suite_dir) / "artefacts" / lint_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
 
-    # --- artefact paths -----------------------------------------------------
-
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "lint.f")
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "lint.log")
-
-    # --- helpers ------------------------------------------------------------
 
     def _expand_files(self) -> tuple[list[str], int]:
         """The check's file set: model expansion minus exclude globs.
@@ -74,9 +57,7 @@ class LintRunner:
     def run(self) -> LintResults:
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
-            # Config/environment error, not a skippable condition: a lint
-            # regression silently green because the linter is missing is
-            # the false pass the flow exists to prevent.
+            # A missing linter is an error, not a skip: a skip would read as a green lint.
             raise FatalRtlBuddyError(
                 f"lint check '{self.lint_cfg.get_name()}': verible binaries "
                 "unavailable (see cfg-verible in root_config.yaml)"
@@ -111,11 +92,6 @@ class LintRunner:
             files=len(files),
             excluded=excluded,
         )
-        # Plain subprocess.run, not run_managed_process: this matches the
-        # existing Verible.do_exe convention, and verible-verilog-lint is
-        # a per-file parser with no elaboration — runtime scales with file
-        # count and stays in seconds, unlike a CDC analysis. Revisit if a
-        # check ever needs a timeout.
         with task_status(f"Linting {self.lint_cfg.get_name()}"):
             proc = subprocess.run(
                 cmd,
@@ -127,9 +103,7 @@ class LintRunner:
             "$ " + " ".join(cmd) + "\n" + proc.stdout + proc.stderr
         )
 
-        # verible-verilog-lint writes findings to stderr (stdout stays
-        # empty on a plain lint run) — scan both streams so a build that
-        # changes the convention keeps counting.
+        # Findings normally go to stderr; scan both streams.
         findings = [
             line
             for line in (proc.stdout + proc.stderr).splitlines()
@@ -156,9 +130,7 @@ class LintRunner:
                 files=len(files),
                 excluded=excluded,
             )
-        # Non-zero exit with no finding lines: the tool itself failed
-        # (bad flag, unreadable file, ...) — surface that instead of a
-        # bogus "0 violations" FAIL.
+        # Non-zero exit with no findings means the tool itself failed.
         return LintFailResults(
             name=self.lint_cfg.get_name(),
             violations=0,
@@ -168,7 +140,6 @@ class LintRunner:
                 f"verible-verilog-lint exited with code {proc.returncode} "
                 f"(see {self._log_path()})"
             ),
-            # The tool failed instead of reporting on the files, so this is
-            # not a violation count an xfail marker can excuse (#553).
+            # A tool failure is not a violation count, so xfail cannot excuse it.
             fail_stage="tool",
         )

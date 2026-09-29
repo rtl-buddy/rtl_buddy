@@ -22,22 +22,14 @@ class PowerResults:
         return "power_results: " + pprint.pformat(self.results)
 
 
-#: How many cell names the pass description spells out before it stops
-#: counting. A design that lost a whole library would otherwise put
-#: hundreds of names in a results table cell; the machine fields carry
-#: the complete list either way.
+#: Cell names spelled out in the pass description; the machine fields list all of them.
 _DESC_CELLS = 3
 
 
 def _unpowered_qualifier(cells, instance_count: int) -> str:
-    """What to add to a pass description when cells had no library (#627).
+    """Return the text to add to a pass description when cells had no library.
 
-    The verdict is unchanged — the watts reported are a real measurement
-    of everything that had a library — so the qualifier is what stops
-    them from being read as a measurement of the whole design. It names
-    the cells because the cell is what the reader has to go and supply a
-    Liberty for; which instances they are is in the per-instance report
-    and in the model beside it.
+    The verdict is unchanged; the qualifier marks the watts as excluding those cells and names them so a Liberty can be supplied.
     """
     if not cells:
         return ""
@@ -97,26 +89,18 @@ class PowerPassResults(PowerResults):
             self.results["leakage_w"] = leakage_w
         if activity_source is not None:
             self.results["activity_source"] = activity_source
-        # What a post-P&R analysis timed the routing on: "spef" (the P&R
-        # run's OpenRCX extraction) or "estimated" (global-route estimate).
-        # Absent on a synth-source run, which has no routing (#101).
+        # "spef" (OpenRCX extraction) or "estimated" (global-route estimate); absent on a synth-source run.
         if parasitics is not None:
             self.results["parasitics"] = parasitics
-        # Multi-corner signoff (#104, #105): the watts above are the worst
-        # (highest-total) corner's, named here, and `corners` carries each
-        # corner's own four. Both absent on a single-corner run.
+        # Multi-corner runs: the watts above are the highest-total corner's; `corners` holds each corner's own. Both absent on a single-corner run.
         if worst_corner is not None:
             self.results["worst_corner"] = worst_corner
         if corners:
             self.results["corners"] = corners
-        # Where the per-instance breakdown behind these scalars was written
-        # (#558). Absent when the run could not publish one.
+        # Path of the per-instance breakdown; absent when none was published.
         if phys_model is not None:
             self.results["phys_model"] = phys_model
-        # The cells the analysis had no library for, and how many
-        # instances of them there are (#627). Absent — rather than empty —
-        # on the ordinary run, so a consumer reading the key reads a run
-        # that found something.
+        # Absent rather than empty when every cell had a library.
         if unpowered_cells:
             self.results["unpowered_cells"] = unpowered_cells
             self.results["unpowered_cell_count"] = len(unpowered_cells)
@@ -126,10 +110,7 @@ class PowerPassResults(PowerResults):
 class PowerFailResults(PowerResults):
     """A failed run.
 
-    ``fail_stage`` names a stage that failed *instead of* producing a
-    verdict on the design (a missing tool, an unresolvable platform, a
-    filelist error). Such a failure is never excused by an xfail marker
-    (#553, #594); leave it unset for the flow's own verdict.
+    Set ``fail_stage`` when a stage failed instead of producing a verdict on the design, such as a missing tool or an unresolvable platform; an xfail marker never excuses such a failure.
     """
 
     def __init__(self, name, desc, *, fail_stage: str | None = None):

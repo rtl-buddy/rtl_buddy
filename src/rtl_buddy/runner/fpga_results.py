@@ -25,21 +25,12 @@ class FpgaResults:
 class FpgaPassResults(FpgaResults):
     """A passed implementation run with its post-route metrics.
 
-    ``lut`` / ``ff`` / ``bram`` / ``dsp`` are each a
-    ``{"used", "available", "util_pct"}`` dict (the canonical aliases
-    from ``fpga_vivado_reports.parse_utilization``). ``bitstream`` is
-    always present on a pass — ``None`` when bitstream generation was
-    not requested (`rb fpga` without ``--bitstream``).
+    ``lut``, ``ff``, ``bram`` and ``dsp`` are ``{"used", "available", "util_pct"}`` dicts.
+    ``bitstream`` is always present; it is ``None`` when no bitstream was requested.
+    Every other metric is optional, and a ``None`` omits the key because backends differ in what they measure.
 
-    Backends differ in what they can measure (openXC7 has no power /
-    DRC / methodology reports, Vivado has no single-number Fmax) — every
-    metric is optional and a ``None`` simply omits the key, so machine
-    consumers must treat all metric keys as optional.
-
-    ``failing_endpoints`` / ``failing_paths`` are the timing-closure
-    loop fields: the count of endpoints with negative slack and the
-    worst failing paths (``{"slack_ns", "source", "destination", ...}``
-    dicts) so an agent can hypothesize a fix without re-parsing reports.
+    ``failing_endpoints`` counts endpoints with negative slack; ``failing_paths`` lists the worst ones as
+    ``{"slack_ns", "source", "destination", ...}`` dicts.
     """
 
     def __init__(
@@ -101,28 +92,21 @@ class FpgaPassResults(FpgaResults):
             self.results["drc_violations"] = drc_violations
         if drc_by_severity is not None:
             self.results["drc_by_severity"] = drc_by_severity
-        # Vendor methodology findings ({id, severity, description} dicts),
-        # surfaced verbatim — informational, never a pass/fail input.
         if methodology_warnings is not None:
             self.results["methodology_warnings"] = methodology_warnings
-        # Deliberately set even when None so machine consumers can
-        # distinguish "no bitstream requested" from older payloads.
+        # Set even when None: the key's presence marks the payload as bitstream-aware.
         self.results["bitstream"] = bitstream
 
 
 class FpgaFailResults(FpgaResults):
     """A failed implementation run.
 
-    ``fail_stage`` names a stage that failed *instead of* producing a
-    verdict on the design; such a failure is never excused by an xfail
-    marker (#553, #594). Leave it unset for the flow's own verdict.
+    Set ``fail_stage`` when a stage failed instead of producing a verdict on the design; an xfail marker never excuses such a failure.
     """
 
     def __init__(self, name, desc, metrics=None, *, fail_stage: str | None = None):
         results = {"result": "FAIL", "name": name, "desc": desc}
-        # A timing-gate failure (require-timing-met) carries the routed
-        # metrics forward so a closure loop still sees wns_ns/timing_met/
-        # failing_paths on the failing payload.
+        # A require-timing-met failure keeps the routed metrics.
         if metrics:
             results.update(metrics)
         if fail_stage is not None:

@@ -47,17 +47,13 @@ class SynthPassResults(SynthResults):
             self.results["wns_ps"] = wns_ps
         if tns_ps is not None:
             self.results["tns_ps"] = tns_ps
-        # Present only when the static-lifetime gate ran in `warn` mode and
-        # found something: a passing run whose netlist may still be wrong.
+        # Set only when the static-lifetime gate in `warn` mode found something.
         if static_function_findings:
             self.results["static_function_findings"] = static_function_findings
-        # Present only when the interface gate ran in `warn` mode and found
-        # something: a passing run whose netlist is missing the port
-        # connections of that many interface instances.
+        # Set only when the interface gate in `warn` mode found something; the count is of interface instances missing port connections.
         if unresolved_interfaces:
             self.results["unresolved_interfaces"] = unresolved_interfaces
-        # Where the per-module breakdown behind these scalars was written
-        # (#558). Absent when the run could not publish one.
+        # Path of the per-module breakdown; absent when none was published.
         if phys_model is not None:
             self.results["phys_model"] = phys_model
 
@@ -65,10 +61,7 @@ class SynthPassResults(SynthResults):
 class SynthFailResults(SynthResults):
     """A failed run.
 
-    ``fail_stage`` names a stage that failed *instead of* producing a
-    verdict on the design (a missing tool, an unresolvable platform, a
-    filelist error). Such a failure is never excused by an xfail marker
-    (#553, #594); leave it unset for the flow's own verdict.
+    Set ``fail_stage`` when a stage failed instead of producing a verdict on the design, such as a missing tool or an unresolvable platform; an xfail marker never excuses such a failure.
     """
 
     def __init__(self, name, desc, *, fail_stage: str | None = None):

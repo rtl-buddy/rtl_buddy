@@ -1,16 +1,9 @@
-"""Block-before-top ordering for an `rb pnr` over a whole suite (#95).
+"""Block-before-top ordering for `rb pnr` over a whole suite.
 
-A run that names hardened blocks under `blocks:` consumes the abstracts
-their `harden: true` runs publish, so those runs have to go first. This
-module turns a suite into that order: a topological sort over the
-`blocks:` edges, stable in the file's own order wherever the edges leave
-a choice, so a suite with no `blocks:` runs exactly as it always has.
-
-A block defined in *another* `pnr.yaml` is pulled into the plan, ahead of
-the run that consumes it, and so are its own blocks in turn — asking for a
-suite means asking for everything it is built from. Only the whole-suite
-form does this: a named run consumes whatever abstract is published, and
-fails fast when there is none, as it always has.
+A run that names hardened blocks under `blocks:` consumes the abstracts their `harden: true` runs publish, so those run first.
+The plan is a topological sort over the `blocks:` edges that keeps file order where the edges leave a choice.
+Blocks defined in another `pnr.yaml` are pulled in ahead of their consumers, recursively.
+A named run is not expanded: it consumes whatever abstract is published and fails fast when there is none.
 """
 
 import os
@@ -42,8 +35,7 @@ class PlannedRun:
     suite_path: str
     cfg: PnrConfig
     deps: tuple[BlockDep, ...] = ()
-    # From another pnr.yaml, only because a run of the requested suite
-    # (or one of its blocks) consumes it.
+    # True for a run from another pnr.yaml, included only because a requested run or one of its blocks consumes it.
     pulled_in: bool = False
 
     @property
@@ -63,17 +55,12 @@ def _label(key: RunKey, root: str) -> str:
 def plan_pnr_runs(
     suite_cfg: PnrSuiteConfig, *, load_suite=PnrSuiteConfig, synth_blocks=None
 ):
-    """Every run of ``suite_cfg`` plus the blocks it is built from, in order.
+    """Return every run of ``suite_cfg`` plus the blocks it is built from, in run order.
 
-    ``synth_blocks`` (`rb pnr --synth`) is a predicate over a run's config:
-    where it holds, the run also depends on the blocks its upstream
-    synthesis names — that synthesis runs just before the run and reads
-    those abstracts, and its `blocks:` list is its own. It is false for a
-    run `-l` deselects, whose synthesis never runs and so is never read.
+    ``synth_blocks`` (`rb pnr --synth`) is a predicate over a run's config. Where it holds, the run also depends on the blocks named by its upstream synthesis.
+    It is false for a run `-l` deselects.
 
-    Raises :class:`FatalRtlBuddyError` for a block that names a run no
-    `pnr.yaml` defines, and for a cycle, naming it — both before anything
-    has run.
+    Raises :class:`FatalRtlBuddyError`, before anything runs, for a block naming a run no `pnr.yaml` defines and for a cycle.
     """
     root = os.path.realpath(suite_cfg.get_path())
     suites: dict[str, PnrSuiteConfig] = {root: suite_cfg}
@@ -114,9 +101,7 @@ def plan_pnr_runs(
             found[dep] = (dep_suite, runs[ref.pnr_run], True)
             pending.append(dep)
 
-    # Two pnr.yaml files in one directory share its artefacts/: a run name
-    # both define would be one output directory written twice, and under
-    # `-j` at once.
+    # Two pnr.yaml files in one directory share its artefacts/, so a run name in both would write one directory twice.
     outputs: dict[tuple[str, str], RunKey] = {}
     for key in found:
         out = (os.path.dirname(key[0]), key[1])
@@ -157,13 +142,12 @@ def plan_pnr_runs(
 
 
 def _find_cycle(keys: list[RunKey], deps: dict[RunKey, list[BlockDep]]):
-    """One cycle among ``keys`` (the runs no order could place), as a path
-    that ends where it starts."""
+    """Return one cycle among ``keys`` as a path that ends where it starts."""
     remaining = set(keys)
     path: list[RunKey] = []
     on_path: dict[RunKey, int] = {}
     key = keys[0]
-    # Every run left has a block that is also left, so the walk repeats.
+    # Every remaining run has a remaining block, so the walk must revisit a run.
     while key not in on_path:
         on_path[key] = len(path)
         path.append(key)
@@ -172,12 +156,7 @@ def _find_cycle(keys: list[RunKey], deps: dict[RunKey, list[BlockDep]]):
 
 
 class OnceMap:
-    """Compute a value once per key, however many threads ask for it.
-
-    A synthesis two P&R runs share is run by the first to need it; the
-    other waits for that result rather than starting a second one over the
-    same artefact directory.
-    """
+    """Compute a value once per key; concurrent callers for the same key wait for the first result."""
 
     def __init__(self):
         self._guard = threading.Lock()
@@ -194,20 +173,12 @@ class OnceMap:
 
 
 def run_plan(plan: list[PlannedRun], step, *, jobs: int = 1, on_error=None) -> dict:
-    """Call ``step(planned, outcomes)`` for every run of ``plan``; return
-    ``{key: step's return}``.
+    """Call ``step(planned, outcomes)`` for every run of ``plan`` and return ``{key: step's return}``.
 
-    ``outcomes`` maps each finished run's key to its `results` object, so a
-    step can see how its blocks went. With ``jobs`` 1 that is the plan's
-    order. Otherwise up to ``jobs`` steps run at once, each started, in
-    plan order, as soon as every block it names that is in the plan has
-    finished — independent blocks harden side by side, and a top still
-    waits for all of its own.
+    ``outcomes`` maps each finished run's key to its `results` object. With ``jobs`` 1 steps run in plan order.
+    Otherwise up to ``jobs`` steps run at once, each starting once every block it names that is in the plan has finished.
 
-    ``on_error(planned, exc)``, when given, turns an exception a step raised
-    into that run's row, so one run's crash neither discards the rows of the
-    others nor — under ``jobs`` — surfaces only after every sibling still in
-    flight has finished and been thrown away.
+    ``on_error(planned, exc)``, when given, turns an exception from a step into that run's row instead of aborting the plan.
     """
 
     def _call(planned, outcomes):

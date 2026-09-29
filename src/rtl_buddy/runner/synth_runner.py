@@ -23,7 +23,7 @@ class SynthRunner:
         accept_stale: bool = False,
     ):
         self.name = name
-        # `--accept-stale` for `blocks:` abstracts (#95).
+        # `--accept-stale` for `blocks:` abstracts.
         self.accept_stale = accept_stale
         self._blocks: list[pnr_abstract.ResolvedBlock] = []
         self.root_cfg = root_cfg
@@ -52,8 +52,7 @@ class SynthRunner:
             effort=effort_cfg.get_name(),
         )
 
-        # When the effort disables OpenROAD, fall back to the Yosys backend
-        # even if the synth.yaml selected tool: openroad.
+        # An openroad tool falls back to Yosys when the effort disables OpenROAD.
         if tool_name == "openroad" and effort_cfg.get_openroad_run():
             yosys_exe = "yosys"
             try:
@@ -71,7 +70,6 @@ class SynthRunner:
                 effort_cfg=effort_cfg,
             )
         else:
-            # Yosys-only: either tool: yosys, or tool: openroad with effort.run=False
             if tool_name == "openroad":
                 try:
                     tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
@@ -98,13 +96,10 @@ class SynthRunner:
         return res
 
     def _resolve_blocks(self, backend) -> SynthFailResults | None:
-        """Add each `blocks:` abstract's Liberty model and LEF to the run (#95).
+        """Add each `blocks:` abstract's Liberty model and LEF to the backend's `lib-paths` / `lef-paths`.
 
-        Resolved before the backend runs and handed to it as ordinary
-        `lib-paths` / `lef-paths`. A block with no abstract, or one built
-        for another corner, fails the run before synthesis — after the
-        backend has withdrawn its previous netlist, so `rb pnr` downstream
-        cannot pick that one up as this run's (#469).
+        Returns a failure for a block with no abstract or one built for another corner.
+        The backend has already withdrawn its previous netlist by then, so `rb pnr` cannot pick up a stale one.
         """
         self._blocks = []
         refs = self.synth_cfg.get_blocks()

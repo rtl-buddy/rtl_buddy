@@ -1,5 +1,4 @@
-"""Per-verification FPV runner — picks the right tool wrapper based on
-the verification config's ``tool`` field and delegates."""
+"""Runs one FPV verification with the tool backend (currently only sby)."""
 
 import logging
 
@@ -33,8 +32,6 @@ class FpvRunner:
         except FatalRtlBuddyError:
             raise
 
-        # Today only one backend (sby); structured for easy extension
-        # when alternative formal tools (jaspergold, vc-formal) are added.
         backend = SbyFpv(
             name=self.name + "/sby",
             fpv_cfg=self.fpv_cfg,
