@@ -1,8 +1,4 @@
-"""Dispatch plan manifest (#351): the head expands sweeps once and writes
-each runnable TestConfig here so the build/sim jobs never re-run the hook.
-
-These tests exercise the manifest IO and the fidelity of the round trip
-against real TestConfigs loaded from the ``minimal_project`` fixture."""
+"""Tests for the dispatch plan manifest: IO and round-trip fidelity of TestConfigs."""
 
 from __future__ import annotations
 
@@ -32,7 +28,6 @@ def test_write_then_read_roundtrips_configs(minimal_project: Path):
 
     reloaded = read_plan_configs(plan)
     assert [c.get_name() for c in reloaded] == [c.get_name() for c in configs]
-    # Full-fidelity: the reglvl a sim job resolves must match the head's.
     for before, after in zip(configs, reloaded):
         assert after.get_reglvl("verilator") == before.get_reglvl("verilator")
         assert after.get_testbench().get_name() == before.get_testbench().get_name()
@@ -43,8 +38,7 @@ def test_read_plan_config_by_name_and_miss(minimal_project: Path):
     plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs, "tok")
 
     assert read_plan_config(plan, "extra").get_name() == "extra"
-    # A name absent from the plan is None (caller falls back to expansion),
-    # not an error.
+    # A name absent from the plan reads back None so the caller falls back to expansion.
     assert read_plan_config(plan, "ghost") is None
 
 
@@ -65,8 +59,7 @@ def test_read_plan_token_roundtrips_and_defaults(minimal_project: Path):
     from rtl_buddy.dispatch.plan import read_plan_token
 
     assert read_plan_token(plan) == "nonce-9"
-    # A legacy plan without a token reads back None (no crash), so a job
-    # falls back to an unstamped envelope rather than failing.
+    # A plan without a token reads back None; the job then uses an unstamped envelope.
     legacy = minimal_project / "legacy.json"
     legacy.write_text(json.dumps({"schema_version": PLAN_SCHEMA_VERSION, "tests": []}))
     assert read_plan_token(legacy) is None
@@ -134,12 +127,7 @@ def test_plan_rejects_invalid_seed_state(minimal_project: Path, source, seed):
 
 
 def test_mode_reservation_blocks_survive_the_round_trip(minimal_project: Path):
-    """`resources.modes` is JSON, so a sim job resolves what the head did.
-
-    The per-mode overrides (#634) live on the test and on its testbench,
-    and both travel in the plan manifest — a plain mapping rather than a
-    typed sub-block precisely so this stays JSON.
-    """
+    """`resources.modes` on the test and its testbench survives the JSON round trip."""
     tests_yaml = minimal_project / "tests.yaml"
     tests_yaml.write_text(
         tests_yaml.read_text()

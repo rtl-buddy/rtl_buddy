@@ -1,11 +1,4 @@
-"""Dispatch progress reporting (#435).
-
-The bug this covers is a *silence*: a dispatched regression printed
-nothing between "submitted" and "drained", so these tests assert on both
-channels at once — the structured record (what ``rtl_buddy.log`` and
-``--machine`` keep) and the line a default-verbosity console actually
-sees, which is the one that was missing.
-"""
+"""Tests for dispatch progress on both the structured record and the console."""
 
 from __future__ import annotations
 
@@ -20,7 +13,7 @@ from rtl_buddy.logging_utils import setup_logging
 
 
 class _Clock:
-    """Hand-advanced monotonic clock: no test may depend on wall time."""
+    """Hand-advanced monotonic clock."""
 
     def __init__(self):
         self.now = 0.0
@@ -44,11 +37,8 @@ def _handle(job_id: str, suite_dir: str = "/proj/verif/tb_a") -> JobHandle:
 
 @pytest.fixture
 def console(capsys, caplog):
-    """Real console handlers plus record capture.
-
-    ``setup_logging`` clears the root handlers, which would take caplog's
-    with them — so it is re-attached afterwards. Both channels matter here:
-    a record with no console line is exactly the defect.
+    """Real console handlers plus record capture; ``setup_logging`` clears caplog's
+    handlers, so they are re-attached.
     """
 
     def _setup(**kwargs):
@@ -72,18 +62,13 @@ def _stderr(capsys) -> str:
     return " ".join(capsys.readouterr().err.split())
 
 
-# ---- id grouping and suite labels ---------------------------------------
-
-
 def test_group_job_ids_collapses_array_elements():
     assert group_job_ids(["1235_1", "1235_2", "1235_3", "1236"]) == [
         "1235_[1-3]",
         "1236",
     ]
-    # Gaps stay visible: the point is a form squeue/sacct takes back.
     assert group_job_ids(["9_1", "9_3", "9_4"]) == ["9_[1,3-4]"]
     assert group_job_ids(["42"]) == ["42"]
-    # A backend with another id shape still round-trips.
     assert group_job_ids(["lp-1", "lp-2"]) == ["lp-1", "lp-2"]
 
 
@@ -94,16 +79,12 @@ def test_suite_labels_shorten_but_stay_distinguishable():
         "/proj/verif/tb_a": "tb_a",
         "/proj/verif/tb_b": "tb_b",
     }
-    # A deeper split keeps enough path to tell two `verif` dirs apart.
     labels = suite_labels(["/proj/blk_a/verif", "/proj/blk_b/verif"])
     assert set(labels.values()) == {"blk_a/verif", "blk_b/verif"}
 
 
-# ---- when the reporter speaks -------------------------------------------
-
-
 def test_first_observation_reaches_the_console_immediately(console, caplog):
-    """Entering the wait is itself news: the console says N/N straight away."""
+    """Entering the wait prints N/N immediately."""
     capsys = console()
     clock = _Clock()
     handles = [_handle(f"9_{i}") for i in (1, 2, 3)]
@@ -130,24 +111,22 @@ def test_change_is_recorded_unchanged_is_not_and_the_console_is_throttled(
         handles, backend="slurm", interval=60.0, max_wait=None, clock=clock
     )
 
-    progress.observe(["9_1", "9_2", "9_3"])  # first: emits
+    progress.observe(["9_1", "9_2", "9_3"])
     clock.advance(5)
-    progress.observe(["9_1", "9_2", "9_3"])  # unchanged, too soon: silent
+    progress.observe(["9_1", "9_2", "9_3"])
     clock.advance(5)
-    progress.observe(["9_1", "9_2"])  # changed: recorded, console throttled
+    progress.observe(["9_1", "9_2"])
 
     counts = [f["remaining"] for f in _records(caplog, "dispatch.progress")]
     assert counts == [3, 2]
-    # One console line in the first interval, however often the count moved.
+    # One console line in the first interval, however often the count changed.
     assert _stderr(capsys).count("jobs remaining") == 1
 
 
 def test_a_throttled_change_is_not_stamped_heartbeat_when_it_finally_prints(
     console, caplog
 ):
-    """`heartbeat` is the field a reader filters on to tell "still alive"
-    from "something happened"; a change the throttle held back is the latter.
-    """
+    """`heartbeat` distinguishes "still alive" from "the count changed"."""
     capsys = console()
     clock = _Clock()
     handles = [_handle(f"9_{i}") for i in (1, 2, 3)]
@@ -155,27 +134,27 @@ def test_a_throttled_change_is_not_stamped_heartbeat_when_it_finally_prints(
         handles, backend="slurm", interval=60.0, max_wait=None, clock=clock
     )
 
-    progress.observe(["9_1", "9_2", "9_3"])  # first: prints
+    progress.observe(["9_1", "9_2", "9_3"])
     clock.advance(10)
-    progress.observe(["9_1", "9_2"])  # changed, throttled off the console
+    progress.observe(["9_1", "9_2"])
     clock.advance(55)
-    progress.observe(["9_1", "9_2"])  # unchanged, but a change is owed
+    progress.observe(["9_1", "9_2"])
 
     records = _records(caplog, "dispatch.progress")
     assert [(f["remaining"], f["heartbeat"]) for f in records] == [
         (3, False),
         (2, False),
-        (2, False),  # NOT a heartbeat: the count moved since the last line
+        (2, False),  # Not a heartbeat: the count moved since the last line.
     ]
     assert _stderr(capsys).count("jobs remaining") == 2
 
     clock.advance(60)
-    progress.observe(["9_1", "9_2"])  # nothing owed now: a real heartbeat
+    progress.observe(["9_1", "9_2"])
     assert _records(caplog, "dispatch.progress")[-1]["heartbeat"] is True
 
 
 def test_heartbeat_proves_liveness_when_nothing_moves(console, caplog):
-    """A count that has not moved for an hour is the case that looked hung."""
+    """An unchanged count still gets a heartbeat once the interval passes."""
     capsys = console()
     clock = _Clock()
     handles = [_handle("9_1")]
@@ -186,7 +165,7 @@ def test_heartbeat_proves_liveness_when_nothing_moves(console, caplog):
     progress.observe(["9_1"])
     clock.advance(30)
     progress.observe(["9_1"])
-    clock.advance(31)  # past the interval since the last console line
+    clock.advance(31)
     progress.observe(["9_1"])
 
     records = _records(caplog, "dispatch.progress")
@@ -195,7 +174,7 @@ def test_heartbeat_proves_liveness_when_nothing_moves(console, caplog):
 
 
 def test_interval_zero_keeps_the_terminal_quiet_but_logs_everything(console, caplog):
-    """The developer's opt-out silences the console, never the log file."""
+    """The opt-out silences the console, never the log file."""
     capsys = console()
     clock = _Clock()
     handles = [_handle(f"9_{i}") for i in (1, 2)]
@@ -209,8 +188,8 @@ def test_interval_zero_keeps_the_terminal_quiet_but_logs_everything(console, cap
     progress.finish()
 
     assert [f["remaining"] for f in _records(caplog, "dispatch.progress")] == [2, 1]
-    assert _records(caplog, "dispatch.suite_drained")  # still logged...
-    assert _stderr(capsys) == ""  # ...and still not printed
+    assert _records(caplog, "dispatch.suite_drained")
+    assert _stderr(capsys) == ""
 
 
 def test_progress_line_splits_running_from_pending_and_names_the_longest(
@@ -236,9 +215,6 @@ def test_progress_line_splits_running_from_pending_and_names_the_longest(
     assert "longest running rb:demo_alu 8m02s" in err
 
 
-# ---- suite completion ----------------------------------------------------
-
-
 def test_suites_are_reported_as_they_drain_in_order(console, caplog):
     capsys = console()
     clock = _Clock()
@@ -253,16 +229,16 @@ def test_suites_are_reported_as_they_drain_in_order(console, caplog):
 
     progress.observe(["9_1", "9_2", "10_1"])
     clock.advance(100)
-    progress.observe(["10_1"])  # tb_a is done
+    progress.observe(["10_1"])
     clock.advance(100)
     progress.observe(["10_1"])
-    progress.finish()  # tb_b's last job left with the queue
+    progress.finish()
 
     drained = _records(caplog, "dispatch.suite_drained")
     assert [f["suite"] for f in drained] == ["tb_a", "tb_b"]
     assert [f["jobs"] for f in drained] == [2, 1]
     err = _stderr(capsys)
-    # "finished", never "passed": no result has been collected yet.
+    # Reported as "finished", not "passed": no result has been collected yet.
     assert "tb_a — all 2 jobs finished" in err
     assert "passed" not in err
 
@@ -270,11 +246,8 @@ def test_suites_are_reported_as_they_drain_in_order(console, caplog):
 def test_a_suite_is_not_drained_while_a_same_id_job_elsewhere_is_queued(
     console, caplog
 ):
-    """Two clusters can issue the same job number (#509).
-
-    Membership keyed by the bare id would hold ONE entry for both, so the
-    suite would be reported finished the moment either of them left the
-    queue — while the other is still pending.
+    """Two clusters can issue the same job number, so membership is keyed by cluster and
+    id.
     """
     console()
     clock = _Clock()
@@ -286,7 +259,7 @@ def test_a_suite_is_not_drained_while_a_same_id_job_elsewhere_is_queued(
         handles, backend="slurm", interval=60.0, max_wait=None, clock=clock
     )
 
-    progress.observe(["beta:77"])  # alpha's 77 is gone, beta's is not
+    progress.observe(["beta:77"])
     assert not _records(caplog, "dispatch.suite_drained")
     clock.advance(100)
     progress.observe([])
@@ -305,9 +278,6 @@ def test_a_drained_suite_is_reported_once(console, caplog):
     progress.observe([])
     progress.finish()
     assert len(_records(caplog, "dispatch.suite_drained")) == 1
-
-
-# ---- the deadline --------------------------------------------------------
 
 
 def test_max_wait_fails_with_the_outstanding_ids_and_warns(console, caplog):
@@ -337,12 +307,8 @@ def test_max_wait_fails_with_the_outstanding_ids_and_warns(console, caplog):
 
 
 def test_the_deadline_renders_a_command_slurm_would_accept(console, caplog):
-    """`-j alpha:77_1` is not a job id (#509 review).
-
-    The outstanding set is keyed by handle so two clusters' identically
-    numbered jobs stay apart, but that key is this process's invention.
-    The post-mortem command has to put the halves back: the bare id, with
-    `-M alpha` beside it.
+    """The post-mortem command gets the bare job id with `-M alpha` beside it, not
+    `alpha:77_1`.
     """
     console()
     clock = _Clock()
@@ -363,7 +329,6 @@ def test_the_deadline_renders_a_command_slurm_would_accept(console, caplog):
     assert "squeue -M alpha -j '77_[1-2]'" in message
     assert "sacct -M alpha -j '77_[1-2]'" in message
     (fields,) = _records(caplog, "dispatch.max_wait_exceeded")
-    # The scheduler id and its cluster travel separately, not glued.
     assert fields["jobs"] == ["77_[1-2]"]
     assert fields["clusters"] == ["alpha"]
     assert fields["queries"] == [
@@ -390,12 +355,11 @@ def test_the_local_deadline_names_no_cluster(console, caplog):
     assert "squeue -j '9_[1-2]'" in message
     (fields,) = _records(caplog, "dispatch.max_wait_exceeded")
     assert fields["jobs"] == ["9_[1-2]"]
-    # log_event drops None fields, so "no cluster" reads as absence.
     assert "clusters" not in fields
 
 
 def test_no_deadline_means_the_wait_is_unbounded(console, caplog):
-    """`max-wait` unset must keep today's behaviour exactly."""
+    """Unset `max-wait` never raises."""
     console()
     clock = _Clock()
     progress = DispatchProgress(
@@ -403,11 +367,11 @@ def test_no_deadline_means_the_wait_is_unbounded(console, caplog):
     )
     progress.observe(["9_1"])
     clock.advance(10_000)
-    progress.observe(["9_1"])  # no raise
+    progress.observe(["9_1"])
 
 
 def test_an_empty_queue_past_the_deadline_is_not_a_failure(console, caplog):
-    """Everything finished: a late-arriving poll must not fail a done run."""
+    """A late poll after everything finished does not fail the run."""
     console()
     clock = _Clock()
     progress = DispatchProgress(
@@ -419,7 +383,7 @@ def test_an_empty_queue_past_the_deadline_is_not_a_failure(console, caplog):
 
 
 def test_none_handles_do_not_break_the_reporter(console, caplog):
-    """A caller that lets a None through (#361) must not lose its liveness."""
+    """A None handle is ignored and the reporter keeps working."""
     console()
     progress = DispatchProgress(
         [None, _handle("9_1")],
