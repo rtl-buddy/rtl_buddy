@@ -41,6 +41,16 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   is in. A checkpoint is never a routed or final result: report it as the
   stage it names, and `pnr-export --checkpoint <stage>` labels its layout
   `checkpoint_final: false`.
+- Hierarchical P&R: a `harden: true` run publishes a block's abstract, and a
+  top names it under `blocks:` (in `pnr.yaml` and its `synth.yaml` entry).
+  `rb pnr` with no run name runs blocks before the runs that consume them;
+  `--synth` also runs each upstream synthesis in that order, so a clean tree
+  builds in one command, and `-j N` hardens independent blocks side by side.
+  A run not attempted because a block failed is `FAIL` with
+  `fail_stage: blocked` and `blocked_by`: report the block, not the top. A
+  stale abstract fails naming the block and what changed; re-harden it rather
+  than reaching for `--accept-stale`. A block reports 0 W in `rb power` and is
+  listed in `unpowered_cells`; that total leaves out the blocks' own power.
 
 ## Synthesis correctness gates
 
@@ -50,7 +60,8 @@ macro placement and the PDN. Do not place pin-region commands in SDC, which is
 read before the die exists. The default without the key remains unconstrained
 placement. Keep macros off a pin edge with `floorplan.macro-anchor` (the packer
 starts in that corner); `floorplan.blockages` adds hard/soft/partial placement
-blockages, and macros avoid the hard ones.
+blockages, and macros avoid the hard ones. `floorplan.macro-placement: rtl-mp`
+places macros with OpenROAD's RTL-MP instead of the packer (no anchor then).
 
 `rb synth` (both backends) gates three silent-corruption shapes before
 reporting PPA. A `function`/`task` without an explicit `automatic` lifetime
