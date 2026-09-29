@@ -1,8 +1,6 @@
-"""
-Unit tests for _parse_verilator_metric output format handling.
+"""Tests for the output formats accepted by ``_parse_verilator_metric``.
 
-Verilator ≤5.042 emits:  "Total coverage (hit/total) X.XX%"
-Verilator ≥5.048 emits:  "  toggle    : 63.1% ( 82/130)"
+Verilator up to 5.042 prints ``Total coverage (hit/total) X.XX%``; 5.048 and later print ``  toggle    : 63.1% ( 82/130)``.
 """
 
 import pytest
@@ -16,14 +14,14 @@ def _make_cov():
 
 
 def _run_parse(output_text, metric_name="toggle"):
-    """Drive _parse_verilator_metric with a fake subprocess result."""
+    """Run ``_parse_verilator_metric`` against a fake subprocess result."""
     cov = _make_cov()
     fake_result = MagicMock()
     fake_result.returncode = 0
     fake_result.stdout = output_text
     fake_result.stderr = ""
 
-    # _build_annotate_cwd needs a real-ish dat file; stub it out
+    # Stub out the dat-file dependency of ``_build_annotate_cwd``.
     with (
         patch.object(cov, "_build_annotate_cwd", return_value="/tmp/fake_cwd"),
         patch("subprocess.run", return_value=fake_result),

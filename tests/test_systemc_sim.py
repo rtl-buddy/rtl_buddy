@@ -1,4 +1,4 @@
-"""Unit tests for SystemCSim — verilator --sc cosim runner."""
+"""Unit tests for SystemCSim, the ``verilator --sc`` cosim runner."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from rtl_buddy.tools.systemc_sim import SystemCSim
 
 @pytest.fixture(autouse=True)
 def _forget_toplevel_conflicts():
-    """`compile.toplevel_conflict` is claimed once per fact per PROCESS."""
+    """`compile.toplevel_conflict` is claimed once per fact per process; reset it between tests."""
     vlog_sim_module._reset_toplevel_conflicts()
     yield
     vlog_sim_module._reset_toplevel_conflicts()
@@ -135,9 +135,7 @@ def _make_sim(tmp_path, sc_cfg, *, systemc_cfg=None, compile_opts=None):
     )
 
 
-# ---------------------------------------------------------------------------
 # Compile-flag emission
-# ---------------------------------------------------------------------------
 
 
 def test_filter_builder_opts_drops_binary(tmp_path):
@@ -199,8 +197,7 @@ def test_compile_flags_embed_cflags_and_ldflags(tmp_path):
 
 
 def test_root_cflags_apply_as_project_default(tmp_path):
-    """Project-wide cflags from cfg-systemc apply even when the testbench
-    omits its own cflags."""
+    """Project-wide cflags from cfg-systemc apply when the testbench has none."""
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
     sim = _make_sim(
         tmp_path,
@@ -218,7 +215,7 @@ def test_root_cflags_apply_as_project_default(tmp_path):
 
 
 def test_testbench_cflags_append_to_root_cflags(tmp_path):
-    """Per-testbench cflags layer above the root-level default, not replace it."""
+    """Testbench cflags append to the root-level cflags."""
     sc = SystemCTestbenchConfig(
         sc_main="sc_main.cpp",
         cflags=["-DTB_LOCAL=1"],
@@ -238,14 +235,12 @@ def test_testbench_cflags_append_to_root_cflags(tmp_path):
     cflags_value = flags[flags.index("-CFLAGS") + 1]
     ldflags_value = flags[flags.index("-LDFLAGS") + 1]
 
-    # Both layers present.
     assert "-std=c++17" in cflags_value
     assert "-DTB_LOCAL=1" in cflags_value
     assert "-lz" in ldflags_value
     assert "-lpthread" in ldflags_value
 
-    # Root tokens appear before testbench tokens, so testbench can override
-    # via "last wins" semantics on flags like -O2 / -DFOO.
+    # Root tokens come first so testbench flags win under last-wins semantics.
     assert cflags_value.index("-std=c++17") < cflags_value.index("-DTB_LOCAL=1")
     assert ldflags_value.index("-lz") < ldflags_value.index("-lpthread")
 
@@ -269,9 +264,7 @@ def test_pin_style_bv_adds_no_pin_flag(tmp_path):
     assert not any(f.startswith("--pins-sc-") for f in flags)
 
 
-# ---------------------------------------------------------------------------
 # Env handling
-# ---------------------------------------------------------------------------
 
 
 def test_compile_env_exports_systemc_paths(tmp_path):
@@ -310,9 +303,7 @@ def test_sim_env_adds_libdir_to_dynamic_loader_path(tmp_path, monkeypatch):
     assert env[key].startswith("/opt/sc/lib")
 
 
-# ---------------------------------------------------------------------------
 # Fail-fast paths
-# ---------------------------------------------------------------------------
 
 
 def test_missing_cfg_systemc_raises(tmp_path):
@@ -349,13 +340,7 @@ def test_home_expands_variables_and_user(tmp_path, monkeypatch):
 
 
 def test_home_with_unresolved_var_falls_through_to_env(tmp_path, monkeypatch):
-    """If the configured ${VAR} doesn't resolve, the env-var fallback still runs.
-
-    Without this, os.path.expandvars would leave the literal "${VAR}" and
-    SystemCSim would pass that to Verilator as a path, producing a confusing
-    "include not found at ${SYSTEMC_HOME}/include" instead of the clean
-    home_unresolved error.
-    """
+    """An unresolved ``${VAR}`` in the configured home falls through to the SYSTEMC_HOME env var."""
     monkeypatch.delenv("MY_CUSTOM_ROOT", raising=False)
     monkeypatch.setenv("SYSTEMC_HOME", "/fallback/sc")
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
@@ -367,8 +352,7 @@ def test_home_with_unresolved_var_falls_through_to_env(tmp_path, monkeypatch):
 
 
 def test_home_with_unresolved_var_and_no_fallback_raises(tmp_path, monkeypatch):
-    """Unresolved ${VAR} + unset SYSTEMC_HOME → clean home_unresolved error,
-    not a literal "${VAR}" propagated as a path."""
+    """An unresolved ``${VAR}`` with no SYSTEMC_HOME raises the ``home_unresolved`` error."""
     monkeypatch.delenv("MY_CUSTOM_ROOT", raising=False)
     monkeypatch.delenv("SYSTEMC_HOME", raising=False)
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
@@ -380,17 +364,11 @@ def test_home_with_unresolved_var_and_no_fallback_raises(tmp_path, monkeypatch):
 
 
 def test_base_top_plumbing_does_not_double_the_systemc_flag(tmp_path):
-    """#508: the base now pins `toplevel:` too — SystemC must stay single.
-
-    SystemCSim has always emitted its own ``--top-module`` from
-    ``_get_extra_compile_flags()``. The base's plumbing has to see that and
-    stand down, or every SystemC compile would carry the flag twice.
-    """
+    """SystemCSim's own ``--top-module`` flag stops the base ``toplevel:`` plumbing from adding a second one."""
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
     sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))
     extra = sim._get_extra_compile_flags()
     assert extra.count("--top-module") == 1
-    # Filtered, exactly as _build_compile_plan() hands them over.
     builder_opts = sim._filter_builder_opts(
         sim.rtl_builder_cfg.get_compile_time_opts("sim")
     )
@@ -398,14 +376,7 @@ def test_base_top_plumbing_does_not_double_the_systemc_flag(tmp_path):
 
 
 def test_configured_top_suppresses_the_generated_one_and_warns(tmp_path, caplog):
-    """A user `--top` in compile-time opts wins, and says so (#511 review).
-
-    Generating the cosim top unconditionally put it AFTER the user's on the
-    command line, where Verilator's last-wins precedence handed it the
-    victory; and because the base plumbing scanned the generated flags too,
-    it saw OUR flag agreeing with `toplevel:` and stayed silent about the
-    override.
-    """
+    """A user `--top` in compile-time opts suppresses the generated top and warns."""
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
     sim = _make_sim(
         tmp_path,
@@ -420,11 +391,10 @@ def test_configured_top_suppresses_the_generated_one_and_warns(tmp_path, caplog)
         extra = sim._get_extra_compile_flags()
         top_flags = sim._get_top_module_flags(builder_opts, extra)
 
-    # SystemC generated nothing, and the base added nothing.
     assert "--top-module" not in extra
     assert top_flags == []
 
-    # Exactly one top on the whole command line, and it is the user's.
+    # Exactly one top remains, and it is the user's.
     line = builder_opts + extra + top_flags
     tops = [
         (tok, line[i + 1])
@@ -459,7 +429,6 @@ def test_generated_top_is_unchanged_without_a_configured_one(tmp_path, caplog):
         for r in caplog.records
         if getattr(r, "rtl_event", None) == "compile.toplevel_already_pinned"
     ]
-    # Recorded as ours, not as something the user configured.
     assert pinned and pinned[-1].rtl_fields["source"] == "backend"
     assert not [
         r

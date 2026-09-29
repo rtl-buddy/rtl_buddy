@@ -1,19 +1,6 @@
 """Contract tests for the Tcl constraint reader.
 
-Two backends answer :func:`read_commands`: the ``tcl`` safe interp
-(rtl-buddy/rtl_buddy#641) and the vendored word tokenizer (#642). Three
-kinds of test live here:
-
-* **Shared contract** — parametrised over both backends via the
-  ``constraint_backend`` fixture. Every row of #642's reproduction tables
-  (continuation, braced values, nested collections, ``#`` inside braces)
-  belongs here: a consumer must not care which backend answered.
-* **Backend-specific** — what only an interpreter can do (``$p``,
-  ``[expr]``, ``;`` separators, and the safety/limit properties that come
-  with evaluating a file), and the literal word shapes the tokenizer
-  hands back plus its one-warning-per-file contract.
-* **Equivalence** — the same fixture set read both ways, compared at the
-  level a consumer reads it.
+``read_commands`` is answered by one of two backends: the ``tcl`` safe interp or the vendored word tokenizer. The tests are shared-contract tests parametrised over both backends via the ``constraint_backend`` fixture, backend-specific tests, and equivalence tests that read the same fixtures both ways.
 """
 
 from __future__ import annotations
@@ -63,13 +50,9 @@ def _read(text, interest=CLOCK, source="x.sdc", backend=None):
 
 
 def _canon(word: str) -> tuple[str, ...]:
-    """What a consumer can read out of one word, backend-independently.
+    """Reduce one word to what a consumer reads via :func:`extract_names`, independent of backend.
 
-    The two backends do not produce byte-identical words — Tcl strips the
-    braces off ``{10.0}`` and evaluates ``[expr]`` — but every consumer
-    reads a target through :func:`extract_names`, which peels a brace
-    group, a bracket span and a bare multi-word string the same way. That
-    is the contract both backends must meet.
+    The backends differ byte-for-byte (Tcl strips the braces off ``{10.0}`` and evaluates ``[expr]``), but ``extract_names`` peels them to the same result.
     """
     if word[:1] in "[{" or any(ch.isspace() for ch in word):
         return tuple(extract_names(word))
@@ -80,9 +63,7 @@ def _shape(cmd: TclCommand) -> tuple:
     return (cmd.name, cmd.line, tuple(_canon(w) for w in cmd.words))
 
 
-# ---------------------------------------------------------------------------
-# backend selection
-# ---------------------------------------------------------------------------
+# Backend selection
 
 
 def test_backend_name_follows_the_env_override(constraint_backend):
@@ -111,8 +92,7 @@ def test_an_unavailable_interp_falls_back_and_warns_once_per_process(
         )
     assert used == "tokenizer"
     assert [c.name for c in cmds] == ["create_clock"]
-    # the interpreter is a property of the process, not of the file, so
-    # reading ten SDCs must not print this ten times
+    # The interpreter is per process, so reading many SDCs must warn only once.
     [rec] = _events(caplog, "constraints.tcl_unavailable")
     assert "_tkinter" in rec.rtl_fields["error"]
     assert any("uv python install" in h for h in rec.rtl_fields["hints"])
@@ -122,8 +102,7 @@ def test_an_unavailable_interp_falls_back_and_warns_once_per_process(
 
 
 def test_forcing_the_interp_without_one_is_fatal(monkeypatch):
-    # A pinned backend that silently answers with the other one is not a
-    # pin. Say so instead.
+    # A pinned backend must not silently answer with the other one.
     monkeypatch.setenv(tcl_reader.BACKEND_ENV, "tcl")
     monkeypatch.setattr(
         tcl_reader, "_PROBE", tcl_reader._Probe("No module named '_tkinter'")
@@ -146,7 +125,7 @@ def test_the_override_is_case_and_space_insensitive(monkeypatch):
 
 
 def test_backend_description_names_the_tcl_version(tcl_backend):
-    # `rb tool-check` prints this: which reader answered, and which Tcl.
+    # `rb tool-check` prints this.
     description = backend_description()
     assert description.startswith("tcl (Tcl ") and description.endswith(")")
 
@@ -155,9 +134,7 @@ def test_backend_description_is_the_plain_name_for_the_tokenizer(tokenizer_backe
     assert backend_description() == "tokenizer"
 
 
-# ---------------------------------------------------------------------------
-# the shared contract: same reading from either backend
-# ---------------------------------------------------------------------------
+# Shared contract: same reading from either backend
 
 
 def test_plain_command_words_line_and_raw(constraint_backend):
@@ -205,8 +182,7 @@ def test_continuation_is_one_command_reported_at_its_first_line(constraint_backe
 
 
 def test_crlf_continuation_keeps_its_arguments(constraint_backend):
-    # A Windows-authored file: the continued line ends in "\\\r\n". Before
-    # normalisation both backends dropped everything after the backslash.
+    # A Windows-authored file ends a continued line in "\\\r\n"; both backends must read past the backslash.
     text = "# head\r\ncreate_clock -name clk \\\r\n  -period 10.0 [get_ports clk]\r\n"
     [cmd] = _read(text, backend=constraint_backend)
     assert _canon(cmd.words[3]) == ("10.0",)
@@ -234,10 +210,7 @@ def test_braced_value_is_one_word(constraint_backend):
 
 
 def test_trailing_comment_leaves_the_period_readable(constraint_backend):
-    # `#` starts a comment only at the start of a command in real Tcl, so
-    # the interp hands the trailing words to `create_clock` while the
-    # tokenizer drops them (each backend's own test below pins that). What
-    # both must agree on is the part a consumer reads.
+    # `#` starts a comment only at the start of a command in real Tcl, so the interp passes trailing words to `create_clock` and the tokenizer drops them; both must agree on the part a consumer reads.
     [cmd] = _read(
         "create_clock -name clk -period {10.0} # not a word\n",
         backend=constraint_backend,
@@ -299,8 +272,7 @@ def test_empty_text_reads_no_commands(constraint_backend):
 
 
 def test_ordinary_constraint_file_reads_clean(constraint_backend, caplog):
-    # set_property / create_pblock are out of *interest*, not out of scope —
-    # warning on them would fire on every real XDC.
+    # set_property / create_pblock are out of interest, not out of scope: warning on them would fire on every real XDC.
     text = (
         "create_clock -name clk -period 10 [get_ports clk]\n"
         "set_property IOSTANDARD LVCMOS18 [get_ports clk]\n"
@@ -312,9 +284,7 @@ def test_ordinary_constraint_file_reads_clean(constraint_backend, caplog):
     assert _events(caplog, "constraints.tcl_error") == []
 
 
-# ---------------------------------------------------------------------------
-# the interp backend: what only evaluation can do
-# ---------------------------------------------------------------------------
+# Interp backend: what only evaluation can do
 
 
 def test_variables_and_expr_are_evaluated(tcl_backend):
@@ -327,9 +297,7 @@ def test_variables_and_expr_are_evaluated(tcl_backend):
 
 
 def test_semicolons_separate_commands_under_the_interp(tcl_backend):
-    # Pinned as a *difference*, not fixed on the tokenizer side: `;` is a
-    # command separator only to a real parser, and the vendored tokenizer
-    # is a verbatim copy that must not grow rules here.
+    # `;` separates commands only in a real parser; the vendored tokenizer is a verbatim copy and must not grow rules, so this stays a difference.
     cmds = _read(
         "create_clock -name a -period 1; create_clock -name b -period 2\n",
         backend="tcl",
@@ -347,10 +315,7 @@ def test_semicolons_are_ordinary_characters_to_the_tokenizer(tokenizer_backend):
 
 
 def test_a_mid_command_hash_is_a_word_to_tcl_not_a_comment(tcl_backend):
-    # Real Tcl only starts a comment where a command starts. Vivado reads
-    # SDC with a real Tcl parser, so this is the faithful reading; the
-    # idiomatic way to write the same comment is `;#`, which is read as a
-    # comment by the interp (below).
+    # Real Tcl starts a comment only where a command starts, as Vivado does; write `;#` for a comment after a command.
     [cmd] = _read("create_clock -name clk -period 10 # main clock\n", backend="tcl")
     assert cmd.words[4:] == ["#", "main", "clock"]
 
@@ -361,14 +326,13 @@ def test_a_semicolon_comment_is_a_comment(tcl_backend):
 
 
 def test_state_does_not_leak_between_files(tcl_backend, caplog):
-    # A fresh child interp per call: `set p 10` in one SDC must not make
-    # `$p` readable in the next one.
+    # Each call gets a fresh child interp: `set p 10` in one SDC must not make `$p` readable in the next.
     _read("set p 10\ncreate_clock -name a -period $p\n", backend="tcl")
     with caplog.at_level(logging.WARNING):
         cmds, used = read_commands(
             "create_clock -name b -period $p\n", interest=CLOCK, source="second.sdc"
         )
-    # unreadable variable -> Tcl refuses the file -> the tokenizer answers
+    # An unreadable variable makes Tcl refuse the file, so the tokenizer answers.
     assert used == "tokenizer"
     assert cmds[0].words[3] == "$p"
     [rec] = _events(caplog, "constraints.tcl_error")
@@ -385,8 +349,7 @@ def test_a_tcl_syntax_error_falls_back_to_the_tokenizer(tcl_backend, caplog):
             source="broken.sdc",
         )
     assert used == "tokenizer"
-    # the readable clock is still read: a file Tcl will not run is still a
-    # file whose create_clock lines abc needs
+    # The readable clock is still read.
     assert cmds[0].words[1] == "a"
     [rec] = _events(caplog, "constraints.tcl_error")
     assert "close-brace" in rec.rtl_fields["message"]
@@ -399,9 +362,7 @@ def test_source_includes_are_reported_as_unsupported(tcl_backend, caplog):
             source="top.sdc",
             backend="tcl",
         )
-    # `source` is absent from a safe interp, so it lands in the recorder
-    # rather than reading a file — and the reader says so instead of
-    # silently reading half a design's constraints.
+    # `source` is absent from a safe interp, so it is recorded rather than read, and the reader warns.
     [rec] = _events(caplog, "constraints.include_unsupported")
     assert rec.rtl_fields["included"] == "shared/clocks.sdc"
     assert rec.rtl_fields["line"] == 1
@@ -451,14 +412,13 @@ def test_a_spinning_file_hits_the_command_limit(tcl_backend, caplog, monkeypatch
         )
     [rec] = _events(caplog, "constraints.tcl_error")
     assert "command count limit" in rec.rtl_fields["message"]
-    # bounded, and the file is still read by the fallback
+    # bounded, and the fallback still reads the file
     assert used == "tokenizer"
     assert [c.name for c in cmds] == ["create_clock"]
 
 
 def test_an_idle_infinite_loop_hits_the_time_limit(tcl_backend, caplog, monkeypatch):
-    # `while 1 {}` runs no commands at all, so only the wall-clock limit
-    # stops it. Without one this call never returns.
+    # `while 1 {}` runs no commands, so only the wall-clock limit stops it.
     monkeypatch.setattr(tcl_reader, "TCL_TIME_LIMIT_SECONDS", 1)
     started = time.monotonic()
     with caplog.at_level(logging.WARNING):
@@ -469,19 +429,13 @@ def test_an_idle_infinite_loop_hits_the_time_limit(tcl_backend, caplog, monkeypa
     assert "time limit" in rec.rtl_fields["message"]
 
 
-# ---------------------------------------------------------------------------
-# the worker process: the interp is out of process, and stays out (#641)
-# ---------------------------------------------------------------------------
+# Worker process: the interp stays out of process
 
 
 def test_reading_never_loads_tkinter_into_this_process(tcl_backend):
-    """The whole point of the worker.
+    """Reading never loads ``_tkinter`` into this process.
 
-    ``_tkinter`` starts a Tcl notifier thread that never exits, and on
-    macOS a later ``subprocess.Popen`` from a process that has one can
-    wedge its forked child inside ``close()`` forever (reproduced: an
-    orphaned child of a pytest run sat there 9+ hours). So the reader may
-    evaluate Tcl, but this process must never load it.
+    ``_tkinter`` starts a Tcl notifier thread that never exits, and on macOS a later ``subprocess.Popen`` from such a process can hang its child in ``close()``. Only the worker may evaluate Tcl.
     """
     cmds, used = read_commands(
         "set p 10\ncreate_clock -name clk -period [expr {$p*2}]\n",
@@ -495,9 +449,7 @@ def test_reading_never_loads_tkinter_into_this_process(tcl_backend):
 
 
 def test_no_shipped_module_imports_tkinter_at_import_time():
-    # The worker imports it inside a function; nothing else may import it
-    # at all. A module-level import would load `_tkinter` into `rb` itself
-    # the moment the module is imported, which is the hazard above.
+    # Only the worker imports it, inside a function; a module-level import would load `_tkinter` into `rb`.
     root = pathlib.Path(rtl_buddy.__file__).parent
     offenders = []
     for path in sorted(root.rglob("*.py")):
@@ -514,7 +466,7 @@ def test_no_shipped_module_imports_tkinter_at_import_time():
 
 
 def test_the_worker_answers_one_json_request_on_stdout(tcl_backend):
-    # The protocol itself, driven the way `_read_with_tcl` drives it.
+    # The protocol, driven as `_read_with_tcl` drives it.
     request = {
         "text": "source inc.sdc\ncreate_clock -name clk -period {10.0}\n",
         "interest": ["create_clock"],
@@ -561,9 +513,7 @@ def test_a_broken_request_is_reported_not_raised(tcl_backend):
 def test_a_worker_that_never_answers_is_killed_and_falls_back(
     tcl_backend, caplog, monkeypatch
 ):
-    # The interp's own time limit is the first line of defence; this is the
-    # second, for a worker that is wedged rather than looping. Raise the
-    # interp limit out of the way and shrink the worker's budget instead.
+    # The interp's time limit is the first defence; this covers a wedged worker. Raise the interp limit and shrink the worker budget.
     monkeypatch.setattr(tcl_reader, "TCL_TIME_LIMIT_SECONDS", 30)
     monkeypatch.setattr(tcl_reader, "TCL_WORKER_GRACE_SECONDS", -29.5)
     started = time.monotonic()
@@ -618,7 +568,7 @@ def test_garbage_on_the_workers_stdout_falls_back(tcl_backend, caplog, monkeypat
 
 
 def test_noise_before_the_answer_is_tolerated():
-    # A Tk build that prints a warning on startup must not cost us the file.
+    # A Tk build that warns on startup must not cost us the file.
     parsed = tcl_reader._parse_response(
         'Warning: unable to load something\n{"ok": true, "commands": []}\n'
     )
@@ -641,9 +591,7 @@ def test_a_worker_that_cannot_be_started_reads_as_unavailable(monkeypatch, caplo
     assert "cannot run the Tcl reader worker" in rec.rtl_fields["error"]
 
 
-# ---------------------------------------------------------------------------
-# the tokenizer backend: literal words and the one-per-file warning
-# ---------------------------------------------------------------------------
+# Tokenizer backend: literal words and the one-per-file warning
 
 
 def test_tokenizer_keeps_words_literal(tokenizer_backend):
@@ -668,8 +616,7 @@ def test_tokenizer_keeps_a_nested_collection_whole(tokenizer_backend):
 
 
 def test_tokenizer_drops_a_trailing_comment(tokenizer_backend):
-    # The forgiving reading, and the one #642 shipped: everything from a
-    # word-boundary `#` to end of line goes.
+    # Everything from a word-boundary `#` to end of line is dropped.
     [cmd] = _read(
         "create_clock -name clk -period 10 # main clock\n", backend="tokenizer"
     )
@@ -684,8 +631,7 @@ def test_variable_reference_warns_once_per_file(tokenizer_backend, caplog):
     )
     with caplog.at_level(logging.WARNING):
         cmds = _read(text, source="vars.sdc", backend="tokenizer")
-    # the commands are still returned — the warning says the reading may be
-    # incomplete, it does not stop it
+    # the commands are still returned; the warning says the reading may be incomplete
     assert [c.words[3] for c in cmds] == ["$p", "$q"]
     [rec] = _events(caplog, "constraints.tokenizer_skipped")
     assert rec.levelno == logging.WARNING
@@ -716,9 +662,7 @@ def test_warning_is_per_call_not_per_process(tokenizer_backend, caplog):
     assert sources == ["one.sdc", "two.sdc"]
 
 
-# ---------------------------------------------------------------------------
-# cross-backend equivalence over the whole fixture set
-# ---------------------------------------------------------------------------
+# Cross-backend equivalence over the whole fixture set
 
 
 EQUIVALENT_FIXTURES = {
@@ -754,11 +698,9 @@ EQUIVALENT_FIXTURES = {
 
 @pytest.mark.parametrize("fixture", sorted(EQUIVALENT_FIXTURES))
 def test_both_backends_read_the_same_constraints(fixture, monkeypatch):
-    """Neither consumer may care which backend answered.
+    """Both backends read the same constraints.
 
-    Only files inside the tokenizer's scope are compared — a ``$var`` or
-    an ``[expr]`` is exactly where the two are *meant* to differ, and
-    those differences are pinned in the backend-specific tests above.
+    Only files inside the tokenizer's scope are compared; ``$var`` and ``[expr]`` differ by design and are pinned in the backend-specific tests.
     """
     if not tcl_reader.tcl_available():
         pytest.skip("no Tcl reader worker runs here, so there is nothing to compare")
@@ -772,9 +714,7 @@ def test_both_backends_read_the_same_constraints(fixture, monkeypatch):
     assert read["tcl"] == read["tokenizer"]
 
 
-# ---------------------------------------------------------------------------
-# extract_names (the rtl_buddy-side wrapper over the vendored peeler)
-# ---------------------------------------------------------------------------
+# extract_names (wrapper over the vendored peeler)
 
 
 @pytest.mark.parametrize(
@@ -788,8 +728,7 @@ def test_both_backends_read_the_same_constraints(fixture, monkeypatch):
         ("[get_cells -hierarchical u_sync/*]", ["u_sync"]),
         # names before -filter survive; the predicate is dropped whole
         ("[get_cells u_sync/* -filter {IS_SEQUENTIAL}]", ["u_sync"]),
-        # nested collection: the inner get_cells head and the `/C` pin
-        # remainder are both dropped, leaving the instance
+        # nested collection: the inner get_cells head and the `/C` pin remainder are dropped, leaving the instance
         ("[get_pins [get_cells u_a]/C]", ["u_a"]),
         # the shape the interp's recorder rebuilds for the same input
         ("[get_pins {[get_cells u_a]/C}]", ["u_a"]),

@@ -91,7 +91,7 @@ def test_cap_exceeded_returns_false_permanently(tmp_path):
     assert monitor.is_waiting() is False
     assert monitor.cap_exceeded is True
 
-    # Even if real output now appears, the monitor stays permanently disabled.
+    # The monitor stays disabled even if real output appears later.
     _append(log_path, "simulation resumed\n")
     assert monitor.is_waiting() is False
     assert monitor.cap_exceeded is True
@@ -113,8 +113,7 @@ def test_partial_line_is_buffered_until_newline(tmp_path):
 
 
 def test_marker_without_trailing_newline_enters_queue(tmp_path):
-    # VCS appends queue-polling dots to the banner without a newline, so the
-    # marker may never complete as a line; it must still pause the clock.
+    # VCS writes the banner without a trailing newline; the marker must still pause the clock.
     log_path = tmp_path / "test.log"
     err_path = tmp_path / "test.err"
     log_path.write_text("")
@@ -144,10 +143,7 @@ def test_missing_files_are_tolerated(tmp_path):
 
 
 def test_run_managed_process_does_not_time_out_while_queuing(tmp_path):
-    """Mirrors the real vlog_sim wiring: a real monitor watches the file the
-    sim's stdout is redirected to, and pauses run_managed_process's timeout
-    clock while the VCS license-queue banner is the most recent output.
-    """
+    """A monitor watching the redirected sim stdout pauses the timeout clock of run_managed_process while the license-queue banner is the latest output."""
     script_path = tmp_path / "fake_vcs.sh"
     script_path.write_text(
         "#!/bin/sh\n"
@@ -178,13 +174,7 @@ def test_run_managed_process_does_not_time_out_while_queuing(tmp_path):
 
 
 def test_ctrl_c_hint_does_not_end_the_queue(tmp_path):
-    """The CTRL-C hint is banner, not simulation output (#383).
-
-    Verbatim replay of a license-starved test.err. Reading that line as
-    "license granted" resumed the timeout clock a second into the wait, so
-    the default 60s sim_timeout fired while the sim was still queuing and
-    657-test regressions came back as walls of RTL failures.
-    """
+    """The CTRL-C hint is banner text and does not end the license queue."""
     log_path = tmp_path / "test.log"
     err_path = tmp_path / "test.err"
     log_path.write_text("")
@@ -206,7 +196,7 @@ def test_ctrl_c_hint_does_not_end_the_queue(tmp_path):
 
     assert exited == []
 
-    # Genuine simulator output still releases the pause.
+    # Simulator output releases the pause.
     _append(err_path, "simulation resumed\n")
     assert monitor.is_waiting() is False
     assert len(exited) == 1

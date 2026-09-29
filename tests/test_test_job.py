@@ -1,9 +1,6 @@
-"""CLI tests for the hidden ``rb _test-job`` re-entry command (#351 P0).
+"""CLI tests for the hidden ``rb _test-job`` and ``rb _build-job`` re-entry commands.
 
-The command is the unit a remote dispatch backend submits: run one
-(test, run_id) and write a ``result.json`` envelope for the collecting
-head process. ``TestRunner`` is stubbed out so no real simulator is
-needed; the ``minimal_project`` fixture provides the config surface.
+``_test-job`` runs one (test, run_id) and writes a ``result.json`` envelope for the collecting head process. ``TestRunner`` is stubbed so no simulator is needed; the ``minimal_project`` fixture provides the config surface.
 """
 
 from __future__ import annotations
@@ -39,15 +36,9 @@ from rtl_buddy.seed_mode import SeedMode
 
 
 class _StubTestRunner:
-    """Stands in for TestRunner: records ctor args, returns a canned result.
+    """Stand in for TestRunner: record constructor args and return a canned result.
 
-    Implements the split contract the build job drives since #495
-    (``prepare`` → ``compile_group_dir`` → ``compile_prepared``) as well as
-    ``run``/``run_multiple``, so the same stub serves both the ``_test-job``
-    tests and the ``_build-job`` ones. ``inits`` (and the thread each
-    construction happened on) is append-only under a lock because the
-    compile phase is threaded; ``last_init`` is kept for the assertions that
-    only care that *a* runner was built the right way.
+    Implements ``prepare``, ``compile_group_dir``, ``compile_prepared``, ``run`` and ``run_multiple``, so one stub serves both job commands. ``inits`` is append-only under a lock because the compile phase is threaded; ``last_init`` serves assertions that only need to know a runner was built.
     """
 
     canned = None
@@ -55,8 +46,7 @@ class _StubTestRunner:
     inits: list = []
     init_threads: list = []
     lock = threading.Lock()
-    # test name -> group dir. Default: every test is its own group, which is
-    # what distinct compile keys look like to the build job.
+    # test name -> group dir. Default: every test is its own group.
     group_of = None
     # test name -> Results (or raise). Default: the canned result.
     compile_hook = None
@@ -64,13 +54,9 @@ class _StubTestRunner:
     prepare_hook = None
     # test name -> Results / None: a probe failure, before any group dir.
     group_fail = None
-    # test name -> compile record dict / None, the shape VlogSim stamps on
-    # itself (#495). Default: a plausible record so the envelope's `builds`
-    # list is exercised without every test having to opt in.
+    # test name -> compile record dict / None, as VlogSim stamps on itself. Default: a plausible record.
     compile_record_of = None
-    # test name -> {returncode, transcript} / None, the failure record
-    # VlogSim stamps on itself (#498). Default: none, i.e. a build job that
-    # has nothing to say about *why* a config failed.
+    # test name -> {returncode, transcript} / None, the failure record VlogSim stamps on itself. Default: none.
     compile_failure_of = None
 
     def __init__(self, **kwargs):
@@ -86,7 +72,7 @@ class _StubTestRunner:
     def run_multiple(self, run_ids):
         return [type(self).canned for _ in run_ids]
 
-    # ---- the build job's phases
+    # The build job's phases
 
     def prepare(self, **_kwargs):
         hook = type(self).prepare_hook
@@ -125,9 +111,7 @@ class _StubTestRunner:
 
     @property
     def builder_name(self):
-        # Known from the moment the sim exists, i.e. before any compile
-        # plan — the fallback the build job uses for a config whose PRE
-        # failed (#495).
+        # Known once the sim exists, before any compile plan; the fallback for a config whose PRE failed.
         return "stub-builder"
 
 
@@ -183,11 +167,10 @@ def test_test_job_token_read_failure_still_writes_result(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A run_token read that fails must NOT abort after the sim ran — that
-    would lose a completed (possibly passing) test's result and report it as
-    'produced no result', the exact #362 signature through another door. The
-    read is non-fatal: the envelope is still written (with a null token, so
-    the head rejects it as stale rather than trusting a mismatched result)."""
+    """A failing run_token read after the sim ran still writes the result.
+
+    The read is non-fatal: the envelope is written with a null token, so the head rejects it as stale instead of losing a completed test's result.
+    """
     from rtl_buddy.dispatch.plan import write_plan
 
     suite_cfg = SuiteConfig(path="tests.yaml")
@@ -195,8 +178,7 @@ def test_test_job_token_read_failure_still_writes_result(
         minimal_project / "plan.json", "tests.yaml", suite_cfg.get_tests(), "tok"
     )
 
-    # Plan resolves the config fine, but the token read blows up (e.g. the
-    # manifest went unreadable on the shared mount between the two reads).
+    # The plan resolves the config, but the token read fails (for example an unreadable manifest).
     def boom(_path):
         raise FatalRtlBuddyError("plan vanished mid-run")
 
@@ -457,9 +439,7 @@ def test_test_job_rejects_resolved_seed_transport_corruption(
 def test_test_job_unknown_na_result_exits_1(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """#546: the job grades its own result the way the head does, so an
-    aborted simulation (NA, no verdict, nobody asked to stop) leaves a
-    nonzero job exit and a scheduler row that says FAILED."""
+    """An aborted simulation (NA, no verdict, not asked to stop) exits the job nonzero."""
     stub_runner.canned = RtlBuddyTestResults(
         "basic/results", {"result": "NA", "desc": "test result unknown"}
     )
@@ -475,8 +455,7 @@ def test_test_job_unknown_na_result_exits_1(
 def test_test_job_early_stop_result_exits_0(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The other half of #546: a dispatched ``-E comp`` run stopped because
-    it was told to, so the job succeeded and its envelope says so."""
+    """A dispatched ``-E comp`` run that stopped on request exits 0."""
     stub_runner.canned = EarlyStopResults(
         name="basic/results", desc="Stopped early at compile"
     )
@@ -528,7 +507,7 @@ class _NamedCfg:
 def test_resolve_job_test_cfg_expansion_paths(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Sweep-aware name resolution: base names, expanded names, ambiguity."""
+    """Sweep-aware name resolution covers base names, expanded names and ambiguity."""
     rb = RtlBuddy(name="resolve_test")
     suite_cfg = SuiteConfig(path="tests.yaml")
 
@@ -556,8 +535,7 @@ def test_resolve_job_test_cfg_expansion_paths(
 def test_resolve_job_test_cfg_from_plan_skips_hook(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """With --plan, a sim job reads its config from the manifest and never
-    runs the suite's sweep hook."""
+    """With --plan, a sim job reads its config from the manifest and never runs the sweep hook."""
     from rtl_buddy.dispatch.plan import write_plan
 
     rb = RtlBuddy(name="resolve_test")
@@ -566,7 +544,7 @@ def test_resolve_job_test_cfg_from_plan_skips_hook(
         minimal_project / "plan.json", "tests.yaml", suite_cfg.get_tests(), "tok"
     )
 
-    def boom(test_cfg, suite_dir):  # would run the hook — must not be called
+    def boom(test_cfg, suite_dir):  # must not be called
         raise AssertionError("sweep hook must not run when --plan resolves the name")
 
     monkeypatch.setattr(rb, "_expand_tests_with_sweep", boom)
@@ -578,13 +556,12 @@ def test_resolve_job_test_cfg_from_plan_skips_hook(
 def test_resolve_job_test_cfg_plan_miss_falls_back_to_hook(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A name absent from the plan still resolves via expansion — the plan
-    is an optimization, not a hard dependency."""
+    """A name absent from the plan still resolves through expansion."""
     from rtl_buddy.dispatch.plan import write_plan
 
     rb = RtlBuddy(name="resolve_test")
     suite_cfg = SuiteConfig(path="tests.yaml")
-    # Plan holds only "basic"; "extra" must fall through to the hook path.
+    # The plan holds only "basic"; "extra" falls through to the hook path.
     plan = write_plan(
         minimal_project / "plan.json",
         "tests.yaml",
@@ -610,13 +587,12 @@ def test_resolve_job_test_cfg_sweep_failure_becomes_setup_error(
     cfg, err = rb._resolve_job_test_cfg(suite_cfg, "basic", ".")
     assert cfg is None and "Setup failed in sweep" in err
 
-    # An unknown name with broken sweeps reports the sweep failure (the
-    # name may have come from the failed expansion) instead of raising.
+    # An unknown name with broken sweeps reports the sweep failure instead of raising.
     cfg, err = rb._resolve_job_test_cfg(suite_cfg, "mystery", ".")
     assert cfg is None and "Setup failed in sweep" in err
 
 
-# ------------------------------------------------ rb _build-job (#351)
+# rb _build-job
 
 
 def test_build_job_compiles_runnable_tests(
@@ -640,7 +616,7 @@ def test_build_job_compiles_runnable_tests(
     ][-1]
     envelope = json.loads(payload_line)
     assert envelope["command"] == "_build-job"
-    # basic + extra both at/under -l 5.
+    # basic and extra are both at or under -l 5.
     assert set(envelope["payload"]["built"]) == {"basic", "extra"}
     assert envelope["payload"]["failed"] == []
 
@@ -648,11 +624,7 @@ def test_build_job_compiles_runnable_tests(
 def test_build_job_accepts_parallel_and_still_builds_every_config(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """``--parallel N`` is the head's concurrency budget, not a filter (#495).
-
-    Whatever the job does with the budget, the set of configs it compiles
-    and the envelope it writes are the ones the serial loop produced.
-    """
+    """``--parallel N`` is the head's concurrency budget, not a filter: the same configs compile and the same envelope is written."""
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
@@ -668,8 +640,7 @@ def test_build_job_accepts_parallel_and_still_builds_every_config(
     envelope = json.loads(payload_line)
     assert set(envelope["payload"]["built"]) == {"basic", "extra"}
     assert envelope["payload"]["failed"] == []
-    # The budget the job was handed is on its own command record: a build
-    # job's wall clock is unreadable without the concurrency it ran at.
+    # The budget is on the job's command record; a build job's wall clock is unreadable without it.
     build_job = [
         record
         for record in _records(minimal_project / "rtl_buddy.log")
@@ -682,11 +653,9 @@ def test_build_job_accepts_parallel_and_still_builds_every_config(
 def test_build_job_rejects_parallel_below_one(
     minimal_project: Path, stub_runner: type[_StubTestRunner], value: str
 ):
-    """A budget of zero builds is a setup error, and it is fatal.
+    """A parallel budget below one is a fatal setup error.
 
-    Fatal is safe *here* only because nothing has compiled yet: the flag is
-    checked before the command context is entered, so the exit-0 contract
-    that keeps the afterok fan-out alive is never in play.
+    It is checked before the command context is entered, so the exit-0 contract is not in play.
     """
     runner, rb = _runner()
     result = runner.invoke(
@@ -702,11 +671,9 @@ def _build_payload(output: str) -> dict:
 
 
 def _add_third_test(project: Path, name: str = "gamma") -> None:
-    """Append a third runnable test to the *tmp copy* of the fixture suite.
+    """Append a third runnable test to the tmp copy of the fixture suite.
 
-    Two configs cannot tell plan order from group order: whatever the
-    grouping, the pool yields them in plan order anyway. Three can — one
-    group holding the first and last config makes the two orders differ.
+    Three configs distinguish plan order from group order; two cannot.
     """
     tests_yaml = project / "tests.yaml"
     tests_yaml.write_text(
@@ -731,12 +698,9 @@ def _add_third_test(project: Path, name: str = "gamma") -> None:
 def test_build_job_compiles_distinct_groups_at_the_same_time(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Two distinct compile keys really do compile concurrently (#495).
+    """Two distinct compile keys compile concurrently.
 
-    The proof is a rendezvous, not a stopwatch: each stub compile blocks on
-    a 2-party barrier, so a serial build job deadlocks until the timeout and
-    both configs come back failed. Both ``built`` is only reachable if the
-    two were inside ``compile_prepared`` at the same moment.
+    Each stub compile blocks on a 2-party barrier, so a serial job would deadlock and both configs would fail.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -757,9 +721,7 @@ def test_build_job_compiles_distinct_groups_at_the_same_time(
     assert payload["built"] == ["basic", "extra"], payload
     assert payload["failed"] == []
 
-    # One TestRunner per plan config, every one of them built on the main
-    # thread: construction is immediately followed by prepare(), and PRE is
-    # process-global-serial by contract (hooks.py) however wide the pool is.
+    # One TestRunner per plan config, built on the main thread: PRE is process-global-serial by contract.
     assert [init["test_cfg"].get_name() for init in stub_runner.inits] == [
         "basic",
         "extra",
@@ -777,11 +739,9 @@ def test_build_job_compiles_distinct_groups_at_the_same_time(
 def test_build_job_never_runs_two_builders_in_one_directory(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Same compile key ⇒ same group ⇒ strictly serial (#369).
+    """The same compile key means the same group, and a group's members never run together.
 
-    Two writers in one build directory is corruption, not slowness, so the
-    grouping is on the directory the compile *writes*, and a group's members
-    are never in flight together however large the budget is.
+    Grouping is on the directory the compile writes, since two writers in one build directory corrupt it.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -809,11 +769,7 @@ def test_build_job_never_runs_two_builders_in_one_directory(
     payload = _build_payload(result.output)
     assert payload["built"] == ["basic", "extra"]
 
-    # One group, so the pool is capped back to it: the budget buys nothing
-    # when there is only one thing to build. Both numbers are on the record
-    # — `parallel` is what the job used, `parallel_requested` is what the
-    # head reserved CPUs for, and the gap is what explains an
-    # over-provisioned reservation in the right-sizing report.
+    # One group caps the pool. `parallel` is what the job used and `parallel_requested` is what the head reserved CPUs for; the gap explains an over-provisioned reservation.
     done = [
         record
         for record in _records(minimal_project / "rtl_buddy.log")
@@ -823,28 +779,23 @@ def test_build_job_never_runs_two_builders_in_one_directory(
         (1, 4, 1)
     ]
 
-    # ...and the mismatch is announced rather than left to whoever thinks
-    # to open the job log: the head sized this job's cpus for 4 concurrent
-    # builds and the suite only has one to run.
+    # The mismatch is announced in the job log.
     (pool,) = [
         record
         for record in _records(minimal_project / "rtl_buddy.log")
         if record.get("event") == "build_job.pool_configured"
     ]
     assert (pool["groups"], pool["parallel"], pool["parallel_requested"]) == (1, 1, 4)
-    # Nothing in this suite's tests.yaml set `compile.parallel`, so the
-    # budget it could not spend belongs to cfg-dispatch (#547).
+    # No `compile.parallel` in the suite's tests.yaml, so the unspent budget belongs to cfg-dispatch.
     assert pool["parallel_origin"] == "cfg-dispatch.compile.parallel"
 
 
 def test_the_pool_line_names_a_suite_that_owns_the_parallel_key(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The origin is the layer that governs, not always cfg-dispatch (#547).
+    """The pool line names the layer that governs the parallel key.
 
-    A suite whose own `compile:` block sets `parallel` is not moved by
-    editing the root config, so a line that named the root key would send
-    the reader to a value with no effect on this job.
+    When the suite's own `compile:` block sets `parallel`, editing the root config has no effect, so the line must not name the root key.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -873,12 +824,9 @@ def test_the_pool_line_names_a_suite_that_owns_the_parallel_key(
 def test_a_plan_capped_pool_line_reports_the_configured_parallel(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """`--parallel-configured` carries the pre-cap value into the job (#547
-    review).
+    """``--parallel-configured`` carries the pre-cap value into the job.
 
-    The head hands a two-config plan `--parallel 2` however large
-    `compile.parallel` is, so without this the job's own line would report
-    the suite's key as 2 while the file says 4.
+    The head passes a two-config plan ``--parallel 2`` regardless of ``compile.parallel``; the line must report the file's value.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -920,11 +868,9 @@ def test_a_plan_capped_pool_line_reports_the_configured_parallel(
 def test_a_build_job_without_the_configured_flag_reads_it_as_the_parallel(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Absent, or below `--parallel`, means "the config value IS --parallel".
+    """A missing ``--parallel-configured``, or one below ``--parallel``, means the configured value is ``--parallel``.
 
-    Diagnostics must never fail a build job: a value describing no run this
-    job could be in is dropped rather than raised, because a fatal here
-    cancels the whole afterok fan-out over a log line (#547 review).
+    A value that fits no run is dropped, not raised, because a fatal here would cancel the afterok fan-out.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -956,9 +902,7 @@ def test_a_build_job_without_the_configured_flag_reads_it_as_the_parallel(
 def test_the_pool_line_names_the_suite_file_that_owns_the_parallel_key(
     minimal_project, stub_runner
 ):
-    """Devin review on rtl_buddy#575: a suite file with a custom name must be
-    named as itself, not as `tests.yaml`, or the line sends the reader to
-    the wrong file."""
+    """A suite file with a custom name is named as itself in the pool line, not as ``tests.yaml``."""
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     tests_yaml = minimal_project / "tests.yaml"
@@ -994,13 +938,7 @@ def test_the_pool_line_names_the_suite_file_that_owns_the_parallel_key(
 def test_the_default_build_job_announces_no_pool(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """At `parallel: 1` there is no pool line, because there is no pool.
-
-    Invariant 8: a project that never set `cfg-dispatch.compile.parallel`
-    gets today's build job, and that includes what it prints. The event is
-    a console line at default verbosity, so emitting it for the serial case
-    would be new output on every dispatched run.
-    """
+    """At ``parallel: 1`` the build job prints no pool line."""
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
@@ -1019,16 +957,9 @@ def test_the_default_build_job_announces_no_pool(
 def test_the_default_build_job_streams_pre_into_compile_per_config(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """At `parallel: 1` config B's hook must not run before A compiles.
+    """At ``parallel: 1`` config B's hook does not run before A compiles.
 
-    The pre-#495 build job ran PRE → COMPILE per config, and the documented
-    generator pattern relies on it: a preproc hook that regenerates a
-    suite-level input would, if every PRE ran first, overwrite what an
-    earlier config's builder is about to consume — and that config's
-    already-probed fingerprint would no longer describe it. Batching buys a
-    serial job nothing, so the default job does not pay for it (#496
-    review). The event order is the whole assertion; a phased job produces
-    pre/pre/compile/compile.
+    Each config runs PRE then COMPILE in order, so a preproc hook that regenerates a suite-level input cannot overwrite what an earlier builder is about to consume. A phased job would produce pre/pre/compile/compile.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1056,12 +987,9 @@ def test_the_default_build_job_streams_pre_into_compile_per_config(
 def test_a_parallel_build_job_batches_every_pre_before_any_compile(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """`parallel > 1` is what opts into the batched phases (#496 review).
+    """``parallel > 1`` batches every PRE before any compile.
 
-    The compile key is only knowable after that config's PRE ran, so a pool
-    cannot be filled without probing every config first — which is why the
-    exposure is opt-in and documented rather than removed. The mirror image
-    of the streaming test above: same two configs, one flag apart.
+    The compile key is known only after PRE, so a pool cannot be filled without probing every config first. Mirrors the streaming test with one flag changed.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1091,13 +1019,9 @@ def test_a_parallel_build_job_batches_every_pre_before_any_compile(
 def test_a_parallel_build_job_owns_the_interrupt_signals_while_it_compiles(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The batched shape must be able to take its own compilers down (#496 review).
+    """A parallel build job holds the interrupt signals while it compiles and can take its compilers down.
 
-    Cancelling this job (Ctrl-C, or the local-parallel pool's ``cancel_all``)
-    sends SIGTERM to the job's process group only, and the compilers a worker
-    thread started are in their own sessions with no handler of their own —
-    ``signal.signal`` is main-thread-only. So the main thread has to hold the
-    two signals for the length of the pool phase, and give them back after.
+    Cancellation sends SIGTERM to the job's process group only; compilers started by worker threads are in their own sessions, and ``signal.signal`` is main-thread-only. The main thread therefore holds the two signals for the pool phase and restores them afterwards.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1123,22 +1047,16 @@ def test_a_parallel_build_job_owns_the_interrupt_signals_while_it_compiles(
             assert callable(installed)
             assert installed is not previous
             assert installed not in (signal.SIG_DFL, signal.SIG_IGN)
-    # ...and handed back, so the envelope-writing tail (and everything after
-    # this command) is not left with a handler that sweeps processes it does
-    # not own.
+    # The handlers are restored so the envelope-writing tail is not left with one that sweeps processes it does not own.
     assert (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)) == before
 
 
 def test_a_cancelled_build_job_stops_compiling_the_rest_of_a_group(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Once cancellation has started, no further member is compiled (#496 review).
+    """Once cancellation has started, no further member of a group is compiled.
 
-    Sweeping the live compilers is only half a cancellation: the sweep is a
-    snapshot, so a member whose compile has not started yet would launch a
-    compiler *behind* it — in its own session, unreachable, and still running
-    when the local backend's grace period kills the job. Three configs in one
-    group, the first latching cancellation the way the sweeper does.
+    A sweep of live compilers is a snapshot, so a not-yet-started member would launch a compiler behind it. Three configs in one group; the first latches cancellation as the sweeper does.
     """
     from rtl_buddy import process_utils
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -1158,30 +1076,21 @@ def test_a_cancelled_build_job_stops_compiling_the_rest_of_a_group(
         rb.app,
         ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
     )
-    # The exit-0 contract is untouched by cancellation.
+    # Cancellation does not change the exit-0 contract.
     assert result.exit_code == 0, result.output
     assert compiled == ["basic"], compiled
     payload = _build_payload(result.output)
     assert payload["built"] == ["basic"], payload
-    # Failed in the envelope's sense: they never reached a builder, and one
-    # row per planned config is the contract. In a real cancellation the
-    # handler re-raises and this envelope is never written at all.
+    # Failed: they never reached a builder, and the envelope has one row per planned config. A real cancellation re-raises and writes no envelope.
     assert payload["failed"] == ["extra", "gamma"], payload
 
 
 def test_a_cancelled_build_job_never_starts_a_queued_group(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The next-group case, which the sweep alone cannot cover (#496 review).
+    """A cancelled build job never starts a queued group.
 
-    Three groups, two pool slots. Cancellation begins inside group 1's
-    compile — on a worker thread, while the main thread is still collecting
-    results — so the worker returns and immediately takes group 3 off the
-    queue. ``Executor.map``'s late cancel of pending futures cannot reach a
-    future a worker already took, and ``__exit__``'s ``shutdown(wait=True)``
-    waits for it: nothing but the worker's own latch check stops it
-    compiling. Deterministic without a sleep, because group 3 can only be
-    picked up after group 1 latched.
+    Three groups, two pool slots. Cancellation begins in group 1's compile on a worker thread, which then takes group 3 off the queue; only the worker's own latch check stops it. Deterministic because group 3 can only be picked up after group 1 latched.
     """
     from rtl_buddy import process_utils
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -1191,7 +1100,7 @@ def test_a_cancelled_build_job_never_starts_a_queued_group(
 
     def cancel_on_basic(name):
         compiled.append(name)
-        if name == "basic":  # plan 0, so the first group the pool is handed
+        if name == "basic":  # plan 0, the first group handed to the pool
             process_utils.terminate_live_managed_processes()
         return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
 
@@ -1202,8 +1111,7 @@ def test_a_cancelled_build_job_never_starts_a_queued_group(
         ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5", "--parallel", "2"],
     )
     assert result.exit_code == 0, result.output
-    # "extra" fills the second slot concurrently and may or may not get in
-    # before the latch; "gamma" is queued behind both and never can.
+    # "extra" may or may not get in before the latch; "gamma" is queued behind both and never can.
     assert "gamma" not in compiled, compiled
     assert "gamma" in _build_payload(result.output)["failed"]
 
@@ -1211,13 +1119,9 @@ def test_a_cancelled_build_job_never_starts_a_queued_group(
 def test_the_streaming_build_job_leaves_the_interrupt_signals_alone(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Invariant 8, and the reason the handler is scoped to the pool.
+    """The streaming build job leaves the interrupt signals alone.
 
-    The streaming shape compiles on the main thread, where
-    ``run_managed_process`` installs its own forwarding handlers for the
-    length of each compile — there is nothing for the build job to add, and
-    a handler installed here would only widen the window in which the job
-    answers for processes it does not own.
+    It compiles on the main thread, where ``run_managed_process`` installs its own forwarding handlers for each compile.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1251,13 +1155,9 @@ def test_the_pool_handler_sweeps_live_compilers_then_re_raises(
     signum: int,
     expected: type[BaseException],
 ):
-    """What the installed handler actually does, without sending a signal.
+    """The pool handler sweeps live compilers, then re-raises.
 
-    The sweep is the point: the workers' ``communicate()`` calls only return
-    once their compiler groups are dead. The re-raise follows
-    ``run_managed_process``'s convention exactly — KeyboardInterrupt for
-    SIGINT, ``SystemExit(128 + signum)`` otherwise — so a cancelled build job
-    exits the way every other interrupted rb command does.
+    The workers' ``communicate()`` calls return only once their compiler groups are dead. The re-raise follows ``run_managed_process``: KeyboardInterrupt for SIGINT, ``SystemExit(128 + signum)`` otherwise.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1292,11 +1192,9 @@ def test_the_pool_handler_sweeps_live_compilers_then_re_raises(
 def test_a_one_config_plan_streams_however_wide_the_budget_is(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Effective pool size, not the flag, picks the shape.
+    """The effective pool size, not the flag, picks the shape.
 
-    One config can only ever be one build, so `--parallel 4` still gets the
-    streaming order — and still gets the over-reservation line, because the
-    head sized this job's cpus for four builds it cannot run.
+    One config is one build, so ``--parallel 4`` still streams and still logs the over-reservation line.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1325,14 +1223,9 @@ def test_a_one_config_plan_streams_however_wide_the_budget_is(
 def test_build_job_reports_in_plan_order_when_a_member_fails(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The envelope is plan-ordered, not group-ordered (#495).
+    """The envelope is plan-ordered, not group-ordered.
 
-    Three configs in two *interleaved* groups: basic (plan 0) and gamma
-    (plan 2) share a compile key, extra (plan 1) has its own. The pool
-    yields whole groups, so its natural order is basic, gamma, extra — the
-    order the head must read back is basic, extra, gamma, and only the sort
-    makes the two agree. basic fails as well, so ``failed`` is pinned
-    against the same reordering. Delete the sort and this test says so.
+    basic (plan 0) and gamma (plan 2) share a compile key and extra (plan 1) has its own, so the pool yields basic, gamma, extra. Only the sort restores basic, extra, gamma. basic also fails, which pins ``failed`` against the same reordering.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1340,7 +1233,7 @@ def test_build_job_reports_in_plan_order_when_a_member_fails(
 
     def first_fails(name):
         if name == "basic":
-            # Slow *and* failing: completion order would put it last.
+            # Slow and failing: completion order would put it last.
             time.sleep(0.1)
             return CompileFailResults(name="basic/results")
         return EarlyStopResults(name=f"{name}/results", desc="Stopped at compile")
@@ -1368,11 +1261,9 @@ def test_build_job_reports_in_plan_order_when_a_member_fails(
 def test_build_job_setup_failure_is_a_failed_test_not_a_failed_job(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """A PRE failure in the serial phase is that config's failure alone.
+    """A PRE failure in the serial phase fails that config only.
 
-    It never reaches a builder, so it is reported the way the old serial
-    loop reported it — failed, one ``build_job.compile_failed``, exit 0 —
-    and the configs behind it still compile.
+    It is reported as failed with one ``build_job.compile_failed``, the job exits 0 and the remaining configs still compile.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults, SetupFailResults
 
@@ -1396,7 +1287,7 @@ def test_build_job_setup_failure_is_a_failed_test_not_a_failed_job(
     assert [
         r["test"] for r in records if r.get("event") == "build_job.compile_failed"
     ] == ["basic"]
-    # A setup failure is not a worker crash; it must not be reported as one.
+    # A setup failure is not a worker crash and is not reported as one.
     assert not [
         r for r in records if r.get("event") == "build_job.compile_worker_error"
     ]
@@ -1405,10 +1296,9 @@ def test_build_job_setup_failure_is_a_failed_test_not_a_failed_job(
 def test_build_job_filelist_failure_in_the_probe_is_a_failed_test(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The probe writes ``run.f``, so it fails the way the compile does.
+    """A filelist failure in the probe fails that config like a compile failure.
 
-    A config whose filelist cannot be written has no group dir and never
-    joins the pool; it is failed here, and the job still exits 0.
+    The config has no group dir and never joins the pool; the job still exits 0.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults, FilelistFailResults
 
@@ -1437,12 +1327,9 @@ def test_build_job_filelist_failure_in_the_probe_is_a_failed_test(
 def test_build_job_serial_phase_exception_is_a_failed_test_not_a_failed_job(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The exit-0 contract covers the serial phase too (#495).
+    """An exception in the serial phase fails that config and the job still exits 0.
 
-    The probe pulled the compile-flag assembly ahead of the builder, which
-    moved fatals like SystemCSim's missing ``cfg-systemc`` onto the main
-    thread. One config's fatal must not cancel the afterok fan-out for the
-    ones that were fine.
+    Fatals such as SystemCSim's missing ``cfg-systemc`` occur on the main thread and must not cancel the afterok fan-out.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1472,11 +1359,9 @@ def test_build_job_serial_phase_exception_is_a_failed_test_not_a_failed_job(
 def test_build_job_worker_exception_is_a_failed_test_not_a_failed_job(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """An exception inside a compile worker must not escape the job.
+    """An exception inside a compile worker does not escape the job.
 
-    A build job that exits non-zero makes Slurm cancel every afterok sim
-    job behind it — the whole point of the best-effort contract. A crashed
-    config also says nothing about the others, so they still compile.
+    A non-zero exit makes Slurm cancel every afterok sim job. The other configs still compile.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1521,18 +1406,14 @@ def test_pool_configured_has_a_dedicated_human_message():
     msg = _human_message("build_job.pool_configured", {"groups": 8, "parallel": 4})
     assert "8 distinct build(s)" in msg
     assert "4 at a time" in msg
-    # A budget the suite cannot spend is deliberate over-provisioning, not
-    # an error — one INFO line, on the same event, saying what the
-    # effective parallelism actually was.
+    # A budget the suite cannot spend is deliberate over-provisioning: one INFO line on the same event states the effective parallelism.
     over = _human_message(
         "build_job.pool_configured",
         {"groups": 1, "parallel": 1, "parallel_requested": 4},
     )
     assert "cfg-dispatch.compile.parallel is 4" in over
     assert "effective parallelism here is 1" in over
-    # ...naming whichever layer actually governs the key (#547), and
-    # falling back to the root spelling for a job log written before the
-    # field existed (the `over` case above).
+    # ...naming the layer that governs the key, and falling back to the root spelling for older job logs (the `over` case above).
     suite_owned = _human_message(
         "build_job.pool_configured",
         {
@@ -1544,11 +1425,7 @@ def test_pool_configured_has_a_dedicated_human_message():
     )
     assert "tests.yaml compile.parallel is 4" in suite_owned
     assert "cfg-dispatch" not in suite_owned
-    # The head caps the configured value by the suite's planned configs
-    # before the job sees it, so the line must quote what the FILE says and
-    # then explain the cap — "compile.parallel is 2" beside a tests.yaml
-    # holding 4 contradicts the key it sends the reader to edit (#547
-    # review).
+    # The head caps the configured value by the suite's planned configs, so the line quotes what the file says and then explains the cap.
     capped = _human_message(
         "build_job.pool_configured",
         {
@@ -1563,8 +1440,7 @@ def test_pool_configured_has_a_dedicated_human_message():
     assert "capped to 2 by the 2 planned configs" in capped
     assert "reservation is sized for 2" in capped
     assert "effective parallelism here is 1" in capped
-    # An uncapped job says exactly what it said before: no cap, nothing to
-    # explain, and the configured value IS the requested one.
+    # An uncapped job has no cap to explain, and the configured value is the requested one.
     uncapped = _human_message(
         "build_job.pool_configured",
         {
@@ -1577,7 +1453,7 @@ def test_pool_configured_has_a_dedicated_human_message():
     )
     assert uncapped == suite_owned
     assert "capped" not in uncapped
-    # No surplus, no explanation to give.
+    # No surplus, no explanation.
     assert "effective parallelism" not in _human_message(
         "build_job.pool_configured",
         {"groups": 4, "parallel": 4, "parallel_requested": 4},
@@ -1585,11 +1461,9 @@ def test_pool_configured_has_a_dedicated_human_message():
 
 
 def test_pool_configured_says_why_there_are_fewer_builds_than_configs():
-    """Fewer distinct builds than configs is the healthy shape (#535).
+    """Fewer distinct builds than configs is the healthy shape.
 
-    A 20-config suite over 3 compile keys compiles 3 times, and a line
-    reading only "Compiling 3 distinct build(s)" looks like 17 configs went
-    missing. The pool sizing itself is correct and stays as it is.
+    A 20-config suite over 3 compile keys compiles 3 times; the line must not read as if 17 configs went missing.
     """
     from rtl_buddy.logging_utils import _human_message
 
@@ -1599,17 +1473,15 @@ def test_pool_configured_says_why_there_are_fewer_builds_than_configs():
     )
     assert "3 distinct build(s)" in shared
     assert "20 configs share 3 keys; siblings adopt the leader's build" in shared
-    # One config per key: nothing is being shared, so nothing to explain.
+    # One config per key: nothing is shared, so nothing to explain.
     assert "share" not in _human_message(
         "build_job.pool_configured", {"groups": 4, "configs": 4, "parallel": 4}
     )
-    # An older event with no `configs` renders exactly as it did.
+    # An older event with no `configs` renders unchanged.
     assert "share" not in _human_message(
         "build_job.pool_configured", {"groups": 4, "parallel": 4}
     )
-    # A config whose PRE or filelist probe failed never reached a compile
-    # key, so it is not sharing one. Three prepared over three keys shares
-    # nothing; the fourth is reported as what it was (#576 review).
+    # A config whose PRE or filelist probe failed reached no compile key and shares none. Three prepared over three keys share nothing; the fourth is reported separately.
     setup_failure = _human_message(
         "build_job.pool_configured",
         {
@@ -1622,15 +1494,14 @@ def test_pool_configured_says_why_there_are_fewer_builds_than_configs():
     )
     assert "share" not in setup_failure
     assert "(1 failed preparation)" in setup_failure
-    # Nothing prepared at all: no keys to share and no sharing clause,
-    # rather than "0 configs share 0 keys".
+    # Nothing prepared: no sharing clause, rather than "0 configs share 0 keys".
     nothing = _human_message(
         "build_job.pool_configured",
         {"groups": 0, "configs": 0, "unprepared": 4, "parallel": 1},
     )
     assert "share" not in nothing
     assert "(4 failed preparation)" in nothing
-    # Both at once: sharing among what prepared, and the rest named.
+    # Both at once: sharing among the prepared configs, and the rest named.
     both = _human_message(
         "build_job.pool_configured",
         {"groups": 2, "configs": 5, "unprepared": 2, "parallel": 2},
@@ -1642,18 +1513,15 @@ def test_pool_configured_says_why_there_are_fewer_builds_than_configs():
 def test_pool_configured_counts_only_the_configs_that_reached_the_pool(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """A config that never got a compile key is not sharing one (#576 review).
+    """A config that never got a compile key is not counted as sharing one.
 
-    `configs` is the membership of the groups the pool was built from, not
-    the plan's length: a config whose PRE or filelist probe failed never
-    joined a group, and counting it would have the line report sharing that
-    did not happen.
+    `configs` is the membership of the groups the pool was built from, not the plan's length.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults, FilelistFailResults
 
     _add_third_test(minimal_project)
     stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
-    # One key each, so nothing shares and the clause must stay away.
+    # One key each: nothing shares, so no clause.
     stub_runner.group_fail = lambda name: (
         FilelistFailResults(name="gamma/results", desc="no such source")
         if name == "gamma"
@@ -1676,11 +1544,9 @@ def test_pool_configured_counts_only_the_configs_that_reached_the_pool(
 
 
 class _StampedStubRunner(_StubTestRunner):
-    """A stub that reports a build stamp and can adopt a sibling's build.
+    """Stub that reports a build stamp and can adopt a sibling's build.
 
-    Separate from :class:`_StubTestRunner` on purpose: a runner class that
-    reports neither keeps the pre-#534 leader rule, and the base stub is
-    what proves that path still works.
+    Separate from :class:`_StubTestRunner` so a runner that reports neither keeps the base leader rule.
     """
 
     # test name -> stamp dict / None ("compiled, but left no stamp").
@@ -1732,13 +1598,9 @@ def stamped_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StampedStubRunner]:
 def test_a_build_job_records_a_compile_it_could_not_stamp(
     minimal_project: Path, stamped_runner: type[_StampedStubRunner]
 ):
-    """`stamp_written: false`, beside a config that is still BUILT (#534).
+    """``stamp_written: false`` is recorded beside a config that is still BUILT.
 
-    The compile ran and its binary is in the directory, so failing the
-    config would cancel the afterok fan-out behind a build that exists. The
-    envelope carries the missing stamp instead, which is what lets the
-    gated simulation jobs decline rather than recompile under their own
-    reservation.
+    The binary exists, so failing the config would cancel the afterok fan-out. The missing stamp makes gated simulation jobs decline instead of recompiling under their own reservation.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1766,20 +1628,16 @@ def test_a_build_job_records_a_compile_it_could_not_stamp(
     envelope = load_build_result_json(minimal_project / "build-result-1.json")
     records = {record["test"]: record for record in envelope["builds"]}
     assert records["basic"]["stamp_written"] is False
-    # Absent, not `true`: every envelope written before the field existed
-    # means "stamped", and so does this one.
+    # Absent, not `true`: an envelope without the field means "stamped".
     assert "stamp_written" not in records["extra"]
 
 
 def test_a_leader_that_left_no_stamp_is_never_adopted_from(
     minimal_project: Path, stamped_runner: type[_StampedStubRunner]
 ):
-    """Adoption reads the leader's stamp, so an unstamped leader is none (#534).
+    """An unstamped leader is never adopted from.
 
-    Left as leader, every sibling would call adopt(), be told "no stamp",
-    and compile the key again — the #535 symptom with no record of its
-    cause. Say it once, at WARNING, and let the siblings take the normal
-    path.
+    It is warned about once at WARNING, and siblings take the normal compile path.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1805,11 +1663,9 @@ def test_a_leader_that_left_no_stamp_is_never_adopted_from(
 def test_a_declined_adoption_says_which_config_and_why(
     minimal_project: Path, stamped_runner: type[_StampedStubRunner]
 ):
-    """A decline is a second full compile of one key, so it is logged (#535).
+    """A declined adoption is logged with the config and the reason.
 
-    `(None, <reason>)` used to be silent: the only trace that a sibling had
-    not adopted was an extra `compile.start`, and nothing said which of the
-    seven reasons produced it.
+    A decline is a second full compile of one key.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1867,8 +1723,7 @@ def test_the_new_build_job_events_have_dedicated_human_messages():
 def test_build_job_compile_failure_is_best_effort_exit_0(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    # A per-test compile failure must not fail the build job (afterok
-    # dependents still run; the failing test recompiles in its own sim job).
+    # A per-test compile failure does not fail the build job: afterok dependents still run and the failing test recompiles in its own sim job.
     stub_runner.canned = CompileFailResults(name="b/results")
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["--machine", "_build-job", "-c", "tests.yaml"])
@@ -1886,12 +1741,9 @@ def test_build_job_exits_0_when_git_is_missing(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A node without a ``git`` binary must not cost a regression its fan-out.
+    """A node without a ``git`` binary must not fail the build job.
 
-    ECP CI, 2026-08-19: the compiles all succeeded, then the machine-result
-    envelope shelled out to git, which the compute node did not have. The
-    FileNotFoundError propagated, the build job exited non-zero, and Slurm
-    cancelled every afterok sim job behind it — ~150 per build, on every branch.
+    The machine-result envelope shells out to git; a FileNotFoundError would exit non-zero and Slurm would cancel every afterok sim job behind it.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -1916,8 +1768,7 @@ def test_build_job_exits_0_when_git_is_missing(
         line for line in result.output.splitlines() if line.startswith("{")
     ][-1]
     envelope = json.loads(payload_line)
-    # The envelope still parses; the git block degrades to null rather than
-    # taking the job down with it.
+    # The envelope still parses; the git block degrades to null.
     assert envelope["meta"]["git"] is None
     assert set(envelope["payload"]["built"]) == {"basic", "extra"}
 
@@ -1927,7 +1778,7 @@ def test_build_job_exits_0_when_the_envelope_cannot_be_emitted(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Reporting is never allowed to decide the build job's exit status."""
+    """Reporting never decides the build job's exit status."""
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
@@ -1945,7 +1796,7 @@ def test_build_job_exits_0_when_the_envelope_cannot_be_emitted(
 
 
 def test_envelope_failure_warning_has_a_dedicated_human_message():
-    """A WARNING must not fall through to the generic event-name fallback."""
+    """The WARNING has a dedicated human message, not the generic event-name fallback."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(
@@ -1962,8 +1813,7 @@ def test_build_job_plan_compiles_plan_configs_without_hook(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """--plan makes the build job compile the head's configs and never
-    re-run the suite's sweep expansion."""
+    """--plan makes the build job compile the head's configs without the suite's sweep expansion."""
     from rtl_buddy.dispatch.plan import write_plan
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -2002,18 +1852,15 @@ def test_build_job_plan_compiles_plan_configs_without_hook(
     assert br["failed"] == []
 
 
-# ------------------------------------- build telemetry (#495)
+# Build telemetry
 
 
 def test_build_envelope_carries_per_compile_records(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """`builds` records what each config's compile cost (#495).
+    """``builds`` records each config's compile cost.
 
-    Plan order, one row per planned config, carrying the duration/builder/
-    reused triple the sim's own instance observed plus the group directory
-    it compiled into — which is what makes two configs that shared one
-    build readable as such.
+    One row per planned config in plan order, with the duration, builder and reused triple and the group directory, so configs sharing a build are identifiable.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -2039,9 +1886,7 @@ def test_build_envelope_carries_per_compile_records(
         "builder": "stub-builder",
         "duration_sec": 12.5,
         "reused": False,
-        # Suite-relative, never the compute node's absolute path — and not
-        # a basename, which is `simv` for every unshared build and would
-        # merge unrelated builds under one id (#496 review).
+        # Suite-relative: never the compute node's absolute path, and not a basename (`simv` for every unshared build).
         "group": os.path.join("artefacts", ".shared-builds", "obj_dir_cafe"),
     }
     assert br["builds"][1]["reused"] is True
@@ -2051,12 +1896,9 @@ def test_build_envelope_carries_per_compile_records(
 def test_build_records_name_the_builder_even_when_the_compile_never_ran(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """A failed config still gets a row — a gap means "never seen" (#495).
+    """A failed config still gets a row, with unknown fields null.
 
-    A missing record must not read as "compiled instantly": every planned
-    config appears, with the fields it could not know left null. The
-    builder is not one of those: it is settled the moment the sim exists,
-    which is before the PRE that failed, so the row still names it.
+    The builder is known once the sim exists, before the failing PRE, so the row names it.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults, SetupFailResults
@@ -2088,12 +1930,9 @@ def test_build_records_name_the_builder_even_when_the_compile_never_ran(
 def test_build_records_that_cannot_be_serialised_do_not_cost_the_envelope(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Telemetry never takes built/failed down with it (#495).
+    """Telemetry that cannot be serialised is dropped and the envelope keeps ``built``/``failed``.
 
-    `built`/`failed` is the load-bearing half — it is what maps a compile
-    failure to a CompileFail row. An unserialisable compile record drops
-    the telemetry and keeps the envelope, and the job still exits 0 so its
-    afterok dependents run.
+    The job still exits 0 so afterok dependents run.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -2115,7 +1954,7 @@ def test_build_records_that_cannot_be_serialised_do_not_cost_the_envelope(
     assert br["builds"] == []
 
 
-# ------------------------------- build failure detail (#498)
+# Build failure detail
 
 
 def test_build_envelope_records_why_a_compile_failed(
@@ -2123,9 +1962,7 @@ def test_build_envelope_records_why_a_compile_failed(
 ):
     """A failed build carries its returncode, transcript and error tail.
 
-    Without them the only record of a one-line lint error is a log on a
-    compute node, while the sim job it gates recompiles under a smaller
-    reservation and writes an OOM over the transcript that held it (#498).
+    Without them the gated sim job recompiles under a smaller reservation and may overwrite the transcript with an OOM.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -2149,9 +1986,7 @@ def test_build_envelope_records_why_a_compile_failed(
         {
             "returncode": 1,
             "transcript": str(transcript),
-            # What VlogSim records beside a real failure (#498 review): the
-            # identity of the inputs the builder failed on, which a gated
-            # sim job compares against its own before declining a retry.
+            # What VlogSim records beside a real failure: the identity of the inputs the builder failed on, which a gated sim job compares with its own before declining a retry.
             "fingerprint_sha": "ab" * 32,
         }
         if name == "basic"
@@ -2168,13 +2003,11 @@ def test_build_envelope_records_why_a_compile_failed(
     by_test = {entry["test"]: entry for entry in br["builds"]}
     assert by_test["basic"]["returncode"] == 1
     assert by_test["basic"]["fingerprint_sha"] == "ab" * 32
-    # Suite-relative, for the reason `group` is: an absolute path here pins
-    # the compute node's mount into an artifact the head reads.
+    # Suite-relative, like `group`: an absolute path would pin the compute node's mount.
     assert by_test["basic"]["transcript"] == os.path.join(
         "artefacts", "basic", "compile.log"
     )
-    # Non-blank lines from the whole transcript, so a builder that writes
-    # only to stderr is not tailed down to a section banner.
+    # Non-blank lines from the whole transcript, so stderr-only output is not tailed down to a banner.
     assert by_test["basic"]["error_tail"] == [
         "Command: verilator -f run.f",
         "=== stderr ===",
@@ -2182,7 +2015,7 @@ def test_build_envelope_records_why_a_compile_failed(
         "%Error: Exiting due to 1 error(s)",
         "=== stdout ===",
     ]
-    # A config that BUILT gets none of them — the keys mean "this failed".
+    # A config that BUILT gets none of these keys.
     assert "returncode" not in by_test["extra"]
     assert "error_tail" not in by_test["extra"]
     assert "fingerprint_sha" not in by_test["extra"]
@@ -2191,7 +2024,7 @@ def test_build_envelope_records_why_a_compile_failed(
 def test_a_worker_exception_becomes_the_error_tail_when_no_builder_ran(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """No builder, no transcript — but the exception is the whole "why"."""
+    """With no builder run, the worker exception is the error tail."""
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -2217,11 +2050,9 @@ def test_a_worker_exception_becomes_the_error_tail_when_no_builder_ran(
 def test_a_multi_line_worker_exception_is_recorded_as_physical_lines(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """str() of an exception can embed newlines (#498 review).
+    """A multi-line worker exception is recorded as physical lines.
 
-    An `error_tail` element is one physical line by contract:
-    `build_compile_fail_desc` selects one element for a one-line summary
-    cell, and an element with embedded newlines would break that row.
+    An `error_tail` element is one physical line because `build_compile_fail_desc` picks one for a one-line summary cell.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -2253,11 +2084,9 @@ def test_a_multi_line_worker_exception_is_recorded_as_physical_lines(
 def test_an_unreadable_transcript_does_not_cost_the_build_job_its_envelope(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The exit-0 contract covers the new detail too (#498).
+    """An unreadable transcript does not cost the build job its envelope.
 
-    A failure to *describe* a failure must not take the envelope — and so
-    the fan-out's `afterok` — down with it. The verdict survives; only the
-    error text is missing.
+    The verdict survives; only the error text is missing.
     """
     from rtl_buddy.runner.result_io import load_build_result_json
     from rtl_buddy.runner.test_results import EarlyStopResults
@@ -2268,8 +2097,7 @@ def test_an_unreadable_transcript_does_not_cost_the_build_job_its_envelope(
         else EarlyStopResults(name=f"{name}/results", desc="compiled")
     )
     stub_runner.compile_failure_of = lambda name: (
-        # A path that does not exist: compile_error_tail declines rather
-        # than raising, and the returncode still lands.
+        # A missing path: compile_error_tail declines rather than raising, and the returncode still lands.
         {"returncode": 3, "transcript": str(minimal_project / "gone" / "compile.log")}
         if name == "basic"
         else None
@@ -2288,11 +2116,9 @@ def test_an_unreadable_transcript_does_not_cost_the_build_job_its_envelope(
 
 
 def test_the_envelope_loader_tolerates_records_without_the_failure_keys():
-    """A mixed-version fleet degrades, never fails (#498).
+    """The envelope loader tolerates records without the failure keys.
 
-    An envelope written by a build job that predates the failure detail is
-    still a valid schema-1 envelope; the keys are additive and every
-    consumer reads them with `.get()`.
+    The keys are additive and consumers read them with `.get()`, so an older envelope is still valid schema 1.
     """
     import json as _json
 
@@ -2311,7 +2137,7 @@ def test_the_envelope_loader_tolerates_records_without_the_failure_keys():
             builds=[{"test": "basic", "builder": "verilator", "group": "obj"}],
         )
         raw = _json.loads(Path(path).read_text())
-        # The schema version does NOT move for an additive field.
+        # An additive field does not move the schema version.
         assert raw["schema_version"] == BUILD_RESULT_SCHEMA_VERSION == 1
         assert raw["rtl-buddy-filetype"] == BUILD_RESULT_FILETYPE
 
@@ -2322,11 +2148,9 @@ def test_the_envelope_loader_tolerates_records_without_the_failure_keys():
 
 
 def test_compile_error_tail_reads_the_whole_transcript_not_its_last_lines():
-    """A Verilator error is in the stderr half; stdout is empty (#498).
+    """A Verilator error in the stderr half is found although stdout is empty.
 
-    A literal tail of the file would be `=== stdout ===` and nothing else,
-    which is why the tail is taken over the non-blank lines of the whole
-    file.
+    The tail is taken over the non-blank lines of the whole file, not the last lines.
     """
     from rtl_buddy.runner.result_io import compile_error_tail
 
@@ -2345,18 +2169,14 @@ def test_compile_error_tail_reads_the_whole_transcript_not_its_last_lines():
             "=== stdout ===",
         ]
         assert compile_error_tail(path, limit=2)[-1] == "=== stdout ==="
-        # Never raises: a build job that cannot read back its own
-        # transcript must still write its envelope and exit 0.
+        # Never raises: an unreadable transcript still yields an envelope and exit 0.
         assert compile_error_tail(Path(tmp) / "gone.log") == []
 
 
 def test_the_build_fail_desc_stays_one_line_for_a_multi_line_tail_element():
-    """The one-line desc contract survives a legacy envelope (#498 review).
+    """The one-line desc contract holds for a legacy envelope with a multi-line `error_tail` element.
 
-    An envelope written before the producer flattened worker exceptions can
-    still carry an `error_tail` element with embedded newlines; the desc
-    goes into a summary table cell, so the selector flattens each element
-    to physical lines before choosing one.
+    The selector flattens each element to physical lines before choosing one.
     """
     from rtl_buddy.runner.result_io import build_compile_fail_desc
 
@@ -2372,12 +2192,9 @@ def test_the_build_fail_desc_stays_one_line_for_a_multi_line_tail_element():
 
 
 def test_the_echoed_compile_command_is_never_the_chosen_diagnostic():
-    """A command carrying `error` must not displace the real error (#498 review).
+    """The echoed compile command is never chosen as the diagnostic.
 
-    A short transcript's first line is `Command: …`; with `--error-limit`
-    (or an `ERROR_*` define, or a path named `errors`) in the command, the
-    loose scan would pick that echo and the summary would show a truncated
-    command instead of the compiler's diagnostic below it.
+    A command containing `error` (`--error-limit`, an `ERROR_*` define, a path named `errors`) must not displace the compiler's message.
     """
     from rtl_buddy.runner.result_io import build_compile_fail_desc
 
@@ -2396,7 +2213,7 @@ def test_the_echoed_compile_command_is_never_the_chosen_diagnostic():
 
 
 def test_failure_detail_warning_has_a_dedicated_human_message():
-    """A WARNING must not fall through to the generic event-name fallback."""
+    """The WARNING has a dedicated human message, not the generic event-name fallback."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(
@@ -2426,7 +2243,7 @@ def test_build_job_failed_error_has_a_dedicated_human_message():
 
 
 def test_build_records_failure_warning_has_a_dedicated_human_message():
-    """A WARNING must not fall through to the generic event-name fallback."""
+    """The WARNING has a dedicated human message, not the generic event-name fallback."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(
@@ -2442,13 +2259,9 @@ def test_an_envelope_that_cannot_be_written_at_all_still_exits_0(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The telemetry retry must not become the escape hatch (#495).
+    """An envelope that cannot be written at all still exits 0.
 
-    The fallback write is reached because the first one failed, and a
-    filesystem reason (ENOSPC, EROFS, a permission change) fails both. An
-    exception out of the second write leaves the build job non-zero, and
-    afterok then cancels the whole sim fan-out — the failure mode the
-    surrounding guard exists to prevent.
+    The fallback write follows a failed first write, and a filesystem error fails both; an exception from the second would exit non-zero and cancel the afterok fan-out.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -2468,7 +2281,7 @@ def test_an_envelope_that_cannot_be_written_at_all_still_exits_0(
 
 
 def test_result_json_failure_warning_has_a_dedicated_human_message():
-    """A WARNING must not fall through to the generic event-name fallback."""
+    """The WARNING has a dedicated human message, not the generic event-name fallback."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(
@@ -2480,16 +2293,11 @@ def test_result_json_failure_warning_has_a_dedicated_human_message():
     assert "build_job result_json_failed" not in msg
 
 
-# ------------------------------------- job log paths (#437)
+# Job log paths
 
 
 def _records(log_path: Path) -> list[dict]:
-    """Every record in a machine-mode rtl_buddy log, fields included.
-
-    ``log_event`` fields are flattened into the JSON line beside ``event``
-    (JsonLinesFormatter), so a record is the assertion surface for both the
-    event name and what it carried.
-    """
+    """Every record in a machine-mode rtl_buddy log, with ``log_event`` fields flattened beside ``event``."""
     return [
         json.loads(line) for line in log_path.read_text().splitlines() if line.strip()
     ]
@@ -2503,12 +2311,9 @@ def _events(log_path: Path) -> list[str]:
 def test_test_job_logs_beside_its_envelope_and_never_the_suite_log(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The head owns ``<suite>/rtl_buddy.log``; a job must not open it.
+    """A job logs beside its envelope and never opens the head's ``<suite>/rtl_buddy.log``.
 
-    ``attach_file_log`` truncates on a process's first open of a path, so
-    a job that attached there would erase the head's records for that
-    suite (#437). The sentinel content below is the head's; it must come
-    back byte-identical.
+    ``attach_file_log`` truncates on a process's first open of a path, so the head's sentinel content must come back byte-identical.
     """
     stub_runner.canned = TestPassResults(name="basic/results")
     suite_log = minimal_project / "rtl_buddy.log"
@@ -2575,8 +2380,7 @@ def test_build_job_logs_beside_its_envelope_and_never_the_suite_log(
 def test_build_job_without_result_json_falls_back_to_the_suite_log(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Run by hand there is no envelope to pair with and no head to
-    collide with, so the suite log is still the right place."""
+    """Run by hand there is no envelope or head, so the build job logs to the suite log."""
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
@@ -2589,14 +2393,13 @@ def test_build_job_without_result_json_falls_back_to_the_suite_log(
     assert "command.build_job" in _events(suite_log)
 
 
-# ------------------------------------------------------- --rebuild (#494)
+# --rebuild
 
 
 def test_rebuild_reaches_the_build_jobs_test_runner(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The flag is only worth anything if it arrives at the sim that acts
-    on it, and the build job's TestRunner is the last hop before that."""
+    """``--rebuild`` reaches the build job's TestRunner."""
     from rtl_buddy.runner.test_results import EarlyStopResults
 
     stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
@@ -2625,7 +2428,7 @@ def test_rebuild_reaches_a_sim_jobs_test_runner(
 def test_rebuild_defaults_off_on_both_jobs(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Byte-parity when nothing is configured (#494)."""
+    """``--rebuild`` defaults off on both jobs."""
     from rtl_buddy.runner.test_results import EarlyStopResults, TestPassResults
 
     stub_runner.canned = TestPassResults(name="basic/results")
@@ -2650,9 +2453,7 @@ def test_rebuild_defaults_off_on_both_jobs(
 def test_rebuild_reaches_the_test_runner_of_an_undispatched_rb_test(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """`rb test` with no dispatch compiles in-process, so the flag has to
-    land on that TestRunner too — the local path is where an edit-then-rerun
-    is most often done."""
+    """``--rebuild`` reaches the TestRunner of an undispatched ``rb test``."""
     from rtl_buddy.runner.test_results import TestPassResults
 
     stub_runner.canned = TestPassResults(name="basic/results")
@@ -2665,8 +2466,7 @@ def test_rebuild_reaches_the_test_runner_of_an_undispatched_rb_test(
 def test_a_plusarg_override_reaches_a_sim_jobs_test_runner(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The head forwards its `--plusarg` overrides in the job's argv (#552),
-    and the job's own parse has to reach the config it runs."""
+    """A ``--plusarg`` override forwarded in the job's argv reaches the sim job's TestRunner."""
     from rtl_buddy.runner.test_results import TestPassResults
 
     stub_runner.canned = TestPassResults(name="basic/results")
@@ -2689,8 +2489,7 @@ def test_a_plusarg_override_reaches_a_sim_jobs_test_runner(
         "mutate": "1",
         "trace": None,
     }
-    # ...and the job is the only writer of a dispatched run's envelope, so
-    # it is where the overrides have to be recorded.
+    # The job is the only writer of a dispatched run's envelope, so it records the overrides.
     envelope = load_result_json(minimal_project / "res.json")
     assert envelope["result"].results["plusarg_overrides"] == {
         "mutate": "1",
@@ -2701,8 +2500,7 @@ def test_a_plusarg_override_reaches_a_sim_jobs_test_runner(
 def test_a_plan_merged_plusarg_survives_the_jobs_own_merge(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The head merges its overrides into the plan AND forwards them, so the
-    job applies them twice; that has to be the same run either way (#552)."""
+    """A plusarg merged into the plan and also forwarded applies to the same run."""
     from rtl_buddy.dispatch.plan import write_plan
     from rtl_buddy.runner.test_results import TestPassResults
 
@@ -2734,8 +2532,7 @@ def test_a_plan_merged_plusarg_survives_the_jobs_own_merge(
 def test_a_plusarg_override_does_not_disturb_a_planned_seed(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The job merges the overrides into the plan's config, and that config
-    already carries the head's resolved seed — the copy must keep it (#552)."""
+    """A plusarg override keeps the plan's resolved seed."""
     from rtl_buddy.dispatch.plan import write_plan
     from rtl_buddy.runner.test_results import TestPassResults
 
@@ -2795,7 +2592,7 @@ def test_a_sim_job_without_the_flag_keeps_the_configured_plusargs(
     assert "plusarg_overrides" not in envelope["result"].results
 
 
-# ------------------------------ per-key release from the build job (#548)
+# Per-key release from the build job
 
 
 def _two_key_build_job(
@@ -2803,9 +2600,7 @@ def _two_key_build_job(
 ):
     """Arrange the fixture suite as two compile keys, one of which fails.
 
-    ``basic`` is the fast key and ``extra`` the slow one, which is the
-    shape the issue reports: a key that finished in the first minute held
-    behind a key that had not.
+    ``basic`` is the fast key and ``extra`` the slow one.
     """
     from rtl_buddy.runner.test_results import EarlyStopResults
 
@@ -2820,10 +2615,7 @@ def _two_key_build_job(
 def _fake_release(monkeypatch: pytest.MonkeyPatch, *, refuses=None, systemic=None):
     """Record ``release_dependency`` calls instead of shelling out.
 
-    ``refuses`` maps a job id to the error Slurm gave for it, so a refusal
-    lands on the job it belongs to rather than on every call. ``systemic``
-    maps a job id to the error that ends the whole batch there — a wedged
-    controller rather than a bad id — leaving the rest unattempted.
+    ``refuses`` maps a job id to the error Slurm gave for it. ``systemic`` maps a job id to an error that ends the whole batch there, leaving the rest unattempted.
     """
     calls = []
     refuses, systemic = refuses or {}, systemic or {}
@@ -2873,11 +2665,9 @@ def test_build_job_releases_a_key_that_built_and_not_one_that_failed(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The whole point of #548: the fast key's sims stop waiting.
+    """The build job releases a key that built and not one that failed.
 
-    ``extra``'s compile failed, so its jobs keep the ``afterok`` they were
-    submitted with — they run after this job, read the build envelope and
-    decline the recompile (#498), exactly as before.
+    ``extra``'s jobs keep their ``afterok``, then run after this job, read the build envelope and decline the recompile.
     """
     _two_key_build_job(stub_runner)
     calls = _fake_release(monkeypatch)
@@ -2924,7 +2714,7 @@ def test_build_job_releases_every_run_of_a_released_config(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """One plan index, N fanned-out runs, N job ids to clear."""
+    """Every run of a released config is released: one plan index, N fanned-out runs, N job ids."""
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
     gates = _gates(
@@ -2955,8 +2745,7 @@ def test_build_job_waits_for_a_gates_manifest_the_head_has_not_written_yet(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The build job is submitted BEFORE the sims it releases, so at its
-    first release the manifest may still be on its way."""
+    """The build job is submitted before the sims it releases, so it waits for the gates manifest."""
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
     gates_path = minimal_project / "gates-1.json"
@@ -2995,8 +2784,7 @@ def test_build_job_builds_on_when_the_gates_manifest_never_arrives(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A head that died between submits costs the run its early start and
-    nothing else: the compile finishes and the job still exits 0."""
+    """A gates manifest that never arrives costs the run its early start only; the job still exits 0."""
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
     monkeypatch.setattr(gates_module, "GATES_WAIT_S", 0.05)
@@ -3031,8 +2819,7 @@ def test_build_job_says_so_once_when_scontrol_is_missing(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """``scontrol`` is an optional Slurm binary: a site without one keeps
-    every sim job gated on the build job, and is told why."""
+    """A missing ``scontrol`` is reported once, and every sim job stays gated on the build job."""
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
     monkeypatch.setattr(rtl_buddy_module.shutil, "which", lambda name: None)
@@ -3065,7 +2852,7 @@ def test_build_job_reports_a_refused_release_without_failing(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A job id Slurm will not clear is a slower start, never a failure."""
+    """A job id Slurm refuses to clear is a slower start, not a failure."""
     _two_key_build_job(stub_runner, failing=None)
     _fake_release(monkeypatch, refuses={"1000_1": "slurm_update: Invalid job id"})
     gates = _gates(
@@ -3094,8 +2881,7 @@ def test_build_job_reports_a_refused_release_without_failing(
     failed = [r for r in records if r.get("event") == "dispatch.release_failed"]
     assert [r["job_id"] for r in failed] == ["1000_1"]
     assert "Invalid job id" in failed[0]["error"]
-    # Every id of that key was refused, so there is nothing to claim
-    # released for it — and the other key is unaffected.
+    # Every id of that key was refused, so nothing is claimed released for it; the other key is unaffected.
     released = [r for r in records if r.get("event") == "dispatch.key_released"]
     assert [r["job_ids"] for r in released] == [["1000_2"]]
 
@@ -3105,8 +2891,7 @@ def test_build_job_without_gates_never_touches_scontrol(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """No ``--gates`` is every pre-#548 run, and every local-parallel one:
-    nothing is polled, nothing is released, nothing is logged about it."""
+    """Without ``--gates`` nothing is polled, released or logged."""
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
 
@@ -3125,9 +2910,9 @@ def test_build_job_releases_each_cluster_in_its_own_batch(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """`--clusters=a,b` places each array wherever it can start first, so
-    one key's jobs can sit on two controllers — and a job id means nothing
-    against the wrong one (#509). One `scontrol -M <cluster>` per cluster.
+    """``--clusters=a,b`` can place one key's jobs on two controllers, and a job id only means something to its own.
+
+    Release issues one `scontrol -M <cluster>` per cluster.
     """
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
@@ -3174,11 +2959,9 @@ def test_a_systemic_release_failure_is_paid_once_for_the_whole_build_job(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A wedged controller is a property of this node, not of an id.
+    """A systemic release failure is paid once for the whole build job.
 
-    Retrying it for every later compile key would put the build job — and
-    the compile slot it occupies — behind an optimization it has already
-    been told it cannot have (#548 review).
+    A wedged controller is a property of the node, so later compile keys do not retry.
     """
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(
@@ -3205,22 +2988,20 @@ def test_a_systemic_release_failure_is_paid_once_for_the_whole_build_job(
     )
     assert result.exit_code == 0, result.output
     assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
-    # One attempt, for the first key. The second key does not try again.
+    # One attempt, for the first key; the second key does not try again.
     assert [call["job_ids"] for call in calls] == [["1000_1", "1000_9"]]
 
     records = _records(minimal_project / "rtl_buddy.log")
     failed = [r for r in records if r.get("event") == "dispatch.release_failed"]
     assert [r["job_id"] for r in failed] == ["1000_1"]
-    # What the give-up cost: the id behind it in this batch, plus the other
-    # key's, all of which keep their afterok gate.
+    # The give-up cost the ids behind it in this batch plus the other key's, all of which keep their afterok gate.
     assert failed[0]["skipped"] == 1
     assert "timed out" in failed[0]["error"]
     assert [r for r in records if r.get("event") == "dispatch.key_released"] == []
 
 
 def test_the_release_events_have_dedicated_human_messages():
-    """Every one of these is logged at WARNING, or printed on the console,
-    so none may fall back to `dispatch key_released (…)` (#548 review)."""
+    """Every release event logged at WARNING or printed on the console has a dedicated human message, not the `dispatch key_released` fallback."""
     from rtl_buddy.logging_utils import _human_message
 
     released = _human_message(
@@ -3284,10 +3065,9 @@ def test_a_release_that_ran_out_of_budget_is_reported_against_the_key(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The budget can expire between calls, so no single id failed.
+    """A release that ran out of budget is reported against the key.
 
-    Reported against the compile key rather than lost: without it the only
-    trace of a key that was never released is the absence of an event.
+    The budget can expire between calls, so no single id failed.
     """
     _two_key_build_job(stub_runner, failing=None)
     calls = []
@@ -3325,8 +3105,7 @@ def test_a_release_that_ran_out_of_budget_is_reported_against_the_key(
     records = _records(minimal_project / "rtl_buddy.log")
     failed = [r for r in records if r.get("event") == "dispatch.release_failed"]
     assert len(failed) == 1, failed
-    # `skipped` counts this key's own unattempted ids; that no later key
-    # will try either is what the message says, not a number here.
+    # `skipped` counts this key's own unattempted ids; the message says later keys will not try either.
     assert failed[0]["skipped"] == 1 and "job_id" not in failed[0]
     assert failed[0]["group"] == "obj_dir_basic"
 
@@ -3336,21 +3115,16 @@ def test_the_build_verdict_is_on_disk_before_the_key_is_released(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The ordering the whole release depends on (#548 review).
+    """The build verdict is on disk before the key is released.
 
-    A released simulation whose stamp fails to validate asks the build
-    envelope whether the build exists. `No envelope` is `inconclusive`,
-    and inconclusive RECOMPILES — under the simulation reservation, into
-    the shared directory every sibling element is pointed at, several
-    elements at once. So the envelope has to name the key before its
-    dependency is cleared, not when the whole job ends.
+    A released simulation whose stamp fails to validate reads the build envelope; a missing envelope is `inconclusive`, which recompiles under the simulation reservation. The envelope must name the key before its dependency is cleared.
     """
     _two_key_build_job(stub_runner, failing=None)
     envelope_path = minimal_project / "build-result-1.json"
     seen = []
 
     def release(job_ids, *, cluster=None, cwd=None, budget_s=None):
-        # What a released sim would read, read at the moment it is released.
+        # What a released sim would read, at the moment of release.
         seen.append(load_build_result_json(envelope_path))
         return slurm_module.ReleaseOutcome(list(job_ids), [], [], None)
 
@@ -3381,7 +3155,7 @@ def test_the_build_verdict_is_on_disk_before_the_key_is_released(
     )
     assert result.exit_code == 0, result.output
 
-    # The first key's release already had its own verdict, and only its own.
+    # The first key's release has only its own verdict.
     assert seen[0] is not None, "no envelope existed when the first key released"
     assert seen[0]["built"] == ["basic"]
     assert seen[0]["partial"] is True
@@ -3390,12 +3164,11 @@ def test_the_build_verdict_is_on_disk_before_the_key_is_released(
     assert seen[1]["built"] == ["basic", "extra"]
     assert seen[1]["partial"] is True
 
-    # And the envelope the head finally reads is complete.
+    # The envelope the head finally reads is complete.
     final = load_build_result_json(envelope_path)
     assert final["partial"] is False
     assert final["built"] == ["basic", "extra"]
-    # One record per config, and each built exactly once — the partial
-    # writes must not duplicate what the tail writes.
+    # One record per config, each built once; partial writes must not duplicate what the tail writes.
     assert [entry["test"] for entry in final["builds"]] == ["basic", "extra"]
 
 
@@ -3404,10 +3177,9 @@ def test_a_failed_key_is_named_in_the_partial_envelope_too(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """It is not released, but its verdict still lands as it happens.
+    """A failed key is named in the partial envelope too.
 
-    The failure detail (#498) is what a later-released sibling on the same
-    key would read, and the head reads it for the summary row.
+    It is not released, but its failure detail is what a later sibling on the same key and the head's summary row read.
     """
     _two_key_build_job(stub_runner, failing="extra")
     envelope_path = minimal_project / "build-result-1.json"
@@ -3444,11 +3216,9 @@ def test_a_build_job_without_result_json_still_releases(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """No envelope to write is not a reason to hold the key.
+    """A build job without ``--result-json`` still releases.
 
-    A hand-run build job has nowhere to persist a verdict; the release is
-    still correct, and a sim job that cannot read one behaves as it did
-    before any of this existed.
+    There is nowhere to persist a verdict, and a sim job that cannot read one behaves as it does without release.
     """
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
@@ -3477,18 +3247,13 @@ def test_one_release_budget_covers_a_key_that_spans_clusters(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A key on three controllers must not get three times the wait.
+    """One release budget covers a key that spans clusters.
 
-    The budget bounds what a release costs the build job, so it belongs to
-    the key, not to each cluster batch it happens to split into (#548
-    review).
+    The budget bounds the release cost to the build job, so it belongs to the key, not to each cluster batch.
     """
     _two_key_build_job(stub_runner, failing=None)
     calls = []
-    # A clock that only moves when a release is made, so an incidental
-    # `time.monotonic()` elsewhere in the job cannot shift the reading.
-    # 40 s per cluster batch: the first two fit in the key's 60 s, the
-    # third finds it spent.
+    # A clock that moves only when a release is made, immune to incidental `time.monotonic()` calls. 40 s per batch: two fit in the key's 60 s and the third finds it spent.
     now = [0.0]
     monkeypatch.setattr(rtl_buddy_module.time, "monotonic", lambda: now[0])
 
@@ -3527,8 +3292,7 @@ def test_one_release_budget_covers_a_key_that_spans_clusters(
         ],
     )
     assert result.exit_code == 0, result.output
-    # Each batch is given what is LEFT of the key's budget, and the third
-    # is never attempted because there is none.
+    # Each batch gets what is left of the key's budget; the third is never attempted.
     assert [(call["cluster"], call["budget_s"]) for call in calls] == [
         ("east", pytest.approx(60.0)),
         ("west", pytest.approx(20.0)),
@@ -3547,14 +3311,9 @@ def test_a_key_whose_verdict_did_not_reach_disk_is_not_released(
     stub_runner: type[_StubTestRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """No record, no release (#548 review).
+    """A key whose verdict did not reach disk is not released.
 
-    Releasing a key whose build record could not be written starts jobs
-    that cannot read the one file saying the build exists — so a stamp
-    that fails to validate sends them into a recompile under the
-    simulation reservation, which is the outcome the record exists to
-    prevent. The key keeps its gate; the next key, whose write lands,
-    still releases.
+    A released job that cannot read the build record may recompile under the simulation reservation. The key keeps its gate and the next key, whose write lands, still releases.
     """
     _two_key_build_job(stub_runner, failing=None)
     calls = _fake_release(monkeypatch)
@@ -3599,12 +3358,10 @@ def test_a_key_whose_verdict_did_not_reach_disk_is_not_released(
     assert result.exit_code == 0, result.output
     assert set(_build_payload(result.output)["built"]) == {"basic", "extra"}
 
-    # The failed key was not released; the next one, whose record landed,
-    # was.
+    # The failed key was not released; the next one, whose record landed, was.
     assert [call["job_ids"] for call in calls] == [["1000_2"]]
 
-    # With --result-json the job logs beside its envelope, not into the
-    # suite log the head owns (#437).
+    # With --result-json the job logs beside its envelope, not into the head's suite log.
     records = _records(job_log_path(envelope_path))
     skipped = [r for r in records if r.get("event") == "dispatch.release_skipped"]
     assert len(skipped) == 1, skipped
@@ -3628,9 +3385,7 @@ def test_the_release_skipped_event_has_a_dedicated_human_message():
     )
     assert "obj_dir_ab" in message and "No space left" in message
     assert "2 simulation job(s)" in message
-    # The jobs were NOT released: they keep the gate and start when the
-    # build job ends, which is also why nothing can recompile under a
-    # simulation reservation here (#548 review).
+    # The jobs were not released: they keep the gate and start when the build job ends.
     assert "NOT released" in message
     assert "start when it ends" in message
     assert "would recompile" not in message

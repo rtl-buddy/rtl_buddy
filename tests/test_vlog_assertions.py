@@ -3,9 +3,7 @@
 from rtl_buddy.tools import vlog_post, vlog_sim as vlog_sim_module
 
 
-# ---------------------------------------------------------------------------
 # count_assertion_failures
-# ---------------------------------------------------------------------------
 
 
 def test_count_assertion_failures_matches_verilator_error_lines(tmp_path):
@@ -21,10 +19,7 @@ def test_count_assertion_failures_matches_verilator_error_lines(tmp_path):
 
 
 def test_count_assertion_failures_matches_timing_prefixed_lines(tmp_path):
-    # Under Verilator's `--timing` flow, assertion-failure lines are prefixed
-    # with the sim time, e.g. `[500] %Error: ...`. The follow-up `$stop` line
-    # starts with a bare `%Error` but lacks "Assertion failed", so only the
-    # firing should be counted.
+    # Under `--timing`, failure lines carry a sim-time prefix such as `[500] %Error: ...`; the follow-up `$stop` line lacks "Assertion failed" and must not count.
     log = tmp_path / "test.log"
     log.write_text(
         "[500] %Error: tb_top.sv:32: Assertion failed in tb_top.CNT_MONOTONE: "
@@ -53,9 +48,7 @@ def test_count_assertion_failures_reads_both_log_and_err(tmp_path):
     assert vlog_post.count_assertion_failures(str(log), str(err)) == 3
 
 
-# ---------------------------------------------------------------------------
 # VlogPost result-dict assertion annotation
-# ---------------------------------------------------------------------------
 
 
 def test_vlog_post_skips_assertions_when_disabled(tmp_path):
@@ -83,9 +76,7 @@ def test_vlog_post_reports_zero_firings_when_enabled_and_pass(tmp_path):
 
 def test_vlog_post_flips_pass_to_fail_when_assertion_fires(tmp_path):
     log = tmp_path / "test.log"
-    # Verilator usually aborts before PASS is printed, but if a testbench
-    # wrapper swallows the abort and prints PASS, we should still surface
-    # the firing as a FAIL.
+    # A testbench wrapper may swallow the abort and print PASS; the firing must still surface as FAIL.
     log.write_text(
         "PASS smoke\n%Error: dut.sv:7: Assertion failed in top.dut: 'cond'\n"
     )
@@ -102,9 +93,7 @@ def test_vlog_post_flips_pass_to_fail_when_assertion_fires(tmp_path):
 
 
 def test_vlog_post_flips_na_to_fail_on_timing_abort(tmp_path):
-    # The issue-229 scenario: under `--timing`, a fired SVA aborts the sim
-    # before any PASS/FAIL marker is printed. Without the assertion override
-    # this would report NA; the timing-prefixed firing must flip it to FAIL.
+    # Under `--timing` a fired SVA aborts before any PASS/FAIL marker; the timing-prefixed firing must flip NA to FAIL.
     log = tmp_path / "test.log"
     log.write_text(
         "[500] %Error: tb_top.sv:32: Assertion failed in tb_top.CNT_MONOTONE: "
@@ -124,9 +113,7 @@ def test_vlog_post_flips_na_to_fail_on_timing_abort(tmp_path):
     assert "SVA assertion failure" in results["desc"]
 
 
-# ---------------------------------------------------------------------------
 # VlogSim._get_verilator_assertion_flags
-# ---------------------------------------------------------------------------
 
 
 class _DummyBuilder:
@@ -246,8 +233,7 @@ def test_assertion_flags_injected_for_verilator(tmp_path):
 
 def test_assertion_flags_idempotent(tmp_path):
     sim = _make_sim(tmp_path, assertions=True, family="verilator")
-    # Existing builder opts already include --coverage-user; we should not
-    # duplicate it but we still add --assert.
+    # --coverage-user is already in the builder opts and must not be duplicated; --assert is still added.
     flags = sim._get_verilator_assertion_flags(["--coverage-line", "--coverage-user"])
     assert "--assert" in flags
     assert "--coverage-user" not in flags

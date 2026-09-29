@@ -1,10 +1,6 @@
-"""
-Unit tests for per-cover-point (user coverage) extraction from raw databases.
+"""Unit tests for per-cover-point (user coverage) extraction from raw coverage databases.
 
-A labeled SVA `cover property` lands in Verilator's `coverage.dat` as a
-`t=user` record carrying the label in its comment key. The LCOV export folds
-those into anonymous `DA:` records, so the raw database is the only place the
-names survive (#367).
+A labeled SVA `cover property` is a `t=user` record in Verilator's `coverage.dat` with the label in its comment key. The LCOV export folds these into anonymous `DA:` records, so the raw database is the only source of the names.
 """
 
 from rtl_buddy.tools.vlog_cov import VlogCov, aggregate_cover_records
@@ -25,11 +21,7 @@ def _record(
     count=13,
     type_="user",
 ):
-    """Build one raw `C '...' <count>` record in Verilator's key encoding.
-
-    Key set and ordering match what Verilator 5.049 actually writes, `n`
-    (column) included — the shape verified against a real `coverage.dat`.
-    """
+    """Build one raw `C '...' <count>` record in the key encoding Verilator 5.049 writes."""
     if hier is None:
         hier = f"tb_top.{name}"
     keys = [
@@ -120,12 +112,7 @@ def test_functional_ratio_still_derives_from_the_same_records(tmp_path):
 
 
 def test_aggregate_sums_hits_for_one_point_across_tests():
-    """The cross-test fold: the same point seen in two per-test databases.
-
-    Within a single database Verilator has already merged a point's instances
-    (see the verbatim-database tests below); this fold is what combines one
-    test's counts with another's.
-    """
+    """Fold the same point seen in two per-test databases; Verilator has already merged instances within one database."""
     records = [
         {"name": "C1", "file": "tb.sv", "line": 10, "module": "m", "hits": 3},
         {"name": "C1", "file": "tb.sv", "line": 10, "module": "m", "hits": 4},
@@ -164,12 +151,9 @@ def test_aggregate_of_nothing_is_none():
     assert aggregate_cover_records(None) is None
 
 
-# --- Verbatim databases -------------------------------------------------
+# Verbatim databases
 #
-# The records below are copied byte-for-byte out of `coverage.dat` files
-# written by Verilator 5.049 for a real `cover property` design, rather than
-# reconstructed from the format description. They pin behaviour that only
-# shows up against the real writer.
+# Records copied byte-for-byte from `coverage.dat` files written by Verilator 5.049.
 
 _REAL_DAT = (
     "# SystemC::Coverage-3\n"
@@ -179,14 +163,12 @@ _REAL_DAT = (
     "\x01o\x02APB_IF_READ\x01h\x02tb_top.APB_IF_READ' 2\n"
     "C '\x01f\x02tb_top.sv\x01l\x0216\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top"
     "\x01o\x02NEVER_HIT\x01h\x02tb_top.NEVER_HIT' 0\n"
-    # Two `sub` instances: Verilator merged them into one record, wildcarding
-    # the differing hierarchy component and summing the counts (3 + 2).
+    # Two `sub` instances merged into one record: the differing hierarchy component is wildcarded and counts are summed (3 + 2).
     "C '\x01f\x02tb_top.sv\x01l\x022\x01n\x0214\x01t\x02user\x01page\x02v_user/sub"
     "\x01o\x02SUB_COVER\x01h\x02tb_top.u*.SUB_COVER' 5\n"
 )
 
-# Same cover property `include`d into two modules. Verilator keys these apart
-# by `page`, so identical file/line/name arrive as two records.
+# The same cover property `include`d into two modules arrives as two records keyed apart by `page`.
 _REAL_SHARED_INCLUDE_DAT = (
     "# SystemC::Coverage-3\n"
     "C '\x01f\x02chk.svh\x01l\x021\x01n\x0213\x01t\x02user\x01page\x02v_user/modA"
@@ -242,7 +224,7 @@ def test_real_database_parses_every_point(tmp_path):
 
 
 def test_real_database_list_matches_the_functional_denominator(tmp_path):
-    """Verilator pre-merges instances, so the two views agree point-for-point."""
+    """Verilator pre-merges instances, so both views agree point-for-point."""
     cov = _make_cov()
     raw = _write_raw(tmp_path, _REAL_DAT)
 
@@ -254,11 +236,7 @@ def test_real_database_list_matches_the_functional_denominator(tmp_path):
 
 
 def test_cross_test_fold_matches_verilator_coverage_merge(tmp_path):
-    """Folding two real per-test databases reproduces `verilator_coverage --write`.
-
-    The expected counts are what the tool itself produced when merging these
-    two databases: 3+1, 2+0, 0+0, 5+1.
-    """
+    """Folding two real per-test databases reproduces `verilator_coverage --write` (3+1, 2+0, 0+0, 5+1)."""
     run_b = (
         _REAL_DAT.replace("APB_IF_WRITE' 3", "APB_IF_WRITE' 1")
         .replace("APB_IF_READ' 2", "APB_IF_READ' 0")
@@ -305,13 +283,7 @@ def test_cross_test_fold_matches_verilator_coverage_merge(tmp_path):
 
 
 def test_shared_include_stays_split_per_module(tmp_path):
-    """One label compiled into two modules stays two entries, one per module.
-
-    Verilator keeps these apart by `page` and so does the fold, because
-    combining them would hide "hit in modA, never in modB" behind a single
-    nonzero count — information a consumer cannot recover. Folding by `name`
-    is something a consumer can do itself.
-    """
+    """One label compiled into two modules stays two entries, one per module."""
     cov = _make_cov()
     raw = _write_raw(tmp_path, _REAL_SHARED_INCLUDE_DAT)
 
@@ -336,7 +308,7 @@ def test_shared_include_stays_split_per_module(tmp_path):
 
 
 def test_one_module_covered_and_another_not_stays_visible(tmp_path):
-    """The case the split exists for: a per-module hole must not read as covered."""
+    """A module hole must not read as covered when another module hits the same label."""
     cov = _make_cov()
     raw = _write_raw(
         tmp_path, _REAL_SHARED_INCLUDE_DAT.replace("SHARED_CHK' 2", "SHARED_CHK' 0")
@@ -345,12 +317,12 @@ def test_one_module_covered_and_another_not_stays_visible(tmp_path):
     covers = aggregate_cover_records(cov.parse_user_cover_records(raw))
 
     assert [(c["module"], c["hits"]) for c in covers] == [("modA", 3), ("modB", 0)]
-    # And a consumer folding by label to union semantics still can.
+    # A consumer can still fold by label.
     assert sum(c["hits"] for c in covers if c["name"] == "SHARED_CHK") == 3
 
 
 def test_covers_length_matches_functional_denominator_in_every_case(tmp_path):
-    """With `module` in the key the two views agree — no documented exception."""
+    """With `module` in the key, the covers list and the functional denominator agree."""
     cov = _make_cov()
     for i, text in enumerate((_REAL_DAT, _REAL_SHARED_INCLUDE_DAT)):
         raw = _write_raw(tmp_path, text, name=f"run{i}.dat")
@@ -363,11 +335,7 @@ def test_covers_length_matches_functional_denominator_in_every_case(tmp_path):
 
 
 def test_raw_database_is_read_once_per_collect(tmp_path, monkeypatch):
-    """`collect()` must not scan `coverage.dat` twice to get ratio + covers.
-
-    The scalar and the list come from the same parse; `coverage.dat` is the one
-    input here that grows with design size.
-    """
+    """`collect()` parses `coverage.dat` once for both the ratio and the covers."""
     raw = _write_raw(tmp_path, _REAL_DAT)
     cov = _make_cov()
 
@@ -404,18 +372,16 @@ def test_functional_ratio_can_be_derived_from_prepared_records(tmp_path):
     raw = _write_raw(tmp_path, _REAL_DAT)
     records = cov.parse_user_cover_records(raw)
 
-    # Passing records avoids touching the file at all; a bogus path proves it.
+    # A bogus path proves the file is not touched.
     assert (
         cov._parse_verilator_metric(
             "/nonexistent/coverage.dat", "functional", user_records=records
         )
         == 0.75
     )
-    # Same ratio as re-reading the database, so threading records through the
-    # call changes nothing about the number.
+    # Same ratio as re-reading the database.
     assert cov._parse_raw_user_metric(raw) == 0.75
     assert cov._ratio_from_user_records(records) == 0.75
-    # An empty parse still yields no ratio, which is what lets the caller fall
-    # back to the annotate path on Verilator versions with a broken summary.
+    # An empty parse yields no ratio, so the caller falls back to the annotate path.
     assert cov._ratio_from_user_records(None) is None
     assert cov._ratio_from_user_records([]) is None

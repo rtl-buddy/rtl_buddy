@@ -1,4 +1,4 @@
-"""Tests for synthesis flow: config, Yosys backend, and filelist strip fix."""
+"""Tests for the synthesis flow: config, Yosys and OpenROAD backends, and the synth gates."""
 
 import hashlib
 import logging
@@ -27,9 +27,7 @@ from rtl_buddy.tools.synth_yosys import YosysSynth
 from rtl_buddy.tools.vlog_filelist import VlogFilelist
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _tool_cfg(name="yosys", exe="yosys", synth_args="", abc_args=""):
@@ -93,9 +91,7 @@ def _make_yosys(tmp_path, synth_cfg=None, tool_cfg=None, root_cfg=None):
     )
 
 
-# ---------------------------------------------------------------------------
 # SynthToolConfig
-# ---------------------------------------------------------------------------
 
 
 def test_synth_tool_config_returns_base_opts():
@@ -116,7 +112,7 @@ def test_synth_tool_config_partial_override_keeps_unset_base():
     cfg = _tool_cfg(synth_args="-flatten", abc_args="-O2")
     opts = cfg.get_opts({"synth_args": "-nordff"})
     assert opts.synth_args == "-nordff"
-    assert opts.abc_args == "-O2"  # unchanged
+    assert opts.abc_args == "-O2"
 
 
 def test_synth_tool_config_none_override_returns_base():
@@ -203,7 +199,7 @@ def test_synth_tool_config_best_effort_hierarchy_is_a_known_override(caplog):
 
 
 def test_synth_tool_config_best_effort_hierarchy_non_bool_raises():
-    """A quoted "true" is a str, which is truthy: rejected, not applied."""
+    """A quoted "true" is a truthy str and is rejected, not applied."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     cfg = _tool_cfg()
@@ -212,9 +208,7 @@ def test_synth_tool_config_best_effort_hierarchy_non_bool_raises():
 
 
 def test_synth_tool_config_kebab_override_key_warns(caplog):
-    """`single-unit` under tool_overrides is the kebab-vs-snake trap: it
-    used to be silently ignored. It is still ignored — rejecting it would
-    be a breaking change on a minor bump — but it now says so."""
+    """A kebab-case `single-unit` under tool_overrides is ignored with a warning, not rejected."""
     cfg = _tool_cfg()
     with caplog.at_level("WARNING"):
         opts = cfg.get_opts({"single-unit": True})
@@ -233,7 +227,7 @@ def test_synth_tool_config_misspelled_override_key_warns(caplog):
 
 
 def test_synth_tool_config_unknown_override_keeps_known_keys(caplog):
-    """One bad key must not discard the good ones in the same block."""
+    """One bad key does not discard the good ones in the same block."""
     cfg = _tool_cfg(synth_args="-flatten")
     with caplog.at_level("WARNING"):
         opts = cfg.get_opts({"synth_args": "-nordff", "nonsense": 1})
@@ -259,8 +253,7 @@ def test_synth_tool_config_known_override_is_quiet(caplog):
 
 
 def test_synth_tool_config_openroad_strategy_override_still_accepted():
-    """SynthToolConfig is shared by the yosys and openroad entries, so the
-    accepted-key set must cover both tools' knobs."""
+    """SynthToolConfig is shared by the yosys and openroad entries, so the accepted keys cover both tools' knobs."""
     cfg = _tool_cfg(name="openroad", exe="openroad")
     assert cfg.get_opts({"strategy": "TIMING"}).strategy == "TIMING"
 
@@ -274,9 +267,7 @@ def test_synth_tool_config_single_unit_non_bool_raises():
 
 
 def test_synth_tool_config_single_unit_null_raises():
-    """`single_unit:` with an empty YAML value deserialises to None —
-    fatal rather than falling through to the base value, because the
-    author plainly meant to set something."""
+    """`single_unit:` with an empty YAML value (None) is fatal, not a fall-through to the base value."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     cfg = _tool_cfg()
@@ -287,8 +278,7 @@ def test_synth_tool_config_single_unit_null_raises():
 
 
 def test_synth_tool_config_non_mapping_override_block_raises():
-    """`tool_overrides: {yosys: "slang"}` used to die on an AttributeError
-    from `overrides.get`; name the file and the shape instead."""
+    """A non-mapping `tool_overrides.yosys` block raises an error naming the file and the expected shape."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     cfg = _tool_cfg()
@@ -296,9 +286,7 @@ def test_synth_tool_config_non_mapping_override_block_raises():
         cfg.get_opts("slang")
 
 
-# ---------------------------------------------------------------------------
 # SynthConfig
-# ---------------------------------------------------------------------------
 
 
 def test_synth_config_top_is_model_name():
@@ -320,7 +308,7 @@ def test_synth_config_reglvl_dict_tool_specific():
     cfg = _make_synth_cfg(reglvl={"yosys": 100, "dc": 200, "default": 50})
     assert cfg.get_reglvl("yosys") == 100
     assert cfg.get_reglvl("dc") == 200
-    assert cfg.get_reglvl("quartus") == 50  # falls back to default
+    assert cfg.get_reglvl("quartus") == 50
 
 
 def test_synth_config_tool_overrides_for_matching_tool():
@@ -338,9 +326,7 @@ def test_synth_config_tool_overrides_none():
     assert cfg.get_tool_overrides_for("yosys") is None
 
 
-# ---------------------------------------------------------------------------
-# SynthSuiteConfig — YAML loading
-# ---------------------------------------------------------------------------
+# SynthSuiteConfig YAML loading
 
 _SUITE_YAML = dedent("""\
     rtl-buddy-filetype: synth_config
@@ -407,9 +393,7 @@ def test_synth_suite_config_params_and_defines_loaded(tmp_path):
 
 
 def test_synth_suite_config_duplicate_synthesis_raises(tmp_path):
-    """Two syntheses with the same name in one synth.yaml is a hard
-    error — the dict-comprehension in SynthSuiteConfig.__init__
-    would silently overwrite the first one otherwise."""
+    """Two syntheses with the same name in one synth.yaml are a hard error."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     models_yaml = tmp_path / "models.yaml"
@@ -446,9 +430,7 @@ def test_synth_suite_config_missing_name_raises(tmp_path):
         cfg.get_syntheses("nonexistent")
 
 
-# ---------------------------------------------------------------------------
-# SynthRegConfig — YAML loading
-# ---------------------------------------------------------------------------
+# SynthRegConfig YAML loading
 
 _REG_YAML = dedent("""\
     rtl-buddy-filetype: synth_reg_config
@@ -526,9 +508,7 @@ def test_synth_reg_config_preserves_single_unit_override(tmp_path):
     assert synth_cfg.get_tool_overrides_for("yosys")["single_unit"] is True
 
 
-# ---------------------------------------------------------------------------
 # SynthResults
-# ---------------------------------------------------------------------------
 
 
 def test_synth_pass_results_is_pass():
@@ -547,9 +527,7 @@ def test_synth_skip_results_is_pass():
     assert SynthSkipResults("r", desc="skipped").is_pass()
 
 
-# ---------------------------------------------------------------------------
-# YosysSynth — artefact paths
-# ---------------------------------------------------------------------------
+# YosysSynth artefact paths
 
 
 def test_yosys_synth_artefact_dir_created(tmp_path):
@@ -558,9 +536,7 @@ def test_yosys_synth_artefact_dir_created(tmp_path):
     assert Path(ys.artefact_dir).name == "test_synth"
 
 
-# ---------------------------------------------------------------------------
-# YosysSynth — _source_files_from_filelist
-# ---------------------------------------------------------------------------
+# YosysSynth _source_files_from_filelist
 
 
 def test_source_files_strips_v_prefix(tmp_path):
@@ -615,10 +591,7 @@ def test_source_files_resolves_relative_paths(tmp_path):
 
 
 def test_filelist_with_incdir_does_not_leak_directory(tmp_path):
-    # Regression: rtl_buddy#69 — `+incdir+<path>` in the model filelist
-    # leaked into the generated synth.f as a bare directory path because
-    # `strip=True` removed the option prefix, then
-    # `_source_files_from_filelist` couldn't tell it from a source file.
+    # `+incdir+<path>` in the model filelist must not leak into synth.f as a bare directory that looks like a source file.
     sv = tmp_path / "top.sv"
     sv.write_text("")
     sub_f = tmp_path / "src.f"
@@ -639,9 +612,7 @@ def test_filelist_with_incdir_does_not_leak_directory(tmp_path):
     )
 
 
-# ---------------------------------------------------------------------------
-# YosysSynth — _write_script
-# ---------------------------------------------------------------------------
+# YosysSynth _write_script
 
 
 def test_write_script_basic(tmp_path):
@@ -660,10 +631,7 @@ def test_write_script_basic(tmp_path):
 
 
 def test_write_script_strips_formal_cells_after_synth(tmp_path):
-    """Formal cells ($assert/$assume/$cover) from unguarded immediate
-    assertions must be stripped after synth and before the netlist is
-    written — structural Verilog readers (OpenROAD/OpenSTA pnr/power
-    `read_verilog`) reject netlists that carry them."""
+    """Formal cells ($assert/$assume/$cover) are stripped after synth and before the netlist is written, because structural `read_verilog` in OpenROAD/OpenSTA rejects them."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -710,7 +678,7 @@ def test_write_script_no_abc_when_empty(tmp_path):
 
     ys = _make_yosys(tmp_path, tool_cfg=_tool_cfg(abc_args=""))
     script = Path(ys._write_script(str(fl))).read_text()
-    assert "\nabc " not in script  # abc as a standalone command line
+    assert "\nabc " not in script
 
 
 def test_write_script_params(tmp_path):
@@ -761,9 +729,7 @@ def test_write_script_tool_overrides_applied(tmp_path):
     assert "abc -fast" in script
 
 
-# ---------------------------------------------------------------------------
-# YosysSynth — frontend: slang
-# ---------------------------------------------------------------------------
+# YosysSynth frontend: slang
 
 
 def _slang_tool_cfg(plugin_path: str):
@@ -778,7 +744,7 @@ def _slang_tool_cfg(plugin_path: str):
 
 
 class _FakeRoot:
-    """Minimal stand-in for RootConfig.get_project_rootdir() in tests."""
+    """Minimal stand-in for RootConfig.get_project_rootdir()."""
 
     def __init__(self, rootdir: str):
         self._rootdir = rootdir
@@ -805,7 +771,7 @@ def test_write_script_frontend_slang_emits_plugin_and_read_slang(tmp_path):
     assert f"plugin -i {plugin}" in script
     assert "read_slang --std 1800-2017 --top my_top" in script
     assert f"{sv}" in script
-    # Legacy verilog frontend must not be emitted.
+    # The legacy verilog frontend is not emitted.
     assert "read_verilog -sv -defer" not in script
 
 
@@ -884,7 +850,7 @@ def test_write_script_frontend_slang_missing_plugin_path_raises(tmp_path, monkey
         opts=SynthToolOptsFile(frontend="slang", plugin_path=""),
     )
     ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
-    # The error must name both configuration channels.
+    # The error names both configuration channels.
     with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
         ys._write_script(str(fl))
     with pytest.raises(FatalRtlBuddyError, match=SLANG_PLUGIN_ENV):
@@ -959,8 +925,7 @@ def test_write_script_frontend_unknown_raises(tmp_path):
 
 
 def test_write_script_default_frontend_is_verilog(tmp_path):
-    """Regression guard: existing root_config.yaml without a frontend
-    field continues to use read_verilog -sv -defer."""
+    """Without a frontend field, root_config.yaml uses `read_verilog -sv -defer`."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -974,10 +939,7 @@ def test_write_script_default_frontend_is_verilog(tmp_path):
 
 
 def test_write_script_explicit_frontend_verilog(tmp_path):
-    """``frontend: "verilog"`` explicitly set must produce the same
-    output as the default. Guards against future default flips that
-    would silently change behavior for projects that pinned to the
-    explicit value."""
+    """``frontend: "verilog"`` produces the same output as the default."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -996,11 +958,10 @@ def test_write_script_explicit_frontend_verilog(tmp_path):
 
 
 def test_write_script_frontend_slang_quotes_path_with_spaces(tmp_path):
-    """Source paths containing spaces must be shell-quoted on the
-    read_slang line, otherwise the whole elaboration corrupts (one
-    line per source on the verilog path; one line for ALL sources
-    on the slang path → unquoted space breaks slang elaboration
-    entirely). Plugin path also quoted."""
+    """Source paths with spaces are shell-quoted on the read_slang line, as is the plugin path.
+
+    The slang path reads all sources on one line, so an unquoted space breaks elaboration.
+    """
     spacey_dir = tmp_path / "dir with spaces"
     spacey_dir.mkdir()
     sv = spacey_dir / "top.sv"
@@ -1019,19 +980,15 @@ def test_write_script_frontend_slang_quotes_path_with_spaces(tmp_path):
     )
     ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
     script = Path(ys._write_script(str(fl))).read_text()
-    # The literal unquoted path must NOT appear (would tokenise).
+    # The unquoted path must not appear.
     assert f"read_slang --std 1800-2017 --top my_module {sv}" not in script
-    # Both source and plugin path must be present in *quoted* form
-    # — shlex.quote uses single quotes for paths with spaces.
+    # Source and plugin paths appear in shlex.quote form (single quotes).
     assert f"'{sv}'" in script
     assert f"'{plugin}'" in script
 
 
 def test_write_script_frontend_slang_quotes_define_value_with_spaces(tmp_path):
-    """Define values containing spaces (uncommon but possible — e.g.
-    a multi-token macro expansion) must be quoted on the read_slang
-    line. Same correctness invariant as path quoting; missed during
-    the original implementation."""
+    """Define values with spaces are quoted on the read_slang line."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -1052,16 +1009,12 @@ def test_write_script_frontend_slang_quotes_define_value_with_spaces(tmp_path):
         synth_cfg=_make_synth_cfg(defines={"MULTI": "a b c"}),
     )
     script = Path(ys._write_script(str(fl))).read_text()
-    # Quoted form: -DMULTI='a b c' (shlex.quote single-quotes anything
-    # that needs escaping). Unquoted -DMULTI=a b c would be parsed as
-    # three tokens by Yosys.
+    # Quoted: -DMULTI='a b c'. Unquoted, Yosys would parse three tokens.
     assert "-DMULTI='a b c'" in script
 
 
 def test_write_script_frontend_slang_whitespace_only_plugin_path_raises(tmp_path):
-    """Whitespace-only plugin-path must raise the same FatalRtlBuddyError
-    as empty string — otherwise we'd build a `plugin -i '   '` line
-    that fails inscrutably inside Yosys."""
+    """A whitespace-only plugin path raises the same FatalRtlBuddyError as an empty one."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -1088,7 +1041,7 @@ def test_tool_overrides_can_flip_frontend_to_slang(tmp_path):
     plugin = tmp_path / "slang.so"
     plugin.write_text("")
 
-    # Tool config defaults to verilog; per-block override flips to slang.
+    # The tool config defaults to verilog; the per-block override flips to slang.
     ys = _make_yosys(
         tmp_path,
         synth_cfg=_make_synth_cfg(
@@ -1132,8 +1085,7 @@ def test_write_script_slang_single_unit_from_tool_opts(tmp_path):
 
 
 def test_write_script_slang_single_unit_precedes_define_and_param_flags(tmp_path):
-    """Flag order is part of the emitted command's contract: --single-unit
-    sits between --top and the -D/-G flags."""
+    """--single-unit sits between --top and the -D/-G flags."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -1181,7 +1133,7 @@ def test_write_script_slang_single_unit_via_tool_overrides(tmp_path):
 
 
 def test_write_script_slang_omits_single_unit_by_default(tmp_path):
-    """Default behaviour is byte-identical to before the option existed."""
+    """Without the option, --single-unit is omitted."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -1259,8 +1211,7 @@ def test_write_script_slang_best_effort_hierarchy_from_tool_opts(tmp_path):
 
 
 def test_write_script_slang_best_effort_hierarchy_follows_single_unit(tmp_path):
-    """Flag order is part of the emitted command's contract: the hierarchy
-    flag sits right after --single-unit and before the -D/-G flags."""
+    """The hierarchy flag sits right after --single-unit and before the -D/-G flags."""
     from rtl_buddy.config.synth import SynthToolOptsFile
 
     sv = tmp_path / "top.sv"
@@ -1325,7 +1276,7 @@ def test_write_script_slang_best_effort_hierarchy_via_tool_overrides(tmp_path):
 
 
 def test_write_script_slang_omits_best_effort_hierarchy_by_default(tmp_path):
-    """Default behaviour is byte-identical to before the option existed."""
+    """Without the option, the hierarchy flag is omitted."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -1369,9 +1320,7 @@ def test_write_script_best_effort_hierarchy_with_verilog_frontend_warns(
     assert "best_effort_hierarchy" in caplog.text and "slang" in caplog.text
 
 
-# ---------------------------------------------------------------------------
-# YosysSynth — run() pass/fail detection
-# ---------------------------------------------------------------------------
+# YosysSynth run() pass/fail detection
 
 
 def _fake_managed_process(returncode=0, write_log=None, calls=None):
@@ -1525,9 +1474,7 @@ def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
     assert calls[0]["stderr"] == synth_yosys_module.subprocess.STDOUT
 
 
-# ---------------------------------------------------------------------------
-# YosysSynth — library-mapped flow
-# ---------------------------------------------------------------------------
+# YosysSynth library-mapped flow
 
 
 class _FakePlatformCfg:
@@ -1581,8 +1528,7 @@ def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
 
 
 def test_write_script_passes_pdk_dont_use_cells_to_dfflibmap_and_abc(tmp_path):
-    """`cfg-pdks.dont-use-cells` is one list read by both flows: P&R emits
-    `set_dont_use`, Yosys excludes the same patterns from tech mapping."""
+    """`cfg-pdks.dont-use-cells` is one list: P&R emits `set_dont_use` and Yosys excludes the same patterns from tech mapping."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -1649,9 +1595,7 @@ def test_resolve_lib_paths_unknown_name_raises(tmp_path):
         ys._resolve_lib_paths()
 
 
-# ---------------------------------------------------------------------------
 # SDC clock period parsing
-# ---------------------------------------------------------------------------
 
 
 def test_parse_clock_period_ps_basic(tmp_path, constraint_backend):
@@ -1692,8 +1636,7 @@ def test_parse_clock_period_ps_missing_file_returns_none(tmp_path, constraint_ba
     assert ys._parse_clock_period_ps(str(tmp_path / "missing.sdc")) is None
 
 
-# The shapes the old per-line regex mis-read as "no clock" (#642). Each one is
-# legal SDC; before the tokenizer they left abc running unconstrained.
+# Legal SDC shapes that a per-line regex would read as "no clock".
 
 
 def test_parse_clock_period_ps_line_continuation(tmp_path, constraint_backend):
@@ -1733,8 +1676,7 @@ def test_parse_clock_period_ps_hash_inside_braces_is_not_a_comment(
 def test_parse_clock_period_ps_variable_warns_once_and_is_not_silence(
     tmp_path, tokenizer_backend, caplog
 ):
-    # `-period $p` cannot be evaluated without an interp. Saying so beats
-    # counting it as "no create_clock in the file".
+    # `-period $p` cannot be evaluated without an interp and is reported as unevaluated, not as "no create_clock".
     sdc = tmp_path / "c.sdc"
     sdc.write_text(
         "set p 10\n"
@@ -1751,7 +1693,7 @@ def test_parse_clock_period_ps_variable_warns_once_and_is_not_silence(
     ]
     # one per create_clock that needs evaluating ...
     assert [r.rtl_fields["line"] for r in unevaluated] == [2, 3]
-    # ... but exactly one "this file uses Tcl we do not evaluate" per file
+    # ... but one "uses Tcl we do not evaluate" warning per file
     skipped = [
         r
         for r in caplog.records
@@ -1801,11 +1743,9 @@ def test_parse_clock_period_ps_mixes_evaluated_and_unevaluated(
 def test_parse_clock_period_ps_evaluates_a_variable_period(
     tmp_path, constraint_backend, caplog, request
 ):
-    """`set p 10` + `[expr {$p*2}]` is a 20 ns clock — with an interp (#641).
+    """`set p 10` with `[expr {$p*2}]` is a 20 ns clock when an interp is available.
 
-    Without one the tokenizer can only say it did not evaluate the period,
-    which is what the xfail below pins: the fallback is expected to miss
-    this, and must never be *silently* missing it.
+    The tokenizer fallback cannot evaluate it, which the xfail below pins; it must report that instead of missing it silently.
     """
     if constraint_backend == "tokenizer":
         request.node.add_marker(
@@ -1838,9 +1778,7 @@ def test_parse_clock_period_ps_evaluates_a_variable_period(
 def test_parse_clock_period_ps_unresolvable_collection_is_unevaluated(
     tmp_path, tcl_backend, caplog
 ):
-    # An interp evaluates `$p` and `[expr]`, but a period that comes from a
-    # design query it cannot answer stays unevaluated — and says so rather
-    # than counting as "no create_clock at all".
+    # An interp evaluates `$p` and `[expr]`, but a period from a design query stays unevaluated and is reported as such.
     sdc = tmp_path / "c.sdc"
     sdc.write_text(
         "create_clock -name clk -period [get_property PERIOD] \\\n  [get_ports clk]\n"
@@ -1889,16 +1827,10 @@ def test_write_script_lib_flow_with_sdc_adds_D_flag(tmp_path):
     assert f"abc -liberty {lib} -D 5000" in script
 
 
-# ---------------------------------------------------------------------------
-# Area and cell-count log scrape, anchored to the top module (#559)
-# ---------------------------------------------------------------------------
+# Area and cell-count log scrape, anchored to the top module
 
 
-# Verbatim shape of `stat -liberty` on a hierarchical design (yosys 0.64):
-# one section per module in design order — a submodule first here — and then
-# the `=== design hierarchy ===` roll-up, whose counts and whose `Chip area
-# for top module` line are the only ones that include the submodules. Taking
-# the first `Chip area for module` match reported `sub` as the design's area.
+# Verbatim `stat -liberty` on a hierarchical design (yosys 0.64): one section per module (a submodule first), then a `=== design hierarchy ===` roll-up. Only the roll-up counts and its `Chip area for top module` line include the submodules.
 _HIER_STAT_LOG = dedent("""\
     5. Printing statistics.
 
@@ -1974,22 +1906,21 @@ _FLAT_STAT_LOG = dedent("""\
 
 
 def test_scrape_anchors_the_area_and_cells_to_the_top_module(tmp_path):
-    """The top's roll-up, not whichever module Yosys printed first (#559)."""
+    """The area and cells come from the top's roll-up, not the first module Yosys printed."""
     ys = _make_yosys(tmp_path)
     assert ys._parse_area_um2(_HIER_STAT_LOG, "my_module") == pytest.approx(12.768)
     assert ys._parse_gate_count(_HIER_STAT_LOG, "my_module") == 5
 
 
 def test_scrape_without_a_top_falls_back_to_the_last_match(tmp_path):
-    """Yosys prints the whole-design roll-up last, so the last match is the
-    design's even when the caller cannot name the top."""
+    """Without a top, the last match is used: Yosys prints the whole-design roll-up last."""
     ys = _make_yosys(tmp_path)
     assert ys._parse_area_um2(_HIER_STAT_LOG) == pytest.approx(12.768)
     assert ys._parse_gate_count(_HIER_STAT_LOG) == 5
 
 
 def test_scrape_reads_a_flat_designs_single_section(tmp_path):
-    """A flat design has no roll-up: the top's own section is the design."""
+    """A flat design has no roll-up; the top's own section is the design."""
     ys = _make_yosys(tmp_path)
     assert ys._parse_area_um2(_FLAT_STAT_LOG, "my_module") == pytest.approx(5.586)
     assert ys._parse_gate_count(_FLAT_STAT_LOG, "my_module") == 2
@@ -1998,17 +1929,14 @@ def test_scrape_reads_a_flat_designs_single_section(tmp_path):
 
 
 def test_scrape_of_a_top_absent_from_the_log_falls_back(tmp_path):
-    """An anchor that matches nothing — a renamed parameterised top, a log
-    from another design — is the no-top case rather than a missing answer."""
+    """An anchor that matches nothing (a renamed parameterised top, another design's log) falls back to the no-top case."""
     ys = _make_yosys(tmp_path)
     assert ys._parse_area_um2(_HIER_STAT_LOG, "other_top") == pytest.approx(12.768)
     assert ys._parse_gate_count(_HIER_STAT_LOG, "other_top") == 5
 
 
 def test_scrape_prefers_the_last_stat_report_in_the_log(tmp_path):
-    """`synth` prints a `stat` of its own mid-script, so a flow that flattens
-    leaves a hierarchical report above the flat one the run ends with. What
-    the run wrote out is the last report, not the first."""
+    """The last `stat` report in the log wins: `synth` prints its own mid-script, so a flattening flow has a hierarchical report above the final flat one."""
     ys = _make_yosys(tmp_path)
     log = _HIER_STAT_LOG + _FLAT_STAT_LOG
     assert ys._parse_area_um2(log, "my_module") == pytest.approx(5.586)
@@ -2021,9 +1949,7 @@ def test_scrape_of_a_log_with_no_area_line_is_none(tmp_path):
     assert ys._parse_gate_count("no cells here\n", "my_module") is None
 
 
-# ---------------------------------------------------------------------------
-# VlogFilelist strip=True fix
-# ---------------------------------------------------------------------------
+# VlogFilelist strip=True
 
 
 def _write_models(tmp_path, filelist_entries):
@@ -2066,9 +1992,7 @@ def test_vlog_filelist_strip_false_keeps_option_prefix(tmp_path):
     assert any(ln.startswith("-v ") for ln in lines), f"Expected -v prefix: {lines}"
 
 
-# ---------------------------------------------------------------------------
-# SynthPassResults — tns_ps field
-# ---------------------------------------------------------------------------
+# SynthPassResults tns_ps field
 
 
 def test_synth_pass_results_tns_stored():
@@ -2092,9 +2016,7 @@ def test_synth_pass_results_all_fields():
     assert r.results["tns_ps"] == -100.0
 
 
-# ---------------------------------------------------------------------------
-# SynthToolConfig — strategy opt
-# ---------------------------------------------------------------------------
+# SynthToolConfig strategy option
 
 
 def test_synth_tool_config_strategy_default_empty():
@@ -2117,9 +2039,7 @@ def test_synth_tool_config_strategy_via_override_dict():
     assert opts.strategy == "AREA"
 
 
-# ---------------------------------------------------------------------------
-# SynthPlatformConfig — pdk + corner + lef paths
-# ---------------------------------------------------------------------------
+# SynthPlatformConfig pdk, corner and lef paths
 
 
 def _make_pdk(name, root_cfg_path, *, tech_lef="", macro_lef="", corners=None):
@@ -2169,9 +2089,7 @@ def test_synth_platform_config_lef_paths_from_pdk(tmp_path):
     ]
 
 
-# ---------------------------------------------------------------------------
-# OpenRoadSynth — artefact paths and script generation
-# ---------------------------------------------------------------------------
+# OpenRoadSynth artefact paths and script generation
 
 
 class _FakePlatformCfgWithLef:
@@ -2269,9 +2187,7 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
 
 
 def test_openroad_stages_both_honour_pdk_dont_use_cells(tmp_path):
-    """Stage 1 maps with the exclusions; stage 2 may resynthesize, so it
-    needs `set_dont_use` before any resynthesis — and after `link_design`,
-    since OpenROAD 26Q2 refuses it with no linked network."""
+    """Stage 1 maps with the exclusions; stage 2 may resynthesize, so it needs `set_dont_use` after `link_design` (OpenROAD 26Q2 refuses it with no linked network)."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -2353,10 +2269,7 @@ def test_openroad_script_has_no_dont_use_when_the_pdk_names_none(tmp_path):
 
 
 def test_openroad_yosys_script_strips_formal_cells_after_synth(tmp_path):
-    """Mirror of the YosysSynth test: the OpenROAD backend's stage-1 yosys
-    script must strip formal cells after synth and before the netlist is
-    written — OpenROAD's structural `read_verilog` (stage 2, and pnr/power
-    downstream) rejects netlists that carry them."""
+    """The OpenROAD backend's stage-1 yosys script strips formal cells after synth and before the netlist is written, as the YosysSynth script does."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -2453,8 +2366,7 @@ def _bb_src(tmp_path, module="mymacro", extra_module=None):
 
 
 def _write_filelist(or_synth, src):
-    """The stub writer reads the filelist the Yosys stage generated, which lives
-    in the artefact directory."""
+    """The stub writer reads the filelist the Yosys stage generated in the artefact directory."""
     fl = Path(or_synth._filelist_path())
     fl.parent.mkdir(parents=True, exist_ok=True)
     fl.write_text(f"-v {src}\n")
@@ -2487,8 +2399,7 @@ def test_masters_from_lef_and_liberty_reads_a_split_cell_declaration(tmp_path):
 
 
 def test_masters_from_lef_and_liberty_ignores_lef_cells_in_liberty_position(tmp_path):
-    """A LEF is scanned for MACRO only, so a stray `cell (...)` line in one does
-    not add a name, and vice versa for MACRO lines in a Liberty."""
+    """A LEF is scanned for MACRO only and a Liberty for `cell (...)` only, so stray lines of the other kind add no name."""
     lef = tmp_path / "odd.lef"
     lef.write_text("MACRO realmacro\n  CLASS BLOCK ;\nEND realmacro\n")
     lib = tmp_path / "odd.lib"
@@ -2507,7 +2418,7 @@ def test_masters_from_lef_and_liberty_tolerates_missing_files(tmp_path):
 
 
 def test_blackbox_stub_written_when_no_lef_or_liberty_master(tmp_path):
-    """The original behaviour: without a master, link_design needs the stub."""
+    """Without a LEF or Liberty master, link_design needs the blackbox stub."""
     src = _bb_src(tmp_path)
     or_synth = _make_openroad(
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
@@ -2524,8 +2435,7 @@ def test_blackbox_stub_written_when_no_lef_or_liberty_master(tmp_path):
 
 
 def test_blackbox_stub_dropped_when_lef_supplies_the_master(tmp_path):
-    """A macro whose LEF this script reads must not also be declared in Verilog:
-    the Verilog module shadows the LEF master and the instances vanish (#470)."""
+    """A macro whose LEF the script reads is not also declared in Verilog, since the Verilog module would shadow the LEF master."""
     src = _bb_src(tmp_path)
     or_synth = _make_openroad(
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
@@ -2537,8 +2447,7 @@ def test_blackbox_stub_dropped_when_lef_supplies_the_master(tmp_path):
 
 
 def test_blackbox_stub_keeps_unmastered_modules_in_a_mixed_file(tmp_path):
-    """One file, one mastered blackbox and one real module: drop the first,
-    keep the file for the second."""
+    """In a file with a mastered blackbox and a real module, the first is dropped and the file is kept for the second."""
     src = _bb_src(tmp_path, extra_module="glue")
     or_synth = _make_openroad(
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
@@ -2553,8 +2462,7 @@ def test_blackbox_stub_keeps_unmastered_modules_in_a_mixed_file(tmp_path):
 
 
 def test_or_script_omits_stub_read_for_a_lef_backed_macro(tmp_path):
-    """End to end through the script writer: the read_verilog of the stub is
-    what dropped the macros, so it must not be emitted."""
+    """The script writer omits the stub read_verilog for a LEF-backed macro."""
     src = _bb_src(tmp_path)
     lib = tmp_path / "cells.lib"
     lib.write_text("")
@@ -2602,14 +2510,11 @@ def test_openroad_or_script_timing_strategy_adds_resynth(tmp_path):
     assert "resynth_annealing" in script
 
 
-# ---------------------------------------------------------------------------
-# OpenRoadSynth — frontend pickup from yosys tool config
-# ---------------------------------------------------------------------------
+# OpenRoadSynth frontend pickup from the yosys tool config
 
 
 class _FakeRootCfgORWithYosys:
-    """Variant of _FakeRootCfgOR that exposes a yosys tool config so the
-    elaboration stage can find frontend / plugin-path settings."""
+    """Variant of _FakeRootCfgOR that exposes a yosys tool config so the elaboration stage finds frontend and plugin-path settings."""
 
     def __init__(self, lib_map, lef_map=None, yosys_opts=None):
         self._lib_map = lib_map
@@ -2637,9 +2542,7 @@ class _FakeRootCfgORWithYosys:
 
 
 def test_openroad_yosys_stage_picks_up_yosys_frontend_from_root_cfg(tmp_path):
-    """When `tool: openroad` is selected, the internal Yosys elaboration stage
-    should read frontend / plugin-path from the *yosys* tool config (and
-    tool_overrides.yosys), not from the openroad tool config."""
+    """With `tool: openroad`, the Yosys elaboration stage reads frontend and plugin-path from the yosys tool config and tool_overrides.yosys, not from the openroad tool config."""
     from rtl_buddy.config.synth import SynthToolOptsFile
 
     sv = tmp_path / "top.sv"
@@ -2668,8 +2571,7 @@ def test_openroad_yosys_stage_picks_up_yosys_frontend_from_root_cfg(tmp_path):
 
 
 def test_openroad_yosys_stage_picks_up_yosys_tool_overrides(tmp_path):
-    """A `tool_overrides.yosys` block in synth.yaml should reach the Yosys
-    elaboration stage of the OpenROAD backend (not just `tool: yosys` flows)."""
+    """A `tool_overrides.yosys` block in synth.yaml reaches the OpenROAD backend's Yosys elaboration stage."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -2681,10 +2583,10 @@ def test_openroad_yosys_stage_picks_up_yosys_tool_overrides(tmp_path):
 
     from rtl_buddy.config.synth import SynthToolOptsFile
 
-    # yosys tool defaults to verilog frontend; per-block override flips to slang.
+    # The yosys tool defaults to the verilog frontend; the per-block override flips to slang.
     root_cfg = _FakeRootCfgORWithYosys(
         lib_map={"mylib": str(lib)},
-        yosys_opts=SynthToolOptsFile(),  # all defaults — frontend="verilog"
+        yosys_opts=SynthToolOptsFile(),  # all defaults: frontend="verilog"
     )
     or_synth = _make_openroad(
         tmp_path,
@@ -2702,9 +2604,7 @@ def test_openroad_yosys_stage_picks_up_yosys_tool_overrides(tmp_path):
 
 
 def test_openroad_falls_back_to_openroad_opts_when_no_yosys_tool_cfg(tmp_path):
-    """Projects that only configure cfg-synth-tools[openroad] keep working —
-    the OpenROAD backend falls back to its own opts (default frontend=verilog)
-    when no yosys tool entry is configured."""
+    """Without a yosys tool entry, the OpenROAD backend falls back to its own opts (default frontend verilog)."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -2725,8 +2625,7 @@ def test_openroad_falls_back_to_openroad_opts_when_no_yosys_tool_cfg(tmp_path):
 
 
 def test_openroad_yosys_stage_forwards_single_unit(tmp_path):
-    """The OpenROAD backend's elaboration stage shares the Yosys emitter, so
-    a single_unit override on the yosys block must reach its read_slang too."""
+    """A single_unit override on the yosys block reaches the read_slang of the OpenROAD elaboration stage."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -2756,10 +2655,7 @@ def test_openroad_yosys_stage_forwards_single_unit(tmp_path):
 
 
 def test_openroad_yosys_stage_surfaces_bad_single_unit_type(tmp_path):
-    """A config error raised while resolving the yosys opts must NOT be
-    swallowed by the `no yosys tool entry` fallback — that guard covers the
-    lookup only. Swallowing it would silently downgrade frontend: slang to
-    read_verilog and synthesise the wrong thing."""
+    """A config error while resolving yosys opts is not swallowed by the `no yosys tool entry` fallback, which covers the lookup only; otherwise `frontend: slang` would silently become read_verilog."""
     from rtl_buddy.config.synth import SynthToolOptsFile
     from rtl_buddy.errors import FatalRtlBuddyError
 
@@ -2790,8 +2686,7 @@ def test_openroad_yosys_stage_surfaces_bad_single_unit_type(tmp_path):
 
 
 def test_openroad_yosys_stage_warns_on_unknown_yosys_override(tmp_path, caplog):
-    """The non-fatal half of the same path: an unknown key warns, and the
-    yosys opts still win over the openroad tool's opts."""
+    """An unknown key warns, and the yosys opts still win over the openroad tool's opts."""
     from rtl_buddy.config.synth import SynthToolOptsFile
 
     sv = tmp_path / "top.sv"
@@ -2824,9 +2719,7 @@ def test_openroad_yosys_stage_warns_on_unknown_yosys_override(tmp_path, caplog):
     assert "--single-unit" not in script
 
 
-# ---------------------------------------------------------------------------
-# OpenRoadSynth — output parsing
-# ---------------------------------------------------------------------------
+# OpenRoadSynth output parsing
 
 
 def test_openroad_parse_area():
@@ -2850,8 +2743,7 @@ def test_openroad_parse_wns_violated():
 
 
 def test_openroad_parse_wns_prefers_report_worst_slack():
-    # When `report_worst_slack -max` is present, prefer that authoritative
-    # line over the per-group path summaries (which may appear in any order).
+    # `report_worst_slack -max` is authoritative over per-group path summaries, which may appear in any order.
     log = (
         "            6.754   slack (MET)\n"
         "           -0.431   slack (VIOLATED)\n"
@@ -2862,10 +2754,7 @@ def test_openroad_parse_wns_prefers_report_worst_slack():
 
 
 def test_openroad_parse_wns_multi_group_fallback_picks_min():
-    # Legacy log without `report_worst_slack`. The parser must scan every
-    # `slack (...)` line and return the minimum — the historical bug was
-    # to take the first match, which on multi-clock designs is whichever
-    # path group OpenROAD prints first, not the true WNS.
+    # A legacy log without `report_worst_slack`: scan every `slack (...)` line and return the minimum; the first match is not the WNS on multi-clock designs.
     log = (
         "            3.054   slack (MET)\n"
         "           -2.000   slack (VIOLATED)\n"
@@ -2888,8 +2777,7 @@ def test_openroad_parse_area_missing_returns_none():
 
 
 def test_openroad_scrapes_the_yosys_log_for_the_top_module(tmp_path):
-    """Stage 1's Yosys log is scraped the same way the `yosys` backend scrapes
-    its own — anchored to the top, last match otherwise (#559)."""
+    """Stage 1's Yosys log is scraped like the `yosys` backend's: anchored to the top, last match otherwise."""
     or_synth = _make_openroad(tmp_path)
     assert or_synth._parse_area_um2(_HIER_STAT_LOG, "my_module") == pytest.approx(
         12.768
@@ -2901,9 +2789,7 @@ def test_openroad_scrapes_the_yosys_log_for_the_top_module(tmp_path):
     assert or_synth._parse_gate_count(_FLAT_STAT_LOG, "my_module") == 2
 
 
-# ---------------------------------------------------------------------------
-# OpenRoadSynth — run() returns fail when no library / no lef
-# ---------------------------------------------------------------------------
+# OpenRoadSynth run() fails without library or lef
 
 
 def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
@@ -2961,9 +2847,7 @@ def test_synth_suite_config_loads_xfail_flags(tmp_path):
     assert cfg.get_syntheses("synth_normal")[0].is_xfail() is False
 
 
-# ---------------------------------------------------------------------------
-# Log events — human messages
-# ---------------------------------------------------------------------------
+# Log events: human messages
 
 
 @pytest.mark.parametrize(
@@ -3009,9 +2893,7 @@ def test_synth_suite_config_loads_xfail_flags(tmp_path):
     ],
 )
 def test_synth_override_human_messages_are_specific(event, fields, expected_substrings):
-    """Every new WARNING/ERROR event needs a case — `rtl_buddy.log` reads the
-    human message, and without one it renders through the lossy dotted-event
-    fallback and says less than the console does."""
+    """Every WARNING/ERROR event has a dedicated human message case; otherwise `rtl_buddy.log` renders the lossy dotted-event fallback."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(event, fields)
@@ -3020,15 +2902,11 @@ def test_synth_override_human_messages_are_specific(event, fields, expected_subs
         assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
 
 
-# ---------------------------------------------------------------------------
-# Synthesis netlists are cleared before each run (#469)
-# ---------------------------------------------------------------------------
+# Synthesis netlists are cleared before each run
 
 
 def test_yosys_failed_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
-    """`synth_netlist.v` / `synth.rtlil` are the fixed-path INPUTS `rb pnr`
-    and `rb power` resolve, guarded by `isfile` alone. A failed rerun must
-    not leave the last successful run's netlist for them to consume (#469)."""
+    """A failed rerun leaves no stale `synth_netlist.v` or `synth.rtlil`, which `rb pnr` and `rb power` resolve by `isfile` alone."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
@@ -3066,9 +2944,7 @@ def test_yosys_failed_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
 
 
 def test_openroad_failed_yosys_stage_leaves_no_stale_netlist(tmp_path, monkeypatch):
-    """Stage 2 reads stage 1's netlist off a fixed path having judged stage 1
-    by exit code alone, and `rb pnr` / `rb power` read the same file. A failed
-    stage 1 must leave neither behind (#469)."""
+    """A failed stage 1 leaves no netlist for stage 2, `rb pnr` or `rb power`."""
     from rtl_buddy.tools import synth_openroad as synth_openroad_module
 
     model = _setup_run(tmp_path)
@@ -3122,9 +2998,7 @@ def test_openroad_failed_yosys_stage_leaves_no_stale_netlist(tmp_path, monkeypat
 
 
 def test_yosys_filelist_failure_still_clears_the_netlist(tmp_path, monkeypatch):
-    """The clear is the FIRST thing run() does, so a rerun that dies before
-    yosys — here a filelist error — still leaves nothing for `rb pnr` /
-    `rb power` to resolve (#469)."""
+    """The clear is the first thing run() does, so a rerun that dies before yosys (here a filelist error) leaves no netlist."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
@@ -3161,9 +3035,7 @@ def test_yosys_filelist_failure_still_clears_the_netlist(tmp_path, monkeypatch):
 
 
 def test_openroad_pre_yosys_gate_still_clears_the_netlist(tmp_path):
-    """`run()` clears before every gate, so a return that never reaches yosys
-    — here the "requires Liberty" gate, which is also where #472's new
-    non-automatic-function gate lands — leaves no netlist behind (#469)."""
+    """run() clears before every gate, so a return that never reaches yosys (here the "requires Liberty" gate and the non-automatic-function gate) leaves no netlist."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
@@ -3193,9 +3065,7 @@ def test_openroad_pre_yosys_gate_still_clears_the_netlist(tmp_path):
 
 
 def test_openroad_failed_sta_stage_removes_the_netlist(tmp_path, monkeypatch):
-    """Stage 1 can succeed and write a netlist before stage 2 fails on
-    `link_design` or the SDC. `rb synth` reports FAIL, so it must not leave
-    that netlist at the path `rb pnr` / `rb power` resolve (#469)."""
+    """A stage 2 failure after a successful stage 1 removes stage 1's netlist, because `rb synth` reports FAIL."""
     from rtl_buddy.tools import synth_openroad as synth_openroad_module
 
     model = _setup_run(tmp_path)
@@ -3250,9 +3120,7 @@ def test_openroad_failed_sta_stage_removes_the_netlist(tmp_path, monkeypatch):
 
 
 def test_yosys_nonzero_exit_after_writing_removes_the_netlist(tmp_path, monkeypatch):
-    """Yosys writes the netlist partway through its script and only then runs
-    the trailing `stat`, so it can crash with the netlist already on disk. A
-    FAIL must publish nothing (#469)."""
+    """A nonzero Yosys exit after it wrote the netlist removes the netlist; the trailing `stat` runs after the write."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
@@ -3288,8 +3156,7 @@ def test_yosys_nonzero_exit_after_writing_removes_the_netlist(tmp_path, monkeypa
 
 
 def test_yosys_error_line_after_writing_removes_the_netlist(tmp_path, monkeypatch):
-    """Same for the other post-run gate: an `ERROR:` line in the log fails the
-    run, so the netlist Yosys had already written must go (#469)."""
+    """An `ERROR:` line in the log after the netlist was written removes the netlist."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
@@ -3328,9 +3195,7 @@ def test_yosys_error_line_after_writing_removes_the_netlist(tmp_path, monkeypatc
 def test_openroad_yosys_stage_writes_then_fails_removes_the_netlist(
     tmp_path, monkeypatch
 ):
-    """Stage 1's script writes the netlist before its trailing `stat`, so a
-    stage-1 crash also leaves one behind — the `not yosys_ok` return has to
-    clear it too (#469)."""
+    """A stage-1 crash after the netlist was written also removes it."""
     from rtl_buddy.tools import synth_openroad as synth_openroad_module
 
     model = _setup_run(tmp_path)
@@ -3382,12 +3247,9 @@ def test_openroad_yosys_stage_writes_then_fails_removes_the_netlist(
     assert not netlist.exists()
 
 
-# ---------------------------------------------------------------------------
-# Static-lifetime gate and conflicting-driver gate (#472)
-# ---------------------------------------------------------------------------
+# Static-lifetime gate and conflicting-driver gate
 
-# The issue's repro, trimmed to the two declarations that matter. `inc` is on
-# line 3 and `same` on line 4.
+# The repro, trimmed to the two declarations that matter: `inc` is on line 3 and `same` on line 4.
 _STATIC_FN_SRC = dedent("""\
     module my_module;
       typedef logic [4:0] ptr_t;
@@ -3473,7 +3335,7 @@ def test_static_functions_error_fails_before_yosys(tmp_path, monkeypatch):
     desc = result.results["desc"]
     assert f"{sv}:3: function inc" in desc
     assert f"{sv}:4: function same" in desc
-    # The gate is a *pre*-synthesis check: yosys must not have been started.
+    # The gate is a pre-synthesis check: yosys must not have been started.
     assert calls == []
 
 
@@ -3575,7 +3437,7 @@ def test_static_functions_default_is_error_for_slang_and_warn_for_verilog():
 
     assert resolve_static_functions_mode(SynthToolOpts(frontend="slang")) == "error"
     assert resolve_static_functions_mode(SynthToolOpts(frontend="verilog")) == "warn"
-    # An explicit setting always wins over the frontend-derived default.
+    # An explicit setting wins over the frontend-derived default.
     assert (
         resolve_static_functions_mode(
             SynthToolOpts(frontend="slang", static_functions="warn")
@@ -3633,7 +3495,7 @@ def test_conflicting_drivers_invalid_mode_is_fatal(tmp_path, monkeypatch):
     [
         # The real yosys `check` warning, verbatim.
         ("Warning: multiple conflicting drivers for bad.\\inc.p [4]:", True),
-        # Same message reported against a source location.
+        # The same message reported against a source location.
         ("bad.sv:9: Warning: multiple conflicting drivers for bad.\\p:", True),
         # `check -h` help text, echoed into the log by a `help check`.
         ("  - two or more conflicting drivers for one wire", False),
@@ -3648,13 +3510,9 @@ def test_conflicting_driver_regex_is_anchored_on_the_warning(line, expected):
     assert bool(find_conflicting_driver_warnings(line + "\n")) is expected
 
 
-# ---------------------------------------------------------------------------
-# Unbound interface instances (rtl-buddy/rtl_buddy#628)
-# ---------------------------------------------------------------------------
+# Unbound interface instances
 
-# Verbatim shape of the yosys `hierarchy` warning. `synth` runs `hierarchy`
-# more than once and re-elaborates each time, so a real log carries the same
-# line repeatedly -- the finder must count the instance, not the line.
+# Verbatim yosys `hierarchy` warning. `synth` runs `hierarchy` several times, so a log repeats the line; the finder counts instances, not lines.
 _UNBOUND_IF_WARNING = (
     "Warning: Could not find interface instance for `bus' in `wrapper_top'\n"
 )
@@ -3663,8 +3521,7 @@ _UNBOUND_IF_WARNING = (
 def test_unresolved_interfaces_default_warns_without_failing(
     tmp_path, monkeypatch, caplog
 ):
-    """The fallback netlist is correct when the interface has no ports of its
-    own, or none the subtree reads, so the default cannot be `error`."""
+    """The default for unresolved interfaces warns without failing: the fallback netlist is correct when the interface has no ports the subtree reads, so the default cannot be `error`."""
     import logging
 
     ys, _ = _gate_yosys(
@@ -3676,8 +3533,7 @@ def test_unresolved_interfaces_default_warns_without_failing(
     assert isinstance(result, SynthPassResults)
     # De-duplicated: three `hierarchy` passes, one instance, one warning.
     assert caplog.text.count("wrapper_top.bus") == 1
-    # The finding survives into the machine-readable envelope, so a passing
-    # run whose netlist may be missing port connections says so.
+    # The finding survives into the machine-readable envelope, so a passing run with possibly missing port connections says so.
     assert result.results["unresolved_interfaces"] == 1
 
 
@@ -3705,9 +3561,7 @@ def test_unresolved_interfaces_error_fails_the_run(tmp_path, monkeypatch):
 
 
 def test_unresolved_interfaces_error_drops_the_netlist(tmp_path, monkeypatch):
-    """`rb pnr` / `rb power` resolve the netlist by `isfile`, so a run that
-    fails the gate must not leave yosys's own product behind. Yosys wrote it
-    before the gate fired, so the start-of-run cleanup cannot have."""
+    """An `error` gate removes the netlist, because Yosys wrote it before the gate fired and the start-of-run cleanup cannot have."""
     ys, _ = _gate_yosys(
         tmp_path,
         _AUTOMATIC_FN_SRC,
@@ -3800,13 +3654,12 @@ def test_unresolved_interfaces_default_is_warn():
     [
         # The real yosys `hierarchy` warning, verbatim.
         ("Warning: Could not find interface instance for `bus' in `top'", True),
-        # Same message reported against a source location.
+        # The same message reported against a source location.
         ("top.sv:9: Warning: Could not find interface instance for `b' in `t'", True),
         # A command echo or a comment that merely names the phrase.
         ("yosys> echo Could not find interface instance", False),
         ("# Could not find interface instance for `bus' in `top'", False),
-        # The sibling implicit-declaration noise from the same elaboration is
-        # not this warning and must not be counted.
+        # The sibling implicit-declaration noise from the same elaboration is a different warning and is not counted.
         ("top.sv:30: Warning: Identifier `\\bus.paddr' is implicitly declared.", False),
     ],
 )
@@ -3906,12 +3759,9 @@ def test_gate_human_messages_are_specific(event, fields, expected_substrings):
         assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
 
 
-# ---------------------------------------------------------------------------
-# Tristate buses are not conflicting drivers (review item 1)
-# ---------------------------------------------------------------------------
+# Tristate buses are not conflicting drivers
 
-# Verbatim shape of the yosys `check` output for two `assign bus = en ? d : 'z;`
-# on an `inout wire [7:0] bus`. Yosys renders an inout port as "module input".
+# Verbatim yosys `check` output for two `assign bus = en ? d : 'z;` on an `inout wire [7:0] bus`. Yosys renders an inout port as "module input".
 _TRISTATE_WARNING = (
     "Warning: multiple conflicting drivers for tri_top.\\bus [7]:\n"
     "    port Y[7] of cell $2 ($tribuf)\n"
@@ -3919,7 +3769,7 @@ _TRISTATE_WARNING = (
     "    module input bus[7]\n"
 )
 
-# The #472 corruption shape: one shared formal driven by two flops.
+# Corruption shape: one shared formal driven by two flops.
 _SHARED_FORMAL_WARNING = (
     "Warning: multiple conflicting drivers for bad.\\inc.p [4]:\n"
     "    port Q[4] of cell $driver$inc.p ($dff)\n"
@@ -3979,7 +3829,7 @@ def test_lower_case_tbuf_cell_type_is_recognised():
 
 
 def test_a_warning_with_no_driver_lines_is_counted():
-    """Conservative: an unparsed warning is a real one until proven benign."""
+    """An unparsed warning counts as a real one."""
     from rtl_buddy.tools.synth_yosys import find_conflicting_driver_warnings
 
     log = "Warning: multiple conflicting drivers for m.\\w [0]:\nEnd of script.\n"
@@ -4005,9 +3855,7 @@ def test_tristate_run_passes_end_to_end(tmp_path, monkeypatch):
     assert isinstance(ys.run(), SynthPassResults)
 
 
-# ---------------------------------------------------------------------------
-# Filelist incdirs and defines reach the scan (review items 2 and 3)
-# ---------------------------------------------------------------------------
+# Filelist incdirs and defines reach the scan
 
 
 def test_filelist_scan_context_collects_incdirs_and_defines(tmp_path):
@@ -4030,9 +3878,7 @@ def test_filelist_scan_context_collects_incdirs_and_defines(tmp_path):
         str(tmp_path / "a"),
         str(tmp_path / "b"),
     ]
-    # A bare `+define+DEBUG` is None, not "": which one it was decides
-    # whether it matches a run `defines:` value, and that depends on the
-    # frontend (slang normalises bare to 1, read_verilog to empty).
+    # A bare `+define+DEBUG` is None, not "": whether it matches a run `defines:` value depends on the frontend (slang normalises bare to 1, read_verilog to empty).
     assert defines == {"SYNTHESIS": "1", "DEBUG": None}
 
 
@@ -4043,8 +3889,7 @@ def test_filelist_scan_context_on_a_missing_file_is_empty(tmp_path):
 
 
 def test_included_header_is_scanned_by_the_synth_gate(tmp_path, monkeypatch):
-    """The reviewer's repro: the declarations moved into an `include`d header
-    used to pass with a corrupted netlist."""
+    """Declarations in an `include`d header are scanned by the synth gate."""
     (tmp_path / "fns.svh").write_text(
         "function ptr_t inc(input ptr_t p);     return p + 1; endfunction\n"
     )
@@ -4089,9 +3934,7 @@ def test_run_defines_suppress_an_excluded_ifdef_region(tmp_path, monkeypatch):
     assert isinstance(ys_no_define.run(), SynthFailResults)
 
 
-# ---------------------------------------------------------------------------
-# Machine output (review item 4)
-# ---------------------------------------------------------------------------
+# Machine output
 
 
 def test_static_function_findings_reaches_the_machine_payload():
@@ -4117,14 +3960,11 @@ def test_machine_payload_omits_the_field_when_the_gate_found_nothing():
     assert "static_function_findings" not in row
 
 
-# ---------------------------------------------------------------------------
-# Gate-mode validation happens before yosys runs (review item 5)
-# ---------------------------------------------------------------------------
+# Gate-mode validation happens before yosys runs
 
 
 def test_conflicting_drivers_invalid_mode_is_fatal_before_yosys(tmp_path, monkeypatch):
-    """The mode is resolved at the top of run(), so a misspelling is fatal even
-    on a run whose log would never have tripped the gate."""
+    """The mode is resolved at the top of run(), so a misspelling is fatal even when the log would not have tripped the gate."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     calls = []
@@ -4139,9 +3979,7 @@ def test_conflicting_drivers_invalid_mode_is_fatal_before_yosys(tmp_path, monkey
     assert calls == []
 
 
-# ---------------------------------------------------------------------------
-# Frontend-aware error message (review item 11)
-# ---------------------------------------------------------------------------
+# Frontend-aware error message
 
 
 def test_static_functions_message_explains_corruption_for_slang():
@@ -4193,8 +4031,7 @@ def test_static_functions_message_reports_the_truncated_remainder():
 
 
 def test_static_functions_event_caps_the_findings_list(tmp_path, monkeypatch, caplog):
-    """A machine log line must not carry an unbounded list; the count and the
-    dropped total travel with it."""
+    """A machine log line carries a capped findings list plus the count and the dropped total."""
     import logging
 
     from rtl_buddy.tools.synth_yosys import MAX_EVENT_FINDINGS
@@ -4222,16 +4059,13 @@ def test_static_functions_event_caps_the_findings_list(tmp_path, monkeypatch, ca
     assert events[0].rtl_fields["truncated"] == 5
 
 
-# ---------------------------------------------------------------------------
-# The OpenROAD backend gets the same gates (review item 8)
-# ---------------------------------------------------------------------------
+# The OpenROAD backend has the same gates
 
 
 def _gate_openroad(tmp_path, text, *, opts_overrides=None):
-    """An OpenROAD backend with Liberty and LEF, over a one-source model.
+    """An OpenROAD backend with Liberty and LEF over a one-source model.
 
-    `_FakeRootCfgOR.get_synth_tool_cfg` raises, so stage 1 falls back to this
-    backend's own opts — which is where the gate settings go.
+    `_FakeRootCfgOR.get_synth_tool_cfg` raises, so stage 1 falls back to the backend's own opts, where the gate settings go.
     """
     from rtl_buddy.config.synth import SynthToolOptsFile
     from rtl_buddy.tools.synth_openroad import OpenRoadSynth
@@ -4312,7 +4146,7 @@ def test_openroad_stage1_fails_on_static_lifetime_functions(tmp_path, monkeypatc
 
 
 def test_openroad_run_surfaces_the_gate_description(tmp_path, monkeypatch):
-    """`run()` must report the finding, not the generic stage-failure text."""
+    """`run()` reports the finding, not the generic stage-failure text."""
     or_synth, _, sv = _gate_openroad(
         tmp_path, _STATIC_FN_SRC, opts_overrides={"static_functions": "error"}
     )
@@ -4385,8 +4219,7 @@ def test_openroad_stage1_conflicting_drivers_allow(tmp_path, monkeypatch):
 
 
 def test_openroad_stage1_fails_on_unbound_interfaces(tmp_path, monkeypatch):
-    """Stage 1 elaborates with the same frontend, so it carries the same
-    hazard and must gate it the same way."""
+    """Stage 1 elaborates with the same frontend and gates unbound interfaces the same way."""
     or_synth, fl, _ = _gate_openroad(
         tmp_path,
         _AUTOMATIC_FN_SRC,
@@ -4417,18 +4250,13 @@ def test_openroad_stage1_unbound_interfaces_default_warns(
     assert caplog.text.count("wrapper_top.bus") == 1
 
 
-# ---------------------------------------------------------------------------
-# The gates must not outrun the stale-netlist cleanup (review round 3, item 1)
-# ---------------------------------------------------------------------------
+# The gates must not outrun the stale-netlist cleanup
 
 
 def test_yosys_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
-    """A rerun that fails the static-functions gate returns before yosys runs.
+    """A rerun that fails the static-functions gate returns before yosys and still clears the previous run's netlist.
 
-    The cleanup is the first action of `run()` precisely so that early return
-    still clears the previous run's product: `rb pnr` / `rb power` resolve
-    `synth_netlist.v` by `isfile` alone and would otherwise consume a netlist
-    from a run whose RTL no longer exists (#469 + #472).
+    The cleanup is the first action of `run()`; `rb pnr` and `rb power` resolve `synth_netlist.v` by `isfile` alone.
     """
     ys, _ = _gate_yosys(
         tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
@@ -4469,8 +4297,7 @@ def test_yosys_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypat
 def test_yosys_conflicting_drivers_failure_leaves_no_stale_netlist(
     tmp_path, monkeypatch
 ):
-    """The conflicting-driver gate returns after yosys wrote a netlist from a
-    design whose shared net folded to `x`. That netlist must not survive."""
+    """The conflicting-driver gate returns after yosys wrote a netlist from a design whose shared net folded to `x`; that netlist is removed."""
     ys, _ = _gate_yosys(
         tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
     )
@@ -4486,7 +4313,7 @@ def test_yosys_conflicting_drivers_failure_leaves_no_stale_netlist(
 
 
 def test_openroad_gate_failure_on_rerun_leaves_no_stale_netlist(tmp_path, monkeypatch):
-    """Same ordering requirement for the OpenROAD backend's stage-1 gates."""
+    """The OpenROAD backend's stage-1 gates also clear a stale netlist on rerun."""
     from rtl_buddy.tools import synth_openroad as or_module
 
     or_synth, _, _ = _gate_openroad(
@@ -4540,9 +4367,7 @@ def test_openroad_conflicting_drivers_failure_leaves_no_stale_netlist(
     assert not mapped.exists()
 
 
-# ---------------------------------------------------------------------------
-# The scan follows the frontend's compilation-unit boundary (round 3, item 2)
-# ---------------------------------------------------------------------------
+# The scan follows the frontend's compilation-unit boundary
 
 
 def _two_source_ifndef_model(tmp_path):
@@ -4599,8 +4424,7 @@ def _yosys_for_model(tmp_path, model, opts_overrides):
 def test_gate_does_not_carry_a_define_between_sources_without_single_unit(
     tmp_path, monkeypatch
 ):
-    """slang compiles each file separately by default, so `SHARED` is not
-    defined while b.sv is read and the guarded function IS compiled."""
+    """slang compiles each file separately by default, so `SHARED` is not defined while b.sv is read and the guarded function is compiled."""
     model = _two_source_ifndef_model(tmp_path)
     ys = _yosys_for_model(
         tmp_path,
@@ -4634,8 +4458,7 @@ def test_gate_carries_a_define_between_sources_under_single_unit(tmp_path, monke
 
 
 def test_verilog_frontend_ignores_single_unit_for_the_scan_too(tmp_path, monkeypatch):
-    """`single-unit` is slang-only; with the verilog frontend it is ignored
-    (with a warning), so the scan must not honour it either."""
+    """`single-unit` is slang-only; the verilog frontend ignores it with a warning, so the scan ignores it too."""
     model = _two_source_ifndef_model(tmp_path)
     ys = _yosys_for_model(
         tmp_path,
@@ -4648,9 +4471,7 @@ def test_verilog_frontend_ignores_single_unit_for_the_scan_too(tmp_path, monkeyp
     assert "function dbg" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# The scan models the Yosys invocation exactly (review round 4, item 1)
-# ---------------------------------------------------------------------------
+# The scan models the Yosys invocation exactly
 
 
 def _gate_yosys_with_filelist_define(tmp_path, src, macro, *, opts_overrides=None):
@@ -4698,8 +4519,7 @@ def _gate_yosys_with_filelist_define(tmp_path, src, macro, *, opts_overrides=Non
 
 
 def test_filelist_define_suppresses_a_finding(tmp_path, monkeypatch):
-    """`_write_script()` passes the filelist's `+define+` entries to Yosys, so
-    a region they exclude is never elaborated and must not be reported."""
+    """`_write_script()` passes the filelist's `+define+` entries to Yosys, so a region they exclude is not elaborated and is not reported."""
     ys = _gate_yosys_with_filelist_define(
         tmp_path,
         _IFNDEF_SRC.format(macro="FAST_SIM_ONLY"),
@@ -4756,7 +4576,7 @@ def test_filelist_defines_the_run_overrides_are_warned_about(
 def test_filelist_defines_warning_fires_even_when_the_gate_is_off(
     tmp_path, monkeypatch, caplog
 ):
-    """The divergence exists whatever the gate is set to."""
+    """The filelist-defines warning fires whatever the gate is set to."""
     import logging
 
     ys = _gate_yosys_with_filelist_define(
@@ -4812,10 +4632,7 @@ def test_a_filelist_with_no_defines_is_quiet(tmp_path, monkeypatch, caplog):
 
 
 def test_synthesis_macro_is_implicitly_defined(tmp_path, monkeypatch):
-    """Both Yosys frontends define `SYNTHESIS` themselves — `read_verilog` in
-    verilog_frontend.cc and yosys-slang unless `--no-synthesis-define`, which
-    rtl_buddy never passes. A `` `ifndef SYNTHESIS `` helper is therefore never
-    compiled by synthesis and must not be reported."""
+    """Both Yosys frontends define `SYNTHESIS` themselves (`read_verilog`, and yosys-slang unless `--no-synthesis-define`, which rtl_buddy never passes), so an `` `ifndef SYNTHESIS `` helper is not reported."""
     ys, _ = _gate_yosys(
         tmp_path,
         _IFNDEF_SRC.format(macro="SYNTHESIS"),
@@ -4826,8 +4643,7 @@ def test_synthesis_macro_is_implicitly_defined(tmp_path, monkeypatch):
 
 
 def test_ifdef_synthesis_region_is_still_scanned(tmp_path, monkeypatch):
-    """The other side of the implicit define: an `` `ifdef SYNTHESIS `` region
-    IS compiled, so a static-lifetime declaration inside it is a finding."""
+    """An `` `ifdef SYNTHESIS `` region is compiled, so a static-lifetime declaration inside it is a finding."""
     src = dedent("""\
         module my_module;
         `ifdef SYNTHESIS
@@ -4849,21 +4665,17 @@ def test_lifetime_scan_inputs_seeds_the_implicit_defines(tmp_path):
     fl.write_text("+incdir+inc\n+define+FROM_FILELIST=1\n-v top.sv\n")
     incdirs, defines = lifetime_scan_inputs(str(fl), "s", {"FROM_RUN": 2}, "verilog")
     assert incdirs == [str(tmp_path / "inc")]
-    # Filelist macros are applied, exactly as `_write_script()` passes them.
+    # Filelist macros are applied as `_write_script()` passes them.
     assert defines["FROM_FILELIST"] == "1"
     assert defines["FROM_RUN"] == "2"
     assert defines["SYNTHESIS"] == implicit_defines("verilog")["SYNTHESIS"]
 
 
-# ---------------------------------------------------------------------------
-# The conflicting-driver gate deletes the netlist it just made (round 4, item 2)
-# ---------------------------------------------------------------------------
+# The conflicting-driver gate deletes the netlist it just made
 
 
 def test_conflicting_drivers_failure_removes_the_new_netlist(tmp_path, monkeypatch):
-    """Yosys already ran `write_verilog`/`write_rtlil` by the time the gate
-    fires, so the netlist at the fixed path is THIS run's product. The
-    start-of-run cleanup cannot have removed it."""
+    """Yosys has already run `write_verilog`/`write_rtlil` when the gate fires, so the netlist at the fixed path is this run's product, which the start-of-run cleanup cannot have removed."""
     ys, _ = _gate_yosys(
         tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "allow"}
     )
@@ -4892,7 +4704,7 @@ def test_conflicting_drivers_failure_removes_the_new_netlist(tmp_path, monkeypat
 
 
 def test_conflicting_drivers_allow_keeps_the_new_netlist(tmp_path, monkeypatch):
-    """`allow` means the warnings are accepted, so the netlist must survive."""
+    """`allow` accepts the warnings, so the netlist survives."""
     ys, _ = _gate_yosys(
         tmp_path,
         _AUTOMATIC_FN_SRC,
@@ -4947,14 +4759,11 @@ def test_openroad_conflicting_drivers_removes_the_new_netlist(tmp_path, monkeypa
     assert not rtlil.exists()
 
 
-# ---------------------------------------------------------------------------
-# OpenROAD resolves the gate modes before anything else (round 4, item 4)
-# ---------------------------------------------------------------------------
+# OpenROAD resolves the gate modes first
 
 
 def test_openroad_invalid_gate_mode_is_fatal_before_the_liberty_check(tmp_path):
-    """Resolved at the top of run(), so a misspelled mode is fatal even on a
-    run that would have returned early for a missing Liberty."""
+    """A misspelled mode is fatal even on a run that would have returned early for a missing Liberty."""
     from rtl_buddy.config.synth import SynthToolOptsFile
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.tools.synth_openroad import OpenRoadSynth
@@ -5025,9 +4834,7 @@ def test_filelist_defines_overridden_has_a_dedicated_human_message():
     assert "Verilator" in msg and "Icarus" in msg
 
 
-# ---------------------------------------------------------------------------
-# `undefineall follows the frontend in use (review round 6, item 1)
-# ---------------------------------------------------------------------------
+# `undefineall follows the frontend in use
 
 _UNDEFINEALL_FLOW_SRC = dedent("""\
     module my_module;
@@ -5041,10 +4848,10 @@ _UNDEFINEALL_FLOW_SRC = dedent("""\
 
 
 def test_undefineall_no_longer_suppresses_a_finding(tmp_path, monkeypatch):
-    """The reviewer's repro: `` `define GUARD ``, `` `undefineall ``, then a
-    static function under `` `ifndef GUARD ``. Yosys compiles it — verified in
-    the elaborated design, which grows `$not` cells only when the guard is
-    cleared — so the gate must report it."""
+    """`` `undefineall `` does not suppress a finding.
+
+    After `` `define GUARD `` and `` `undefineall ``, a static function under `` `ifndef GUARD `` is compiled by Yosys, so the gate reports it.
+    """
     ys, _ = _gate_yosys(
         tmp_path,
         _UNDEFINEALL_FLOW_SRC,
@@ -5057,9 +4864,7 @@ def test_undefineall_no_longer_suppresses_a_finding(tmp_path, monkeypatch):
 
 
 def test_undefineall_keeps_the_run_defines_under_slang(tmp_path, monkeypatch):
-    """slang's undefineAll() re-applies options.predefines, so a `defines:`
-    macro survives `` `undefineall `` and its guarded region stays uncompiled.
-    """
+    """slang's undefineAll() re-applies options.predefines, so a `defines:` macro survives `` `undefineall `` and its guarded region stays uncompiled."""
     src = dedent("""\
         module my_module;
         `undefineall
@@ -5085,8 +4890,7 @@ def test_undefineall_keeps_the_run_defines_under_slang(tmp_path, monkeypatch):
 def test_undefineall_drops_the_run_defines_under_the_verilog_frontend(
     tmp_path, monkeypatch
 ):
-    """Yosys's own read_verilog clears global_defines_cache too, so the same
-    source DOES compile the guarded region there."""
+    """Yosys's read_verilog clears global_defines_cache too, so the guarded region is compiled under the verilog frontend."""
     src = dedent("""\
         module my_module;
         `undefineall
@@ -5119,15 +4923,11 @@ def test_openroad_undefineall_follows_the_elaboration_frontend(tmp_path, monkeyp
     assert "function dbg" in desc
 
 
-# ---------------------------------------------------------------------------
-# Gate modes resolve before the filelist write (review round 6, item 2)
-# ---------------------------------------------------------------------------
+# Gate modes resolve before the filelist write
 
 
 def test_invalid_gate_mode_is_fatal_even_when_the_filelist_fails(tmp_path, monkeypatch):
-    """A misspelled mode is a config error. A FilelistError must not turn it
-    into an ordinary FAIL — the modes are resolved before the filelist write,
-    as on the OpenROAD path."""
+    """A misspelled mode is a config error and stays fatal when a FilelistError also occurs; modes resolve before the filelist write, as on the OpenROAD path."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     ys, _ = _gate_yosys(
@@ -5166,7 +4966,7 @@ def test_invalid_static_functions_mode_is_fatal_even_when_the_filelist_fails(
 def test_a_failing_filelist_with_valid_modes_is_still_an_ordinary_failure(
     tmp_path, monkeypatch
 ):
-    """The reordering must not turn a real filelist error into something else."""
+    """A real filelist error with valid modes is still an ordinary failure."""
     ys, _ = _gate_yosys(
         tmp_path, _AUTOMATIC_FN_SRC, opts_overrides={"static_functions": "error"}
     )
@@ -5180,15 +4980,11 @@ def test_a_failing_filelist_with_valid_modes_is_still_an_ordinary_failure(
     assert "Filelist error" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# Implicit defines are frontend-specific (review round 7, item 1)
-# ---------------------------------------------------------------------------
+# Implicit defines are frontend-specific
 
 
 def test_implicit_defines_differ_by_frontend():
-    """`read_verilog` predefines YOSYS (preproc.cc define_map_t ctor) as well
-    as SYNTHESIS; slang predefines SYNTHESIS plus its own built-ins, and no
-    YOSYS. Both confirmed with a syntax error inside the guarded region."""
+    """`read_verilog` predefines YOSYS as well as SYNTHESIS; slang predefines SYNTHESIS plus its own built-ins and no YOSYS."""
     from rtl_buddy.tools.synth_yosys import implicit_defines
 
     verilog = implicit_defines("verilog")
@@ -5224,7 +5020,7 @@ def test_ifndef_yosys_is_not_reported_under_the_verilog_frontend(tmp_path, monke
 
 
 def test_ifndef_yosys_is_reported_under_the_slang_frontend(tmp_path, monkeypatch):
-    """slang does not define YOSYS, so the guarded helper really is compiled."""
+    """slang does not define YOSYS, so a helper guarded by `ifndef YOSYS` is compiled and reported."""
     ys, _ = _gate_yosys(
         tmp_path,
         _IFNDEF_YOSYS_SRC,
@@ -5264,7 +5060,7 @@ def test_ifndef_slang_builtin_is_not_reported_under_slang(tmp_path, monkeypatch)
 def test_ifdef_yosys_region_is_scanned_under_the_verilog_frontend(
     tmp_path, monkeypatch
 ):
-    """The other side: an `` `ifdef YOSYS `` region IS compiled there."""
+    """An `` `ifdef YOSYS `` region is compiled under the verilog frontend and scanned."""
     src = dedent("""\
         module my_module;
         `ifdef YOSYS
@@ -5283,14 +5079,11 @@ def test_ifdef_yosys_region_is_scanned_under_the_verilog_frontend(
     assert "function yosys_only" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# Frontend config errors stay fatal (review round 7, item 3)
-# ---------------------------------------------------------------------------
+# Frontend config errors stay fatal
 
 
 def test_unknown_frontend_is_fatal_even_with_a_static_function(tmp_path, monkeypatch):
-    """The gate's early return precedes `_write_script()`, so the frontend
-    check has to happen in `run()` or a config error becomes a plain FAIL."""
+    """The gate's early return precedes `_write_script()`, so `run()` checks the frontend itself; otherwise a config error becomes a plain FAIL."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     ys, _ = _gate_yosys(
@@ -5398,7 +5191,7 @@ def test_validate_frontend_returns_the_resolved_plugin_path(tmp_path):
 
 
 def test_a_valid_frontend_still_reaches_the_gate(tmp_path, monkeypatch):
-    """The new check must not swallow the finding it precedes."""
+    """A valid frontend still reaches the gate and its finding."""
     ys, _ = _gate_yosys(
         tmp_path,
         _STATIC_FN_SRC,
@@ -5414,14 +5207,11 @@ def test_a_valid_frontend_still_reaches_the_gate(tmp_path, monkeypatch):
     assert "function inc" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# Attributes do not exempt a declaration (review round 9)
-# ---------------------------------------------------------------------------
+# Attributes do not exempt a declaration
 
 
 def test_an_attributed_static_function_still_fails_the_gate(tmp_path, monkeypatch):
-    """`(* \\extern = 1 *)` is an attribute carrying a user identifier, not an
-    `extern` prototype. It used to exempt the declaration it decorated."""
+    """`(* \\extern = 1 *)` is an attribute carrying a user identifier, not an `extern` prototype, and does not exempt the declaration it decorates."""
     src = dedent("""\
         module my_module;
           (* \\extern = 1 *) function bit dbg(input bit x); return x; endfunction
@@ -5445,9 +5235,7 @@ def test_a_keep_attribute_does_not_change_the_gate_verdict(tmp_path, monkeypatch
     assert isinstance(ys.run(), SynthPassResults)
 
 
-# ---------------------------------------------------------------------------
 # Filelist +define+ entries are forwarded to Yosys; the run's `defines:` win
-# ---------------------------------------------------------------------------
 
 
 def _scan_inputs(tmp_path, filelist_body, run_defines, frontend):
@@ -5483,8 +5271,7 @@ def test_merge_defines_with_no_run_defines_is_the_filelist():
 
 
 def test_an_explicit_filelist_value_is_compared_literally(tmp_path, caplog):
-    """A value written with `=` means the same thing to every tool, so it can
-    be compared. A bare entry cannot — see the ambiguity tests below."""
+    """A value written with `=` is compared literally; a bare entry cannot be compared (see the ambiguity tests below)."""
     import logging
 
     with caplog.at_level(logging.WARNING):
@@ -5494,8 +5281,7 @@ def test_an_explicit_filelist_value_is_compared_literally(tmp_path, caplog):
 
 
 def test_a_conflicting_filelist_value_is_warned_with_both_values(tmp_path, caplog):
-    """Simulation builds an 8-bit design and synthesis a 16-bit one, and this
-    is the only place that says so."""
+    """A conflicting filelist value is warned about with both values, since simulation and synthesis would build different designs."""
     import logging
 
     with caplog.at_level(logging.WARNING):
@@ -5523,8 +5309,7 @@ def test_a_filelist_only_define_is_applied_quietly(tmp_path, caplog):
 
 
 def test_a_filelist_define_overrides_an_implicit_macro_in_the_scan(tmp_path, caplog):
-    """`+define+SYNTHESIS=0` is passed as `-D SYNTHESIS=0`, exactly as a run
-    `defines: {SYNTHESIS: 0}` is; the scan follows the same layering."""
+    """`+define+SYNTHESIS=0` is passed as `-D SYNTHESIS=0`, like a run `defines: {SYNTHESIS: 0}`, and the scan layers it the same way."""
     import logging
 
     with caplog.at_level(logging.WARNING):
@@ -5539,9 +5324,7 @@ def test_a_filelist_define_overrides_an_implicit_macro_in_the_scan(tmp_path, cap
 def test_a_bare_filelist_define_takes_the_frontend_meaning(
     tmp_path, caplog, frontend, expected
 ):
-    """A bare `+define+X` is passed to Yosys valueless, so the scan gives it
-    what the selected frontend gives a valueless `-D`: an EMPTY body under
-    `read_verilog`, 1 under slang."""
+    """A bare `+define+X` is passed to Yosys valueless, so the scan gives it the selected frontend's valueless meaning: an empty body under `read_verilog`, 1 under slang."""
     import logging
 
     with caplog.at_level(logging.WARNING):
@@ -5554,9 +5337,7 @@ def test_a_bare_filelist_define_takes_the_frontend_meaning(
 def test_a_bare_filelist_define_paired_with_a_run_value_is_reported(
     tmp_path, caplog, frontend
 ):
-    """A bare entry has no single meaning to compare against (Verilator and
-    `read_verilog` give it an empty body, Icarus and slang give it 1), so any
-    run value on top of it is reported as an override, never as a match."""
+    """A bare entry has no single meaning (Verilator and `read_verilog` give an empty body, Icarus and slang give 1), so any run value on top is reported as an override, never as a match."""
     import logging
 
     with caplog.at_level(logging.WARNING):
@@ -5603,8 +5384,7 @@ def test_write_script_forwards_filelist_defines_before_the_run_defines(tmp_path)
 
 
 def _incdir_filelist(tmp_path):
-    """A filelist whose `+incdir+` is spelled relative to the filelist itself
-    (as `-F`-nested filelists are), so forwarding has to resolve it."""
+    """A filelist whose `+incdir+` is relative to the filelist itself (as with `-F`-nested filelists), so forwarding must resolve it."""
     gen = tmp_path / "gen"
     gen.mkdir()
     (tmp_path / "inc").mkdir()
@@ -5702,8 +5482,7 @@ def test_write_script_slang_forwards_filelist_defines(tmp_path):
 
 @pytest.mark.parametrize("frontend", ["verilog", "slang"])
 def test_a_verilog_literal_define_value_reaches_yosys_verbatim(tmp_path, frontend):
-    """`shlex.quote` would turn 8'hff into '8'"'"'hff', and Yosys passes the
-    quote characters through to the frontend rather than stripping them."""
+    """`shlex.quote` would turn 8'hff into '8'"'"'hff', and Yosys passes the quote characters through to the frontend."""
     from rtl_buddy.config.synth import SynthToolOptsFile
 
     sv = tmp_path / "top.sv"
@@ -5737,9 +5516,7 @@ def _whitespace_define_filelist(tmp_path):
 
 @pytest.mark.parametrize("frontend", ["verilog", "slang"])
 def test_a_whitespace_filelist_define_value_is_fatal(tmp_path, frontend):
-    """A yosys script line is split on whitespace and no quoting survives, so
-    `+define+MSG=a b` cannot be expressed as a `-D`; refuse it up front rather
-    than emit a read command that fails on a mangled source path."""
+    """A yosys script line is split on whitespace and quoting does not survive, so `+define+MSG=a b` is refused up front instead of failing on a mangled source path."""
     from rtl_buddy.config.synth import SynthToolOptsFile
     from rtl_buddy.errors import FatalRtlBuddyError
 
@@ -5771,17 +5548,13 @@ def test_a_whitespace_filelist_define_value_is_fatal_for_openroad(tmp_path):
         or_synth._write_yosys_script(str(fl))
 
 
-# ---------------------------------------------------------------------------
-# Anonymous struct return types (review round 12)
-# ---------------------------------------------------------------------------
+# Anonymous struct return types
 
 
 def test_an_out_of_block_method_returning_an_anonymous_struct_passes_the_gate(
     tmp_path, monkeypatch
 ):
-    """The `;` inside the struct body used to stop the header scan, losing the
-    `C::` and reporting an automatic class method as a static free function —
-    a false failure under the default slang gate."""
+    """The `;` inside an anonymous struct return type does not stop the header scan, so an out-of-block class method is not reported as a static free function."""
     src = dedent("""\
         module my_module;
           function struct packed { logic a; } C::f(); return 0; endfunction
@@ -5807,17 +5580,13 @@ def test_a_module_scope_struct_returning_function_still_fails_the_gate(
     assert "function free_fn" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# Type-reference return types (review round 13, item 2)
-# ---------------------------------------------------------------------------
+# Type-reference return types
 
 
 def test_an_out_of_block_method_returning_a_type_reference_passes_the_gate(
     tmp_path, monkeypatch
 ):
-    """`type(int)`'s `(` used to be taken for the argument list, so the scan
-    never saw the `C::` and failed an automatic class method under the default
-    slang gate."""
+    """`type(int)`'s `(` is not taken for the argument list, so an automatic out-of-block class method passes the slang gate."""
     src = dedent("""\
         module my_module;
           function type(int) C::f(); return 0; endfunction
@@ -5843,9 +5612,7 @@ def test_a_module_scope_type_reference_function_fails_with_its_own_name(
     assert "function free_fn" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# Per-module `stat -json` -> phys-model.json (#558)
-# ---------------------------------------------------------------------------
+# Per-module `stat -json` and phys-model.json
 
 
 _STAT_JSON = """{
@@ -5859,8 +5626,7 @@ _STAT_JSON = """{
 
 
 def test_write_script_emits_the_stat_json_dump(tmp_path):
-    """`stat -json` prints to the console, so it needs `tee -o`; `-q` keeps
-    the document out of `synth.log`, which is scraped line by line."""
+    """`stat -json` prints to the console, so it needs `tee -o`; `-q` keeps the document out of `synth.log`, which is scraped line by line."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -5933,9 +5699,7 @@ def _run_yosys_with(
 ):
     """Run a YosysSynth whose fake Yosys writes `stats_text` and a log.
 
-    ``during_run`` is called while the fake Yosys is "running", which is
-    where a test puts whatever the world does to this run's inputs
-    underneath it.
+    ``during_run`` is called while the fake Yosys is "running", where a test can change the run's inputs.
     """
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
@@ -5988,8 +5752,7 @@ def test_a_passing_synth_publishes_the_phys_model(tmp_path, monkeypatch):
     assert model["design"]["top"] == "my_module"
     assert [row["module"] for row in model["modules"]] == ["my_module", "sub"]
     assert model["modules"][0]["area_um2"] == 12.5
-    # The totals come from the log scrape, not from the stat dump, so the two
-    # can be compared.
+    # The totals come from the log scrape, not the stat dump, so the two can be compared.
     assert model["totals"]["area_um2"] == 12.5
 
     manifest = load_manifest(Path(ys.artefact_dir) / "phys-manifest.json")
@@ -6000,11 +5763,10 @@ def test_a_passing_synth_publishes_the_phys_model(tmp_path, monkeypatch):
 
 
 def test_a_passing_synth_totals_the_top_module_not_a_submodule(tmp_path, monkeypatch):
-    """The totals are a scrape of the flow's own log, kept independent of the
-    `stat -json` rows so a drift between them is information. That only holds
-    if the scrape measures the design: on a hierarchical log it used to take
-    the first `Chip area for module` line, which is a submodule's
-    (rtl-buddy/rtl_buddy#559)."""
+    """A passing synth totals the top module, not a submodule.
+
+    The totals are a scrape of the flow's log, independent of the `stat -json` rows, so on a hierarchical log the first `Chip area for module` line (a submodule) must not be used.
+    """
     from rtl_buddy.phys.model import load_model
 
     _ys, result = _run_yosys_with(
@@ -6020,9 +5782,7 @@ def test_a_passing_synth_totals_the_top_module_not_a_submodule(tmp_path, monkeyp
 
 
 def test_a_passing_synth_binds_the_model_to_the_netlist_it_wrote(tmp_path, monkeypatch):
-    """The hash a power half already in this directory has to have been
-    measured on before a re-synthesis will carry it forward (#558, #560
-    review)."""
+    """A passing synth binds the model to the netlist it wrote; a power half already in the directory carries forward only if measured on that hash."""
     from rtl_buddy.phys.model import load_model
 
     netlist = "module my_module(); endmodule\n"
@@ -6039,8 +5799,7 @@ def test_a_passing_synth_binds_the_model_to_the_netlist_it_wrote(tmp_path, monke
 
 
 def test_a_synth_without_a_readable_stat_dump_still_passes(tmp_path, monkeypatch):
-    """The model is a by-product: a Yosys that never reached its `stat -json`
-    line costs the document its module rows and nothing else (#558)."""
+    """A Yosys that never reached its `stat -json` line costs the document its module rows and nothing else."""
     from rtl_buddy.phys.model import load_model
 
     _ys, result = _run_yosys_with(tmp_path, monkeypatch, stats_text=None)
@@ -6052,10 +5811,10 @@ def test_a_synth_without_a_readable_stat_dump_still_passes(tmp_path, monkeypatch
 def test_a_failed_synth_rerun_withdraws_the_modules_half_it_published(
     tmp_path, monkeypatch
 ):
-    """The clear deletes `synth_stat.json`, but publication only happens on a
-    pass — so without this the last run's per-module areas stay in
-    `phys-model.json` with nothing left on disk behind them. The power half,
-    whose report the synthesis never touched, survives (#558)."""
+    """A failed rerun withdraws the modules half it published.
+
+    The clear deletes `synth_stat.json` but publication happens only on a pass, so the previous per-module areas would remain in `phys-model.json`. The power half survives.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import publish_power
 
@@ -6068,8 +5827,7 @@ def test_a_failed_synth_rerun_withdraws_the_modules_half_it_published(
     model_path = Path(result.results["phys_model"])
     assert load_model(model_path)["modules"]
 
-    # A power run into the same artefact directory, as a co-named `rb power`
-    # would have left it.
+    # A power run in the same artefact directory, as a co-named `rb power` would leave it.
     publish_power(
         artefact_dir=ys.artefact_dir,
         top="my_module",
@@ -6090,8 +5848,7 @@ def test_a_failed_synth_rerun_withdraws_the_modules_half_it_published(
 
 
 def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch):
-    """`synth_stat.json` is read back inside the same `run()`, so a rerun that
-    dies must not have the last run's per-module areas published (#469)."""
+    """A failed synth clears the previous run's stat dump, since `synth_stat.json` is read back within the same `run()`."""
     model = _setup_run(tmp_path)
     synth_cfg = SynthConfig(
         name="s",
@@ -6122,9 +5879,7 @@ def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch
     assert not stale.exists()
 
 
-# ---------------------------------------------------------------------------
-# what feeds the config digest, per backend and per path (#570)
-# ---------------------------------------------------------------------------
+# What feeds the config digest, per backend and path
 
 
 def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
@@ -6147,7 +5902,7 @@ def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
 def _yosys_digest(
     tmp_path, *, mapped, tool_overrides=None, effort=None, lib_paths=None
 ):
-    """The options digest a YosysSynth would publish on `mapped`'s branch."""
+    """The options digest a YosysSynth publishes on `mapped`'s branch."""
     from rtl_buddy.phys.provenance import options_digest
 
     ys = YosysSynth(
@@ -6161,11 +5916,10 @@ def _yosys_digest(
 
 
 def test_a_mapped_yosys_run_ignores_abc_args_and_says_so_in_its_digest(tmp_path):
-    """`_write_script` hard-codes the ABC script on the mapped branch --
-    `_ABC_SCRIPT_WITH_TIMING`/`_ABC_SCRIPT_NO_TIMING`, chosen by whether the
-    SDC named a clock -- and never reads `abc_args`. Digesting the resolved
-    dataclass therefore told two byte-identical netlists apart by a string
-    Yosys was never given."""
+    """A mapped yosys run ignores `abc_args` and its digest says so.
+
+    `_write_script` hard-codes the ABC script on the mapped branch (`_ABC_SCRIPT_WITH_TIMING` or `_ABC_SCRIPT_NO_TIMING`, chosen by whether the SDC names a clock), so `abc_args` cannot distinguish two identical netlists.
+    """
     plain = _yosys_digest(tmp_path, mapped=True)
     with_abc = _yosys_digest(
         tmp_path, mapped=True, tool_overrides={"yosys": {"abc_args": "-fast"}}
@@ -6173,19 +5927,16 @@ def test_a_mapped_yosys_run_ignores_abc_args_and_says_so_in_its_digest(tmp_path)
     assert plain is not None
     assert plain == with_abc
 
-    # The unmapped branch does emit `abc <abc_args>`, so there the same
-    # field is a real difference. Which is the point: the subset is per
-    # path, not per backend.
+    # The unmapped branch emits `abc <abc_args>`, so there the field is a real difference: the digested subset is per path, not per backend.
     assert _yosys_digest(tmp_path, mapped=False) != _yosys_digest(
         tmp_path, mapped=False, tool_overrides={"yosys": {"abc_args": "-fast"}}
     )
-    # And the two branches are themselves distinguishable.
+    # The two branches are distinguishable.
     assert _yosys_digest(tmp_path, mapped=False) != plain
 
 
 def test_a_yosys_run_never_digests_the_strategy_no_yosys_script_reads(tmp_path):
-    """`strategy` is a stage-2 OpenROAD knob. This backend has no stage 2,
-    and no line of its script consumes the field."""
+    """`strategy` is a stage-2 OpenROAD knob; this backend has no stage 2 and its script never reads it."""
     for mapped in (True, False):
         assert _yosys_digest(tmp_path, mapped=mapped) == _yosys_digest(
             tmp_path, mapped=mapped, tool_overrides={"yosys": {"strategy": "TIMING"}}
@@ -6193,54 +5944,49 @@ def test_a_yosys_run_never_digests_the_strategy_no_yosys_script_reads(tmp_path):
 
 
 def test_a_yosys_run_digests_the_synth_args_its_script_appends(tmp_path):
-    """The counterpart: an input the script does read has to move the
-    digest, or the fingerprint reports two experiments as one."""
+    """An input the script reads must move the digest."""
     assert _yosys_digest(tmp_path, mapped=True) != _yosys_digest(
         tmp_path, mapped=True, tool_overrides={"yosys": {"synth_args": "-flatten"}}
     )
-    # The effort's value reaches the script through the same resolved
-    # field, so it moves the digest too.
+    # The effort's value reaches the script through the same resolved field, so it moves the digest too.
     assert _yosys_digest(tmp_path, mapped=True) != _yosys_digest(
         tmp_path, mapped=True, effort=_effort_cfg(synth_args="-flatten")
     )
 
 
 def test_a_mapped_yosys_run_digests_the_liberty_it_mapped_against(tmp_path):
-    """The finding (#570 round-15 review, Codex P2). The digest recorded
-    `mapped: true` and not *what against*, so the classic experiment — one
-    design, one effort, two corners named through `lib-paths` — produced
-    two netlists with two areas under one `options_sha256`, and a reader
-    comparing runs was told they were the same experiment."""
+    """A mapped yosys run digests the liberty it mapped against.
+
+    Otherwise one design and effort with two corners named through `lib-paths` give two areas under one `options_sha256`.
+    """
     slow = _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib"])
     fast = _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/fast.lib"])
 
     assert slow is not None and slow != fast
 
-    # A second library is a different library set, not the same one.
+    # A second library is a different library set.
     assert (
         _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"])
         != slow
     )
-    # `read_liberty` is order-sensitive, so an order is an experiment.
+    # `read_liberty` is order-sensitive, so a different order is a different experiment.
     assert _yosys_digest(
         tmp_path, mapped=True, lib_paths=["/pdk/io.lib", "/pdk/slow.lib"]
     ) != _yosys_digest(
         tmp_path, mapped=True, lib_paths=["/pdk/slow.lib", "/pdk/io.lib"]
     )
-    # And the same set twice is the same experiment.
+    # The same set twice is the same experiment.
     assert _yosys_digest(tmp_path, mapped=True, lib_paths=["/pdk/slow.lib"]) == slow
 
 
 def test_an_unmapped_yosys_run_has_no_library_to_digest(tmp_path):
-    """`mapped` is `bool(self._resolve_lib_paths())`, so the unmapped branch
-    has an empty set by definition — recording it there would be a key that
-    can only ever hold one value."""
+    """`mapped` is `bool(self._resolve_lib_paths())`, so the unmapped branch has an empty set by definition and records no library key."""
     assert "libs" in _yosys_digest_fed(tmp_path, mapped=True)
     assert "libs" not in _yosys_digest_fed(tmp_path, mapped=False)
 
 
 def _yosys_digest_fed(tmp_path, *, mapped, lib_paths=None):
-    """The mapping `_yosys_digest` hashes, for the tests that read keys."""
+    """The mapping `_yosys_digest` hashes, for tests that read keys."""
     ys = YosysSynth(
         name="t/yosys",
         synth_cfg=_make_synth_cfg(lib_paths=lib_paths or ["/pdk/slow.lib"]),
@@ -6252,10 +5998,7 @@ def _yosys_digest_fed(tmp_path, *, mapped, lib_paths=None):
 
 
 def test_the_library_fingerprint_is_project_relative_where_it_can_be(tmp_path):
-    """Spelled the way every other path in these documents is, so the same
-    checkout on two machines is one library set rather than two. A PDK
-    outside the project keeps the absolute path that is its only
-    identity."""
+    """The library fingerprint is project-relative where it can be, so the same checkout on two machines is one library set; a PDK outside the project keeps its absolute path."""
     from rtl_buddy.tools.synth_yosys import library_fingerprint
 
     class _Root:
@@ -6267,20 +6010,16 @@ def test_the_library_fingerprint_is_project_relative_where_it_can_be(tmp_path):
         "pdk/slow.lib",
         "/opt/pdk/fast.lib",
     ]
-    # No project root to spell against: the resolved paths stand. A
-    # fingerprint helper is the last place worth raising from — it feeds
-    # a publish that never fails a synthesis already on disk.
+    # No project root: the resolved paths stand. A fingerprint helper must not raise, since it feeds a publish that never fails a synthesis already on disk.
     assert library_fingerprint([str(inside)], None) == [str(inside)]
     assert library_fingerprint([str(inside)], object()) == [str(inside)]
 
 
 def test_the_slang_plugin_is_fingerprinted_as_the_script_loads_it(tmp_path):
-    """The finding (#570 round-15 review, Codex P2). The digest recorded the
-    raw `plugin_path`, and the script loads `resolve_plugin_path`'s answer.
-    That was wrong in both directions: a plugin selected through
-    `RTL_BUDDY_SLANG_PLUGIN` leaves the field empty, so two runs against two
-    different yosys-slang builds digested identically, and a relative path
-    digested apart from the absolute path it resolves to."""
+    """The slang plugin is fingerprinted as the script loads it.
+
+    The script loads `resolve_plugin_path`'s answer, so a plugin chosen through `RTL_BUDDY_SLANG_PLUGIN` (empty `plugin_path`) digests differently per build, and a relative path digests the same as its absolute form.
+    """
     from rtl_buddy.config.synth import SynthToolOpts
     from rtl_buddy.tools.synth_yosys import (
         SLANG_PLUGIN_ENV,
@@ -6315,13 +6054,12 @@ def test_the_slang_plugin_is_fingerprinted_as_the_script_loads_it(tmp_path):
     absolute = str(tmp_path / "plug" / "slang.so")
     assert _fed("plug/slang.so", root_cfg=_Root()) == absolute
     assert _fed(absolute, root_cfg=_Root()) == absolute
-    # Nothing configured at all is still nothing.
+    # Nothing configured is still nothing.
     assert _fed(None) is None
 
 
 def test_the_verilog_frontend_records_no_plugin_at_all(tmp_path):
-    """The gate is unchanged: the verilog read emitter loads no plugin, so
-    resolving one for it would report a difference the script cannot have."""
+    """The verilog read emitter loads no plugin, so no plugin is recorded for it."""
     from rtl_buddy.config.synth import SynthToolOpts
     from rtl_buddy.tools.synth_yosys import elaboration_fingerprint
 
@@ -6333,8 +6071,7 @@ def test_the_verilog_frontend_records_no_plugin_at_all(tmp_path):
 
 
 def test_the_slang_fingerprint_records_best_effort_hierarchy():
-    """Two slang runs differing only in the hierarchy flag read different
-    scripts, so they must not digest as one experiment."""
+    """Two slang runs differing only in the hierarchy flag digest differently."""
     from rtl_buddy.config.synth import SynthToolOpts
     from rtl_buddy.tools.synth_yosys import elaboration_fingerprint
 
@@ -6353,12 +6090,10 @@ def test_the_slang_fingerprint_records_best_effort_hierarchy():
 
 
 def test_a_synth_run_digests_the_merged_define_table_its_script_fed(tmp_path):
-    """The finding (#570 round-15 review, Codex P2). `_write_script` feeds
-    the frontend `elaboration_defines()` — the generated filelist's
-    `+define+` entries with the run's `defines:` layered on top — but the
-    digest recorded `synth.yaml`'s field alone. A filelist whose
-    `+define+WIDTH=8` became `+define+WIDTH=16` therefore elaborated a
-    different design under an identical fingerprint."""
+    """A synth run digests the merged define table its script was fed.
+
+    `_write_script` feeds the frontend `elaboration_defines()`, the filelist's `+define+` entries with the run's `defines:` on top; the digest must not record `synth.yaml`'s field alone.
+    """
     from rtl_buddy.phys.provenance import options_digest
 
     sv = tmp_path / "top.sv"
@@ -6380,13 +6115,12 @@ def test_a_synth_run_digests_the_merged_define_table_its_script_fed(tmp_path):
     assert narrow is not None and narrow != wide
     # A bare entry is its own value, and adding one is a change.
     assert _digest(["WIDTH=8", "DEBUG"]) != narrow
-    # And the same filelist twice is the same experiment.
+    # The same filelist twice is the same experiment.
     assert _digest(["WIDTH=8"]) == narrow
 
 
 def test_the_openroad_backend_digests_its_merged_defines_too(tmp_path):
-    """Both backends feed their frontend the same merged mapping, so both
-    have to digest it — the round-14 rule is per script, not per tool."""
+    """Both backends feed their frontend the same merged mapping and both digest it."""
     from rtl_buddy.phys.provenance import options_digest
 
     sv = tmp_path / "top.sv"
@@ -6419,7 +6153,7 @@ def _openroad_digest(
     lib_paths=None,
     lef_paths=None,
 ):
-    """The options digest an OpenRoadSynth would publish."""
+    """The options digest an OpenRoadSynth publishes."""
     from rtl_buddy.phys.provenance import options_digest
 
     or_synth = _make_openroad(
@@ -6434,11 +6168,10 @@ def _openroad_digest(
 
 
 def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_path):
-    """`_write_yosys_script` appends `effort_cfg.get_yosys_synth_args()` to
-    `synth -top` and never looks at `opts.synth_args`. The digest used to
-    be the other way round: a `tool_overrides.openroad.synth_args` that
-    changed nothing moved it, and an effort that changed the netlist did
-    not."""
+    """An openroad run digests the effort synth args its stage 1 reads.
+
+    `_write_yosys_script` appends `effort_cfg.get_yosys_synth_args()` to `synth -top` and ignores `opts.synth_args`, so an override of the latter does not move the digest and an effort change does.
+    """
     base = _openroad_digest(tmp_path)
     assert base is not None
 
@@ -6452,8 +6185,7 @@ def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_pat
         )
         == base
     )
-    # Nor is `abc_args`, from either source: stage 1's ABC line is
-    # `_ABC_SCRIPT_AREA`, hard-coded.
+    # Nor is `abc_args` from either source: stage 1's ABC line is the hard-coded `_ABC_SCRIPT_AREA`.
     assert (
         _openroad_digest(tmp_path, tool_overrides={"openroad": {"abc_args": "-fast"}})
         == base
@@ -6462,12 +6194,10 @@ def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_pat
 
 
 def test_an_openroad_run_digests_the_libraries_and_lefs_it_resolves(tmp_path):
-    """The platform name does not determine them: `_resolve_lib_paths` and
-    `_resolve_lef_paths` append the config's own `lib-paths` / `lef-paths`
-    to the platform's, and with no platform at all those lists are the
-    whole of it. Recording the platform alone left two corners — and two
-    LEF sets, which decide what stage 2 can place — digesting as one
-    (#570)."""
+    """An openroad run digests the libraries and LEFs it resolves.
+
+    `_resolve_lib_paths` and `_resolve_lef_paths` append the config's `lib-paths` and `lef-paths` to the platform's, and with no platform they are the whole list, so the platform name alone does not identify them.
+    """
     base = _openroad_digest(tmp_path, lib_paths=["/pdk/slow.lib"])
     assert base is not None
 
@@ -6487,26 +6217,19 @@ def test_an_openroad_run_digests_the_libraries_and_lefs_it_resolves(tmp_path):
 
 
 def test_an_openroad_run_digests_the_strategy_as_the_command_it_selects(tmp_path):
-    """Strategy reaches the script only through `_resynth_cmd`'s table, so
-    the digest records the command and not the string: `TIMING` and
-    `TIMING_ANNEAL` are one run, and anything that selects no resynthesis
-    is another."""
+    """The digest records the command `_resynth_cmd` selects for the strategy, not the string: `TIMING` and `TIMING_ANNEAL` are one run, and anything selecting no resynthesis is another."""
     annealing = _openroad_digest(tmp_path, strategy="TIMING")
     assert annealing == _openroad_digest(tmp_path, strategy="timing_anneal")
     assert annealing != _openroad_digest(tmp_path, strategy="TIMING_GENETIC")
     assert annealing != _openroad_digest(tmp_path, strategy="AREA")
-    # `AREA` and an unrecognised value both emit nothing, and both runs
-    # produce the same netlist.
+    # `AREA` and an unrecognised value both emit nothing and produce the same netlist.
     assert _openroad_digest(tmp_path, strategy="AREA") == _openroad_digest(
         tmp_path, strategy="whatever"
     )
 
 
 def test_an_openroad_run_digests_the_pre_sta_tcl_it_actually_runs(tmp_path):
-    """The effort's `pre-sta-tcl` is executed verbatim by
-    `_write_or_script`, and it is content rather than a path, so nothing
-    else in the config block can identify it. Two efforts sharing a name
-    and differing in the Tcl are two experiments."""
+    """The effort's `pre-sta-tcl` is content, executed verbatim by `_write_or_script`, so the digest must record it: two efforts with one name and different Tcl are two experiments."""
     base = _openroad_digest(tmp_path)
     floorplan = _openroad_digest(
         tmp_path, effort=_effort_cfg(pre_sta_tcl="initialize_floorplan\n")
@@ -6515,21 +6238,17 @@ def test_an_openroad_run_digests_the_pre_sta_tcl_it_actually_runs(tmp_path):
     assert floorplan != _openroad_digest(
         tmp_path, effort=_effort_cfg(pre_sta_tcl="global_placement\n")
     )
-    # Trailing whitespace never reaches OpenROAD -- the writer rstrips it --
-    # so it is not a different experiment.
+    # Trailing whitespace never reaches OpenROAD (the writer rstrips it), so it is not a different experiment.
     assert floorplan == _openroad_digest(
         tmp_path, effort=_effort_cfg(pre_sta_tcl="initialize_floorplan\n\n  ")
     )
 
 
-# ---------------------------------------------------------------------------
-# A stale half that cannot be withdrawn stops the run (#560 round-17)
-# ---------------------------------------------------------------------------
+# A stale half that cannot be withdrawn stops the run
 
 
 def _lock_the_publication(monkeypatch):
-    """Make every `_publication_lock` acquisition time out, as a holder that
-    outlives `PUBLISH_LOCK_TIMEOUT_SEC` does."""
+    """Make every `_publication_lock` acquisition time out, as a holder that outlives `PUBLISH_LOCK_TIMEOUT_SEC` does."""
     import contextlib
 
     from rtl_buddy.phys import publish as publish_mod
@@ -6543,11 +6262,10 @@ def _lock_the_publication(monkeypatch):
 
 
 def test_a_half_that_cannot_be_withdrawn_stops_the_synth_run(tmp_path, monkeypatch):
-    """The finding (#560 round-17, Codex P2). The clear deletes
-    `synth_stat.json` and then withdraws the module rows read from it; a
-    withdrawal that failed used to log at DEBUG and let the run proceed, so a
-    rerun that died before publishing left the previous run's areas
-    discoverable over a file that no longer exists. Yosys does not start."""
+    """A failed withdrawal of the modules half stops the run before Yosys starts.
+
+    The clear deletes `synth_stat.json` and withdraws the module rows read from it; proceeding after a failed withdrawal would leave the previous areas discoverable over a file that no longer exists.
+    """
     from rtl_buddy.phys.model import load_model
 
     ys, result = _run_yosys_with(
@@ -6571,15 +6289,14 @@ def test_a_half_that_cannot_be_withdrawn_stops_the_synth_run(tmp_path, monkeypat
     desc = rerun.results["desc"]
     assert "could not be withdrawn" in desc
     assert "phys-publish.lock" in desc
-    # Still there, which is exactly why the run stopped.
+    # Still there, which is why the run stopped.
     assert load_model(model_path)["modules"]
 
 
 def test_the_openroad_backend_stops_on_the_same_failed_withdrawal(
     tmp_path, monkeypatch
 ):
-    """Both synthesis backends publish the same half into the same directory,
-    so both have to refuse to run over one they could not withdraw."""
+    """Both synthesis backends publish the same half into the same directory, so both refuse to run over one they could not withdraw."""
     from rtl_buddy.phys.publish import publish_synth
     from rtl_buddy.tools import synth_openroad as synth_openroad_module
 
@@ -6604,20 +6321,16 @@ def test_the_openroad_backend_stops_on_the_same_failed_withdrawal(
     assert "could not be withdrawn" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# The constraints hash is of the bytes the tool read (#570 round-17)
-# ---------------------------------------------------------------------------
+# The constraints hash is of the bytes the tool read
 
 
 def test_an_sdc_edited_during_a_synth_records_no_constraints_hash(
     tmp_path, monkeypatch, caplog
 ):
-    """The finding (#570 round-17, Codex P2). The digest used to be computed
-    inside the publish, minutes after the script had read the SDC for its ABC
-    delay target — so a file edited while Yosys worked was recorded as the
-    constraints this netlist was built under, the exact substitution the hash
-    exists to catch. Hashed at script generation and confirmed when the run
-    ends instead; a file that moved has no identity this run can vouch for."""
+    """An SDC edited during a synth records no constraints hash.
+
+    The SDC is hashed at script generation and confirmed when the run ends; a file that moved has no identity the run can vouch for.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
 
@@ -6639,7 +6352,7 @@ def test_an_sdc_edited_during_a_synth_records_no_constraints_hash(
     # Neither hash: not the bytes at the start, not the ones on disk now.
     assert config["constraints_sha256"] is None
     assert sha256_of(sdc) is not None
-    # The path is still recorded — which file the run read is known.
+    # The path is still recorded: which file the run read is known.
     assert config["constraints"].endswith("demo.sdc")
     assert "constraints_changed_during_run" in caplog.text
 
@@ -6647,8 +6360,7 @@ def test_an_sdc_edited_during_a_synth_records_no_constraints_hash(
 def test_an_untouched_sdc_is_recorded_by_the_hash_taken_at_generation(
     tmp_path, monkeypatch
 ):
-    """The success path is untouched: hash-before and confirm-after agree,
-    and what is recorded is the file the script read."""
+    """An untouched SDC is recorded by the hash taken at generation: hash-before and confirm-after agree."""
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
 
@@ -6664,9 +6376,7 @@ def test_an_untouched_sdc_is_recorded_by_the_hash_taken_at_generation(
 
 
 def test_the_openroad_backend_hashes_its_sdc_at_script_generation(tmp_path):
-    """Both synthesis backends record the same field, so both take it on the
-    same schedule: stage 1's script generation, which is the earliest point in
-    a run that has one."""
+    """Both backends hash the SDC at script generation, the earliest point in a run that has one; stage 1's for OpenROAD."""
     from rtl_buddy.phys.publish import sha256_of
 
     sdc = tmp_path / "demo.sdc"
@@ -6678,18 +6388,14 @@ def test_the_openroad_backend_hashes_its_sdc_at_script_generation(tmp_path):
     captured = or_synth._constraints_sha256
     assert captured == sha256_of(sdc)
 
-    # Replaced after the capture, as a concurrent editor would: the
-    # confirmation withdraws the digest rather than recording the
-    # replacement as what this run read.
+    # Replaced after the capture, as a concurrent editor would; the confirmation withdraws the digest.
     sdc.write_text("create_clock -period 9.0 [get_ports clk]\n")
     or_synth._confirm_constraints_unchanged()
 
     assert or_synth._constraints_sha256 is None
 
 
-# ---------------------------------------------------------------------------
-# OpenROAD thread count on the timing stage (#654)
-# ---------------------------------------------------------------------------
+# OpenROAD thread count on the timing stage
 
 
 def _or_threads_script(tmp_path, monkeypatch, threads):
