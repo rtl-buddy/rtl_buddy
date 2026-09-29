@@ -3,8 +3,8 @@
 Dominance rules:
 
 * Only ``success`` experiments participate.
-* A boolean metric ``routed`` that is ``false`` marks an experiment infeasible.
-* Dominance is computed over numeric metrics with a declared ``min``/``max`` direction, from ``metric_meta`` or ``--metrics``. An experiment missing one of them is excluded with a reason.
+* A boolean metric ``routed`` that is ``false`` marks an experiment infeasible. Infeasible experiments are listed under ``infeasible``, not on the frontier.
+* Dominance is computed over numeric metrics with a declared ``min``/``max`` direction, from ``metric_meta`` or ``--metrics``. An experiment missing one of them is excluded with a reason. Metrics without a direction are not used for dominance but are still reported on each member.
 * X dominates Y if it is at least as good on every such metric and strictly better on one.
 """
 

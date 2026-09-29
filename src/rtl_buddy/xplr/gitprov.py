@@ -2,7 +2,7 @@
 
 * :func:`pin_with_policy` applies the commit policy behind ``rb xplr register``: ``auto`` snapshots a dirty source scope to an ``exp/<id>`` branch without touching the user's tree, ``self-managed`` requires a clean scope.
 * :func:`materialize` and :func:`release` create and remove a disposable git worktree at an experiment's pinned sha.
-* :func:`gc` evicts heavy artifacts, frontier members last, and never deletes ``record.json``.
+* :func:`gc` evicts worktrees and outcome artifacts oldest first until usage is under the target, protecting the frontier under ``keep-frontier``, and never deletes ``record.json``.
 
 All git operations run via subprocess in the project-root repository.
 """
