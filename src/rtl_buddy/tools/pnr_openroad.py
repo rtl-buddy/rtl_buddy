@@ -1483,6 +1483,7 @@ class OpenRoadPnr:
         hits = []
         for line in log_text.splitlines():
             if line.startswith(_DONT_USE_VIOLATION_TAG):
+                # rsplit: only the instance name can contain whitespace.
                 fields = line[len(_DONT_USE_VIOLATION_TAG) :].strip().rsplit(None, 2)
                 if len(fields) == 3:
                     hits.append(tuple(fields))

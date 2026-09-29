@@ -40,7 +40,10 @@ def view_path(directory: str, design: str, view: str) -> str:
 
 
 def clear_abstract(artefact_dir: str) -> list[str]:
-    """Remove the published abstract and any staging leftover, returning the removed paths."""
+    """Remove the published abstract and any staging leftover, returning the removed paths.
+
+    Every `rb pnr` run calls this, including runs that do not harden.
+    """
     removed = []
     for path in (abstract_dir(artefact_dir), staging_dir(artefact_dir)):
         if os.path.lexists(path):

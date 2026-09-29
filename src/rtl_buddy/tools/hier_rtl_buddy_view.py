@@ -122,15 +122,18 @@ class RtlBuddyView:
         self.frontend = frontend
         self.cdc_annotations = cdc_annotations
         self.rdc_annotations = rdc_annotations
+        # Path to the axi-perf.json written by `rb axi-profile run`; passed as `--overlay axi-perf=PATH`.
         self.axi_perf_annotations = axi_perf_annotations
         self.clock_legend = clock_legend
         # Forwarded only when set so viewers that predate the flag see an unchanged command.
         self.block_diagram = block_diagram
         self.executable = executable
+        # Set: TB-rooted view with a merged DUT+TB filelist and `--tb-top`.
         self.test_cfg = test_cfg
-        # Base for TB filelist entries; `suite_dir` is the artefact root, not this.
+        # Base for TB filelist entries; `None` uses the cwd. `suite_dir` is the artefact root, not this.
         self.test_suite_dir = test_suite_dir
 
+        # Set by callers that need the result as a value; `run()` then fills `stdout` and `stderr`.
         self.capture = False
         self.stdout: str | None = None
         self.stderr: str | None = None
@@ -168,6 +171,7 @@ class RtlBuddyView:
             model_cfg=self.model_cfg,
             output_path=fl_path,
         )
+        # Merged filelist is DUT first, then TB.
         # Filter extra lines first: `strip=True` would emit `+incdir+<dir>` as a bare directory path.
         extra = self._extra_filelist()
         test_filelist = None
