@@ -7,7 +7,7 @@ class FatalRtlBuddyError(RtlBuddyError):
 
 
 class FilelistError(RtlBuddyError):
-    """Per-test filelist validation failure (bad path, malformed line, missing file, etc.)."""
+    """Per-test filelist validation failure."""
 
 
 class SetupScriptError(RtlBuddyError):

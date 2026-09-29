@@ -10,9 +10,8 @@ from importlib.metadata import version
 from .runner.elab_results import elab_failure, write_elab_result_json
 
 
-#: Forwarded by ``ElabRunner._slang_args`` when the profile raises the parser's
-#: nesting limit. Read back out of the slang arguments so the result envelope
-#: records the limit the run actually used, the way ``-G`` overrides are.
+#: Forwarded by ``ElabRunner._slang_args`` to raise the parser nesting limit;
+#: read back so the result envelope records the limit used.
 MAX_PARSE_DEPTH_ARG = "--max-parse-depth="
 
 
@@ -35,11 +34,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _max_parse_depth(slang_args: list[str]) -> int | None:
-    """The forwarded parser nesting limit, or None when it was left default.
+    """The forwarded parser nesting limit, or ``None`` when left at default.
 
-    Only ``ElabRunner`` writes this argument, and it writes a validated
-    integer; an unparsable value from a hand-run worker records as unset
-    rather than failing the elaboration over a sidecar field.
+    An unparsable value from a hand-run worker records as unset instead of
+    failing the elaboration.
     """
     values = [
         arg.removeprefix(MAX_PARSE_DEPTH_ARG)

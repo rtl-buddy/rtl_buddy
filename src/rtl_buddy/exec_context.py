@@ -1,25 +1,9 @@
-"""Execution context for a single rtl_buddy command invocation.
+"""Execution context for one rtl_buddy command invocation.
 
-A command's `ExecutionContext` captures the three paths that decide where
-outputs land and how relative arguments are resolved:
-
-- ``invocation_cwd`` — the directory the user ran ``rb`` from. Explicit CLI
-  input/output paths are resolved against this so the shell behaves normally.
-- ``command_root`` — the directory containing the command's primary config
-  file (``tests.yaml``, ``synth.yaml``, ``cdc.yaml``, etc.). Orchestration
-  logs and the artifact tree are anchored here so the same command produces
-  the same layout regardless of where the user invoked it from.
-- ``artifact_root`` — the directory under which per-command-item artifact
-  trees live. Defaults to ``command_root / "artefacts"``; a future
-  ``--artifact-root`` flag can redirect this onto a separate disk without
-  affecting any downstream consumer.
-- ``run_tag`` — the optional ``--run-tag`` namespace (#541). When set, the
-  artifact root moves to ``command_root / "artefacts" / ".runs" / <tag>``,
-  which is what lets two runs of one suite hold different tree locks and
-  write disjoint paths. Unset is today's layout exactly.
-
-See ``docs/concepts/execution-context.md`` for the user-facing description
-and ``docs/development/guidelines.md`` for the policy these fields encode.
+It holds the paths that anchor outputs and relative arguments; the fields are
+described on :class:`ExecutionContext`. See ``docs/concepts/execution-context.md``
+for the user-facing description and ``docs/development/guidelines.md`` for the
+policy.
 """
 
 from __future__ import annotations
@@ -39,12 +23,10 @@ from .tools.artifact_paths import (
 def _tagged_artifact_root(
     command_root: Path, artifact_root: Path | None, run_tag: str | None
 ) -> Path:
-    """The artefact root for one invocation, tag applied (#541).
+    """The artefact root for one invocation, with ``run_tag`` applied.
 
-    An explicit ``artifact_root`` is resolved and then namespaced too: the
-    tag says "this invocation's tree", which has to mean the same thing
-    wherever the tree was redirected to, or a future ``--artifact-root``
-    would quietly switch concurrent runs back onto one lock.
+    An explicit ``artifact_root`` is namespaced by the tag too, so a tag always
+    selects a separate tree.
     """
     if artifact_root is None:
         return run_artifact_root(command_root, run_tag)
@@ -58,9 +40,18 @@ def _tagged_artifact_root(
 class ExecutionContext:
     """Paths that anchor a single command's execution.
 
-    Construct with :meth:`for_command` from inside a command handler once
-    the primary config path has been resolved. The dataclass is frozen so
-    downstream code can safely cache references.
+    - ``invocation_cwd``: the directory the user ran ``rb`` from. Explicit CLI
+      input and output paths resolve against it.
+    - ``command_root``: the directory of the command's primary config file.
+      Logs and the artefact tree anchor here, whatever the invocation directory.
+    - ``artifact_root``: where per-item artefact trees live. Default
+      ``command_root/artefacts``; with a run tag,
+      ``command_root/artefacts/.runs/<tag>``, so concurrent runs of one suite
+      hold different tree locks.
+    - ``run_tag``: the optional ``--run-tag`` namespace.
+
+    Construct with :meth:`for_command` or :meth:`for_dir`. The dataclass is
+    frozen.
     """
 
     invocation_cwd: Path
@@ -80,16 +71,11 @@ class ExecutionContext:
     ) -> "ExecutionContext":
         """Build an :class:`ExecutionContext` for a command.
 
-        ``primary_config`` is the command's ``-c`` argument (e.g.
-        ``tests.yaml``, ``synth.yaml``). It is resolved against
-        ``invocation_cwd`` and made absolute, then its parent becomes the
-        command root.
-
-        ``artifact_root`` is reserved for a future override flag; pass
-        ``None`` for the default ``command_root/artefacts`` layout.
-
-        ``run_tag`` namespaces that layout (#541); pass ``None`` for the
-        flat tree every untagged run keeps.
+        ``primary_config`` is the command's ``-c`` argument. It is resolved
+        against ``invocation_cwd`` and its parent becomes the command root.
+        ``artifact_root`` is reserved for an override flag; ``None`` gives the
+        default layout. ``run_tag`` namespaces the layout; ``None`` gives the
+        flat tree.
         """
         invocation_cwd = Path(invocation_cwd).resolve()
         primary_config = Path(primary_config)
@@ -115,10 +101,9 @@ class ExecutionContext:
         artifact_root: Path | None = None,
         run_tag: str | None = None,
     ) -> "ExecutionContext":
-        """Build an :class:`ExecutionContext` from a directory, not a config file.
+        """Build an :class:`ExecutionContext` from a directory instead of a config file.
 
-        Used by commands whose anchor is naturally a directory (e.g. ``hub``
-        at the project root) rather than a YAML config.
+        For commands anchored at a directory, such as ``hub`` at the project root.
         """
         invocation_cwd = Path(invocation_cwd).resolve()
         command_root = Path(command_root).resolve()
@@ -133,8 +118,7 @@ class ExecutionContext:
     def artifact_dir(self, *parts: str) -> Path:
         """Return ``artifact_root/<sanitized parts...>`` without creating it.
 
-        Each part is sanitized independently so test names like
-        ``foo/bar`` don't accidentally create nested directories.
+        Each part is sanitized separately, so ``foo/bar`` does not nest.
         """
         sanitized = [sanitize_artifact_component(p) for p in parts if p]
         return self.artifact_root.joinpath(*sanitized)
@@ -142,9 +126,7 @@ class ExecutionContext:
     def resolve_input(self, path: str | Path) -> Path:
         """Resolve a user-supplied path against ``invocation_cwd``.
 
-        Use this for explicit CLI input/output arguments (e.g. ``-o
-        report.svg``) so shell behavior matches user expectations.
-        Absolute paths pass through unchanged.
+        For explicit CLI input and output arguments. Absolute paths pass through.
         """
         p = Path(path)
         if p.is_absolute():
@@ -153,15 +135,11 @@ class ExecutionContext:
 
     @property
     def log_path(self) -> Path:
-        """Where ``rtl_buddy.log`` should be written for this command.
+        """Where ``rtl_buddy.log`` is written for this command.
 
-        Beside the command's config, as it always has been — except under
-        a ``--run-tag``, where it moves into the tagged artefact root. A
-        file log is opened for *writing* and the first open truncates it,
-        so two concurrent runs of one suite sharing
-        ``<suite>/rtl_buddy.log`` would erase each other's record: the same
-        failure #437 fixed for dispatched jobs, reached by a second route.
-        A tagged run's log therefore belongs to its own tree.
+        Beside the command's config, or in the tagged artefact root under
+        ``--run-tag``. The first open truncates the file, so concurrent runs
+        need separate logs.
         """
         if self.run_tag is None:
             return self.command_root / DEFAULT_FILE_LOG
