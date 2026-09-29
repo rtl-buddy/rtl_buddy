@@ -2,29 +2,13 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Slurm dispatch backend (#351 P1).
+"""Slurm dispatch backend.
 
-Nothing heavy runs on the submit host (usually an interactive login node).
-The head submits one **build job** per suite (``submit_build`` →
-``rb _build-job``) that Verilates the shared executable on a compute node,
-then one ``sbatch --wrap`` sim job per (test, run_id) (``submit`` →
-``rb _test-job``) gated on that build with ``--dependency=afterok`` — a sim
-only starts once its shared build succeeded, and its own ``compile()`` then
-short-circuits on the shared-build stamp so it effectively runs SIM + POST
-only. What each job runs is the backend-independent argv from
-:mod:`.argv`: the same Python environment (``sys.executable``, on the
-shared filesystem alongside the project), handed the head's dispatch plan
-(``--plan``) so the suite's sweep hook is never re-run off the head.
-
-Collection waits for the queue to drain via ``squeue`` polling; loading
-the per-job result envelopes is the caller's job (backend-independent).
-
-The Slurm client calls (``sbatch`` / ``squeue`` / ``scancel``) use plain
-``subprocess.run`` rather than ``run_managed_process``: they are short,
-synchronous probes that submit or poll and return immediately, not
-long-lived simulation processes that need signal-forwarding / cleanup.
-Each passes an explicit ``cwd`` per the engineering guidelines, since the
-head process cwd is re-anchored per suite during a regression.
+The head submits one build job per suite (``rb _build-job``) and one ``sbatch --wrap``
+sim job per (test, run_id) (``rb _test-job``), each sim gated on the build with
+``--dependency=afterok``. Waiting polls ``squeue`` until the queue drains; loading
+result envelopes is the caller's job. Slurm client calls use plain ``subprocess.run``
+with an explicit ``cwd``, since the head cwd is re-anchored per suite.
 """
 
 import getpass
@@ -64,38 +48,19 @@ def _runnable_job_argv(spec: RunnableJobSpec) -> list[str]:
     return elab_job_argv(spec)
 
 
-# Every state in which Slurm still holds a submitted job ALIVE — the
-# non-terminal half of job_state_codes(7) minus the two records it keeps
-# after the job is over (see `_TERMINAL_RETAINED_STATES`). Anything else
-# (COMPLETED/FAILED/TIMEOUT/CANCELLED...) has finished as far as the
-# collector is concerned — the result envelope decides pass/fail.
+# Job states in which Slurm still holds a submitted job alive (job_state_codes(7)),
+# minus the retained results in `_TERMINAL_RETAINED_STATES`. `wait_all` waits on this
+# set: a missing state hides a live job from the wait, an extra one holds the wait on a
+# finished record.
 #
-# This is the set `wait_all`'s drain poll waits on, and it must be complete
-# in BOTH directions (#527 review). A live state missing from it makes a
-# live job invisible to `_outstanding`: the wait returns, the collector
-# records a missing envelope for a job that is still queued, and nothing
-# cancels it. A finished state wrongly IN it holds the fleet on a record
-# Slurm is merely retaining until it is purged, which delays collection and
-# the license-queue retry — and, with a finite `max-wait`, fails a run whose
-# jobs had all ended.
-#
-# Spelled out rather than omitted, which is the trap here: `squeue` with no
-# `--states` does NOT list every live job, it reports "pending, running, and
-# completing jobs" (squeue(1)), so dropping the flag would NARROW this
-# filter — SUSPENDED, CONFIGURING and every held state would go missing.
-# `--states=all` is not the default and would go the other way, naming jobs
-# that have already finished.
-#
-# Long names rather than the short codes (`PD,R,S,...`): squeue takes
-# either, the long form is the one job_state_codes(7) documents, and several
-# of these states have no abbreviation to write.
+# Spelled out because `squeue` without `--states` lists only pending, running and
+# completing jobs, and `--states=all` also names finished ones. Long names because
+# several states have no short code.
 _LIVE_STATES = (
     "PENDING",
     "RUNNING",
     "SUSPENDED",
-    # A SIGSTOPped job "retains its CPUs" (job_state_codes(7)), so it has
-    # not terminated: `singleton` still waits for it and the collector must
-    # still wait for its envelope (#527).
+    # A stopped job retains its CPUs; it has not terminated.
     "STOPPED",
     "CONFIGURING",
     "COMPLETING",
@@ -104,53 +69,31 @@ _LIVE_STATES = (
     "RESIZING",
     "REQUEUED",
     "REQUEUE_HOLD",
-    # Held because the reservation it asked for was deleted: as stuck, and
-    # as un-terminated, as a REQUEUE_HOLD job.
     "RESV_DEL_HOLD",
     "REQUEUE_FED",
-    # "The job was requeued in a special state" — a requeue, so the job runs
-    # again once it is released. Held, not finished.
     "SPECIAL_EXIT",
 )
 
-# ...and the two that sit in squeue's state list looking non-terminal but
-# are RESULTS: the job is over and Slurm is keeping the record until it is
-# purged (#527 round-19 review).
-#
-# PREEMPTED is where the collector expects to find a preempted job: retry
-# classifies it beside TIMEOUT and NODE_FAIL in
-# :data:`~rtl_buddy.dispatch.retry.RESOURCE_KILL_STATES` — an allocation
-# lost, which is a finished job to re-submit rather than one to keep waiting
-# for. (A preemption configured to requeue moves the job on to
-# REQUEUED/PENDING, both above, so that case still holds the fleet.)
-# REVOKED is the federation twin: "sibling was removed from cluster due to
-# other cluster starting the job", so this record will never progress and
-# waiting on it would be waiting for a job running somewhere else.
-#
-# The dedup probe still asks for both, because there the over-report is
-# free: it only names the ids `--dependency=singleton` may be waiting for,
-# and a predecessor whose record is still in the queue is worth naming
-# either way. In the drain poll the same over-report costs a run.
+# Results Slurm keeps after the job is over. The drain poll must not wait on them: retry
+# treats PREEMPTED as a finished resource kill (`RESOURCE_KILL_STATES`), and REVOKED is
+# a federation sibling that will never progress. The dedup probe includes both, since
+# naming a predecessor whose record is still queued is harmless there.
 _TERMINAL_RETAINED_STATES = ("PREEMPTED", "REVOKED")
 
-# The two filters, DERIVED from one base so they cannot drift apart: the
-# probe's set is the drain set plus the retained results.
+# Both filters derive from `_LIVE_STATES` so they cannot drift apart.
 _DEDUP_STATES = _LIVE_STATES + _TERMINAL_RETAINED_STATES
 _DRAIN_FILTER = ",".join(_LIVE_STATES)
 _DEDUP_FILTER = ",".join(_DEDUP_STATES)
 
-# What squeue answers a state name its Slurm predates: `squeue: error:
-# Invalid job state specified: RESV_DEL_HOLD`. A name it rejects is a state
-# that build has no concept of, so no job of ours can be sitting in it —
-# dropping just that name keeps every state the cluster DOES know, where
-# retrying without `--states` would fall back to squeue's own narrower
-# default and hide a held job (#527 review). An empty capture is the older
-# phrasing that names nothing.
+# squeue answers a state name its Slurm predates with `Invalid job state specified:
+# <NAME>`. Dropping only that name keeps every state the cluster knows; dropping
+# `--states` would fall back to squeue's narrower default and hide held jobs. An empty
+# capture names nothing.
 _INVALID_STATE_RE = re.compile(
     r"invalid job state[s]?(?: specified)?\s*:?\s*([A-Za-z_,]*)", re.I
 )
-# ...and what it answers once none of the ids are in the queue any more.
-# That is completion, not failure: the jobs aged out.
+# squeue's answer once none of the ids are queued any more: the jobs aged out, which is
+# completion.
 _GONE_FROM_QUEUE = "invalid job id"
 
 
@@ -167,32 +110,20 @@ def _rejected_states(stderr: str) -> tuple[str, ...] | None:
     return tuple(name.upper() for name in named)
 
 
-# squeue's reason for a job whose `afterok` dependency has already failed.
-# Such a job is PENDING but will NEVER run, and since PD counts as "still in
-# the queue" a head that waited on it would poll until killed.
-#
-# Jobs THIS backend submits are reaped by Slurm itself — see
-# `_dependency_argv`, which passes --kill-on-invalid-dep=yes — so `wait_all`'s
-# sweep over this reason is the fallback, not the primary mechanism: it covers
-# a site that turns the flag back off via sbatch-args, and a Slurm that
-# ignores it. Absent both, the job pends until the site's
-# `kill_invalid_depend` reaps it, which is off by default (#358, #372).
+# squeue reason for a job whose `afterok` dependency failed: PENDING but never runnable.
+# Slurm reaps our jobs itself through `--kill-on-invalid-dep` (see `_dependency_argv`);
+# `wait_all` sweeps this reason as the fallback for sites or Slurms that ignore the
+# flag.
 _NEVER_SATISFIED = "DependencyNeverSatisfied"
 
-# What each poll asks squeue for: id | reason | state | time-used | name.
-# The first two are what `_reap_never_satisfied` has always needed; the
-# rest are the progress line's running/pending split and its "longest
-# running job" (#435). Parsing stays tolerant of a short line so a Slurm
-# that renders fewer columns degrades to a plainer progress line rather
-# than breaking the wait.
+# Columns per poll: id | reason | state | time-used | name. Parsing tolerates short
+# lines.
 _SQUEUE_FORMAT = "%i|%r|%T|%M|%j"
 _SQUEUE_RUNNING_STATE = "RUNNING"
 
-# One element per manifest line, indexed by SLURM_ARRAY_TASK_ID. Lines
-# are shlex-quoted, so eval reconstructs the exact argv. A missing line
-# (short/rewritten manifest) fails the element loudly rather than exiting
-# 0 with no envelope, which would surface as a misleading "produced no
-# result (killed/crashed)" in the collector.
+# One element per manifest line, indexed by SLURM_ARRAY_TASK_ID; lines are shlex-quoted,
+# so eval rebuilds the argv. A missing line fails the element loudly instead of exiting
+# 0 with no envelope.
 _ARRAY_SCRIPT = """#!/bin/bash
 set -uo pipefail
 cmd=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$1")
@@ -207,36 +138,24 @@ _SACCT_FORMAT = (
     "JobID,State,ElapsedRaw,TimelimitRaw,AllocCPUS,ReqCPUS,ReqMem,TotalCPU,MaxRSS"
 )
 
-# `AllocCPUS` is what the scheduler handed out, which is not what the
-# reservation asked for. A partition with `SelectTypeParameters=NONE` on
-# nodes with `ThreadsPerCore=2` allocates whole cores, so `--cpus-per-task=1`
-# comes back as `AllocCPUS=2` — and cpu efficiency measured against it caps a
-# single-threaded job at 0.5, firing the default over-threshold on every test
-# forever (#505). `ReqCPUS` is the number the project's YAML controls, so it
-# is carried alongside and right-sizing ratios against it; the allocated
-# figure stays, because it is what `squeue`/`sacct` show.
+# `AllocCPUS` can exceed the request: whole-core allocation with `ThreadsPerCore=2`
+# turns `--cpus-per-task=1` into 2, which would cap a single-threaded job's cpu
+# efficiency at 0.5. `ReqCPUS` is what the project YAML controls, so right-sizing ratios
+# against it.
 
-# `scontrol show config` renders one `Key = Value` per line, padded. The
-# value that matters here is the cluster's job-array ceiling (#509).
+# `scontrol show config` prints padded `Key = Value` lines.
 _MAX_ARRAY_SIZE_RE = re.compile(r"^MaxArraySize\s*=\s*(\d+)\s*$", re.MULTILINE)
-# ...and the SECOND ceiling, which a cluster may set below it:
-# `SchedulerParameters=max_array_tasks=N`. slurm.conf(5) defines it as "the
-# maximum number of tasks that be included in a job array", defaulting to
-# MaxArraySize — a COUNT, inclusive, unlike MaxArraySize's exclusive index
-# bound. Its own example is the whole trap: max_array_tasks=1000 with
-# MaxArraySize=100001 permits task index 100000 but only 1000 tasks in one
-# array. `scontrol show config` keeps reporting the larger MaxArraySize, so
-# a slice sized from that alone is refused (#509 review).
+# `SchedulerParameters=max_array_tasks=N` is a second ceiling: a task count, inclusive,
+# where MaxArraySize bounds the task index exclusively. `scontrol show config` keeps
+# reporting the larger MaxArraySize, so slices sized from it alone can be refused.
 _SCHEDULER_PARAMS_RE = re.compile(r"^SchedulerParameters\s*=\s*(.*)$", re.MULTILINE)
 _MAX_ARRAY_TASKS_RE = re.compile(r"\bmax_array_tasks\s*=\s*(\d+)\b")
 
 
 def _max_array_tasks(config_text: str) -> int | None:
-    """``max_array_tasks`` from a ``scontrol show config`` dump, if set.
+    """``max_array_tasks`` from a ``scontrol show config`` dump, or ``None``.
 
-    Read out of the ``SchedulerParameters`` line rather than the whole
-    dump, so nothing else that happens to mention the key can be taken for
-    the cluster's setting.
+    Read from the ``SchedulerParameters`` line only.
     """
     params = _SCHEDULER_PARAMS_RE.search(config_text)
     if params is None:
@@ -245,51 +164,28 @@ def _max_array_tasks(config_text: str) -> int | None:
     return int(match.group(1)) if match is not None else None
 
 
-# The probe is a courtesy, not a dependency: a slurmctld that is slow or
-# unreachable must cost a bounded wait and then leave chunking off, never
-# hang the head before it has submitted anything.
+# The probe is optional: a slow or unreachable slurmctld costs a bounded wait and leaves
+# chunking off, never a hang.
 _SCONTROL_TIMEOUT_S = 30
-# Options by which `sbatch-args` sends the jobs to another cluster. The
-# probe has to follow them: `scontrol show config` with no cluster reads
-# the LOCAL slurmctld, whose MaxArraySize says nothing about the cluster
-# the arrays are actually submitted to (#509 review).
-# sbatch resolves any UNAMBIGUOUS long-option prefix (GNU getopt_long), so
-# a selector may legitimately be written short. `--clusters` has no such
-# abbreviation: every proper prefix of it, `--cl` through `--cluster`, is
-# also a prefix of `--cluster-constraint` — sbatch's only other `--cl`
-# option — so getopt_long calls them ambiguous and sbatch exits rather than
-# submitting. (The rest of its `c` options diverge at `--c` already:
-# --chdir, --comment, --constraint, --container*, --contiguous, --core-spec,
-# --cores-per-socket, --cpu-freq, --cpus-per-*.) Matching a prefix here
-# would therefore read a selection out of a command line that cannot run,
-# and `--cluster-constraint=<list>` — a FEATURE list, not a cluster — is
-# exactly what a loose prefix match would swallow.
+# Options by which `sbatch-args` sends jobs to another cluster; the probe must follow
+# them, since `scontrol show config` alone reads the local slurmctld.
 #
-# `--cluster` singular is kept because the cost is asymmetric: several
-# Slurm clients register it explicitly as an alias of `--clusters`, and if
-# sbatch is not one of them it is one of those ambiguous prefixes, so the
-# submit fails at sbatch before this probe's answer could matter. Missing a
-# real selection, by contrast, silently sizes slices from the wrong
-# cluster's limit — the bug this probe exists to avoid.
+# Only exact spellings are matched. sbatch accepts any unambiguous long-option prefix,
+# but every proper prefix of `--clusters` is also a prefix of `--cluster-constraint` (a
+# feature list), so sbatch rejects them as ambiguous. `--cluster` is kept as a tolerated
+# alias.
 _CLUSTER_OPTS = ("-M", "--clusters", "--cluster")
-# Slurm documents this as the equivalent of `--clusters`, with the command
-# line winning — so `sbatch-args` is consulted first and this only fills in
-# for a site that exports the selection instead of writing it (#509 review).
+# Equivalent of `--clusters`, with the command line winning.
 _CLUSTER_ENV = "SBATCH_CLUSTERS"
-# The reserved value: query EVERY registered cluster and submit to whichever
-# can start first. Like a comma-separated list it names no single cluster.
+# Reserved value selecting every registered cluster.
 _CLUSTER_ALL = "all"
 
 
 def _is_multi_cluster(value: str) -> bool:
-    """Does this selection name more than one cluster?
+    """Whether this cluster selection names more than one cluster (``a,b`` or ``all``).
 
-    Both spellings Slurm gives for "let the scheduler choose": an explicit
-    ``a,b`` list and the reserved ``all``. Which cluster runs the array is
-    then decided at submit, so no single ``MaxArraySize`` describes it —
-    and ``scontrol -M all show config`` answers with one config block per
-    cluster, where a first-match regex would silently pick a limit
-    belonging to whichever cluster sorted first.
+    No single ``MaxArraySize`` applies then, and ``scontrol -M all show config`` returns
+    one config block per cluster.
     """
     return "," in value or value.strip().lower() == _CLUSTER_ALL
 
@@ -297,23 +193,9 @@ def _is_multi_cluster(value: str) -> bool:
 def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     """The cluster ``sbatch-args`` submits to, or ``None`` for the local one.
 
-    All four spellings Slurm takes: ``-M name``, ``-Mname``,
-    ``--clusters=name`` and ``--clusters name``, plus the ``--cluster``
-    singular (see :data:`_CLUSTER_OPTS`). The LAST occurrence wins, which
-    is how sbatch itself resolves a repeated option — so a project
-    appending an override to a shared list gets the same answer here as at
-    submit.
-
-    Shorter abbreviations are NOT accepted, and that is not an omission:
-    ``--clusters`` has no unambiguous prefix, because ``--cluster-constraint``
-    shares every one of them. Reading ``--clus=x`` as a selection would be
-    reading it out of a command line sbatch refuses to run, and it is the
-    same match that would mistake a ``--cluster-constraint`` feature list
-    for a cluster name.
-
-    The value is returned verbatim, comma-separated multi-cluster lists
-    included: deciding what to do about those belongs to the caller, which
-    is the only place that can say what it costs.
+    Accepts ``-M name``, ``-Mname``, ``--clusters=name``, ``--clusters name`` and the
+    ``--cluster`` alias (see :data:`_CLUSTER_OPTS`); the last occurrence wins, as in
+    sbatch. The value is returned verbatim, including multi-cluster lists.
     """
     selected = None
     for index, arg in enumerate(sbatch_args):
@@ -328,28 +210,19 @@ def _selected_cluster(sbatch_args: Sequence[str]) -> str | None:
     return selected or None
 
 
-# The whole of one key's release, not one call of it and not one cluster's
-# share of it. A key fanned out over a thousand runs is a thousand
-# `scontrol` calls, and at one 30 s timeout each an unreachable controller
-# would hold the build job — and the compile slot it occupies — for hours
-# to buy an optimization. The batch gets a budget instead, and the first
-# systemic failure ends it. The caller (the build job) holds ONE deadline
-# per compile key and passes what is left of it as `budget_s`, so a key
-# whose jobs span several clusters does not get a fresh budget per cluster
-# (#548 review).
+# Time budget for releasing one compile key's jobs, across all clusters. The build job
+# holds one deadline per key and passes the remainder as `budget_s`, so an unreachable
+# controller cannot hold it for hours.
 RELEASE_BUDGET_S = 60
 
 
 class ReleaseOutcome(NamedTuple):
-    """What one batch of :func:`release_dependency` actually managed.
+    """Result of one :func:`release_dependency` batch.
 
-    ``systemic`` is set when the batch stopped early — a timeout, or
-    ``scontrol`` not being executable at all. Those say something about
-    this host and this controller rather than about a job id, so retrying
-    the remaining ids would pay the same cost again; ``skipped`` is what
-    was never attempted, and the caller should stop asking for the rest of
-    the run. A per-id refusal (``rc != 0``: an unknown or already-finished
-    job) is an ordinary ``failure`` and the batch continues.
+    ``systemic`` is set when the batch stopped early (timeout, or ``scontrol`` not
+    executable); ``skipped`` holds the ids never attempted, and the caller should stop
+    releasing for the run. A per-id refusal is an ordinary entry in ``failures`` and the
+    batch continues.
     """
 
     released: list[str]
@@ -365,29 +238,16 @@ def release_dependency(
     cwd: str | None = None,
     budget_s: float | None = None,
 ) -> ReleaseOutcome:
-    """Clear these jobs' scheduler dependency; report what happened (#548).
+    """Clear these jobs' scheduler dependency and report what happened.
 
-    ``scontrol update JobId=<id> Dependency=`` is how a job sitting
-    ``PENDING`` with reason ``Dependency`` is told to stop waiting. It
-    takes a plain id and an array *element* id alike (``1234`` /
-    ``1234_3``), and clearing one element leaves its siblings pending, so
-    a compile key's sims can be released without disturbing the rest of
-    the array they were grouped into.
+    Runs ``scontrol update JobId=<id> Dependency=`` per id. Plain and array-element ids
+    (``1234``, ``1234_3``) both work, and siblings stay pending. ``cluster`` is the
+    cluster that issued the ids, since job ids are unique only within a cluster. Called
+    from the build job against ids from the gates manifest.
 
-    Called from the build job, once a key has compiled, against ids the
-    head wrote into the gates manifest. ``cluster`` is the one those ids
-    were issued by, since a job id is unique only within its cluster
-    (#509) — the caller batches by it. One call per id: ``scontrol
-    update`` addresses a single job.
-
-    The whole batch shares ``budget_s`` (default :data:`RELEASE_BUDGET_S`)
-    and each call is time-boxed to what is left of it, so the cost of this
-    is bounded by the batch and not by the fan-out.
-
-    Best effort, and it never raises. The ``afterok`` gate is still on
-    every job that was not reached, so a release that does not happen
-    costs the run its early start and nothing else; a raise, by contrast,
-    would escape the build job and cancel the whole fan-out.
+    The batch shares ``budget_s`` (default :data:`RELEASE_BUDGET_S`) and each call is
+    time-boxed to what is left. Never raises: an unreleased job keeps its ``afterok``
+    gate and only loses the early start.
     """
     cluster_argv = [] if cluster is None else ["-M", cluster]
     released: list[str] = []
@@ -417,9 +277,7 @@ def release_dependency(
                 timeout=min(_SCONTROL_TIMEOUT_S, remaining),
             )
         except (OSError, subprocess.SubprocessError) as e:
-            # Not about this job id: a wedged controller or an scontrol
-            # that cannot be run answers the same way for every id behind
-            # it. Stop the batch and tell the caller to stop asking.
+            # Systemic: every remaining id would fail the same way. Stop the batch.
             systemic = str(e)[:200]
             failures.append((job_id, systemic))
             break
@@ -438,136 +296,66 @@ def release_dependency(
     return ReleaseOutcome(released, failures, pending, systemic)
 
 
-# `MaxRSS` is a high-water mark over samples, so a job shorter than the
-# sampling interval reports whatever the first sample caught — near zero.
-# The stock `JobAcctGatherFrequency` is 30 s and dispatch exists to produce
-# jobs far shorter than that, so right-sizing was reading peaks 17-27x below
-# the truth and advising reservations from them (#365). Ask for the sampling
-# the advice needs instead of inheriting the site default; one sample per
-# second per job is cheap next to being wrong in the unsafe direction.
+# `MaxRSS` is a peak over samples, so a job shorter than the sampling interval reports a
+# near-zero peak. Request per-second task sampling instead of the site default (30 s).
 _ACCT_FREQ_OPT = "--acctg-freq"
 _ACCT_FREQ_DEFAULT = f"{_ACCT_FREQ_OPT}=task=1"
 _DEFAULT_ACCT_INTERVAL_S = 1.0
 
-# ------------------------------------------------ build-job dedup (#507)
+# ------------------------------------------------ build-job dedup
 #
-# A build job carries a name derived from what it builds, and is submitted
-# with `--dependency=singleton`, which Slurm defines as "this job can begin
-# execution after any previously launched jobs sharing the same job name
-# and user have terminated". So one build identity admits one running
-# build job per user and cluster, cluster-side and atomically (a
-# federation resolves it across its clusters unless the site sets
-# `DependencyParameters=disable_remote_singleton`): a second run of the
-# same suite queues behind the first run's build job instead of Verilating
-# into the same shared directory beside it. The in-job `flock` (#504)
-# already makes that safe, but only by parking the second builder inside a
-# compute allocation for the whole of the first compile; a queue
-# dependency is the same wait with the allocation released, and it is the
-# form that also holds where `flock` is process-local (an NFS mount with
-# `nolock`).
+# Build jobs are named per suite and submitted with `--dependency=singleton`, so Slurm
+# runs one build job per (user, name) at a time and a second run of the suite queues
+# behind the first. The in-job `flock` also keeps concurrent builds safe, but parks the
+# second builder in a compute allocation, and is process-local on NFS mounts with
+# `nolock`.
 _BUILD_JOB_NAME_PREFIX = "rb-build"
-# The verilate half of a split compile gets its own name, over the same
-# digest (#593). It has to: `singleton` serialises on the (user, name)
-# pair, and one name shared with the build job would make each phase wait
-# for the other's predecessor — a chain that deadlocks the moment two runs
-# of one suite overlap.
+# The verilate half of a split compile has its own name over the same digest.
+# `singleton` serialises per name, so a shared name would make each phase wait on the
+# other's predecessor and deadlock overlapping runs.
 _VERILATE_JOB_NAME_PREFIX = "rb-verilate"
-# The clause itself. It names no job ids — Slurm resolves it against the
-# (user, job name) pair at schedule time — which is what makes it free of
-# the check-then-submit race a queue probe has, and what makes it work on
-# a submit host where `squeue` is unavailable.
+# Names no job ids, so it has no check-then-submit race and works where `squeue` is
+# unavailable.
 _DEDUP_DEPENDENCY = "singleton"
-# sbatch reads this as the default for `-d/--dependency`, and a
-# command-line option overrides it. Before #507 the build job passed no
-# dependency flag, so a gate exported this way reached it untouched;
-# emitting one means composing with it rather than replacing it.
+# sbatch's default for `-d/--dependency`; a command-line option overrides it, so the
+# generated dependency composes with it.
 _SBATCH_DEPENDENCY_ENV = "SBATCH_DEPENDENCY"
-# Slurm takes `,` (all dependencies must be satisfied) or `?` (any may be),
-# and one expression may not mix them. A configured `?` therefore cannot be
-# composed with, and this is the marker for that case.
+# One expression may use `,` (all) or `?` (any), not both, so an expression using `?`
+# cannot be composed with.
 _DEPENDENCY_OR_SEPARATOR = "?"
-# sbatch takes any UNAMBIGUOUS abbreviation of a long option, so
-# `--depend=afterok:7` is a real dependency and reading only the full
-# spelling would let the generated clause replace it (#507 review). Its
-# `d` options are `--deadline`, `--delay-boot`, `--dependency` and
-# `--distribution`: `--de` still collides with the first two, so `--dep`
-# is the shortest prefix that can only mean this one. Over-claiming a
-# longer prefix sbatch would reject as ambiguous is harmless — the
-# submission fails on the user's own flag either way — but claiming a
-# shorter one would read `--deadline` as a dependency.
+# sbatch accepts any unambiguous long-option prefix. `--dep` is the shortest that cannot
+# mean `--deadline`, `--delay-boot` or `--distribution`.
 _DEPENDENCY_OPT = "--dependency"
 _DEPENDENCY_MIN_ABBREV = "--dep"
-# What the informational probe counts as "still in flight" is
-# :data:`_DEDUP_FILTER`, defined once at the top of this module as the drain
-# poll's live states plus the results Slurm retains — because `singleton`
-# defers this job until every earlier one of the same name and user has
-# *terminated*, and a record still in the queue is worth naming whichever of
-# the two it is (#507 review, #527 round 19).
-# The probe sits between the user and their submission, so it is
-# time-boxed: a wedged squeue must cost a few seconds and a DEBUG line,
-# never the run. It only feeds a log line — the guarantee is the
-# dependency above — so losing it loses nothing but the explanation.
+# The informational probe counts jobs in `_DEDUP_FILTER` as in flight. It is time-boxed
+# because it only feeds a log line; the guarantee is the dependency.
 _DEDUP_TIMEOUT_SEC = 20.0
 
 
 def _is_dependency_opt(arg: str) -> bool:
-    """Is ``arg`` the long ``--dependency`` option, however abbreviated?
+    """Whether ``arg`` is the long ``--dependency`` option, abbreviated or not.
 
-    True for every spelling sbatch resolves to it — ``--dep``, ``--depe``,
-    ..., ``--dependency`` — and false for the options an abbreviation
-    could otherwise be confused with (``--deadline``, ``--delay-boot``,
-    ``--distribution``), because a prefix shorter than
-    :data:`_DEPENDENCY_MIN_ABBREV` is not claimed. The ``=value`` form is
-    the caller's business: it splits first and asks about the flag half.
+    Prefixes shorter than :data:`_DEPENDENCY_MIN_ABBREV` are not claimed. The caller
+    splits ``=value`` first and passes the flag half.
     """
     return arg.startswith(_DEPENDENCY_MIN_ABBREV) and _DEPENDENCY_OPT.startswith(arg)
 
 
 def build_job_name(spec: BuildJobSpec) -> str:
-    """The Slurm job name for ``spec``: one name per build identity (#507).
+    """The Slurm job name for ``spec``: one name per suite directory.
 
-    Deterministic across runs and across a user's processes, because the
-    name is the rendezvous point: ``--dependency=singleton`` serialises
-    jobs that share a name and owner, so two invocations that would
-    populate the same shared build tree have to answer to one name or the
-    dedup does not fire.
+    Deterministic across runs and processes, because ``--dependency=singleton``
+    serialises jobs sharing a name and owner. The identity is the suite directory, which
+    owns ``artefacts/.shared-builds/``. Finer keys are wrong: different tests or builder
+    modes of one suite can compile the same key into the same ``obj_dir``. The compile
+    key itself is unavailable, since it is only known after the config's ``pre()`` hook
+    runs inside the job. Over-matching costs queue latency, never a wrong build.
 
-    The identity is **the suite directory, and nothing else**. That is the
-    unit which owns ``artefacts/.shared-builds/``, so it is the coarsest
-    thing that is still precise: every build any invocation of this suite
-    performs lands under that one tree.
-
-    Everything finer was tried and was wrong. The planned tests: ``rb
-    regression`` over a suite and ``rb test alpha`` inside it compile the
-    same key into the same ``obj_dir_<key>``, so naming them apart leaves
-    the issue's own shape — interrupt a regression, re-run one test —
-    racing. The builder selection (mode, ``--builder`` override): two
-    modes whose ``compile-time`` options are identical and differ only in
-    ``run-time`` produce the SAME compile key and the same ``obj_dir``,
-    so keying on the mode would let a ``-M debug`` run and a ``-M reg``
-    run build into one directory at once.
-
-    So the name over-matches, on purpose. It is not the compile key and
-    cannot be: keys fingerprint sources, flags and defines, and are only
-    knowable after a config's ``pre()`` hook has run inside the job, on a
-    compute node, after the filelists are written (#458). Two runs of one
-    suite therefore share a name whether or not they compile the same
-    thing, and the cost of a false match is queue latency — the second job
-    waits, then finds the stamp does not validate and builds — never a
-    wrong build. A different suite, which owns a different shared tree,
-    never adopts another build's wait.
-
-    The two halves of a split compile (#593) are two identities over that
-    one digest — ``rb-verilate-<hash>`` and ``rb-build-<hash>``. Sharing a
-    name would make each phase's ``singleton`` wait for the other phase's
-    predecessor, which two overlapping runs of one suite can satisfy only
-    by deadlock.
+    The verilate and build halves of a split compile use ``rb-verilate-<hash>`` and
+    ``rb-build-<hash>`` over one digest.
     """
-    # `os.fsencode`, not `.encode("utf-8")`: a path byte that is not valid
-    # UTF-8 arrives here surrogate-escaped (PEP 383), and encoding that
-    # raises UnicodeEncodeError — a crash before sbatch, for a suite the
-    # filesystem is perfectly happy with. fsencode is the inverse of the
-    # decode that produced the escapes, so it round-trips those bytes.
+    # os.fsencode, not .encode("utf-8"): a non-UTF-8 path byte arrives surrogate-escaped
+    # and would raise UnicodeEncodeError.
     digest = hashlib.sha256(os.fsencode(os.path.abspath(spec.suite_dir))).hexdigest()[
         :12
     ]
@@ -623,11 +411,9 @@ def _parse_cpu_time_to_seconds(text: str) -> float | None:
 
 
 def _parse_squeue_line(line: str) -> dict | None:
-    """One ``_SQUEUE_FORMAT`` line as a record; ``None`` if it has no id.
+    """One ``_SQUEUE_FORMAT`` line as a record, or ``None`` when it has no id.
 
-    Tolerant of a line with fewer fields than asked for: the id and the
-    reason are load-bearing (they decide what is still queued and what is
-    doomed), the rest only decorate the progress line.
+    Tolerates short lines: only the id and reason drive decisions.
     """
     job_id, _, rest = line.partition("|")
     job_id = job_id.strip()
@@ -652,17 +438,9 @@ def _expand_squeue_id(
 ) -> list[str]:
     """Handle ids one squeue id stands for.
 
-    squeue speaks four shapes and only one of them is one job:
-    ``1235`` (a non-array job, or a whole array before Slurm splits it),
-    ``1235_3`` (one element), ``1235_[1-40]`` / ``1235_[1,3-5]`` (the
-    still-pending elements of an array), and ``1235_[1-40%4]`` (the same
-    with the concurrency throttle attached). Counting lines instead of
-    expanding them is what made ``remaining`` a number about the queue
-    rather than about the run.
-
-    A bare base id with array handles is expanded **conservatively** to
-    every handle sharing it: the alternative — assuming it means one job —
-    would under-report a whole array as a single outstanding job.
+    Handles ``1235``, ``1235_3``, ``1235_[1-40]``, ``1235_[1,3-5]`` and
+    ``1235_[1-40%4]``. A bare base id is expanded to every handle sharing it, so a whole
+    array is not counted as one job.
     """
     base, sep, element = job_id.partition("_")
     if not sep:
@@ -687,21 +465,17 @@ def _expand_squeue_id(
     return [f"{base}_{index}" for index in expanded] or [job_id]
 
 
-# The two cfg-dispatch fields an array ceiling can come from. Which one
-# GOVERNED a slice decides which one a rejected slice must be lowered on:
-# telling a site to shrink `max-array-size` when its `max_array_tasks` is
-# the binding cap misstates the cluster's index ceiling, and is exactly
-# what the separate task-count field exists to avoid (#509 review).
+# The cfg-dispatch fields an array ceiling can come from. A rejected slice is reported
+# against the field that governed it.
 _FIELD_MAX_ARRAY_SIZE = "cfg-dispatch.max-array-size"
 _FIELD_MAX_ARRAY_TASKS = "cfg-dispatch.max-array-tasks"
 
 
 class _ArrayLimit(NamedTuple):
-    """The resolved slice size, and enough provenance to advise on it.
+    """The resolved slice size and its provenance.
 
-    ``elements`` is ``None`` when no limit could be established at all;
-    ``source`` is where the governing value came from (``config`` or
-    ``scontrol``) and ``governed_by`` is WHICH ceiling it was.
+    ``elements`` is ``None`` when no limit is known; ``source`` is ``config`` or
+    ``scontrol``; ``governed_by`` is the ceiling that set it.
     """
 
     elements: int | None
@@ -712,12 +486,8 @@ class _ArrayLimit(NamedTuple):
 def _parsable_submission(stdout: str) -> tuple[str, str | None]:
     """``(job id, cluster)`` from ``sbatch --parsable`` output.
 
-    It prints ``jobid`` for a local submission and ``jobid;cluster`` for one
-    the multi-cluster path accepted elsewhere. The cluster half used to be
-    split off and dropped, which is fine for identifying the job and wrong
-    for acting on it: ids are unique per cluster, so a later ``scancel``
-    issued without it hits the LOCAL cluster's job of that number —
-    cancelling nothing, or something else entirely (#509 review).
+    The output is ``jobid`` or ``jobid;cluster``. The cluster is kept because ids are
+    unique per cluster, and ``scancel`` needs it.
     """
     job_id, _, cluster = stdout.strip().partition(";")
     return job_id.strip(), (cluster.strip() or None)
@@ -726,16 +496,10 @@ def _parsable_submission(stdout: str) -> tuple[str, str | None]:
 def _task_sampling_interval(value: str) -> float | None:
     """Seconds between task samples in an ``--acctg-freq`` value.
 
-    Accepts both forms Slurm takes: a bare interval (``30``) and the
-    typed, comma-separated form (``task=5,energy=0``). Only the ``task``
-    datatype samples memory, so the others are ignored.
-
-    Returns ``None`` when the value says nothing about task sampling — an
-    unparsable interval, or one naming only other datatypes — and
-    ``math.inf`` when it explicitly *disables* task sampling (``task=0``).
-    Those are different answers: "unknown" leaves the peak trusted, while
-    "never sampled" must distrust every peak, and mapping the explicit
-    disable onto the first is the one reading that cannot be right.
+    Accepts a bare interval (``30``) and the typed form (``task=5,energy=0``); only the
+    ``task`` datatype counts. Returns ``None`` when the value says nothing about task
+    sampling and ``math.inf`` when it disables it (``task=0``). The two differ: unknown
+    leaves the peak trusted, disabled distrusts it.
     """
     intervals = []
     for part in value.split(","):
@@ -757,81 +521,42 @@ class SlurmDispatchBackend(DispatchBackend):
     name = "slurm"
 
     def __init__(self, dispatch_cfg):
-        # Fail with the manifest's install hint, not a raw FileNotFoundError
-        # from the first subprocess.run, when the Slurm client is absent.
+        # Raises with the manifest's install hint when the Slurm client is absent.
         require_tool("slurm")
         self.sbatch_args = list(dispatch_cfg.sbatch_args)
         self.poll_interval = dispatch_cfg.poll_interval
-        # How often the wait says something, and how long it is willing to
-        # wait at all (#435). Both default-safe: 60 s of console cadence and
-        # an unbounded wait, i.e. today's behaviour plus a heartbeat.
         self.progress_interval = getattr(dispatch_cfg, "progress_interval", 60.0)
         self.max_wait = getattr(dispatch_cfg, "max_wait", None)
-        # The cluster's MaxArraySize, when the project pinned one (#509).
-        # Resolution itself is deferred to the first array submit — see
-        # _max_elements_per_array — so constructing a backend never shells
-        # out, and a run with no array never probes at all.
+        # Resolved on the first array submit, so constructing a backend never shells
+        # out.
         self.max_array_size = getattr(dispatch_cfg, "max_array_size", None)
-        # The second ceiling, for a site that cannot run `scontrol` at all:
-        # `SchedulerParameters=max_array_tasks` caps the tasks in ONE array
-        # independently of MaxArraySize, so it needs its own field — pinning
-        # a smaller max-array-size instead would state the wrong ceiling and
-        # still be wrong the moment the real MaxArraySize matters (#509).
+        # `SchedulerParameters=max_array_tasks` caps tasks per array independently of
+        # MaxArraySize, so it has its own field.
         self.max_array_tasks = getattr(dispatch_cfg, "max_array_tasks", None)
-        # ...cached per cluster selection: the answer is a property of the
-        # cluster probed, not of this process. The selection itself is
-        # resolved on demand (see `cluster`), not frozen here, because
-        # $SBATCH_CLUSTERS is part of it and is read when the probe runs.
-        # {selection: (elements per array or None, where it came from)}.
+        # Cached per cluster selection. The selection is read on demand because
+        # $SBATCH_CLUSTERS is part of it.
         self._elements_per_array_by_cluster: dict[str | None, _ArrayLimit] = {}
         self._acct_interval_s = self._resolve_accounting_frequency()
-        # The dedup probe is per RUN, not per suite (#507 review): a
-        # `squeue` that hangs costs its timeout on every build job a
-        # regression submits, and it is a purely informational probe. One
-        # failure retires it for this backend instance; a probe that
-        # answers keeps being asked.
+        # Retired after the first failure, so a hung `squeue` costs its timeout once per
+        # run.
         self._dedup_probe_available = True
-        # The state filter each drain poll asks with, PER CLUSTER: an absent
-        # entry means the full `_DRAIN_FILTER`, and a cluster whose Slurm
-        # rejects one of the names gets its own narrowed (or dropped) value
-        # — see `_narrow_wait_states`. Keyed like `_wait_poll_failed` below,
-        # by the cluster the poll addressed.
-        #
-        # Per cluster and not per backend, because the state names a Slurm
-        # knows are a property of THAT Slurm: one backend can hold handles
-        # on several clusters of a federation running different versions,
-        # and narrowing them all to what the oldest accepts would poll a
-        # newer cluster with a filter too small to see its own held job —
-        # which reads as drained, and retires a job that is still running
-        # (#527 review).
+        # Drain-poll state filter per cluster; a missing entry means the full
+        # `_DRAIN_FILTER`. Per cluster because federated clusters can run different
+        # Slurm versions, and narrowing to the oldest would hide held jobs on newer
+        # ones.
         self._wait_states_by_cluster: dict = {}
-        # Clusters whose poll has already failed for an unexplained reason:
-        # the first failure is a WARNING, the rest are DEBUG, or a wedged
-        # squeue would print one line per poll for the whole wait (#527
-        # review).
+        # Clusters whose poll already failed: the first failure warns, the rest log at
+        # DEBUG.
         self._wait_poll_failed: set = set()
 
     def _resolve_accounting_frequency(self) -> float | None:
-        """Request per-second task sampling, unless the user asked for a rate.
+        """Request per-second task sampling unless the user asked for a rate.
 
-        Prepended rather than appended so it keeps the documented
-        precedence — user ``sbatch-args`` are last and win — which also
-        means a site that must not raise the rate can put its own
-        ``--acctg-freq`` in ``sbatch-args`` and be obeyed.
-
-        Returns the interval that will actually apply to the jobs this
-        backend submits; right-sizing uses it to decide whether a job ran
-        long enough to have been sampled at all.
-
-        The presence check and the interval must be judged at the same
-        granularity, or one flag disarms both guards at once:
-        ``--acctg-freq=energy=30`` says nothing about task sampling, so
-        deferring to it would leave tasks on the site default *and* report
-        the interval as unknown — which reads as "no evidence the peak is
-        untrustworthy", putting #365 straight back. A user value that
-        yields no usable task interval is therefore reported at WARNING and
-        the default is still requested, so the trust decision is visible
-        rather than silently inverted.
+        Prepended, so user ``sbatch-args`` come later and win. Returns the interval that
+        applies to submitted jobs; right-sizing uses it to decide whether a job ran long
+        enough to be sampled. A user value with no usable task interval (for example
+        ``--acctg-freq=energy=30``) is logged at WARNING and the default is still
+        requested.
         """
         for index, arg in enumerate(self.sbatch_args):
             if arg == _ACCT_FREQ_OPT:
@@ -865,12 +590,9 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @property
     def effective_sbatch_args(self) -> list:
-        """What every submission of this backend really appends.
+        """The ``sbatch-args`` as submitted, including the prepended ``--acctg-freq``.
 
-        The list this backend was constructed with, plus the
-        ``--acctg-freq`` it prepends — i.e. the passthrough as submitted,
-        which is what right-sizing must judge a job's cpu request by
-        (#505 review).
+        Right-sizing judges a job's cpu request by it.
         """
         return self.sbatch_args
 
@@ -879,27 +601,25 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @staticmethod
     def _cwd_of(handles: Sequence[JobHandle | None]) -> str | None:
-        # Skip None handles for the same reason _base_ids does: cancel_all
-        # must not be disarmed by a bad caller (#361).
+        # Skips None handles so cancel_all is not disarmed by a bad caller.
         for h in handles:
             if h is not None:
                 return h.spec.suite_dir
         return None
 
     def _reservation_argv(self, resources, *, job_name, chdir, log_path) -> list[str]:
-        """Common sbatch reservation flags shared by build and sim jobs.
+        """Common sbatch reservation flags for build and sim jobs.
 
-        ``job_name`` may be ``None`` for a caller that emits its own after
-        ``sbatch_args`` — the build job does, because its name is what
-        ``--dependency=singleton`` serialises on (#507).
+        ``job_name`` may be ``None`` for a caller that appends its own after
+        ``sbatch_args``.
         """
         cmd = [
             "sbatch",
             "--parsable",
             *([] if job_name is None else [f"--job-name={job_name}"]),
             f"--chdir={chdir}",
-            # Always explicit: right-sizing needs a defined time limit,
-            # and site partitions may default to UNLIMITED.
+            # Explicit: right-sizing needs a defined limit, and partitions may default
+            # to UNLIMITED.
             f"--time={resources.time}",
             f"--cpus-per-task={resources.cpus}",
         ]
@@ -912,31 +632,20 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @staticmethod
     def _dependency_argv(dependency: str | None) -> list[str]:
-        """The ``afterok`` gate, plus self-reaping if it can never be met.
+        """The ``afterok`` gate, plus ``--kill-on-invalid-dep=yes``.
 
-        ``--kill-on-invalid-dep=yes`` makes **Slurm** remove the job the moment
-        the dependency becomes unsatisfiable. Without it such a job sits
-        ``PENDING`` with reason ``DependencyNeverSatisfied`` indefinitely unless
-        the site sets ``kill_invalid_depend`` in ``SchedulerParameters`` (off by
-        default), and the head is then the only thing that would clean it up —
-        which is exactly what fails when the head is killed rather than
-        interrupted, since ``cancel_all`` never runs. Asking Slurm to own the
-        cleanup is the only form that survives a ``SIGKILL``ed head.
+        Slurm then removes the job if the dependency can never be met. Slurm owning the
+        cleanup is the only form that survives a SIGKILLed head.
         """
         if dependency is None:
             return []
         return [f"--dependency=afterok:{dependency}", "--kill-on-invalid-dep=yes"]
 
     def _retire_dedup_probe(self, error: str, **fields) -> list[str]:
-        """Say the probe failed, stop asking, and answer "nobody" (#507).
+        """Log that the probe failed, stop asking, and return no ids.
 
-        Every reason it can fail — no ``squeue`` on the submit host, a
-        rejected query, a wedged slurmctld — is a property of this
-        submit host and this run, not of the suite being submitted. A
-        regression submits one build job per suite, so retrying would
-        pay the same timeout N times for a line that only decorates a
-        warning. Retired once, reported once, and the guarantee
-        (``--dependency=singleton``) is untouched by any of it.
+        Failures are properties of the submit host, not the suite, so retrying would
+        repeat the cost. The guarantee (``--dependency=singleton``) is unaffected.
         """
         self._dedup_probe_available = False
         log_event(
@@ -955,50 +664,24 @@ class SlurmDispatchBackend(DispatchBackend):
     def _queued_build_ids(self, job_name: str, *, cwd: str) -> list[str]:
         """This user's build jobs still in flight under ``job_name``.
 
-        Informational only (#507). The serialisation is
-        ``--dependency=singleton``, which Slurm evaluates itself against
-        the (user, job name) pair; this probe exists so the warning that
-        explains the resulting wait can *name* the jobs being waited on.
-        Nothing branches on it but that line.
-
-        The filter is every non-terminal state (:data:`_DEDUP_FILTER`),
-        which is the set ``singleton`` itself waits on — including the
-        held ones (``REQUEUE_HOLD``, ``SPECIAL_EXIT``) a stuck
-        predecessor sits in, since those are the ids the documented
-        recovery needs most.
-
-        Which is why every failure here is a DEBUG line, an empty answer,
-        and no second attempt this run (see :meth:`_retire_dedup_probe`):
-        a submit host with no ``squeue``, one that errors, or one that
-        hangs loses the explanation and keeps the guarantee. Scoped to
-        this user because that is the scope ``singleton`` has, and to the
-        cluster ``sbatch-args`` submits to, so the line describes the jobs
-        the dependency actually waits for.
+        Informational only: the serialisation is ``--dependency=singleton``; this probe
+        lets the warning name the jobs being waited on. The filter is
+        :data:`_DEDUP_FILTER`, which includes held states. Every failure returns no ids,
+        logs at DEBUG and disables the probe for the run (see
+        :meth:`_retire_dedup_probe`). Scoped to this user and to the cluster
+        ``sbatch-args`` selects.
         """
         if not self._dedup_probe_available:
             return []
         fields = {"job_name": job_name, "suite_dir": cwd}
-        # The RAW selection, not `self.cluster`: the property collapses any
-        # multi-cluster selection (`a,b`, `all`) to None, which is right for
-        # "which one cluster may I qualify a command with" and exactly wrong
-        # for "did the user select more than one" (#509 round 10).
+        # The raw selection, not `self.cluster`, which collapses multi-cluster
+        # selections to None.
         selection = self._cluster_selection()
         if selection is not None and _is_multi_cluster(selection):
-            # `--clusters=a,b` lets Slurm pick which one runs the job, at
-            # submit. Probing either would report ids from a queue this
-            # build job may not be in — and a job id means nothing without
-            # the cluster it belongs to.
-            #
-            # The same condition bounds the guarantee itself, which is why
-            # the line says so (#507 review): a federation resolves
-            # `singleton` across its clusters by default, but a site
-            # setting `DependencyParameters=disable_remote_singleton`
-            # fulfils it on the local cluster only — so two invocations
-            # routed to different clusters of one federation that shares
-            # this filesystem are not serialised against each other. This
-            # is the one DEBUG line that names that, and the condition is
-            # a property of `sbatch-args`, so saying it once per run is
-            # saying it as often as it can be true.
+            # Slurm picks the cluster at submit, so a job id from one queue would be
+            # ambiguous. With `DependencyParameters=disable_remote_singleton`,
+            # `singleton` is fulfilled per cluster only; the message below says so, once
+            # per run.
             return self._retire_dedup_probe(
                 f"sbatch-args select several clusters ({selection}), so a job "
                 "id from any one of them would be ambiguous; note that with "
@@ -1012,10 +695,8 @@ class SlurmDispatchBackend(DispatchBackend):
             user = getpass.getuser()
         except Exception as e:  # noqa: BLE001 - no login name, no probe
             return self._retire_dedup_probe(str(e), **fields)
-        # Follow `sbatch-args` to the cluster the build job is submitted to
-        # (#509 gave the backend the selection): a bare `squeue` reads the
-        # LOCAL queue, which for a remote submission means either silence
-        # or, worse, local ids named in a warning about a remote wait.
+        # Follow `sbatch-args` to the submit cluster; a bare `squeue` reads the local
+        # queue.
         cluster_argv = [] if self.cluster is None else ["-M", self.cluster]
 
         def _argv(states: str | None) -> list[str]:
@@ -1038,16 +719,10 @@ class SlurmDispatchBackend(DispatchBackend):
                 timeout=_DEDUP_TIMEOUT_SEC,
             )
             if proc.returncode != 0:
-                # An error return, and the state list is the one thing here
-                # a squeue can reject outright: the newer names in it
-                # (SIGNALING, STAGE_OUT, REQUEUE_FED) postdate older Slurms,
-                # which answer `Invalid job state specified` and take the
-                # whole probe down with them. Asking again without the flag
-                # falls back to squeue's own default — pending, running and
-                # completing — which is less than this wants but is what the
-                # probe had before it was widened, so an old cluster keeps
-                # its warning instead of losing it. Only on an error return:
-                # a timeout or a missing binary must stay a single cost.
+                # The state list is the one thing squeue can reject: newer names
+                # postdate older Slurms. Retry without it, which falls back to squeue's
+                # narrower default. Only on an error return; a timeout or missing binary
+                # stays a single cost.
                 proc = subprocess.run(
                     _argv(None),
                     capture_output=True,
@@ -1061,9 +736,8 @@ class SlurmDispatchBackend(DispatchBackend):
             return self._retire_dedup_probe(
                 proc.stderr.strip() or f"squeue exited {proc.returncode}", **fields
             )
-        # `--noheader` drops the column header, not the `CLUSTER: name`
-        # banner `-M` prints ahead of each queue, so ids are taken as the
-        # lines that begin like one (`123`, `123_4`, `123_[1-4]`).
+        # `--noheader` keeps the `CLUSTER: name` banner `-M` prints; take the lines that
+        # start like an id (`123`, `123_4`, `123_[1-4]`).
         return [
             line.strip()
             for line in proc.stdout.splitlines()
@@ -1071,69 +745,36 @@ class SlurmDispatchBackend(DispatchBackend):
         ]
 
     def _configured_dependency(self) -> str | None:
-        """The dependency expression already in force for this submission.
+        """The dependency expression already in force for this submission, raw.
 
-        Composed with rather than overwritten: a site that gates every
-        job behind a reservation or a staging job means it, and the dedup
-        clause is an additional condition, not a replacement. Returned
-        raw, separators included, because whether it uses ``,`` or ``?``
-        decides whether composing is possible at all.
-
-        Two sources, in sbatch's own precedence. ``sbatch-args`` first —
-        every spelling sbatch itself resolves, abbreviations included (see
-        :func:`_is_dependency_opt`), and the **last** occurrence, because
-        that is the one Slurm obeys: a repeated option overrides the earlier copy, so composing
-        onto the first would build the dedup on top of an expression the
-        scheduler has already discarded, and the flag this backend emits
-        (later still) would then drop the one the user actually meant.
-        Then :data:`_SBATCH_DEPENDENCY_ENV`, which sbatch documents as
-        equivalent to ``-d`` and which a command-line option overrides.
-
-        The environment half is why this is read at submit time rather
-        than resolved in ``__init__``. It also used to reach the build
-        job untouched, precisely because this backend passed no dependency
-        flag at all; now that it passes one, an exported gate would be
-        silently replaced instead of added to (#507 review).
-
-        The two halves are separately readable —
-        :meth:`_sbatch_args_dependency` is the first of them — because
-        they do not outrank the same things. Composing treats them alike,
-        since both are gates this backend must not replace. A consumer
-        asking "what will actually hold this job back" must not: a
-        command-line option beats the environment, so on a submission that
-        already carries a generated ``--dependency`` an exported value is
-        not the effective gate at all (#548 review).
+        Composed with rather than overwritten, since a site may gate every job behind a
+        reservation or staging job. Sources, in sbatch's precedence: the last matching
+        option in ``sbatch-args`` (abbreviations included, see
+        :func:`_is_dependency_opt`), then :data:`_SBATCH_DEPENDENCY_ENV`. The
+        environment is read at submit time. :meth:`_sbatch_args_dependency` reads the
+        first source alone, for callers that need what actually holds the job, since a
+        command-line option beats the environment.
         """
         found = self._sbatch_args_dependency()
         if found is not None:
             return found
-        # An empty or whitespace-only export is not an expression; sbatch
-        # would make nothing of it either, so it is "no gate" rather than
-        # something to compose a comma onto.
+        # A blank export is no gate.
         return os.environ.get(_SBATCH_DEPENDENCY_ENV, "").strip() or None
 
     def _sbatch_args_dependency(self) -> str | None:
-        """The dependency `sbatch-args` supplies, or ``None``.
+        """The dependency ``sbatch-args`` supplies, or ``None``.
 
-        The half of :meth:`_configured_dependency` that OUTRANKS what this
-        backend generates: `sbatch-args` is appended after the generated
-        flags in :meth:`_sbatch_argv`, and a repeated option is resolved
-        by Slurm to the last copy — so this expression, not the generated
-        ``afterok``, is what actually holds the job. Read separately by
-        the per-key release, which must not clear an expression the site
-        meant, and may clear one the generated flag has already overridden
-        (#548).
-
-        Every spelling sbatch itself resolves, abbreviations included (see
-        :func:`_is_dependency_opt`), and the **last** occurrence.
+        It outranks the generated ``afterok``, because ``sbatch-args`` come later in
+        :meth:`_sbatch_argv` and Slurm takes the last copy. The per-key release reads it
+        so as not to clear an expression the site meant. Matches every abbreviation (see
+        :func:`_is_dependency_opt`) and takes the last occurrence.
         """
         args = self.sbatch_args
         found = None
         skip = -1
         for index, arg in enumerate(args):
             if index == skip:
-                # A value consumed by the separated spelling above; it is
-                # not a flag, whatever it looks like.
+                # A value consumed by the separated spelling above.
                 continue
             flag, equals, value = arg.partition("=")
             if equals and _is_dependency_opt(flag):
@@ -1143,29 +784,17 @@ class SlurmDispatchBackend(DispatchBackend):
                     found = args[index + 1]
                     skip = index + 1
             elif arg.startswith("-d") and arg[1] != "-":
-                # `-dafterok:7`, the joined SHORT spelling. Long
-                # abbreviations begin `--` and were answered above.
+                # `-dafterok:7`, the joined short spelling.
                 found = arg[2:]
         return found
 
     def _dedup_dependency(self, *, suite_dir: str) -> str | None:
-        """The ``--dependency`` value that serialises this build job (#507).
+        """The ``--dependency`` value that serialises this build job.
 
-        ``singleton`` on its own, or whatever dependency is already in
-        force — from ``sbatch-args`` or from ``SBATCH_DEPENDENCY`` — with
-        ``singleton`` ANDed onto it. A site that gates every job behind a
-        staging job means that, and the dedup is an extra condition rather
-        than a replacement.
-
-        ``None`` when that expression uses the ``?`` (any-of)
-        separator: Slurm allows one separator per expression, so
-        ``afterok:7?afterok:8,singleton`` is rejected outright and the
-        submission would fail. Losing the dedup there costs what the dedup
-        buys — the in-job build lock still makes concurrent builders safe —
-        while composing would cost the run. Emitting no flag also leaves
-        the user's own gate exactly as it was: their ``sbatch-args`` copy
-        is still in the argv, and an exported one is still in sbatch's
-        environment.
+        ``singleton``, ANDed onto any dependency already in force (from ``sbatch-args``
+        or ``SBATCH_DEPENDENCY``). ``None`` when that expression uses ``?``, because
+        Slurm rejects mixed separators; the in-job build lock still keeps concurrent
+        builders safe, and the user's own gate is left as it was.
         """
         configured = self._configured_dependency()
         if configured is None:
@@ -1184,22 +813,18 @@ class SlurmDispatchBackend(DispatchBackend):
             )
             return None
         if _DEDUP_DEPENDENCY in configured.split(","):
-            # Already asked for by the user: repeating the clause would be
-            # inert but would make the argv read as if two things wanted it.
+            # Already requested by the user.
             return configured
         return f"{configured},{_DEDUP_DEPENDENCY}"
 
     def submit_build(
         self, spec: BuildJobSpec, *, dependency: str | None = None
     ) -> JobHandle:
-        """Submit one build job, optionally chained behind another (#593).
+        """Submit one build job, optionally chained behind another.
 
-        ``dependency`` is the verilate job's id, for the ``build`` half of
-        a split compile. It is ANDed onto whatever
-        :meth:`_dedup_dependency` produced and carries
-        ``--kill-on-invalid-dep=yes``: a verilate job that fails must reap
-        the build job rather than leave it ``PENDING`` with reason
-        ``DependencyNeverSatisfied`` for a head that may already be gone.
+        ``dependency`` is the verilate job's id for the build half of a split compile.
+        It is ANDed onto :meth:`_dedup_dependency` and adds
+        ``--kill-on-invalid-dep=yes``, so a failed verilate job reaps the build job.
         """
         job_name = build_job_name(spec)
         cmd = self._reservation_argv(
@@ -1209,33 +834,16 @@ class SlurmDispatchBackend(DispatchBackend):
             log_path=spec.log_path,
         )
         cmd += self.sbatch_args
-        # The build job's name is not decoration: `--dependency=singleton`
-        # serialises on it, and the probe and the logged `job_name` name
-        # it. A `--job-name` / `-J` in `sbatch_args` would otherwise win
-        # (Slurm takes the last), which would both point those two at a
-        # name the scheduler is not using AND collapse every suite onto
-        # one singleton — a repo-wide serialisation of unrelated builds.
-        # So it goes last, like `--dependency` below. The cost is that
-        # `sbatch-args` cannot rename the build job; the sim jobs are
-        # untouched, and the docs say so.
+        # The name goes after `sbatch_args`: `--dependency=singleton` serialises on it,
+        # and a `--job-name` in `sbatch_args` would win and collapse every suite onto
+        # one singleton. `sbatch-args` therefore cannot rename the build job.
         cmd.append(f"--job-name={job_name}")
-        # One build job of this identity runs at a time (#507). The flag
-        # goes AFTER `sbatch_args`, unlike the sim jobs' `afterok` gate:
-        # Slurm lets the last `--dependency` win, and a user-configured one
-        # would otherwise silently drop the dedup. It carries the user's
-        # expression too, so composing loses neither condition.
-        #
-        # `singleton` alone needs no `--kill-on-invalid-dep`: it waits for
-        # terminations, so it cannot become unsatisfiable. A composed user
-        # `afterok` still can — that is the exposure their own flag already
-        # had — and so can the chain below, which is why only that one adds
-        # the flag.
+        # Also after `sbatch_args`, because Slurm takes the last `--dependency`; it
+        # carries the user's expression too. `singleton` cannot become unsatisfiable, so
+        # only the chained `afterok` adds `--kill-on-invalid-dep`.
         dedup = self._dedup_dependency(suite_dir=spec.suite_dir)
-        # The chained `afterok` first, so the expression reads in the order
-        # the phases run. A refused dedup (a `?` expression, see
-        # `_dedup_dependency`) still gets the gate: the build half must not
-        # start before its verilation, and the in-job build lock is what
-        # makes two concurrent builders safe without it.
+        # The chained `afterok` comes first, in phase order, and is kept even when dedup
+        # is refused.
         clauses = [f"afterok:{dependency}"] if dependency is not None else []
         if dedup is not None:
             clauses.append(dedup)
@@ -1243,14 +851,8 @@ class SlurmDispatchBackend(DispatchBackend):
         if expression is not None:
             cmd.append(f"--dependency={expression}")
         if dependency is not None:
-            # Only for the chained gate: `singleton` waits for terminations
-            # and so can never become unsatisfiable, while an `afterok` on a
-            # job that failed can — and a job left PENDING on it outlives
-            # every head that could clean it up.
             cmd.append("--kill-on-invalid-dep=yes")
-        # Informational, and BEFORE the submit so it cannot see this run's
-        # own job: which jobs the dependency above will make this one wait
-        # for. The guarantee does not depend on the answer.
+        # Probed before the submit so it cannot see this run's own job.
         inflight = (
             self._queued_build_ids(job_name, cwd=spec.suite_dir)
             if dedup is not None
@@ -1267,15 +869,9 @@ class SlurmDispatchBackend(DispatchBackend):
         if not job_id:
             raise FatalRtlBuddyError("sbatch returned no job id for build job")
         if inflight:
-            # WARNING, so it reaches the console: this run's build will not
-            # start until an earlier one finishes, and a user watching the
-            # queue needs to read that wait as deliberate — and to have
-            # the ids to inspect if it lasts (a predecessor that is
-            # RUNNING or queued on capacity is the serialisation working;
-            # only a held or abandoned one is worth cancelling, and
-            # cancelling a healthy one discards the build this run is
-            # about to reuse). After the submit, so it describes a job
-            # that exists and can name it.
+            # WARNING so the console shows why this build waits, with ids to inspect.
+            # Cancel only a held or abandoned predecessor; cancelling a healthy one
+            # discards the build this run will reuse.
             log_event(
                 logger,
                 logging.WARNING,
@@ -1290,56 +886,40 @@ class SlurmDispatchBackend(DispatchBackend):
         log_event(
             logger,
             logging.INFO,
-            # One event per phase, with identical fields (#593): a reader
-            # filtering the machine log for the compile's two reservations
-            # should not have to disambiguate them by job name.
+            # One event per phase, with identical fields.
             "dispatch.verilate_submitted"
             if spec.phase == BUILD_PHASE_VERILATE
             else "dispatch.build_submitted",
             backend=self.name,
             job_id=job_id,
-            # The identity name `--dependency=singleton` serialises on
-            # (#507); recorded so a queue full of `rb-build-<hash>` entries
-            # can be traced back to the suite that submitted each one, and
-            # so `squeue --name=` / `scancel --name=` have a value to use.
-            # Slurm-only: the local-parallel backend has no queue to name a
-            # job in and emits this event without the field.
+            # The name `--dependency=singleton` serialises on. Slurm-only: the
+            # local-parallel backend omits the field.
             job_name=job_name,
             suite_dir=spec.suite_dir,
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,
-            # The cpus above are already scaled by this (#495); logging both
-            # is what makes a 16-CPU build job's reservation legible.
+            # `cpus` is already scaled by this.
             parallel=spec.parallel,
             cluster=cluster,
         )
         return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
 
     def _accepted_on(self, stdout: str) -> tuple[str, str | None]:
-        """``(job id, cluster)`` for a submission this backend just made.
+        """``(job id, cluster)`` for a submission just made.
 
-        Falls back to the cluster this backend SELECTED when sbatch names
-        none: a Slurm that omits the ``;cluster`` half still put the job
-        where ``-M`` pointed, and cancelling it locally would be the same
-        miss. The selection is ``None`` for a multi-cluster one (``a,b``,
-        ``all``) — precisely the case where sbatch's own answer is the only
-        way to know where the job landed, which is why it is preferred.
+        Falls back to the selected cluster when sbatch names none. The selection is
+        ``None`` for multi-cluster values, where sbatch's own answer is the only source.
         """
         job_id, cluster = _parsable_submission(stdout)
         return job_id, cluster or self.cluster
 
     @staticmethod
     def _begin_argv(delay_sec: float) -> list[str]:
-        """The retry backoff, served by Slurm rather than by the head (#405).
+        """The retry backoff as ``--begin=now+<n>`` seconds, served by Slurm.
 
-        ``--begin=now+<n>`` (bare units are seconds) leaves the job
-        ``PENDING`` with reason ``BeginTime`` until then: it holds no
-        allocation while it waits, which is the whole point — the license
-        pool that killed the first attempt is not made freer by a second
-        allocation sitting on it. Sub-second delays round to whole seconds
-        because that is the only granularity Slurm takes; a delay that
-        rounds to 0 emits no flag at all rather than an inert ``now+0``.
+        The job pends with reason ``BeginTime`` and holds no allocation. Delays round to
+        whole seconds; one that rounds to 0 emits no flag.
         """
         seconds = int(round(delay_sec)) if delay_sec and delay_sec > 0 else 0
         return [f"--begin=now+{seconds}"] if seconds > 0 else []
@@ -1353,7 +933,6 @@ class SlurmDispatchBackend(DispatchBackend):
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
-        # afterok: the sim only runs if the shared build succeeded.
         cmd += self._dependency_argv(dependency)
         cmd += self._begin_argv(delay_sec)
         cmd += self.sbatch_args
@@ -1399,18 +978,9 @@ class SlurmDispatchBackend(DispatchBackend):
     def _cluster_selection(self) -> str | None:
         """Cluster selection as written, or ``None`` for the local cluster.
 
-        ``sbatch-args`` first, then ``$SBATCH_CLUSTERS``: Slurm documents
-        the variable as the equivalent of ``--clusters`` with the command
-        line taking precedence, and this backend passes ``sbatch-args``
-        verbatim to sbatch, so the same precedence has to hold here or the
-        probe would describe a different cluster than the submit. Read at
-        probe time rather than frozen at construction, since the
-        environment a head runs in is not this object's to snapshot. An
-        empty or whitespace-only variable selects nothing, exactly as it
-        does for sbatch.
-
-        Multi-cluster values (``a,b``, ``all``) come back verbatim — they
-        are still what the user wrote, and the diagnostics name them.
+        ``sbatch-args`` first, then ``$SBATCH_CLUSTERS`` (blank selects nothing),
+        matching sbatch's precedence. Read at probe time, not at construction.
+        Multi-cluster values (``a,b``, ``all``) are returned verbatim.
         """
         selected = _selected_cluster(self.sbatch_args)
         if selected is not None:
@@ -1419,16 +989,11 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @property
     def cluster(self) -> str | None:
-        """The ONE cluster this backend addresses, or ``None``.
+        """The one cluster this backend addresses, or ``None``.
 
-        ``None`` covers three cases that a per-cluster scheduler query must
-        treat alike: no selection (the local cluster), a comma-separated
-        list, and the reserved ``all``. In the latter two Slurm picks the
-        cluster at submit, so there is no single name any probe could be
-        qualified with — a caller that appended ``-M <this>`` to a query
-        would be asking about a cluster nothing was necessarily submitted
-        to. Read :meth:`_cluster_selection` for what the user actually
-        wrote.
+        ``None`` for no selection (local cluster), a list, or ``all``: Slurm picks the
+        cluster at submit, so no query can be qualified with ``-M``. See
+        :meth:`_cluster_selection` for the raw value.
         """
         selection = self._cluster_selection()
         if selection is None or _is_multi_cluster(selection):
@@ -1436,22 +1001,12 @@ class SlurmDispatchBackend(DispatchBackend):
         return selection
 
     def _max_elements_per_array(self, *, cwd: str | None) -> int | None:
-        """Elements one array may hold, resolved once per backend instance.
+        """Elements one array may hold, resolved once per cluster selection.
 
-        Slurm's ``MaxArraySize`` bounds the task *index* exclusively — "the
-        maximum job array task index value will be one less than
-        MaxArraySize to allow for an index value of zero" (slurm.conf(5)) —
-        and this backend's manifests are 1-based, since ``%a`` is a manifest
-        line number. The largest array it may submit is therefore
-        ``1-(MaxArraySize-1)``: ``MaxArraySize - 1`` elements, not
-        ``MaxArraySize``.
-
-        ``cfg-dispatch.max-array-size`` wins where it is set (a submit host
-        with no working ``scontrol``, or a site that wants a finer split);
-        otherwise the value is read from ``scontrol show config``.
-        ``None`` means "unknown" — submit the group whole, exactly as
-        before #509 — because guessing a ceiling would split groups on
-        clusters that never needed it.
+        ``MaxArraySize`` bounds the task index exclusively and manifests are 1-based, so
+        the largest array is ``MaxArraySize - 1`` elements.
+        ``cfg-dispatch.max-array-size`` wins where set; otherwise ``scontrol show
+        config`` is read. ``None`` means unknown and the group is submitted whole.
         """
         selection = self._cluster_selection()
         if selection not in self._elements_per_array_by_cluster:
@@ -1463,19 +1018,11 @@ class SlurmDispatchBackend(DispatchBackend):
     def _probe_max_elements(self, *, cwd: str | None) -> "_ArrayLimit":
         """Effective elements-per-array, layering config over the probe.
 
-        TWO ceilings decide it and they are configured independently, so
-        they are layered independently: ``cfg-dispatch.max-array-size``
-        over the probed ``MaxArraySize``, ``cfg-dispatch.max-array-tasks``
-        over the probed ``max_array_tasks``, and the slice is the smaller
-        of what each layer yields. A pinned ``max-array-size`` therefore no
-        longer hides a cluster's task cap: it wins for its OWN ceiling and
-        the probe still supplies the other (#509 review). The probe is
-        skipped only when it can add nothing — both values pinned — or when
-        there is no single cluster to ask.
-
-        Returns an :class:`_ArrayLimit`: the slice size plus where the
-        GOVERNING value came from and which ceiling it was, so a rejected
-        slice can be sent to the knob that actually produced it.
+        ``cfg-dispatch.max-array-size`` overrides the probed ``MaxArraySize`` and
+        ``cfg-dispatch.max-array-tasks`` overrides the probed ``max_array_tasks``,
+        independently; the slice is the smaller result. The probe is skipped when both
+        are pinned or the selection names several clusters. Returns an
+        :class:`_ArrayLimit` recording which ceiling governed.
         """
         selection = self._cluster_selection()
         ambiguous = selection is not None and _is_multi_cluster(selection)
@@ -1483,13 +1030,8 @@ class SlurmDispatchBackend(DispatchBackend):
         reason = None
         if self.max_array_size is None or self.max_array_tasks is None:
             if ambiguous:
-                # `--clusters=a,b` (and the reserved `all`) let Slurm pick
-                # whichever can run the job soonest, and the decision is
-                # made at submit. Probing one of them would pin a limit the
-                # others may not have — and `-M all` answers with several
-                # config blocks, so the regex would take whichever came
-                # first. The honest answer is "unknown", recovered by the
-                # pinned config values.
+                # Slurm picks the cluster at submit and `-M all` returns several config
+                # blocks, so the limit is unknown unless pinned.
                 reason = (
                     f"the cluster selection ({selection}) names several "
                     "clusters; which one runs the array is decided at "
@@ -1504,22 +1046,16 @@ class SlurmDispatchBackend(DispatchBackend):
         tasks = (
             self.max_array_tasks if self.max_array_tasks is not None else probed_tasks
         )
-        # A cap below 1 is not a ceiling anything could submit under; drop
-        # it rather than let it produce empty arrays. (The config field is
-        # validated >= 1, so this can only be a probed value.)
+        # A cap below 1 cannot be submitted under; drop it (only a probed value can be
+        # one).
         if tasks is not None and tasks < 1:
             tasks = None
         if size is None and tasks is None:
             self._log_unknown(reason or "no array ceiling available")
             return _ArrayLimit(None)
 
-        # MaxArraySize bounds the INDEX exclusively; max_array_tasks counts
-        # the tasks, inclusively. The smaller of whichever are known is what
-        # an array may actually hold — and EITHER alone is a real ceiling: a
-        # site that can state only its task cap (no scontrol on the submit
-        # host, or a multi-cluster selection) had that cap ignored, so a
-        # group larger than the value it explicitly configured was submitted
-        # whole and refused (#509 review).
+        # MaxArraySize bounds the index exclusively, max_array_tasks counts tasks. The
+        # smaller known value applies, and either alone is a ceiling.
         limit = source = governed_by = None
         if size is not None:
             limit = size - 1
@@ -1535,15 +1071,12 @@ class SlurmDispatchBackend(DispatchBackend):
             "dispatch.max_array_size",
             backend=self.name,
             max_array_size=size,
-            # Emitted on every source path, so a reader never has to guess
-            # whether a task cap was consulted. Absent only when no cap is
-            # known — neither configured nor probed — since `log_event`
-            # drops `None` fields for every event in this package.
+            # Absent only when no task cap is known, since `log_event` drops `None`
+            # fields.
             max_array_tasks=tasks,
             max_elements=limit,
             source=source,
-            # Which of the two ceilings produced `max_elements` — the field
-            # a rejected slice has to be lowered on.
+            # The ceiling that produced `max_elements`.
             governed_by=governed_by,
             cluster=selection,
         )
@@ -1554,10 +1087,7 @@ class SlurmDispatchBackend(DispatchBackend):
     ) -> tuple[int | None, int | None, str | None]:
         """``(MaxArraySize, max_array_tasks, why not)`` from one scontrol call.
 
-        Best effort by construction: every failure mode returns ``None``
-        ceilings and a reason string rather than raising, because a limit
-        that cannot be read must cost the run nothing more than the
-        chunking it disables.
+        Never raises: a limit that cannot be read only disables chunking.
         """
         cluster_argv = [] if selection is None else ["-M", selection]
         try:
@@ -1583,9 +1113,8 @@ class SlurmDispatchBackend(DispatchBackend):
         value = int(match.group(1)) if match is not None else 0
         tasks = _max_array_tasks(proc.stdout)
         if value < 2:
-            # A cluster reporting MaxArraySize < 2 has arrays disabled; no
-            # slice size would submit, so treat that as unknown and let
-            # sbatch give the authoritative refusal.
+            # MaxArraySize < 2 means arrays are disabled; treat as unknown and let
+            # sbatch refuse.
             return (
                 None,
                 tasks,
@@ -1603,11 +1132,10 @@ class SlurmDispatchBackend(DispatchBackend):
             "dispatch.max_array_size_unknown",
             backend=self.name,
             error=reason,
-            # As written, not the resolved single cluster: a multi-cluster
-            # selection resolves to None and naming it is the diagnosis.
+            # As written: a multi-cluster selection resolves to None, and naming it
+            # is the diagnosis.
             cluster=self._cluster_selection(),
-            # An oversized group is what this probe exists to split, so say
-            # how to get chunking back when the cluster cannot be asked.
+            # How to restore chunking when the cluster cannot be asked.
             hint=(
                 "set cfg-dispatch.max-array-size (and max-array-tasks, where "
                 "the cluster caps tasks per array) to split oversized groups"
@@ -1615,30 +1143,13 @@ class SlurmDispatchBackend(DispatchBackend):
         )
 
     def _array_limit_hint(self, stderr: str) -> str:
-        """What to do about a rejected array, for a failed array submit.
+        """Recovery advice appended to a failed array submit, or ``""``.
 
-        ``Batch job submission failed: Invalid job array specification`` is
-        what sbatch answers an array the cluster will not take, and the
-        recovery is always the same knob — but the reason differs, so the
-        sentence does. The probe's own diagnostic is INFO, which a
-        default-verbosity console never shows, while THIS message is the one
-        that fails the run in front of the user (#509).
-
-        Gated on the wording, because a hint on every failed submit is noise
-        that buries the real recovery action: an invalid account, partition
-        or QoS is rejected in its own words and has nothing to do with array
-        size. Matched case-insensitively on "job array" rather than on the
-        full sentence, so a Slurm that words the rest of it differently
-        still gets the hint.
-
-        With the limit KNOWN the array was already within everything the
-        probe could see — ``MaxArraySize`` and ``max_array_tasks`` both —
-        so the cluster is enforcing something it did not report (a site
-        patch, a newer limit, an association ceiling). Saying "the limit
-        could not be read" there would be false, and saying nothing would
-        leave the one actionable knob unnamed; the variant names the
-        effective limit, where it came from, and the override (#509
-        review).
+        Added only when stderr mentions "job array" (case-insensitive), so unrelated
+        rejections such as an invalid account get no hint. With the limit unknown, the
+        hint names both ``cfg-dispatch`` fields. With it known, the cluster is enforcing
+        something it did not report, and the hint names the governing field and where
+        the limit came from.
         """
         if "job array" not in stderr.lower():
             return ""
@@ -1646,12 +1157,8 @@ class SlurmDispatchBackend(DispatchBackend):
             self._cluster_selection(), _ArrayLimit(None)
         )
         if resolved.elements is None:
-            # BOTH ceilings, because either one alone can be the binding
-            # one and they are configured separately: a cluster whose
-            # `SchedulerParameters=max_array_tasks` is the lower limit
-            # refuses the next submission identically after
-            # `max-array-size` is set to the real MaxArraySize, and the
-            # advice would simply recur (#509 round 17 review).
+            # Names both ceilings: either can be binding, and fixing one alone would
+            # recur.
             return (
                 "; the cluster's array limits could not be read, so this group "
                 "was submitted as one array — set cfg-dispatch.max-array-size "
@@ -1661,9 +1168,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 "either limit; each is layered on its own and either one alone "
                 "is enough to split"
             )
-        # Named for the ceiling that actually produced the slice: sending a
-        # site to `max-array-size` when its task cap was binding would have
-        # it state a MaxArraySize the cluster does not have (#509 review).
+        # Names the ceiling that produced the slice.
         return (
             f"; rb sliced this group at {resolved.elements} element(s) per "
             f"array, the {resolved.governed_by} limit it read from "
@@ -1679,14 +1184,10 @@ class SlurmDispatchBackend(DispatchBackend):
         max_parallel: int | None = None,
         dependency: str | None = None,
     ) -> list[JobHandle]:
-        """Submit one resource group, split across arrays if it must be (#509).
+        """Submit one resource group, split across arrays if it exceeds the limit.
 
-        A group larger than the cluster's ``MaxArraySize`` is not a legal
-        ``--array=1-N``: sbatch refuses it outright, which used to fail the
-        whole run at the first oversized group. It is submitted as several
-        arrays instead, each with its own manifest, and the handles are
-        returned concatenated in spec order so collection, cancellation and
-        the right-sizing table still see one logical group.
+        Each array has its own manifest. Handles are returned concatenated in spec
+        order. Slices already submitted are cancelled if a later one fails.
         """
         if len(specs) <= 1:
             return [self.submit(spec, dependency=dependency) for spec in specs]
@@ -1700,11 +1201,8 @@ class SlurmDispatchBackend(DispatchBackend):
 
         handles: list[JobHandle] = []
         for index, slice_specs in enumerate(slices, start=1):
-            # One subdirectory per slice when chunked, so `%a` keeps mapping
-            # 1:1 onto a manifest line and `slurm-%a.log` cannot collide
-            # between slices. A group that fits in one array keeps exactly
-            # today's layout — no `slice-1/` — so unchunked artefact paths
-            # do not move.
+            # One subdirectory per slice when chunked; a single array keeps the unsliced
+            # layout.
             slice_dir = array_dir if len(slices) == 1 else array_dir / f"slice-{index}"
             try:
                 handles += self._submit_one_array(
@@ -1716,9 +1214,8 @@ class SlurmDispatchBackend(DispatchBackend):
                     slice_count=len(slices),
                 )
             except BaseException:
-                # The caller only learns of the handles this call RETURNS, so
-                # its own cancel-on-failure cannot cover slices submitted
-                # here. Cancelling them is this method's job.
+                # The caller only learns of returned handles, so cancelling earlier
+                # slices is this method's job.
                 if handles:
                     self.cancel_all(handles)
                 raise
@@ -1742,18 +1239,16 @@ class SlurmDispatchBackend(DispatchBackend):
         script = array_dir / "array.sh"
         script.write_text(_ARRAY_SCRIPT)
         script.chmod(0o755)
-        # Element logs are deterministic (%a = 1-based manifest line), so
-        # collection can point at the exact log on failure.
+        # `%a` is the 1-based manifest line, so element logs are deterministic.
         for i, spec in enumerate(specs, start=1):
             spec.log_path = array_dir / f"slurm-{i}.log"
 
         array_range = f"1-{len(specs)}"
-        # The throttle caps each ARRAY, so a chunked group's peak
-        # concurrency is slices x max_parallel — documented, not hidden.
+        # The throttle applies per array, so a chunked group's peak concurrency is
+        # slices x max_parallel.
         if max_parallel is not None and max_parallel < len(specs):
             array_range += f"%{max_parallel}"
-        # `/k` names the slice, so a split group is legible in squeue
-        # instead of looking like several unrelated arrays.
+        # The `/k` suffix names the slice in squeue.
         first_name = (
             specs[0].test_name
             if isinstance(specs[0], TestJobSpec)
@@ -1775,7 +1270,6 @@ class SlurmDispatchBackend(DispatchBackend):
         if resources.mem is not None:
             cmd.append(f"--mem={resources.mem}")
         cmd.append(f"--output={array_dir}/slurm-%a.log")
-        # afterok: array elements only run if the shared build succeeded.
         cmd += self._dependency_argv(dependency)
         cmd += self.sbatch_args
         cmd += [str(script), str(manifest)]
@@ -1806,8 +1300,7 @@ class SlurmDispatchBackend(DispatchBackend):
             time=resources.time,
             cpus=resources.cpus,
             mem=resources.mem,
-            # Additive: 1/1 for a group that fits in one array, so a reader
-            # (and the log) can always tell a split from a whole group.
+            # 1/1 for a group that fits in one array.
             slice=slice_index,
             slices=slice_count,
             cluster=cluster,
@@ -1819,12 +1312,10 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @staticmethod
     def _base_ids(handles: Sequence[JobHandle | None]) -> list[str]:
-        """Unique base job ids — one per array, not per element.
+        """Unique base job ids, one per array.
 
-        Skips ``None`` handles: ``cancel_all`` is the last thing standing
-        between a head-side failure and an orphaned fleet, so it must not be
-        disarmed by a caller that let a ``None`` (e.g. a zero-test suite's
-        absent build handle, #361) into the list.
+        Skips ``None`` handles so ``cancel_all`` is not disarmed by an absent build
+        handle.
         """
         seen: dict[str, None] = {}
         for h in handles:
@@ -1839,11 +1330,8 @@ class SlurmDispatchBackend(DispatchBackend):
     ) -> dict[str | None, list[str]]:
         """Unique base ids grouped by the cluster that accepted them.
 
-        A run can span clusters even within one resource group: a
-        ``--clusters=a,b`` submission lets Slurm place each array wherever
-        it can start first, so the slices of ONE group may live on
-        different clusters. Cancelling them therefore cannot be one command
-        with one ``-M``; it is one command per cluster.
+        One group can span clusters under ``--clusters=a,b``, so cancellation is one
+        command per cluster.
         """
         grouped: dict[str | None, dict[str, None]] = {}
         for h in handles:
@@ -1856,12 +1344,9 @@ class SlurmDispatchBackend(DispatchBackend):
     def _scancel(
         self, ids_by_cluster: dict[str | None, list[str]], *, cwd
     ) -> list[tuple[str | None, list[str], subprocess.CompletedProcess]]:
-        """One ``scancel`` per cluster; the results, for the caller to report.
+        """One ``scancel`` per cluster; returns the results for the caller to report.
 
-        ``scancel`` acts on the local cluster unless ``-M`` says otherwise,
-        the same rule sbatch follows, so ids accepted elsewhere have to be
-        cancelled with the matching selection or the command reaches a
-        different cluster's job numbering (#509 review).
+        Ids accepted on another cluster need the matching ``-M``.
         """
         results = []
         for cluster, ids in ids_by_cluster.items():
@@ -1878,30 +1363,19 @@ class SlurmDispatchBackend(DispatchBackend):
     def _reap_never_satisfied(self, lines, *, cwd, cluster=None) -> list[dict]:
         """Split queued jobs into those still coming and those already dead.
 
-        A job whose ``afterok`` build failed is reported PENDING with reason
-        ``DependencyNeverSatisfied``. :meth:`_dependency_argv` asks Slurm to
-        reap those itself, so normally none are seen here; this is the fallback
-        for a site that disabled that flag through ``sbatch-args`` or a Slurm
-        that ignores it, where the job would otherwise sit until the site's
-        ``kill_invalid_depend`` (off by default) removed it. Cancel them so
-        they leave the queue instead of being waited on; collection then
-        reports them as producing no result, which is exactly what happened.
-
-        Returns the surviving **records** (see :func:`_parse_squeue_line`),
-        not just their ids: the caller needs each survivor's state and
-        elapsed time for the progress line, and parsing the same output
-        twice invites the two parses to disagree.
+        Jobs pending with reason ``DependencyNeverSatisfied`` are cancelled. This is the
+        fallback for sites that disabled ``--kill-on-invalid-dep`` or Slurms that ignore
+        it (see :meth:`_dependency_argv`). Returns the surviving squeue records (see
+        :func:`_parse_squeue_line`), not ids, because the progress line needs their
+        state and elapsed time.
         """
         remaining, doomed = [], []
         for line in lines:
             record = _parse_squeue_line(line)
             if record is None:
                 continue
-            # Substring, not equality: %r is unpadded today, but a site whose
-            # Slurm renders the reason with surrounding text must not silently
-            # fall back into the infinite poll this method exists to remove.
-            # Matched against the reason column alone, so a job *named* after
-            # the reason cannot be reaped by mistake.
+            # Substring match on the reason column alone, so a job named after the
+            # reason is not reaped.
             if _NEVER_SATISFIED in record["reason"]:
                 doomed.append(record["id"])
             else:
@@ -1915,17 +1389,13 @@ class SlurmDispatchBackend(DispatchBackend):
                 jobs=doomed,
                 cluster=cluster,
             )
-            # Cancel by base id: one scancel clears a whole pending array.
-            # These ids came from a squeue asked about ONE cluster, so that
-            # is the cluster to cancel them on — an unqualified scancel
-            # would aim at the local one (#509 review).
+            # Cancel by base id, on the cluster the ids came from.
             base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
             for cluster, ids, proc in self._scancel({cluster: base_ids}, cwd=cwd):
                 if proc.returncode == 0:
                     continue
-                # These jobs are already out of `remaining`, so the run will
-                # finish and leave them queued. Say so — a transient
-                # slurmctld failure here is only recoverable by hand.
+                # Already out of `remaining`, so a failed cancel leaves them queued
+                # after the run.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -1939,21 +1409,12 @@ class SlurmDispatchBackend(DispatchBackend):
         return remaining
 
     def _outstanding(self, records, handles, *, cluster=None):
-        """Queue records → ({outstanding handle key: state}, longest running).
+        """Queue records to ``({outstanding key: state}, longest running)``.
 
-        The queue speaks in lines and the run is counted in jobs, so every
-        record is expanded to the handle ids it covers (an array pending as
-        ``9_[1-3]`` is three jobs, not one). A record whose expansion names
-        no known handle still counts as itself: dropping it would let the
-        wait end while that job is queued, and being conservative here
-        costs at most an over-count for one poll.
-
-        Keyed by :func:`telemetry_key`, and matched only against the
-        handles of the cluster this poll asked: a job id repeats across
-        clusters, so an unqualified key would let one cluster's job stand
-        in for another's and take the twin out of the outstanding set with
-        it (#509 review). ``records`` therefore has to come from a squeue
-        that named ``cluster``.
+        Each record is expanded to the handle ids it covers (``9_[1-3]`` is three jobs);
+        a record matching no handle counts as itself. Keys come from
+        :func:`telemetry_key` and match only handles of ``cluster``, so ``records`` must
+        come from a squeue that named ``cluster``.
         """
         keys = {
             h.job_id: telemetry_key(h)
@@ -1965,12 +1426,8 @@ class SlurmDispatchBackend(DispatchBackend):
         longest = None
         for record in records:
             if record["state"] in _TERMINAL_RETAINED_STATES:
-                # A result Slurm is still holding on to, not a job to wait
-                # for. `_DRAIN_FILTER` does not ask for these, but a poll
-                # that fell back to squeue's own filter — or a Slurm that
-                # renders a state the filter did not name — can still put one
-                # here, and counting it would keep the fleet outstanding
-                # until the record was purged (#527 round-19 review).
+                # A retained result, not a job to wait for; a fallback poll can still
+                # return one.
                 continue
             running = record["state"] == _SQUEUE_RUNNING_STATE
             expanded = [
@@ -2004,34 +1461,15 @@ class SlurmDispatchBackend(DispatchBackend):
     ) -> tuple[list[str], str]:
         """One cluster's live jobs: ``(squeue lines, status)``.
 
-        ``status`` is one of three ANSWERS, which the caller must keep apart
-        (#527 review):
+        ``status`` is ``"ok"`` (squeue answered; an empty list means drained),
+        ``"drained"`` (squeue holds none of the ids: ``Invalid job id specified``) or
+        ``"unknown"`` (the poll failed). ``"unknown"`` must never be read as a drain. A
+        rejected state name is recovered from, see :func:`_rejected_states`.
 
-        - ``"ok"`` — squeue answered, and the lines are every job of ours it
-          still holds. An empty list means drained.
-        - ``"drained"`` — squeue says it holds none of these ids at all
-          (``Invalid job id specified``), which is how a fleet that has aged
-          out of the queue reports completion.
-        - ``"unknown"`` — the poll FAILED. It says nothing about the jobs, so
-          it must never be read as a drain: an empty answer from a query
-          that errored would retire jobs that are still running, and the
-          collector would score their absent envelopes as failures while the
-          fleet ran on unwaited and uncancelled.
-
-        A rejected state name is recovered from rather than fatal, because
-        the name is a state the cluster's Slurm does not have — see
-        :func:`_rejected_states`.
-
-        ``timeout_s`` bounds each ``squeue`` call. ``None`` — every caller
-        but the cancellation check — waits as long as the controller takes,
-        which is the drain wait's own contract: it has ``max-wait`` above it
-        and nothing to gain from giving up on one poll. A caller that is
-        itself under a deadline passes what is left of it, and a query that
-        runs out of time is an ``"unknown"`` like any other failed one: it
-        says nothing about the jobs (#580 review).
+        ``timeout_s`` bounds each ``squeue`` call. ``None`` waits as long as the
+        controller takes; a timeout returns ``"unknown"``.
         """
-        # Bounded by the filter's own length: each rejection drops the name
-        # it named, so the loop cannot outlive the list.
+        # Each rejection drops one name, so the loop is bounded by the list length.
         for _ in range(len(_LIVE_STATES) + 1):
             states = self._wait_states_for(cluster)
             try:
@@ -2043,9 +1481,7 @@ class SlurmDispatchBackend(DispatchBackend):
                     timeout=timeout_s,
                 )
             except subprocess.TimeoutExpired:
-                # A wedged controller. Reported as "no answer", never as a
-                # drain: the caller that set the deadline is the one that
-                # must not read silence as "those jobs are gone".
+                # Wedged controller: report no answer, never a drain.
                 log_event(
                     logger,
                     logging.DEBUG,
@@ -2066,11 +1502,8 @@ class SlurmDispatchBackend(DispatchBackend):
             self._narrow_wait_states(rejected, cluster=cluster)
         if _GONE_FROM_QUEUE in (proc.stderr or "").lower():
             return [], "drained"
-        # Anything else — a socket timeout to a busy controller, a squeue
-        # that is not on PATH on this poll, an unreadable cluster — is
-        # transient far more often than it is terminal, so the wait keeps
-        # polling instead of failing the run. What it must NOT do is
-        # conclude anything about the jobs.
+        # Other failures are usually transient, so keep polling and conclude nothing
+        # about the jobs.
         level = logging.DEBUG if cluster in self._wait_poll_failed else logging.WARNING
         self._wait_poll_failed.add(cluster)
         log_event(
@@ -2086,30 +1519,18 @@ class SlurmDispatchBackend(DispatchBackend):
         return [], "unknown"
 
     def _wait_states_for(self, cluster) -> str | None:
-        """The filter to poll ``cluster`` with: the full set until it says no.
+        """The state filter for ``cluster``: the full set until it rejects a name.
 
-        ``None`` is "no ``--states`` at all", which only a cluster that
-        refused the filter without naming a state gets (see
-        :meth:`_narrow_wait_states`). Every other cluster keeps asking with
-        everything, whatever an older sibling in the same federation
-        rejected (#527 review).
+        ``None`` means no ``--states`` at all (see :meth:`_narrow_wait_states`).
         """
         return self._wait_states_by_cluster.get(cluster, _DRAIN_FILTER)
 
     def _narrow_wait_states(self, rejected: tuple, *, cluster) -> None:
-        """Drop the state names THIS cluster rejected, for the rest of the run.
+        """Drop the state names this cluster rejected, for the rest of the run.
 
-        A name squeue refuses is a state that build does not have, so no job
-        can be in it and the remaining filter is exactly as complete as the
-        full one. When squeue named nothing the filter has to go instead,
-        which leaves squeue's own default — pending, running and completing —
-        narrower than this wants, so that degradation is a WARNING rather
-        than a silent fallback (#527 review).
-
-        Recorded against ``cluster`` alone. The rejection says what one
-        Slurm knows, and a federation can run several versions: applying it
-        backend-wide would poll a newer cluster with a filter too narrow for
-        its own held jobs, and an unseen job reads as a finished one.
+        When squeue named none, the filter is dropped instead, leaving squeue's narrower
+        default; that logs a WARNING. Recorded per cluster because a rejection describes
+        one Slurm.
         """
         current = self._wait_states_for(cluster)
         kept = [
@@ -2140,13 +1561,9 @@ class SlurmDispatchBackend(DispatchBackend):
         )
 
     def _assumed_outstanding(self, handles, *, cluster) -> dict:
-        """Every handle of ``cluster``, as "still outstanding".
+        """Every handle of ``cluster`` as still outstanding.
 
-        What a failed poll leaves the wait believing (#527 review): the jobs
-        were submitted and nothing has been seen to end them. Keeping them in
-        the outstanding set is what stops an unanswered poll reading as a
-        drain — and what keeps `max-wait` armed, since the deadline is only
-        enforced while something is outstanding.
+        A failed poll must not read as a drain, and this keeps ``max-wait`` armed.
         """
         return {
             telemetry_key(h): "pending"
@@ -2158,35 +1575,26 @@ class SlurmDispatchBackend(DispatchBackend):
         if not handles:
             return
         cwd = self._cwd_of(handles)
-        # One poll per cluster the fleet was accepted on. `squeue` answers
-        # for the LOCAL cluster unless `-M` says otherwise, so a single
-        # unqualified poll reports a remote slice as absent — which reads
-        # as drained, and collection would run while it is still queued
-        # (#509 review). Grouped the way cancellation and telemetry are.
+        # One poll per cluster: an unqualified squeue would report a remote slice as
+        # absent, which reads as drained.
         by_cluster = self._base_ids_by_cluster(handles)
         progress = DispatchProgress(
             handles,
             backend=self.name,
             interval=self.progress_interval,
-            # A job held on `--begin` is PENDING for the whole backoff and
-            # squeue reports it outstanding, so the deadline must allow for
-            # the hold the head itself asked for (#405).
+            # A job held on `--begin` stays PENDING for the whole backoff, so the
+            # deadline allows for it.
             max_wait=(
                 None if self.max_wait is None else self.max_wait + max(0.0, extra_wait)
             ),
-            # Resolved here rather than taken as a default, so the clock the
-            # reporter reads is the same one this module sleeps against.
             clock=time.monotonic,
         )
         while True:
             states: dict[str, str] = {}
             longest = None
             for cluster, base_ids in by_cluster.items():
-                # Three answers, not two: "these are still queued", "they
-                # have all aged out" and "the poll failed, so I know
-                # nothing". Only the middle one is a drain — a failed query
-                # used to take the same path as an empty one, retiring live
-                # jobs (#527 review). Per cluster: the others are still asked.
+                # Three answers: still queued, aged out, or poll failed. Only aged-out
+                # is a drain.
                 lines, status = self._poll_queue(base_ids, cluster=cluster, cwd=cwd)
                 if status == "drained":
                     continue
@@ -2218,34 +1626,21 @@ class SlurmDispatchBackend(DispatchBackend):
     def live_job_ids(
         self, handles: Sequence[JobHandle | None], *, timeout_s=None
     ) -> set[str]:
-        """The subset of these ids ``squeue`` still holds (#521).
+        """The subset of these ids ``squeue`` still holds.
 
-        Asked about an interrupted run's fleet, read out of its manifest,
-        so the handles are rebuilt rather than submitted here — which is
-        why the query goes through the same per-cluster grouping every
-        other command about a job uses: an id means nothing on a cluster
-        that did not issue it (#509).
-
-        A poll that FAILED reports those ids live, not gone. The three
-        answers :meth:`_poll_queue` distinguishes matter more here than
-        anywhere else: "drained" and an empty "ok" both mean the run is
-        over and its manifest can be retired, while "unknown" says nothing
-        at all about the jobs — and reading that as "gone" would submit a
-        second fleet beside a first one still occupying the cluster, or
-        quietly skip the ``scancel`` a user asked for. ``timeout_s`` bounds
-        each query for a caller that is itself on a deadline — a wedged
-        ``squeue`` must not hold the cancellation check open past its own
-        grace period, and running out of time is one more way not to know
-        (#580 review).
+        Handles are rebuilt from an interrupted run's manifest and queried per cluster.
+        A failed poll reports its ids live, never gone: reading "unknown" as gone would
+        submit a second fleet beside a running one or skip a requested ``scancel``.
+        ``timeout_s`` bounds each query for a caller on a deadline; a timeout counts as
+        unknown.
         """
         live: set[str] = set()
         cwd = self._cwd_of(handles)
         for cluster, base_ids in self._base_ids_by_cluster(handles).items():
             if not base_ids:
                 continue
-            # This cluster's handle ids, for expanding a squeue row that
-            # names a whole array (`1235` or `1235_[1-40]`) back into the
-            # elements the manifest recorded.
+            # Expands a squeue row naming a whole array back into the manifest's
+            # elements.
             ids_here = [
                 h.job_id
                 for h in handles
@@ -2267,9 +1662,8 @@ class SlurmDispatchBackend(DispatchBackend):
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:
             return
-        # Base ids: cancelling an array id cancels every element. One
-        # command per cluster, since an id only means anything on the
-        # cluster that issued it.
+        # Base ids: cancelling an array id cancels every element. One command per
+        # cluster, since an id means something only on the cluster that issued it.
         by_cluster = self._base_ids_by_cluster(handles)
         self._scancel(by_cluster, cwd=self._cwd_of(handles))
         log_event(
@@ -2278,25 +1672,19 @@ class SlurmDispatchBackend(DispatchBackend):
             "dispatch.cancelled",
             backend=self.name,
             jobs=len(handles),
-            # Additive, and absent on a single-cluster site: which clusters
-            # the cancellation had to reach.
+            # Absent on a single-cluster site.
             clusters=sorted(c for c in by_cluster if c) or None,
-            # An interrupted or failed run must leave the ids on the console:
-            # they are the only route to `squeue`/`sacct` afterwards (#435).
+            # Leaves the ids on the console; they are the only route to squeue/sacct
+            # afterwards.
             job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
 
     def build_outcome(self, handle: JobHandle) -> str | None:
-        """The build job's scheduler state, from one ``sacct`` row (#548).
+        """The build job's scheduler state, or ``None`` without accounting.
 
-        The state out of :meth:`collect_telemetry`, which is where every
-        other consumer reads it. The head prefers the row it already
-        fetched for this handle and only calls this when that row is
-        missing — a site with no slurmdbd — so the query below is a last
-        resort rather than a second identical sacct per suite (#495).
-        Returns the state verbatim (``COMPLETED``, ``TIMEOUT``,
-        ``CANCELLED``…), or ``None`` where there is no accounting to ask,
-        which keeps the caller's conservative reading.
+        The state is verbatim (``COMPLETED``, ``TIMEOUT``, ``CANCELLED``...). The head
+        prefers the sacct row it already fetched and calls this only when that row is
+        missing.
         """
         return (self.collect_telemetry([handle]).get(telemetry_key(handle)) or {}).get(
             "state"
@@ -2305,43 +1693,23 @@ class SlurmDispatchBackend(DispatchBackend):
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """Reserved-vs-used per job from ``sacct``, keyed by :func:`telemetry_key`.
 
-        That key is the bare job id for a local or single-cluster run — the
-        shape every consumer has always seen — and ``<cluster>:<job id>``
-        for a job accepted elsewhere, because ids repeat across clusters.
+        The key is the bare job id for a local or single-cluster run and
+        ``<cluster>:<job id>`` otherwise. One sacct runs per cluster, because
+        ``_SACCT_FORMAT`` has no cluster column and rows from a combined query could not
+        be told apart. Queries omit ``-X``, since ``MaxRSS`` and ``TotalCPU`` appear
+        only on step rows.
 
-        ONE sacct per cluster, not one query naming them all: provenance is
-        then structural. ``_SACCT_FORMAT`` has no cluster column, so rows
-        returned by a combined ``-M a,b`` query cannot be told apart, and
-        two jobs sharing a number would have their allocation rows
-        overwrite each other and their step metrics summed together (#509
-        review). Adding the column would work too, but it makes correctness
-        depend on parsing a field whose rendering varies by Slurm version
-        and widens a pinned machine contract; grouping by the cluster the
-        submission recorded reuses the grouping cancellation already uses
-        and cannot be misparsed. A single-cluster run still issues exactly
-        one query, argv unchanged.
-
-        Queries WITHOUT ``-X``: ``MaxRSS``/``TotalCPU`` only populate on
-        step rows (``.batch`` etc.), never the allocation row — usage is
-        folded up to its parent job. Values per job:
-        ``state``, ``elapsed_s``, ``timelimit_s`` (TimelimitRaw is in
-        MINUTES; normalized here), ``alloc_cpus``, ``req_cpus``,
-        ``req_mem_bytes``, ``total_cpu_s``, ``max_rss_bytes``. Missing
-        accounting (no slurmdbd) returns ``{}`` and right-sizing degrades
-        gracefully.
-
-        ``alloc_cpus`` and ``req_cpus`` are both reported because they
-        differ wherever the site allocates whole cores: the first is what
-        `squeue` shows, the second is what a ``resources.cpus`` edit can
-        actually move, and right-sizing needs the second (#505).
+        Per job: ``state``, ``elapsed_s``, ``timelimit_s`` (converted from minutes),
+        ``alloc_cpus``, ``req_cpus``, ``req_mem_bytes``, ``total_cpu_s``,
+        ``max_rss_bytes``. ``alloc_cpus`` is what ``squeue`` shows; ``req_cpus`` is what
+        a ``resources.cpus`` edit moves, and right-sizing uses it. Missing accounting
+        returns ``{}``.
         """
         if not handles:
             return {}
         telemetry: dict[str, dict] = {}
         for cluster, base_ids in self._base_ids_by_cluster(handles).items():
-            # A cluster whose accounting is unreachable must not discard
-            # what the others answered, so each group is folded in on its
-            # own; a single-cluster run still ends with {} on failure.
+            # One cluster's failure must not discard the others' rows.
             telemetry.update(
                 self._telemetry_on(handles, cluster=cluster, base_ids=base_ids)
             )
@@ -2355,17 +1723,14 @@ class SlurmDispatchBackend(DispatchBackend):
         base_ids: list[str],
     ) -> dict[str, dict]:
         """One cluster's ``sacct`` rows, keyed by :func:`telemetry_key`."""
-        # Only THIS cluster's handles are matchable, which is what keeps a
-        # shared job number from crossing over.
+        # Only this cluster's handles match, so a shared job number cannot cross over.
         wanted = {
             h.job_id: telemetry_key(h)
             for h in handles
             if h is not None and getattr(h, "cluster", None) == cluster
         }
-        # Telemetry is strictly additive — no failure mode of it may fail a
-        # run whose jobs have all completed. sacct may be absent (client
-        # packaging varies; sbatch present does not guarantee sacct) or wedged
-        # against a slow slurmdbd, so guard both and time-box the call.
+        # Telemetry is additive: sacct may be absent or hang, and neither may fail a run
+        # whose jobs completed.
         try:
             proc = subprocess.run(
                 [
@@ -2373,9 +1738,7 @@ class SlurmDispatchBackend(DispatchBackend):
                     "--parsable2",
                     "--noheader",
                     f"--format={_SACCT_FORMAT}",
-                    # Accounting is per cluster, and a job id repeats across
-                    # clusters — unqualified, this finds nothing for a remote
-                    # fleet, or the wrong local job of that number (#509).
+                    # Job ids repeat across clusters, so qualify the query.
                     *(["-M", cluster] if cluster else []),
                     "--jobs",
                     ",".join(base_ids),
@@ -2450,10 +1813,8 @@ class SlurmDispatchBackend(DispatchBackend):
                 if (req_mem_bytes := _parse_mem_to_bytes(req_mem)) is not None:
                     entry["req_mem_bytes"] = req_mem_bytes
             else:
-                # Step rows. TotalCPU is per step, so a job's CPU time is the
-                # SUM over steps (.batch + .extern + any srun steps) — max
-                # would under-report once a hook/builder uses srun. MaxRSS is
-                # a high-water mark and folds with max.
+                # Step rows: CPU time sums over steps (.batch, .extern, srun steps);
+                # MaxRSS is a peak and folds with max.
                 if (cpu_s := _parse_cpu_time_to_seconds(total_cpu)) is not None:
                     entry["total_cpu_s"] = entry.get("total_cpu_s", 0.0) + cpu_s
                 if (rss := _parse_mem_to_bytes(max_rss)) is not None:

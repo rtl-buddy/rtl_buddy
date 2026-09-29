@@ -4,24 +4,10 @@
 #
 """Directory walks that follow symlinks without walking a tree twice.
 
-``os.walk`` does not descend into a symlinked directory unless it is
-asked to, and an artefact-discovery walk has to ask: a suite whose
-``artefacts/`` is a link onto scratch storage is an ordinary, documented
-setup — the one the filelist writer is pinned against — and a walk that
-stopped at the link would report a project with no artefacts in it at
-all (rtl-buddy/rtl_buddy#564).
-
-Following links costs two risks, and both are paid for here rather than
-in each caller. A link can circle, so a directory is admitted once, by
-its *real* path, and one already admitted is neither yielded again nor
-descended into — which terminates a cycle and de-dupes a directory
-reachable by two routes, something a caller reporting one result per
-directory needs in any case. And a link can lead somewhere that is not
-the project at all: a ``vendor/`` link, or a link to ``$HOME``, drags an
-unrelated tree into the walk, which is slow and — worse — reports
-someone else's artefacts as this project's own run. That one is a policy
-question, so it is asked of the caller's ``may_follow`` predicate, and
-:func:`may_follow_link` is the answer both artefact walks give.
+A directory is admitted once by its real path, which ends symlink cycles and
+de-dupes directories reachable by two routes. A caller-supplied ``may_follow``
+predicate decides which links to enter; :func:`may_follow_link` is the policy
+both artefact walks use.
 """
 
 from __future__ import annotations
@@ -36,25 +22,17 @@ from .tools.artifact_paths import ARTIFACT_DIRNAME
 def may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bool:
     """Whether a symlinked directory is part of the artefact layout.
 
-    ``link`` is the link itself, ``rel_parts`` the components of its path
-    below the project root (its own basename last), ``root_real`` the
-    resolved project root.
-
-    A link is descended into only when
+    ``link`` is the link path, ``rel_parts`` the components of its path below
+    the project root (its own basename last), ``root_real`` the resolved
+    project root. A link is followed only when
     :data:`~rtl_buddy.tools.artifact_paths.ARTIFACT_DIRNAME` is already a
-    component of its path below the project root — its own basename
-    (``<suite>/artefacts -> scratch``, the supported case) or an
-    ``artefacts`` above it (a run directory inside an ``artefacts/``
-    subtree linked out individually). A link whose realpath is the
-    project root or an ancestor of it is refused outright, so no admitted
-    link can circle back over the whole tree (or over ``/``).
+    component of that path: the link itself (``<suite>/artefacts -> scratch``)
+    or an ancestor. A link resolving to the project root or one of its
+    ancestors is refused, so no link can circle back over the tree.
 
-    Public because the hub's ``?dir=`` route decides the same question
-    about the same tree (:func:`rtl_buddy.hub.phys_page
-    .contained_phys_dir`). A run the walk refused to enter is a run the
-    route must refuse to read: two spellings of one boundary would
-    eventually disagree, and the disagreement anyone finds first is the
-    one where the route is the looser of the two.
+    Public because the hub's ``?dir=`` route applies the same boundary
+    (:func:`rtl_buddy.hub.phys_page.contained_phys_dir`). A run the walk
+    refuses must also be unreadable through the route.
     """
     if ARTIFACT_DIRNAME not in rel_parts:
         return False
@@ -63,13 +41,7 @@ def may_follow_link(link: str, rel_parts: tuple[str, ...], root_real: str) -> bo
 
 
 def artefact_layout_boundary(root) -> Callable[[str], bool]:
-    """:func:`may_follow_link` bound to one project root, for ``may_follow``.
-
-    The binding a whole-project walk needs: the predicate judges a link
-    by its position *below the root*, so the root has to come from
-    somewhere, and both artefact walks would otherwise restate the same
-    three lines.
-    """
+    """:func:`may_follow_link` bound to one project root, for ``may_follow``."""
     root_real = os.path.realpath(root)
 
     def _may_follow(link: str) -> bool:
@@ -83,18 +55,11 @@ def walk_unique(
 ) -> Iterator[tuple[str, list[str], list[str]]]:
     """Yield ``os.walk`` triples, following links, each directory once.
 
-    A drop-in for ``os.walk(root, followlinks=True)``. The ``dirnames``
-    list handed out is the walk's own, so a caller still prunes it in
-    place — its own skip set, its own naming rules — and the pruning is
-    honoured exactly as before.
-
-    ``may_follow`` is asked about each *link* among the directories about
-    to be descended into, by its path, and a link it declines is pruned;
-    real directories are walked whatever it says. The default follows
-    every link, which suits a walk bounded to a directory the caller
-    already trusts; a walk over a whole project should pass a boundary —
-    :func:`artefact_layout_boundary` — because an arbitrary link under a
-    project root need not lead anywhere inside it.
+    Drop-in for ``os.walk(root, followlinks=True)``; callers still prune
+    ``dirnames`` in place. ``may_follow`` is asked about each symlinked
+    directory by path, and a declined link is pruned; real directories are
+    always walked. The default follows every link, so a walk over a whole
+    project should pass :func:`artefact_layout_boundary`.
     """
     seen: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
