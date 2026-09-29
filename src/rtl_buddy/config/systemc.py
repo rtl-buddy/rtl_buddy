@@ -1,31 +1,8 @@
-"""SystemC root-config support.
+"""Optional ``cfg-systemc`` block in ``root_config.yaml``.
 
-A single optional block on root_config.yaml that pins where the project's
-SystemC install lives (headers + libsystemc.{a,dylib,so}) and, optionally,
-the C++ compiler to use so the cosim binary's ABI matches libsystemc.
+Pins the SystemC install (``home``), an optional C++ compiler (``cxx``) and project-wide ``cflags`` / ``ldflags``, which per-testbench ``systemc.cflags`` / ``systemc.ldflags`` in tests.yaml extend. The include and library paths derived from ``home`` are added automatically, so ``cflags`` and ``ldflags`` need not repeat them.
 
-Schema (in root_config.yaml):
-
-    cfg-systemc:
-      home: "${WORKSPACE}/systemc-install"   # optional; $SYSTEMC_HOME fallback
-      cxx:  "/opt/homebrew/bin/g++-15"       # optional
-      cflags: ["-std=c++17"]                  # optional; project-wide -CFLAGS
-      ldflags: []                             # optional; project-wide -LDFLAGS
-
-`cflags` / `ldflags` here are project-wide defaults. Per-testbench
-`systemc.cflags` / `systemc.ldflags` in tests.yaml are appended (not
-replaced) so testbench-specific tokens layer on top of the project
-default. The SystemC include and library paths derived from `home`
-are always auto-emitted; users never need to repeat those.
-
-Resolution order for `home`: config value (with ~ and $VAR expansion) →
-$SYSTEMC_HOME env var → None. SystemCSim is responsible for failing fast
-when a SystemC testbench is requested but home cannot be resolved.
-
-An unresolved `${VAR}` (env var not set) is treated as if `home` was
-unset, so the env-var fallback still runs and the existing
-`systemc.home_unresolved` error fires instead of Verilator failing later
-with a confusing "include not found at ${SYSTEMC_HOME}/include".
+``home`` resolves from the config value (``~`` and ``$VAR`` expanded), then ``$SYSTEMC_HOME``, then None. When it is None, SystemCSim logs ``systemc.home_unresolved`` and fails a SystemC testbench.
 """
 
 import os
@@ -36,9 +13,7 @@ from dataclasses import dataclass, field
 from serde import serde
 
 
-# Matches `${VAR}` and `$VAR` (identifier form). If `os.path.expandvars`
-# leaves either of these in the output, the env var was unset — POSIX
-# expandvars semantics return the literal rather than raising.
+# expandvars leaves an unset variable in the output instead of raising.
 _UNRESOLVED_VAR_RE = re.compile(r"\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -52,21 +27,14 @@ class SystemCConfig:
     ldflags: list[str] = field(default_factory=list)
 
     def get_home(self) -> str | None:
-        """Configured SystemC install root, with ~ and $VAR expanded.
+        """SystemC install root, or None.
 
-        Falls back to $SYSTEMC_HOME when not set in config, or when the
-        config value contained a $VAR that did not resolve (env var unset).
-        Returns None if neither is available; SystemCSim raises a fatal
-        error in that case.
+        Falls back to $SYSTEMC_HOME when `home` is unset or references an unset variable. An unset variable is never left in the returned path, so a missing home is caught as ``systemc.home_unresolved`` before Verilator runs.
         """
         if self.home is not None:
             expanded = os.path.expanduser(os.path.expandvars(self.home))
             if not _UNRESOLVED_VAR_RE.search(expanded):
                 return expanded
-            # The configured value referenced an unset env var. Treat as
-            # if `home` was unset and let the env-var fallback / None path
-            # handle it, so SystemCSim's home_unresolved error fires
-            # instead of Verilator failing later on a literal "${...}" path.
         env_home = os.environ.get("SYSTEMC_HOME")
         return env_home if env_home else None
 
@@ -82,11 +50,11 @@ class SystemCConfig:
         return self.cxx
 
     def get_cflags(self) -> list[str]:
-        """Project-wide -CFLAGS tokens (testbench-level cflags append on top)."""
+        """Project-wide -CFLAGS tokens."""
         return list(self.cflags)
 
     def get_ldflags(self) -> list[str]:
-        """Project-wide -LDFLAGS tokens (testbench-level ldflags append on top)."""
+        """Project-wide -LDFLAGS tokens."""
         return list(self.ldflags)
 
     def __str__(self):

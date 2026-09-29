@@ -30,12 +30,7 @@ logger = logging.getLogger(__name__)
 
 @serde
 class CocotbTestbenchConfig:
-    """
-    cocotb-specific configuration nested under a testbench.
-
-    Attributes:
-      module (str | list[str]): Python test module(s) to load via MODULE env var.
-    """
+    """cocotb settings for a testbench; `module` is the Python test module(s) passed via the MODULE env var."""
 
     module: str | list[str]
 
@@ -47,20 +42,9 @@ class CocotbTestbenchConfig:
 
 @serde
 class SystemCTestbenchConfig:
-    """
-    SystemC-specific configuration nested under a testbench.
+    """SystemC settings for a testbench; presence makes Verilator emit the DUT as an sc_module linked against a user sc_main().
 
-    Presence signals that Verilator should emit the DUT as an sc_module and
-    link it against a user-provided sc_main(). Mirrors CocotbTestbenchConfig.
-
-    Attributes:
-      sc_main (str): C++ source file containing sc_main(), relative to suite dir.
-      sc_extra (list[str]): Additional C++ translation units to compile and link.
-      cflags (list[str]): Tokens appended to -CFLAGS at verilator invocation.
-      ldflags (list[str]): Tokens appended to -LDFLAGS at verilator invocation.
-      pin_style (str | None): One of "uint" | "bv" | "biguint" — maps to
-        --pins-sc-uint / --pins-sc-biguint / (no flag for "bv"). None leaves
-        Verilator's default emission (uint32_t for ≤32-bit, sc_bv for wider).
+    `sc_main` is the C++ file containing sc_main(), relative to the suite directory. `sc_extra` lists extra C++ units. `cflags` and `ldflags` are appended to -CFLAGS and -LDFLAGS. `pin_style` "uint" or "biguint" adds --pins-sc-uint or --pins-sc-biguint; "bv" adds no flag; None keeps Verilator's default.
     """
 
     sc_main: str
@@ -72,39 +56,9 @@ class SystemCTestbenchConfig:
 
 @serde
 class TestbenchConfig:
-    """
-    Configuration for a single testbench within a test suite.
+    """A testbench entry in a suite.
 
-    Attributes:
-      name (str): Unique testbench identifier.
-      filelist (list[str]): List of paths to files involved in running the testbench.
-      toplevel (str | None): Name of the module the compile elaborates from.
-        Required for cocotb and SystemC testbenches; optional but recommended
-        for a plain SystemVerilog one, where it is passed to the builder as
-        Verilator ``--top-module`` / VCS ``-top`` / Icarus ``-s`` (#506, #508).
-        Without it the top — and, for Verilator, the model name — is elected
-        from filelist order, which also makes an uninstantiated module in an
-        ordinary (non-``-v``) input a MULTITOP error. Not defaulted to
-        ``name``: a testbench name is a config label, not necessarily a module.
-        For a plain SystemVerilog testbench this is the BENCH, not the DUT it
-        instantiates — a DUT-valued ``toplevel:`` left over from when the
-        field was only graph metadata elaborates the wrong root (see
-        docs/known-issues.md).
-      cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
-      systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
-      resources (DispatchResourcesFile | None): default per-job reservation for
-        dispatched runs of this testbench's tests (#351); tests override per field.
-        Its ``modes:`` sub-block overrides the resolved value per builder mode
-        (#634) and is validated here, at load, like the compile block below.
-      compile (TestbenchCompileFile | None): this testbench's own PER-BUILD
-        compile reservation (#551), layered over the suite's ``compile:``
-        block the way that block layers over ``cfg-dispatch.compile``. For a
-        suite whose testbenches verilate at wildly different sizes — the same
-        design at two geometries, say — this is what stops the whole suite
-        from reserving the largest one's memory for every build. The suite's
-        build job aggregates these (see
-        :func:`~.dispatch.aggregate_compile_resources`); ``parallel`` is rejected
-        here, because one build job compiles every testbench.
+    `filelist` lists the files to compile. `toplevel` is the module the compile elaborates from (Verilator ``--top-module``, VCS ``-top``, Icarus ``-s``): required for cocotb and SystemC, recommended otherwise. For plain SystemVerilog it is the bench, not the DUT. `cocotb` or `systemc` presence selects that mode; they are mutually exclusive. `resources` is the default dispatch reservation for the testbench's tests, with a ``modes:`` sub-block per builder mode. `compile` is this testbench's compile reservation, layered over the suite's ``compile:`` block and aggregated by :func:`~.dispatch.aggregate_compile_resources`; ``parallel`` is rejected here.
     """
 
     name: str
@@ -116,22 +70,10 @@ class TestbenchConfig:
     compile: TestbenchCompileFile | None = None
 
     def __post_init__(self):
-        # Validated at load, in the same place and with the same wording the
-        # suite-level block uses, so the YAML 1.1 sexagesimal trap (an
-        # unquoted `4:00:00` read as the integer 14400) cannot reach sbatch
-        # as a ten-day reservation, an unaddable `mem` cannot reach the build
-        # job's sum, and a `parallel:` written here is refused rather than
-        # silently dropped. Named by testbench, matching the other errors
-        # raised here (#551).
+        # Validated at load, as the suite-level block is: an unquoted `4:00:00` parses as an integer.
         try:
             self.compile = validate_testbench_compile_block(self.compile)
-            # The `resources:` block's own per-mode overrides (#634). Only
-            # the `modes:` sub-block: the base fields here have been loaded
-            # leniently by every release so far (resolve_resources validates
-            # them as it applies them), and tightening them now would reject
-            # configs that run today. A mode block has no such history, and
-            # a typo in one is a reservation that silently stays at the base
-            # figure — which is the failure this key exists to remove.
+            # Only `modes:` is validated here; resolve_resources validates the base fields when applied.
             if self.resources is not None:
                 self.resources.modes = validate_modes_block(
                     self.resources.modes, where="resources."
@@ -159,21 +101,9 @@ class TestbenchConfig:
         return self.systemc is not None
 
     def get_name(self):
-        """
-        Retrieve the value of name
-
-        Returns:
-        name (str): The name of the testbench
-        """
         return self.name
 
     def get_filelist(self):
-        """
-        Retrieve the value of filelist
-
-        Returns:
-        filelist(list[str]): The value of filelist in the testbench
-        """
         return self.filelist
 
     def __str__(self):
@@ -182,32 +112,9 @@ class TestbenchConfig:
 
 @dataclass
 class TestConfig:
-    """
-    Configuration for a single test within a test suite.
+    """A test loaded from tests.yaml. Hooks and plan restore may mutate it during a run.
 
-    Encapsulates all test-specific settings loaded from tests.yaml, including
-    required metadata, optional runtime parameters, and sweep/pre/post processing
-    scripts. Supports mutable properties for dynamic test expansion during execution.
-
-    Attributes:
-      name (str): Unique test identifier.
-      desc (str): Human-readable test description.
-      model (str): RTL model name from models.yaml.
-      model_path (str): Path to models.yaml.
-      tb_name (str): Name of the testbench to use for this test.
-      tb (TestbenchConfig): Associated testbench configuration object.
-      _reglvl (int | dict | None): Regression level(s) controlling test execution.
-        Can be a uniform int, a dict with builder-specific levels, or None (defaults to 0).
-      pa (dict | None): Plusargs dict passed to simulator at runtime.
-      pd (dict | None): Plusdefines dict passed to simulator at runtime.
-      uvm (UVMConfig | None): If defined, enables UVM report parsing in post.
-      sweep_path (str | None): Path to sweep expansion Python script (expands one test into many).
-      preproc_path (str | None): Path to pre-processing Python script (runs before compile).
-      postproc_path (str | None): Path to post-processing Python script (runs after simulation).
-      assertions (bool): When True and the builder is Verilator, compile in SVA via
-        `--assert` and surface assertion-failed counts in the `rb test` results
-        table. Also enables `--coverage-user` so concurrent `cover` property hits
-        flow into the existing coverage pipeline.
+    `_reglvl` is an int, a per-builder dict or None (0). `pa` and `pd` are the plusargs and plusdefines. `uvm` enables UVM report parsing in post. `sweep_path`, `preproc_path` and `postproc_path` are the hook scripts. `assertions` compiles SVA with Verilator `--assert` and `--coverage-user` and reports assertion-failed counts.
     """
 
     name: str
@@ -225,23 +132,12 @@ class TestConfig:
     covers: list[str] | None = None
     builder_name: str | None = None
     assertions: bool = False
-    # Per-test reservation override for dispatched runs (#351). Layered
-    # field-wise over the testbench's `resources:` and the cfg-dispatch
-    # defaults by config.dispatch.resolve_resources(), which then layers
-    # every level's `modes.<builder mode>` block over the result (#634).
+    # Layered over the testbench's `resources:` and cfg-dispatch defaults by config.dispatch.resolve_resources().
     resources: "DispatchResourcesFile | None" = None
-    # Expected-fail markers (pytest-style xfail). A test is treated as
-    # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
-    # FAIL is reported as XFAIL and counts as a pass; SKIP/NA pass through.
-    # They differ only in how an unexpected pass (XPASS) is counted:
-    #   xfail        — non-strict: XPASS still counts as a pass.
-    #   xfail_strict — strict: XPASS counts as a FAILURE (stale marker is
-    #                  loud). If both are set, strict wins.
-    # Use for a known-failing test you want tracked in the suite rather
-    # than deleted or silently excluded.
+    # Either flag makes a FAIL report as XFAIL (a pass). An unexpected pass (XPASS) counts as a pass under `xfail` and a failure under `xfail_strict`, which wins if both are set.
     xfail: bool = False
     xfail_strict: bool = False
-    default_timeout: int = 60  # NOTE: potential for config through root config
+    default_timeout: int = 60
     sim_rand_seed: int | None = None
     sim_rand_seed_plusarg: str | None = None
     resolved_seed: int | None = None
@@ -249,30 +145,18 @@ class TestConfig:
     seed_identity: str | None = None
 
     def get_name(self):
-        """
-        Retrieve the value of name
-
-        Returns:
-        name (str): The name of the test
-        """
         return self.name
 
     def get_builder_name(self):
-        """
-        Retrieve the builder selected for this test, if any.
-
-        Returns:
-          builder_name (str | None): Name of a cfg-rtl-builder entry to use
-            for this test, or None to fall back to the suite/platform default.
-        """
+        """Return the ``cfg-rtl-builder`` name selected for this test, or None for the suite/platform default."""
         return self.builder_name
 
     def is_xfail(self) -> bool:
-        """Whether this test is expected to fail (either flag set)."""
+        """Whether this test is expected to fail."""
         return self.xfail or self.xfail_strict
 
     def get_xfail(self) -> bool:
-        """Whether this test is marked expected-to-fail (see `xfail`)."""
+        """Whether `xfail` is set."""
         return self.xfail
 
     def get_xfail_strict(self) -> bool:
@@ -280,109 +164,37 @@ class TestConfig:
         return self.xfail_strict
 
     def get_model(self):
-        """
-        Retrieve the value of model
-
-        Returns:
-        model (ModelConfig): The value of model in the test
-        """
         return self.model
 
     def get_testbench(self):
-        """
-        Retrieve the testbench configuration associated with this test.
-
-        Returns:
-          TestbenchConfig: Testbench configuration containing HDL filelist.
-        """
         return self.tb
 
     def get_plusarg(self, key):
-        """
-        Return the value of the plusarg from the plusargs dictionary
-
-        Args:
-          key (str): Plusarg name (e.g., 'NUM_ITERATIONS').
-        Returns:
-          value (str | int | float): Plusarg value.
-        """
+        """Return the value of plusarg `key`."""
         return self.pa.get(key)
 
     def get_plusargs(self):
-        """
-        Retrieve the current plusargs dictionary for simulator runtime.
-
-        Returns:
-          dict | None: Dict of plusargs, or None if not specified.
-        """
+        """Return the plusargs dict, or None."""
         return self.pa
 
     def set_plusarg(self, key, value):
-        """
-        Set or update a single plusarg for simulator runtime.
-
-        Lazily initializes the plusargs dict if not already present.
-        Used by pre-processing scripts to inject vlog runtime plusargs dynamically.
-
-        Args:
-          key (str): Plusarg name (e.g., 'NUM_ITERATIONS').
-          value (str | int | float): Plusarg value.
-        """
+        """Set one plusarg; used by preprocessing hooks."""
         if self.pa is None:
             self.pa = {}
         self.pa[key] = value
 
     def set_plusargs(self, new_args):
-        """
-        Set or update multiple plusargs for simulator runtime.
-
-        Merges the provided dictionary with the existing plusargs dict.
-        Lazily initializes the plusargs dict if not already present.
-        Used by pre-processing scripts to inject multiple vlog runtime plusargs dynamically.
-
-        Args:
-          new_args (dict): Dictionary of plusarg key-value pairs to merge.
-        """
+        """Merge `new_args` into the plusargs; used by preprocessing hooks."""
         if self.pa is None:
             self.pa = {}
         self.pa.update(new_args)
 
     def with_plusarg_overrides(self, overrides):
-        """Return this config with ``overrides`` merged over its ``plusargs:``.
+        """Return this config with ``rb test --plusarg`` ``overrides`` merged over its ``plusargs:``.
 
-        The one place a ``rb test --plusarg`` override is applied (#552), so
-        every consumer — the preprocessor hook that reads
-        :meth:`get_plusarg`, the simulator command line built from
-        :meth:`get_plusargs`, and the dispatch plan the jobs rebuild their
-        configs from — sees one merged view rather than each re-deriving it.
+        Overrides win over configured values; a ``preproc`` hook may still overwrite them. Empty overrides return ``self``; otherwise a shallow copy with a fresh ``plusargs`` dict. A ``None`` value is a valueless ``+KEY``.
 
-        ``overrides`` wins over the configured value, matching the "later
-        wins" rule the repeated CLI flag already follows among its own
-        entries. A ``preproc`` hook still runs afterwards and may overwrite
-        one deliberately; hooks are the last word, as they are for every
-        other field.
-
-        Empty or ``None`` overrides return ``self`` unchanged — not a copy —
-        so a run without the flag is byte-for-byte the run it always was.
-        Otherwise a shallow copy carrying a *fresh* ``plusargs`` dict is
-        returned, leaving the suite's own loaded config untouched. Only that
-        dict is copied: everything else (the testbench, the model, the
-        plusdefines dict) stays shared, exactly as it is today when a hook
-        mutates the config the suite loaded.
-
-        Overriding the plusarg a test's ``sim-rand-seed-plusarg`` manages is
-        a fatal error, not a merge — see the raise below.
-
-        Args:
-          overrides (dict | None): Plusarg overrides; a ``None`` value means
-            a valueless ``+KEY``, exactly as in ``plusargs:``.
-
-        Returns:
-          TestConfig: This config, or a copy with the overrides merged in.
-
-        Raises:
-          FatalRtlBuddyError: When an override names this test's
-            ``sim-rand-seed-plusarg``.
+        Raises FatalRtlBuddyError if an override names the test's ``sim-rand-seed-plusarg``.
         """
         if not overrides:
             return self
@@ -390,11 +202,7 @@ class TestConfig:
             self.sim_rand_seed_plusarg is not None
             and self.sim_rand_seed_plusarg in overrides
         ):
-            # Refused rather than merged: rtl_buddy re-writes this plusarg
-            # from the resolved seed after the preprocessor runs
-            # (:meth:`ensure_resolved_seed_plusarg`), so the override would
-            # reach neither the hook's second read nor the simulator. A
-            # silently dropped value is the worse answer.
+            # ensure_resolved_seed_plusarg rewrites this plusarg after the preprocessor, so an override would be lost.
             raise FatalRtlBuddyError(
                 f"test {self.name!r}: --plusarg {self.sim_rand_seed_plusarg} "
                 "names the plusarg its sim-rand-seed-plusarg manages, and "
@@ -448,131 +256,50 @@ class TestConfig:
         return getattr(self, "_resolved_seed_lock", self.resolved_seed)
 
     def get_plusdefine(self, key):
-        """
-        Return the value of the plusdefine from the plusdefine dictionary
-
-        Args:
-          key (str): Plusdefine name (e.g., 'NUM_ITERATIONS').
-        Returns:
-          value (str | int | float): Plusdefine value.
-        """
+        """Return the value of plusdefine `key`."""
         return self.pd.get(key)
 
     def get_plusdefines(self):
-        """
-        Retrieve the current plusdefines dictionary for simulator runtime.
-
-        Returns:
-          dict | None: Dict of plusdefines, or None if not specified.
-        """
+        """Return the plusdefines dict, or None."""
         return self.pd
 
     def set_plusdefine(self, key, value):
-        """
-        Set or update a single plusdefine for simulator runtime.
-
-        Lazily initializes the plusdefines dict if not already present.
-        Used by pre-processing scripts to inject vlog plusdefines dynamically.
-
-        Args:
-          key (str): Define name (e.g., 'WIDTH').
-          value (str | int): Define value.
-        """
+        """Set one plusdefine; used by preprocessing hooks."""
         if self.pd is None:
             self.pd = {}
         self.pd[key] = value
 
     def set_plusdefines(self, new_defines):
-        """
-        Set or update multiple plusdefines for simulator runtime.
-
-        Merges the provided dictionary with the existing plusdefines dict.
-        Lazily initializes the plusdefines dict if not already present.
-        Used by pre-processing scripts to inject multiple vlog plusdefines dynamically.
-
-        Args:
-          new_defines (dict): Dictionary of plusdefine key-value pairs to merge.
-        """
+        """Merge `new_defines` into the plusdefines; used by preprocessing hooks."""
         if self.pd is None:
             self.pd = {}
         self.pd.update(new_defines)
 
     def get_timeout(self):
-        """
-        Retrieve the simulation timeout for this test in seconds.
-
-        Returns:
-          timeout (int): Simulation timeout in seconds.
-          is_custom (bool): Whether this value is custom set.
-        """
+        """Return ``(timeout_seconds, is_custom)``; `is_custom` is False when the default applies."""
         is_custom = self.timeout is not None
         return self.timeout if is_custom else self.default_timeout, is_custom
 
     def set_timeout(self, timeout):
-        """
-        Set the simulation timeout for this test in seconds
-
-        Args:
-          timeout (int): Simulation timeout in seconds
-        """
+        """Set the simulation timeout in seconds."""
         self.timeout = timeout
 
     def get_sweep_path(self):
-        """
-        Retrieve the path to the sweep expansion script.
-
-        Sweep scripts expand a single test configuration into multiple test variants,
-        enabling parametric testing across design configurations.
-
-        Returns:
-          str | None: Absolute path to sweep script, or None if not specified.
-        """
+        """Return the absolute path of the sweep script (expands one test into variants), or None."""
         return self.sweep_path
 
     def get_preproc_path(self):
-        """
-        Retrieve the path to the pre-processing Python script.
-
-        Pre-processing runs before compilation to allow dynamic modification of
-        TestConfig object.
-
-        Returns:
-          str | None: Absolute path to pre-proc script, or None if not specified.
-        """
+        """Return the absolute path of the preprocessing script (runs before compile), or None."""
         return self.preproc_path
 
     def get_postproc_path(self):
-        """
-        Retrieve the path to the post-processing Python script.
-
-        Post-processing runs after simulation for an external script to do any
-        checking needed.
-
-        Returns:
-          str | None: Absolute path to post-proc script, or None if not specified.
-        """
+        """Return the absolute path of the postprocessing script (runs after simulation), or None."""
         return self.postproc_path
 
     def get_reglvl(self, builder):
-        """
-        Get the regression level for this test on a specific builder.
+        """Return the regression level for `builder`.
 
-        Regression level controls test execution filtering:
-        - Tests are skipped if reglvl falls outside the --reg-level range
-        - Enables tiered testing: e.g. critical tests (reglvl=0) → longer tests (reglvl=5000)
-
-        Args:
-          builder (str): Builder name defined in root_config.yaml (e.g., 'verilator', 'vcs').
-
-        Returns:
-          int: Regression level for this builder. Resolves in order:
-            1. Builder-specific level from reglvl dict
-            2. Default level from reglvl dict if present
-            3. Uniform reglvl if specified as int
-            4. 0 if reglvl not specified
-
-        Raises:
-          SystemExit: If reglvl is malformed, e.g. missing default.
+        Order: the builder's entry in a ``reglvl`` dict, its ``default`` entry, an int ``reglvl``, else 0. Raises FatalRtlBuddyError if a dict has neither.
         """
         match self._reglvl:
             case int() as lvl:
@@ -597,21 +324,9 @@ class TestConfig:
 
         return reglvl
 
-    # ---- dispatch plan (de)serialization (#351) -------------------------
-    #
-    # Under ``--dispatch`` the sweep hook must run exactly once, on the
-    # head: re-running it in the build job and again in each sim job both
-    # wastes work and risks a nondeterministic hook expanding differently
-    # per process (so a sim job's compile key never gets built). The head
-    # therefore expands once and writes each resulting TestConfig to a plan
-    # manifest; the build/sim jobs rebuild it from the manifest instead of
-    # re-expanding. Full-fidelity round trip — a hook may mutate any field,
-    # so every field is carried, and ``test_testconfig_plan_roundtrip``
-    # guards the field list against silent drift.
+    # Dispatch plan round trip: the head expands sweeps once and writes each TestConfig to the plan manifest; jobs rebuild from it. Every field is carried.
 
-    # to_plan_dict keys, mapped to the dataclass field they carry. The
-    # only rename is the private ``_reglvl`` -> ``reglvl``. Kept as a class
-    # attribute so the completeness guard test can assert coverage.
+    # to_plan_dict keys that differ from their dataclass field.
     _PLAN_FIELD_RENAMES = {"_reglvl": "reglvl"}
 
     def to_plan_dict(self) -> dict:
@@ -647,12 +362,7 @@ class TestConfig:
 
     @classmethod
     def from_plan_dict(cls, d: dict) -> "TestConfig":
-        """Rebuild a TestConfig from a :meth:`to_plan_dict` manifest entry.
-
-        Hook paths and ``model.path`` were resolved to absolute on the head
-        at load time and carried verbatim, so the rebuilt config runs the
-        same regardless of the job's cwd — no re-resolution needed.
-        """
+        """Rebuild a TestConfig from a :meth:`to_plan_dict` manifest entry; paths are already absolute."""
         config = cls(
             d["name"],
             d["desc"],
@@ -745,8 +455,6 @@ class TestConfigFile:
                 f"test {self.name!r}: sim-rand-seed-plusarg must not be empty"
             )
         if self.resources is not None:
-            # Per-mode overrides, validated at load like the testbench's
-            # (see TestbenchConfig.__post_init__ for why only these).
             try:
                 self.resources.modes = validate_modes_block(
                     self.resources.modes, where="resources."
@@ -757,11 +465,7 @@ class TestConfigFile:
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
-        # Hook script paths are declared relative to the suite config
-        # (tests.yaml), the same as model_path. Resolve them at load
-        # time so VlogSim.pre() / _expand_tests_with_sweep can open()
-        # them regardless of the process cwd — required since #216,
-        # which stopped changing cwd into the suite dir.
+        # Hook paths are relative to the suite config; resolve them so they open from any cwd.
         preproc_path = _resolve_hook_path(self.preproc_path, config_dir)
         postproc_path = _resolve_hook_path(self.postproc_path, config_dir)
         sweep_path = _resolve_hook_path(self.sweep_path, config_dir)
@@ -790,36 +494,14 @@ class TestConfigFile:
 
 
 def parse_plusarg_overrides(values) -> dict:
-    """Parse repeated ``--plusarg`` values into a plusargs dict (#552).
+    """Parse repeated ``--plusarg`` values into ``{key: value}``.
 
-    Each value is ``KEY=VALUE`` or a bare ``KEY`` for the valueless
-    ``+KEY`` form ``plusargs:`` spells as a null value. The result merges
-    over a test's configured ``plusargs:`` — see
-    :meth:`TestConfig.with_plusarg_overrides` — and a key repeated on the
-    command line keeps its LAST value, so the rule is "later wins" whether
-    the earlier value came from the YAML or from an earlier flag.
-
-    Rejected, because the simulator would never see what the user typed: an
-    empty key, a key carrying the ``+`` that introduces a plusarg (the
-    value keeps any ``+`` it contains), and whitespace anywhere in the key
-    — the argv token splits the plusarg list, so a space in a key is a
-    second plusarg the bench will not recognise.
-
-    Args:
-      values (list[str] | None): Raw ``--plusarg`` values, in CLI order.
-
-    Returns:
-      dict: ``{key: value}``, with ``None`` for a valueless plusarg.
-
-    Raises:
-      FatalRtlBuddyError: On a malformed value.
+    Each value is ``KEY=VALUE``, or a bare ``KEY`` for a valueless plusarg (``None``). A repeated key keeps its last value. Raises FatalRtlBuddyError for an empty key, a ``+`` in the key, or whitespace in the key.
     """
     overrides: dict = {}
     for raw in values or []:
         key, sep, value = raw.partition("=")
-        # `strip("+")` so a name that is nothing but the prefix ("+", "++")
-        # is reported as the missing name it is, rather than falling into
-        # the '+' branch below and suggesting an empty replacement.
+        # strip("+") so "+" or "++" reports a missing name, not the '+' error.
         if not key.strip("+"):
             raise FatalRtlBuddyError(
                 f"--plusarg {raw!r} has no name; write --plusarg KEY=VALUE "
@@ -842,12 +524,7 @@ def parse_plusarg_overrides(values) -> dict:
 
 
 def _resolve_hook_path(path: str | None, config_dir: str) -> str | None:
-    """Resolve a hook-script path declared in tests.yaml.
-
-    Absolute paths pass through; relative paths anchor on the suite
-    config's directory. Returns None unchanged so commands without a
-    hook stay None.
-    """
+    """Resolve a hook path from tests.yaml: absolute paths pass through, relative ones anchor on `config_dir`, None stays None."""
     if path is None:
         return None
     if os.path.isabs(path):

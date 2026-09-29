@@ -1,19 +1,6 @@
 """Optional ``cfg-tools`` block in ``root_config.yaml``.
 
-Each entry pairs a tool manifest name (e.g. ``verible``, ``yosys``, ``surfer``)
-with a project-pinned minimum version. ``rb tool-check`` overlays these on top
-of the in-source defaults in :mod:`rtl_buddy.tool_manifest`, so a project can
-demand a newer baseline than what rtl_buddy ships with — without forking the
-manifest.
-
-The block is intentionally optional and additive. Projects that don't pin
-versions get the manifest defaults.
-
-An entry may also carry ``platform:`` naming a ``cfg-platforms[].os``, in
-which case it applies only on that platform and beats an unqualified
-entry for the same tool. That is what lets a project pin Linux to a
-shared tool tree at ``5.050`` while macOS takes Homebrew's ``5.049``,
-instead of having to declare the lowest floor any platform can satisfy.
+Each entry pins a minimum version for a tool manifest name (e.g. ``verible``); ``rb tool-check`` overlays the pins on :mod:`rtl_buddy.tool_manifest`. An entry with ``platform:`` (a ``cfg-platforms[].os``) applies only there and beats an unqualified entry for the same tool.
 """
 
 from dataclasses import dataclass
@@ -25,10 +12,7 @@ from serde import field, serde
 class ToolVersionConfigFile:
     name: str
     min_version: str | None = field(rename="min-version", default=None)
-    #: Optional ``cfg-platforms[].os`` this pin applies to. Unset means
-    #: every platform. A project that pins one platform's toolchain to a
-    #: shared tool tree can then state the real floor there instead of
-    #: the lowest floor any platform can satisfy (#439).
+    #: ``cfg-platforms[].os`` this pin applies to; unset means every platform.
     platform: str | None = None
 
 

@@ -3,13 +3,7 @@ from serde import serde, field
 
 @serde
 class UVMConfig:
-    """
-    Configuration for UVM report parsing in post.
-
-    Attributes:
-            max_warns (int): Maximum number of UVM_WARNINGs before the test fails. Defaults to 0.
-            max_errors (int): Maximum number of UVM_ERRORs before the test fails. Defaults to 0.
-    """
+    """UVM report limits: the test fails above `max_warns` warnings or `max_errors` errors (both default 0)."""
 
     max_warns: int = field(default=0)
     max_errors: int = field(default=0)

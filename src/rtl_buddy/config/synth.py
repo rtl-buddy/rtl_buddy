@@ -23,17 +23,14 @@ class SynthPlatformConfigFile:
     name: str
     pdk: str
     corner: str = ""
-    # Cells this platform excludes on top of the PDK's `dont-use-cells`
-    # (#656), mirroring the P&R platform key.
+    # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
 
 
 class SynthPlatformConfig:
-    """A synthesis-side view of a PDK + corner selection.
+    """A PDK plus corner selection for synthesis.
 
-    Backends consume `get_path()` (Liberty for STA / tech mapping) and
-    `get_lef_paths()` (tech + macro LEF from the PDK). Block-specific
-    LEFs live on the per-run synth.yaml (`SynthConfig.get_lef_paths()`).
+    `get_path()` is the Liberty for STA and tech mapping; `get_lef_paths()` is the PDK's tech and macro LEF. Block-specific LEFs come from `SynthConfig.get_lef_paths()`.
     """
 
     def __init__(self, cfg: SynthPlatformConfigFile, pdk_lookup):
@@ -67,7 +64,7 @@ class SynthPlatformConfig:
         return list(self._lef_paths)
 
     def get_dont_use_cells(self) -> list[str]:
-        """The PDK's excluded cells plus this platform's, PDK first (#656)."""
+        """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
 
 
@@ -78,26 +75,15 @@ class SynthToolOpts:
     strategy: str = ""
     frontend: str = "verilog"
     plugin_path: str = ""
-    # Parse all model sources as one SystemVerilog compilation unit, so
-    # preprocessor definitions stay visible across file boundaries.
-    # Forwarded to yosys-slang as ``read_slang --single-unit``; the
-    # legacy verilog frontend has no equivalent.
+    # One compilation unit for all sources (``read_slang --single-unit``); slang frontend only.
     single_unit: bool = False
-    # Keep module instances as hierarchy instead of inlining them. Forwarded
-    # to yosys-slang as ``read_slang --best-effort-hierarchy``; the legacy
-    # verilog frontend has no equivalent.
+    # Keep hierarchy (``read_slang --best-effort-hierarchy``); slang frontend only.
     best_effort_hierarchy: bool = False
-    # Pre-synthesis gate on `function`/`task` declarations that lack an
-    # explicit `automatic` lifetime: "error", "warn", or "allow". Empty
-    # selects the frontend-dependent default -- see
-    # :func:`resolve_static_functions_mode`.
+    # Gate on `function`/`task` without `automatic`: "error", "warn" or "allow". See :func:`resolve_static_functions_mode`.
     static_functions: str = ""
-    # Post-synthesis gate on Yosys "multiple conflicting drivers" warnings:
-    # "error" (the default) or "allow".
+    # Gate on Yosys "multiple conflicting drivers" warnings: "error" (default) or "allow".
     conflicting_drivers: str = ""
-    # Post-synthesis gate on Yosys "Could not find interface instance"
-    # warnings: "error", "warn" (the default) or "allow". See
-    # :func:`resolve_unresolved_interfaces_mode`.
+    # Gate on Yosys "Could not find interface instance" warnings: "error", "warn" (default) or "allow".
     unresolved_interfaces: str = ""
 
 
@@ -115,22 +101,16 @@ class SynthToolOptsFile:
     unresolved_interfaces: str = field(rename="unresolved-interfaces", default="")
 
 
-# Accepted values for the correctness gates, and the default each takes
-# when the option is left empty.
+# Accepted values for the correctness gates.
 STATIC_FUNCTIONS_MODES: tuple[str, ...] = ("error", "warn", "allow")
 CONFLICTING_DRIVERS_MODES: tuple[str, ...] = ("error", "allow")
 UNRESOLVED_INTERFACES_MODES: tuple[str, ...] = ("error", "warn", "allow")
 
 
 def resolve_static_functions_mode(opts: SynthToolOpts) -> str:
-    """Effective ``static-functions`` mode for these tool options.
+    """Effective ``static-functions`` mode.
 
-    The default depends on the frontend because the hazard does. yosys-slang
-    lowers a static-lifetime subroutine literally and shares one net per
-    formal across every call site, so the netlist is silently wrong: default
-    ``error``. The legacy ``verilog`` frontend inlines per call site, so the
-    design is correct there but not portable, and the default is ``warn``.
-    An explicit setting always wins.
+    The default is ``error`` for the slang frontend, which shares one net per formal across call sites, and ``warn`` for the verilog frontend. An explicit setting wins.
     """
     mode = (opts.static_functions or "").strip()
     if not mode:
@@ -157,25 +137,9 @@ def resolve_conflicting_drivers_mode(opts: SynthToolOpts) -> str:
 
 
 def resolve_unresolved_interfaces_mode(opts: SynthToolOpts) -> str:
-    """Effective ``unresolved-interfaces`` mode for these tool options.
+    """Effective ``unresolved-interfaces`` mode; defaults to ``warn``.
 
-    ``read_verilog`` cannot bind a SystemVerilog interface *instance* to the
-    interface port of a child, so it falls back to deriving a per-child
-    ``<child>$interfaces$<interface>`` module whose ports are the interface's
-    members, wired in the parent through implicitly declared ``<inst>.<member>``
-    wires. The members usually survive that, but the interface instance's own
-    port connections do not: ``bus_if b (.clk(clk));`` leaves ``\\b.clk``
-    undriven, so every flop clocked from it loses its clock, silently, with a
-    warning and an exit code of 0. yosys-slang binds the instance properly, so
-    the hazard is a ``frontend: verilog`` one.
-
-    The fallback is correct often enough -- an interface with no ports of its
-    own, or whose ports nothing downstream reads, synthesizes to the same
-    netlist slang produces -- that ``error`` would fail working designs. The
-    default is therefore ``warn``: the warning is otherwise buried in a Yosys
-    log nobody reads. An explicit setting always wins, and ``error`` is the
-    setting for a project that uses interface ports and wants the hazard
-    gated.
+    With ``frontend: verilog``, an interface instance's own port connections can be left undriven, silently. ``error`` gates that; the slang frontend is unaffected.
     """
     mode = (opts.unresolved_interfaces or "").strip()
     if not mode:
@@ -188,11 +152,7 @@ def resolve_unresolved_interfaces_mode(opts: SynthToolOpts) -> str:
     return mode
 
 
-# Accepted keys of a `synth.yaml` ``tool_overrides.<tool>`` block. These are
-# the snake_case attribute names of SynthToolOpts, NOT the kebab-case YAML
-# spellings used under ``cfg-synth-tools.opts`` — an override written in the
-# kebab form used to be accepted and silently ignored, which is exactly the
-# failure mode this list exists to close.
+# Accepted keys of a ``tool_overrides.<tool>`` block: snake_case, unlike the kebab-case keys under ``cfg-synth-tools.opts``.
 SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "synth_args",
     "abc_args",
@@ -206,12 +166,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "unresolved_interfaces",
 )
 
-# Overrides whose value type is checked, as key -> (type, label, hint).
-# PyYAML gives `single_unit: "true"` as a str, which is truthy and would
-# silently enable the flag from a value the author may have meant as
-# anything. Type errors here are fatal: `single_unit` is new, so no existing
-# config can hold a wrongly-typed one, and serde already rejects the same
-# values under `cfg-synth-tools.opts.single-unit`.
+# Type-checked overrides, as key -> (type, label, hint). A quoted `"true"` would otherwise be truthy.
 _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
     "single_unit": (bool, "bool", "write an unquoted YAML true/false"),
     "best_effort_hierarchy": (bool, "bool", "write an unquoted YAML true/false"),
@@ -290,20 +245,14 @@ class SynthToolConfigFile:
 class SynthToolConfig:
     def __init__(self, cfg: SynthToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
-        # Directory relative `tool:` candidates are existence-tested
-        # against: the one holding root_config.yaml, never the process
-        # cwd (rb is routinely invoked from a suite directory).
+        # Anchor for relative `tool:` candidates: the root_config.yaml directory, not the cwd.
         self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
-
-        ``tool:`` may be a single value or a list of candidates in
-        preference order; see :mod:`rtl_buddy.config.toolpath`.
-        """
+        """Return the effective tool executable (see :mod:`rtl_buddy.config.toolpath`)."""
         return resolve_tool_path(
             self._cfg.tool,
             base_dir=self._base_dir,
@@ -315,16 +264,7 @@ class SynthToolConfig:
     def _validate_overrides(self, overrides: dict) -> None:
         """Check a ``tool_overrides.<tool>`` block before it is merged.
 
-        A misspelled or kebab-case override key used to be dropped on the
-        floor: the run proceeded with the tool-level default and nothing
-        said so. It is now **warned** about and still ignored — rejecting
-        it outright would break configs that load today, and breaking
-        changes only land on major bumps (docs/migrations.md). Promoting
-        this to a hard error is a candidate for the next major.
-
-        A wrongly-typed ``single_unit`` *is* fatal: the field is new, so
-        no config in the wild can already carry a bad one, and serde
-        already rejects the same values under ``cfg-synth-tools.opts``.
+        An unknown or kebab-case key is warned about and ignored. A wrongly typed value for a checked key is fatal.
         """
         unknown = sorted(
             (str(k) for k in overrides if k not in SYNTH_TOOL_OVERRIDE_KEYS)
@@ -377,9 +317,6 @@ class SynthToolConfig:
         unresolved_interfaces = self._cfg.opts.unresolved_interfaces
         if overrides:
             if not isinstance(overrides, dict):
-                # Previously this reached `overrides.get(...)` and died with a
-                # bare AttributeError, so naming the file and the shape it
-                # wanted is strictly better, not a compatibility break.
                 log_event(
                     logger,
                     logging.ERROR,
@@ -435,22 +372,14 @@ class SynthConfigFile:
     platform: str | None = None
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
     lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
-    # Hardened blocks the design instances: each adds its abstract's
-    # Liberty model and LEF to the run, as `lib-paths` / `lef-paths` would
-    # (#95). The model's filelist must still leave the module undefined or
-    # a blackbox stub.
+    # Hardened blocks: each adds its abstract's Liberty and LEF like `lib-paths` / `lef-paths`. The model's filelist must leave the module undefined or a blackbox stub.
     blocks: list[BlockRefFile] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     effort: str | None = None
-    # OpenROAD worker threads for the `tool: openroad` timing stage: a
-    # positive integer or `auto`; unset keeps OpenROAD's single-thread
-    # default (#654). See config/openroad_threads.
+    # OpenROAD threads for the `tool: openroad` timing stage: a positive integer or `auto`; unset means single-threaded.
     threads: int | str | None = None
-    # Expected-fail markers (pytest-style). Either marks this run
-    # expected-to-fail; `xfail` is non-strict (an unexpected pass still
-    # passes), `xfail_strict` is strict (an unexpected pass is a failure).
-    # See docs/concepts/expected-failures.md.
+    # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
@@ -517,7 +446,7 @@ class SynthConfig:
     xfail_strict: bool = False
 
     def is_xfail(self) -> bool:
-        """Whether this run is expected to fail (either flag set)."""
+        """Whether this run is expected to fail."""
         return self.xfail or self.xfail_strict
 
     def get_xfail_strict(self) -> bool:
@@ -527,7 +456,7 @@ class SynthConfig:
         return self.effort
 
     def get_threads(self) -> int | str | None:
-        """Validated `threads:` — a positive int, `auto`, or None (#654)."""
+        """Validated `threads:`: a positive int, `auto`, or None."""
         return self.threads
 
     def get_name(self) -> str:
@@ -537,12 +466,7 @@ class SynthConfig:
         return self.model
 
     def get_top(self) -> str:
-        """The module this run elaborates — the model's root module.
-
-        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
-        ``top:`` override (#479) reaches this flow too; without the
-        override it is still the model name.
-        """
+        """The module this run elaborates: the model's ``top:`` override, else the model name."""
         return self.model.get_top()
 
     def get_constraints(self) -> str | None:
@@ -564,7 +488,7 @@ class SynthConfig:
         return list(self.lib_paths)
 
     def get_blocks(self) -> list[BlockRef]:
-        """The hardened blocks this run instances (#95)."""
+        """The hardened blocks this run instances."""
         return list(self.blocks)
 
     def get_tool_name(self) -> str:
@@ -624,9 +548,7 @@ class SynthSuiteConfig:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
-        # Fail loud on duplicate ``name:`` — same rationale as the
-        # cdc.yaml side: the dict-comprehension below would silently
-        # overwrite the first synthesis with the second.
+        # The dict comprehension below would silently keep the last duplicate.
         seen: dict[str, int] = {}
         for idx, synthesis in enumerate(data.syntheses):
             if synthesis.name in seen:
@@ -648,7 +570,6 @@ class SynthSuiteConfig:
         try:
             self.syntheses = {s.name: s.initialise(config_dir) for s in data.syntheses}
         except FatalRtlBuddyError:
-            # Already says which entry and what is wrong with it.
             raise
         except Exception as e:
             log_event(

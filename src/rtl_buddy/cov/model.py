@@ -2,45 +2,14 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The structured coverage model (#399).
+"""The structured coverage model: a versioned, simulator-agnostic JSON document of what a run covered.
 
-One versioned JSON document describing what a run covered, built from
-artefacts already on disk. Its shape is **simulator-agnostic** — a file
-holds points, a point has hits and an attribution — even though the
-Verilator raw database plus its LCOV export is the only producer today.
+- Each file carries its individual line, branch, toggle, expression and cover points, not only percentages. Toggle and expression detail comes from the raw database (:mod:`rtl_buddy.cov.raw`).
+- Each point carries per-test hit counts (attribution) unless built with ``--coverage-model totals``; ``attribution`` records which.
+- Points are keyed by project-relative source path via :mod:`rtl_buddy.cov.source_paths`.
+- ``totals`` counts points with the elaborated module in their identity; ``source_totals`` drops ``module`` so a point is hit when any elaboration hit it (:func:`~rtl_buddy.cov.raw.source_point_key`). Both appear on the run, each test and each file; see ``docs/concepts/coverage.md``.
 
-Three properties are the point of the exercise:
-
-**Per point, not per percentage.** A file carries its individual line,
-branch, toggle, expression and cover points, so "which lines are cold"
-is a read rather than a re-run. Toggle and expression detail exists only
-in the raw database (:mod:`rtl_buddy.cov.raw`); the LCOV export folds
-both into anonymous records.
-
-**Attribution by default.** Every point carries the per-test hit
-counts behind it — the ``.desc`` data Coverview gets, except it is built
-whenever per-test artefacts exist rather than only when packaging an
-archive. That is what answers "which test covered this line", and its
-inverse, "what would I lose by dropping this test". It is also the
-points x tests term that dominates the model's size and build time, so
-``--coverage-model totals`` builds without it (#660); ``attribution``
-records which kind of document this is.
-
-**Paths are project-relative.** Points are keyed by repo-relative source
-path via the one resolver in :mod:`rtl_buddy.cov.source_paths`, so a
-model stays meaningful when the run directory is gone.
-
-**Two totals, one set of points.** ``totals`` counts points with the
-elaborated module in their identity, the figure every artefact has
-always reported; ``source_totals`` counts them again with ``module``
-dropped, so a point is found once per *source* location and hit when any
-elaboration hit it (#637). Both ride on the run, on each test and on
-each file. See :func:`~rtl_buddy.cov.raw.source_point_key` for the exact
-identity and ``docs/concepts/coverage.md`` for which question each
-answers.
-
-The model is written to ``cov_dir/coverage-model.json`` and pointed at
-by ``cov_dir/manifest.json``.
+The model is written to ``cov_dir/coverage-model.json`` and referenced by ``cov_dir/manifest.json``.
 """
 
 from __future__ import annotations
@@ -62,23 +31,16 @@ from .raw import (
 )
 from .source_paths import SourcePathResolver
 
-#: Bumped when the document's shape changes incompatibly. Adding a key
-#: is not incompatible — ``source_totals`` (#637) and ``attribution``
-#: (#660) arrived at version 1, and a reader of an older document sees
-#: them absent, never wrong.
+#: Bumped when the document's shape changes incompatibly; adding a key is compatible.
 MODEL_SCHEMA_VERSION = 1
 
-#: ``--coverage-model`` values (#660): the whole document, the document
-#: without per-point ``tests`` maps, or no document (manifest only).
+#: ``--coverage-model`` values: the whole document, without per-point ``tests`` maps, or none (manifest only).
 MODEL_MODE_FULL = "full"
 MODEL_MODE_TOTALS = "totals"
 MODEL_MODE_NONE = "none"
 MODEL_MODES = (MODEL_MODE_FULL, MODEL_MODE_TOTALS, MODEL_MODE_NONE)
 
-#: Filename inside ``cov_dir``.
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+# Defined in `tools.artifact_paths` and re-exported here.
 from ..tools.artifact_paths import (  # noqa: E402
     COV_MODEL_NAME as MODEL_FILENAME,
 )
@@ -86,11 +48,9 @@ from ..tools.artifact_paths import (  # noqa: E402
 
 @dataclass(frozen=True)
 class TestArtefacts:
-    """One test's coverage artefacts, as the manifest records them.
+    """One test's coverage artefacts.
 
-    ``source_roots`` is the ``[run dir, suite root]`` hint pair the
-    source-path resolver takes; ``raw`` is preferred over ``info``
-    because it carries the per-signal detail the LCOV export drops.
+    ``source_roots`` is the ``[run dir, suite root]`` hint pair for the source-path resolver. ``raw`` is preferred over ``info``.
     """
 
     name: str
@@ -100,7 +60,7 @@ class TestArtefacts:
     source_roots: tuple[str, ...] = ()
 
 
-# Named for the RTL test it describes, not for pytest.
+# Stops pytest collecting this class.
 TestArtefacts.__test__ = False
 
 
@@ -119,12 +79,7 @@ class _Point:
             self.tests[test] = self.tests.get(test, 0) + hits
 
     def source_key(self, metric: str) -> tuple:
-        """This point's source identity — :func:`source_point_key`'s tuple.
-
-        Derived from the stored fields rather than from a record, so the
-        source figure is a regrouping of the points the model already
-        holds and cannot drift from them.
-        """
+        """This point's :func:`source_point_key` tuple."""
         return source_point_key(
             {
                 "metric": metric,
@@ -181,12 +136,7 @@ def _empty_totals() -> dict:
 
 
 def _totals_from_hits(hits_by_id: dict) -> dict:
-    """Totals over ``{(path, metric, key): summed hits}``.
-
-    Found is one per distinct id, hit is one per id with any hits at
-    all — the collapsed reading, for whatever set of ids the caller
-    grouped.
-    """
+    """Totals over ``{(path, metric, key): summed hits}``: found per id, hit per id with any hits."""
     totals = _empty_totals()
     for (_path, metric, _key), hits in hits_by_id.items():
         bucket = totals[metric]
@@ -226,15 +176,10 @@ def build_model(
     """Build the coverage model from a run's per-test artefacts.
 
     :param tests: iterable of :class:`TestArtefacts`.
-    :param project_root: project root; every source path is reported
-        relative to it.
+    :param project_root: source paths are reported relative to it.
     :param simulator: simulator family that produced the artefacts.
-    :param merged_info: optional merged ``.info`` used only when no test
-        produced any point at all, so a merge-only tree still yields a
-        model (with no attribution — a merged file has no test column).
-    :param attribution: record each point's per-test hit counts. False
-        leaves every total and per-test row intact and drops only the
-        per-point ``tests`` maps (#660).
+    :param merged_info: merged ``.info`` used only when no test produced any point; it has no attribution.
+    :param attribution: record per-test hit counts per point. False drops only the per-point ``tests`` maps.
     """
     project_root = str(Path(project_root).resolve())
     files: dict[str, _FileEntry] = {}
@@ -246,9 +191,7 @@ def build_model(
             continue
         test_name = artefacts.name if attribution else None
         totals = _empty_totals()
-        # This test's points collapsed on their source identity, so its
-        # own row carries both figures: one record per elaboration in
-        # `totals`, one per source location here.
+        # Hits collapsed on source identity, for this test's `source_totals`.
         source_hits: dict[tuple, int] = {}
         for path, metric, record in records:
             entry = files.get(path)
@@ -288,8 +231,7 @@ def build_model(
 
     file_rows = []
     totals = _empty_totals()
-    # Summable across files because the source identity is scoped to one
-    # file: no collapsed point spans two of them.
+    # Summable across files: a source identity never spans two files.
     run_source_totals = _empty_totals()
     modules: dict[str, set[str]] = {}
     for path in sorted(files):
@@ -335,10 +277,7 @@ def _file_row(entry: _FileEntry) -> dict:
         row["totals"][metric] = _totals_entry(
             len(points), sum(1 for point in points if point["hits"] > 0)
         )
-        # The same points regrouped without the module, hits summed: a
-        # point the run elaborated twice is found once and hit if either
-        # copy was hit. On an ``.info``-only model no point carries a
-        # module at all, so the two figures are the same numbers.
+        # Regroup without the module, hits summed.
         collapsed: dict[tuple, int] = {}
         for _, point in ordered:
             key = point.source_key(metric)
@@ -363,7 +302,7 @@ def _relative(path, project_root: str) -> str | None:
 
 
 def _records_for(artefacts: TestArtefacts, project_root: str):
-    """Yield ``(path, metric, record)`` for one test, raw database first."""
+    """Return ``(path, metric, record)`` rows for one test, from the raw database else the ``.info``; None if neither exists."""
     if artefacts.raw is not None and os.path.exists(artefacts.raw):
         rows = _raw_records(artefacts.raw, project_root, artefacts.source_roots)
         if rows:
@@ -400,11 +339,7 @@ def _raw_records(raw_path: str, project_root: str, source_roots):
 
 
 def _info_records(info_path: str, project_root: str, source_roots):
-    """Line and branch points from an LCOV ``.info`` file.
-
-    The fallback for a test whose raw database is gone: an ``.info``
-    carries no toggle, expression or cover detail and no names.
-    """
+    """Line and branch points from an LCOV ``.info`` file, which has no toggle, expression or cover detail."""
     resolver = _resolver(project_root, os.path.dirname(info_path), source_roots)
     rows = []
     current = None
@@ -485,27 +420,16 @@ def load_model(path) -> dict:
 
 
 def source_totals(row: dict) -> dict | None:
-    """A model, test row or file row's source-collapsed totals, or None.
+    """A model, test row or file row's ``source_totals``, or None when the document has none.
 
-    None means the document predates #637, not that nothing was
-    covered — the figure cannot be recomputed from a written model
-    because the module is gone from its line points. Consumers omit the
-    key rather than substituting ``totals``, so "absent" never reads as
-    "the two figures agree".
+    Consumers omit the key rather than substitute ``totals``.
     """
     totals = row.get("source_totals")
     return totals or None
 
 
 def cover_points(model: dict) -> list[dict]:
-    """Observed SVA cover points, attribution included.
-
-    :func:`cover_records` is this list with the per-test column dropped.
-    The graph's declared-vs-observed join (#402) needs that column —
-    "which spec item is exercised" is only half the answer without "by
-    which test" — so the walk lives here once rather than being repeated
-    against the model's file rows by every consumer that wants it.
-    """
+    """Observed SVA cover points, with per-test hits under ``tests``, sorted by file, line, name, module."""
     records = []
     for file_row in model.get("files", []):
         for point in file_row.get(COVER, []):
