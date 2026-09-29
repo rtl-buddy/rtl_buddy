@@ -1,8 +1,7 @@
-"""`blocks:` — a synthesis or P&R run consuming hardened abstracts (#95).
+"""Tests for `blocks:`, where a run consumes the abstracts of hardened blocks.
 
-A block resolves to the `abstract/` a `harden: true` run published. Its
-views join the run's own macro lists; anything that cannot be resolved
-fails the run before the tool starts, naming the block.
+A block resolves to the `abstract/` a `harden: true` run published. An unresolvable
+block fails the run before the tool starts, naming the block.
 """
 
 import hashlib
@@ -38,8 +37,9 @@ def _write(path: Path, text: str) -> Path:
 
 
 def _block_platform(tmp_path):
-    """The platform the block was hardened on; also what the stale check
-    rebuilds the block's config against."""
+    """The platform the block was hardened on; the stale check rebuilds the block's
+    config against it.
+    """
     pdk = PdkConfig(
         PdkConfigFile(
             name="p",
@@ -113,11 +113,6 @@ def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, view
 
 def _ref(suite, name="blk_top", run="blk_pnr"):
     return BlockRef(name=name, pnr_run=run, pnr_suite_path=str(suite))
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 
 def _top_suite(tmp_path, blocks_yaml):
@@ -195,11 +190,6 @@ def test_a_synth_block_resolves_its_pnr_path_against_synth_yaml(tmp_path):
     ]
 
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
-
-
 def test_a_published_abstract_resolves_to_its_three_views(tmp_path):
     block = resolve_block(_ref(_block_suite(tmp_path)))
     out = tmp_path / "blk/artefacts/blk_pnr/abstract"
@@ -250,11 +240,6 @@ def test_an_abstract_that_records_no_technology_is_refused(tmp_path):
     lib = _write(tmp_path / "top/pdk/typ.lib", _CORNER)
     with pytest.raises(BlockResolutionError, match="records no corner Liberty"):
         pnr_abstract.check_technology(block, liberty=str(lib), tech_lef=None)
-
-
-# ---------------------------------------------------------------------------
-# The P&R backend
-# ---------------------------------------------------------------------------
 
 
 def _pdk(tmp_path):
@@ -377,11 +362,6 @@ def test_a_run_without_blocks_renders_the_flow_unchanged(tmp_path, monkeypatch):
     assert "abstract" not in Path(backend._script_path()).read_text()
 
 
-# ---------------------------------------------------------------------------
-# The synthesis runner
-# ---------------------------------------------------------------------------
-
-
 def _synth_runner(tmp_path, blocks_yaml):
     from rtl_buddy.runner.synth_runner import SynthRunner
 
@@ -445,15 +425,10 @@ def test_synthesis_with_an_unusable_block_withdraws_its_netlist(tmp_path, monkey
     assert not stale.exists()
 
 
-# ---------------------------------------------------------------------------
-# Staleness (step 3)
-# ---------------------------------------------------------------------------
-
-
 def test_editing_a_block_input_refuses_the_top_run_naming_the_block(
     tmp_path, monkeypatch
 ):
-    """Acceptance 4: edit a block's SDC, re-run only the top — refused."""
+    """Editing a block's SDC and re-running only the top is refused, naming the block."""
     _block_suite(tmp_path)
     (tmp_path / "blk/blk.sdc").write_text("create_clock -period 5\n")
     backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
@@ -469,7 +444,7 @@ def test_editing_a_block_input_refuses_the_top_run_naming_the_block(
 
 
 def test_a_touched_but_unchanged_input_is_not_stale(tmp_path, monkeypatch):
-    """Content, not timestamps: a checkout that rewrites mtimes is current."""
+    """Staleness compares content, not timestamps."""
     import os
 
     _block_suite(tmp_path)
@@ -570,8 +545,9 @@ def test_rb_pnr_and_rb_synth_take_accept_stale():
 
 
 def test_the_default_macro_cell_halo_leaves_the_config_digest_alone(tmp_path):
-    """An abstract hardened before the key existed must stay current: the
-    key only enters the digest when it is set away from its default (#673)."""
+    """A key at its default stays out of the config digest, so older abstracts stay
+    current.
+    """
     from rtl_buddy.config.pdk import PlacementFile
 
     suite = _block_suite(tmp_path)

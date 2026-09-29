@@ -1,9 +1,7 @@
-"""`harden:` — a P&R run that publishes a hard-macro abstract (#95).
+"""Tests for `harden:`, where a P&R run publishes a hard-macro abstract.
 
-The run renders two extra OpenROAD commands, forces a strict stream-out,
-and on success publishes `abstract/<top>.{lef,lib,gds}` plus a fingerprint
-manifest, all or nothing. OpenROAD and KLayout are faked: the fakes write
-what the real tools would, so the tests exercise the backend's own logic.
+On success the run publishes `abstract/<top>.{lef,lib,gds}` plus a fingerprint
+manifest, all or nothing. OpenROAD and KLayout are faked to write what the real tools would.
 """
 
 import hashlib
@@ -138,8 +136,10 @@ def _backend(tmp_path, monkeypatch, *, platform=None, pnr_overrides=None, **kw):
 
 
 def _fake_tools(backend, monkeypatch, *, lef=True, lib=True, missing=()):
-    """OpenROAD that routes and stages the requested views; KLayout that
-    streams out a GDS with `missing` cells empty."""
+    """Fake OpenROAD that stages the requested views; fake KLayout that writes a GDS.
+
+    Cells named in `missing` are empty in the GDS.
+    """
     artefacts = Path(backend.artefact_dir)
     staging = artefacts / pnr_abstract.ABSTRACT_STAGING_NAME
     calls = []
@@ -184,11 +184,6 @@ def _fake_tools(backend, monkeypatch, *, lef=True, lib=True, missing=()):
     return calls
 
 
-# ---------------------------------------------------------------------------
-# Configuration and rendering
-# ---------------------------------------------------------------------------
-
-
 def _suite(tmp_path, extra=""):
     path = tmp_path / "pnr.yaml"
     path.write_text(
@@ -223,7 +218,7 @@ def _render(tmp_path, harden):
 
 
 def test_a_run_that_does_not_harden_renders_the_flow_unchanged(tmp_path):
-    """Acceptance 6: no `harden:` means the script it always had."""
+    """A run without `harden:` renders the unchanged flow."""
     text = _render(tmp_path, harden=False)
     assert "write_abstract_lef" not in text
     assert "write_timing_model" not in text
@@ -241,15 +236,10 @@ def test_a_hardening_run_writes_its_views_after_the_database(tmp_path):
 
 
 def test_harden_forces_a_strict_stream_out(tmp_path, monkeypatch):
-    """A hole in a hardened block is never acceptable, whatever was asked."""
+    """A hardened block never accepts a hole in stream-out."""
     backend = _backend(tmp_path, monkeypatch, gds_mode="preview")
     assert backend.emit_gds is True
     assert backend.gds_mode == GdsMode.STRICT
-
-
-# ---------------------------------------------------------------------------
-# Publishing
-# ---------------------------------------------------------------------------
 
 
 def _sha(data: bytes) -> str:
@@ -283,7 +273,6 @@ def test_a_hardening_run_publishes_the_abstract_and_its_manifest(tmp_path, monke
     assert manifest["tool"]["version"] == "26Q2-1"
     assert manifest["technology"]["tech_lef"]["path"] == "pdk/lef/tech.lef"
     assert manifest["technology"]["liberty"]["path"] == "pdk/lib/typ.lib"
-    # Published paths, project-relative — never the staging directory.
     assert manifest["outputs"]["gds"] == {
         "path": "artefacts/demo_pnr/abstract/demo_top.gds",
         "size": len(_GDS),
@@ -292,14 +281,12 @@ def test_a_hardening_run_publishes_the_abstract_and_its_manifest(tmp_path, monke
     assert manifest["outputs"]["lib"]["sha256"] == _sha(_LIB.encode())
     assert manifest["outputs"]["lef"]["sha256"] == _sha(_LEF.encode())
     inputs = manifest["inputs"]
-    # The synth filelist's sources, not its option lines.
     assert [r["path"] for r in inputs["rtl"]] == ["rtl/demo_top.sv"]
     assert inputs["netlist"]["path"] == "artefacts/demo_synth/synth_netlist.v"
     assert inputs["sdc"]["path"] == "constraints.sdc"
     assert inputs["pin_constraints"] is None
     assert inputs["lef"][0]["path"] == "pdk/lef/tech.lef"
     assert manifest["config"]["floorplan"]["utilization"] == 0.55
-    # What the run is configured to read, not only what it read.
     assert manifest["config"]["constraints"] == "constraints.sdc"
     assert manifest["config"]["synth"] == {"name": "demo_synth", "path": "synth.yaml"}
     assert manifest["config"]["lib_paths"] == []
@@ -322,7 +309,6 @@ def test_a_view_openroad_did_not_write_fails_the_run_and_publishes_nothing(
     assert f"demo_top.{dropped}" in res.results["desc"]
     assert not (Path(backend.artefact_dir) / "abstract").exists()
     assert not (Path(backend.artefact_dir) / "abstract.partial").exists()
-    # P&R itself finished: its database stays for `rb power`.
     assert (Path(backend.artefact_dir) / "demo_top.routed.odb").exists()
 
 
@@ -342,7 +328,7 @@ def test_an_incomplete_stream_out_fails_as_export_and_publishes_nothing(
 def test_a_rerun_withdraws_the_previous_abstract_even_when_it_fails_early(
     tmp_path, monkeypatch
 ):
-    """The abstract describes the result a rerun replaces (#469)."""
+    """A rerun withdraws the previous abstract even when it fails early."""
     backend = _backend(tmp_path, monkeypatch)
     _fake_tools(backend, monkeypatch)
     assert backend.run().is_pass()
