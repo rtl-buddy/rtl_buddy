@@ -282,7 +282,7 @@ def _replace_environ(snapshot: dict) -> None:
 
 
 def _graph_where(node: dict) -> str:
-    """``file:line`` for a graph node summary, or ``-`` (#380)."""
+    """``file:line`` for a graph node summary, or ``-``."""
     file_path = node.get("file")
     if not file_path:
         return "-"
@@ -291,11 +291,10 @@ def _graph_where(node: dict) -> str:
 
 
 def _pnr_worst_corner_cell(res: dict) -> str:
-    """The `Worst Corner` column for one multi-corner P&R row (#104, #105).
+    """The `Worst Corner` column for one multi-corner P&R row.
 
-    Which corner set the setup WNS and which the hold WNS — typically not
-    the same one — so a reader knows where the two slack columns come from.
-    A single-corner row in a mixed table reads `-`.
+    Names the corner that set the setup WNS and the one that set the hold WNS. A
+    single-corner row in a mixed table reads `-`.
     """
     setup = res.get("worst_setup_corner")
     hold = res.get("worst_hold_corner")
@@ -305,13 +304,10 @@ def _pnr_worst_corner_cell(res: dict) -> str:
 
 
 def _pnr_outputs_cell(res: dict) -> str:
-    """The `Outputs` column for one P&R row, qualified when it has to be.
+    """The `Outputs` column for one P&R row, qualified when the layout is incomplete.
 
-    A layout with cells that have no GDS is still a layout, and `preview`
-    keeps it — but the row that reports it has to say so, or a reader
-    takes `gds+png` for a complete stream-out and never looks at the log
-    (#619). Cells the run's `gds-allow-empty` covers are empty on purpose
-    and are reported as such, not as a shortfall.
+    Cells with no GDS are a shortfall unless the run's `gds-allow-empty` covers them, in
+    which case they are reported as intentionally empty.
     """
     tags = []
     if res.get("gds_path"):
@@ -323,8 +319,7 @@ def _pnr_outputs_cell(res: dict) -> str:
     text = "+".join(tags) if tags else "-"
 
     def _qualified(note: str) -> str:
-        # A strict run that published nothing has no tags to qualify, so
-        # the note stands on its own rather than reading "- (…)".
+        # No tags to qualify, so the note stands alone.
         return f"{text} ({note})" if tags else note
 
     if res.get("gds_status") == "failed":
@@ -339,17 +334,16 @@ def _pnr_outputs_cell(res: dict) -> str:
 
 
 def _line_ratio_text(coverage: dict | None) -> str:
-    """One test's line coverage as a percentage, or ``-`` (#402)."""
+    """One test's line coverage as a percentage, or ``-``."""
     ratio = ((coverage or {}).get("totals") or {}).get("line", {}).get("ratio")
     return "-" if ratio is None else f"{ratio * 100:.1f}%"
 
 
 def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
-    """`rb graph explain`'s coverage lines, or none at all (#402).
+    """`rb graph explain`'s coverage lines, or none.
 
-    Machine mode returns the whole entry; the console gets the verdict
-    and the manifest behind it, because an answer that does not name the
-    run it came from can be mistaken for a fresher one than it is.
+    Machine mode returns the whole entry; the console gets the verdict and the manifest
+    behind it.
     """
     if not entry:
         return []
@@ -374,17 +368,11 @@ def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
 
 
 def _summarize_compile_work(build_entries) -> dict:
-    """How much real compiling a build envelope's ``builds`` list describes.
+    """Summarize how much real compiling a build envelope's ``builds`` list describes.
 
-    ``{"records": n, "compiled": n, "compiled_sec": float}`` (#495). A
-    record counts as *compiled* on ``reused is False`` and nothing else:
-    the three states of that field are the whole answer — ``True`` is a
-    stamp short-circuit, ``None`` is a config that never reached a builder,
-    and only ``False`` is a builder that actually ran. Duration is a
-    measurement, not the predicate: a fast compile is still a compile.
-    This is the one thing that separates a build job with nothing to do
-    from one that compiled quickly, which sacct alone cannot see. Tolerant
-    of a foreign or hand-edited envelope: a non-numeric duration simply
+    Returns ``{"records": n, "compiled": n, "compiled_sec": float}``. A record counts as
+    compiled only when ``reused is False``: ``True`` is a stamp short-circuit and
+    ``None`` is a config that never reached a builder. A non-numeric duration
     contributes nothing to the total.
     """
     records = 0
@@ -407,20 +395,14 @@ def _summarize_compile_work(build_entries) -> dict:
 
 
 def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
-    """Add the failure keys to one ``builds`` record, in place (#498).
+    """Add the failure keys to one ``builds`` record, in place.
 
-    ``returncode``/``fingerprint_sha``/``transcript``/``error_tail``: the
-    builder's exit status, the identity of the inputs it failed on, the
-    file that holds its output, and enough of that output to read the
-    error without opening the file. Written only for a build that failed,
-    and only for the fields this failure actually has — a config that never
-    reached a builder has no returncode to report, and its worker's
-    exception is the whole story instead.
+    Adds ``returncode``, ``fingerprint_sha``, ``transcript`` and ``error_tail`` for a
+    failed build, only for the fields that failure has: a config that never reached a
+    builder has no returncode.
 
-    ``transcript`` is suite-relative for the reason ``group`` is: an
-    absolute path here would pin the compute node's mount into an artifact
-    the head reads. ``error_tail`` is read from the *absolute* path, on the
-    node that just wrote it, because the head may not be able to.
+    ``transcript`` is suite-relative so the artifact does not pin the compute node's
+    mount. ``error_tail`` is read from the absolute path on the node that wrote it.
     """
     failure = failure or {}
     returncode = failure.get("returncode")
@@ -428,10 +410,8 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
         entry["returncode"] = returncode
     fingerprint_sha = failure.get("fingerprint_sha")
     if fingerprint_sha is not None:
-        # Identity of the inputs the builder failed on (#498 review):
-        # additive like the rest, and what lets a gated sim job tell "the
-        # same compile" from "a compile whose inputs moved since" before
-        # honouring the no-retry verdict. schema_version stays 1.
+        # Identity of the failed inputs, so a gated sim job can tell an unchanged
+        # compile from a changed one.
         entry["fingerprint_sha"] = fingerprint_sha
     transcript = failure.get("transcript")
     if transcript:
@@ -440,19 +420,13 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
         if tail:
             entry["error_tail"] = tail
     elif failure.get("error_tail"):
-        # A failure with no builder and no transcript, but with its own
-        # account of itself: the group-adopt drift verdict (#535), which
-        # never ran a compiler and so has nothing to read a tail out of.
+        # No builder and no transcript, but the failure carries its own account
+        # (group-adopt drift).
         entry["error_tail"] = list(failure["error_tail"])[-COMPILE_ERROR_TAIL_LINES:]
     elif worker_error:
-        # No builder ran, so there is no transcript — but the exception that
-        # replaced it is exactly the "why" this field exists to carry.
-        # Physical non-blank lines, not one string: str() of an exception
-        # can embed newlines (a serde validation error, a wrapped
-        # subprocess error), and every consumer treats an `error_tail`
-        # element as one line of a summary cell (#498 review). Tail-capped
-        # like the transcript path, so a long traceback cannot turn the
-        # envelope into a log file.
+        # One element per non-blank line: consumers treat each `error_tail` element as
+        # one summary line.
+        # Tail-capped like the transcript path.
         lines = [
             line.strip() for line in str(worker_error).splitlines() if line.strip()
         ]
@@ -462,11 +436,7 @@ def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
 
 
 class RtlBuddy:
-    """
-    RTL Buddy Main Class
-
-    Handles cli entry into RTL Buddy
-    """
+    """Command-line entry point for rtl_buddy."""
 
     _GIT_COMMANDS = {
         "test",
@@ -563,15 +533,14 @@ class RtlBuddy:
             hidden=True,
             help="internal: elaborate one model/profile and write its result JSON",
         )(self.do_cmd_elab_job)
-        # Remote-dispatch re-entry point (#351): one (test, run_id) run
-        # whose result is serialized for a collecting head process.
+        # Remote-dispatch re-entry point: runs one (test, run_id) and serializes the
+        # result for the head.
         self.app.command(
             "_test-job",
             hidden=True,
             help="internal: run one (test, run_id) and write its result JSON",
         )(self.do_cmd_test_job)
-        # Remote-dispatch build job (#351): compile a suite's shared simv on
-        # a compute node, so nothing heavy runs on the submit host.
+        # Remote-dispatch build job: compiles the suite's shared simv on a compute node.
         self.app.command(
             "_build-job",
             hidden=True,
@@ -592,10 +561,9 @@ class RtlBuddy:
         self.app.command(
             "mcp",
             help=(
-                "serve the design knowledge graph, test status, coverage, "
-                "physical metrics, hierarchy queries and — with a hub "
-                "running — the live session over the Model Context "
-                "Protocol (stdio); needs the 'mcp' extra"
+                "serve the knowledge graph, test status, coverage, physical "
+                "metrics and hierarchy queries (plus the live session when a "
+                "hub runs) over MCP (stdio); needs the 'mcp' extra"
             ),
         )(self.do_cmd_mcp)
         self.graph_app = typer.Typer(
@@ -640,9 +608,9 @@ class RtlBuddy:
         )
         self.cov_app = typer.Typer(
             help=(
-                "read the coverage a run already produced: per-file, per-point "
-                "line/branch/toggle/expression coverage with per-test "
-                "attribution, from cov_dir/manifest.json — no simulator runs"
+                "read a finished run's cov_dir/manifest.json: per-file, "
+                "per-point line/branch/toggle/expression coverage with "
+                "per-test attribution; runs no simulator"
             ),
             no_args_is_help=True,
         )
@@ -661,9 +629,8 @@ class RtlBuddy:
         )
         self.phys_app = typer.Typer(
             help=(
-                "read the physical metrics a run already produced: per-module "
-                "cells and area, per-instance power, from the artefact "
-                "directory's phys-manifest.json — no tools are run"
+                "read a finished run's phys-manifest.json: per-module cells "
+                "and area, per-instance power; runs no tools"
             ),
             no_args_is_help=True,
         )
@@ -712,9 +679,8 @@ class RtlBuddy:
         self.verible_app = typer.Typer(
             help="verible tooling and filelist generation", no_args_is_help=True
         )
-        # The passthrough subcommands hand every argument they do not
-        # recognise straight to the verible binary, so `rb verible lint
-        # --rules_config=x f.sv` works without a `--` separator.
+        # Passthrough subcommands forward unrecognised arguments to verible, so
+        # `--rules_config=x` needs no `--`.
         _verible_passthrough_ctx = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,
@@ -757,7 +723,6 @@ class RtlBuddy:
             help="install/update the unified rtl-buddy-nvim editor plugin "
             "(hub + wave annotation)",
         )(self.do_nvim_install)
-        # Back-compat alias for the pre-#272 annotation-only command.
         self.app.command("wave-install-nvim", help="alias for nvim-install")(
             self.do_nvim_install
         )
@@ -837,12 +802,11 @@ class RtlBuddy:
         self.xplr_app = typer.Typer(
             help=(
                 "tool-agnostic experiment ledger for design-space exploration. "
-                "rb xplr is a bookkeeper, not an optimizer: you declare the "
-                "knob deltas you made and the outcomes your flow produced; it "
-                "pins the source revision and records everything under "
-                "artefacts/xplr/<exp-id>/record.json. Agent-facing: pass the "
-                "global --machine flag for a JSON envelope on stdout, and feed "
-                "JSON manifests in via --json <file|->"
+                "A bookkeeper, not an optimizer: you declare the knob deltas "
+                "and flow outcomes; it pins the source revision and records "
+                "them in artefacts/xplr/<exp-id>/record.json. Agent-facing: "
+                "use the global --machine flag for a JSON envelope on stdout "
+                "and pass manifests with --json <file|->"
             ),
             no_args_is_help=True,
         )
@@ -893,19 +857,19 @@ class RtlBuddy:
         )(self.do_xplr_release)
         self.xplr_app.command(
             "gc",
-            help="reclaim experiment disk space, non-interactively: evict "
-            "heavy artifacts + worktrees per policy (default keep-frontier "
-            "never touches Pareto-frontier members or their lineage); "
-            "record.json and the pinned sha always survive, so evicted "
-            "experiments can be re-materialized",
+            help="reclaim experiment disk space non-interactively: evict "
+            "heavy artifacts and worktrees per policy (default keep-frontier "
+            "spares Pareto-frontier members and their lineage); record.json "
+            "and the pinned sha survive, so evicted experiments can be "
+            "re-materialized",
         )(self.do_xplr_gc)
         self.xplr_mock_app = typer.Typer(
             help=(
-                "synthetic DSE backend with known optima (dev/CI harness). "
-                "EDA-flavored knobs and metrics over multi-modal benchmark "
-                "landscapes (Rastrigin, ZDT1) with feasibility cliffs and a "
-                "synthetic cost model — instant, deterministic, license-free, "
-                "and self-scoring against the analytic optimum / Pareto front"
+                "synthetic DSE backend with known optima (dev/CI harness): "
+                "EDA-style knobs and metrics over Rastrigin and ZDT1 "
+                "landscapes with feasibility cliffs; instant, deterministic, "
+                "license-free, and self-scoring against the analytic optimum "
+                "or Pareto front"
             ),
             no_args_is_help=True,
         )
@@ -955,22 +919,17 @@ class RtlBuddy:
         self._git_root_resolved = False
         self.run_depth = RunDepth.POST
         self.share_build = False
-        # `--shared-build-root` as typed, before precedence and anchoring
-        # (#542). The resolved value is the `shared_build_root` property,
-        # which needs `root_cfg` and so cannot be settled at parse time.
+        # `--shared-build-root` as typed; the resolved value is the `shared_build_root`
+        # property.
         self._shared_build_root_flag = None
         self.expect_prebuilt = False
-        # `--rebuild`: distrust the build stamps and compile anyway (#494).
+        # `--rebuild`: ignore build stamps and compile anyway.
         self.rebuild = False
-        # `--plusarg KEY=VALUE`: this invocation's one-off runtime plusargs,
-        # merged over each selected test's `plusargs:` as the suite is
-        # expanded (#552). Empty for every command that does not offer the
-        # flag, so `_iter_suite_runnables` is unchanged for them.
+        # `--plusarg KEY=VALUE` overrides merged over each test's `plusargs:`; empty for
+        # commands without the flag.
         self._plusarg_overrides: dict = {}
-        # `--orphans`: what this invocation does about a previous run's jobs
-        # that outlived their head (#521). `None` defers to
-        # `cfg-dispatch.orphans`, which defaults to `warn`; `_orphans_policy`
-        # is the resolved answer, fixed once the backend is known.
+        # `--orphans` as typed; None defers to `cfg-dispatch.orphans` (default `warn`).
+        # `_orphans_policy` is the resolved value.
         self._orphans: str | None = None
         self._orphans_policy: str = "warn"
         self.build_result_json = None
@@ -980,29 +939,20 @@ class RtlBuddy:
         self._builder_override: str | None = None
         self._artifact_locks = ArtifactLocks()
         self._xplr_root_override: Path | None = None
-        # Per-invocation nonce stamped into every result envelope this
-        # process writes (#379). Under dispatch the head's plan token
-        # replaces it, so an envelope's identity is the same whether the
-        # run happened in-process or on a compute node.
+        # Nonce stamped into every result envelope; under dispatch the head's plan token
+        # replaces it.
         self._run_token: str | None = None
-        # The validated `--run-tag` artefact namespace (#541), or None for
-        # the flat tree. Set by the handlers that accept the flag, BEFORE
-        # they enter their execution context — the context derives the
-        # artefact root from it, and the artefact root is what the tree lock
-        # is taken on. Read by everything that builds a per-run path, so
-        # there is exactly one answer per process.
+        # Validated `--run-tag` namespace, or None for the flat tree.
+        # Set before entering the execution context, which derives the artefact root and
+        # tree lock from it.
         self._run_tag: str | None = None
 
     def run(self):
-        """The process entry point: run the CLI, always giving the tree back.
+        """The process entry point: run the CLI and always release the artefact-tree lock.
 
-        Every exit path from here — a clean return, a tool failure
-        surfaced as :class:`FatalRtlBuddyError`, a click abort, or a
-        ``KeyboardInterrupt`` raised out of the subprocess signal handler
-        while OpenROAD was running — leaves through the ``finally``, which
-        releases the artefact-tree lock (#609). The kernel would release
-        it at process exit anyway; doing it here is what makes the release
-        deterministic and independent of how the process ends.
+        Every exit path (clean return, ``FatalRtlBuddyError``, click abort,
+        ``KeyboardInterrupt`` from the subprocess signal handler) leaves through
+        ``finally``, which releases the lock deterministically.
         """
         try:
             rv = self.app(standalone_mode=False)
@@ -1016,31 +966,22 @@ class RtlBuddy:
         except (FatalRtlBuddyError, FilelistError) as exc:
             emit_console_text(str(exc), style="red", markup=False)
             if self.machine:
-                # Machine consumers parse stdout JSON; a silent stdout
-                # forces them to scrape stderr for an ad-hoc message.
-                # Emit an envelope so the failure surface matches the
-                # success surface.
+                # Emit an envelope so machine consumers get JSON on stdout rather than a
+                # silent stdout.
                 command = (
                     getattr(self, "_pending_invoked_subcommand", None) or "rtl_buddy"
                 )
                 self._emit_machine_result(command, 2, error=str(exc))
             return 2
         except KeyboardInterrupt:
-            # Ctrl-C during a long flow: `process_utils` has already
-            # terminated the tool's process group and re-raised here, so
-            # the only thing left is to say so and exit on the
-            # conventional 128+SIGINT. Handled rather than propagated
-            # precisely so the `finally` below is the release path for an
-            # interrupt too, and so the user gets a line instead of a
-            # traceback.
+            # process_utils already terminated the tool's process group; report and exit
+            # 128+SIGINT so `finally` releases as usual.
             emit_console_text("interrupted", style="red", markup=False)
             return 130
         finally:
             self._artifact_locks.release_all()
-        # standalone_mode=False makes click *return* the exit code from
-        # `typer.Exit(code=N)` rather than re-raise it, so we have to
-        # surface it here. Existing commands that return None continue
-        # to exit cleanly with code 0.
+        # standalone_mode=False makes click return the exit code from `typer.Exit`
+        # instead of re-raising.
         return rv if isinstance(rv, int) else 0
 
     def root_options(
@@ -1127,17 +1068,14 @@ class RtlBuddy:
         if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
             return
 
-        # Phase 1: console logging only. The file handler is attached in
-        # phase 2 once the command's ExecutionContext is known so
-        # rtl_buddy.log lands under the command root rather than the
-        # invocation directory.
+        # Phase 1: console logging only. The file handler is attached once the
+        # ExecutionContext is known.
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
 
         log_event(logger, logging.INFO, "cli.start", version=version("rtl-buddy"))
 
-        # RootConfig + CoverageReporter construction is deferred to
-        # _enter_command_context() so root_config.yaml is discovered by
-        # walking up from the command root, not the invocation cwd.
+        # RootConfig and CoverageReporter are built in _enter_command_context(), after
+        # root_config.yaml is found from the command root.
         self.rtl_builder_mode = rtl_builder_mode
         self._builder_override = builder_override
         self._extra_sim_timeout_override = extra_sim_timeout
@@ -1155,52 +1093,28 @@ class RtlBuddy:
         """Build the command's ExecutionContext and attach the file log.
 
         Pass exactly one of:
-        - ``primary_config``: the command's ``-c`` argument (e.g.
-          ``tests.yaml``); the command root is its parent directory.
-        - ``command_root``: an explicit directory anchor for commands that
-          don't have a single primary config file.
+        - ``primary_config``: the command's ``-c`` argument (e.g. ``tests.yaml``); the
+          command root is its parent directory.
+        - ``command_root``: an explicit directory anchor for commands without a single
+          primary config.
 
-        ``log_path`` overrides where the file log is attached (its parent
-        is created); the returned context is otherwise unchanged. The
-        dispatched jobs use it: ``rb _test-job`` / ``rb _build-job`` are
-        rooted at the same ``tests.yaml`` as the head that submitted them,
-        so without an override they would attach to the head's
-        ``<suite>/rtl_buddy.log`` — and a process's first open of a path
-        truncates it, so head and jobs would overwrite each other's
-        records. Each job instead logs beside its own result envelope
-        (:func:`~rtl_buddy.dispatch.argv.job_log_path`), so no two
-        processes ever share a log file (#437).
+        ``log_path`` overrides where the file log is attached (its parent is created).
+        Dispatched ``rb _test-job`` and ``rb _build-job`` use it to log beside their
+        result envelope (:func:`~rtl_buddy.dispatch.argv.job_log_path`); otherwise they
+        would truncate the head's ``<suite>/rtl_buddy.log``.
 
-        Constructs :attr:`root_cfg` and :attr:`coverage` once the command
-        root is known so ``root_config.yaml`` is discovered relative to
-        the command rather than the invocation cwd. Subsequent calls
-        within the same process re-anchor the file log handler so a
-        long-running session (e.g. ``rb regression`` iterating suites)
-        keeps each suite's log under its own root.
+        Constructs :attr:`root_cfg` and :attr:`coverage` once the command root is known,
+        so ``root_config.yaml`` is found relative to the command. Later calls in the
+        same process re-anchor the file log, so ``rb regression`` keeps each suite's log
+        under its own root.
 
-        ``list_only=True`` skips ``RootConfig``, builder, and
-        ``CoverageReporter`` setup. The metadata-only ``--list`` paths
-        only need to read the suite config; skipping the root-config
-        load keeps them usable when the surrounding project config is
-        invalid or unrelated to the listed suite.
-
-        **It also leaves the project's log file alone** (#561). A file
-        log is opened for *writing*, and a process's first open of a
-        path truncates it
-        (:func:`~rtl_buddy.logging_utils.attach_file_log`) — which is
-        right for a flow, whose ``rtl_buddy.log`` is that run's log, and
-        wrong for every read. The paths that pass ``list_only`` write
-        nothing else: `rb phys`, `rb cov` and the `rb graph` read verbs
-        answer from artefacts already on disk, `rb xplr` writes only its
-        own ledger, and `--list` prints a config. Opening the log would
-        therefore be the only thing they wrote, and it costs twice — it
-        fails outright in a read-only checkout, and after a flow it
-        destroys the log of the very run being asked about. Append mode
-        fixes neither (an unwritable file is unwritable either way, and
-        a read verb's events are not part of the run's record), so these
-        paths keep the console handler and nothing else. An explicit
-        ``log_path`` still attaches: that is a caller stating where this
-        process's log goes, which is a different question.
+        ``list_only=True`` skips ``RootConfig``, builder and ``CoverageReporter`` setup,
+        so the metadata-only ``--list`` paths work when the surrounding project config
+        is invalid. It also leaves the project's log file alone: opening a file log
+        truncates it, which would fail in a read-only checkout and destroy the log of
+        the run being queried. These paths (`rb phys`, `rb cov`, the `rb graph` read
+        verbs, `rb xplr`, `--list`) keep only the console handler. An explicit
+        ``log_path`` still attaches.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -1227,10 +1141,8 @@ class RtlBuddy:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(log_path)
         elif not list_only:
-            # Under a `--run-tag` the log lives in the tagged artefact root,
-            # which nothing has created yet — the tree lock below is what
-            # mkdirs it, and that is after this (#541). Untagged this is
-            # `command_root`, created two lines up, so the call is a no-op.
+            # Under `--run-tag` the log directory does not exist yet; the tree lock
+            # below creates it.
             ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
             attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
@@ -1238,20 +1150,11 @@ class RtlBuddy:
         if list_only:
             return ctx
 
-        # Fail loud if another rtl-buddy process is already using this
-        # artefact tree (#73). Held until process exit; metadata-only
-        # --list paths above stay lock-free. Dispatched `_test-job`
-        # processes are cooperative delegates of a lock-holding head
-        # (#351): they share the suite artefact tree deliberately,
-        # write disjoint run dirs, and reuse the shared build read-only,
-        # so they must not contend for the exclusive lock.
-        #
-        # `ctx.artifact_root` carries the `--run-tag` namespace (#541), so
-        # the lock is per-tag by construction: two tagged runs of one suite
-        # lock different directories, an untagged run locks exactly the
-        # directory it always did, and two runs naming the SAME tag still
-        # contend — which is the answer a caller that named one tag twice
-        # wants.
+        # Fail loud if another process uses this artefact tree; held until exit.
+        # `--list` paths stay lock-free.
+        # Dispatched `_test-job` processes share the head's tree and must not take the
+        # lock.
+        # `ctx.artifact_root` carries the `--run-tag`, so the lock is per tag.
         if getattr(self, "_pending_invoked_subcommand", None) not in (
             "_test-job",
             "_build-job",
@@ -1262,11 +1165,8 @@ class RtlBuddy:
                 command=getattr(self, "_pending_invoked_subcommand", None),
             )
 
-        # Build root_cfg on first entry; on later entries, only rebuild if
-        # the new command root walks up to a different root_config.yaml —
-        # so regression loops whose suites span project roots get the
-        # right tool/platform defaults per suite. Suites that share a
-        # root keep the cached instance.
+        # Rebuild root_cfg only when the command root resolves to a different
+        # root_config.yaml, so multi-root regressions get each suite's defaults.
         rebuild = self.root_cfg is None
         if not rebuild:
             try:
@@ -1283,11 +1183,8 @@ class RtlBuddy:
                 start_dir=ctx.command_root,
                 extra_sim_timeout_override=self._extra_sim_timeout_override,
             )
-            # Project-local env defaults (.rtl-buddy/.env): applied as
-            # soon as the project root is known, before any tool config
-            # or subprocess reads the environment. Never overrides vars
-            # already set, so within one process the first project's
-            # values win for cross-root regressions.
+            # Project-local env defaults (.rtl-buddy/.env) apply before tools read the
+            # environment and never override set vars, so the first project wins.
             apply_env_file(self.root_cfg.get_project_rootdir())
             self.builder = self.root_cfg.get_builder_name()
             self.coverage = CoverageReporter(self.root_cfg)
@@ -1302,8 +1199,7 @@ class RtlBuddy:
                 run_depth=self.run_depth.value,
             )
 
-        # After root_cfg, so the banner and the machine envelope agree on
-        # which repo they describe.
+        # After root_cfg, so the banner and machine envelope describe the same repo.
         if (
             not self._git_banner_shown
             and getattr(self, "_pending_invoked_subcommand", None) in self._GIT_COMMANDS
@@ -1315,36 +1211,28 @@ class RtlBuddy:
 
     @property
     def shared_build_root(self) -> str | None:
-        """The persistent shared-build cache root in force, or None (#542).
+        """The persistent shared-build cache root in force, or None.
 
-        ``--shared-build-root`` beats :data:`SHARED_BUILD_ROOT_ENV`, which
-        beats ``cfg-rtl-reg.shared-build-root``: the flag is this run's
-        explicit intent, the variable is the job/CI environment's, and the
-        config is the project's default. An *empty* flag or variable is an
-        override too — it turns the cache off for this run without editing
-        the project's config.
+        Precedence: ``--shared-build-root``, then :data:`SHARED_BUILD_ROOT_ENV`, then
+        ``cfg-rtl-reg.shared-build-root``. An empty flag or variable is an override too:
+        it disables the cache for this run.
 
-        Derived on each read rather than cached, because a regression whose
-        suites span project roots rebuilds ``root_cfg`` per suite and a
-        relative root anchors to whichever project owns the suite.
+        Derived on each read: a regression whose suites span project roots rebuilds
+        ``root_cfg`` per suite, and a relative root anchors to the suite's project.
         """
         return self._resolve_shared_build_root()[0]
 
     def _resolve_shared_build_root(self) -> tuple[str | None, bool]:
-        """``(root or None, was it explicitly disabled)`` — see the property.
+        """``(root or None, was it explicitly disabled)``; see the property.
 
-        The second element is what a dispatched job cannot work out for
-        itself (#542 review round 5). ``None`` alone is ambiguous: it is
-        both "nobody asked for a cache" and "somebody asked for no cache",
-        and a job told only the former re-reads the environment and the
-        project config and turns the cache back on — so `--shared-build-root
-        ''` would disable the head and nothing else.
+        The second element lets a dispatched job tell "nobody asked for a cache" from
+        "somebody asked for none"; both are ``None`` otherwise, and the job would
+        re-enable the cache.
         """
         if self.root_cfg is None:
             return None, False
-        # `getattr`, because `root_cfg` is duck-typed on this path: a
-        # command handler under test hands in a stand-in with only the
-        # accessors it needs, and a cache root is never what may break one.
+        # getattr: root_cfg is duck-typed here; test stand-ins provide only some
+        # accessors.
         project_root = getattr(self.root_cfg, "get_project_rootdir", None)
         if project_root is None:
             return None, False
@@ -1363,19 +1251,16 @@ class RtlBuddy:
                 root=root,
                 source=source,
             )
-        # A value was GIVEN and resolved to nothing: that is a disable, not
-        # an absence.
+        # A value was given but resolved to nothing: a disable, not an absence.
         return root, root is None and raw is not None
 
     @property
     def shared_build_root_for_jobs(self) -> str | None:
-        """What to forward to a dispatched job, as the tri-state argv wants.
+        """The value to forward to a dispatched job, as the tri-state argv wants.
 
-        A path enables the cache there; ``""`` disables it (the job parses
-        an empty ``--shared-build-root`` exactly as the head parsed an empty
-        flag); ``None`` says nothing and lets the job resolve its own, which
-        is what every project without a cache root gets and what keeps their
-        job scripts byte-identical.
+        A path enables the cache there; ``""`` disables it; ``None`` lets the job
+        resolve its own, which keeps job scripts unchanged for projects without a cache
+        root.
         """
         root, disabled = self._resolve_shared_build_root()
         if root is not None:
@@ -1383,17 +1268,10 @@ class RtlBuddy:
         return "" if disabled else None
 
     def _exit_code_from_results(self, suite_results):
-        # The exit code reflects whether rtl_buddy and the tools ran, not the
-        # verdict of the design under test per se. A real FAIL (sim failure,
-        # compile/setup/filelist failure, timeout) or a strict XPASS fails the
-        # run; an *intentional* early stop — NA carrying `early_stop`, which
-        # only needs hand checking — does not, nor do PASS/SKIP/XFAIL.
-        #
-        # An NA that merely means "no verdict was produced" (an aborted
-        # simulator, a transcript with no PASS/FAIL banner) is an unknown
-        # outcome, not a successful stop, and fails the run (#546): the
-        # blanket NA exemption this used to apply was how a dispatched run
-        # whose sim job exited 1 still reported exit 0.
+        # The exit code reflects whether rtl_buddy and the tools ran: a real FAIL or a
+        # strict XPASS fails the run; an intentional early stop (NA with `early_stop`)
+        # does not.
+        # An NA meaning "no verdict produced" is unknown and fails the run.
         exit_code = 0
         for suite_result in suite_results:
             if is_run_failure(suite_result["results"]):
@@ -1414,10 +1292,7 @@ class RtlBuddy:
         coverage_dir_summary_file,
         coverage_source_summary=False,
     ):
-        """Fail loud (#334) when a coverage output flag was requested but no
-        executed (non-skipped) test produced raw coverage data — otherwise the
-        command could succeed without ever emitting the requested artifact.
-        """
+        """Fail loud when a coverage output flag was requested but no executed (non-skipped) test produced raw coverage data."""
         coverage_requested = (
             coverage_merge
             or coverage_merge_raw
@@ -1426,9 +1301,7 @@ class RtlBuddy:
             or coverage_coverview
             or coverage_dir_summary
             or coverage_dir_summary_file
-            # A source-point summary (#637) is a coverage output like any
-            # other: it is computed from the model the raw databases
-            # build, so a run that produced none cannot print it.
+            # A source-point summary needs the model built from the raw databases.
             or coverage_source_summary
         )
         if (
@@ -1443,25 +1316,16 @@ class RtlBuddy:
             )
 
     def _coverage_merge_exit_code(self, coverage_payload) -> int:
-        """1 when a requested coverage merge failed (#638), else 0.
+        """Return 1 when a requested coverage merge failed, else 0.
 
-        The sibling of ``_guard_coverage_requested``: #334 refused to exit 0
-        on a coverage request that produced *nothing*, and a request that
-        produced *half* deserves the same answer. A merge whose tool was
-        killed leaves the metrics it alone carried unmeasured while line and
-        branch still report normally, so the run used to succeed with a
-        summary that reads almost complete — which is the number that gets
-        believed weeks later.
+        Sibling of ``_guard_coverage_requested``: a merge whose tool was killed leaves
+        some metrics unmeasured while line and branch still report, so the summary would
+        look almost complete.
 
-        Not a ``FatalRtlBuddyError``, for two reasons. It must not preempt
-        anything the run already produced: the caller invokes this *after*
-        the results are recorded, the side-cars refreshed and the manifest
-        written, so the artefacts survive and the machine envelope still
-        carries every result row. And the fatal path replaces the envelope
-        with an ``error`` payload, which would cost a consumer the results
-        and the ``coverage`` block — the same loss of evidence in a
-        different place. So it folds into the ordinary run status: exit 1,
-        "a tool flow failed", which is what happened.
+        Not a ``FatalRtlBuddyError``: the caller invokes this after results, side-cars
+        and manifest are written, and the fatal path would replace the envelope with an
+        ``error`` payload and lose them. It folds into the run status as exit 1, "a tool
+        flow failed".
         """
         if not coverage_payload or not coverage_payload.get("merge_failed"):
             return 0
@@ -1476,15 +1340,13 @@ class RtlBuddy:
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
 
-        Shared by every command whose per-item config exposes
-        ``is_xfail()`` / ``get_xfail_strict()`` (test, fpv, synth, cdc,
-        pnr, power). Call only when ``cfg.is_xfail()`` is true.
+        Shared by every command whose per-item config exposes ``is_xfail()`` /
+        ``get_xfail_strict()`` (test, fpv, synth, cdc, pnr, power); call only when
+        ``cfg.is_xfail()`` is true.
 
-        A FAIL that happened instead of a verdict — a setup or compile
-        failure, a sim killed at the timeout, a lost dispatch job — keeps
-        its FAIL, and the event says so with ``excused=false`` plus the
-        reason, so a CI reader does not have to open every marked row to
-        find the one the marker never covered (#553, #594).
+        A FAIL that happened instead of a verdict (setup or compile failure, sim killed
+        at the timeout, lost dispatch job) keeps its FAIL; the event reports
+        ``excused=false`` with the reason.
         """
         observed = res.results.get("result")
         strict = cfg.get_xfail_strict()
@@ -1499,8 +1361,8 @@ class RtlBuddy:
             observed=observed,
             reported=res.results.get("result"),
             strict=strict,
-            # log_event drops None fields, so `excused` is reported only
-            # where it means something: an observed failure.
+            # log_event drops None fields, so `excused` appears only for an observed
+            # failure.
             excused=(refusal is None) if observed == "FAIL" else None,
             reason=refusal,
         )
@@ -1548,8 +1410,7 @@ class RtlBuddy:
         if include_run_id:
             columns.append(("run_id", "Run"))
         columns.extend([("result", "Result"), ("desc", "Description")])
-        # Per-row Builder column only when more than one builder is in play;
-        # a single-builder run is named in the footer metadata instead.
+        # Per-row Builder column only when more than one builder is in play.
         if len(builders) > 1:
             columns.append(("builder", "Builder"))
         if has_assertions:
@@ -1596,7 +1457,6 @@ class RtlBuddy:
             ("result", "Result"),
             ("desc", "Description"),
         ]
-        # Per-row Builder column only when more than one builder is in play.
         if len(builders) > 1:
             columns.append(("builder", "Builder"))
         if has_assertions:
@@ -1616,12 +1476,9 @@ class RtlBuddy:
     def _builder_metadata_line(self, suite_cfgs, test_name=None):
         """Footer line naming the distinct builder(s) the run uses.
 
-        Resolves each test's effective builder (per-test/suite `builder:`,
-        `--builder` override, or platform default) so the summary reflects
-        what actually ran rather than only the platform default. `suite_cfgs`
-        may be one SuiteConfig or an iterable; for regression it lists the
-        union across suites. Renders `Builder: x` for a single builder and
-        `Builders: x, y` when more than one is in play.
+        Resolves each test's effective builder (per-test/suite `builder:`, `--builder`,
+        or platform default). `suite_cfgs` may be one SuiteConfig or an iterable.
+        Renders `Builder: x` for one builder and `Builders: x, y` for several.
         """
         if not isinstance(suite_cfgs, (list, tuple)):
             suite_cfgs = [suite_cfgs]
@@ -1678,10 +1535,7 @@ class RtlBuddy:
     def _resolve_coverage_dir_summary_paths(
         self, coverage_dir_summary=None, coverage_dir_summary_file=None
     ):
-        """
-        Resolve configured coverage directory-summary prefixes from repeated CLI
-        options and/or a file containing one path per line.
-        """
+        """Resolve coverage directory-summary prefixes from repeated CLI options and/or a file with one path per line."""
         return self.coverage.resolve_dir_summary_paths(
             dir_summary_paths=coverage_dir_summary,
             dir_summary_file=coverage_dir_summary_file,
@@ -1860,10 +1714,9 @@ class RtlBuddy:
             list[str] | None,
             typer.Option(
                 "--plusarg",
-                help="add or override one runtime plusarg for this run "
-                "(KEY=VALUE, or bare KEY for a valueless +KEY); repeatable, "
-                "wins over the test's plusargs: and, among repeats, the last "
-                "one wins",
+                help="add or override one runtime plusarg (KEY=VALUE, or bare "
+                "KEY for +KEY); repeatable, the last repeat wins, and it "
+                "beats the test's plusargs:",
                 show_default=False,
             ),
         ] = None,
@@ -1872,24 +1725,22 @@ class RtlBuddy:
             typer.Option(
                 "--run-tag",
                 help="namespace this run's artefact tree under "
-                "artefacts/.runs/<tag>/ so a concurrent run of the same "
-                "suite gets its own tree, its own tree lock and its own "
-                "log; shared builds stay shared",
+                "artefacts/.runs/<tag>/ with its own tree lock and log, so "
+                "concurrent runs of a suite do not collide; shared builds "
+                "stay shared",
             ),
         ] = None,
     ):
         """
         run a simple test
         """
-        # Recorded before anything resolves a backend: the policy is
-        # validated against the selected backend there (#521).
+        # Recorded before a backend is resolved; the policy is validated against it
+        # there.
         self._orphans = orphans
-        # Parsed before anything runs, so a malformed value is a usage error
-        # rather than a plusarg the bench silently never sees (#552).
+        # Parsed before anything runs, so a malformed value is a usage error.
         self._plusarg_overrides = parse_plusarg_overrides(plusarg)
-        # Validated and recorded before the execution context is entered:
-        # the context derives the artefact root — and therefore the tree
-        # lock — from it (#541).
+        # Validated before the execution context is entered, which derives the artefact
+        # root from it.
         self._run_tag = validate_run_tag(run_tag)
         master_seed = self._checked_master_seed(master_seed)
         if master_seed is not None and (rnd_new or rnd_last):
@@ -1897,20 +1748,15 @@ class RtlBuddy:
                 "--master-seed cannot be combined with --rnd-new or --rnd-last"
             )
 
-        # Keep direct callers that used the old scalar keyword working while
-        # Typer supplies a list for the variadic CLI argument.
+        # Direct callers may pass a scalar; Typer supplies a list.
         test_names = [test_name] if isinstance(test_name, str) else test_name
 
-        # Validated before anything else runs — including the `--list` short
-        # circuit below, which exits without running a test: a flag that
-        # cannot mean anything is rejected, never silently dropped (#360).
-        # The name first, so no later message quotes an unknown backend
-        # back at the user as though it existed (#440 review).
+        # Validated before the `--list` short circuit, so an unusable flag is rejected,
+        # not dropped.
+        # Name first, so no message quotes an unknown backend.
         validate_backend_name(dispatch)
-        # The raw --dispatch, not a resolved backend name: `rb test` is the
-        # one dispatch-capable command that ignores `cfg-dispatch.backend`
-        # (see the rationale at the `dispatch_backend =` site below), so
-        # what the flag says is what this run does.
+        # The raw --dispatch, not a resolved backend: `rb test` ignores
+        # `cfg-dispatch.backend`.
         self._validate_jobs_flag(dispatch, jobs)
         if list_tests and dispatch not in (None, "local"):
             raise FatalRtlBuddyError(
@@ -2001,12 +1847,10 @@ class RtlBuddy:
             test="all" if test_selection is None else ", ".join(test_selection),
             test_config=test_config,
             master_seed=master_seed,
-            # What this invocation is running that tests.yaml does not say
-            # (#552); None rather than an empty dict, so the field reads the
-            # same way `master_seed` does when it was never asked for.
+            # Runtime overrides not in tests.yaml; None rather than {}, like
+            # `master_seed`.
             plusarg_overrides=self._plusarg_overrides or None,
-            # Which artefact tree this run wrote into (#541). Omitted by
-            # log_event when unset, so an untagged run's log is unchanged.
+            # Artefact tree written to; omitted by log_event when unset.
             run_tag=self._run_tag,
         )
 
@@ -2022,19 +1866,11 @@ class RtlBuddy:
         self.rebuild = rebuild
         self._shared_build_root_flag = shared_build_root
 
-        # `rb test` enters the same planning path `rb regression --dispatch`
-        # already uses (#440): one plan, one build job, and one gated sim job
-        # per selected test. With no selection it covers the whole suite,
-        # exactly as the in-process path does.
-        #
-        # Dispatch here is **opt-in per invocation**: unlike its two
-        # neighbours, `rb test` deliberately does not read
-        # `cfg-dispatch.backend`. It is the local iteration command, and a
-        # project that set a cluster backend for its regressions must not
-        # find single-test runs queueing after an upgrade — with no
-        # `--dispatch` on the command line this is exactly the pre-#440
-        # command. The rest of `cfg-dispatch` (resources, retry, jobs, …)
-        # still configures the run once `--dispatch` selects a backend.
+        # `rb test` uses the `rb regression --dispatch` planning path: one plan, one
+        # build job, one gated sim job per selected test.
+        # Dispatch is opt-in per invocation: `rb test` does not read
+        # `cfg-dispatch.backend`, so a project with a cluster backend does not queue
+        # single-test runs.
         dispatch_backend = (
             self._resolve_dispatch_backend(dispatch, jobs=jobs)
             if dispatch is not None
@@ -2053,11 +1889,8 @@ class RtlBuddy:
                 master_seed=master_seed,
             )
         else:
-            # Same two preconditions the dispatched regression states: no
-            # stop point earlier than POST is expressible per job (the build
-            # job compiles, the sim job runs sim+post), and the build job is
-            # what lets the sim job skip compilation, so share_build is
-            # implied rather than silently ignored.
+            # As for dispatched regressions: no stop point before POST per job, and the
+            # build job lets the sim job skip compilation, so share_build is implied.
             self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
             if not share_build:
                 self.share_build = True
@@ -2119,9 +1952,8 @@ class RtlBuddy:
         if master_seed is not None:
             metadata.append(f"Master Seed: {master_seed}")
         if self._plusarg_overrides:
-            # Named in the footer for the same reason the master seed is: the
-            # table is otherwise indistinguishable from a run of the
-            # configured entry (#552). Spelled as the simulator receives it.
+            # Named in the footer like the master seed, spelled as the simulator
+            # receives it.
             metadata.append(
                 "Plusarg Overrides: "
                 + " ".join(
@@ -2145,12 +1977,12 @@ class RtlBuddy:
             model_mode=coverage_model,
         )
         metadata.extend(cov_metadata)
-        # After build_metadata: the manifest and the model are on disk, so a
-        # failed merge costs the run its exit code and nothing else (#638).
+        # After build_metadata: the manifest and model are on disk, so a failed merge
+        # costs only the exit code.
         exit_code |= self._coverage_merge_exit_code(coverage_payload)
         self._refresh_result_side_cars(suite_results)
-        # Render in both modes: in machine mode this emits the "summary" log
-        # event (and plain text to stderr), leaving stdout for the envelope.
+        # Rendered in both modes; in machine mode it emits the "summary" log event and
+        # leaves stdout for the envelope.
         self._render_test_summary(
             "Test Results Summary", suite_results, metadata=metadata
         )
@@ -2247,9 +2079,9 @@ class RtlBuddy:
             typer.Option(
                 "--run-tag",
                 help="namespace this run's artefact tree under "
-                "artefacts/.runs/<tag>/ so a concurrent run of the same "
-                "suite gets its own tree, its own tree lock and its own "
-                "log; shared builds stay shared",
+                "artefacts/.runs/<tag>/ with its own tree lock and log, so "
+                "concurrent runs of a suite do not collide; shared builds "
+                "stay shared",
             ),
         ] = None,
     ):
@@ -2277,18 +2109,16 @@ class RtlBuddy:
             run_tag=self._run_tag,
         )
 
-        # Seed fan-out is the dispatch sweet spot: one shared build, N
-        # independent sims. Replay (-r) stays local — a single re-run
-        # gains nothing from the queue.
+        # Seed fan-out suits dispatch (one shared build, N sims); a single replay (-r)
+        # stays local.
         backend_name = self._dispatch_backend_name(dispatch)
-        # Validate --jobs even on the replay path, which never builds a
-        # backend: an unusable flag must be rejected, not dropped (#360).
+        # Validate --jobs on the replay path too, which never builds a backend.
         self._validate_jobs_flag(backend_name, jobs)
         if rpt_i is not None and (
             jobs is not None or (dispatch is not None and dispatch != "local")
         ):
-            # A single-seed replay gains nothing from the queue, so it stays
-            # local — but make that audible when a dispatch flag was explicit.
+            # A single-seed replay stays local; say so when a dispatch flag was
+            # explicit.
             log_event(
                 logger,
                 logging.WARNING,
@@ -2392,8 +2222,8 @@ class RtlBuddy:
     def _abs_invocation_path(self, path: str) -> Path:
         """Resolve ``path`` against the invocation cwd if it is relative.
 
-        A dispatched job's ``--result-json`` / ``--plan`` are given relative
-        to where the head submitted from, not the (re-anchored) suite dir.
+        A dispatched job's ``--result-json`` and ``--plan`` are relative to where the
+        head submitted from, not the re-anchored suite dir.
         """
         p = Path(path)
         return p if p.is_absolute() else self.invocation_cwd / p
@@ -2401,19 +2231,13 @@ class RtlBuddy:
     def _resolve_job_test_cfg(self, suite_cfg, test_name, suite_dir, plan_path=None):
         """Resolve a job's test config by name, honoring sweep expansion.
 
-        Accepts either a base test name from the suite or the name of a
-        sweep-expanded config (jobs are dispatched per expanded config,
-        so both must be addressable). Returns ``(test_cfg, None)`` on
-        success or ``(None, setup_error)`` when a sweep hook failed —
-        the caller turns that into a written ``SetupFailResults`` so the
-        job still produces a result artifact. An unknown name raises
-        ``FatalRtlBuddyError`` (nothing ran; the collector maps the
-        missing result file to an infrastructure failure).
+        Accepts a base test name or a sweep-expanded config name. Returns ``(test_cfg,
+        None)``, or ``(None, setup_error)`` when a sweep hook failed, which the caller
+        writes as a ``SetupFailResults``. An unknown name raises ``FatalRtlBuddyError``.
 
-        When ``plan_path`` is given, the config is read from the head's
-        dispatch plan first — the suite's sweep hook does not run in this
-        job at all. A name absent from the plan falls through to hook
-        expansion (the plan is an optimization, not a hard dependency).
+        With ``plan_path``, the config is read from the head's dispatch plan and the
+        sweep hook does not run; a name absent from the plan falls through to hook
+        expansion.
         """
         if plan_path is not None:
             cfg = read_plan_config(self._abs_invocation_path(plan_path), test_name)
@@ -2443,9 +2267,8 @@ class RtlBuddy:
                 base, suite_dir=suite_dir
             )
             if sweep_error is not None:
-                # A broken sweep elsewhere must not mask resolution of
-                # other names, but remember it: the requested name may
-                # have come from this expansion.
+                # A broken sweep must not mask other names, but is remembered: the
+                # requested name may come from it.
                 if sweep_error_seen is None:
                     sweep_error_seen = sweep_error
                 continue
@@ -2577,14 +2400,11 @@ class RtlBuddy:
             ),
         ] = None,
     ):
-        """
-        internal: run one (test, run_id) and write its result JSON (#351)
-        """
+        """internal: run one (test, run_id) and write its result JSON"""
         master_seed = self._checked_master_seed(master_seed)
         self._plusarg_overrides = parse_plusarg_overrides(plusarg)
-        # Re-validated here rather than trusted: this is a CLI boundary like
-        # any other, and a job whose tag was mangled in transport must fail
-        # loud rather than write a second tree beside the head's (#541).
+        # Re-validated at this CLI boundary: a mangled tag must fail loud, not write a
+        # second tree.
         self._run_tag = validate_run_tag(run_tag)
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
@@ -2593,27 +2413,23 @@ class RtlBuddy:
         self.expect_prebuilt = expect_prebuilt
         self.rebuild = rebuild
         self._shared_build_root_flag = shared_build_root
-        # Resolved against the invocation cwd for the reason --result-json is:
-        # the head writes the path it sees, and this job's cwd is the suite
-        # dir. Absent for an ungated job, and for a head too old to pass it —
-        # both then behave exactly as before #498 (compile, and report).
+        # Resolved against the invocation cwd like --result-json; absent for an ungated
+        # job or an old head.
         self.build_result_json = (
             self._abs_invocation_path(build_result_json)
             if build_result_json is not None
             else None
         )
-        # Resolve the output path before entering the command context so
-        # a relative --result-json lands where the dispatching process
-        # expects it, not under the suite dir.
+        # Resolved before entering the command context so a relative --result-json lands
+        # where the head expects it.
         result_json_path = self._abs_invocation_path(result_json)
-        # Mirror run_multiple's fan-out semantics: a replayed job replays
-        # its own run_id unless told otherwise.
+        # Mirror run_multiple: a replayed job replays its own run_id unless told
+        # otherwise.
         if seed_mode == SeedMode.REPLAY and replay_run_id is None:
             replay_run_id = run_id
 
-        # Log beside the envelope, never into the head's
-        # <suite>/rtl_buddy.log — the first open of that path in this
-        # process would truncate the head's own records (#437).
+        # Log beside the envelope, never into the head's <suite>/rtl_buddy.log, which
+        # the first open would truncate.
         ctx = self._enter_command_context(
             primary_config=test_config,
             log_path=job_log_path(result_json_path),
@@ -2644,13 +2460,9 @@ class RtlBuddy:
             suite_cfg, test_name, suite_dir, plan_path=plan
         )
         if test_cfg is not None:
-            # The head already merged its `--plusarg` overrides into the plan
-            # it wrote, so this is a no-op for the config that came from
-            # there — and the whole of the override for the one that did not
-            # (a name absent from the plan falls back to hook expansion,
-            # which re-reads tests.yaml and knows nothing about them). Also
-            # what puts the overrides into this job's result envelope, since
-            # the head never sees a dispatched run's results (#552).
+            # Re-applies the head's `--plusarg` overrides: a no-op for configs from the
+            # plan, the whole override for a config absent from it.
+            # Also puts them in this job's result envelope.
             test_cfg = test_cfg.with_plusarg_overrides(self._plusarg_overrides)
         if plan is not None:
             plan_master_seed = self._checked_master_seed(
@@ -2733,22 +2545,15 @@ class RtlBuddy:
                     f"dispatch plan seed {planned_seed!r} changed to "
                     f"{current_seed!r} for {test_name!r}"
                 )
-        # Resolve the head's run token BEFORE running the sim, and never let a
-        # token-read failure abort: the plan was just read for the config, so
-        # it is readable now; reading it again after the sim would risk the job
-        # doing all the work and then dying before write_result_json if the
-        # plan went unreadable meanwhile — the exact "produced no result" this
-        # fixes, through another door. A None here just means the head rejects
-        # the envelope as stale, which still surfaces after it is written
-        # (#362).
+        # Resolve the head's run token before the sim and never abort on failure: a None
+        # token only makes the head reject the envelope as stale.
         run_token = None
         if plan is not None:
             try:
                 run_token = read_plan_token(self._abs_invocation_path(plan))
             except FatalRtlBuddyError:
                 run_token = None
-        # The artifact-dir envelope this job also writes (#379) carries the
-        # head's token too, so the two records of one run agree on identity.
+        # The artifact-dir envelope carries the head's token too, so both records agree.
         if run_token is not None:
             self._run_token = run_token
 
@@ -2768,9 +2573,8 @@ class RtlBuddy:
             res = run_results[0]
             reported_name = test_cfg.get_name()
 
-        # Stamp the head's per-invocation run token (carried in the plan) into
-        # the envelope so collection can reject a stale envelope by identity
-        # rather than the head pre-unlinking it (#362).
+        # Stamp the head's run token so collection can reject a stale envelope by
+        # identity.
         write_result_json(
             result_json_path,
             test_name=reported_name,
@@ -2779,9 +2583,8 @@ class RtlBuddy:
             run_token=run_token,
             run_tag=self._run_tag,
         )
-        # The head's grading rule, applied here too, so one run cannot be
-        # scored differently by the job and by the collector (#546): an
-        # unknown NA is a failure, an intentional early stop is not.
+        # The head's grading rule, so job and collector score a run alike: unknown NA
+        # fails, intentional early stop does not.
         exit_code = 1 if is_run_failure(res) else 0
         if self.machine:
             self._emit_machine_result(
@@ -2905,63 +2708,42 @@ class RtlBuddy:
             ),
         ] = None,
     ):
-        """
-        internal: compile a suite's runnable tests on a compute node (#351)
+        """internal: compile a suite's runnable tests on a compute node
 
-        Runs PRE+COMPILE (share-build) for every runnable test in the
-        suite so each unique compile key Verilates once. With ``--plan`` the
-        configs come from the head's single sweep expansion (the hook does
-        not run again here). Best-effort: a test whose compile fails is
-        reported but does not fail the job, so the dependent sim jobs still
-        run (a test with no shared build just recompiles in its own sim
-        job). Exit code is always 0 unless the setup itself is fatal.
+        Runs PRE+COMPILE (share-build) for every runnable test so each compile key
+        Verilates once. With ``--plan`` the configs come from the head's single sweep
+        expansion. A failed compile is reported but does not fail the job, so dependent
+        sim jobs still run; the exit code is 0 unless setup is fatal.
 
-        Two loop shapes, one program. A job that can only run one build at
-        a time (``--parallel 1``, or a plan with one config) streams
-        PRE → COMPILE per config, which is what a preproc hook that
-        regenerates a suite-level input has always been able to rely on.
-        Above that, every PRE runs first and the distinct builds compile
-        concurrently — which asks of preproc hooks exactly what the sim
-        fan-out already asks, that one config's hook not mutate another
-        config's inputs.
+        With ``--parallel 1`` or a one-config plan, PRE then COMPILE runs per config.
+        Above that, every PRE runs first and distinct builds compile concurrently, so
+        one config's preproc hook must not mutate another config's inputs.
 
-        With ``--result-json`` (how dispatch always invokes it) the job
-        logs beside that envelope instead of the head's
-        ``<suite>/rtl_buddy.log``; run by hand without it there is no head
-        to collide with, so it falls back to the suite log (#437).
+        With ``--result-json`` (always set under dispatch) the job logs beside that
+        envelope; without it, it logs to the suite log.
 
-        With ``--gates`` (Slurm only) it also releases each compile key's
-        simulation jobs as that key finishes, instead of leaving all of
-        them gated on this whole job: see ``dispatch.gates`` and #548. The
-        gate itself is untouched — every one of those jobs keeps its
-        ``afterok`` on this job, which is what still cancels the fan-out if
-        this job dies.
+        With ``--gates`` (Slurm only) it releases each compile key's sim jobs as the key
+        finishes; see ``dispatch.gates``. Every sim job keeps its ``afterok`` on this
+        job.
         """
         if phase not in BUILD_PHASES:
-            # Rejected before anything is entered or written, like
-            # `--parallel` below: a phase nobody implements would compile
-            # the wrong half of the suite, and this flag only ever comes
-            # from the head (#593).
+            # Rejected before anything is written: an unimplemented phase would compile
+            # the wrong half of the suite.
             raise FatalRtlBuddyError(
                 f"--phase must be one of {', '.join(BUILD_PHASES)} (got {phase!r})."
             )
-        # Re-validated like the phase above, and before anything is written
-        # (#541): a mangled tag must fail loud, not write a second tree.
+        # Re-validated before anything is written: a mangled tag must fail loud.
         self._run_tag = validate_run_tag(run_tag)
         if parallel < 1:
-            # Rejected before anything is entered or written: a job allowed
-            # zero concurrent builds would compile nothing, and a fatal here
-            # costs the fan-out nothing (no compile has succeeded yet).
+            # Rejected before anything is written: zero concurrent builds compile
+            # nothing.
             raise FatalRtlBuddyError(
                 f"--parallel must be >= 1 (got {parallel}); a build job "
                 "allowed zero concurrent builds would compile nothing."
             )
-        # Diagnostics only, so a nonsensical value is dropped rather than
-        # raised (#547 review): the head's cap only ever lowers, so a
-        # configured value below `--parallel` describes no run this job
-        # could be in, and failing the job over a log line would cancel the
-        # whole afterok fan-out behind it. Absent means "the config value IS
-        # --parallel", which is what every uncapped submission means.
+        # Diagnostics only: a nonsensical value is dropped, not raised, since failing
+        # would cancel the afterok fan-out.
+        # Absent means the config value is --parallel.
         if parallel_configured is None or parallel_configured < parallel:
             parallel_configured = parallel
         self.rtl_builder_mode = (
@@ -2970,15 +2752,12 @@ class RtlBuddy:
         self.share_build = share_build
         self.rebuild = rebuild
         self._shared_build_root_flag = shared_build_root
-        # Resolve before entering the context: a relative --result-json is
-        # the dispatching process's path, not the suite dir's, and the log
-        # that pairs with it is derived from the resolved envelope.
+        # Resolved before entering the context: relative paths are the head's, and the
+        # log derives from the envelope path.
         result_json_path = (
             self._abs_invocation_path(result_json) if result_json is not None else None
         )
-        # Same treatment for the gates manifest, and for the same reason as
-        # the plan: it is a head path, and this job's cwd is a compute
-        # node's (#458).
+        # Likewise the gates manifest: a head path, not the compute node's cwd.
         gates_path = self._abs_invocation_path(gates) if gates is not None else None
         ctx = self._enter_command_context(
             primary_config=test_config,
@@ -2988,14 +2767,9 @@ class RtlBuddy:
         )
         suite_cfg = SuiteConfig(path=str(ctx.primary_config))
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
-        # Which config layer owns `compile.parallel` for THIS suite — the
-        # key a reader would edit, not where this invocation's `--parallel`
-        # number came from (the head caps the resolved value by the planned
-        # configs, and that cap is reported separately as
-        # `parallel_requested`). Read from the same suite block the head
-        # resolved against, so the two provably agree, rather than plumbed
-        # through argv to restate a fact already on disk beside the job
-        # (#547).
+        # Config layer owning `compile.parallel` for this suite (the key to edit), read
+        # from the suite block the head resolved against.
+        # Reported separately from `parallel_requested`.
         parallel_origin = compile_parallel_origin(
             getattr(suite_cfg.get_compile(), "parallel", None) is not None,
             suite_cfg.get_path(),
@@ -3018,14 +2792,12 @@ class RtlBuddy:
         )
 
         if plan is not None:
-            # Head-expanded plan: the sweep hook already ran once on the
-            # head, so just rebuild each config — no skip/level logic here
-            # (the head already applied it when writing the plan).
+            # Head-expanded plan: the sweep hook ran on the head, so rebuild each config
+            # with no skip/level logic.
             configs = read_plan_configs(self._abs_invocation_path(plan))
         else:
-            # Standalone invocation: expand here. _iter_suite_runnables
-            # applies level filtering + sweep expansion (config-only, no
-            # compile); its skip/setup rows are irrelevant to a build job.
+            # Standalone: expand here. _iter_suite_runnables applies level filtering and
+            # sweep expansion; its skip/setup rows are irrelevant to a build job.
             discard = []
             configs = list(
                 self._iter_suite_runnables(
@@ -3041,11 +2813,9 @@ class RtlBuddy:
         def _prepare_config(index, cfg):
             """Construct, PRE and probe one config.
 
-            Returns ``(outcome row, group dir, member)``: either a terminal
-            outcome row (and no member), or a member for the group its
-            compile will write into. Shared by both loop shapes below, so
-            the streaming path and the batched one cannot disagree about
-            what PRE did or how a failure is reported.
+            Returns ``(outcome row, group dir, member)``: a terminal outcome row with no
+            member, or a member for the group its compile writes into. Shared by both
+            loop shapes.
             """
             runner = TestRunner(
                 name=self.name + "/build-job",
@@ -3058,14 +2828,11 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 share_build=share_build,
                 shared_build_root=self.shared_build_root,
-                # The build job is where `--rebuild` belongs under dispatch:
-                # it is the single writer of the shared directory, and its
-                # per-process memo makes the whole suite's shared build
-                # rebuild exactly once (#494/#369).
+                # Under dispatch `--rebuild` belongs to the build job: it is the single
+                # writer of the shared directory, and its per-process memo rebuilds it
+                # once.
                 rebuild=rebuild,
-                # Which half of the compile this job runs (#593).
                 build_phase=phase,
-                # The head's artefact namespace (#541).
                 run_tag=self._run_tag,
             )
             try:
@@ -3074,22 +2841,17 @@ class RtlBuddy:
                 if res is None:
                     group_dir, res = runner.compile_group_dir()
             except Exception as exc:  # noqa: BLE001 - see exit-0 contract
-                # The exit-0 contract covers this phase too, and the probe
-                # made that matter: pulling the compile-flag assembly ahead
-                # of the builder moved fatals like SystemCSim's missing
-                # `cfg-systemc` out of a protected worker and onto the main
-                # thread. One config's broken setup must not cancel the
-                # afterok fan-out for the seven that were fine — the config
-                # is reported failed and its own sim job says why.
+                # The exit-0 contract covers this phase too: one config's broken setup
+                # (e.g. SystemCSim's missing `cfg-systemc`) is reported failed and must
+                # not cancel the afterok fan-out.
                 return (
                     (index, cfg.get_name(), False, str(exc), runner, None),
                     None,
                     None,
                 )
             if res is not None:
-                # A setup or filelist failure never reaches a builder, so it
-                # is reported exactly as the serial loop reported it: failed,
-                # and the job still exits 0.
+                # A setup or filelist failure never reaches a builder: reported as
+                # failed, and the job still exits 0.
                 return (
                     (index, cfg.get_name(), False, None, runner, group_dir),
                     None,
@@ -3097,38 +2859,21 @@ class RtlBuddy:
                 )
             return None, group_dir, (index, cfg.get_name(), runner)
 
-        # Which config compiled each group's build, once one has (#535).
-        # Keyed by group dir, and a group is one worker's whole unit of
-        # work, so no two threads ever touch one key.
+        # Config that compiled each group's build, keyed by group dir. A group is one
+        # worker's unit, so no two threads touch one key.
         group_leaders = {}
-        # Told apart from a runner reporting no stamp: a runner class that
-        # does not report one at all keeps the pre-#534 leader rule, the
-        # same convention `adopt_group_build` is looked up under.
+        # Distinct from a runner reporting no stamp: a runner class that reports none
+        # keeps the leader rule, as with `adopt_group_build`.
         unreported = object()
 
-        # ---- per-key release (#548).
-        #
-        # Every sim job of this suite was submitted `--dependency=afterok`
-        # on THIS job, so without help the fastest compile key's tests wait
-        # for the slowest key in the plan — 56 minutes of it, in the report
-        # that opened the issue. The head cannot gate them per key: the keys
-        # only exist once `run.f` has been written, which happens here, on a
-        # compute node (#458). So the release is this job's to make.
-        #
-        # What is released, and when: a group whose compile has RETURNED
-        # (so the build directory's lock is long gone) with a build and a
-        # stamp on disk. Not a failed key — its sims stay on `afterok`,
-        # start after this job, read the build envelope and decline the
-        # recompile (#498), which is exactly the behaviour they had before
-        # this existed. The `afterok` itself is never cleared as a gate: it
-        # is left on every job and stays the orphan safety net, because
-        # `--kill-on-invalid-dep=yes` is what reaps the fan-out if this job
-        # dies mid-compile.
-        #
-        # Resolved once, lazily, at the first release: `shutil.which` is a
-        # filesystem walk and the manifest may not be written yet, and
-        # neither is worth paying for in a job with `--gates` pointing at a
-        # head that never got there.
+        # ---- per-key release.
+        # Sim jobs are gated `afterok` on this job. The head cannot gate per key, since
+        # keys exist only once `run.f` is written here, so this job releases a key's
+        # sims once its build and stamp are on disk. A failed key keeps its gate.
+        # `afterok` is never cleared: it stays as the orphan safety net
+        # (`--kill-on-invalid-dep=yes` reaps the fan-out if this job dies).
+        # The scontrol lookup and the manifest are resolved once, lazily, at the first
+        # release.
         release_lock = threading.Lock()
         release_state = {"resolved": False, "gates": None, "disabled": None}
 
@@ -3138,9 +2883,8 @@ class RtlBuddy:
                 return release_state["gates"]
             release_state["resolved"] = True
             if shutil.which("scontrol") is None:
-                # `scontrol` is an optional binary in the tool manifest, so
-                # a site can run the whole Slurm backend without it. Say so
-                # once and keep every job on `afterok`.
+                # `scontrol` is an optional binary in the tool manifest: say so once and
+                # keep every job on `afterok`.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -3158,9 +2902,8 @@ class RtlBuddy:
                     else None
                 )
             except FatalRtlBuddyError:
-                # The plan already parsed once above, so this is unreachable
-                # short of the file changing underneath; an unreadable token
-                # only costs the staleness check.
+                # Unreachable unless the plan file changed since it was parsed; an
+                # unreadable token only costs the staleness check.
                 token = None
             payload, reason = wait_for_gates(gates_path, run_token=token)
             if payload is None:
@@ -3178,31 +2921,24 @@ class RtlBuddy:
         def _release_group(group_dir, members, *, verdict_error=None):
             """Clear the `afterok` of this key's sims. Never raises.
 
-            ``members`` is ``[(plan index, test name), …]`` for the rows
-            this group actually built. Called from the worker that compiled
-            the group, right after its last member returned, so two keys
-            finishing at different times release at different times — which
-            is the entire point.
+            ``members`` is ``[(plan index, test name), …]`` for the rows this group
+            built. Called from the worker right after the group's last member returns.
 
-            ``verdict_error`` is why this key's build record did not reach
-            disk, when it did not. Releasing then would start jobs that
-            cannot read the one file that tells them the build exists, so
-            the key keeps its gate instead.
+            ``verdict_error`` is why the build record did not reach disk; the key then
+            keeps its gate, since released jobs could not read the file that says the
+            build exists.
             """
             if gates_path is None or not members or cancellation_has_started():
                 return
             if phase == BUILD_PHASE_VERILATE:
-                # There is no build to release these jobs onto: this half
-                # emitted sources and a Makefile, and the build half still
-                # has to run (#593). The head passes no `--gates` to a
-                # verilate job, so this is the second guard, not the first.
+                # No build to release onto: this half emitted sources and a Makefile.
+                # The head passes no `--gates` to a verilate job, so this is the second
+                # guard.
                 return
             if verdict_error is not None:
-                # The envelope these jobs would consult is not on disk, so
-                # releasing them starts jobs that cannot learn this build
-                # exists. They keep their `afterok` and run after this job,
-                # which is where they were before any of this — slower, and
-                # the one outcome that is never wrong.
+                # The envelope these jobs would consult is not on disk, so releasing
+                # them would start jobs that cannot learn the build exists. They keep
+                # `afterok`.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -3213,34 +2949,24 @@ class RtlBuddy:
                 )
                 return
             with release_lock:
-                # Held across the wait on purpose: the manifest is resolved
-                # exactly once for the job, and a second worker arriving
-                # mid-poll should join that wait rather than start its own.
-                # It costs that worker the remainder of a bounded wait, and
-                # only in the run where the head never wrote the file.
+                # Held across the wait on purpose: the manifest is resolved once, and a
+                # second worker joins that wait rather than starting its own.
                 payload = _resolve_gates_locked()
-                # A systemic failure — a wedged controller, an scontrol
-                # that will not run — is a property of this node and this
-                # run, not of the ids it was asked about. Paying its
-                # timeout once per remaining compile key would put the
-                # whole build job behind an optimization it has already
-                # been told it cannot have.
+                # A systemic failure (wedged controller, scontrol that will not run)
+                # belongs to the node, not to the ids asked about; do not pay its
+                # timeout once per remaining key.
                 disabled = release_state["disabled"]
             if payload is None or disabled is not None:
                 return
             batches = release_batches(payload, [index for index, _ in members])
             if not batches:
-                # The manifest knows nothing about these configs: a hand-run
-                # build job over a head's manifest, or a plan whose indices
-                # moved. Nothing to release and nothing wrong.
+                # The manifest does not know these configs (hand-run build job, or plan
+                # indices moved): nothing to release.
                 return
-            # One call per cluster: these ids were issued by whichever
-            # controller accepted their array, and an id is unique only
-            # there (#509).
+            # One call per cluster: an array id is unique only on the controller that
+            # accepted it.
             released, failures, skipped, systemic = [], [], [], None
-            # ONE deadline for the whole key, shared by its clusters: a
-            # per-batch budget would give a key spread over three
-            # controllers three times the wait it is allowed (#548 review).
+            # One deadline for the whole key, shared by its clusters, not one per batch.
             deadline = time.monotonic() + RELEASE_BUDGET_S
             for position, (cluster, job_ids) in enumerate(batches):
                 remaining = deadline - time.monotonic()
@@ -3258,8 +2984,8 @@ class RtlBuddy:
                 skipped.extend(outcome.skipped)
                 if outcome.systemic is not None:
                     systemic = outcome.systemic
-                    # Whatever stopped this cluster's batch stops the rest
-                    # of them too, and every later key in this job.
+                    # Whatever stopped this cluster's batch stops the rest and every
+                    # later key in this job.
                     skipped.extend(
                         job_id for _, ids in batches[position + 1 :] for job_id in ids
                     )
@@ -3268,13 +2994,10 @@ class RtlBuddy:
                 with release_lock:
                     release_state["disabled"] = systemic
             if released:
-                # On the console, not just in the job log: this is the line
-                # that says a 40-minute key stopped holding its tests, and
-                # INFO is invisible on a CI console without it. Emitted from
-                # a pool worker in the batched shape, which is safe on both
-                # halves: logging handlers take the logging lock, and the
-                # console half is a Rich `print` to stderr, never stdout —
-                # so the machine path's JSON stream is untouched.
+                # On the console, not just the job log: this line says a key stopped
+                # holding its tests, and INFO is invisible on a CI console.
+                # It goes to stderr via Rich `print`, so the machine JSON stream on
+                # stdout is untouched.
                 log_console_event(
                     logger,
                     logging.INFO,
@@ -3284,13 +3007,11 @@ class RtlBuddy:
                     job_ids=released,
                 )
             for position, (job_id, error) in enumerate(failures):
-                # A release that did not happen is a job that starts when
-                # this one ends — slower, never wrong — so it is a warning
-                # and the build continues. The one that ended the batch
-                # carries what it cost: the ids never attempted, and the
-                # fact that no later key will try either. It is the last
-                # one recorded by construction — the loop above breaks
-                # straight after appending it.
+                # A failed release only means the job starts when this one ends, so it
+                # is a warning and the build continues.
+                # The warning that ended the batch names the ids never attempted; it is
+                # the last one recorded because the loop breaks straight after appending
+                # it.
                 is_systemic = systemic is not None and position == len(failures) - 1
                 log_event(
                     logger,
@@ -3302,8 +3023,8 @@ class RtlBuddy:
                     skipped=len(skipped) if is_systemic else None,
                 )
             if systemic is not None and not failures:
-                # The budget ran out between calls, so no single id failed:
-                # say it against the key rather than losing it.
+                # The budget ran out between calls, so no single id failed: say it
+                # against the key.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -3316,76 +3037,51 @@ class RtlBuddy:
         def _build_entry(name, ok, worker_error, runner, group_dir):
             """One config's envelope record. Pure but for the stamp refresh.
 
-            Called once per config: from ``_record_group`` as each group
-            finishes (for the partial envelope a released key's sims read),
-            and from the tail below for a config no group ever ran — a PRE
-            failure, a cancelled worker. The tail reuses what is already
-            recorded rather than rebuilding it, so ``refresh_build_stamp``
-            runs exactly once per config whichever path produced it.
+            Called once per config: from ``_record_group`` as each group finishes, and
+            from the tail for a config no group ran (PRE failure, cancelled worker). The
+            tail reuses what is recorded, so ``refresh_build_stamp`` runs once per
+            config.
             """
             record = runner.last_compile or {}
             build_entry = {
                 "test": name,
-                # The runner's own resolved builder when no compile plan
-                # was ever derived (a config whose PRE failed): the
-                # builder is settled once the sim exists, and naming it
-                # is the difference between "never compiled" and "no idea
-                # what would have compiled it".
+                # The runner's own builder when no compile plan was derived (a config
+                # whose PRE failed): distinguishes "never compiled" from "unknown
+                # builder".
                 "builder": record.get("builder")
                 or getattr(runner, "builder_name", None),
                 "duration_sec": record.get("duration_sec"),
                 "reused": record.get("reused"),
-                # Suite-relative, not absolute and not a basename: the
-                # suite prefix would pin the compute node's mount into
-                # an artifact the head reads, and a basename collides —
-                # every unshared build's output is literally `simv`, so
-                # unrelated concurrent builds would record one `group`
-                # and a consumer would merge their timings (#496
-                # review). Relative to the suite the value is bijective
-                # with the output path: equal means one single-writer
-                # output (a shared dir, or one pinned executable),
-                # distinct means two.
+                # Suite-relative, not absolute and not a basename: an absolute path pins
+                # the compute node's mount, and a basename collides (every unshared
+                # output is `simv`).
+                # Equal values mean one single-writer output; distinct values mean two.
                 "group": (os.path.relpath(group_dir, suite_dir) if group_dir else None),
             }
             for half in ("verilate_sec", "build_sec"):
-                # Where the compile was split, `duration_sec` above is the
-                # whole of it and these say where the time went (#593).
-                # Additive: absent for every unsplit compile, which is what
-                # keeps an existing envelope's shape.
+                # For a split compile, `duration_sec` above is the whole and these say
+                # where the time went. Absent for an unsplit compile.
                 if record.get(half) is not None:
                     build_entry[half] = record[half]
-            # The stamp as it stands now that every member is done: a
-            # sibling's adoption rewrote its listing after the leader
-            # recorded, and the gated jobs validate — and compare their
-            # digest against — the final one.
+            # The stamp after every member is done: a sibling's adoption rewrote its
+            # listing after the leader recorded, and gated jobs validate against the
+            # final one.
             refresh_stamp = getattr(runner, "refresh_build_stamp", None)
             if callable(refresh_stamp):
                 refresh_stamp()
             stamp = getattr(runner, "last_build_stamp", None) or {}
             if ok and stamp.get("fingerprint_sha") is not None:
-                # WHICH inputs this build was made from (#535). A gated sim
-                # job that cannot validate the stamp compares its own
-                # fingerprint against this to say whether the disagreement
-                # is over the same inputs or different ones — and either
-                # way it declines to recompile, because the build exists.
-                # Additive; schema_version stays 1.
+                # Which inputs this build was made from: a gated sim job that cannot
+                # validate the stamp compares its fingerprint against this, and declines
+                # to recompile either way.
                 build_entry["fingerprint_sha"] = stamp["fingerprint_sha"]
             if ok and getattr(runner, "stamp_write_failed", False):
-                # Built, but with nothing on disk to say so (#534). The
-                # gated sim jobs must read this as "built" — the binary is
-                # there and a recompile under the simulation reservation is
-                # the one answer that cannot help — while getting a reason
-                # that names the write rather than sending them looking for
-                # a build that never happened. Absent means "stamped", which
-                # is what every older envelope means too.
+                # Built, but with nothing on disk to say so. Gated sim jobs read this as
+                # "built" and get a reason naming the write. Absent means "stamped".
                 build_entry["stamp_written"] = False
             if not ok:
-                # Why it failed, carried in the envelope rather than left in
-                # this job's log for someone to find (#498). Everything here
-                # is additive and best-effort under the same exit-0 contract
-                # the rest of the loop runs under: a failure to describe a
-                # failure must not cost the fan-out its `afterok`, and a
-                # record without these keys still means what it always did.
+                # Why it failed, carried in the envelope rather than only the job log.
+                # Additive and best-effort under the exit-0 contract.
                 try:
                     _annotate_build_failure(
                         build_entry,
@@ -3403,39 +3099,25 @@ class RtlBuddy:
                     )
             return build_entry
 
-        # ---- the envelope, written as the job goes (#548).
-        #
-        # A released key's simulation jobs start while later keys are still
-        # compiling, and the first thing one does when its stamp fails to
-        # validate is ask this envelope whether the build exists. Written
-        # once at the end, it would not be there yet — and `no envelope` is
-        # `inconclusive`, which is the verdict that RECOMPILES, under the
-        # simulation reservation, into the shared directory every sibling
-        # element is pointed at. So the verdict is persisted before the
-        # dependency that holds those jobs is cleared: each group rewrites
-        # the envelope with everything decided so far, marked `partial`,
-        # and the write at the end drops the mark.
+        # ---- the envelope, written as the job goes.
+        # A released sim whose stamp fails to validate asks this envelope whether the
+        # build exists; "no envelope" is `inconclusive`, which recompiles.
+        # So the verdict is persisted before the dependency is cleared: each group
+        # rewrites the envelope marked `partial`, and the final write drops the mark.
         recorded_lock = threading.Lock()
         recorded_entries = {}  # plan index -> envelope record
         recorded_ok = {}  # plan index -> did it build?
 
         def _record_group(rows):
-            """Persist this group's outcomes; ``None`` or why it did not.
+            """Persist this group's outcomes; return ``None`` or why it failed.
 
-            Called before the group's release, and its answer decides
-            whether that release happens at all. A released simulation
-            whose stamp fails to validate reads this file to learn that
-            the build exists; if the write failed there is nothing for it
-            to read, and clearing its dependency would start it into the
-            one verdict this whole mechanism exists to avoid — a recompile
-            under the simulation reservation, into the shared directory
-            its siblings are pointed at (#548 review). So a failed write
-            costs the key its early start, never the job's exit status.
+            Called before the group's release, and its answer decides whether the
+            release happens: a failed write costs the key its early start, never the
+            job's exit status.
 
-            ``result_json_path is None`` is not that case: it is a build
-            job run by hand, with no head, and so no gated simulation that
-            could consult an envelope — the head passes ``--result-json``
-            on every submission that passes ``--gates``.
+            ``result_json_path is None`` is a hand-run build job with no head and no
+            gated simulation, not a failure; the head passes ``--result-json`` on every
+            submission that passes ``--gates``.
             """
             entries = {
                 index: (
@@ -3456,10 +3138,9 @@ class RtlBuddy:
                     index: recorded_entries[index].get("test") for index in ordered
                 }
                 try:
-                    # Under the lock, so two workers finishing together
-                    # cannot interleave a stale snapshot over a fresher one.
-                    # The write is a tmp + os.replace, so a reader sees one
-                    # or the other whole.
+                    # Under the lock, so two workers finishing together cannot
+                    # interleave a stale snapshot over a fresher one. tmp + os.replace
+                    # gives readers a whole file.
                     write_build_result_json(
                         result_json_path,
                         built=[names[index] for index in ordered if recorded_ok[index]],
@@ -3481,55 +3162,38 @@ class RtlBuddy:
                 return None
 
         def _compile_group(group):
-            """Compile one group's configs serially; rows for the caller.
+            """Compile one group's configs serially; return rows for the caller.
 
-            The first member compiles; the rest ADOPT what it built. A
-            group's members share a compile key by construction — one
-            ``run.f``, one command line, one builder — so the only thing
-            that can separate a sibling's fingerprint from the leader's
-            stamp is a file that moved during this job, and the serial PRE
-            phase guarantees one on a cold tree: this member's own preproc
-            output, created after the leader was fingerprinted, under an
-            ``+incdir+`` the stamp lists. Re-deriving the stamp for that
-            bought a full second Verilation of an identical design (#535).
-            What the sibling does check is the leader's ``deps``: an input
-            the build actually consumed, differing here, is not a stale
-            build but two tests compiling different bytes under one key —
-            reported, not recompiled, because a recompile makes the last
-            writer decide what both of them simulate.
+            The first member compiles; the rest adopt what it built. Members share one
+            compile key, so a sibling's fingerprint can differ from the leader's stamp
+            only through a file that moved during this job (e.g. this member's preproc
+            output under an ``+incdir+``), and re-deriving the stamp would Verilate an
+            identical design twice. The sibling checks the leader's ``deps``: a
+            differing input the build consumed means two tests compile different bytes
+            under one key, which is reported, not recompiled, because a recompile would
+            make the last writer decide what both simulate.
 
-            Re-checks the cancellation latch before every member, which is
-            also the check a worker makes when the pool hands it the next
-            group. ``Executor.map``'s result generator cancels the futures
-            still *pending* when the main thread unwinds, but a worker that
-            has already taken the next group is past that point, and
-            ``ThreadPoolExecutor.__exit__`` then waits for it
-            (``shutdown(wait=True)``, no ``cancel_futures``) — long enough
-            to start a compiler the sweep below can no longer see, in its
-            own session, after the job has begun exiting (#496 review). The
-            latch is what turns that worker into a no-op instead;
-            cancelling from the handler is not an option, since it runs
-            between bytecodes on the main thread with the pool's internals
-            mid-flight.
+            Re-checks the cancellation latch before every member and when a worker takes
+            the next group. The pool cancels only pending futures, and
+            ``ThreadPoolExecutor.__exit__`` waits for a worker that already took the
+            next group, which could start a compiler the signal sweep cannot see. The
+            latch makes that worker a no-op; the handler cannot cancel directly because
+            it runs between bytecodes with the pool's internals mid-flight.
             """
             group_dir, members = group
             rows = []
             for index, name, runner in members:
                 if cancellation_has_started():
-                    # Reported failed, like anything else that never reached
-                    # a builder: the envelope has one row per planned config
-                    # and `failed` is the only thing it can honestly say
-                    # about a compile that did not happen. In practice the
-                    # envelope is never written — the handler re-raises out
-                    # of the pool — and the head then reports these tests as
-                    # "produced no result", which is the pre-existing
-                    # cancellation story.
+                    # Reported failed like anything that never reached a builder:
+                    # `failed` is all the envelope can say about a compile that did not
+                    # happen.
+                    # In practice the envelope is not written; the handler re-raises out
+                    # of the pool.
                     rows.append((index, name, False, None, runner, group_dir))
                     continue
                 leader = group_leaders.get(group_dir)
-                # getattr, like every other optional runner capability
-                # here: a runner class that offers no adopt keeps the
-                # pre-#535 path rather than failing the config.
+                # getattr, like every optional runner capability: a runner class with no
+                # adopt keeps the default path.
                 adopt = getattr(runner, "adopt_group_build", None)
                 if leader is not None and adopt is not None:
                     try:
@@ -3551,17 +3215,10 @@ class RtlBuddy:
                         )
                         rows.append((index, name, False, None, runner, group_dir))
                         continue
-                    # Undecidable — no dependency file (VCS, Icarus), no
-                    # stamp, a compile line that moved. The leader's own
-                    # full comparison decides it instead, which is the
-                    # pre-#535 path and still short-circuits a valid stamp.
-                    #
-                    # Said out loud, at INFO: the whole point of adoption is
-                    # that a same-key sibling does not pay a second full
-                    # elaboration, and a decline is the difference between
-                    # "this job compiled one key once" and "it compiled it
-                    # N times". Without this the only visible trace was the
-                    # extra `compile.start` (#534/#535).
+                    # Undecidable (no dependency file, no stamp, or a moved compile
+                    # line): the leader's full comparison decides.
+                    # Logged at INFO so a decline is visible: it is the difference
+                    # between compiling a key once and N times.
                     log_event(
                         logger,
                         logging.INFO,
@@ -3573,36 +3230,19 @@ class RtlBuddy:
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
-                    # A worker exception must never escape: an unhandled one
-                    # takes the job's exit status with it, and a build job
-                    # that exits non-zero makes Slurm cancel every afterok
-                    # sim job behind it. The group's remaining members still
-                    # get their attempt — a crashed config says nothing
-                    # about its siblings.
+                    # A worker exception must never escape: a non-zero build job exit
+                    # makes Slurm cancel every afterok sim job. The group's remaining
+                    # members still get their attempt.
                     rows.append((index, name, False, str(exc), runner, group_dir))
                     continue
                 built = isinstance(res, EarlyStopResults)
                 if built:
-                    # This member's build is what the rest of the group
-                    # adopts, whichever loop shape ran it: streaming calls
-                    # this once per member, so the leader has to outlive
-                    # the call.
-                    #
-                    # Only if it left a stamp, though. Adoption reads the
-                    # leader's stamp for the dependency list it decides on,
-                    # so a leader whose stamp never landed — the write
-                    # failed, the directory went read-only — makes every
-                    # sibling call adopt(), get "no stamp", and compile
-                    # anyway. Saying so once is worth more than N silent
-                    # declines (#534). `last_build_stamp` is set wherever a
-                    # build is stamped, reused or adopted, and names the
-                    # directory the stamp actually went in — which for an
-                    # unshared build is not `group_dir`.
-                    #
-                    # The verilate half writes no stamp by design (#593) —
-                    # there is nothing runnable to vouch for yet — and its
-                    # siblings short-circuit on its marker instead, so the
-                    # absence is not a fault to report there.
+                    # This member's build is what the rest of the group adopts, but only
+                    # if it left a stamp: without one every sibling would adopt(), find
+                    # none and compile anyway, so warn once.
+                    # `last_build_stamp` names the stamp's directory, which for an
+                    # unshared build is not `group_dir`. The verilate half writes no
+                    # stamp by design, so its absence is not a fault.
                     if getattr(runner, "last_build_stamp", unreported) is None:
                         if phase != BUILD_PHASE_VERILATE:
                             log_event(
@@ -3615,19 +3255,13 @@ class RtlBuddy:
                     else:
                         group_leaders.setdefault(group_dir, name)
                 rows.append((index, name, built, None, runner, group_dir))
-            # Outside the loop, and therefore outside every build-directory
-            # lock `compile_prepared` took: by here this key is built and
-            # stamped, and its sims can start without racing a writer.
-            #
-            # The envelope first, the release second, and never the other
-            # way round: a job released before its verdict was on disk asks
-            # a file that does not name it yet, is told nothing decisive,
-            # and recompiles into the directory it was gated on (#548
-            # review).
+            # Outside the loop, so outside every build-directory lock `compile_prepared`
+            # took: this key is built and stamped.
+            # Envelope first, release second: a job released before its verdict is on
+            # disk would recompile into the directory it was gated on.
             verdict_error = _record_group(rows)
-            # Per ROW, not per group: a member that failed, or one whose
-            # build left no stamp for the sim to validate, keeps its gate
-            # and the pre-#548 recovery path.
+            # Per row, not per group: a failed member, or one whose build left no stamp,
+            # keeps its gate.
             _release_group(
                 group_dir,
                 [
@@ -3641,36 +3275,16 @@ class RtlBuddy:
             return rows
 
         # ---- serial phase: construct, PRE, and probe the compile key.
-        #
-        # PRE stays on the main thread whatever --parallel says. Hook
-        # execution is process-global-serial by declared contract (one
-        # sys.modules registration slot and a process-wide redirect_stdout,
-        # see hooks.py), and arbitrary preproc code may write suite-level
-        # files that two configs would then race on. It is also the phase
-        # that makes the key knowable at all: a preproc script may mutate
-        # test_cfg, so the compile key exists only after pre() ran, on the
-        # sim instance that saw the mutation.
-        #
-        # Outcome rows are (plan index, test name, built?, worker error,
-        # runner, group dir) so both the envelope and the WARNINGs can be
-        # replayed in plan order below — a pool that reported in completion
-        # order would make two identical runs produce different logs. The
-        # runner rides along because the compile record it observed
-        # (duration/builder/reused) is only readable off the instance that
-        # ran the compile (#495).
-        #
-        # `streaming` is the default job, and it is the pre-#495 program
-        # exactly: PRE → COMPILE per config, one config at a time. Batching
-        # every PRE ahead of every compile is a semantic change for the
-        # documented generator pattern — a preproc hook that rewrites a
-        # suite-level generated input would, batched, clobber an earlier
-        # config's input before that config compiled, and the earlier
-        # config's probed fingerprint would no longer describe what its
-        # builder consumed. A job that can only ever run one build at a time
-        # buys nothing from batching, so it does not pay that (#496 review).
-        # `parallel > 1` opts into the same assumption the sim fan-out
-        # already makes — every `rb _test-job` re-runs its own pre()
-        # concurrently across nodes — and docs/known-issues.md says so.
+        # PRE stays on the main thread whatever --parallel says: hook execution is
+        # process-global-serial (see hooks.py), preproc code may write suite-level files
+        # configs would race on, and a preproc may mutate test_cfg, so the compile key
+        # exists only after pre().
+        # Outcome rows are (plan index, test name, built?, worker error, runner, group
+        # dir), replayed in plan order so identical runs log identically.
+        # `streaming` (default) runs PRE then COMPILE per config; batching every PRE
+        # first would let a preproc hook that rewrites a suite-level input clobber an
+        # earlier config's before it compiled. `parallel > 1` opts into batching; see
+        # docs/known-issues.md.
         streaming = min(parallel, len(configs)) <= 1
         outcomes = []
         groups = {}
@@ -3679,114 +3293,60 @@ class RtlBuddy:
             if row is not None:
                 outcomes.append(row)
                 continue
-            # Group by the directory the compile will WRITE, not by the
-            # config: two configs with the same compile key share one build
-            # dir, and two builders in one directory is #369. Members of a
-            # group run serially, and the second short-circuits on the
-            # first's stamp. First-seen group order preserves plan order.
-            #
-            # This assumes what a plan already promises: test names in it are
-            # unique. Two configs answering to one name share a per-test
-            # `run.f` whatever the grouping does, because the serial phase
-            # writes every filelist before any compile reads one — grouping
-            # cannot repair that, only the sweep hook that emitted the
-            # duplicate can.
+            # Group by the directory the compile will write, not by config: configs with
+            # one compile key share a build dir, and later ones short-circuit on the
+            # first's stamp.
+            # Test names in a plan are assumed unique (two configs with one name share a
+            # per-test `run.f`).
             groups.setdefault(group_dir, []).append(member)
             if streaming:
-                # Compile it now, before the next config's hook runs. The
-                # group still records the membership so the telemetry
-                # (`groups`, the envelope's per-build `group`) reads the
-                # same in both shapes; a same-key sibling later in the plan
-                # simply short-circuits on the stamp this compile leaves,
-                # which is what the serial loop always did.
+                # Compile now, before the next config's hook runs. The group still
+                # records membership so telemetry reads the same in both shapes.
                 outcomes.extend(_compile_group((group_dir, [member])))
 
         # ---- parallel phase: one worker per distinct build.
         pool_size = max(1, min(parallel, len(groups)))
         prepared = sum(len(members) for members in groups.values())
         if pool_size > 1 or parallel > pool_size:
-            # Liveness on a CI console, which shows INFO only under -v: a
-            # build job that sits silent for 20 minutes is indistinguishable
-            # from a hung one, and this line is what says how many compiles
-            # that silence is covering.
-            #
-            # The second half of the condition is the over-reservation case
-            # (#495): the head scaled the job's cpus by `parallel`, but the
-            # plan collapsed to fewer distinct compile keys than that, so
-            # part of the reservation can never be used. It is not an error
-            # — `parallel` is a per-suite budget and a suite that reuses one
-            # build is the normal shape of a re-run — so it stays INFO on
-            # the same event rather than becoming a warning; without it the
-            # only record of the mismatch is `build_job.done` in the job
-            # log, which nothing prints at default verbosity.
+            # Liveness on a CI console (INFO shows only under -v). The second condition
+            # flags over-reservation (the plan collapsed to fewer compile keys than
+            # `parallel`); it is not an error, so it stays INFO.
             log_console_event(
                 logger,
                 logging.INFO,
                 "build_job.pool_configured",
                 groups=len(groups),
-                # Why the group count can be below `parallel` without
-                # anything being misconfigured: configs sharing a compile
-                # key are one group, and the siblings adopt the leader's
-                # build rather than compiling it again (#535). Reading
-                # "3 distinct builds" against a 20-test suite otherwise
-                # looks like 17 tests went missing.
-                #
-                # The configs that reached the pool, not every config in the
-                # plan: one whose PRE or filelist probe failed never joined a
-                # group, and counting it here would report sharing that did
-                # not happen — "4 configs share 3 keys" after one setup
-                # failure over three distinct keys, or "share 0 keys" when
-                # every config failed to prepare (#576 review).
+                # Why the group count can be below `parallel`: configs sharing a compile
+                # key are one group and siblings adopt the leader's build.
+                # Counts cover configs that reached the pool only; one whose PRE or
+                # filelist probe failed never joined a group.
                 configs=prepared,
-                # ...and the ones that did not, so the difference is stated
-                # rather than left to be inferred from a count that shrank.
-                # Derived from the plan rather than counted as the loop went,
-                # because `outcomes` also holds the streaming shape's
-                # already-compiled rows.
+                # ...and the ones that did not. Derived from the plan, because
+                # `outcomes` also holds the streaming shape's already-compiled rows.
                 unprepared=len(configs) - prepared,
                 parallel=pool_size,
                 parallel_requested=parallel,
-                # What the config says, which is `parallel_requested` unless
-                # the head's plan cap lowered it — the line must quote the
-                # number the named key actually holds (#547 review).
+                # The config value, which is `parallel_requested` unless the head's plan
+                # cap lowered it: quote the number the named key holds.
                 parallel_configured=parallel_configured,
-                # So the line names the key a reader would edit: a suite
-                # that set `compile.parallel` is not moved by cfg-dispatch
-                # (#547).
+                # Name the key a reader would edit: a suite that set `compile.parallel`
+                # is not moved by cfg-dispatch.
                 parallel_origin=parallel_origin,
             )
 
-        # Nothing left to do in the streaming shape: every group was compiled
-        # as it was prepared.
+        # Streaming shape: every group was compiled as it was prepared.
         if not streaming:
             if pool_size > 1:
-                # Threads, not processes: the work is a subprocess wait, and
-                # the prepared TestRunners (with their hook-mutated configs)
-                # would not survive a fork/spawn boundary.
-                #
-                # Cancelling this shape needs a handler the streaming one
-                # does not (#496 review). A worker thread's
-                # run_managed_process installs no signal handler —
-                # signal.signal only works on the main thread — and each
-                # compiler runs in its own session (start_new_session), so a
-                # SIGTERM aimed at this job's process group reaches the job
-                # and nothing it spawned. Left alone, `local-parallel`'s
-                # cancel_all (Ctrl-C, or --max-wait) would kill the job and
-                # orphan every in-flight Verilation on the node. So while the
-                # pool runs, the main thread owns SIGINT/SIGTERM and sweeps
-                # the live compilers by hand; the workers' communicate()
-                # calls then return promptly and the pool's exit does not
-                # hang. Slurm still kills the whole job-tree cgroup on its
-                # own — this makes the build job clean up after itself, which
-                # is what a backend with no cgroup requires. The streaming
-                # shape needs none of it: there run_managed_process is on the
-                # main thread and installs its own forwarding handlers.
-                #
-                # The handler convention is run_managed_process's, exactly:
-                # chain to the previous handler, then KeyboardInterrupt for
-                # SIGINT and SystemExit(128+signum) otherwise. It does no
-                # logging — a handler runs between bytecodes and the logging
-                # lock may already be held by a worker.
+                # Threads, not processes: the work is a subprocess wait, and prepared
+                # TestRunners would not survive a fork/spawn.
+                # Worker threads install no signal handlers and each compiler runs in
+                # its own session, so SIGTERM to this job would orphan in-flight
+                # Verilations. While the pool runs, the main thread owns SIGINT/SIGTERM
+                # and sweeps live compilers by hand. Streaming needs none of it:
+                # run_managed_process is on the main thread.
+                # The handler follows run_managed_process (chain, then KeyboardInterrupt
+                # / SystemExit(128+signum)) and does no logging: a worker may hold the
+                # logging lock.
                 previous_handlers = {}
 
                 def _sweep_compilers_and_reraise(signum, frame):
@@ -3803,27 +3363,22 @@ class RtlBuddy:
                         previous_handlers[signum] = signal.getsignal(signum)
                         signal.signal(signum, _sweep_compilers_and_reraise)
                     except ValueError:
-                        # Only reachable if this command is ever driven off
-                        # the main thread, and the exit-0 contract outranks
-                        # the cleanup: an escaping ValueError here would fail
-                        # the build job and cancel the afterok fan-out for
-                        # compiles that had not even started.
+                        # Only reachable off the main thread; the exit-0 contract
+                        # outranks the cleanup, so an escaping ValueError must not fail
+                        # the build job.
                         previous_handlers.pop(signum, None)
                 try:
                     with ThreadPoolExecutor(max_workers=pool_size) as pool:
                         for rows in pool.map(_compile_group, list(groups.items())):
                             outcomes.extend(rows)
                 finally:
-                    # Restored on every exit, including the re-raise above:
-                    # the envelope-writing tail below runs on the main thread
-                    # with no pool to protect, and leaving the handler armed
-                    # would have it sweep processes it does not own.
+                    # Restored on every exit, including the re-raise above: the tail
+                    # below runs on the main thread with no pool to protect.
                     for signum, handler in previous_handlers.items():
                         signal.signal(signum, handler)
             else:
-                # `parallel` exceeded the group count: one group, but the
-                # plan held more than one config, so the batched shape was
-                # already chosen above.
+                # `parallel` exceeded the group count: one group, but the plan held
+                # several configs, so the batched shape was already chosen.
                 for group in groups.items():
                     outcomes.extend(_compile_group(group))
 
@@ -3831,10 +3386,9 @@ class RtlBuddy:
         for index, name, ok, worker_error, runner, group_dir in sorted(
             outcomes, key=lambda row: row[0]
         ):
-            # Plan order, and one row per planned config whatever happened to
-            # it — a config that never reached a builder still names the
-            # builder it would have used, so a gap in the envelope means "the
-            # build job never saw this test", not "it compiled instantly".
+            # Plan order, one row per planned config: a config that never reached a
+            # builder still names its builder, so a gap means "never seen", not
+            # "compiled instantly".
             build_entry = recorded_entries.get(index)
             if build_entry is None:
                 build_entry = _build_entry(name, ok, worker_error, runner, group_dir)
@@ -3863,12 +3417,9 @@ class RtlBuddy:
             "build_job.done",
             built=len(built),
             failed=len(failed),
-            # Both numbers, because they answer different questions. The
-            # budget the head reserved CPUs for is `parallel_requested`;
-            # what the job could actually use, once the plan collapsed to
-            # its distinct builds, is `parallel`. A reservation that looks
-            # over-provisioned in the right-sizing report is explained by
-            # the gap between them, so neither can stand in for the other.
+            # Both numbers: `parallel_requested` is the budget the head reserved CPUs
+            # for; `parallel` is what the job could use once the plan collapsed to
+            # distinct builds.
             parallel=pool_size,
             parallel_requested=parallel,
             parallel_configured=parallel_configured,
@@ -3877,19 +3428,16 @@ class RtlBuddy:
             phase=phase,
         )
         if result_json_path is not None:
-            # Persist the outcome so the head can map a compile failure to a
-            # CompileFail row (parity with the in-process path).
+            # Persist the outcome so the head can map a compile failure to a CompileFail
+            # row (parity with the in-process path).
             try:
                 write_build_result_json(
                     result_json_path, built=built, failed=failed, builds=builds
                 )
             except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
-                # The compile records are additive telemetry; built/failed is
-                # the load-bearing half (it is what maps a compile failure to
-                # a CompileFail row). Rather than let an unserialisable record
-                # cost the head that mapping — and the fan-out its exit
-                # status — drop the telemetry and write the envelope that
-                # always existed.
+                # Compile records are additive telemetry; built/failed is what maps a
+                # failure to a CompileFail row. On an unserialisable record, drop the
+                # telemetry and write the bare envelope.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -3901,16 +3449,11 @@ class RtlBuddy:
                         result_json_path, built=built, failed=failed
                     )
                 except Exception as exc2:  # noqa: BLE001 - never fatal here
-                    # The retry can fail for the reason the first write did
-                    # (ENOSPC, EROFS, a permission change) and nothing above
-                    # catches a bare exception: run() handles only click
-                    # exits, FatalRtlBuddyError and FilelistError, so an
-                    # escape here exits the build job non-zero and afterok
-                    # cancels the whole sim fan-out — the 2026-08-19 ECP CI
-                    # failure the guard above exists to prevent. Losing the
-                    # envelope costs the head its compile-failure mapping;
-                    # each affected sim job then recompiles and reports the
-                    # failure itself, which is a worse report, not a lost run.
+                    # The retry can fail for the same reason as the first write, and
+                    # run() catches only click exits, FatalRtlBuddyError and
+                    # FilelistError: an escape would exit the build job non-zero and
+                    # cancel the sim fan-out.
+                    # Losing the envelope only costs the compile-failure mapping.
                     log_event(
                         logger,
                         logging.WARNING,
@@ -3919,11 +3462,8 @@ class RtlBuddy:
                         error=str(exc2),
                     )
         if self.machine:
-            # Reporting only, so it is not allowed to change the exit status
-            # below. A build job that exits non-zero makes the scheduler cancel
-            # every afterok dependent, which would throw away a whole regression
-            # fan-out *after* the compiles had already succeeded -- exactly what
-            # an unreadable machine-result envelope did to ECP CI on 2026-08-19.
+            # Reporting only, so it must not change the exit status: a non-zero build
+            # job makes the scheduler cancel every afterok dependent.
             try:
                 self._emit_machine_result("_build-job", 0, built=built, failed=failed)
             except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
@@ -3933,9 +3473,8 @@ class RtlBuddy:
                     "build_job.machine_result_failed",
                     error=str(exc),
                 )
-        # Always exit 0: a per-test compile failure is not a build-job
-        # failure (afterok dependents must still run). Only a fatal setup
-        # error (raised above) fails the job and cancels the fan-out.
+        # Always exit 0: a per-test compile failure is not a build-job failure. Only a
+        # fatal setup error (raised above) fails the job.
         raise typer.Exit(0)
 
     def _append_skip_results(
@@ -4047,10 +3586,9 @@ class RtlBuddy:
         else:
             results = test_runner.run_multiple(run_ids)
         if test_cfg.is_xfail():
-            # FAIL->XFAIL (pass) / PASS->XPASS (a failure only when strict)
-            # so a known-failing test can live in a suite/regression. A
-            # failure that happened instead of a verdict (setup, compile,
-            # timeout) keeps its FAIL — see _apply_xfail_logged.
+            # FAIL->XFAIL (pass) and PASS->XPASS (failure only when strict) let a
+            # known-failing test live in a suite. A failure instead of a verdict (setup,
+            # compile, timeout) keeps FAIL; see _apply_xfail_logged.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
         get_resolved_seed = getattr(test_cfg, "get_resolved_seed", None)
@@ -4066,30 +3604,23 @@ class RtlBuddy:
                 res.results["seed"] = dict(seed_record)
         compile_record = test_runner.last_compile
         if compile_record is not None:
-            # Same key the dispatch path folds in from the build envelope
-            # (#495), so `rb graph results` reads one shape whether the
-            # compile happened in a build job or right here. Recorded before
-            # the envelope is written — this is the only chance; the sim
+            # Same key the dispatch path folds in from the build envelope, so `rb graph
+            # results` reads one shape. Recorded before the envelope is written: the sim
             # instance goes out of scope with the runner.
             for res in results:
                 res.results["compile"] = dict(compile_record)
         build_stamp = getattr(test_runner, "last_build_stamp", None)
         if build_stamp is not None:
-            # Which build this run actually simulated (#535): the compile
-            # key its stamp was written for, and the executable it launched.
-            # The head cross-checks the runs of one key at collect — they
-            # all validated one stamp, so a run naming another binary reused
-            # something nobody else did. A multi-run runner already stamped
-            # each result with its own launch; that is kept.
+            # The build this run simulated: the compile key its stamp was written for
+            # and the executable it launched.
+            # The head cross-checks runs of one key at collect. A multi-run runner's own
+            # per-launch stamp is kept.
             for res in results:
                 res.results.setdefault("build_stamp", dict(build_stamp))
         if self._plusarg_overrides:
-            # What THIS invocation added on the command line (#552). Recorded
-            # so a durable result tells a one-off `--plusarg` run apart from
-            # the tests.yaml entry it is otherwise indistinguishable from —
-            # the effective plusargs are that entry's plus this key, so only
-            # the overrides need carrying. Absent entirely without the flag,
-            # leaving every existing envelope's keys unchanged.
+            # What this invocation added on the command line, so a result tells a
+            # one-off `--plusarg` run from its tests.yaml entry.
+            # Absent without the flag, so existing envelopes keep their keys.
             for res in results:
                 res.results["plusarg_overrides"] = dict(self._plusarg_overrides)
         self._record_run_results(test_cfg, suite_dir, run_ids, results)
@@ -4098,26 +3629,20 @@ class RtlBuddy:
     def _invocation_run_token(self) -> str:
         """This process's result-envelope nonce, minted on first use.
 
-        Same role as the dispatch plan's token: it identifies the run that
-        produced an envelope, so a reader can tell one run's results from a
-        leftover without comparing timestamps. `_test-job` overwrites it
-        with the head's token so a dispatched run and its collected
-        envelope agree.
+        Identifies the run that produced an envelope. `_test-job` overwrites it with the
+        head's token so a dispatched run and its collected envelope agree.
         """
         if self._run_token is None:
             self._run_token = uuid.uuid4().hex
         return self._run_token
 
     def _record_run_results(self, test_cfg, suite_dir, run_ids, results):
-        """Write each run's result envelope into its artifact directory (#379).
+        """Write each run's result envelope into its artifact directory.
 
-        The durable, machine-readable record of what a test did, written
-        wherever a test runs — the dispatch path's `dispatch/result-*.json`
-        only exists when a head asked for one, so without this a plain
-        `rb test` / `rb regression` would leave nothing behind but logs and
-        `rb graph results` would have nothing but mtimes to report.
-        Best-effort by design: a run that passed must never be reported as
-        failed because its side-car could not be written.
+        The durable record of what a test did, written wherever a test runs; the
+        dispatch path's `dispatch/result-*.json` exists only when a head asked for one.
+        Best-effort: a passed run is never reported failed because its side-car could
+        not be written.
         """
         token = self._invocation_run_token()
         for run_id, res in zip(run_ids, results):
@@ -4141,15 +3666,10 @@ class RtlBuddy:
                     run_token=token,
                     run_tag=self._run_tag,
                 )
-                # Remember where the envelope landed so coverage
-                # post-processing can re-persist it once the artefact
-                # paths exist (#399) — see _refresh_result_side_cars.
+                # Remember where the envelope landed so coverage post-processing can
+                # re-persist it; see _refresh_result_side_cars.
                 res.result_json_path = str(path)
-            except Exception as exc:  # noqa: BLE001 - best-effort side-car:
-                # a run that passed must never be reported failed because
-                # its envelope could not be written (serialization and
-                # metadata errors included, not just OSError — the
-                # dispatch-path write is the strict one, this is not it).
+            except Exception as exc:  # noqa: BLE001 - best-effort side-car; a passed run is never reported failed over its envelope
                 log_event(
                     logger,
                     logging.WARNING,
@@ -4161,13 +3681,11 @@ class RtlBuddy:
                 )
 
     def _refresh_result_side_cars(self, suite_results):
-        """Re-persist result envelopes after coverage post-processing (#399).
+        """Re-persist result envelopes after coverage post-processing.
 
-        `_record_run_results` writes the envelope as soon as the run ends,
-        which is before the LCOV export, the HTML tree and the Coverview
-        archive exist. The coverage dict is mutated in place afterwards, so
-        without this second write the durable record of a run names none of
-        its own coverage artefacts. Best-effort, like the first write.
+        `_record_run_results` writes before the LCOV export, HTML tree and Coverview
+        archive exist, and the coverage dict is mutated afterwards. Best-effort, like
+        the first write.
         """
         for suite_result in suite_results:
             res = suite_result.get("results")
@@ -4204,11 +3722,9 @@ class RtlBuddy:
     def _machine_coverage(test_results):
         """Structured per-test coverage for the machine payload, or None.
 
-        Returns the `{line, branch, toggle, functional}` percentages a machine
-        consumer would gate on, plus `covers` (per-cover-point names and hit
-        counts) when the test recorded user coverage — the display string and
-        artifact paths carried by the full coverage dict are dropped. None when
-        the test produced no coverage data at all.
+        Returns the `{line, branch, toggle, functional}` percentages, plus `covers`
+        (per-cover-point names and hit counts) when the test recorded user coverage.
+        None when the test produced no coverage data.
         """
         cov = test_results.results.get("coverage")
         if not cov:
@@ -4231,13 +3747,12 @@ class RtlBuddy:
             row["run_id"] = run_id
         if "seed" in res:
             row["seed"] = res["seed"]
-        # An NA that stopped on purpose (-E pre|comp|sim) is the one NA
-        # that keeps the exit code at 0; automation reading --machine needs
-        # that discriminator, not the human `desc` (#546).
+        # An NA that stopped on purpose (-E pre|comp|sim) keeps the exit code at 0;
+        # `--machine` consumers need this discriminator rather than `desc`.
         if res.get(EARLY_STOP_KEY):
             row["early_stop"] = True
-        # The `rb test --plusarg` overrides this run applied (#552). Present
-        # only when there were any, so an ordinary row is the row it was.
+        # The `rb test --plusarg` overrides this run applied; present only when there
+        # were any.
         if res.get("plusarg_overrides"):
             row["plusarg_overrides"] = res["plusarg_overrides"]
         cov = self._machine_coverage(test_results)
@@ -4249,15 +3764,9 @@ class RtlBuddy:
     def _machine_coverage_payload(coverage):
         """Return the run-level coverage payload if it carries data, else None.
 
-        `covers` counts as data on its own: user cover points are recorded
-        without any `--coverage-merge*` flag, so gating only on `merged` would
-        drop them. So does `artefacts` (#399): a run with no merge flag still
-        writes a model and a manifest, and the paths to them are the whole
-        point of the block. So does `merge_failed` (#638): a merge that died
-        before it wrote anything is the one case where the block would
-        otherwise be empty precisely when it matters most. And so does
-        `source_summary` (#637), which is likewise produced with no merge
-        flag at all.
+        Any of `covers`, `artefacts`, `merge_failed` or `source_summary` counts as data
+        on its own, since each is produced without a `--coverage-merge*` flag or when a
+        merge died before writing anything.
         """
         if coverage and (
             coverage.get("merged")
@@ -4274,9 +3783,8 @@ class RtlBuddy:
     def _format_assertions_summary(test_results):
         """Return a short Assertions cell, or None when the test didn't enable SVA.
 
-        Shape: `"<fired> fired"` so the column doubles as a hit-counter and a
-        pass/fail signal (anything > 0 fired is a FAIL already reflected in the
-        Result column).
+        Shape: `"<fired> fired"`; anything above zero is already a FAIL in the Result
+        column.
         """
         assertions = test_results.results.get("assertions")
         if not assertions or not assertions.get("enabled"):
@@ -4320,8 +3828,7 @@ class RtlBuddy:
                 run_id=seed_run_id,
                 seed_mode=seed_mode,
             )
-            # A sweep-expanded test may carry its own `builder:`; resolve
-            # per expansion so the stamped builder matches what runs.
+            # A sweep-expanded test may carry its own `builder:`; resolve per expansion.
             exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
                 expanded_test_cfg.get_builder_name()
             ).get_name()
@@ -4348,27 +3855,20 @@ class RtlBuddy:
     ):
         """Yield the suite's sweep-expanded runnable test configs.
 
-        Level-filtered tests and failed sweeps are not yielded; their
-        SKIP / SetupFail rows are appended to ``suite_results`` in test
-        order, so callers only decide how to *execute* runnable configs
-        (in-process or dispatched).
+        Level-filtered tests and failed sweeps are not yielded; their SKIP / SetupFail
+        rows are appended to ``suite_results`` in test order, so callers only decide how
+        to execute runnable configs.
 
-        This is also where a ``--plusarg`` override is merged in (#552).
-        Both execution paths funnel through here — the in-process runner and
-        the dispatch planner, whose plan the build job and every sim job
-        rebuild their configs from — so one merge covers them all. It
-        happens AFTER sweep expansion on purpose: a sweep hook that rewrites
-        ``plusargs`` wholesale would otherwise silently drop the override
-        the user typed, and the flag's contract is that it wins over
-        whatever the configuration produced.
+        A ``--plusarg`` override is merged in here, after sweep expansion, so it wins
+        over a sweep hook that rewrites ``plusargs`` wholesale. Both the in-process
+        runner and the dispatch planner go through here.
         """
         tests = suite_cfg.get_tests(test_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         for t in tests:
-            # The builder this test will actually run on (per-test/suite
-            # `builder:`, a `--builder` override, or the platform default).
-            # Stamped onto each result row so the summary can report it, and
-            # used to resolve any per-builder regression level.
+            # The builder this test runs on (per-test/suite `builder:`, `--builder`, or
+            # the platform default); stamped onto each result row and used to resolve
+            # per-builder regression levels.
             t_builder = self.root_cfg.resolve_rtl_builder_cfg(
                 t.get_builder_name()
             ).get_name()
@@ -4433,11 +3933,10 @@ class RtlBuddy:
         return self.root_cfg.get_dispatch_cfg().backend
 
     def _validate_jobs_flag(self, backend_name, jobs):
-        """Reject ``--jobs`` where it cannot mean anything (#360).
+        """Reject ``--jobs`` where it cannot mean anything.
 
-        Called on every path that accepts the flag — including ones that then
-        skip dispatch entirely (a randtest replay) — so the flag is never
-        silently dropped.
+        Called on every path that accepts the flag, including ones that skip dispatch (a
+        randtest replay), so the flag is never silently dropped.
         """
         if jobs is None:
             return
@@ -4457,9 +3956,9 @@ class RtlBuddy:
     def _resolve_dispatch_backend(self, dispatch, *, jobs=None):
         """Instantiate the dispatch backend named by ``--dispatch`` (or config).
 
-        CLI ``--dispatch`` wins over ``cfg-dispatch.backend``; both default
-        to ``local`` (in-process, the unchanged pre-#351 path, returned as
-        ``None``). ``--jobs`` overrides ``cfg-dispatch.jobs`` for this run.
+        ``--dispatch`` wins over ``cfg-dispatch.backend``; both default to ``local``
+        (in-process, returned as ``None``). ``--jobs`` overrides ``cfg-dispatch.jobs``
+        for this run.
         """
         backend_name = self._dispatch_backend_name(dispatch)
         self._validate_jobs_flag(backend_name, jobs)
@@ -4469,38 +3968,27 @@ class RtlBuddy:
         backend = create_dispatch_backend(
             backend_name,
             dispatch_cfg,
-            # Which root_config.yaml this `cfg-dispatch` came from, snapshotted
-            # with it: this runs ONCE, before the suite loop, so it is the
-            # orchestration config even after `root_cfg` is rebuilt for a suite
-            # under a different root — and that is the file an `sbatch-args`
-            # edit hint has to name (#527).
+            # Root config this `cfg-dispatch` came from. This runs once before the suite
+            # loop, so it stays the orchestration config after `root_cfg` is rebuilt for
+            # another root; it is the file an `sbatch-args` hint must name.
             config_path=getattr(self.root_cfg, "root_cfg_path", None),
         )
-        # Validate `--orphans` / `cfg-dispatch.orphans` against the backend
-        # that was actually selected, before the run plans anything (#521).
+        # Validate `--orphans` / `cfg-dispatch.orphans` against the selected backend
+        # before planning.
         self._orphans_policy = self._resolve_orphans_policy(backend)
         return backend
 
     def _resolve_orphans_policy(self, backend):
-        """``warn`` / ``cancel`` / ``adopt`` for this run (#521).
+        """Return ``warn`` / ``cancel`` / ``adopt`` for this run.
 
-        CLI ``--orphans`` over ``cfg-dispatch.orphans`` over ``warn``,
-        validated here rather than by Typer so the flag and the config key
-        are rejected by one message before anything is submitted.
+        Precedence: ``--orphans``, then ``cfg-dispatch.orphans``, then ``warn``.
+        Validated here rather than by Typer so the flag and config key give one message
+        before anything is submitted. Resolved once, beside the backend, so one suite's
+        root_config.yaml cannot decide another suite's orphans.
 
-        Resolved ONCE, beside the backend, and for the same reason: a
-        multi-root regression rebuilds ``root_cfg`` per suite, and a policy
-        re-read there would let one suite's root_config.yaml decide what
-        happens to another suite's orphans.
-
-        Only a scheduler-backed backend can leave anything behind — the
-        local path runs tests in this process and ``local-parallel`` in its
-        children, both of which die with the head. ``adopt`` asked for
-        explicitly is therefore FATAL there: it names jobs that provably do
-        not exist, and quietly running the suite instead is not what was
-        asked for. The same policy *inherited from config* degrades to
-        ``warn`` with a notice, because a project that sets it for its
-        Slurm regressions must still be able to run ``rb test`` locally.
+        Only a scheduler-backed backend can leave jobs behind. ``adopt`` given
+        explicitly is fatal on any other backend; inherited from config it degrades to
+        ``warn`` with a notice, so a project can still run ``rb test`` locally.
         """
         value = self._orphans
         if value is None:
@@ -4537,16 +4025,11 @@ class RtlBuddy:
         return "warn"
 
     def _reject_early_stop_under_dispatch(self, dispatch, backend):
-        """Reject ``--early-stop`` under dispatch, naming what selected it.
+        """Reject ``--early-stop`` under dispatch, naming what selected the backend.
 
-        No stop point earlier than POST is expressible per job: the build
-        job compiles and the sim jobs exist to run SIM+POST. Rejecting
-        beats silently ignoring the flag, which the local path honours.
-
-        The message names *where the backend came from*. When it came from
-        ``cfg-dispatch.backend`` rather than the command line, "run without
-        --dispatch" would be advice about a flag the user never passed, and
-        the remedy they need is a different one.
+        No stop point earlier than POST is expressible per job. The message says whether
+        ``--dispatch`` or ``cfg-dispatch.backend`` chose the backend, so the remedy it
+        offers applies.
         """
         if self.run_depth == RunDepth.POST:
             return
@@ -4578,14 +4061,9 @@ class RtlBuddy:
     ):
         """Create this suite's empty run record; ``None`` if it cannot be.
 
-        Only for a backend the scheduler keeps alive: a local-parallel
-        pool's jobs are this process's children and die with it, so there
-        would never be anything to find.
-
-        Never fatal. A record that cannot be opened costs the next run its
-        ability to find this fleet, and nothing else — the console ids from
-        `dispatch.suite_submitted` remain the manual route they always were
-        (#435).
+        Only for a backend the scheduler keeps alive; local-parallel jobs die with the
+        head. Never fatal: a failure only costs the next run the ability to find this
+        fleet.
         """
         if not backend.scheduled:
             return None
@@ -4616,9 +4094,8 @@ class RtlBuddy:
     def _grow_run_manifest(path, amend, value, *, suite_dir):
         """Apply one incremental update to the run record, best effort.
 
-        The submissions this records have already been accepted by the
-        scheduler, so nothing here may raise into the fan-out: a failed
-        write would otherwise cancel a fleet that is correctly launched.
+        The recorded submissions are already accepted, so nothing here may raise into
+        the fan-out and cancel a correctly launched fleet.
         """
         if path is None:
             return
@@ -4635,15 +4112,12 @@ class RtlBuddy:
 
     @staticmethod
     def _close_run_manifest(state, status):
-        """Record how one suite's fleet ended, for the next run (#521).
+        """Record how one suite's fleet ended, for the next run.
 
-        The manifest exists to tell a later invocation whether an earlier
-        one's jobs are still out there. A run that reaches collection or
-        teardown answers that itself, so it says so and the next run never
-        has to ask the scheduler about it. Best effort in both directions:
-        a status that cannot be written costs one wasted ``squeue`` and a
-        `dispatch.orphans_found` about a fleet that has in fact ended,
-        which the probe then retires as stale.
+        A run that reaches collection or teardown answers whether its jobs are still out
+        there, so the next run need not ask the scheduler. Best effort: a failed write
+        costs one wasted ``squeue`` and a `dispatch.orphans_found` about an ended fleet,
+        which the probe retires as stale.
         """
         path = (state or {}).get("run_manifest")
         if path is None:
@@ -4663,12 +4137,9 @@ class RtlBuddy:
     def _state_handles(state):
         """Every job one collect state holds, compile jobs first.
 
-        One expression, because several places need it and a list that
-        forgot the verilate job (#593) would leave it running after an
-        interrupt, or out of the wait that makes the fleet this run's
-        responsibility. ``None`` entries — a suite that submitted no build
-        job — are dropped: they crash both ``wait_all`` and ``cancel_all``
-        (#361).
+        One expression so no caller forgets the verilate job. ``None`` entries (a suite
+        that submitted no build job) are dropped because they crash ``wait_all`` and
+        ``cancel_all``.
         """
         return [
             handle
@@ -4683,24 +4154,18 @@ class RtlBuddy:
     def _wait_or_cancel(self, backend, state):
         """Await one submitted suite's fleet; cancel it if the head dies.
 
-        An interrupt (or a fatal error) on the head must not leave jobs
-        running after it exits and releases its tree lock. The build job is
-        awaited alongside the sim jobs, and a ``None`` build handle — a
-        suite that selected nothing submits no build — is dropped, since a
-        ``None`` crashes both ``wait_all`` and the ``cancel_all`` cleanup
-        path (#361).
-
-        The multi-suite regression does not use this: its cancel scope
-        spans submission of every suite, not just the wait.
+        An interrupt or fatal error must not leave jobs running after the head releases
+        its tree lock. ``None`` handles are dropped as in ``_state_handles``. The
+        multi-suite regression does not use this: its cancel scope spans submission of
+        every suite.
         """
         handles = self._state_handles(state)
         try:
             backend.wait_all(handles)
         except BaseException:
             backend.cancel_all(handles)
-            # ...and the record follows the fleet, not the request: it says
-            # `cancelled` only once the jobs are really gone, and otherwise
-            # stays `running` so the next invocation still finds them (#521).
+            # The record follows the fleet, not the request: `cancelled` only once the
+            # jobs are gone, else `running`.
             self._close_cancelled_run_manifest(backend, state)
             raise
 
@@ -4759,10 +4224,8 @@ class RtlBuddy:
                     "directories"
                 )
 
-    # How long `--orphans cancel` waits for a cancelled fleet to leave the
-    # queue before it refuses to run. `scancel` is asynchronous and
-    # COMPLETING counts as live, so the first re-probe can still see a job
-    # that is on its way out; this bounds that grace, and nothing else.
+    # How long `--orphans cancel` waits for a cancelled fleet to leave the queue.
+    # `scancel` is asynchronous and COMPLETING counts as live.
     ORPHAN_CANCEL_WAIT_S = 30.0
     ORPHAN_CANCEL_POLL_S = 2.0
 
@@ -4771,29 +4234,22 @@ class RtlBuddy:
     ):
         """Interrupted runs of this suite whose jobs are still on the cluster.
 
-        The scan is over run manifests, never over scheduler job names: two
-        invocations of one suite submit the same build-job name — that is
-        exactly what the shared-build dedup serialises on (#515) — so a
-        name-keyed search would happily adopt or cancel a colleague's fleet.
-        A manifest is one head's record of one fan-out, and the ``run_token``
-        in it is what the envelopes its jobs write are stamped with.
+        Scans run manifests, never scheduler job names: two invocations of one suite
+        submit the same build-job name, so a name search could adopt or cancel a
+        colleague's fleet.
 
-        Every manifest still marked ``running`` is put to the backend: a
-        manifest with nothing live left behind it is a head that died after
-        its fleet finished, so it is retired as ``stale`` and never probed
-        again. Returns one record per manifest that still has live jobs.
+        Each manifest still marked ``running`` is put to the backend; one with nothing
+        live is retired as ``stale`` and not probed again. Returns one record per
+        manifest with live jobs.
 
-        ``run_token`` is this invocation's own nonce, and the only thing
-        that excludes a manifest from the scan — see
-        :func:`discover_run_manifests` for why the pid cannot do it.
-        ``dispatch_root`` is the suite's whole ``.dispatch/`` tree rather
-        than the directory this run writes to, and ``suite_config`` is what
-        keeps the widened scan to this suite's own records.
+        ``run_token`` is this invocation's nonce and the only thing that excludes a
+        manifest from the scan (see :func:`discover_run_manifests`). ``dispatch_root``
+        is the suite's whole ``.dispatch/`` tree, and ``suite_config`` keeps the scan to
+        this suite's records.
         """
         if not backend.scheduled:
-            # local-parallel runs its jobs as this process's children; an
-            # interrupted run of it leaves nothing behind to discover, and
-            # probing would be a query about jobs that cannot exist.
+            # local-parallel jobs are this process's children; an interrupted run leaves
+            # nothing to discover.
             return []
         orphans = []
         for path, payload in discover_run_manifests(
@@ -4802,11 +4258,8 @@ class RtlBuddy:
             try:
                 handles = handles_from(payload)
             except (KeyError, TypeError, ValueError) as e:
-                # A manifest from a neighbouring rtl_buddy whose job specs
-                # this one cannot rebuild. Skipped rather than fatal: this
-                # run has submitted nothing yet, and refusing to start
-                # because of a file another version wrote would make an
-                # upgrade unrunnable.
+                # A manifest from another rtl_buddy version whose job specs this one
+                # cannot rebuild: skipped, not fatal, so an upgrade stays runnable.
                 log_event(
                     logger,
                     logging.DEBUG,
@@ -4842,15 +4295,12 @@ class RtlBuddy:
     def _warn_about_orphan_runs(orphans, *, suite_dir):
         """Name an interrupted run's surviving jobs, and change nothing.
 
-        The default, and deliberately inert: this run proceeds with a fresh
-        fleet exactly as every release before #521 did. Acting by default
-        would mean either destroying a fleet that may be one minute from
-        finishing or binding this run's verdict to results it did not
-        submit, and neither is a decision to take on a user's behalf.
+        The default, and deliberately inert: this run proceeds with a fresh fleet, since
+        acting by default would destroy a nearly finished fleet or bind this run's
+        verdict to results it did not submit.
 
-        WARNING and console-visible, because the cost of not seeing it is a
-        doubled cluster footprint, and a long dispatched run's CI log is
-        often the only artefact anybody reads (#435).
+        WARNING and console-visible, because the cost of missing it is a doubled cluster
+        footprint.
         """
         for orphan in orphans:
             payload = orphan["payload"]
@@ -4874,23 +4324,17 @@ class RtlBuddy:
     def _cancel_orphan_runs(self, backend, orphans, *, suite_dir):
         """``scancel`` an interrupted run's fleet, then proceed normally.
 
-        The handles are rebuilt from the manifest, so the cancellation goes
-        through the same per-cluster ``scancel`` any live run's teardown
-        uses — an id means nothing on a cluster that did not issue it
-        (#509). The manifest is marked ``cancelled`` whether or not the
-        scheduler agreed: what it records is this head's decision about the
-        run, and a job that had already ended is cancelled in the only
-        sense that matters here.
+        Handles are rebuilt from the manifest and cancelled per cluster like any live
+        run's teardown. The manifest is marked ``cancelled`` whether or not the
+        scheduler agreed; a job that had already ended is cancelled in the sense that
+        matters.
         """
         for orphan in orphans:
             payload = orphan["payload"]
             backend.cancel_all(orphan["handles"])
-            # `cancel_all` is best effort by contract — it does not read
-            # `scancel`'s exit status, and it could not act on a cluster it
-            # cannot reach. Confirm before believing it: retiring the
-            # manifest and submitting a second fleet beside one we failed
-            # to take down is the exact outcome this policy exists to
-            # prevent (#521 review).
+            # `cancel_all` is best effort and ignores `scancel`'s exit status, so
+            # confirm: retiring the manifest and submitting a second fleet beside a
+            # survivor is what this policy prevents.
             self._confirm_orphan_cancelled(backend, orphan, suite_dir=suite_dir)
             set_run_status(orphan["path"], STATUS_CANCELLED)
             log_console_event(
@@ -4907,25 +4351,17 @@ class RtlBuddy:
             )
 
     def _await_fleet_gone(self, backend, handles):
-        """Re-probe until these jobs have left the queue; the ones still live.
+        """Re-probe until these jobs have left the queue; return the ones still live.
 
         ``[]`` means the cancellation took. ``scancel`` is asynchronous and
-        ``COMPLETING`` is a live state, so a job on its way out can still
-        answer the first probe — hence the bounded grace rather than a
-        single question.
-
-        What it must never do is conclude "gone" from silence. A failed
-        ``squeue`` reports the recorded ids LIVE
-        (:meth:`SlurmDispatchBackend.live_job_ids`), so an unreachable
-        controller comes back non-empty too, and every caller then errs
-        towards "that fleet may still be out there".
+        ``COMPLETING`` counts as live, hence a bounded grace period. Silence never means
+        "gone": a failed ``squeue`` reports the recorded ids live
+        (:meth:`SlurmDispatchBackend.live_job_ids`).
         """
         deadline = time.monotonic() + self.ORPHAN_CANCEL_WAIT_S
         while True:
-            # Each probe is bounded by what is left of the grace period, so
-            # a wedged controller cannot hold this loop open past it: the
-            # timeout expires, the probe says "no answer", and that reads as
-            # "still live" like every other failed query (#580 review).
+            # Each probe is bounded by the remaining grace period, so a wedged
+            # controller cannot hold the loop open; a timeout reads as "still live".
             remaining = max(0.0, deadline - time.monotonic())
             live = sorted(
                 backend.live_job_ids(
@@ -4940,7 +4376,7 @@ class RtlBuddy:
             time.sleep(min(self.ORPHAN_CANCEL_POLL_S, remaining))
 
     def _report_cancel_failed(self, backend, *, manifest, payload, suite_dir, live):
-        """The one WARNING every surviving-after-scancel fleet produces."""
+        """The WARNING every fleet that survives ``scancel`` produces."""
         log_console_event(
             logger,
             logging.WARNING,
@@ -4979,20 +4415,14 @@ class RtlBuddy:
         )
 
     def _close_cancelled_run_manifest(self, backend, state):
-        """Mark this run's own record `cancelled` — but only if it is true.
+        """Mark this run's own record `cancelled`, but only if it is true.
 
-        The head cancels its fleet on the way out of an interrupt or a
-        ``max-wait``, and ``cancel_all`` is best effort: it never reads
-        ``scancel``'s exit status. Writing `cancelled` on the strength of
-        having *asked* is how a fleet that survived the request becomes
-        invisible — settled in the record, running on the cluster, and
-        skipped by the next run's probe (#521 review). So the record is
-        retired only once the jobs are gone, and otherwise left at
-        `running` for the next invocation to find.
+        ``cancel_all`` is best effort and never reads ``scancel``'s exit status, so the
+        record is retired only once the jobs are gone and otherwise left `running` for
+        the next invocation to find.
 
-        Never raises: this runs while the head is already unwinding from
-        the failure that cancelled the fleet, and that exception is the one
-        the user needs to see.
+        Never raises: this runs while the head unwinds from the failure that cancelled
+        the fleet, and that exception is the one the user needs to see.
         """
         path = (state or {}).get("run_manifest")
         if path is None:
@@ -5028,20 +4458,16 @@ class RtlBuddy:
         suite_results,
         master_seed,
     ):
-        """Collect an interrupted run's fleet instead of submitting one (#521).
+        """Collect an interrupted run's fleet instead of submitting one.
 
-        Returns the same collect state a submission would have, rebuilt
-        from the manifest: the orphan's handles, its ``run_token`` (which
-        is what makes its jobs' envelopes acceptable to *this* head, #362),
-        and its submission time (which is what retry classification dates
-        artefacts against, #405). Nothing is submitted and no new plan is
-        written — the adopted jobs are already reading the plan their own
-        head wrote, and a second plan at this pid's path would name a run
-        that does not exist.
+        Returns the collect state a submission would have, rebuilt from the manifest:
+        the orphan's handles, its ``run_token`` (which makes its envelopes acceptable to
+        this head) and its submission time (which dates retry classification). Nothing
+        is submitted and no plan is written.
 
-        Every way this could collect the wrong thing is a hard error rather
-        than a fallback to submitting, because the fallback is the failure:
-        it would run the suite twice over one set of artefact directories.
+        Every way this could collect the wrong thing is a hard error, not a fallback to
+        submitting, which would run the suite twice over one set of artefact
+        directories.
         """
         if not orphans:
             raise FatalRtlBuddyError(
@@ -5067,11 +4493,9 @@ class RtlBuddy:
         payload = orphan["payload"]
         manifest_path = orphan["path"]
         if payload.get("status") == STATUS_SUBMITTING:
-            # The head died mid-fan-out, so this record names the jobs it
-            # got as far as submitting and no more. Those are live and must
-            # be dealt with, but a partial fleet cannot be collected into a
-            # complete result — the rows it never submitted would score as
-            # "produced no result" for jobs that were never launched.
+            # The head died mid-fan-out: this record names only the jobs it submitted.
+            # They are live and must be dealt with, but a partial fleet cannot be
+            # collected into a complete result.
             raise FatalRtlBuddyError(
                 f"--orphans adopt cannot adopt {manifest_path} (run_token "
                 f"{payload.get('run_token')}, submitted by pid "
@@ -5113,20 +4537,14 @@ class RtlBuddy:
                     + ", ".join(self._row_label(row) for row in only_planned[:10])
                 )
             if not difference:
-                # Same rows, different order: the plan expanded differently,
-                # which is as much a mismatch as a different set — the row
-                # index is what binds a job to a result.
+                # Same rows in a different order is a mismatch too: the row index binds
+                # a job to a result.
                 difference.append("its tests are in a different order")
             raise self._adopt_mismatch(manifest_path, payload, "; ".join(difference))
-        # ...and then the plan itself. The rows above are only names and run
-        # ids: two invocations can agree on every one of them and still be
-        # different runs — a changed plusdefine, a different `--master-seed`,
-        # an edited `resources:` or builder, an edited tests.yaml. Those
-        # produce a different simulation, and adopting across them would
-        # report the orphan's results under this run's configuration
-        # (#521 review). The orphan's own plan manifest is the record of what
-        # its jobs are executing, so it is what this invocation's fresh
-        # expansion is held against, field by field.
+        # ...then the plan itself: two invocations can agree on names and run ids yet
+        # differ in plusdefine, `--master-seed`, `resources:`, builder or tests.yaml.
+        # The orphan's plan manifest records what its jobs run, so the fresh expansion
+        # is compared to it field by field.
         plan_difference = self._adopt_plan_difference(payload, entries, master_seed)
         if plan_difference is not None:
             raise self._adopt_mismatch(manifest_path, payload, plan_difference)
@@ -5138,12 +4556,9 @@ class RtlBuddy:
             verilate_resources,
             verilate_origins,
         ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
-        # ...and finally what the plan does not carry. `--builder-mode`,
-        # `--builder`, `--extra-sim-timeout`, the forwarded shared-build root
-        # and `--rebuild` are invocation-level, and the resolved reservation
-        # is per-run configuration: they reach the jobs on their specs, never
-        # through the plan, so two runs can plan identically and still
-        # compile, reserve and simulate differently (#521/#580 review).
+        # ...then what the plan does not carry: `--builder-mode`, `--builder`,
+        # `--extra-sim-timeout`, the forwarded shared-build root, `--rebuild` and the
+        # resolved reservation reach jobs on their specs, not through the plan.
         spec_difference = self._adopt_spec_difference(
             payload,
             sim_resources=self._planned_sim_resources(
@@ -5152,10 +4567,9 @@ class RtlBuddy:
             build_resources=self._scaled_build_resources(
                 build_compile_resources, build_parallel
             ),
-            # ...and the verilate job's, on the same footing (#593): a suite
-            # that has raised `compile.verilate.mem` since the orphan went
-            # out would otherwise adopt a fleet whose verilation was killed
-            # under the old figure and report that as this run's verdict.
+            # ...and the verilate job's, likewise: a raised `compile.verilate.mem` since
+            # the orphan went out would otherwise adopt a fleet killed under the old
+            # figure.
             verilate_resources=self._scaled_build_resources(
                 verilate_resources, build_parallel
             ),
@@ -5171,14 +4585,10 @@ class RtlBuddy:
                 manifest_path, payload, f"its job records cannot be read ({e})"
             ) from e
 
-        # Put the submit-time reservation metadata back on the rows this
-        # head just planned. Right-sizing reads it per row (which cpus were
-        # requested, which compile floor bounds the advice) and only the
-        # head that submitted these jobs ever knew it; without this an
-        # adopted run would produce sacct telemetry with nothing to judge it
-        # against. `results` is deliberately not in the manifest — the fresh
-        # expansion owns the skip/setup verdicts, and every runnable row's
-        # result comes from the envelope at collect.
+        # Restore the submit-time reservation metadata on the rows just planned;
+        # right-sizing reads it per row and only the submitting head knew it.
+        # `results` is not in the manifest: the fresh expansion owns skip/setup verdicts
+        # and runnable rows' results come from the envelope at collect.
         for row, recorded_row in zip(suite_results, payload.get("rows") or []):
             for key, value in recorded_row.items():
                 if key != "results":
@@ -5205,9 +4615,8 @@ class RtlBuddy:
             "pending": pending,
             "build_handle": build_handle,
             "verilate_handle": verilate_handle,
-            # The ORPHAN's token, not this invocation's: its jobs stamp
-            # their envelopes with the token their own head planned them
-            # with, and collection accepts an envelope by that identity.
+            # The orphan's token, not this invocation's: its jobs stamp envelopes with
+            # the token their own head planned.
             "run_token": payload.get("run_token"),
             "submitted_at": payload.get("submitted_at"),
             "suite_compile": suite_compile,
@@ -5215,15 +4624,13 @@ class RtlBuddy:
             "build_compile_origins": build_compile_origins,
             "verilate_resources": verilate_resources,
             "verilate_origins": verilate_origins,
-            # Re-read from THIS invocation's backend rather than recorded:
-            # an `sbatch-args` cpu override is a property of the config an
-            # edit hint would tell the user to change, and that is the one
-            # in front of them now.
+            # Re-read from this invocation's backend rather than recorded: an
+            # `sbatch-args` cpu override is the config an edit hint tells the user to
+            # change.
             "cpus_override": cpu_request_overrides(backend.effective_sbatch_args),
             "run_manifest": manifest_path,
-            # This suite launched nothing: its jobs predate the invocation,
-            # so a failure elsewhere in the run must not cancel them before
-            # the fleet-wide wait has made them this run's responsibility.
+            # This suite launched nothing: a failure elsewhere must not cancel these
+            # jobs before the fleet-wide wait makes them this run's responsibility.
             "adopted": True,
         }
 
@@ -5241,39 +4648,28 @@ class RtlBuddy:
     def _adopt_spec_difference(
         self, payload, *, sim_resources, build_resources, verilate_resources=None
     ):
-        """First recorded job option that differs from this run's, else ``None``.
+        """Return the first recorded job option that differs from this run's, else
+        ``None``.
 
-        The plan describes the tests; these describe the invocation. A
-        ``--builder-mode debug`` re-run adopting a ``reg`` fleet would
-        report results from binaries it did not ask for, and a
-        ``--rebuild`` that adopts is a rebuild that never happened — so
-        every option the head puts on a job spec rather than in the plan is
-        compared here.
+        The plan describes the tests; these describe the invocation. Every option the
+        head puts on a job spec rather than in the plan is compared (e.g.
+        ``--builder-mode``, ``--rebuild``).
 
-        The **resolved reservation** is compared for the same reason and is
-        the one that bites hardest (#580 review): a test that inherits
-        ``cfg-dispatch.resources`` carries no reservation of its own in the
-        plan, so raising ``time`` after an orphan hit its old limit changes
-        nothing the plan comparison can see — and adopting would return the
-        scheduler TIMEOUT from the *old* limit as this run's verdict, which
-        is exactly the failure the edit was meant to fix.
+        The resolved reservation is compared too: a test inheriting
+        ``cfg-dispatch.resources`` has no reservation in the plan, so raising ``time``
+        after an orphan hit its limit would otherwise adopt the old TIMEOUT.
 
-        ``expect_prebuilt`` and a simulation job's ``rebuild`` are derived
-        rather than chosen (they follow from whether the suite submitted a
-        build job), so they are checked against the record's own build
-        entry: a manifest whose specs disagree with it is not one to
-        collect from.
+        ``expect_prebuilt`` and a simulation job's ``rebuild`` are derived from whether
+        the suite submitted a build job, so they are checked against the record's own
+        build entry.
         """
         shared = {
             "builder_mode": self.rtl_builder_mode,
             "builder_override": self._builder_override,
             "extra_sim_timeout": self._extra_sim_timeout_override,
-            # What the head FORWARDS to a job, not what it resolved for
-            # itself: an explicit disable travels as `""` and an absent
-            # setting as `None`, and comparing against the resolved root
-            # would read those two as the same thing — refusing a re-run
-            # that repeats the disable, and accepting one that introduces
-            # it (#580 review).
+            # What the head forwards to a job, not what it resolved: an explicit disable
+            # travels as `""` and an absent setting as `None`; comparing resolved roots
+            # would conflate them.
             "shared_build_root": self.shared_build_root_for_jobs,
         }
 
@@ -5297,9 +4693,8 @@ class RtlBuddy:
             return None
 
         build = payload.get("build")
-        # Read out here as well as compared below: a simulation job's
-        # derived `expect_prebuilt` and `rebuild` follow from whether the
-        # suite submitted a build job at all.
+        # Read here as well as compared below: a sim job's derived `expect_prebuilt` and
+        # `rebuild` follow from whether the suite submitted a build job.
         build_spec = build.get("spec") if isinstance(build, dict) else None
         for key, what, resources in (
             ("verilate", "verilate job", verilate_resources),
@@ -5332,9 +4727,8 @@ class RtlBuddy:
                 f"job for {test_name!r}",
                 {
                     **shared,
-                    # A gated job never carries --rebuild: the build job has
-                    # already rebuilt and its stamp is what stops the array
-                    # from compiling (#494/#369).
+                    # A gated job never carries --rebuild: the build job already rebuilt
+                    # and its stamp stops the array from compiling.
                     "rebuild": self.rebuild and build_spec is None,
                     "expect_prebuilt": build_spec is not None,
                     "resources": self._resources_dict(sim_resources[test_name]),
@@ -5348,48 +4742,33 @@ class RtlBuddy:
     def _scaled_build_resources(resources, parallel):
         """The build job's reservation once ``compile.parallel`` is applied.
 
-        Scaling happens ONLY here: the very same resolved compile resources
-        size an in-job compile's sim reservation and the right-sizing
-        compile floor, where one compile is still one serial build. A fresh
-        :class:`JobResources`, so the scaling cannot reach those callers
-        through a shared object.
+        Scaling happens only here; a fresh :class:`JobResources` keeps it from reaching
+        the in-job compile and right-sizing callers, where one compile is one serial
+        build. Shared with the adoption check, which needs what this invocation would
+        have reserved.
 
-        Deliberately unbounded above: the only ceiling that matters is the
-        widest node in the target partition, and the head is a login node
-        whose own cpu_count says nothing about it. A guessed threshold
-        would fire on correct configs on a fat-node cluster and stay silent
-        on a thin one, so an oversized ``parallel`` is caught where it is
-        real — sbatch rejects the submission and
-        ``SlurmDispatchBackend.submit_build`` raises. Sizing ``parallel``
-        against the partition is a docs obligation instead; see
-        docs/concepts/dispatch.md and docs/known-issues.md.
-
-        Shared with the adoption check (#580 review), which has to know
-        what this invocation *would* have reserved without submitting it.
+        Unbounded above on purpose: the ceiling is the partition's widest node, which
+        the head cannot know. An oversized ``parallel`` is caught when sbatch rejects
+        the submission; see docs/concepts/dispatch.md and docs/known-issues.md.
         """
         if parallel <= 1:
             return resources
         return JobResources(
             cpus=resources.cpus * parallel,
-            # mem/time are NOT scaled: N concurrent Verilations need roughly
-            # N times the memory but the same wall clock as the longest one,
-            # and guessing either for a project is worse than making it size
-            # cfg-dispatch.compile deliberately.
+            # mem/time are not scaled: N concurrent Verilations need about N times the
+            # memory but the wall clock of the longest; leave sizing to
+            # cfg-dispatch.compile.
             mem=resources.mem,
             time=resources.time,
         )
 
     def _planned_sim_resources(self, entries, *, dispatch_cfg, suite_compile):
-        """``{test name: JobResources}`` this invocation would submit with.
+        """Return ``{test name: JobResources}`` this invocation would submit with.
 
-        The same resolution the fan-out performs, run again here because an
-        adoption never reaches the fan-out and still has to know what it
-        *would* have asked the scheduler for. Names are unique after sweep
-        expansion, so they key it.
-
-        The builder mode goes in with it (#634): a reservation can depend on
-        it, so an orphan planned under ``-M cov`` must not compare equal to
-        this invocation's ``-M reg`` fleet.
+        Repeats the fan-out's resolution because an adoption never reaches it. Names are
+        unique after sweep expansion. The builder mode is included, since a reservation
+        can depend on it (an orphan planned under ``-M cov`` must not match a ``-M reg``
+        fleet).
         """
         resolved = {}
         for entry in entries:
@@ -5413,27 +4792,16 @@ class RtlBuddy:
 
     @staticmethod
     def _adopt_plan_difference(payload, entries, master_seed):
-        """First way the orphan's plan differs from this one; else ``None``.
+        """Return the first way the orphan's plan differs from this one, else ``None``.
 
-        Compares the orphan's ``plan-<pid>.json`` — the JSON-safe
-        ``TestConfig.to_plan_dict()`` its build and simulation jobs are
-        actually executing — against this invocation's freshly expanded
-        entries, element-wise and in plan order, plus the master seed the
-        plan was written with.
+        Compares the orphan's ``plan-<pid>.json`` (the JSON-safe
+        ``TestConfig.to_plan_dict()`` its jobs execute) with this invocation's fresh
+        expansion, element-wise in plan order, plus the master seed. The dict covers
+        plusargs, plusdefines, testbench, hook paths, per-test ``resources:``, builder,
+        xfail and the resolved seed, so an unreadable or older-schema plan is a refusal.
 
-        That dict is deliberately the whole config: plusargs, plusdefines,
-        the resolved testbench, hook paths, per-test ``resources:``, the
-        builder, xfail, and the resolved seed with its provenance. So a
-        different ``--master-seed`` shows up as a different
-        ``resolved_seed``, an edited tests.yaml as a different field, and
-        an unreadable or older-schema plan as a refusal rather than a
-        guess.
-
-        One consequence is worth stating: a run whose seeds are drawn
-        fresh every time (``rb randtest`` with new seeds) plans different
-        `resolved_seed` values on every invocation and can therefore never
-        be adopted. That is the honest answer — those jobs are simulating
-        seeds this invocation did not ask for.
+        A run with freshly drawn seeds (``rb randtest``) plans different
+        ``resolved_seed`` values every time and can never be adopted.
         """
 
         def short(value):
@@ -5500,82 +4868,34 @@ class RtlBuddy:
         )
 
     def _resolve_build_compile(self, suite_cfg, dispatch_cfg, entries):
-        """The compile's reservations, as this invocation would submit them.
+        """Resolve the compile's reservations as this invocation would submit them.
 
-        ``(suite compile block, build reservation, its origins, parallel,
+        Returns ``(suite compile block, build reservation, its origins, parallel,
         verilate reservation, its origins)``.
 
-        The suite's own ``compile:`` block (#497) is the most specific
-        suite-wide layer of the compile reservation and is per suite
-        exactly like the build job it sizes, so it is read once and
-        threaded to every consumer — the build job, the in-job compile
-        combination, and the post-run advice, which has no ``suite_cfg``
-        of its own — rather than re-read where each of them needs it. An
-        adopted run (#521) rebuilds its state through the same helper.
-
-        The reservation is aggregated over the builds this plan produces
-        (#551); see the comments below for the key and the ``parallel``
-        the aggregation is scheduled against.
+        The suite's own ``compile:`` block is read once and threaded to the build job,
+        the in-job compile combination and the post-run advice; an adopted run rebuilds
+        its state through this helper. The reservation is aggregated over the builds
+        this plan produces; see the comments below.
         """
         suite_compile = suite_cfg.get_compile()
-        # The suite's own `compile:` block, if any (#497) — the most
-        # specific layer of the compile reservation, and per suite exactly
-        # like the build job it sizes. Read once here and threaded to both
-        # consumers (the build job below, the in-job compile combination
-        # further down) so the two can never resolve differently, and
-        # stashed in the returned state for the post-run advice, which has
-        # no suite_cfg of its own.
-        # The BUILDS this plan will produce, in plan order, each paired with
-        # the `compile:` block that sizes it. The one build job compiles all
-        # of them, so its reservation is aggregated over these (#551) — and
-        # a testbench nobody selected contributes no build, so it must not
-        # inflate that reservation.
-        #
-        # One entry per distinct compile, not per distinct testbench: the
-        # build job groups on the post-preproc `compile_group_dir`, so two
-        # selected tests sharing a testbench but differing in plusdefines,
-        # builder or model compile SEPARATELY and each hold their own peak.
-        # Collapsing them would give two 40-minute builds 40 minutes, and
-        # two 96G builds 96G (#551 review round 2).
-        #
-        # The key is the head-visible half of that grouping. The head cannot
-        # see the real key without writing filelists on the submit host
-        # (#458), so this is one reservation per distinct (testbench,
-        # plusdefines, builder, model, assertions) among the planned tests.
-        # Exact where those ingredients differ, and wrong in one direction
-        # only where they do not: two configs that happen to resolve to the
-        # same group_dir are counted twice, and the job is reserved for a
-        # build it does not run.
-        #
-        # Two shapes are keyed per test instead, both of them the opposite
-        # direction — an under-count is what they prevent.
-        #
-        # The first is a `preproc:` hook. The build job runs PRE before it
-        # probes `compile_group_dir()`, and a hook is free to set
-        # plusdefines on the config it is handed — so the ingredients this
-        # key snapshots are the ones BEFORE the hook, and two configs that
-        # look identical here can leave PRE wanting different builds. A
-        # test with a preprocessing hook is therefore assumed to produce
-        # its own compile (#551 review round 5). The alternative is running
-        # every project's hooks on the submit host to find out, which is
-        # the build job's work and #458's whole point.
-        #
-        # The second is a builder that cannot share. A config
-        # whose builder cannot share a build compiles to its OWN output path
-        # (`group_dir` is the resolved simv, per test), so the build job —
-        # which runs PRE+COMPILE for the WHOLE plan, self-compiling configs
-        # included, see the build-job skip decision below — puts each of
-        # them in a group of its own however identical their ingredients
-        # are. The test name goes into the key for those, so two of them
-        # count as the two concurrent builds they are rather than one
-        # (#551 review round 3). Not the run id: a fan-out over run_ids
-        # shares `artefacts/<test>/`, which is one build.
-        #
-        # `parallel` is resolved here rather than inside the submit helper
-        # because the aggregation needs it: memory adds up across the builds
-        # that can be in flight together, and the wall clock is their
-        # schedule. The same expression the build job is submitted with,
-        # computed once and passed to both.
+        # The suite's own `compile:` block: the most specific layer of the compile
+        # reservation, read once for the build job, the in-job compile combination and
+        # the post-run advice.
+        # The builds this plan produces, each with the `compile:` block that sizes it;
+        # the build job's reservation aggregates over them, and an unselected testbench
+        # adds none.
+        # One entry per distinct compile, not per testbench: tests sharing a testbench
+        # but differing in plusdefines, builder or model each hold their own peak. The
+        # head cannot see the real key without writing filelists, so it keys on
+        # (testbench, plusdefines, builder, model, assertions); configs that resolve to
+        # one group_dir are counted twice (over-reserving).
+        # Keyed per test instead, to avoid under-counting: a `preproc:` hook (may set
+        # plusdefines after this snapshot) and a builder that cannot share (per-test
+        # output path). The test name goes in the key, not the run id: a run_id fan-out
+        # shares `artefacts/<test>/`.
+        # `parallel` is resolved here because memory adds across builds in flight and
+        # wall clock is their schedule; the same value goes to the build job.
         planned_builds = []
         seen_builds = set()
         for entry in entries:
@@ -5589,9 +4909,8 @@ class RtlBuddy:
                 getattr(tb_compile, "cpus", None),
                 getattr(tb_compile, "mem", None),
                 getattr(tb_compile, "time", None),
-                # repr, not the value: a plusdefine is whatever the YAML or
-                # a sweep hook put there, and the key only has to separate
-                # configs, not survive a round trip.
+                # repr, not the value: the key only has to separate configs, and a
+                # plusdefine is whatever YAML or a sweep hook put there.
                 tuple(
                     sorted(
                         (str(k), repr(v))
@@ -5601,14 +4920,11 @@ class RtlBuddy:
                 cfg.get_builder_name(),
                 getattr(model, "name", None),
                 getattr(model, "path", None),
-                # `assertions: true` puts Verilator's SVA flags into the
-                # compile command, and `_build_compile_plan` folds those
-                # into `key_cmd` — so two otherwise-identical tests that
-                # disagree about it are two builds (#551 review round 4).
+                # `assertions: true` adds Verilator's SVA flags to `key_cmd` in
+                # `_build_compile_plan`, so tests that disagree on it are two builds.
                 getattr(cfg, "assertions", False),
-                # Per-test output dir, so per-test build — see above; and
-                # per-test again for a config with a `preproc:` hook, whose
-                # plusdefines this key snapshots BEFORE the hook has run.
+                # Per-test output dir means per-test build; also per test with a
+                # `preproc:` hook.
                 cfg.get_name()
                 if entry["compile_in_job"] or cfg.get_preproc_path()
                 else None,
@@ -5625,17 +4941,13 @@ class RtlBuddy:
             suite_compile,
             planned_builds,
             parallel=build_parallel,
-            # The mode this run compiles in: an instrumented build peaks
-            # higher than the same sources under `-M reg`, and each layer's
-            # `modes:` block says by how much (#634).
+            # The mode this run compiles in: an instrumented build peaks higher than the
+            # same sources under `-M reg`, per each layer's `modes:` block.
             builder_mode=self.rtl_builder_mode,
         )
-        # ...and the same aggregation over the verilate keys, for the job in
-        # front of it (#593). Resolved unconditionally, even where the
-        # compile is not split: an adoption compares what THIS invocation
-        # would have reserved, and a suite that has since turned the split
-        # off must still be able to say what the orphan's verilate job was
-        # sized from.
+        # ...and the same aggregation over the verilate keys. Resolved even when the
+        # compile is not split: an adoption compares what this invocation would have
+        # reserved.
         verilate_resources, verilate_origins = aggregate_verilate_resources(
             dispatch_cfg,
             suite_compile,
@@ -5654,26 +4966,16 @@ class RtlBuddy:
         )
 
     def _suite_splits_verilate(self, backend, dispatch_cfg, suite_compile, entries):
-        """Should this suite's compile go out as two chained jobs (#593)?
+        """Return whether this suite's compile goes out as two chained jobs.
 
-        Four conditions, and the answer is no unless all of them hold:
-
-        * the backend can chain jobs. Only Slurm can: the split's whole
-          mechanism is a second submission with ``--dependency=afterok``
-          on the first, and a pool that runs jobs itself has nothing to
-          express that with.
-        * ``compile.split-verilate`` resolves true (default), so a project
-          whose Verilator predates ``--no-verilate``, or whose compiles are
-          too short to be worth two queue waits, can turn it off.
-        * every planned build compiles with the plain ``verilator
-          --binary`` line. cocotb and SystemC drive their own sim classes
-          and replace ``--binary`` with an ``--exe --build`` of their own,
-          and a mixed suite would have to verilate the odd build under the
-          build job's reservation anyway — so one entry that is not makes
+        All must hold:
+        - The backend can chain jobs (Slurm, via ``--dependency=afterok``).
+        - ``compile.split-verilate`` resolves true (the default).
+        - Every planned build compiles with the plain ``verilator --binary`` line;
+          cocotb and SystemC use their own ``--exe --build``, so one such entry makes
           the whole suite unsplit.
-        * the builder is resolvable at all. An unresolvable one is a
-          failure the build job reports per test; it must not decide how
-          the suite is submitted.
+        - The builder is resolvable; an unresolvable one is a per-test failure the build
+          job reports and must not decide how the suite is submitted.
         """
         if backend.name != "slurm":
             return False
@@ -5710,52 +5012,41 @@ class RtlBuddy:
         replay_run_id=None,
         master_seed: int | None = None,
     ):
-        """Plan + build job + array fan-out for one suite; no waiting (#351).
+        """Plan, build job and array fan-out for one suite; no waiting.
 
-        Nothing heavy runs on the submit host (usually an interactive login
-        node). Phases: (1) **plan** — expand the suite's sweep hooks *once*
-        on the head and write the resulting configs to a plan manifest.
-        (2) submit a **build job** that compiles the shared executable on a
-        compute node (``rb _build-job --plan``, share-build) — skipped when
-        no planned test's builder can share a build, since its output would
-        be unreadable to every sim job (#358). (3) Fan-out — group the sim
-        jobs by resolved resources into ``sbatch`` arrays (``rb _test-job
-        --plan``), each gated on the build via ``--dependency=afterok`` (a
-        sim only starts once its shared build succeeded; its own
-        ``compile()`` then short-circuits on the stamp and it runs SIM+POST).
-        A group whose builder compiles inside the job instead is left
-        ungated and carries a reservation covering both phases. Neither the
-        build job nor the sim jobs re-run the sweep hook — they read the
-        plan. Returns collect state for
-        :meth:`_dispatch_collect` including the build handle; the caller
-        owns the (cross-suite) wait. Partial submissions are cancelled here
-        on a mid-fan-out failure; the caller additionally cancels the whole
-        fleet on a later failure or interrupt.
+        Nothing heavy runs on the submit host. Phases:
+        1. Plan: expand the sweep hooks once on the head and write the configs to a plan
+          manifest.
+        2. Build job: compile the shared executable on a compute node (``rb _build-job
+          --plan``); skipped when no planned test's builder can share a build.
+        3. Fan-out: group sim jobs by resolved resources into ``sbatch`` arrays (``rb
+          _test-job --plan``), each gated on the build via ``--dependency=afterok``. A
+          group whose builder compiles in the job is ungated and reserves for both
+          phases.
+
+        Jobs read the plan; none re-runs the sweep hook. Returns collect state for
+        :meth:`_dispatch_collect` including the build handle; the caller owns the
+        cross-suite wait. A mid-fan-out failure cancels the partial submissions here;
+        the caller cancels the whole fleet on a later failure or interrupt.
         """
         if run_ids is None:
             run_ids = [None]
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_config_path = str(Path(suite_cfg.get_path()).resolve())
         dispatch_cfg = self.root_cfg.get_dispatch_cfg()
-        # The suite's whole `.dispatch/` tree, and the directory THIS
-        # invocation writes to. They differ whenever a regression namespaces
-        # co-located suite configs: discovery has to search the tree (a plain
-        # `rb test` on either config writes to the root, a regression to a
-        # namespace below it) while every file this run writes still goes
-        # where this invocation computed (#580 review).
+        # The suite's whole `.dispatch/` tree and the directory this invocation writes
+        # to differ when a regression namespaces co-located suite configs: discovery
+        # searches the tree, writes go to this invocation's directory.
         dispatch_base = run_artifact_root(suite_dir, self._run_tag) / ".dispatch"
         dispatch_root = dispatch_base
         if dispatch_namespace is not None:
             dispatch_root /= dispatch_namespace
-        # When this head started work on this suite, for the run manifest
-        # below — the reader of an interrupted run's manifest has no other
-        # way to tell a fleet submitted minutes ago from one from yesterday.
+        # When this head started work on the suite, for the run manifest: distinguishes
+        # a fleet submitted minutes ago from one from yesterday.
         started_at = time.time()
-        # (0) An earlier run of this suite whose head died with its fleet
-        # still on the cluster (#521). Probed BEFORE anything is planned, so
-        # `--orphans cancel` takes the old fleet down before this one
-        # competes with it for the same nodes, and `--orphans adopt` can
-        # decline to submit at all.
+        # (0) An earlier run of this suite whose head died with its fleet still on the
+        # cluster. Probed before planning, so `--orphans cancel` takes the old fleet
+        # down first and `--orphans adopt` can decline to submit.
         orphans = self._discover_orphan_runs(
             backend,
             dispatch_base,
@@ -5784,10 +5075,9 @@ class RtlBuddy:
             entries = prepared["entries"]
             suite_results = prepared["suite_results"]
         if self._orphans_policy == "adopt":
-            # Collect the orphan instead of launching anything. Checked
-            # before the zero-test early return below, so "you asked to adopt
-            # and this invocation plans nothing" is a diagnosed mismatch
-            # rather than a silent no-op that leaves the fleet running.
+            # Collect the orphan instead of launching. Checked before the zero-test
+            # return so adopting with an empty plan is a diagnosed mismatch, not a
+            # silent no-op.
             return self._adopt_orphan_run(
                 orphans,
                 backend=backend,
@@ -5799,9 +5089,8 @@ class RtlBuddy:
                 master_seed=master_seed,
             )
         if not entries:
-            # Every test filtered out by -l/-s: nothing to compile or run.
-            # Submitting a build job here would queue an rb _build-job that
-            # iterates nothing and make wait_all block on it for zero work.
+            # Every test filtered out by -l/-s: skip the build job, which would iterate
+            # nothing while wait_all blocks on it.
             return {
                 "suite_results": suite_results,
                 "pending": [],
@@ -5818,11 +5107,9 @@ class RtlBuddy:
             verilate_origins,
         ) = self._resolve_build_compile(suite_cfg, dispatch_cfg, entries)
 
-        # ``run_token`` is the head's per-invocation nonce (one per regression
-        # run, shared across suites). Threaded to every sim job through the
-        # plan; each job stamps it into its result envelope so collection
-        # tells this run's result from a stale one by identity, not absence
-        # (#362).
+        # ``run_token`` is the head's per-invocation nonce, shared across suites and
+        # threaded to every sim job through the plan; jobs stamp it into their envelopes
+        # so collection tells this run's result from a stale one.
         plan_path = write_plan(
             run_scoped_path(dispatch_root, "plan", run_token),
             str(suite_cfg.get_path()),
@@ -5831,12 +5118,9 @@ class RtlBuddy:
             master_seed=master_seed,
         )
 
-        # The run record is opened HERE, before anything is submitted, and
-        # grown as each handle is accepted (#521 review). The window it
-        # exists to cover opens at the first `sbatch`: a head killed
-        # between its build job and its last array leaves those jobs
-        # running, and writing the record only after the whole fan-out
-        # would leave nothing on disk to find them by.
+        # The run record is opened here, before anything is submitted, and grown as each
+        # handle is accepted: a head killed mid fan-out would otherwise leave nothing on
+        # disk to find the jobs by.
         run_manifest = self._open_run_manifest(
             backend,
             dispatch_root,
@@ -5848,37 +5132,21 @@ class RtlBuddy:
             rows=suite_results,
         )
 
-        # (2) Build job — unless nothing in this suite could use its output.
-        # `sbatch-args` is appended after the generated flags and therefore
-        # wins, and the `SBATCH_*` environment reaches sbatch through the
-        # inherited environment, so either can mean the reservation this
-        # suite resolved is NOT what its jobs are submitted with.
-        # Right-sizing must not take it for the request; recording nothing
-        # sends it back to the scheduler's own `ReqCPUS` (#505 review). NOT
-        # sanitized: a site that exports these means them.
-        #
-        # Read once, HERE, before this suite submits anything, and carried
-        # in the returned state to analysis. A regression submits every
-        # suite before collecting any, and a later suite's sweep hook is
-        # `exec()`d in this same process (see hooks.py) — so it can set or
-        # unset `SBATCH_*` between this submit and this suite's analysis.
-        # Re-reading the environment there would judge these jobs by a
-        # later suite's environment: the wrong cpu denominator, and an edit
-        # hint naming an override that was never active for them.
-        #
-        # From the BACKEND's arguments, not this suite's `cfg-dispatch`.
-        # The backend is built once from the orchestration config before the
-        # suite loop, while `root_cfg` is rebuilt for any suite that walks
-        # up to a different root_config.yaml — so the two lists diverge in a
-        # multi-root regression, and only the backend's is what `sbatch`
-        # receives. The generated reservation flags stay suite-derived (they
-        # come from this suite's resolved `resources:`); it is the verbatim
-        # passthrough that belongs to the backend (#505 review).
+        # (2) Build job, unless nothing in this suite could use its output.
+        # `sbatch-args` follows the generated flags and wins, and `SBATCH_*` reaches
+        # sbatch through the environment, so the resolved reservation may not be what
+        # jobs are submitted with. Right-sizing must not take it for the request;
+        # recording nothing falls back to the scheduler's `ReqCPUS`. Not sanitized: a
+        # site that exports these means them.
+        # Read once here and carried in the returned state: a later suite's sweep hook
+        # (exec()d in this process) can change `SBATCH_*` before analysis.
+        # Taken from the backend's arguments, not this suite's `cfg-dispatch`: the
+        # backend is built once from the orchestration config while `root_cfg` is
+        # rebuilt per root.
         cpus_request_args = cpu_request_overrides(backend.effective_sbatch_args)
         if cpus_request_args:
-            # DEBUG, once per suite submit: the override is deliberate
-            # configuration, and the only thing worth saying is why the
-            # advice is derived from sacct rather than from the YAML.
+            # DEBUG, once per suite submit: the override is deliberate, so only say why
+            # advice comes from sacct rather than the YAML.
             log_event(
                 logger,
                 logging.DEBUG,
@@ -5886,31 +5154,20 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 overrides=cpus_request_args,
             )
-        # For a builder with no shared-build support the build pass compiles
-        # on a compute node and produces no stamp any sim job can reuse, so
-        # submitting it burns a compile and adds queue latency for nothing
-        # (#358). A mixed-builder suite still gets one: the sharable configs
-        # benefit.
-        #
-        # One exception, and it is a correctness one rather than an
-        # optimization (#369): a test that compiles inside its own job
-        # compiles into `artefacts/<test>/`, which is keyed on the test and
-        # NOT on the run. Fan that test out over several run_ids and every
-        # element runs the full compile into that one directory at once,
-        # overwriting each other's outputs — spurious `Compile failed`
-        # results with no design fault behind them. The build job is the
-        # single writer that fixes it: it compiles once, and the elements
-        # short-circuit on the stamp it leaves.
+        # A builder without shared-build support produces no reusable stamp; a build job
+        # would only add queue latency (a mixed-builder suite still gets one).
+        # Exception, for correctness: a test that compiles in its own job writes
+        # `artefacts/<test>/`, keyed on the test, not the run, so a run_id fan-out would
+        # overwrite itself. The build job is the single writer; elements short-circuit
+        # on its stamp.
         fans_out_in_job = any(
             entry["compile_in_job"] and len(entry["rows"]) > 1 for entry in entries
         )
         if any(not entry["compile_in_job"] for entry in entries) or fans_out_in_job:
-            # Two chained jobs where the compile can be split (#593): the
-            # verilation is single-threaded at peak memory and the C++ build
-            # is `compile.cpus` cores at a fraction of it, so one allocation
-            # covering both idles most of its cores through the first half.
-            # Submitted first, because the build job takes an `afterok` on
-            # its id.
+            # Two chained jobs when the compile can be split: verilation is
+            # single-threaded at peak memory and the C++ build uses `compile.cpus` cores
+            # at a fraction of it. Submitted first, because the build job takes an
+            # `afterok` on its id.
             splits = self._suite_splits_verilate(
                 backend, dispatch_cfg, suite_compile, entries
             )
@@ -5962,8 +5219,8 @@ class RtlBuddy:
                     ),
                 )
             except BaseException:
-                # A verilate job with no build job behind it would hold its
-                # allocation, verilate the suite and never be collected.
+                # A verilate job with no build job behind it would verilate and never be
+                # collected.
                 backend.cancel_all([verilate_handle])
                 raise
             self._grow_run_manifest(
@@ -5985,32 +5242,28 @@ class RtlBuddy:
                 tests=len(entries),
             )
 
-        # (3) Group by resolved resources: elements of one sbatch array must
-        # share a reservation shape. Consumes the single expansion; no hook.
+        # (3) Group by resolved resources: elements of one sbatch array must share a
+        # reservation shape. Consumes the single expansion; no hook.
         groups = {}  # (cpus, mem, time) -> list[(row index, plan index, spec)]
-        # `plan_index` is the config's position in the plan manifest written
-        # above — the build job's own index for it, and therefore the only
-        # name the two processes share for "this compile key's tests" (#548).
+        # `plan_index` is the config's position in the plan manifest: the build job's
+        # index for it, and the name both processes share for "this compile key's
+        # tests".
         for plan_index, entry in enumerate(entries):
             cfg = entry["cfg"]
-            # Resolved for the mode this fleet runs in — the same value the
-            # jobs carry as `builder_mode`, so a `-M cov` array reserves
-            # what the suite's `modes.cov` blocks ask for (#634).
+            # Resolved for the mode this fleet runs in, the same value the jobs carry as
+            # `builder_mode`.
             resources = resolve_resources(
                 dispatch_cfg, cfg, builder_mode=self.rtl_builder_mode
             )
-            # ...and which of its fields a `modes:` block supplied, for the
-            # reservation advice at the end of the run (#634).
+            # ...and which fields a `modes:` block supplied, for the end-of-run
+            # reservation advice.
             mode_governed = mode_governed_fields(
                 dispatch_cfg, cfg, builder_mode=self.rtl_builder_mode
             )
             if entry["compile_in_job"]:
-                # This test's OWN compile reservation, resolved per entry
-                # rather than once per suite: the job about to be sized
-                # compiles this testbench and no other, so the aggregate the
-                # build job takes would be the wrong number here — it would
-                # hand every sim job in the suite the sum of every planned
-                # testbench's memory (#551).
+                # This test's own compile reservation, resolved per entry: the aggregate
+                # the build job takes would give every sim job the sum of every
+                # testbench's memory.
                 entry_tb = cfg.get_testbench()
                 entry_tb_compile = getattr(entry_tb, "compile", None)
                 compile_resources = resolve_compile_resources(
@@ -6019,17 +5272,13 @@ class RtlBuddy:
                     entry_tb_compile,
                     builder_mode=self.rtl_builder_mode,
                 )
-                # One allocation has to cover compile AND sim, so it is sized
-                # for the larger of the two per field; record which layer won
-                # so reservation advice names the governing field.
+                # One allocation covers compile and sim, so it is sized for the larger
+                # per field; record which layer won so advice names the governing field.
                 resources, governed_by = combine_for_in_job_compile(
                     resources, compile_resources
                 )
-                # ...and which tests.yaml layer supplied each compile field,
-                # so a field the testbench block won is hinted at that entry
-                # rather than at a suite key it overrides (#551). Per row,
-                # because with a testbench layer the attribution is no longer
-                # one fact per suite.
+                # ...and which tests.yaml layer supplied each compile field, per row, so
+                # a testbench-block field is hinted at that entry.
                 entry_origins = compile_resource_origins(
                     suite_compile,
                     entry_tb_compile,
@@ -6041,8 +5290,7 @@ class RtlBuddy:
                     suite_results[idx]["compile_testbench"] = getattr(
                         entry_tb, "name", None
                     )
-                    # The floor no `reduce` advice can take this allocation
-                    # below, whatever the test's own resources: are trimmed to.
+                    # The floor no `reduce` advice can take this allocation below.
                     suite_results[idx]["compile_floor"] = {
                         "cpus": compile_resources.cpus,
                         "mem": compile_resources.mem,
@@ -6059,25 +5307,18 @@ class RtlBuddy:
                     governed_by=governed_by,
                 )
             for idx, _ in entry["rows"]:
-                # The cpus this test's jobs are submitted with, recorded for
-                # right-sizing: it is `--cpus-per-task` verbatim, so it is
-                # the REQUEST by construction. A site that allocates whole
-                # cores reports more back, and judging efficiency against
-                # that surplus advises a reduction to the value the
-                # tests.yaml already holds (#505). Recorded after the in-job
-                # compile max, so it is the number that actually governed
-                # the allocation.
+                # The cpus submitted with, for right-sizing: `--cpus-per-task` verbatim,
+                # i.e. the request. Judging efficiency against a site's rounded-up
+                # allocation would advise a value tests.yaml already holds. Recorded
+                # after the in-job compile max.
                 self._record_cpu_request_metadata(
                     suite_results[idx],
                     per_task_cpus=resources.cpus,
                     overrides=cpus_request_args,
                 )
-                # ...and which fields this run's builder mode governed, so
-                # advice about one names `resources.modes.<mode>.<field>`
-                # rather than a base key the mode block overrides and that
-                # editing would therefore never retire (#634). Recorded
-                # only where a mode block is in play, so a suite that
-                # writes none produces the rows it always did.
+                # ...and which fields this run's builder mode governed, so advice names
+                # `resources.modes.<mode>.<field>`. Recorded only where a mode block is
+                # in play.
                 if mode_governed:
                     suite_results[idx]["resource_modes"] = mode_governed
             dispatch_dir = (
@@ -6086,20 +5327,16 @@ class RtlBuddy:
                 )
                 / "dispatch"
             )
-            # Create the log dir on the head before submit: slurmstepd opens
-            # the --output path before rb _test-job (which would otherwise
-            # mkdir it) runs.
+            # Create the log dir on the head before submit: slurmstepd opens `--output`
+            # before `rb _test-job` runs.
             dispatch_dir.mkdir(parents=True, exist_ok=True)
             for idx, run_id in entry["rows"]:
-                # This job's envelope tag, not the artefact tree's
-                # `--run-tag` (#541) — a whole fleet shares the latter.
+                # This job's envelope tag, not the artefact tree's `--run-tag`.
                 job_tag = "single" if run_id is None else f"{run_id:04d}"
                 result_json = dispatch_dir / f"result-{job_tag}.json"
-                # Deliberately do NOT pre-unlink a stale envelope here: on
-                # NFS the head's negative lookup caches a dentry that hides
-                # the job's later write for ~acdirmin, so fast jobs get
-                # falsely reported as producing no result (#362). Staleness
-                # is instead rejected by run_token at collection time.
+                # Do not pre-unlink a stale envelope: on NFS the head's negative lookup
+                # caches a dentry that hides the job's later write for ~acdirmin.
+                # Staleness is rejected by run_token at collection.
                 spec = TestJobSpec(
                     test_name=cfg.get_name(),
                     suite_dir=suite_dir,
@@ -6115,78 +5352,61 @@ class RtlBuddy:
                     builder_override=self._builder_override,
                     extra_sim_timeout=self._extra_sim_timeout_override,
                     share_build=True,
-                    # Gated jobs are told so: reaching their own compile then
-                    # means the build job's stamp did not validate, which is
-                    # the one thing that puts every sibling element back into
-                    # one build directory at once (#369).
+                    # Gated jobs are told so: reaching their own compile means the build
+                    # job's stamp did not validate, which would put every sibling
+                    # element into one build directory at once.
                     expect_prebuilt=build_handle is not None,
-                    # `--rebuild` reaches a SIM job only when this suite
-                    # submitted no build job — then every job compiles into
-                    # its own per-test directory and rebuilding there races
-                    # nothing (#494). With a build job it has already
-                    # rebuilt, and its fresh stamp is exactly what stops the
-                    # array from compiling; handing the elements --rebuild
-                    # would defeat that and re-run #369.
+                    # `--rebuild` reaches a sim job only when the suite submitted no
+                    # build job. With one, its fresh stamp stops the array compiling;
+                    # passing `--rebuild` would defeat that.
                     rebuild=self.rebuild and build_handle is None,
-                    # Resolved once, by the head, and handed to the build job
-                    # and every sim job alike: both derive the shared build
-                    # directory from it and must agree (#542). An explicit
-                    # disable travels as `""`, since `None` would let the job
-                    # turn the cache back on from its own environment.
+                    # Resolved once by the head and handed to the build job and every
+                    # sim job, which must agree. An explicit disable travels as `""`,
+                    # since `None` would let the job re-enable the cache from its
+                    # environment.
                     shared_build_root=self.shared_build_root_for_jobs,
-                    # ...and told where that build job records its verdict,
-                    # so "the stamp did not validate" can be split into "the
-                    # compile FAILED, deterministically" (report it, do not
-                    # recompile under the sim reservation) and "the stamp is
-                    # stale" (recompile, into compile.retry.log) — #498.
+                    # ...and where the build job records its verdict, splitting "stamp
+                    # did not validate" into "compile failed" (report, do not recompile)
+                    # and "stale stamp" (recompile into compile.retry.log).
                     build_result_json=(
                         build_handle.spec.result_json
                         if build_handle is not None
                         else None
                     ),
-                    # Named after the backend that will write it: `slurm-*`
-                    # from sbatch --output, `local-parallel-*` from the pool's
-                    # redirected stdout.
+                    # Named after the backend that writes it: `slurm-*` from sbatch
+                    # --output, `local-parallel-*` from the pool's redirected stdout.
                     log_path=dispatch_dir / f"{backend.name}-{job_tag}.log",
                     plan_path=plan_path,
-                    # Already merged into the plan above; carried so the job
-                    # records them as this run's overrides and so a plan miss
-                    # still applies them (#552).
+                    # Already merged into the plan; carried so the job records them as
+                    # this run's overrides and a plan miss still applies them.
                     plusarg_overrides=dict(self._plusarg_overrides),
-                    # Which artefact tree this fleet belongs to (#541); the
-                    # job recomputes its own paths from it.
+                    # Artefact tree this fleet belongs to; the job recomputes its paths
+                    # from it.
                     run_tag=self._run_tag,
                 )
-                # Resources alone: every group now takes the same dependency,
-                # so a self-compiling test that happens to resolve to the
-                # same reservation can ride along in the same array.
+                # Resources alone: every group takes the same dependency, so a
+                # self-compiling test with the same reservation can share the array.
                 groups.setdefault(
                     (resources.cpus, resources.mem, resources.time), []
                 ).append((idx, plan_index, spec))
 
-        pending = []  # (row index, JobHandle)
-        # When this attempt went out. Retry classification only accepts
-        # artefacts at least this recent: `artefacts/<test>/test.log` is
-        # keyed on the test, not on the run, and nothing cleans it between
-        # runs, so a banner from days ago would otherwise satisfy the rule
-        # forever (#405 review). Taken before the first submit, so it can
-        # never be later than a job's own output.
+        pending = []
+        # When this attempt went out. Retry classification accepts only artefacts at
+        # least this recent: `artefacts/<test>/test.log` is keyed on the test and never
+        # cleaned, so an old banner would satisfy the rule.
+        # Taken before the first submit.
         submitted_at = time.time()
-        # (plan index, test name, job id) per submitted row, for the gates
-        # manifest below. Only the FIRST round of submissions belongs in it:
-        # `_resubmit_retryable` runs after collection, by which time the build
-        # job it would be talking to has long exited, and a retry's jobs are
-        # submitted ungated anyway.
+        # (plan index, test name, job id) per submitted row, for the gates manifest.
+        # Only the first round belongs: `_resubmit_retryable` runs after the build job
+        # exited, and retries are submitted ungated.
         gate_entries = []
-        # Only read once, and only where there is a build job at all: a
-        # suite whose tests each compile in their own job has none, and the
-        # manifest it would key on does not exist either.
+        # Read once, and only where a build job exists: a suite whose tests each compile
+        # in their own job has none.
         build_cluster = None if build_handle is None else build_handle.cluster
         try:
-            # Per-invocation array dir (head pid) so a resubmit or an
-            # overlapping run in the same suite tree never rewrites a
-            # manifest under another run's still-queued array elements, which
-            # sed the manifest at exec time. Sibling of .shared-builds.
+            # Per-invocation array dir (head pid), so a resubmit or overlapping run
+            # never rewrites a manifest under another run's queued elements, which `sed`
+            # it at exec time. Sibling of .shared-builds.
             for array_seq, group_entries in enumerate(groups.values(), start=1):
                 specs = [spec for _, _, spec in group_entries]
                 array_dir = run_scoped_path(
@@ -6196,16 +5416,10 @@ class RtlBuddy:
                     specs,
                     array_dir=array_dir,
                     max_parallel=dispatch_cfg.max_jobs_per_array,
-                    # Every group waits for the build job, including the
-                    # groups that compile for themselves. The build job runs
-                    # PRE+COMPILE for the whole plan, so it writes into a
-                    # self-compiling test's `artefacts/<test>/` too — letting
-                    # such an element start alongside it is the same
-                    # two-writers-one-directory race that made this build job
-                    # necessary (#369). Gated, it finds the stamp and skips
-                    # its own compile. A suite with no build job at all still
-                    # runs unblocked: there, one element per directory is the
-                    # only writer.
+                    # Every group waits for the build job, including self-compiling
+                    # ones: it runs PRE+COMPILE for the whole plan and writes their
+                    # `artefacts/<test>/` too, so an ungated element would race it. A
+                    # suite with no build job runs unblocked.
                     dependency=(
                         build_handle.job_id if build_handle is not None else None
                     ),
@@ -6217,21 +5431,17 @@ class RtlBuddy:
                             plan_index,
                             spec.test_name,
                             handle.job_id,
-                            # Where THIS job was accepted. `--clusters=a,b`
-                            # places each array wherever it can start
-                            # first, so the fan-out can span clusters and
-                            # an id only means anything against the one
-                            # that issued it (#509). A backend that does
-                            # not record a cluster gets the build job's,
-                            # which is the same submission path.
+                            # Where this job was accepted. `--clusters=a,b` can span
+                            # clusters and an id means something only on the cluster
+                            # that issued it. A backend recording no cluster gets the
+                            # build job's.
                             handle.cluster
                             if handle.cluster is not None
                             else build_cluster,
                         )
                     )
-                # This array is accepted, so it is running whether or not
-                # the head lives to submit the next one: record it now
-                # rather than after the loop (#521 review).
+                # This array is accepted, so it is running whether or not the head
+                # survives to submit the next: record it now.
                 self._grow_run_manifest(
                     run_manifest,
                     record_pending_handles,
@@ -6242,18 +5452,17 @@ class RtlBuddy:
                     suite_dir=suite_dir,
                 )
         except BaseException:
-            # A mid-fan-out submit failure must not leak this suite's build
-            # job or already-submitted arrays.
+            # A mid-fan-out submit failure must not leak this suite's build job or
+            # already-submitted arrays.
             backend.cancel_all(
                 [verilate_handle, build_handle] + [handle for _, handle in pending]
             )
             raise
-        # The whole suite is out, so every id the build job could release is
-        # known: hand it the map (#548). Written here and not inside the try
-        # above because a manifest naming only half an array would release
-        # only half a compile key, and because failing to write it must not
-        # cancel a fleet that is already correctly gated on `afterok` — the
-        # run simply keeps the pre-#548 behaviour.
+        # The whole suite is out, so every id the build job could release is known: hand
+        # it the map.
+        # Written outside the try above: a manifest naming half an array would release
+        # half a compile key, and a write failure must not cancel a fleet already gated
+        # on `afterok`.
         gates_json = getattr(getattr(build_handle, "spec", None), "gates_json", None)
         if gates_json is not None:
             try:
@@ -6267,9 +5476,8 @@ class RtlBuddy:
                     path=str(gates_json),
                     error=str(e),
                 )
-        # The fan-out is complete, so the record stops saying `submitting`:
-        # everything this run launched is now named in it, and only from
-        # here may it be adopted (#521 review).
+        # The fan-out is complete, so the record stops saying `submitting`; only from
+        # here may it be adopted.
         self._grow_run_manifest(
             run_manifest, finish_submission, submitted_at, suite_dir=suite_dir
         )
@@ -6277,53 +5485,41 @@ class RtlBuddy:
             "suite_results": suite_results,
             "pending": pending,
             "build_handle": build_handle,
-            # The verilate half of a split compile (#593), or None. A
-            # separate key rather than a list, because the two jobs are not
-            # interchangeable: only the build job's envelope decides a
-            # test's compile verdict, and only it gates the fan-out.
+            # The verilate half of a split compile, or None. A separate key, not a list:
+            # only the build job's envelope decides a compile verdict and gates the
+            # fan-out.
             "verilate_handle": verilate_handle,
             "run_token": run_token,
             "submitted_at": submitted_at,
-            # Where this suite's fleet is recorded, so collection can retire
-            # it (`collected`) and a teardown can mark it `cancelled`.
+            # Where this suite's fleet is recorded, so collection can retire it
+            # (`collected`) and teardown can mark it `cancelled`.
             "run_manifest": run_manifest,
-            # For _analyze_reservations, which re-resolves the compile
-            # reservation from the root config alone and has no suite_cfg
-            # (#497) — same route as build_telemetry/build_compile_work.
+            # For _analyze_reservations, which re-resolves the compile reservation from
+            # the root config alone and has no suite_cfg.
             "suite_compile": suite_compile,
-            # The build job's own reservation and its per-field provenance as
-            # submit resolved them — the maximum over the planned testbenches
-            # (#551), which analysis cannot recompute: it has neither the plan
-            # nor the suite_cfg the testbench blocks live in.
+            # The build job's reservation and per-field provenance as submit resolved
+            # them (maximum over planned testbenches); analysis has neither the plan nor
+            # the suite_cfg.
             "build_compile_resources": build_compile_resources,
             "build_compile_origins": build_compile_origins,
-            # ...and the verilate job's own pair, for the same reason
-            # (#593).
+            # ...and the verilate job's pair.
             "verilate_resources": verilate_resources,
             "verilate_origins": verilate_origins,
-            # What superseded this suite's resolved cpus, as it stood when
-            # these jobs were submitted. Snapshotted rather than recomputed
-            # at analysis, because the environment half of it can move under
-            # a later suite's in-process sweep hook (#505 review).
+            # What superseded the resolved cpus at submit time. Snapshotted because a
+            # later suite's in-process sweep hook can change the environment half.
             "cpus_override": cpus_request_args,
         }
 
     @staticmethod
     def _record_cpu_request_metadata(row, *, per_task_cpus, overrides):
-        """What right-sizing needs to know about ONE submission's cpus.
+        """What right-sizing needs to know about one submission's cpus.
 
-        Written at submit and rewritten on every resubmission, because a
-        retry is a fresh `sbatch` with a fresh inherited environment and it
-        is the retry's telemetry the analysis ends up reading (#505 review).
-
-        - ``submitted_cpus_per_task`` is the generated ``--cpus-per-task``
-          verbatim. Recorded unconditionally: a task-count override
-          multiplies it rather than replacing it, so it stays the value the
-          compile floor bounds and the value the request decomposes into.
-        - ``requested_cpus`` is that same number *as the whole-job request*,
-          which it only is when nothing overrode it — hence ``None`` under
-          any override, sending the denominator to the scheduler's
-          ``ReqCPUS``.
+        Written at submit and rewritten on every resubmission, since the analysis reads
+        the retry's telemetry.
+        - ``submitted_cpus_per_task`` is the generated ``--cpus-per-task`` verbatim,
+          always recorded; it is what the compile floor bounds.
+        - ``requested_cpus`` is the whole-job request, ``None`` under any override (the
+          denominator then comes from the scheduler's ``ReqCPUS``).
         - ``cpus_override`` is what did the overriding, for the edit hint.
         """
         row["submitted_cpus_per_task"] = per_task_cpus
@@ -6331,19 +5527,15 @@ class RtlBuddy:
         row["cpus_override"] = overrides
 
     def _announce_dispatched_suite(self, state, *, backend, suite):
-        """Put a suite's job ids on the console, before the wait begins (#435).
+        """Put a suite's job ids on the console before the wait begins.
 
-        Ordering is the whole point: if the head then dies — the way this
-        surfaced — those ids are the only route to `squeue`/`sacct` and the
-        only way to tell whether the fleet outlived the process that
-        submitted it. Reconstructing them from `dispatch.*_submitted` is
-        possible but those are INFO, and a default-verbosity console shows
-        none of them.
+        If the head then dies, these ids are the only route to `squeue`/`sacct`; the
+        `dispatch.*_submitted` events are INFO and not shown at default verbosity.
         """
         handles = [handle for _, handle in state["pending"]]
         if not handles:
-            # Nothing queued (every test filtered out): there are no ids to
-            # report and no wait to explain.
+            # Nothing queued (every test filtered out): no ids to report and no wait to
+            # explain.
             return
         build_handle = state["build_handle"]
         verilate_handle = state.get("verilate_handle")
@@ -6354,17 +5546,14 @@ class RtlBuddy:
             backend=backend.name,
             suite=suite,
             build_job=build_handle.job_id if build_handle is not None else None,
-            # The verilate half of a split compile (#593). Additive, and
-            # absent where the compile went out as one job — which is what
-            # keeps an unsplit suite's line unchanged.
+            # The verilate half of a split compile; absent where the compile went out as
+            # one job.
             verilate_job=(
                 verilate_handle.job_id if verilate_handle is not None else None
             ),
             job_ids=group_job_ids(handle.job_id for handle in handles),
-            # Compile jobs included: this is the same scale
-            # `dispatch.progress` (remaining/total) and
-            # `dispatch.suite_drained` count on, so the per-suite counts
-            # announced here sum to the fleet's `total`.
+            # Compile jobs included: the same scale as `dispatch.progress` and
+            # `dispatch.suite_drained`, so per-suite counts sum to the fleet's `total`.
             jobs=len(handles)
             + (1 if build_handle is not None else 0)
             + (1 if verilate_handle is not None else 0),
@@ -6382,16 +5571,14 @@ class RtlBuddy:
         seed_mode: SeedMode = SeedMode.DEFAULT,
         master_seed: int | None = None,
     ):
-        """Expand the suite ONCE for dispatch; return the runnable entries.
+        """Expand the suite once for dispatch; return the runnable entries.
 
-        Appends the same skip/setup rows the in-process path emits — and a
-        placeholder row per (runnable test, run_id) — to ``suite_results``
-        in test order, and returns one entry ``{cfg, rows}`` per runnable
-        config (``rows`` = the placeholder indices it owns). Consuming the
-        generator while interleaving the run rows preserves summary order;
-        materializing the runnables lets the build job and sim jobs read the
-        plan instead of re-running the sweep hook. ``test_name`` narrows the
-        expansion to one base test (randtest dispatch).
+        Appends the same skip/setup rows as the in-process path, and a placeholder row
+        per (runnable test, run_id), to ``suite_results`` in test order. Returns one
+        ``{cfg, rows}`` entry per runnable config, where ``rows`` are the placeholder
+        indices it owns, so build and sim jobs read the plan instead of re-running the
+        sweep hook. ``test_name`` narrows the expansion to one base test (randtest
+        dispatch).
         """
         if master_seed is not None and len(run_ids) != 1:
             raise FatalRtlBuddyError(
@@ -6416,12 +5603,11 @@ class RtlBuddy:
             )
             builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(cfg.get_builder_name())
             exp_builder = builder_cfg.get_name()
-            # A builder that cannot share a build recompiles inside every sim
-            # job, so that job's reservation has to cover the compile too
-            # (#358). Decided here, once, from the same predicate the job
-            # itself will consult — family *and* an absolute `builder-simv:`,
-            # not family alone, or a VCS builder pinned that way would be
-            # planned as shareable and take the unshared path at runtime.
+            # A builder that cannot share a build recompiles inside every sim job, so
+            # that job's reservation must cover the compile.
+            # Decided once from the predicate the job itself consults: family and an
+            # absolute `builder-simv:`, not family alone, or a pinned VCS builder would
+            # be planned as shareable.
             compile_in_job = share_build_unsupported_reason(builder_cfg) is not None
             rows = []
             for run_id in run_ids:
@@ -6457,53 +5643,34 @@ class RtlBuddy:
         phase=BUILD_PHASE_FULL,
         dependency=None,
     ):
-        """Submit the suite's compile as a Slurm build job (compute node).
-
-        ``phase`` is which half of that compile this job runs (#593), and
-        ``dependency`` the job id it must not start before — the verilate
-        job's, for the ``build`` half. Every file this job owns is named
-        after the phase, so a split suite's two jobs never write over each
-        other's envelope or log.
-
-        ``suite_compile`` is the suite's own ``compile:`` block (#497),
-        layered over ``cfg-dispatch.compile`` field by field — ``parallel``
-        included (#547). Passed in rather than re-read from ``suite_cfg`` so
-        this job's reservation and the in-job-compile combination in the
-        caller are provably the same resolution.
-
-        ``compile_resources`` is the reservation this job is sized from: the
-        planned testbenches' own ``compile:`` blocks aggregated and floored
-        at the suite-level whole-job value (#551), resolved by the caller
-        because only the caller holds the plan. ``parallel`` is the
-        concurrency that aggregation was computed against, passed in for the
-        same reason — the two must be the same number, since memory adds up
-        across the builds in flight together and wall clock divides by them.
-        Both ``None`` fall back to resolving here, which is the same answer
-        for every suite whose testbenches declare no block of their own.
-
-        ``planned`` is how many configs the plan holds. It caps the
-        resolved ``compile.parallel``: a suite with two planned configs
-        cannot keep four build slots busy, and reserving cpus for slots
-        that will idle is the failure mode the scaling below would
-        otherwise introduce. Planned configs, not distinct compile
-        keys — the head cannot know the keys without writing filelists on
-        the submit host, which is the build job's job (#458), so the cap is
-        an upper bound on the concurrency, never a promise of it. The
-        pre-cap value travels beside it as ``parallel_configured``, because
-        it is the only one of the two a reader can find in a config file —
-        the job's own console line quotes that and reports the cap
-        separately (#547 review).
+        """Submit the suite's compile as a Slurm build job on a compute node.
+        - ``phase`` is which half of the compile this job runs, and ``dependency`` the
+          job id it must wait for (the verilate job's, for the ``build`` half). Files
+          are named after the phase, so a split suite's two jobs never share an envelope
+          or log.
+        - ``suite_compile`` is the suite's own ``compile:`` block, layered over
+          ``cfg-dispatch.compile`` field by field (``parallel`` included). It is passed
+          in so this job and the caller's in-job-compile combination use one resolution.
+        - ``compile_resources`` is the reservation this job is sized from: the planned
+          testbenches' ``compile:`` blocks aggregated and floored at the suite-level
+          whole-job value. ``parallel`` is the concurrency it was computed against; the
+          two must match, since memory adds across builds in flight and wall clock
+          divides by them. Both ``None`` resolve here, giving the same answer for suites
+          whose testbenches declare no block.
+        - ``planned`` is the number of configs in the plan. It caps ``compile.parallel``
+          so cpus are not reserved for idle slots. It counts configs, not distinct
+          compile keys, so the cap is an upper bound on concurrency. The pre-cap value
+          travels as ``parallel_configured``, the one a reader can find in a config
+          file.
         """
         dispatch_root = Path(dispatch_root)
         dispatch_root.mkdir(parents=True, exist_ok=True)
-        # The prefix every file this job owns is named with. The build half
-        # of a split compile keeps the build job's names, so a suite that
-        # stops splitting produces the same paths it always did.
+        # Prefix of every file this job owns. The build half of a split compile keeps
+        # the build job's names.
         tag = "verilate" if phase == BUILD_PHASE_VERILATE else "build"
         configured_parallel = compile_parallel(dispatch_cfg, suite_compile)
-        # Asked only for the job that could release anything: the verilate
-        # half never gets a gates manifest, and probing here twice would
-        # say `dispatch.gates_skipped` twice for one suite (#593).
+        # Asked only for the job that could release anything: the verilate half gets no
+        # gates manifest, and probing twice would log `dispatch.gates_skipped` twice.
         configured_dependency = (
             self._release_blocking_dependency(backend, suite_dir=suite_dir)
             if phase != BUILD_PHASE_VERILATE
@@ -6511,12 +5678,11 @@ class RtlBuddy:
         )
         if parallel is None:
             parallel = max(1, min(configured_parallel, planned))
-        # `parallel` layers exactly like the reservation fields beside it
-        # (#547): this job belongs to this suite alone, so a suite with one
-        # compile key says `parallel: 1` and reserves `cpus` rather than
-        # `cpus x` a cluster-wide value sized for the repo's widest suite.
-        # Sizing against the partition's widest node remains the writer's
-        # obligation at either level — see the scaling note below.
+        # `parallel` layers like the reservation fields beside it: this job belongs to
+        # one suite, so a suite with one compile key reserves `cpus`, not a cluster-wide
+        # multiple.
+        # Sizing against the partition's widest node stays the writer's obligation; see
+        # the scaling note below.
         resources = (
             compile_resources
             if compile_resources is not None
@@ -6530,14 +5696,11 @@ class RtlBuddy:
             test_config_path=str(suite_cfg.get_path()),
             resources=resources,
             parallel=parallel,
-            # ...and what the config asked for before the cap, so the job's
-            # console line can name the value a reader will find in the file
-            # rather than the capped one it was handed (#547 review).
+            # ...and what the config asked for before the cap, so the console line names
+            # the value found in the file.
             parallel_configured=configured_parallel,
-            # Always, when the run asked for it: the build job is the single
-            # writer of the shared directory, so this is the one place a
-            # forced recompile costs one compile instead of one per element
-            # (#494).
+            # Always, when requested: the build job is the single writer of the shared
+            # directory, so a forced recompile costs one compile, not one per element.
             rebuild=self.rebuild,
             shared_build_root=self.shared_build_root_for_jobs,
             reg_level=reg_level,
@@ -6548,76 +5711,55 @@ class RtlBuddy:
             log_path=run_scoped_path(dispatch_root, tag, run_token, suffix=".log"),
             plan_path=plan_path,
             phase=phase,
-            # Where the build job records which configs compiled; the head
-            # reads it at collect for compile-fail parity.
+            # Where the build job records which configs compiled; the head reads it at
+            # collect.
             result_json=run_scoped_path(dispatch_root, f"{tag}-result", run_token),
-            # ...and where the head will record which sim job is waiting on
-            # which planned config, so the build job can release a compile
-            # key's sims as soon as that key is built (#548). Keyed on the
-            # same head pid as the envelope beside it, and only for a
-            # backend whose jobs can be released at all: `local-parallel`
-            # has no pending queue to clear, so it gets no flag and its
-            # build job's argv is byte-identical to before.
+            # ...and where the head records which sim job waits on which planned config,
+            # so the build job can release a compile key's sims once built.
+            # Keyed on the head pid like the envelope beside it, and only for a backend
+            # whose jobs can be released: `local-parallel` has no pending queue.
             gates_json=(
                 run_scoped_path(dispatch_root, "gates", run_token)
-                # ...and never for the verilate half: it leaves sources and
-                # a Makefile, so there is no build for a released
-                # simulation to find (#593).
+                # ...and never for the verilate half: it leaves sources and a Makefile,
+                # so a released simulation would find no build.
                 if backend.name == "slurm"
                 and configured_dependency is None
                 and phase != BUILD_PHASE_VERILATE
                 else None
             ),
-            # The head's artefact namespace (#541). The SHARED build it
-            # populates is keyed on the compile fingerprint and stays shared
-            # across tags — the tag only moves this job's own per-test
-            # outputs and its transcripts into this run's tree.
+            # The head's artefact namespace. The shared build it populates stays keyed
+            # on the compile fingerprint; the tag only moves this job's per-test outputs
+            # and transcripts.
             run_tag=self._run_tag,
         )
         # A stale build-result must not annotate this run's collection.
         Path(spec.result_json).unlink(missing_ok=True)
-        # Same for the gates manifest: this pid has been a head before, and
-        # the build job starts polling for this path before the fan-out has
-        # written it. It also carries a run token the build job checks, so
-        # this is belt and braces — but a file that is never read beats one
-        # that is read and rejected.
+        # Same for the gates manifest: this pid may have been a head before, and the
+        # build job polls for the path before the fan-out writes it. It also carries a
+        # run token, but a file never read beats one read and rejected.
         if spec.gates_json is not None:
             Path(spec.gates_json).unlink(missing_ok=True)
         return backend.submit_build(spec, dependency=dependency)
 
     @staticmethod
     def _release_blocking_dependency(backend, *, suite_dir):
-        """A user-configured dependency that per-key release must not clear.
+        """Return a user-configured dependency that per-key release must not clear.
 
-        `sbatch-args` can carry a dependency of the site's own —
-        `--dependency=singleton` serialising a licensed simulator is the
-        motivating case — and it is appended AFTER the generated
-        `afterok`, so Slurm resolves the repeated option to it and it is
-        the sim job's *effective* gate. `scontrol update JobId=<id>
-        Dependency=` clears the whole expression, not this run's clause of
-        it, so releasing a key would drop the site's serialisation and let
-        the fan-out run in parallel against whatever that gate protects
-        (#548 review).
+        `sbatch-args` can carry a site dependency (e.g. `--dependency=singleton`
+        serialising a licensed simulator). It is appended after the generated `afterok`,
+        so it is the sim job's effective gate, and `scontrol update Dependency=` clears
+        the whole expression. Releasing a key would drop the site's serialisation.
 
-        There is no partial answer available — Slurm takes a dependency
-        expression whole — so such a suite simply does not get early
-        release: no gates manifest, no `--gates`, every job waiting for
-        the build job exactly as before. Said once per suite at INFO,
-        because it is deliberate configuration rather than a fault, and
-        silence here would read as the release being broken.
+        Slurm takes a dependency expression whole, so such a suite gets no early
+        release: no gates manifest, no `--gates`. Logged once per suite at INFO, since
+        it is deliberate configuration.
 
-        An exported ``$SBATCH_DEPENDENCY`` is NOT that case, even though
-        composing treats the two alike (#507). sbatch documents the
-        environment value as the default for `-d`, which a command-line
-        option overrides — and this backend puts a generated
-        `--dependency=afterok:<build>` on every gated submission, so the
-        export never reaches the job as its gate. Clearing is therefore
-        safe, and the suite keeps its early release; the INFO line exists
-        so a reader who set the export and expected it to hold is not left
-        guessing why it did not (#548 review).
+        An exported ``$SBATCH_DEPENDENCY`` is not that case: a command-line
+        `--dependency` overrides it, and every gated submission carries a generated one,
+        so clearing is safe and early release stays. The INFO line explains why the
+        export did not hold.
 
-        ``getattr``, like every other optional backend capability: a
-        backend with no notion of a configured dependency has none.
+        ``getattr``, like every optional backend capability.
         """
         probe = getattr(backend, "_sbatch_args_dependency", None)
         configured = probe() if callable(probe) else None
@@ -6648,30 +5790,20 @@ class RtlBuddy:
 
     @staticmethod
     def _audit_shared_binaries(suite_results):
-        """Warn when one compile key produced more than one binary (#535).
+        """Warn when one compile key produced more than one binary.
 
-        Every run gated on a build job validates the same stamp and records
-        what it validated — the shared directory the stamp lives in, its
-        inputs' digest, and the ``simv`` that stamp vouched for. Runs of one
-        directory that name different binaries mean somebody rebuilt it
-        instead of reusing it, and its neighbours may have simulated an
-        executable that was replaced under them mid-run. That is not
-        something a result can be rescored from, so it is a warning and not
-        a verdict: the runs are already scored against whatever they ran,
-        and the point is that the substitution is *visible* rather than
-        only inferable from a `compile.prebuilt_stamp_invalid` somewhere in
-        the fleet.
+        Every run gated on a build job validates the same stamp and records the shared
+        directory, its inputs' digest and the ``simv`` it vouched for. Runs of one
+        directory naming different binaries mean it was rebuilt mid-run, and neighbours
+        may have simulated a replaced executable. This is a warning, not a verdict: runs
+        are already scored, and the point is to make the substitution visible.
 
-        Grouped by ``build_dir`` — the ``obj_dir_<key>`` directory, which
-        is the compile key — and not by the fingerprint digest: the digest
-        covers the inputs' *contents*, so the very rebuild this is looking
-        for (an input edited mid-run, then recompiled into the same
-        directory) would split the runs into two digests and hide from a
-        digest-keyed audit. A stamp written before ``build_dir`` was
-        recorded falls back to its digest, which is at least a key.
+        Grouped by ``build_dir`` (the ``obj_dir_<key>`` directory), not the fingerprint
+        digest, which covers input contents and would split the very rebuild being
+        looked for. A stamp without ``build_dir`` falls back to its digest.
 
-        Reporting only, and never raising: a missing or oddly shaped
-        ``build_stamp`` is simply a run that had nothing to say.
+        Reporting only, never raising: a missing or oddly shaped ``build_stamp`` is a
+        run with nothing to say.
         """
         by_key = {}
         for row in suite_results:
@@ -6706,29 +5838,20 @@ class RtlBuddy:
             )
 
     def _dispatch_collect(self, backend, state):
-        """Collect a submitted suite, retrying what deserves it (#405).
+        """Collect a submitted suite, retrying what deserves it.
 
-        One pass over the fleet loads every envelope (see
-        :meth:`_dispatch_collect_pass`); jobs it classifies as retryable —
-        killed by the scheduler while queueing for a license seat, and only
-        those — are resubmitted after a jittered backoff, waited on, and
-        collected again, up to ``cfg-dispatch.retry.attempts`` extra
-        attempts. With no ``retry:`` block (the default) the first pass
-        finds nothing retryable and this is exactly the single-pass collect
-        it has always been.
+        One pass loads every envelope (see :meth:`_dispatch_collect_pass`). Jobs
+        classified retryable (killed by the scheduler while queueing for a license seat,
+        and only those) are resubmitted after a jittered backoff, waited on and
+        collected again, up to ``cfg-dispatch.retry.attempts`` extra attempts. Without a
+        ``retry:`` block nothing is retryable and this is a single pass.
 
-        Every pass writes a result for every row before any retry is
-        considered, so an interrupted or exhausted retry leaves the fleet
-        scored — a job that vanished never scores green, whatever the
-        budget says.
+        Every pass writes a result for every row before any retry, so an interrupted or
+        exhausted retry leaves the fleet scored and a vanished job never scores green.
 
-        Retries are per suite: this runs after the fleet-wide ``wait_all``,
-        so a suite's second round is submitted and drained before the next
-        suite is collected rather than folded into one cross-suite round.
-        That costs wall clock proportional to the number of suites that had
-        a retryable job, and it is deliberate for now — collection is where
-        the classification evidence lives, and every later suite's
-        envelopes are already on disk, so only the retries serialise.
+        Retries are per suite: a suite's second round is submitted and drained before
+        the next suite is collected. That serialises only the retries; later suites'
+        envelopes are already on disk.
         """
         suite_results = state["suite_results"]
         pending = state["pending"]
@@ -6737,10 +5860,8 @@ class RtlBuddy:
             return suite_results
         retry_cfg = self.root_cfg.get_dispatch_cfg().effective_retry()
         attempt = 0
-        # Each round has its own submission time: classification only reads
-        # artefacts at least that recent, and a retried job rewrites its
-        # capture, so the previous attempt's evidence must not be re-read as
-        # this one's (#405 review).
+        # Each round has its own submission time: a retried job rewrites its capture, so
+        # the previous attempt's evidence must not be re-read.
         submitted_at = state.get("submitted_at")
         while True:
             retryable = self._dispatch_collect_pass(
@@ -6764,38 +5885,26 @@ class RtlBuddy:
                     attempt=attempt,
                     retry_cfg=retry_cfg,
                     suite_results=suite_results,
-                    # A retry is a fresh submission with fresh job ids, and
-                    # the manifest has to name them BEFORE the round is
-                    # waited on: `_resubmit_retryable` blocks until the
-                    # round drains, so recording afterwards would leave a
-                    # head killed mid-retry pointing at the previous
-                    # attempt's jobs — ids the scheduler has forgotten,
-                    # while the ones it is running are in no record at all
-                    # (#521 review).
+                    # A retry is a fresh submission with new job ids. Record them before
+                    # waiting on the round: `_resubmit_retryable` blocks until it
+                    # drains, and a head killed mid-retry would otherwise point at the
+                    # previous attempt's jobs.
                     on_submitted=lambda accepted: self._record_retry_handles(
                         state, accepted
                     ),
                 )
                 submitted_at = resubmitted_at
             except (FatalRtlBuddyError, OSError, subprocess.SubprocessError) as e:
-                # A retry is a best-effort second chance, never a way to
-                # lose a scored regression. Every row of this pass — this
-                # suite's and every suite collected before it — is already
-                # written, and the retryable ones already say they produced
-                # no result, so degrade to that instead of propagating out
-                # of the command and discarding the whole run's summary,
-                # exit code and machine payload. Narrow on purpose: the
-                # failure modes worth degrading over are exactly the
-                # flaky-cluster ones retry exists to survive — a refusing
-                # ``sbatch`` (FatalRtlBuddyError / a subprocess error) or
-                # ``max-wait`` elapsing on the second round, plus the
-                # filesystem giving out under the resubmission. A
-                # TypeError/KeyError/AttributeError from this head-side
-                # code is a bug in rtl-buddy, not cluster weather, and must
-                # surface loudly instead of being logged as an abandoned
-                # retry. ``_resubmit_retryable`` has already taken this
-                # attempt's jobs down; BaseException (a Ctrl-C) is
-                # deliberately not caught and still tears the run down.
+                # A retry is a best-effort second chance, never a way to lose a scored
+                # regression: every row is already written and the retryable ones
+                # already say they produced no result, so degrade to that instead of
+                # discarding the run.
+                # Narrow on purpose: catch the flaky-cluster failures retry exists to
+                # survive (a refusing ``sbatch``, ``max-wait`` elapsing, the filesystem
+                # giving out); a TypeError/KeyError/AttributeError is a bug and must
+                # surface.
+                # BaseException (Ctrl-C) is not caught; `_resubmit_retryable` has
+                # already taken this attempt's jobs down.
                 log_console_event(
                     logger,
                     logging.WARNING,
@@ -6812,10 +5921,8 @@ class RtlBuddy:
     def _record_retry_handles(self, state, resubmitted):
         """Re-point this suite's run manifest at a retry round's job ids.
 
-        Called from inside the resubmission, before the wait, so the record
-        describes the fleet that is outstanding right now. Never raises:
-        the round is already accepted by the scheduler, and a manifest that
-        cannot be rewritten must not cancel it.
+        Called inside the resubmission, before the wait. Never raises: the round is
+        already accepted, and a manifest that cannot be rewritten must not cancel it.
         """
         path = (state or {}).get("run_manifest")
         if path is None:
@@ -6842,27 +5949,20 @@ class RtlBuddy:
     ):
         """Re-launch the retryable jobs after their backoff; wait; return them.
 
-        The delay is served by the **backend** (Slurm holds the job on
-        ``--begin``, the local pool holds it in its queue), never slept in
-        the head: the head is a planner and a poller, and a delayed job
-        must not hold an allocation the license pool needs to drain.
+        The backend serves the delay (Slurm holds the job on ``--begin``, the local pool
+        in its queue); the head never sleeps, so a delayed job holds no allocation the
+        license pool needs.
 
-        Each attempt gets its own scheduler log (``…-retry<N>.log``) so the
-        first attempt's evidence — the queue banner that justified the
-        retry — is still there afterwards. The result envelope path is
-        deliberately unchanged: it is the one path the job and the head
-        must agree on, and it is still guarded by this run's token.
+        Each attempt gets its own scheduler log (``…-retry<N>.log``) to keep the first
+        attempt's evidence. The result envelope path is unchanged: the job and head must
+        agree on it, and this run's token still guards it.
 
-        ``on_submitted`` is called with the accepted ``[(row, handle)]`` once
-        the whole round is out and before the wait begins — the only moment
-        at which anything can record a round this method then blocks on.
+        ``on_submitted`` is called with the accepted ``[(row, handle)]`` once the round
+        is out and before the wait.
 
-        The longest delay imposed is handed to ``wait_all`` as
-        ``extra_wait``: a held job is outstanding for its whole backoff, so
-        a ``cfg-dispatch.max-wait`` shorter than the backoff would
-        otherwise trip the deadline on every retry round before the job had
-        been allowed to start. ``max-wait`` still bounds each wait, not
-        their sum.
+        The longest delay is passed to ``wait_all`` as ``extra_wait``, so a
+        ``cfg-dispatch.max-wait`` shorter than the backoff does not trip on every retry
+        round. ``max-wait`` still bounds each wait, not their sum.
         """
         resubmitted = []
         staged = []
@@ -6872,9 +5972,8 @@ class RtlBuddy:
                 delay = backoff_delay(attempt, retry_cfg)
                 longest_delay = max(longest_delay, delay)
                 spec = self._retry_spec(handle.spec, attempt=attempt)
-                # Console-visible: a green run that needed three attempts
-                # must not read like one that needed none, and INFO alone
-                # never reaches a CI console (#435).
+                # Console-visible: a green run that needed three attempts must not read
+                # like one that needed none, and INFO never reaches a CI console.
                 log_console_event(
                     logger,
                     logging.INFO,
@@ -6888,30 +5987,17 @@ class RtlBuddy:
                     delay_sec=round(delay, 1),
                     classifier=classifier,
                 )
-                # No `dependency`, and that is safe only because nothing
-                # gets here until the gate has already opened: a job is
-                # classified retryable only when its suite's build job
-                # reported success (see `build_gate_open`), so the shared
-                # build's stamp is on disk and this element short-circuits
-                # its own compile exactly as the gated first attempt did —
-                # the #369 invariant (never two writers in one artefact
-                # directory) is kept by the stamp, not by the edge.
-                # Re-arming the edge is not an option: an afterok on a job
-                # the scheduler has forgotten never becomes satisfiable.
-                # A retry is a fresh `sbatch` from THIS moment's environment,
-                # not a replay of the first submission's. Between the two, a
-                # later suite's sweep hook has run in this process and may
-                # have set or unset `SBATCH_NTASKS`/`_NODES`/`_NTASKS_PER_NODE`
-                # — and it is this attempt's telemetry the analysis reads, so
-                # the row has to describe this attempt. Stale metadata here
-                # picks the wrong cpu denominator and names an override that
-                # was not in force (#505 review).
-                #
-                # Read now, beside the submit it describes, but applied only
-                # once the whole round has landed: an `sbatch` that refuses,
-                # or a wait that fails, leaves the caller holding the
-                # PREVIOUS attempt's results and telemetry, and those must
-                # not be paired with this attempt's reservation.
+                # No `dependency`: safe because a job is retryable only when its suite's
+                # build job succeeded (see `build_gate_open`), so the stamp is on disk
+                # and the element short-circuits its compile. An afterok on a job the
+                # scheduler has forgotten never becomes satisfiable.
+                # A retry is a fresh `sbatch` from this moment's environment (a later
+                # suite's sweep hook may have changed
+                # `SBATCH_NTASKS`/`_NODES`/`_NTASKS_PER_NODE`), so the row must describe
+                # this attempt.
+                # Read now but applied only once the round has landed: if `sbatch`
+                # refuses or the wait fails, the caller keeps the previous attempt's
+                # results, which must not pair with this reservation.
                 if suite_results is not None:
                     staged.append(
                         self._stage_cpu_request_metadata(
@@ -6920,35 +6006,29 @@ class RtlBuddy:
                     )
                 resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
             if on_submitted is not None:
-                # The whole round is accepted and none of it has been waited
-                # on yet: this is the only moment at which a record of it can
-                # be written before the head blocks (#521).
+                # The whole round is accepted and none waited on yet: the only moment a
+                # record can be written before the head blocks.
                 on_submitted(resubmitted)
             backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
-            # The round landed: every job of it was accepted and waited on,
-            # so the rows may now describe it. Anything short of that leaves
+            # The round landed, so the rows may now describe it. Anything short leaves
             # them describing the attempt whose results the caller keeps.
             self._commit_cpu_request_metadata(staged, backend=backend, attempt=attempt)
         except BaseException:
-            # Same contract as the submit fan-out: a failure mid-retry must
-            # not leave this attempt's jobs running behind the head.
+            # Same contract as the submit fan-out: a failure mid-retry must not leave
+            # this attempt's jobs running behind the head.
             backend.cancel_all([h for _, h in resubmitted])
             raise
         return resubmitted
 
     def _stage_cpu_request_metadata(self, row, spec, *, backend):
-        """Read this resubmission's cpu overrides; do NOT write them yet.
+        """Read this resubmission's cpu overrides; do not write them yet.
 
-        Returned staged, not applied, because a row's metadata must always
-        describe the attempt whose telemetry sits beside it. If this round's
-        `sbatch` is refused or its wait fails, the caller keeps the previous
-        attempt's results and telemetry — and a row already rewritten here
-        would pair those with the reservation of an attempt that never ran
-        (#505 review).
+        Returned staged because a row's metadata must describe the attempt whose
+        telemetry sits beside it: if this round's `sbatch` is refused or its wait fails,
+        the caller keeps the previous attempt's results.
         """
-        # The backend's own arguments, for the same reason the first
-        # submission uses them: it is the backend that appends them, and by
-        # now `root_cfg` may belong to a different suite entirely.
+        # The backend's own arguments, as in the first submission: the backend appends
+        # them, and `root_cfg` may now belong to another suite.
         return (row, spec, cpu_request_overrides(backend.effective_sbatch_args))
 
     def _commit_cpu_request_metadata(self, staged, *, backend, attempt):
@@ -6961,9 +6041,8 @@ class RtlBuddy:
                 overrides=overrides,
             )
             if overrides != was:
-                # Worth a line: the advice for this test is now derived from
-                # a different set of overrides than its first attempt was,
-                # and nothing else in the run would say so.
+                # Worth a line: this test's advice is now derived from different
+                # overrides than its first attempt.
                 log_event(
                     logger,
                     logging.DEBUG,
@@ -6980,17 +6059,13 @@ class RtlBuddy:
     def _retry_spec(spec, *, attempt):
         """The spec for one more attempt at ``spec``'s job.
 
-        The scheduler log is tagged with the attempt number, stripping any
-        tag the previous attempt added — attempt 3 is ``…-retry3.log``, not
-        ``…-retry1-retry2-retry3.log``.
+        The scheduler log is tagged with the attempt number, replacing the previous tag
+        (``…-retry3.log``, not ``…-retry1-retry2-retry3.log``).
 
-        Everything else is carried, ``rebuild`` included — carried, never
-        *added*: a gated element that was denied ``--rebuild`` on its first
-        attempt must not acquire it on its second, which would put the
-        array back into one build directory at once (#494/#369). A spec
-        that legitimately holds it owns its own per-test directory, and an
-        attempt killed before it compiled still needs the rebuild it asked
-        for.
+        Everything else is carried, ``rebuild`` included, but never added: a gated
+        element denied ``--rebuild`` on its first attempt must not acquire it, which
+        would put the array back into one build directory. A spec that holds it owns its
+        per-test directory and still needs it.
         """
         log_path = spec.log_path
         if log_path is not None:
@@ -7003,16 +6078,12 @@ class RtlBuddy:
     def _build_compile_fail_desc(build_handle, build_failure):
         """One summary line for a row the suite's build job failed to compile.
 
-        The head's spelling of the desc the gated sim job writes for itself
-        (#498) — same formatter, plus the two things only the head knows:
-        the scheduler's job id, and where that job's logs are. The error
-        line comes from the build envelope's ``error_tail``, so the row
-        shows the design error rather than whatever a recompile hit.
+        The head's spelling of the desc the gated sim job writes for itself, plus the
+        scheduler job id and the location of that job's logs. The error line comes from
+        the build envelope's ``error_tail``.
         """
-        # BuildJobSpec.result_json is optional on the type (a build job can
-        # be launched without one, and then has no rtl_buddy log of its own
-        # to name); dispatch always sets it, but an error branch must not be
-        # where that assumption turns into a TypeError.
+        # BuildJobSpec.result_json is optional on the type; dispatch always sets it, but
+        # an error branch must not raise a TypeError over that.
         build_logs = str(build_handle.spec.log_path)
         if build_handle.spec.result_json is not None:
             build_logs += f" and {job_log_path(build_handle.spec.result_json)}"
@@ -7027,41 +6098,34 @@ class RtlBuddy:
     def _enrich_compile_fail_desc(self, results, build_handle, build_failure):
         """Point a collected compile-fail row at the build job that broke.
 
-        Only a row that *is* a compile failure, recognised by the two descs
-        rtl_buddy itself writes: the generic ``Compile failed``, and the
-        gated sim job's own build-failure line. A row saying anything else
-        failed in simulation, not in compilation, and rewriting its desc
-        would replace a real diagnosis with a guess — the build envelope
-        listing the test under ``failed`` says a *compile* failed, not that
-        this run's failure was that compile.
+        Only rows that are compile failures, recognised by the two descs rtl_buddy
+        writes: the generic ``Compile failed`` and the gated sim job's build-failure
+        line. Any other desc failed in simulation, and rewriting it would replace a real
+        diagnosis with a guess.
 
-        Returns whether the desc changed, so the caller can persist the
-        rewrite into the durable envelope — this mutation is otherwise
-        in-memory only, and ``rb graph results`` re-reads the file.
+        Returns whether the desc changed, so the caller can persist it into the durable
+        envelope that ``rb graph results`` re-reads.
         """
         if build_handle is None:
             return False
         desc = results.results.get("desc") or ""
         if desc != COMPILE_FAIL_DESC and not desc.startswith(BUILD_COMPILE_FAIL_PREFIX):
             return False
-        # The generic desc needs the same compiler evidence the sim job's
-        # retry gate demands: bare `failed` membership can record a setup or
-        # worker error, and a sim job that saw no evidence retried — so its
-        # generic "Compile failed" may be the retry's own, genuine compile
-        # failure, which must not be re-attributed to a build job whose
-        # compiler never ran. A desc already carrying the build prefix was
-        # written by a sim job that read a recorded returncode itself.
+        # The generic desc needs the compiler evidence the sim job's retry gate demands:
+        # bare `failed` membership can record a setup or worker error, and a sim job
+        # that saw no evidence retried, so its "Compile failed" may be the retry's own
+        # failure.
+        # A desc with the build prefix came from a sim job that read a recorded
+        # returncode.
         returncode = (build_failure or {}).get("returncode")
         if desc == COMPILE_FAIL_DESC and not (
             isinstance(returncode, int) and returncode
         ):
             return False
-        # A record that carries a fingerprint digest was written by a build
-        # job whose sim-side twin suppresses the retry on matching inputs
-        # and stamps the build prefix into its own desc. A still-generic
-        # desc therefore means that sim job *did* retry — its inputs had
-        # drifted from the failed build — and this failure is the retry's
-        # own, not the build's stale verdict.
+        # A record with a fingerprint digest comes from a build job whose sim-side twin
+        # suppresses the retry on matching inputs and stamps the build prefix. A
+        # still-generic desc means that sim job did retry (inputs drifted), so this
+        # failure is the retry's own.
         if desc == COMPILE_FAIL_DESC and (build_failure or {}).get("fingerprint_sha"):
             return False
         results.results["desc"] = self._build_compile_fail_desc(
@@ -7074,45 +6138,37 @@ class RtlBuddy:
     ):
         """Load result envelopes for one attempt; return what may be retried.
 
-        Joins per-job scheduler telemetry (``sacct`` reserved-vs-used, when
-        accounting exists) into both the in-memory results and the on-disk
-        envelopes. A missing/unreadable envelope becomes a
-        ``DispatchFailResults`` naming the scheduler state when known
-        (TIMEOUT/OOM pairs the failure with its cause) — unless the build
-        job recorded that test's compile as failed, in which case it becomes
-        a ``CompileFailResults`` (parity with the in-process path, where a
-        design error is a clean compile fail rather than an infra fail).
+        Joins per-job scheduler telemetry (``sacct`` reserved-vs-used, when accounting
+        exists) into the in-memory results and the on-disk envelopes. A missing or
+        unreadable envelope becomes a ``DispatchFailResults`` naming the scheduler state
+        when known (TIMEOUT/OOM), or a ``CompileFailResults`` when the build job
+        recorded that test's compile as failed.
 
-        Returns ``[(row index, handle, classifier)]`` for the missing
-        results that a remaining retry budget covers. ``submitted_at`` is
-        when this attempt was submitted: classification ignores artefacts
-        older than that, so a previous run's log cannot be read as this
-        attempt's evidence (#405 review).
+        Returns ``[(row index, handle, classifier)]`` for missing results a remaining
+        retry budget covers. ``submitted_at`` is when this attempt was submitted;
+        artefacts older than it are ignored as evidence.
         """
         suite_results = state["suite_results"]
         retryable = []
         build_handle = state.get("build_handle")
-        # Build-job compile outcome (advisory): map a compile failure to a
-        # CompileFail rather than the sim job's downstream DispatchFail.
+        # Build-job compile outcome (advisory): map a compile failure to CompileFail
+        # rather than the sim job's downstream DispatchFail.
         build_result = (
             load_build_result_json(build_handle.spec.result_json)
             if build_handle is not None
             else None
         )
         compile_failed = set(build_result["failed"]) if build_result else set()
-        # Why each of those failed (#498), keyed by test. The record the sim
-        # job read for itself, read again here — the head has the one thing
-        # the sim job lacked, the scheduler's build job id, and it is what
-        # takes a reader from a summary row to `build-<id>.log`.
+        # Why each of those failed, keyed by test. The head adds the scheduler's build
+        # job id, which leads from a summary row to `build-<id>.log`.
         build_failures = {
             entry["test"]: entry
             for entry in (build_result["builds"] if build_result else [])
             if entry.get("test") in compile_failed
         }
-        # What the build job observed each config's compile to cost (#495),
-        # keyed by test so a sim row can carry its own compile back to the
-        # summary and the results overlay. Empty for an envelope written by
-        # a build job that predates the records.
+        # What the build job observed each config's compile to cost, keyed by test so a
+        # sim row carries its compile to the summary and results overlay. Empty for an
+        # envelope from a build job without the records.
         build_entries = build_result["builds"] if build_result else []
         compile_records = {
             entry["test"]: {
@@ -7123,21 +6179,15 @@ class RtlBuddy:
             for entry in build_entries
             if entry.get("test")
         }
-        # Did this suite's build gate open? A build job that left no result
-        # did not finish: every sim it gated was cancelled by `afterok` (or
-        # skipped by the pool) and never started, so nothing in its
-        # artefacts is this attempt's evidence and resubmitting it would
-        # launch — with no gate at all — a job the head deliberately
-        # skipped (#405 review). A suite with no build job has no gate to
-        # open: there, one sim job per artefact directory is the only
-        # writer, which is the invariant the gate exists to keep (#369),
-        # and it holds for the retry too.
-        # A build job that released a compile key early rewrites its
-        # envelope as it goes (#548), so an envelope can now exist for a
-        # job that then died: `partial` says so. The tests it lists are
-        # decided and their jobs really ran — their gate opened, one key at
-        # a time — but a test it does not list is exactly the "no result"
-        # case above, so the flag is per test rather than per suite.
+        # Did this suite's build gate open? A build job that left no result did not
+        # finish: the sims it gated were cancelled by `afterok` (or skipped), so nothing
+        # in their artefacts is this attempt's evidence, and resubmitting would launch
+        # ungated a job the head skipped.
+        # A suite with no build job has no gate; one sim job per artefact directory is
+        # the only writer.
+        # A build job that released keys early rewrites its envelope as it goes, so one
+        # can exist for a job that then died; `partial` says so. Listed tests really
+        # ran; an unlisted test is the "no result" case, so the flag is per test.
         build_partial = bool(build_result and build_result.get("partial"))
         build_decided = (
             set(build_result["built"]) | set(build_result["failed"])
@@ -7145,9 +6195,9 @@ class RtlBuddy:
             else set()
         )
 
-        # ...unless the job FINISHED and only its final write was lost.
-        # Decided below, once the scheduler has been asked how the build
-        # job ended; until then the conservative reading stands.
+        # ...unless the job finished and only its final write was lost. Decided below
+        # once the scheduler says how the build job ended; until then the conservative
+        # reading stands.
         build_finished_partial = []
 
         def _build_gate_open(test_name):
@@ -7159,26 +6209,20 @@ class RtlBuddy:
                 return True
             return test_name in build_decided
 
-        # Keyed, not .get(): a state carrying pending jobs always set run_token
-        # in _dispatch_suite_submit, so a missing key is a bug that must fail
-        # loud — .get() would silently disable the staleness check and let a
-        # stale PASS through (a wrong-green, worse than the #362 false-red).
-        # The guard asks about *this* pass's jobs, the same list the loop
-        # below walks; the first attempt's full fleet lives in
-        # ``state["pending"]`` and is not what this pass collects (#405 review).
+        # Keyed, not .get(): a state with pending jobs always sets run_token in
+        # _dispatch_suite_submit, so a missing key is a bug; .get() would disable the
+        # staleness check and let a stale PASS through.
+        # The guard covers this pass's jobs, not the first attempt's fleet in
+        # ``state["pending"]``.
         run_token = state["run_token"] if pending else None
-        # The build handle joins the query on the first pass only. It costs
-        # nothing (Slurm's collect_telemetry is one `sacct --jobs a,b,c`) and
-        # the build job is guaranteed finished by then — the fleet-wide
-        # wait_all includes it. Later passes collect a resubmitted sim
-        # subset; the build job is never resubmitted, so re-querying it would
-        # buy a second identical row and a second identical write (#495).
+        # The build handle joins the query on the first pass only: it is cheap (one
+        # `sacct --jobs a,b,c`), finished by then, and never resubmitted, so re-querying
+        # would duplicate a row and a write.
         verilate_handle = state.get("verilate_handle")
         query_handles = [h for _, h in pending]
         if attempt == 0:
-            # The compile jobs, in the order they ran, on the first pass
-            # only — same reasoning as the build handle's: one `sacct` call
-            # covers them, and neither is ever resubmitted (#495, #593).
+            # The compile jobs, in run order, on the first pass only: one `sacct` covers
+            # them and neither is resubmitted.
             query_handles = [
                 handle
                 for handle in (verilate_handle, build_handle)
@@ -7186,9 +6230,9 @@ class RtlBuddy:
             ] + query_handles
         telemetry = backend.collect_telemetry(query_handles)
         if attempt == 0 and verilate_handle is not None:
-            # The verilate job's own numbers, on its own envelope and in
-            # `state` for its own right-sizing row (#593). The build job's
-            # block below says why both halves of this are best-effort.
+            # The verilate job's numbers, on its own envelope and in `state` for its own
+            # right-sizing row. The build job's block below explains why both are
+            # best-effort.
             verilate_tele = telemetry.get(telemetry_key(verilate_handle))
             if verilate_tele:
                 if verilate_handle.spec.result_json is not None:
@@ -7209,71 +6253,46 @@ class RtlBuddy:
         if attempt == 0 and build_handle is not None:
             build_tele = telemetry.get(telemetry_key(build_handle))
             if build_tele:
-                # (a) travels with the artifact, the way a sim job's does —
-                # attach_telemetry_json validates no filetype, so the build
-                # envelope takes the same top-level block; (b) stays in
-                # `state` for the compile-reservation advice, which is the
-                # only consumer that needs the build job's own numbers.
-                # Best-effort: a build job that died left no envelope, and
-                # that is already reported as a missing build result.
+                # (a) travels with the artifact like a sim job's (attach_telemetry_json
+                # validates no filetype); (b) stays in `state` for the
+                # compile-reservation advice, the only consumer of the build job's
+                # numbers.
+                # Best-effort: a build job that died left no envelope, already reported
+                # as a missing build result.
                 if build_handle.spec.result_json is not None:
                     attach_telemetry_json(build_handle.spec.result_json, build_tele)
                 state["build_telemetry"] = build_tele
-            # What the job's wall clock actually covered. sacct cannot tell
-            # "nothing to compile" from "compiled fast", and a re-run of an
-            # unchanged suite is the first of those: every build
-            # short-circuits on its stamp, so a 2 h reservation shows
-            # seconds of elapsed and near-zero cpu time. Right-sizing needs
-            # to know that before it advises shrinking anything (#495).
-            # None (not a zeroed dict) when the build job left no envelope
-            # or wrote one predating the records — "unknown", not "nothing".
-            # `None` for a partial envelope too, and for the same reason
-            # it is None for a missing one: the records are a fraction of
-            # the compiles the reservation actually paid for, and advising
-            # a smaller one from them would shrink it towards a build job
-            # that died (#548).
+            # What the job's wall clock covered. sacct cannot tell "nothing to compile"
+            # from "compiled fast": a re-run of an unchanged suite short-circuits every
+            # build, so a 2 h reservation shows seconds. Right-sizing needs that before
+            # advising a shrink.
+            # None (not a zeroed dict) when the envelope is missing, predates the
+            # records, or is partial: "unknown", not "nothing".
             state["build_compile_work"] = (
                 _summarize_compile_work(build_entries)
                 if build_result is not None and not build_partial
                 else None
             )
             if build_partial:
-                # Two very different things leave a partial envelope, and
-                # only the scheduler can tell them apart. A build job that
-                # DIED mid-compile never reached the tests its envelope
-                # does not name — their jobs were cancelled behind it, and
-                # closing their gate is what stops the retry round
-                # resubmitting them ungated (#405). A build job that ran to
-                # COMPLETED reached all of them; what it lost was the final
-                # write that would have dropped the `partial` mark (a full
-                # or read-only filesystem at the very end), and treating
-                # its unnamed tests as never-compiled would refuse a retry
-                # to a fleet that has nothing wrong with it. Anything else
-                # — no accounting, a kill, an unknown state — keeps the
-                # conservative reading. The reservation advice stays
-                # suppressed either way: the records are still a fraction
-                # of the compiles the job actually ran.
-                #
-                # Distinct TEST NAMES on both counts, because that is the
-                # unit the build job compiles: `suite_results` holds one
-                # row per (test, run_id) plus the skipped ones, so counting
-                # it would report "1 of 100 planned" for a single config
-                # fanned out over a hundred runs (#548 review). The first
-                # attempt's full fleet is one row per submitted job, and
-                # every planned config has at least one — the skipped rows
-                # reached neither a job nor the build job. Said once per
-                # suite, on the first pass: a retry pass re-reads the same
-                # envelope and would repeat it.
+                # A partial envelope has two causes only the scheduler can tell apart. A
+                # build job that died mid-compile never reached the unnamed tests;
+                # closing their gate stops the retry round resubmitting them ungated.
+                # One that ran to COMPLETED reached all of them and only lost the final
+                # write that drops `partial`; treating its unnamed tests as
+                # never-compiled would refuse a retry to a healthy fleet. Anything else
+                # keeps the conservative reading. Reservation advice stays suppressed
+                # either way.
+                # Count distinct test names on both sides, the build job's unit:
+                # `suite_results` has a row per (test, run_id) plus skipped ones, so it
+                # would report "1 of 100 planned" for one config run a hundred times.
+                # Said once per suite, on the first pass.
                 planned_names = {
                     handle.spec.test_name for _, handle in state.get("pending") or ()
                 }
-                # The scheduler's word where there is one, and the
-                # backend's own otherwise: `local-parallel` has no
-                # accounting at all (`collect_telemetry` returns {} by
-                # design), so without asking it directly a partial envelope
-                # there could never be recognised as a finished build and
-                # every unnamed gate would stay shut on a run that was
-                # fine (#548 review).
+                # The scheduler's word where there is one, the backend's otherwise:
+                # `local-parallel` has no accounting (`collect_telemetry` returns {}),
+                # so without asking it a partial envelope there could never be
+                # recognised as finished.
                 outcome = (build_tele or {}).get("state") or backend.build_outcome(
                     build_handle
                 )
@@ -7300,8 +6319,7 @@ class RtlBuddy:
                         scheduler_state=outcome,
                     )
         for idx, handle in pending:
-            # Keyed by handle, not by job id: two jobs on different clusters
-            # can carry the same id, and telemetry keeps them apart (#509).
+            # Keyed by handle, not job id: jobs on different clusters can share an id.
             tele = telemetry.get(telemetry_key(handle))
             try:
                 envelope = load_result_json(
@@ -7309,24 +6327,21 @@ class RtlBuddy:
                 )
                 results = envelope["result"]
                 if handle.spec.test_name in compile_failed:
-                    # The complementary case to the branch below: the sim job
-                    # DID leave an envelope, and it says the compile failed —
-                    # either because it declined the retry and reported the
-                    # build's verdict (#498), or, from an older job, because
-                    # its own retry failed too. Either way the summary row
-                    # should name the build job that actually broke, so the
-                    # reader goes to `build-<id>.log` instead of re-reading a
-                    # `compile.log` the retry may have written over.
+                    # The complementary case: the sim job left an envelope saying the
+                    # compile failed (it declined the retry and reported the build's
+                    # verdict, or in older jobs its own retry failed).
+                    # Name the build job that broke, so the reader goes to
+                    # `build-<id>.log` rather than a `compile.log` the retry may have
+                    # overwritten.
                     if self._enrich_compile_fail_desc(
                         results,
                         build_handle,
                         build_failures.get(handle.spec.test_name),
                     ):
-                        # The rewrite must outlive this pass: the summary
-                        # and machine payload render from memory, but the
-                        # durable ``dispatch/result-*.json`` still says the
-                        # generic desc and `rb graph results` re-reads it
-                        # (#498 review). Best-effort, like every collect
+                        # The rewrite must outlive this pass: the summary and machine
+                        # payload render from memory, but the durable
+                        # ``dispatch/result-*.json`` that `rb graph results` re-reads
+                        # still has the generic desc. Best-effort, like every collect
                         # annotation.
                         attach_result_key(
                             handle.spec.result_json,
@@ -7335,8 +6350,8 @@ class RtlBuddy:
                         )
             except FatalRtlBuddyError as e:
                 if handle.spec.test_name in compile_failed:
-                    # The build job already knows this is a compile failure;
-                    # don't mislabel the (killed) recompile as infra failure.
+                    # The build job already knows this is a compile failure; don't
+                    # mislabel the killed recompile as an infra failure.
                     log_event(
                         logger,
                         logging.WARNING,
@@ -7358,9 +6373,8 @@ class RtlBuddy:
                         f" (scheduler state {sched_state})" if sched_state else ""
                     )
                     attempt_note = f" after {attempt + 1} attempts" if attempt else ""
-                    # Both compile jobs, where the compile was split
-                    # (#593): a fan-out killed by `kill-on-invalid-dep`
-                    # never had a build job run at all, so the log that
+                    # Both compile jobs, where the compile was split: a fan-out killed
+                    # by `kill-on-invalid-dep` never ran a build job, so the log that
                     # says why is the verilate job's.
                     build_note = "".join(
                         f" and {label} log {handle.spec.log_path}"
@@ -7370,16 +6384,13 @@ class RtlBuddy:
                         )
                         if handle is not None
                     )
-                    # The scheduler log holds the job's stdout; its own
-                    # rtl_buddy log holds the events, and after #437 that
-                    # is a separate file per job, so name both.
+                    # The scheduler log holds the job's stdout; its rtl_buddy log is a
+                    # separate file per job with the events, so name both.
                     job_note = f" and {job_log_path(handle.spec.result_json)}"
-                    # A job the scheduler reports COMPLETED (exit 0) that left
-                    # no envelope is a contradiction — it ran but its result is
-                    # not visible here. On a shared filesystem that usually
-                    # means client attribute-cache staleness rather than a job
-                    # failure; point at that first so it isn't misread as a
-                    # scheduler kill (#362).
+                    # A job the scheduler reports COMPLETED (exit 0) with no envelope is
+                    # a contradiction: on a shared filesystem it usually means client
+                    # attribute-cache staleness, not a failure. Point at that first so
+                    # it is not misread as a scheduler kill.
                     if sched_state == "COMPLETED":
                         cause = (
                             "job COMPLETED (exit 0) but its result is not "
@@ -7393,23 +6404,19 @@ class RtlBuddy:
                             "afterok cancelled it"
                         )
                     else:
-                        # No scheduler in the picture (local-parallel): the job
-                        # crashed, was cancelled with the fleet, or never
-                        # started because its build job failed (#360).
+                        # No scheduler (local-parallel): the job crashed, was cancelled
+                        # with the fleet, or never started because its build job failed.
                         cause = (
                             "the job crashed or was cancelled, or its build job "
                             "failed so the job never ran"
                         )
-                    # Only a resource-condition kill whose own fresh output
-                    # ends *inside* the license queue is retryable: a hung
-                    # test reaches the same TIMEOUT having printed real
-                    # simulator output (with or without an earlier banner)
-                    # and must keep failing (#405). Classifying when the
-                    # budget is spent is pointless work, so the budget is
-                    # checked first. `scheduled` decides whether a
-                    # scheduler state is required at all — a backend that
-                    # runs jobs itself reports none, and demanding one
-                    # would make retry dead code there.
+                    # Only a resource-condition kill whose fresh output ends inside the
+                    # license queue is retryable: a hung test reaches the same TIMEOUT
+                    # after real simulator output and must keep failing. The budget is
+                    # checked first.
+                    # `scheduled` decides whether a scheduler state is required: a
+                    # backend that runs jobs itself reports none, and demanding one
+                    # would make retry dead code.
                     classifier = (
                         classify_missing_result(
                             handle.spec,
@@ -7443,26 +6450,17 @@ class RtlBuddy:
                     if classifier is not None:
                         retryable.append((idx, handle, classifier))
             if tele is not None:
-                # In-memory for aggregation (P3 right-sizing) and folded
-                # into the envelope so telemetry travels with the artifact.
+                # In memory for aggregation (right-sizing) and folded into the envelope
+                # so telemetry travels with the artifact.
                 results.results["telemetry"] = tele
                 attach_telemetry_json(handle.spec.result_json, tele)
             compile_record = compile_records.get(handle.spec.test_name)
             if compile_record is not None:
-                # The build job's own observation of this test's compile.
-                # The row already carries a head-side `builder` (what the
-                # head resolved before submitting); where the two disagree —
-                # a preproc hook that overrode the builder — the envelope
-                # wins, because it is what actually ran.
-                #
-                # Folded into `result.results`, not onto the envelope's top
-                # level: that nested dict is what `rb graph results` reads a
-                # run's payload from, so a top-level key would travel with
-                # the artifact and still be invisible to the overlay.
-                #
-                # A copy per row: one record backs every run_id of a test and
-                # every envelope written for it, and a shared dict is an
-                # aliasing invariant nothing here needs to hold.
+                # The build job's observation of this test's compile. Where it disagrees
+                # with the row's head-side `builder` (a preproc hook overrode it), the
+                # envelope wins.
+                # Folded into `result.results`, which is what `rb graph results` reads.
+                # A copy per row: one record backs every run_id of a test.
                 results.results["compile"] = dict(compile_record)
                 attach_result_key(handle.spec.result_json, "compile", compile_record)
             suite_results[idx]["results"] = results
@@ -7471,10 +6469,9 @@ class RtlBuddy:
     def _simulator_family_of(self, builder_name):
         """Simulator family for a resolved builder name (advice gating).
 
-        Reservation analysis is advisory and runs *after* every job has
-        completed; a row whose builder name no longer resolves must not
-        turn a finished run into an abort. Return ``None`` (family unknown)
-        instead of raising.
+        Returns ``None`` (unknown) instead of raising: analysis is advisory and runs
+        after every job completed, so an unresolvable builder must not abort a finished
+        run.
         """
         try:
             return self.root_cfg.resolve_rtl_builder_cfg(
@@ -7495,88 +6492,70 @@ class RtlBuddy:
     ):
         """Right-size one dispatched suite's rows into advice findings.
 
-        ``state`` is the suite's dispatch state, carrying the build job's
-        own telemetry when collect saw any (#495) — the build job has no
-        ``suite_results`` row, so its reservation can only be judged from
-        there.
+        ``state`` is the suite's dispatch state; it carries the build job's own
+        telemetry when collect saw any, since the build job has no ``suite_results``
+        row.
         """
         rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
         if not rightsize_cfg.report:
             return []
-        # Where the `sbatch-args` the jobs were submitted with actually live.
-        # The overrides themselves are read off the backend (#505 review), so
-        # the file named in an `edit_hint` about them has to come from there
-        # too: the backend was built once from the orchestration
-        # root_config.yaml, while `self.root_cfg` below is whichever root THIS
-        # suite walked up to, and applying a hint that named the suite's root
-        # would edit a `cfg-dispatch` the instantiated backend never reads
-        # (#527). getattr, for the same reason the others use it — analysis is
-        # advisory and must never turn a finished run into an abort.
+        # Where the `sbatch-args` the jobs were submitted with live. The overrides come
+        # from the backend, so the `edit_hint` file must too: the backend was built from
+        # the orchestration root_config.yaml, while `self.root_cfg` is the root this
+        # suite walked up to.
+        # getattr: analysis is advisory and must not abort a finished run.
         sbatch_args_config_path = getattr(backend, "effective_sbatch_args_path", None)
-        # The suite's own `compile:` block as submit resolved it, and which
-        # compile fields it won (#497). .get(), unlike `build_handle` below:
-        # an old state dict — or a caller that assembled one by hand — must
-        # degrade to root-config-only attribution rather than abort a
-        # finished run. Resolved once: both analyses attribute the same
-        # reservation, and computing it twice invites them to disagree.
+        # The suite's own `compile:` block as submit resolved it, and which fields it
+        # won. .get(), unlike `build_handle` below: an old or hand-built state must
+        # degrade to root-config-only attribution. Resolved once so both analyses
+        # attribute the same reservation.
         suite_compile = (state or {}).get("suite_compile")
-        # Attributed for the mode this run reserved in, so an edit hint
-        # names `compile.modes.cov.mem` where that block governed rather
-        # than the base key it overrode (#634).
+        # Attributed for the mode this run reserved in, so a hint names
+        # `compile.modes.cov.mem` where that block governed.
         compile_origins = compile_resource_origins(
             suite_compile, builder_mode=self.rtl_builder_mode
         )
         findings = analyze_suite_reservations(
             suite_results,
             suite_display=suite_display,
-            # Absolute tests.yaml path in the machine edit_hint so an agent
-            # whose cwd differs from the invocation cwd can still apply it;
-            # the human table uses the short suite_display.
+            # Absolute tests.yaml path in the machine edit_hint so an agent with a
+            # different cwd can apply it; the human table uses the short suite_display.
             suite_config_path=suite_config_path or suite_display,
             rightsize_cfg=rightsize_cfg,
             reg_level=reg_level,
             simulator_family_of=self._simulator_family_of,
-            # cfg-dispatch lives in root_config.yaml, so advice about a
-            # reservation the compile block governs has to point there
-            # rather than at the suite's tests.yaml (#358). getattr, not the
-            # attribute: analysis is advisory and runs after every job has
-            # finished — it must never turn a completed run into an abort.
+            # cfg-dispatch lives in root_config.yaml, so advice about a reservation the
+            # compile block governs must point there, not at tests.yaml. getattr:
+            # analysis is advisory and must not abort a completed run.
             root_config_path=getattr(self.root_cfg, "root_cfg_path", None),
-            # ...except for a cpu override in `sbatch-args`, which belongs to
-            # the backend and so names the backend's own config (#527).
+            # ...except a cpu override in `sbatch-args`, which belongs to the backend
+            # and names the backend's config.
             sbatch_args_config_path=sbatch_args_config_path,
-            # ...unless the suite's own compile block is what governs that
-            # field, in which case cfg-dispatch is the layer it overrides
-            # and the hint has to name the suite instead (#497). This
-            # reaches an in-job compile's rows — the case with no build job
-            # at all, where the compile reservation only ever shows up
-            # inside the field-wise maximum.
+            # ...unless the suite's own compile block governs that field: then
+            # cfg-dispatch is the layer it overrides and the hint names the suite. This
+            # reaches an in-job compile's rows, where no build job exists.
             compile_origins=compile_origins,
-            # How often the scheduler sampled usage, so a peak that was
-            # never actually measured cannot become a mem suggestion (#365).
+            # How often the scheduler sampled usage, so an unmeasured peak cannot become
+            # a mem suggestion.
             accounting_interval_s=(
                 backend.accounting_interval_s() if backend is not None else None
             ),
         )
         build_telemetry = (state or {}).get("build_telemetry")
         if build_telemetry:
-            # Keyed, not .get(): collect only stashes build telemetry when it
-            # had a build handle to query, so the two travel together and a
-            # missing handle here is a bug that must fail loud.
+            # Keyed, not .get(): collect stashes build telemetry only when it had a
+            # build handle, so the two travel together and a missing handle is a bug
+            # that must fail loud.
             build_spec = state["build_handle"].spec
             findings.extend(
                 analyze_build_reservation(
                     build_telemetry,
-                    # The per-build reservation, NOT the scaled one the build
-                    # spec carries: the advice names
-                    # cfg-dispatch.compile.cpus, which is per-build.
-                    #
-                    # Submit's own resolution where there is one: with
-                    # per-testbench `compile:` blocks the build job is sized
-                    # by the maximum over the PLANNED testbenches (#551), and
-                    # analysis holds neither the plan nor the suite_cfg those
-                    # blocks live in. The suite-wide fallback is the same
-                    # number for every suite that declares none.
+                    # The per-build reservation, not the scaled one the build spec
+                    # carries: the advice names cfg-dispatch.compile.cpus, which is per
+                    # build.
+                    # Use submit's own resolution where there is one (with per-testbench
+                    # `compile:` blocks the build job is sized by the maximum over
+                    # planned testbenches, which analysis cannot recompute).
                     (state or {}).get("build_compile_resources")
                     or resolve_compile_resources(
                         self.root_cfg.get_dispatch_cfg(),
@@ -7586,63 +6565,49 @@ class RtlBuddy:
                     build_spec.parallel,
                     rightsize_cfg,
                     suite_display,
-                    # cfg-dispatch lives in root_config.yaml; getattr, not the
-                    # attribute, for the same reason the per-test analysis
-                    # uses it — advice runs after every job finished and must
-                    # never turn a completed run into an abort.
+                    # cfg-dispatch lives in root_config.yaml; getattr, as in the
+                    # per-test analysis, because advice must never abort a completed
+                    # run.
                     getattr(self.root_cfg, "root_cfg_path", None),
-                    # Whether anything actually compiled: without it a re-run
-                    # whose builds all short-circuited on their stamps reads
-                    # as a fast compile and advises a limit the next real RTL
-                    # change times out against (#495).
+                    # Whether anything compiled: without it a re-run whose builds all
+                    # short-circuited on stamps reads as a fast compile and advises a
+                    # limit the next real change times out against.
                     compile_work=state.get("build_compile_work"),
-                    # TotalCPU is accumulated from usage samples, so a build
-                    # job shorter than one interval was measured at most once
-                    # — the same reason memory advice is gated (#365).
+                    # TotalCPU accumulates from usage samples, so a build job shorter
+                    # than one interval was measured at most once; same reason memory
+                    # advice is gated.
                     accounting_interval_s=(
                         backend.accounting_interval_s() if backend is not None else None
                     ),
-                    # Per-field provenance, so a value the suite block won
-                    # is pointed back at the suite's tests.yaml instead of
-                    # at a cfg-dispatch key editing which would move
-                    # nothing (#497). The build job's own map, which also
-                    # names the testbench whose block won each field where
-                    # the maximum took it from one (#551); the suite-wide
-                    # map is the fallback for a state dict from before that.
+                    # Per-field provenance, so a value the suite block won points at the
+                    # suite's tests.yaml, not a cfg-dispatch key whose edit would move
+                    # nothing.
+                    # The build job's own map also names the testbench whose block won
+                    # each field; the suite-wide map is the fallback for an older state
+                    # dict.
                     compile_origins=(
                         (state or {}).get("build_compile_origins") or compile_origins
                     ),
                     suite_config_hint=suite_config_path or suite_display,
-                    # ...and whether the resolved reservation is what the
-                    # build job was actually submitted with: a `sbatch-args`
-                    # argument or an `SBATCH_*` variable that sets the cpu
-                    # request beats the generated flags, so neither the
-                    # ratio nor the decomposition may be stated from it
-                    # (#505 review).
-                    #
-                    # The submit-time snapshot, NOT a fresh read: a
-                    # regression submits every suite before collecting any,
-                    # and a later suite's sweep hook is `exec()`d in this
-                    # process, so `os.environ` here can be a different
-                    # environment from the one this build job inherited.
-                    # Recomputing would pick the wrong denominator and name
-                    # an override that was never active for it. This is also
-                    # what the per-test rows carry, so both halves of a
-                    # suite's advice describe one submission.
+                    # ...and whether the resolved reservation is what the build job was
+                    # submitted with: a `sbatch-args` argument or `SBATCH_*` variable
+                    # setting the cpu request beats the generated flags, so neither the
+                    # ratio nor the decomposition may be stated from it.
+                    # Use the submit-time snapshot, not a fresh read: a later suite's
+                    # sweep hook can change `os.environ`. The per-test rows carry the
+                    # same snapshot.
                     cpus_override=(state or {}).get("cpus_override") or [],
-                    # ...and the config those `sbatch-args` came from, so the
-                    # hint's `file` is the one the backend reads rather than
-                    # this suite's root (#527). Same value the per-test rows
-                    # above got: one submission, one file to edit.
+                    # ...and the config those `sbatch-args` came from, so the hint's
+                    # `file` is the one the backend reads. Same value as the per-test
+                    # rows.
                     sbatch_args_config_path=sbatch_args_config_path,
                 )
             )
         verilate_telemetry = (state or {}).get("verilate_telemetry")
         if verilate_telemetry:
-            # Its own row, from its own reservation and its own provenance
-            # (#593). Everything the build job's call reads from the suite
-            # is the same; what differs is which keys an edit hint names,
-            # and the verilate provenance map spells those itself.
+            # Its own row, from its own reservation and provenance. The suite inputs are
+            # the same as the build job's; the verilate provenance map spells its own
+            # edit-hint keys.
             findings.extend(
                 analyze_build_reservation(
                     verilate_telemetry,
@@ -7676,9 +6641,9 @@ class RtlBuddy:
                 "test": f.test,
                 "resource": f.resource,
                 "phase": f.phase,
-                # The requested reservation, with what the scheduler handed
-                # out beside it when the two differ — whole-core rounding is
-                # not something an edit to the named Field can move (#505).
+                # The requested reservation, with what the scheduler handed out beside
+                # it when they differ; whole-core rounding is not something an edit to
+                # the named field can move.
                 "reserved": (
                     f"{f.reserved} ({f.allocated} allocated)"
                     if f.allocated
@@ -7695,17 +6660,15 @@ class RtlBuddy:
             "rtl-buddy suggests; apply by editing the named Field",
         ]
         if any(f.phase == "compile+sim" for f in findings):
-            # Without this the numbers read as sim-only and a compile-sized
-            # reservation looks wildly over-reserved. Gated on the phase it
-            # describes: a table whose only non-sim row is the build job
-            # would otherwise explain a row it does not contain.
+            # Without this the numbers read as sim-only and a compile-sized reservation
+            # looks over-reserved. Gated on the phase it describes.
             metadata.append(
                 "compile+sim rows measure a job that also compiled (its "
                 "builder cannot share a build), so the peak spans both phases"
             )
         if any(f.allocated for f in findings):
-            # Without this the parenthesised number reads as a second
-            # reservation to edit, when it is the scheduler's rounding.
+            # Without this the parenthesised number reads as a second reservation to
+            # edit, when it is the scheduler's rounding.
             metadata.append(
                 "Reserved is what the reservation asked for; the "
                 "parenthesised figure is what the scheduler allocated — a "
@@ -7713,9 +6676,9 @@ class RtlBuddy:
                 "requested, and no edit to Field changes that"
             )
         if any(f.suggested_total for f in findings):
-            # Without this the number reads as the reservation to end up
-            # with, and a reader who writes it into the named Field
-            # overshoots by whatever the other builds contribute (#551).
+            # Without this the number reads as the reservation to end up with, and
+            # writing it into the named field overshoots by what the other builds
+            # contribute.
             metadata.append(
                 "an aggregated row's suggestion is the named Field's OWN new "
                 "value, not the whole-job figure: the build job reserves the "
@@ -7724,12 +6687,10 @@ class RtlBuddy:
             )
         compile_rows = [f for f in findings if f.phase == "compile"]
         if compile_rows:
-            # Name the key that governs these rows, not the root one by
-            # default: a suite whose own `compile:` block sets `parallel` is
-            # not moved by editing cfg-dispatch (#547 review). One regression
-            # can table several suites, and they need not agree — where they
-            # differ the footnote states the rule instead of picking a side,
-            # since each row's own file is already in the Field column.
+            # Name the key that governs these rows: a suite whose own `compile:` block
+            # sets `parallel` is not moved by cfg-dispatch. One regression can table
+            # suites that disagree; the footnote then states the rule, since each row's
+            # file is in the Field column.
             parallel_keys = {
                 f.parallel_origin for f in compile_rows if f.parallel_origin
             }
@@ -7740,17 +6701,16 @@ class RtlBuddy:
                     "the resolved compile.parallel (suite block or cfg-dispatch)"
                 )
             else:
-                # Nothing said: findings from a caller that does not carry
-                # the origin keep the wording they always had.
+                # Nothing said: findings from a caller without the origin keep their
+                # wording.
                 parallel_key = "cfg-dispatch.compile.parallel"
             note = (
                 "the compile row is the suite's build job: one allocation "
                 f"running up to {parallel_key} builds at once"
             )
-            # The cpus row is gated independently (efficiency threshold, and
-            # a reduce needs evidence a compile ran), so a table whose only
-            # build-job row is `time` would otherwise carry a footnote
-            # explaining a column that is not there.
+            # The cpus row is gated independently (efficiency threshold; a reduce needs
+            # evidence a compile ran), so a table whose only build-job row is `time`
+            # must not carry a footnote about a missing column.
             if any(f.resource == "cpus" for f in compile_rows):
                 note += ", so its cpus suggestion is per-build"
             metadata.append(note)
@@ -7923,10 +6883,10 @@ class RtlBuddy:
             str | None,
             typer.Option(
                 "--run-tag",
-                help="namespace this run's artefact tree under "
-                "artefacts/.runs/<tag>/ so a concurrent run of the same "
-                "suites gets its own trees, its own tree locks and its own "
-                "logs; shared builds stay shared",
+                help="namespace this run's artefact trees under "
+                "artefacts/.runs/<tag>/ with their own tree locks and logs, "
+                "so concurrent runs of the suites do not collide; shared "
+                "builds stay shared",
             ),
         ] = None,
     ):
@@ -7934,8 +6894,8 @@ class RtlBuddy:
         run rtl regression
         """
         self._orphans = orphans
-        # Before the first `_enter_command_context` — the manifest root's and
-        # every suite's artefact root (and tree lock) derive from it (#541).
+        # Before the first `_enter_command_context`: the manifest root's and every
+        # suite's artefact root (and tree lock) derive from it.
         self._run_tag = validate_run_tag(run_tag)
         master_seed = self._checked_master_seed(master_seed)
         merge_mode_count = sum(
@@ -7981,8 +6941,8 @@ class RtlBuddy:
                 if not os.path.isabs(reg_config)
                 else Path(reg_config).resolve()
             )
-            # Anchor the orchestration to dirname(regression.yaml). Each
-            # suite below will re-anchor to its own tests.yaml directory.
+            # Anchor orchestration to dirname(regression.yaml); each suite re-anchors to
+            # its own tests.yaml directory.
             ctx = self._enter_command_context(primary_config=resolved_reg_config)
             self.reg_cfg = RegConfig(
                 name=self.name + "/reg_config", path=resolved_reg_config
@@ -8004,8 +6964,8 @@ class RtlBuddy:
                     path=local_reg_config,
                 )
             else:
-                # Defer to root_config.yaml — its reg-cfg-path is anchored
-                # to the root config directory; use that as the command root.
+                # Defer to root_config.yaml: its reg-cfg-path is anchored to the root
+                # config directory, which becomes the command root.
                 ctx = self._enter_command_context(command_root=self.invocation_cwd)
                 self.reg_cfg = self.root_cfg.get_rtl_reg_cfg()
                 ctx = self._enter_command_context(
@@ -8016,8 +6976,8 @@ class RtlBuddy:
                     logging.INFO,
                     "regression.config_root_default",
                     path=self.reg_cfg.get_path(),
-                    # `flow` is on every emission of this event, not only the
-                    # per-flow commands' — one event name, one field set.
+                    # `flow` is on every emission of this event, not only per-flow
+                    # commands': one event name, one field set.
                     flow="sim",
                 )
 
@@ -8033,13 +6993,13 @@ class RtlBuddy:
                 derivation_version=SEED_DERIVATION_VERSION,
             )
 
-        # Dispatch implies share_build — the dispatched build job is what lets
-        # the sim jobs skip compilation.
+        # Dispatch implies share_build: the build job is what lets sim jobs skip
+        # compilation.
         dispatch_backend = self._resolve_dispatch_backend(dispatch, jobs=jobs)
         if dispatch_backend is not None:
-            # An early-stop before POST can't be honoured per-job (the
-            # message names whether --dispatch or cfg-dispatch.backend put
-            # this run on a backend, so the remedy it offers exists).
+            # An early stop before POST cannot be honoured per job; the message names
+            # whether --dispatch or cfg-dispatch.backend chose the backend, so its
+            # remedy exists.
             self._reject_early_stop_under_dispatch(dispatch, dispatch_backend)
             if not share_build:
                 self.share_build = True
@@ -8053,16 +7013,14 @@ class RtlBuddy:
         exit_code = 0
         reg_results = []
         reservation_findings = []
-        # Per-suite ExecutionContext re-anchors the file log under each
-        # tests.yaml directory. The process CWD is intentionally not
-        # changed; the test runner already passes suite_dir explicitly to
-        # every consumer.
+        # Per-suite ExecutionContext re-anchors the file log under each tests.yaml
+        # directory. The process CWD is unchanged; the test runner passes suite_dir
+        # explicitly.
         orchestration_ctx = ctx
         if dispatch_backend is not None:
-            # Expand every suite before the first submission. Besides keeping
-            # sweep hooks head-only, this lets the regression reject two
-            # co-located configs whose expanded tests would write the same
-            # per-test artefact directory before either job can touch it.
+            # Expand every suite before the first submission: keeps sweep hooks
+            # head-only and lets the regression reject two co-located configs whose
+            # expanded tests would write the same artefact directory.
             suite_configs = list(self.reg_cfg.get_suite_configs())
             namespaces = self._dispatch_regression_namespaces(suite_configs)
             prepared_suites = []
@@ -8094,37 +7052,31 @@ class RtlBuddy:
                         "dispatch_namespace": namespaces[
                             str(Path(suite_cfg.get_path()).resolve())
                         ],
-                        # A sweep hook is `exec()`d in this process and may
-                        # set or unset `SBATCH_*`, and entering a suite loads
-                        # its `.rtl-buddy/.env`. Snapshot the environment as
-                        # it stood right after this suite's own planning so
-                        # its submission sees exactly that, not what a later
-                        # suite's hook left behind (docs/concepts/dispatch.md).
+                        # A sweep hook is `exec()`d in this process and may set or unset
+                        # `SBATCH_*`, and entering a suite loads its `.rtl-buddy/.env`.
+                        # Snapshot the environment right after this suite's planning so
+                        # its submission sees exactly that (docs/concepts/dispatch.md).
                         "environ": dict(os.environ),
                     }
                 )
             self._validate_dispatch_test_artifacts(prepared_suites)
-            # Retries, collection, and analysis run from whatever the process
-            # holds after every hook has run, as before pre-expansion.
+            # Retries, collection and analysis run from whatever the process holds after
+            # every hook has run.
             final_environ = dict(os.environ)
 
-            # Submit every suite before waiting: the job fleet spans all
-            # suites, so slow suites overlap instead of serializing (#351 P2).
+            # Submit every suite before waiting: the fleet spans all suites, so slow
+            # suites overlap.
             submitted = []
             all_handles = []
-            # Jobs this run INHERITED rather than launched (`--orphans
-            # adopt`), by identity. Until the fleet-wide wait begins they are
-            # not this run's to destroy: a later suite that finds no orphan,
-            # or one whose orphan does not match, is a failure of THIS
-            # invocation and must leave an earlier suite's live fleet exactly
-            # where it found it — still queued, still recorded `running`, and
-            # still adoptable once the mismatch is fixed (#521 review). From
-            # the wait onwards they are the fleet, and an interrupt takes
-            # them down with everything else.
+            # Jobs this run inherited (`--orphans adopt`), by identity. Until the
+            # fleet-wide wait begins they are not this run's to destroy: a later suite
+            # that finds no matching orphan fails this invocation but must leave an
+            # earlier suite's fleet queued, recorded `running` and adoptable.
+            # From the wait onwards an interrupt takes them down with the rest.
             adopted_handles = set()
             waiting = False
-            # One nonce for the whole regression run, shared across suites, so
-            # a collector rejects any envelope not from this run (#362).
+            # One nonce for the whole regression run, shared across suites, so a
+            # collector rejects any envelope not from this run.
             run_token = uuid.uuid4().hex
             try:
                 for prepared in prepared_suites:
@@ -8150,26 +7102,25 @@ class RtlBuddy:
                         ),
                     )
                     submitted.append((suite_cfg, state))
-                    # A suite that selected zero tests submits nothing and
-                    # returns build_handle=None; a None in all_handles crashes
-                    # both wait_all and the cancel_all cleanup path (#361).
+                    # A suite that selected zero tests submits nothing and returns
+                    # build_handle=None; a None in all_handles crashes wait_all and
+                    # cancel_all.
                     suite_handles = self._state_handles(state)
                     all_handles.extend(suite_handles)
                     if state.get("adopted"):
                         adopted_handles.update(id(handle) for handle in suite_handles)
-                    # A backend that runs jobs itself may have freed a slot
-                    # during the next suite's submission, so give it a chance
-                    # to refill; a scheduler-backed backend no-ops here.
+                    # A backend that runs jobs itself may have freed a slot during the
+                    # next suite's submission; give it a chance to refill. A
+                    # scheduler-backed backend no-ops.
                     dispatch_backend.advance()
                 _replace_environ(final_environ)
                 if all_handles:
                     waiting = True
                     dispatch_backend.wait_all(all_handles)
             except BaseException:
-                # Interrupt or fatal error on the head: don't leave the
-                # fleet running — but "the fleet" is what this run launched.
-                # Before the wait, an adopted suite's jobs belong to the run
-                # that submitted them and are left alone.
+                # Interrupt or fatal error on the head: don't leave the fleet running,
+                # but "the fleet" is what this run launched. Before the wait, an adopted
+                # suite's jobs belong to the run that submitted them.
                 _replace_environ(final_environ)
                 doomed_states = [
                     state
@@ -8182,20 +7133,18 @@ class RtlBuddy:
                     if waiting or id(handle) not in adopted_handles
                 ]
                 dispatch_backend.cancel_all(doomed)
-                # ...and don't leave a cancelled suite's manifest claiming a
-                # live fleet: the next invocation reads those to decide what
-                # is still out there (#521). Only the suites whose jobs were
-                # actually taken down, and only once they really are gone.
+                # ...and don't leave a cancelled suite's manifest claiming a live fleet:
+                # the next invocation reads them. Only suites whose jobs were taken
+                # down, and only once they are gone.
                 for submitted_state in doomed_states:
                     self._close_cancelled_run_manifest(
                         dispatch_backend, submitted_state
                     )
                 raise
             for suite_cfg, state in submitted:
-                # Re-anchor the file log under this suite before collecting,
-                # so a collect-time dispatch.result_missing lands in the
-                # suite's own rtl_buddy.log rather than the last-entered
-                # suite's — matching the in-process per-suite fidelity.
+                # Re-anchor the file log under this suite before collecting, so a
+                # collect-time dispatch.result_missing lands in the suite's own
+                # rtl_buddy.log.
                 self._enter_command_context(primary_config=suite_cfg.get_path())
                 suite_results = self._dispatch_collect(dispatch_backend, state)
                 suite_display = self._display_path(
@@ -8249,10 +7198,9 @@ class RtlBuddy:
                         "test_suite": self._display_path(
                             suite_cfg.get_path(), base_dir=start_dir
                         ),
-                        # Absolute suite dir — used as the coverage source_root.
-                        # Avoid recombining the display path with command_root,
-                        # which breaks when invocation cwd differs from
-                        # command_root.
+                        # Absolute suite dir, used as the coverage source_root;
+                        # recombining the display path with command_root breaks when the
+                        # invocation cwd differs.
                         "test_suite_path": str(
                             Path(suite_cfg.get_path()).resolve().parent
                         ),
@@ -8260,9 +7208,8 @@ class RtlBuddy:
                     }
                 )
                 exit_code |= self._exit_code_from_results(suite_results)
-        # Re-anchor the orchestration log to the regression root for the
-        # summary phase so coverage merge artifacts and final summary land
-        # next to regression.yaml.
+        # Re-anchor the orchestration log to the regression root so coverage merge
+        # artifacts and the final summary land beside regression.yaml.
         self._enter_command_context(command_root=orchestration_ctx.command_root)
         ctx = orchestration_ctx
         _log_reservation_advice(reservation_findings)
@@ -8293,10 +7240,9 @@ class RtlBuddy:
             coverage_dir_summary_file=coverage_dir_summary_file,
             coverage_source_summary=coverage_source_summary,
         )
-        # The per-suite HTML branch below builds metadata per suite and drops
-        # each payload, so seed the run-level cover points here to keep them in
-        # the envelope either way. Key omitted when there are none, so "absent"
-        # keeps meaning "not collected" on every surface.
+        # The per-suite HTML branch below drops each payload, so seed the run-level
+        # cover points here. Key omitted when there are none, so "absent" keeps meaning
+        # "not collected".
         coverage_payload = {
             "merged": None,
             "dir_summary": [],
@@ -8314,7 +7260,7 @@ class RtlBuddy:
         ):
             reg_outdir = str(ctx.command_root)
             for reg_result in reg_results:
-                # Per-suite HTML only — no merge, so no structured merged payload.
+                # Per-suite HTML only: no merge, so no structured merged payload.
                 cov_metadata, _ = self.coverage.build_metadata(
                     reg_result["results"],
                     outdir=reg_outdir,
@@ -8356,12 +7302,12 @@ class RtlBuddy:
                 model_mode=coverage_model,
             )
             metadata.extend(cov_metadata)
-        # Same rule as `test`, applied once the artefacts are written (#638).
+        # Same rule as `test`, applied once the artefacts are written.
         exit_code |= self._coverage_merge_exit_code(coverage_payload)
 
         self._refresh_result_side_cars(all_suite_results)
-        # Render in both modes: in machine mode this emits the "summary" log
-        # event (and plain text to stderr), leaving stdout for the envelope.
+        # Rendered in both modes; in machine mode it emits the "summary" log event and
+        # leaves stdout for the envelope.
         self._render_regression_summary(reg_results, metadata=metadata)
         if reservation_findings and not self.machine:
             self._render_reservation_advice(reservation_findings)
