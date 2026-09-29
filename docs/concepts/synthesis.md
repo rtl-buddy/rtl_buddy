@@ -13,7 +13,7 @@ description: Configure and run Yosys synthesis with optional OpenROAD timing ana
 | `yosys` | Yosys and ABC | Uses the shortest SDC clock period | Gates, area, WNS |
 | `openroad` | Yosys mapping, then OpenROAD STA | Reads the full multi-clock SDC | Gates, area, WNS, TNS |
 
-Use `yosys` for technology-independent synthesis or a quick mapped result. Use `openroad` when timing must respect multiple clocks. Both backends use Yosys for elaboration and mapping.
+Use `yosys` for technology-independent synthesis or a quick mapped result. Use `openroad` when timing must respect multiple clocks: a Yosys run passes only the shortest `create_clock` period to ABC and warns when there are several.
 
 ## Install the tools
 
@@ -28,7 +28,7 @@ make install
 yosys --version
 ```
 
-`tool: openroad` also needs `openroad` on `PATH` (`openroad -version`). On macOS, follow `tools/openroad/SETUP_OSX.md` in the project template.
+`tool: openroad` also needs `openroad` on `PATH` (`openroad -version`). On macOS, follow `tools/openroad/SETUP_OSX.md` in the project template. `rb tool-check --explain yosys` reports what is missing.
 
 ## Define synthesis runs
 
@@ -59,9 +59,7 @@ syntheses:
     reglvl: 0
 ```
 
-Paths resolve from `synth.yaml`. The synthesis top is the model's root module: its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping; the OpenROAD backend also needs LEF files.
-
-Use `lef-paths` and `lib-paths` for block-specific hard macros, and `tool_overrides` for backend options with no portable equivalent. All fields are in [YAML Formats: synth.yaml](../reference/yaml.md#synthyaml).
+Paths resolve from `synth.yaml`. The synthesis top is the model's root module: its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping. Use `lef-paths` and `lib-paths` for block-specific hard macros, and `tool_overrides` for backend options with no portable equivalent. All fields are in [YAML Formats: synth.yaml](../reference/yaml.md#synthyaml).
 
 ## Configure tools and the PDK
 
@@ -96,36 +94,28 @@ cfg-synth-platforms:
     corner: tt
 ```
 
-Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF, and fails before running the tool if a LEF is missing. Keep large PDK files untracked and provide a fetch script.
+Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF. Keep large PDK files untracked and provide a fetch script.
 
 OpenROAD `strategy` is `AREA`, `TIMING`, `TIMING_ANNEAL`, or `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
 
 Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`:
 
-- **Nangate45**: one Liberty file, `NangateOpenCellLibrary_typical.lib`. The template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
-- **sky130hd**: one Liberty per corner, plus a `dont-use-cells` list for the probe and `lpflow` cells. See the template's `sky130hd` entry and `synth/demo_tiny_alu_subsys_hier/download_pdk.sh`.
-- **ASAP7**: not validated. Its cells are split across gzipped Liberty files per cell group, Vt and corner, and `corners:` takes one file per corner. Merge a corner's files into one Liberty first.
+- **Nangate45**: one Liberty file. The template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
+- **sky130hd**: one Liberty per corner, plus a `dont-use-cells` list for the probe and `lpflow` cells. See the template's `sky130hd` entry.
+- **ASAP7**: not validated. `corners:` takes one file per corner, so merge ASAP7's split gzipped Liberty files first.
 
-P&R-side PDK notes are in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
-
-A PDK's `dont-use-cells` list excludes cells from mapping. Each pattern becomes a `-dont_use` argument to Yosys `dfflibmap` and `abc`, and the OpenROAD backend also applies `set_dont_use` before resynthesis. [P&R](pnr.md#tune-the-process-dependent-steps) reads the same list, so two runs that exclude different cells count as two experiments. A synth platform's own `dont-use-cells` is appended after the PDK's.
-
-## Use SDC constraints
-
-A Yosys run extracts `create_clock` periods from the SDC, passes the shortest to ABC, and warns when several clocks make that an approximation. An OpenROAD run loads the complete SDC and reports actual worst and total negative slack, so use it for multi-clock timing decisions.
+`dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](pnr.md#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
 
 ## How the SDC is read
 
 `rb` reads SDC and XDC text with one of two readers. `rb tool-check` names the active one under `In-process readers`.
 
-- **`tcl`**: a safe Tcl interpreter, so line continuations, braces, nested collections, `$variables` and `[expr ...]` read as they do in Vivado and OpenSTA. The safe interpreter has no `exec`, `open`, `file`, `socket`, `cd`, `glob` or `source`, and a resource limit stops runaway loops. `source` includes are not followed; read the included file directly.
-- **`tokenizer`**: the fallback when no Tcl interpreter can start, for example a Python without `_tkinter`. It splits words but evaluates nothing, so `-period $p` or `-period [expr ...]` is reported as unevaluated. Restore the `tcl` reader by installing tkinter (`uv python install --managed-python`, `brew install python-tk@<X.Y>`, or `dnf install python3-tkinter`).
+- **`tcl`**: a safe Tcl interpreter, so line continuations, braces, nested collections, `$variables` and `[expr ...]` read as they do in Vivado and OpenSTA. It has no `exec`, `open`, `file`, `socket`, `cd`, `glob` or `source`; `source` includes are not followed, so name the included file directly.
+- **`tokenizer`**: the fallback when no Tcl interpreter can start, typically a Python without `_tkinter`. It splits words but evaluates nothing, so `-period $p` or `-period [expr ...]` is reported as unevaluated. Install tkinter to restore the `tcl` reader: `uv python install --managed-python`, `brew install python-tk@<X.Y>`, or `dnf install python3-tkinter`.
 
-The interpreter runs in a short-lived worker process, not inside `rb`. Loading `tkinter` in `rb` itself can leave a later fork and exec hanging on macOS.
+Either reader returns syntax only. `get_ports`, `get_cells` and `-filter` collections stay opaque names, because OpenROAD or Vivado resolves them against a netlist.
 
-Either reader returns syntax only. `get_ports`, `get_cells` and `-filter` collections stay opaque names, because resolving them needs a linked netlist that OpenROAD or Vivado owns.
-
-Set `RTL_BUDDY_CONSTRAINT_READER=tokenizer` to force the fallback. Set `=tcl` to require the interpreter and fail if no worker can start one.
+Set `RTL_BUDDY_CONSTRAINT_READER=tokenizer` to force the fallback, or `=tcl` to require the interpreter and fail if none can start.
 
 ## SystemVerilog frontend
 
@@ -142,13 +132,12 @@ cfg-synth-tools:
       best-effort-hierarchy: false
 ```
 
-Build the plugin against the same Yosys installation. `plugin-path` resolves from the project root. If it is omitted, `RTL_BUDDY_SLANG_PLUGIN` is used; that value must be an absolute path, though `~` is expanded.
-
-An unknown `frontend` or a missing slang plugin fails the run as a configuration error (exit 2) before any gate runs. It is not a synthesis `FAIL`.
+Build the plugin against the same Yosys installation. `plugin-path` resolves from the project root. If omitted, `RTL_BUDDY_SLANG_PLUGIN` is used; it must be an absolute path, though `~` is expanded. An unknown `frontend` or a missing plugin is a configuration error (exit 2) reported before synthesis starts, not a synthesis `FAIL`.
 
 - `single-unit: true` shares preprocessor definitions across source files. Set it only when the sources rely on that.
-- `best-effort-hierarchy: true` forwards `read_slang --best-effort-hierarchy` and keeps module instances as hierarchy. yosys-slang otherwise inlines every instance and drops `(* keep_hierarchy *)`. Set it when mapping needs the hierarchy, for example when a flattened cone of `keep_hierarchy` multipliers stalls ABC. Reports still include the hierarchy roll-up.
-- Both options apply only to slang. With the Verilog frontend they are ignored with a warning. A non-Boolean value is fatal.
+- `best-effort-hierarchy: true` keeps module instances as hierarchy and honours `(* keep_hierarchy *)`. Without it yosys-slang inlines every instance. Set it when mapping needs the hierarchy, for example when a flattened cone of `keep_hierarchy` multipliers stalls ABC.
+
+Both apply only to slang; the Verilog frontend ignores them with a warning. A non-Boolean value is fatal.
 
 To change the elaboration stage for one run, use `tool_overrides`:
 
@@ -157,33 +146,34 @@ tool_overrides:
   yosys:
     frontend: slang
     plugin_path: ../yosys-slang/build/slang.so
-    single_unit: true
-    best_effort_hierarchy: true
 ```
 
-Fields under `cfg-synth-tools.opts` use kebab case (`plugin-path`). Fields under `tool_overrides.yosys` use snake case (`plugin_path`), and unknown keys are warned about and ignored. The override key stays `yosys` when the backend is `openroad`, because Yosys owns elaboration.
+`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored. The override key stays `yosys` when the backend is `openroad`.
+
+## Correctness gates
+
+Three gates check the Yosys elaboration stage of both backends for netlists that are wrong without any error. Set them in `cfg-synth-tools.opts`:
+
+```yaml
+opts:
+  static-functions: error        # error | warn | allow
+  conflicting-drivers: error     # error | allow
+  unresolved-interfaces: warn    # error | warn | allow
+```
+
+An unrecognized value is fatal.
 
 ## Gate static-lifetime subroutines
 
-A `function` or `task` declared at module, interface, package, program or compilation-unit scope without `automatic` has static lifetime, so each formal argument is one shared storage location. Simulation is unaffected. yosys-slang lowers the declaration literally, so two calls in one combinational process alias their arguments and the netlist is wrong with no error or warning.
+A `function` or `task` declared at module, interface, package, program or compilation-unit scope without `automatic` has static lifetime: each formal argument is one shared storage location. Simulation is unaffected, but yosys-slang lowers it literally, so two calls in one combinational process alias their arguments and the netlist is wrong with no error.
 
-Before Yosys starts, rtl_buddy scans the filelist's sources and the headers they `` `include ``, and reports each declaration as `file:line: function <name>`:
-
-```yaml
-cfg-synth-tools:
-  - name: yosys
-    tool: yosys
-    opts:
-      static-functions: error        # error | warn | allow
-      conflicting-drivers: error     # error | allow
-      unresolved-interfaces: warn    # error | warn | allow
-```
+Before Yosys starts, rtl_buddy scans the filelist's sources and their `` `include `` headers and reports each declaration as `file:line: function <name>`.
 
 - `error` fails the run before Yosys starts. It is the default with `frontend: slang`.
-- `warn` logs one warning per finding and records `static_function_findings` in the machine output. It is the default with `frontend: verilog`, which inlines per call site, so the result is correct but not portable.
+- `warn` logs one warning per finding and records `static_function_findings` in `--machine` output. It is the default with `frontend: verilog`, which inlines per call site, so the result is correct but not portable.
 - `allow` skips the scan.
 
-The scan reports a declaration, not an actual alias, so a subroutine with a single call site also fails. To stage a fix, set `static-functions: warn` while adding the keyword:
+The scan reports declarations, not actual aliases, so a subroutine with a single call site also fails. Fix by adding the keyword; set `static-functions: warn` while migrating:
 
 ```systemverilog
 function automatic ptr_t inc(input ptr_t p);
@@ -191,69 +181,40 @@ function automatic ptr_t inc(input ptr_t p);
 endfunction
 ```
 
-Verible's `explicit-function-lifetime` rule, run through `rb lint` and `cfg-verible`, covers testbench and non-synthesisable sources. The remaining gates in the block above are described in [Gate conflicting drivers](#gate-conflicting-drivers) and [Gate unbound interface instances](#gate-unbound-interface-instances). All three apply to the Yosys elaboration stage of both backends, and an unrecognized value is fatal.
+Class methods, `extern` and `pure virtual` prototypes, DPI imports and exports, and anything declared `automatic` are exempt. For testbench and non-synthesisable sources, Verible's `explicit-function-lifetime` rule runs through `rb lint` and `cfg-verible`.
 
-## Static-function scan coverage
+The scan is a tokenizer, not an elaborator. It follows `` `include `` and evaluates `` `ifdef `` on definedness only. It misses declarations produced by macros, under `-y` library directories, or in unresolvable headers, and can report spuriously because `` `if `` expressions are not evaluated.
 
-The scan is a tokenizer, not an elaborator.
+## Preprocessor definitions
 
-- **Includes**: `` `include `` is followed against the including file's directory, then the filelist's `+incdir+` entries. Each inclusion is scanned in its own context, so a header included from a class is exempt there and reported when included from a module. A declaration is reported once. A chain deeper than 1024 fails the run and names the chain's tail.
-- **Conditionals**: `` `ifdef ``, `` `ifndef ``, `` `elsif ``, `` `else `` and `` `endif `` are evaluated on definedness, updated by `` `define ``, `` `undef `` and `` `undefineall ``. `` `if `` expressions are not evaluated.
-- **Attributes**: `(* ... *)` is ignored.
-- **Exempt**: class methods (including `function int C::f(...)`), `extern` and `pure virtual` prototypes, DPI imports and exports, and any scope declared `automatic`.
+The scan and the frontend see the filelist's `+define+` entries, then the run's `defines:`, then the frontend's own macros. `read_verilog` predefines `SYNTHESIS` and `YOSYS`; `read_slang` predefines `SYNTHESIS` but not `YOSYS`. An `` `ifndef YOSYS `` helper is therefore reported only under `frontend: slang`.
 
-Limits, in both directions:
-
-| Limit | Effect |
-| --- | --- |
-| Macro bodies are skipped at their `` `define `` | A declaration produced by a macro is never reported |
-| `-y` library directories are not scanned | Declarations there are missed |
-| An unresolvable `` `include `` is skipped (DEBUG log) | That header's declarations are missed; the run does not fail |
-| Scope nesting is tracked by keyword pairing | Pathological legal code can change which declarations are exempt |
-
-## Preprocessor definitions in the scan
-
-The macro table starts with the filelist's `+define+` entries, then the run's `defines:`, then the frontend's own macros. `read_verilog` predefines `SYNTHESIS` and `YOSYS`. `read_slang` predefines `SYNTHESIS` and slang's built-ins but not `YOSYS`. So a `` `ifndef YOSYS `` helper is reported only under `frontend: slang`.
-
-- A bare `+define+X` takes the value the selected frontend gives a valueless `-D`. Tools disagree on it (Verilator and `read_verilog` use empty, Icarus and slang use `1`), so write `+define+X=1` when a value is meant.
-- When `defines:` overrides a filelist entry, one `synth.filelist_defines_overridden` warning names both. It fires when the values differ, and when the filelist entry is bare (no value) and `defines:` sets any value, because the tools disagree on what a bare macro means. Simulation then uses the filelist value and synthesis the `synth.yaml` one; drop one to make them agree.
-- A filelist `+define+` value containing whitespace is fatal, because a Yosys script line cannot carry it.
-- After `` `undefineall ``, slang keeps command-line macros and `read_verilog` does not. A `` `ifndef `` on a `defines:` macro can therefore compile under `verilog` and not under `slang`.
-- With `single-unit: false` (default) the macro table is re-seeded for each source file. `single-unit: true` shares it. A header always shares its includer's table.
+- Write `+define+X=1` when a value is meant. A bare `+define+X` gets the value the frontend gives a valueless `-D`, which differs between tools.
+- When `defines:` overrides a filelist entry with a different value, or overrides a bare entry, the run warns with `synth.filelist_defines_overridden`. Simulation then uses the filelist value and synthesis the `synth.yaml` one. Drop one of the two to make them agree.
+- A filelist `+define+` value containing whitespace is fatal.
 
 ## Gate conflicting drivers
 
-When one net is driven from both a combinational and a clocked process, for example through aliased static-function arguments, it folds to `x` and takes its register and everything downstream with it. Yosys reports this only as a `multiple conflicting drivers` warning and exits 0.
+When one net is driven from both a combinational and a clocked process, for example through aliased static-function arguments, it folds to `x` and takes its register and everything downstream with it. Yosys reports only a `multiple conflicting drivers` warning and exits 0.
 
-`conflicting-drivers: error` (default) fails the run and names the count and log path. Set `allow` only when the warnings are understood.
+`conflicting-drivers: error` (default) fails the run and names the count and the log path. Set `allow` only when the warnings are understood.
 
-A tristate bus produces the same warning, one per bit. A warning whose drivers are all `$tribuf` or `$_TBUF_` cells and module ports is not counted. A warning with any other driver, such as a flop or a process action, fails the run.
+Tristate-bus warnings (all drivers are tristate cells and ports) are not counted; any other driver, such as a flop, fails the run.
 
 ## Gate unbound interface instances
 
-`read_verilog` cannot bind a SystemVerilog interface instance to a child module's interface port. It warns ``Could not find interface instance for `<instance>' in `<module>'`` and exits 0. The interface's members survive as `<instance>.<member>` wires, but the instance's own port connections are dropped:
+`read_verilog` cannot bind an interface instance to a child module's interface port. It warns ``Could not find interface instance for `<instance>' in `<module>'`` and exits 0. The instance's own port connections are dropped, so an interface that carries a clock or reset leaves it undriven:
 
 ```systemverilog
-interface bus_if (input logic clk);
-  logic [7:0] data;
-  logic       vld;
-  modport src (input clk, output data, vld);
-  modport dst (input clk, input  data, vld);
-endinterface
-
-module top (input logic clk, ...);
-  bus_if b (.clk(clk));          // .clk is dropped
-  producer u_p (.b(b), ...);     // both children clock off an
-  consumer u_c (.b(b), ...);     // undriven \b.clk
-endmodule
+bus_if b (.clk(clk));          // .clk is dropped
+producer u_p (.b(b), ...);     // flops in both children
+consumer u_c (.b(b), ...);     // lose their clock
 ```
 
-Here `\b.data` and `\b.vld` still connect the children, but `\b.clk` is undriven and every flop in the subtree loses its clock. `frontend: slang` binds the instance correctly and shows neither the warning nor the disconnect.
+`frontend: slang` binds the instance correctly. Otherwise `unresolved-interfaces` decides:
 
-`unresolved-interfaces` gates that warning:
-
-- `warn` (default) logs one `synth.unresolved_interface` per instance, records `unresolved_interfaces` in the machine output, and passes. The fallback is correct for interfaces with no ports of their own.
-- `error` fails the run and drops the netlist, so `rb pnr` and `rb power` cannot consume it. Use it in projects that give interfaces ports.
+- `warn` (default) logs one `synth.unresolved_interface` per instance, records `unresolved_interfaces` in `--machine` output, and passes. The result is correct for interfaces with no ports of their own.
+- `error` fails the run and removes the netlist, so `rb pnr` and `rb power` cannot consume it. Use it in projects whose interfaces have ports.
 - `allow` silences the warning.
 
 ## Select an effort
@@ -268,10 +229,6 @@ cfg-synth-efforts:
       abc-args: -fast
     openroad:
       run: false
-
-  - name: standard
-    openroad:
-      run: true
 
   - name: accurate
     openroad:
@@ -288,11 +245,9 @@ rb synth sandbox_openroad --effort quick
 rb synth-regression --effort accurate
 ```
 
-Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-synth-tools`. Without a configured or selected effort, the built-in `standard` behavior applies.
+Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-synth-tools`. With no effort, the built-in `standard` applies.
 
-`openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl run before STA. Test it on a small design, because syntax errors appear only at runtime.
-
-The OpenROAD stage uses one thread unless the entry sets `threads:` to a positive integer or `auto` (the CPUs of the current allocation). This matters most for a `pre-sta-tcl` that runs global placement. See [OpenROAD threads](pnr.md#openroad-threads). It does not affect the Yosys stage.
+`openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl run before STA; syntax errors appear only at runtime. The OpenROAD stage uses one thread unless the entry sets `threads:`; see [OpenROAD threads](pnr.md#openroad-threads).
 
 ## Synthesize hard macros
 
@@ -300,17 +255,15 @@ For each hard macro:
 
 1. Add its physical LEF to `lef-paths`.
 2. Add its timing Liberty to `lib-paths`.
-3. Provide a port-only RTL `(* blackbox *)` declaration for the frontend.
+3. Provide a port-only `(* blackbox *)` RTL declaration for the frontend.
 
-When the macro exists in the supplied LEF or Liberty, the OpenROAD stage uses it instead of generating a Verilog stub, so its area and timing arcs are kept. With no physical or timing master, rtl_buddy generates a port-only stub and the reported PPA does not represent the macro.
+With both files supplied, the OpenROAD stage keeps the macro's area and timing arcs. Without them rtl_buddy generates a port-only stub, and the reported PPA does not represent the macro.
 
 ## Run synthesis
 
 ```bash
 rb synth --list -c synth/block/synth.yaml
 rb synth block_openroad -c synth/block/synth.yaml
-rb synth -c synth/block/synth.yaml
-rb synth-regression -c synth_regression.yaml
 rb synth-regression -c synth_regression.yaml --reg-level 1000
 ```
 
@@ -327,9 +280,7 @@ synth-configs:
 
 Mapped runs report gates and area. A constrained Yosys run reports WNS as clock period minus critical-path delay. OpenROAD reports actual WNS and TNS: negative values are violations, and TNS 0 means no endpoint has negative slack.
 
-A Yosys run passes when the process exits 0, the log has no `ERROR:` line, and no correctness gate fires. An OpenROAD run also needs the OpenROAD stage to exit 0 with no `[ERROR ...]` line. Any failed stage reports `FAIL`.
-
-When a run fails, read the failing stage's log first. Missing tools, plugin paths, Liberty or LEF inputs are configuration failures: fix the path or installation and rerun the named synthesis.
+A Yosys run passes when the process exits 0, the log has no `ERROR:` line, and no correctness gate fires. An OpenROAD run also needs the OpenROAD stage to exit 0 with no `[ERROR ...]` line. Any failed stage reports `FAIL`; read that stage's log first.
 
 ## Inspect artefacts
 
@@ -344,14 +295,25 @@ Outputs land under `<synth-dir>/artefacts/<run>/`.
 | `synth_yosys.log` | OpenROAD | First-stage Yosys output |
 | `synth.tcl`, `synth.log` | OpenROAD | STA script and OpenROAD output |
 | `synth_stat.json` | Both | Yosys `stat -json`: per-module cell count and area |
-| `phys-model.json` | Both | Physical model: per-module rows plus design totals |
-| `phys-manifest.json` | Both | Which physical artefacts this run produced, and where |
-| `phys-publish.lock` | Both | Held while the model and manifest are rewritten; empty otherwise |
+| `phys-model.json`, `phys-manifest.json` | Both | Physical model and its manifest; query with `rb phys` ([Physical Metrics](phys.md)) |
 
-Query the model with `rb phys`; see [Physical Metrics](phys.md).
+A failed run leaves no netlist. Netlists are deleted at the start of every run, so `rb pnr` and `rb power` never consume a previous run's design and report that `rb synth` must run first. Copy out a netlist before rerunning if you want to keep it.
 
-A failed run leaves no netlist. The netlists are deleted at the start of every run, before the tool is looked up, so `rb pnr` and `rb power` never consume a previous run's design. They report that `rb synth` must run first. Copy out a netlist you want to keep before rerunning.
+A power run for the same top in the same artefact directory fills the model's per-instance half; see [Pair the model with a synthesis run](power.md#pair-the-model-with-a-synthesis-run). A re-synthesis keeps those rows only when its netlist is byte-identical to the one the power run read, so after an RTL edit rerun `rb power`.
 
-The physical model is a by-product, not a gate. If Yosys writes no readable `stat -json`, the model keeps the design totals, its `modules` block is `null`, a warning says so, and the run still passes.
+## Troubleshooting
 
-A power run for the same top in the same artefact directory fills the model's per-instance half instead of replacing it. See [Pair the model with a synthesis run](power.md#pair-the-model-with-a-synthesis-run). A re-synthesis keeps those rows only when its netlist is byte-identical to the one the power run read. After an RTL edit the rows are dropped (`instances: null`); rerun `rb power` to measure the new netlist. Concurrent publishers take `phys-publish.lock` in turn, so both halves survive whichever finishes first.
+Each entry is a console message and the action it calls for.
+
+- **`static-functions` finding, run fails:** add `automatic` to the listed declarations, or set `static-functions: warn|allow`.
+- **`multiple conflicting drivers` warning(s), run fails:** fix the design so each net has one driver style, or set `conflicting-drivers: allow`.
+- **Interface instance could not be bound:** use `frontend: slang`, or accept the fallback with `unresolved-interfaces: warn|allow`.
+- **multi-clock SDC, abc constraint set to minimum:** use `tool: openroad` for multi-clock timing, or split into one run per clock domain.
+- **no `create_clock` found, or `create_clock -period` did not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
+- **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables` and `[expr]` stay unevaluated. Install tkinter.
+- **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
+- **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
+- **OpenROAD synthesis requires LEF files:** set `tech-lef` and `macro-lef` on the `cfg-pdks` entry, or `lef-paths` on the run.
+- **OpenROAD synthesis requires a mapped library:** set `platform:` on the run and define the matching `cfg-synth-platforms` entry.
+- **`phys-model.json` has no per-module breakdown:** Yosys wrote no readable `stat -json`. The run still passes, but `rb phys module` has no rows for it.
+- **Previous run's module rows could not be withdrawn:** the run stops rather than leave stale rows over cleared reports. Fix the error the message names (for example a locked or unwritable artefact directory) and rerun.
