@@ -577,8 +577,8 @@ def test_head_does_not_preunlink_and_rejects_stale_by_token(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
-    """The head does not pre-unlink the result path; a stale envelope is rejected by
-    run_token, so an old PASS never satisfies this run.
+    """The head does not pre-unlink the result path (on NFS that caches a negative dentry and
+    blinds it); a stale envelope is rejected by run_token, so an old PASS never satisfies this run.
     """
     fake_backend.write_results = False  # this run's job leaves no fresh envelope
 
@@ -4228,7 +4228,7 @@ def test_a_job_whose_build_job_never_succeeded_is_not_retried(
     minimal_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A sim gated on a build job that never launched is not retried.
+    """A sim whose gating build job died without writing its result never launched, so it is not retried.
 
     A banner left in `artefacts/basic/test.log` by an earlier run must not make the head
     resubmit that sim ungated.
