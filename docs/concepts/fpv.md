@@ -66,6 +66,7 @@ Use the simplest frontend that elaborates your properties.
 | `slang` | `bind`, `\|->`, `\|=>`, sequences, or richer SystemVerilog | Needs the `yosys-slang` plugin, set by `cfg-fpv-tools[].opts.plugin-path` or `RTL_BUDDY_SLANG_PLUGIN` |
 
 - For concurrent SVA under slang, use a build that lowers the constructs you need; the [rtl-buddy yosys-slang branch](https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy) supports the property flow.
+- With slang, includes and macros inside `synthesis translate_off` regions must still resolve, because slang preprocesses those regions.
 - Accepted constructs vary by build, and one rejected construct aborts the whole read. Probe your build one construct at a time before writing a large property set:
 
 ```systemverilog
