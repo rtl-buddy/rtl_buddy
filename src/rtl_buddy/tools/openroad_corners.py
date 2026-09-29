@@ -1,35 +1,14 @@
-"""Multi-corner OpenROAD/OpenSTA Tcl and log parsing shared by `rb pnr` and
-`rb power` (#104, #105).
+"""Multi-corner OpenROAD/OpenSTA Tcl generation and log parsing for `rb pnr` and `rb power`.
 
-A `cfg-pnr-platforms` entry with two or more `corners:` is analysed in ONE
-OpenROAD session rather than one session per corner: OpenSTA holds every
-corner at once (`define_corners`, then `read_liberty -corner`), so the
-optimisations that run inside the P&R flow see all of them — `repair_design`,
-`repair_timing` and the hold repair iterate every corner — and the final
-`report_worst_slack` / `report_tns` / `report_checks` are already the worst
-across corners. Fanning out N sessions would instead route N different
-layouts, none of which is signed off at the other corners.
+A platform with two or more `corners:` is analysed in one OpenROAD session, so repair and the final timing reports see every corner. The first listed corner is the primary: CTS characterises buffer and wire delays there.
 
-What does *not* see every corner is CTS: OpenROAD characterises its buffer
-and wire delays at the command corner, which `define_corners` makes the
-first one listed. That is why the first entry of `corners:` is the
-*primary* corner.
-
-`define_corners` is deprecated in OpenSTA 3.0 in favour of `define_scene`,
-but it is the spelling every OpenROAD from the flow's 25Q1 minimum to 26Q2
-accepts, and it still defines the same scenes. The per-corner numbers have
-no user command in either release (`report_worst_slack` takes no corner),
-so the generated Tcl reaches for the `sta::` functions behind them, under
-their 3.0 names (`find_scene`, `worst_slack_scene`, ...) when present and
-their pre-3.0 ones (`find_corner`, `worst_slack_corner`, ...) otherwise.
+Per-corner numbers have no user command, so the generated Tcl calls `sta::` functions, using the OpenSTA 3.0 names (`find_scene`, `worst_slack_scene`) when present and the earlier ones (`find_corner`, `worst_slack_corner`) otherwise. `define_corners` is used because every supported OpenROAD accepts it.
 """
 
 import math
 import re
 
-#: Defines `rb_find_corner`, which resolves a corner name to the OpenSTA
-#: object the per-corner `sta::` functions take — a `Scene` from OpenSTA
-#: 3.0, a `Corner` before it.
+#: Tcl proc `rb_find_corner`: resolves a corner name to the OpenSTA `Scene` (3.0) or `Corner` object.
 FIND_CORNER_PROC = """\
 proc rb_find_corner {name} {
   if {[info commands ::sta::find_scene] ne ""} {
@@ -40,19 +19,9 @@ proc rb_find_corner {name} {
 
 
 def liberty_tcl(corner_libs: dict[str, str], macro_libs: list[str]) -> list[str]:
-    """`define_corners` plus one `read_liberty -corner` per corner and library.
+    """Return Tcl that defines the corners and reads each Liberty into its corner.
 
-    ``corner_libs`` is the platform's corner → Liberty map, primary first;
-    it becomes the corner order OpenSTA uses, which is what makes the
-    primary the command corner.
-
-    A hard macro usually ships one Liberty, not one per corner, and it is
-    read into *every* corner: OpenSTA binds a library to the corner it was
-    read for, and a cell with no library at some corner has no timing or
-    power there at all. This is what ORFS does with a single-corner macro
-    too. OpenSTA warns `STA-1140 library ... already exists` from the
-    second read on; the warning is expected and harmless — each read is
-    bound to its own corner.
+    `corner_libs` maps corner to Liberty, primary first; that order makes the first corner the command corner. Each macro Liberty is read into every corner. OpenSTA warns `STA-1140 library ... already exists` on the second read, which is harmless.
     """
     lines = [f"define_corners {' '.join(corner_libs)}"]
     lines.extend(f"read_liberty -corner {c} {lib}" for c, lib in corner_libs.items())
@@ -61,14 +30,7 @@ def liberty_tcl(corner_libs: dict[str, str], macro_libs: list[str]) -> list[str]
     return lines
 
 
-# ---------------------------------------------------------------------------
-# rb pnr — per-corner timing
-# ---------------------------------------------------------------------------
-
-#: The lines `timing_report_tcl` makes OpenROAD print, one set per corner.
-#: They mirror `report_worst_slack` / `report_tns`' own spelling behind a
-#: `corner <name>` prefix, in the same default digits, so the worst of them
-#: is the number the global report prints.
+#: Lines `timing_report_tcl` prints per corner: the `report_worst_slack` and `report_tns` format behind a `corner <name>` prefix.
 _CORNER_TIMING_RE = re.compile(
     r"^corner (\S+) (worst slack max|worst slack min|tns max) ([-\d.]+)\s*$",
     re.MULTILINE,
@@ -82,7 +44,7 @@ _TIMING_FIELDS = {
 
 
 def timing_report_tcl(corners: list[str]) -> str:
-    """Tcl printing each corner's worst setup / hold slack and setup TNS."""
+    """Return Tcl that prints each corner's worst setup slack, worst hold slack and setup TNS."""
     return "\n".join(
         [
             "",
@@ -104,9 +66,7 @@ def timing_report_tcl(corners: list[str]) -> str:
             '  puts "corner $name worst slack min [sta::format_time $hold $digits]"',
             '  puts "corner $name tns max [sta::format_time $tns $digits]"',
             "}",
-            # Report-only, and it sits ahead of the writes: an error here
-            # (an OpenSTA without either API spelling, say) costs that
-            # corner's rows, not the routed database (#104, #105).
+            # catch: a failure here must lose only that corner's rows, not the routed database.
             *(
                 f"if {{[catch {{rb_report_corner_timing {c}}} rb_err]}} "
                 f'{{ puts "rb: per-corner timing for {c} unavailable: $rb_err" }}'
@@ -117,11 +77,9 @@ def timing_report_tcl(corners: list[str]) -> str:
 
 
 def parse_corner_timing(log_text: str, corners: list[str]) -> dict[str, dict]:
-    """Per-corner `{wns_setup_ps, wns_hold_ps, tns_ps}` from a `pnr.log`.
+    """Parse per-corner `wns_setup_ps`, `wns_hold_ps` and `tns_ps` from `pnr.log` text.
 
-    Every configured corner gets an entry, in config order; a value the log
-    does not carry (or carries as something other than a finite number) is
-    left out, the way the scalar fields leave out what they cannot parse.
+    Every configured corner gets an entry, in config order. A value that is missing or not a finite number is omitted.
     """
     found: dict[str, dict] = {c: {} for c in corners}
     for m in _CORNER_TIMING_RE.finditer(log_text):
@@ -138,10 +96,7 @@ def parse_corner_timing(log_text: str, corners: list[str]) -> dict[str, dict]:
 
 
 def worst_corner(per_corner: dict[str, dict], key: str, *, highest=False) -> str | None:
-    """The corner with the lowest (or ``highest``) ``key``, first on a tie.
-
-    ``None`` when no corner carries the field.
-    """
+    """Return the corner with the lowest (or `highest`) `key`, first on a tie, or None if no corner has it."""
     candidates = [(c, v[key]) for c, v in per_corner.items() if key in v]
     if not candidates:
         return None
@@ -149,13 +104,7 @@ def worst_corner(per_corner: dict[str, dict], key: str, *, highest=False) -> str
     return pick(candidates, key=lambda cv: cv[1])[0]
 
 
-# ---------------------------------------------------------------------------
-# rb power — per-corner totals, and the corner that drives the budget
-# ---------------------------------------------------------------------------
-
-#: Printed by the power script with the corner it picked as the worst — the
-#: highest design total — before it writes `power.rpt` and the per-instance
-#: breakdown at that corner.
+#: Printed by the power script with the corner of highest design total.
 POWER_CORNER_MARKER = "RB_POWER_CORNER"
 
 _POWER_CORNER_RE = re.compile(rf"^{POWER_CORNER_MARKER} (\S+)\s*$", re.MULTILINE)
@@ -164,16 +113,9 @@ _POWER_CORNER_RE = re.compile(rf"^{POWER_CORNER_MARKER} (\S+)\s*$", re.MULTILINE
 def power_report_tcl(
     corners: list[str], report_path_for, worst_report: str
 ) -> list[str]:
-    """Per-corner `report_power`, then the worst corner's report and choice.
+    """Return Tcl that reports power per corner, then reports the highest-power corner to `worst_report`.
 
-    ``report_path_for(corner)`` names each corner's report. The worst corner
-    is chosen in Tcl, on `sta::design_power`'s design total, so the design
-    report at ``worst_report`` and the per-instance breakdown after it are
-    both of the corner whose totals the run reports — the one that drives a
-    power budget. Sets `rb_power_corner` for the per-instance block.
-
-    `report_power -corner` is spelled with the pre-3.0 flag, which OpenSTA
-    3.0 still accepts as an alias of `-scene`.
+    `report_path_for(corner)` names each corner's report. The Tcl picks the worst corner by `sta::design_power` total and sets `rb_power_corner` for the per-instance block that follows. `-corner` is the pre-3.0 flag, which OpenSTA 3.0 accepts as an alias of `-scene`.
     """
     lines = [f"report_power -corner {c} > {report_path_for(c)}" for c in corners]
     lines.extend(
@@ -196,6 +138,6 @@ def power_report_tcl(
 
 
 def parse_power_corner(log_text: str) -> str | None:
-    """The corner the power script chose as worst, or ``None``."""
+    """Return the corner the power script chose as worst, or None."""
     m = _POWER_CORNER_RE.search(log_text)
     return m.group(1) if m else None

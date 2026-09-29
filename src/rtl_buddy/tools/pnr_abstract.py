@@ -1,24 +1,6 @@
-"""Hardened-block abstracts: the `harden:` outputs of a P&R run (#95).
+"""Hardened-block abstracts: the outputs of a P&R run with `harden: true`, and their use by `blocks:`.
 
-A run with `harden: true` finishes as a block another design can instance
-as a hard macro. Next to its routed result it publishes the three views a
-parent run consumes and a manifest that says what they were made from:
-
-    <artefact-dir>/abstract/<top>.lef        write_abstract_lef
-    <artefact-dir>/abstract/<top>.lib        write_timing_model (OpenSTA)
-    <artefact-dir>/abstract/<top>.gds        the run's strict stream-out
-    <artefact-dir>/abstract/abstract.manifest.json
-
-The directory is all-or-nothing. OpenROAD writes the LEF and the Liberty
-into a staging directory, the GDS and the manifest are added there, and the
-staging directory is renamed into place only once all four exist. A partial
-abstract is worse than none: a parent would read two fresh views beside a
-stale one and could not tell (#469).
-
-The manifest follows the `{path, size, sha256}` shape of
-`export.provenance.json` (#618), with project-relative paths, so a later
-reader can re-fingerprint every recorded input and decide whether the
-abstract still describes the block's sources.
+A hardened run publishes `<artefact-dir>/abstract/` holding `<top>.lef`, `<top>.lib`, `<top>.gds` and `abstract.manifest.json`. The directory is published all at once, by renaming a staging directory, so a parent never reads a mix of fresh and stale views. The manifest records `{path, size, sha256}` for the inputs, outputs and configuration the abstract was built from, with project-relative paths.
 """
 
 import hashlib
@@ -35,15 +17,13 @@ from ..config.pdk import DEFAULT_PLACEMENT_MACRO_CELL_HALO
 from ..config.pnr import MacroPlacement
 from .artifact_paths import project_relative, project_root_or_none
 
-#: Where a hardened run publishes its abstract, under its artefact dir.
 ABSTRACT_DIR_NAME = "abstract"
-#: Where OpenROAD writes the views before they are published. Never read by
-#: a parent; cleared by every run.
+#: OpenROAD writes the views here before `publish`; cleared by every run.
 ABSTRACT_STAGING_NAME = "abstract.partial"
 ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
-#: Bumped when the manifest changes shape incompatibly.
+#: Bumped on an incompatible manifest change.
 ABSTRACT_MANIFEST_SCHEMA = 1
-#: The three views, by manifest key; each is `<top>.<key>`.
+#: Manifest keys of the three views; each file is `<top>.<key>`.
 ABSTRACT_VIEWS = ("lef", "lib", "gds")
 
 
@@ -60,12 +40,7 @@ def view_path(directory: str, design: str, view: str) -> str:
 
 
 def clear_abstract(artefact_dir: str) -> list[str]:
-    """Remove the published abstract and any staging leftover.
-
-    A rerun of the block replaces the result the abstract was cut from, so
-    the abstract goes with the other outputs whether or not the rerun
-    hardens again — the rule every other output of the run follows (#469).
-    """
+    """Remove the published abstract and any staging leftover, returning the removed paths."""
     removed = []
     for path in (abstract_dir(artefact_dir), staging_dir(artefact_dir)):
         if os.path.lexists(path):
@@ -78,18 +53,9 @@ def clear_abstract(artefact_dir: str) -> list[str]:
 
 
 def harden_tcl() -> str:
-    """The Tcl the flow runs after `write_db` when the run hardens.
+    """Return the Tcl that writes the LEF and timing model into the staging directory.
 
-    Written in the P&R session itself rather than a second OpenROAD
-    invocation: the routed design, the Liberty set it was timed against and
-    the post-CTS constraints (propagated clocks) are all still loaded, so
-    the timing model is characterised against exactly what produced the
-    result.
-
-    `-bloat_occupied_layers` reports every layer the block routes on as
-    blocked over its whole footprint. It is the conservative choice: a
-    parent that routes into a gap in a block's own metal is the failure a
-    hardened block exists to rule out.
+    It runs in the P&R session after `write_db`, so the timing model is characterised against the routed design and its propagated clocks. `-bloat_occupied_layers` marks every layer the block routes on as blocked over its whole footprint, so a parent never routes through the block's own metal.
     """
     staging = f"$OUT_DIR/{ABSTRACT_STAGING_NAME}"
     return (
@@ -101,10 +67,9 @@ def harden_tcl() -> str:
 
 
 def file_fingerprint(path: str | None, root: str | None) -> dict | None:
-    """`{path, size, sha256}`, the path project-relative where it can be.
+    """Return `{path, size, sha256}` for a file, or None without a path.
 
-    A file that cannot be read is recorded with a null size and digest, so
-    a later comparison sees it as changed rather than silently skipping it.
+    The path is project-relative when `root` is given. An unreadable file gets a null size and digest, which later compares as changed.
     """
     if not path:
         return None
@@ -123,12 +88,9 @@ def file_fingerprint(path: str | None, root: str | None) -> dict | None:
 
 
 def filelist_sources(filelist: str) -> list[str]:
-    """The source files a synthesis filelist names, as absolute paths.
+    """Return the absolute paths of the sources a synthesis filelist names.
 
-    Bare entries and `-v` library files; option lines (`+incdir+`,
-    `+define+`, `-y`, nested `-f`) name no single source. Paths resolve
-    against the filelist's own directory, the rule `VlogFilelist` writes by.
-    An unreadable filelist has no sources.
+    Bare entries and `-v` files count; option lines (`+incdir+`, `+define+`, `-y`, `-f`) do not. Paths resolve against the filelist's directory. An unreadable filelist has none.
     """
     base = os.path.dirname(os.path.abspath(filelist))
     skip = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
@@ -149,15 +111,9 @@ def filelist_sources(filelist: str) -> list[str]:
 
 
 def abstract_config(pnr_cfg, platform) -> dict:
-    """The settings, beyond its input files, a hardened result depends on.
+    """Return the configuration a hardened result depends on, with project-relative paths.
 
-    Recorded in the manifest so a parent can tell a block whose
-    configuration was edited since it was hardened (#95): the floorplan,
-    the platform's placement, routing and cell choices, and which files the
-    run is configured to read — a `lib-paths` entry added to the block is a
-    different block even though no recorded file changed. Built from the
-    loaded configuration alone, so the parent's check computes it the same
-    way without running anything. Paths are project-relative.
+    It covers the floorplan, the platform's placement, routing and cell settings, and the files the run is configured to read. It is built from loaded configuration alone, so a parent can recompute it without running anything.
     """
     root = project_root_or_none(os.path.dirname(pnr_cfg.get_synth_suite_path()))
 
@@ -176,9 +132,6 @@ def abstract_config(pnr_cfg, platform) -> dict:
         "lef_paths": [_rel(p) for p in pnr_cfg.get_lef_paths()],
         "lib_paths": [_rel(p) for p in pnr_cfg.get_lib_paths()],
         "gds_paths": [_rel(p) for p in pnr_cfg.get_gds_paths()],
-        # A block that itself instances blocks is a different block when
-        # that list changes; their abstracts' own bytes are recorded under
-        # `inputs` (as `lef` / `liberty`) by the run that consumed them.
         "blocks": [
             {"name": b.name, "pnr": b.pnr_run, "pnr_path": _rel(b.pnr_suite_path)}
             for b in pnr_cfg.get_blocks()
@@ -196,8 +149,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 }
                 for b in fp.blockages
             ],
-            # Only when away from the packer, so the abstracts hardened
-            # before the key existed keep their digest (#95).
+            # Emitted only when non-default so existing digests do not change.
             **(
                 {"macro_placement": str(fp.macro_placement)}
                 if fp.macro_placement is not MacroPlacement.PACK
@@ -208,8 +160,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
             "density": platform.get_placement_density(),
             "padding": platform.get_placement_padding(),
             "macro_halo": platform.get_placement_macro_halo(),
-            # Only when set away from its default, so the abstracts hardened
-            # before the key existed keep their digest (#673).
+            # Emitted only when non-default so existing digests do not change.
             **(
                 {"macro_cell_halo": platform.get_placement_macro_cell_halo()}
                 if platform.get_placement_macro_cell_halo()
@@ -227,7 +178,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
 
 
 def config_digest(config: dict) -> str:
-    """A stable SHA-256 over a JSON-able config record."""
+    """Return a stable SHA-256 of a JSON-serialisable config record."""
     text = json.dumps(config, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -245,16 +196,9 @@ def write_manifest(
     inputs: dict,
     config: dict,
 ) -> str:
-    """Write `abstract.manifest.json` into the staging directory.
+    """Write `abstract.manifest.json` into the staging directory and return its path.
 
-    ``inputs`` maps a role to one absolute path or a list of them (`None`
-    for an input the run does not have); every one is fingerprinted here.
-    ``technology`` names the technology LEF and the corner Liberty the
-    block was built on — what a parent must share with it — and is
-    fingerprinted the same way.
-    Output paths are recorded where they will be once published, not where
-    they are being staged — a manifest naming the staging directory would
-    describe a directory that no longer exists.
+    `inputs` maps a role to an absolute path, a list of paths, or None. `technology` names the technology LEF and corner Liberty a parent must share; it is fingerprinted the same way. Output paths are recorded at their published location, not the staging one.
     """
     root = project_root_or_none(artefact_dir)
     published = abstract_dir(artefact_dir)
@@ -302,13 +246,8 @@ def publish(artefact_dir: str) -> str:
     return final
 
 
-# ---------------------------------------------------------------------------
-# Consuming abstracts: `blocks:` (#95)
-# ---------------------------------------------------------------------------
-
-
 class BlockResolutionError(Exception):
-    """A `blocks:` entry that cannot be satisfied; the message says why."""
+    """Raised when a `blocks:` entry cannot be satisfied; the message says why."""
 
 
 @dataclass(frozen=True)
@@ -322,9 +261,7 @@ class ResolvedBlock:
     lef: str
     lib: str
     gds: str
-    # The block's `harden: true` run, as configured now (#95 staleness).
     run_cfg: object = None
-    # What changed since the block was hardened; empty when it is current.
     changes: tuple[str, ...] = ()
 
     @property
@@ -332,9 +269,7 @@ class ResolvedBlock:
         return bool(self.changes)
 
     def result_row(self) -> dict:
-        """What the machine output says about one consumed block: which
-        abstract, the fingerprints of the three views it read, and whether
-        the abstract was stale (only ever true under `--accept-stale`)."""
+        """Return the machine-output row for this block: abstract location, view fingerprints and staleness."""
         return {
             "name": self.ref.name,
             "pnr_run": self.ref.pnr_run,
@@ -351,8 +286,7 @@ class ResolvedBlock:
 
 
 def read_manifest(directory: str) -> dict | None:
-    """The abstract manifest in ``directory``, or ``None`` if there is no
-    readable one of a schema this rtl_buddy knows."""
+    """Return the manifest in `directory`, or None if it is missing, unreadable or of an unknown schema."""
     try:
         data = json.loads(
             Path(directory, ABSTRACT_MANIFEST_NAME).read_text(encoding="utf-8")
@@ -367,11 +301,9 @@ def read_manifest(directory: str) -> dict | None:
 
 
 def resolve_block(ref: BlockRef) -> ResolvedBlock:
-    """Resolve one `blocks:` entry to its published abstract, or raise.
+    """Resolve one `blocks:` entry to its published abstract, or raise BlockResolutionError.
 
-    Fails fast rather than re-running anything: a block with no abstract
-    means its `harden: true` run has not been run (or last failed), and the
-    fix is to run it, which the message says how to do.
+    Nothing is re-run; a missing abstract is reported with the `rb pnr` command that produces it.
     """
     from ..config.pnr import PnrSuiteConfig
     from ..errors import FatalRtlBuddyError
@@ -426,13 +358,9 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
 def check_technology(
     block: ResolvedBlock, *, liberty: str | None, tech_lef: str | None
 ) -> None:
-    """Raise unless the consumer shares the block's technology and corner.
+    """Raise unless the consumer's technology LEF and corner Liberty match the block's.
 
-    Compared by content, not by path or platform name: a block hardened on
-    a block-level platform (its own PDN, its own routing layers) is meant
-    to go into a top on the full platform, and the two share exactly the
-    technology LEF and the corner Liberty. A different corner or process is
-    a model that does not describe the block in this run.
+    Files are compared by content, not by path or platform name, so a block built on a block-level platform can go into a top on the full platform.
     """
     recorded = block.manifest.get("technology") or {}
     for role, path, what in (
@@ -443,8 +371,6 @@ def check_technology(
             continue
         expected = (recorded.get(role) or {}).get("sha256")
         if expected is None:
-            # An abstract from before the manifest recorded it: nothing to
-            # compare, so nothing vouches that it fits this run.
             raise BlockResolutionError(
                 f"block {block.ref.name!r}: its abstract records no {what} — "
                 f"re-run `rb pnr {block.ref.pnr_run} -c {block.ref.pnr_suite_path}`"
@@ -463,22 +389,16 @@ def resolve_blocks(refs: list[BlockRef]) -> list[ResolvedBlock]:
 
 
 def _records(value):
-    """A manifest input entry — one record, a list of them, or none."""
+    """Normalise a manifest input entry (one record, a list, or None) to a list."""
     if value is None:
         return []
     return value if isinstance(value, list) else [value]
 
 
 def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
-    """What has changed since the block was hardened; empty when current.
+    """Return what changed since the block was hardened; empty when current.
 
-    Every input the manifest recorded is fingerprinted again and compared
-    by content — no timestamps, which a checkout or a copy rewrites in any
-    order (the reasoning of #618's DEF check). The three published views
-    are compared too, so an abstract edited after the fact is not taken as
-    the one the manifest vouches for. The block's configuration is rebuilt
-    from its `pnr.yaml` and platform as they are now and its digest
-    compared, which catches an edited floorplan, platform or file list.
+    Recorded inputs and the three published views are re-fingerprinted and compared by content, not timestamp. The block's configuration is rebuilt from its current `pnr.yaml` and platform and its digest compared.
     """
     root = project_root_or_none(block.abstract_dir)
     changes: list[str] = []
@@ -523,13 +443,9 @@ def block_changes(block: ResolvedBlock, root_cfg) -> list[str]:
 def assess_blocks(
     resolved: list[ResolvedBlock], root_cfg, *, accept_stale: bool
 ) -> list[ResolvedBlock]:
-    """Attach each block's changes; refuse stale ones unless accepted.
+    """Attach each block's changes and raise on a stale block unless `accept_stale` is set.
 
-    A stale abstract describes a block that no longer exists in the source
-    tree, so a run consuming it is refused, naming every stale block and
-    what changed. ``accept_stale`` (`--accept-stale`) lets it through; the
-    consuming run then qualifies its result and each block's row says
-    `stale: true` with the changes.
+    With `--accept-stale` the run proceeds, qualifies its result, and marks each stale block's row `stale: true`.
     """
     assessed = [replace(b, changes=tuple(block_changes(b, root_cfg))) for b in resolved]
     stale = [b for b in assessed if b.stale]
@@ -545,7 +461,7 @@ def assess_blocks(
 
 
 def stale_qualifier(blocks: list[ResolvedBlock]) -> str:
-    """The result qualifier for stale abstracts a run accepted; "" if none."""
+    """Return the result qualifier naming accepted stale abstracts, or an empty string."""
     names = [b.ref.name for b in blocks if b.stale]
     if not names:
         return ""

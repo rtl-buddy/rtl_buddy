@@ -3,21 +3,9 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-nvim_install: install/update the unified rtl-buddy-nvim editor plugin.
+"""Install or update the rtl-buddy-nvim editor plugin and its managed setup file.
 
-Replaces the legacy ``rb wave-install-nvim`` flow that dropped a standalone
-``rtl_buddy_wave.lua`` (annotation only, no hub). The annotation feature now
-lives inside ``rtl-buddy-nvim`` alongside the hub adapter, so a single command
-clones that one plugin into the nvim *pack* dir and writes a managed setup file
-that auto-connects to the hub and renders ``rb wave`` annotations.
-
-Delivery is a pinned ``git clone``: the ref below is known-compatible with this
-rtl_buddy's hub protocol version. The hub also enforces the protocol version on
-the wire (``hub/protocol.py::decode`` rejects a mismatched ``v``), so a stale
-clone fails fast at handshake rather than silently misbehaving. Bump
-:data:`RTL_BUDDY_NVIM_REF` whenever :data:`rtl_buddy.hub.protocol.PROTOCOL_VERSION`
-changes.
+The plugin is cloned at a pinned ref that matches this release's hub protocol version. Bump `RTL_BUDDY_NVIM_REF` whenever `rtl_buddy.hub.protocol.PROTOCOL_VERSION` changes.
 """
 
 import logging
@@ -32,69 +20,50 @@ from ..process_utils import run_managed_process
 
 logger = logging.getLogger(__name__)
 
-# The upstream plugin and the revision pinned to this rtl_buddy release. The
-# ref is a git tag (or branch) accepted by ``git clone --branch``. Keep it in
-# lockstep with hub/protocol.py::PROTOCOL_VERSION — see the module docstring.
+# The ref is a git tag or branch accepted by `git clone --branch`.
 RTL_BUDDY_NVIM_REPO = "https://github.com/rtl-buddy/rtl-buddy-nvim"
 RTL_BUDDY_NVIM_REF = "v0.3.0"
 
-# The hub wire-protocol version the pinned plugin speaks. The hub enforces it
-# on the wire (``hub/protocol.py::decode`` rejects a mismatched ``v``), so a
-# pin/protocol drift would only surface at a user's handshake — never at build
-# time. When ``PROTOCOL_VERSION`` changes, tag a compatible rtl-buddy-nvim
-# release, bump ``RTL_BUDDY_NVIM_REF`` to it, and bump this constant.
-# ``test_pin_tracks_hub_protocol_version`` is the CI tripwire that fails if the
-# two drift apart. See docs/known-issues.md.
+# Hub protocol version the pinned plugin speaks; `test_pin_tracks_hub_protocol_version` fails if it drifts from `PROTOCOL_VERSION`.
 _PIN_PROTOCOL_VERSION = 1
 
-# Generous ceiling for the one-shot git clone/fetch; the plugin repo is tiny, so
-# this only trips on a hung network — turning an indefinite hang into a clear
-# error that points at ``--source <local path>``.
 _GIT_TIMEOUT_S = 300.0
 
-# Env overrides, mainly for offline/dev installs against a sibling checkout
-# (``--source ../rtl-buddy-nvim --ref <branch>``) and for the test suite.
 _ENV_SOURCE = "RTL_BUDDY_NVIM_SOURCE"
 _ENV_REF = "RTL_BUDDY_NVIM_REF"
 
 
 def _site_dir() -> Path:
-    """``~/.local/share/nvim/site`` — recomputed per call so tests can repoint $HOME."""
+    """Return `~/.local/share/nvim/site`, resolved per call so tests can repoint $HOME."""
     return Path(os.path.expanduser("~/.local/share/nvim/site"))
 
 
 def pack_dir() -> Path:
-    """Native-package install location for the plugin (auto-loaded by nvim)."""
+    """Return the native-package directory nvim auto-loads the plugin from."""
     return _site_dir() / "pack" / "rtlbuddy" / "start" / "rtl-buddy-nvim"
 
 
 def setup_file() -> Path:
-    """Managed bootstrap that calls ``setup()`` — auto-sourced from ``site/plugin``."""
+    """Return the managed Lua file that calls `setup()`."""
     return _site_dir() / "plugin" / "rtl_buddy_setup.lua"
 
 
 def legacy_plugin_file() -> Path:
-    """The pre-#272 standalone annotation plugin; removed on install if present."""
+    """Return the standalone annotation plugin file that install removes."""
     return _site_dir() / "plugin" / "rtl_buddy_wave.lua"
 
 
 def is_installed() -> bool:
-    """True if the unified rtl-buddy-nvim plugin is present in the pack dir."""
+    """Return whether the plugin is present in the pack directory."""
     return pack_dir().exists()
 
 
 def _rtl_buddy_version() -> str:
     try:
         return _pkg_version("rtl-buddy")
-    except (
-        Exception
-    ):  # pragma: no cover - packaging metadata always present in practice
+    except Exception:  # pragma: no cover
         return "unknown"
 
-
-# ---------------------------------------------------------------------------
-# managed setup file
-# ---------------------------------------------------------------------------
 
 _LSP_BLOCK = """
 -- Auto-start verible-verilog-ls when it's on PATH and no LSP is already
@@ -170,15 +139,7 @@ def _remove_legacy() -> Path | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# git
-# ---------------------------------------------------------------------------
-
-
 def _git(git: str, args: list[str], *, cwd: str) -> None:
-    # Routed through run_managed_process (the repo convention for external tools)
-    # so the networked clone gets an explicit cwd, a timeout, and process-group
-    # cleanup on Ctrl-C — rather than a bare subprocess.run that could hang.
     cmd = [git, *args]
     log_event(logger, logging.DEBUG, "nvim_install.git", cmd=" ".join(cmd))
     result = run_managed_process(
@@ -199,7 +160,6 @@ def _git(git: str, args: list[str], *, cwd: str) -> None:
 
 def _clone(git: str, source: str, ref: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # dest is absolute; run from its parent so the clone is explicitly rooted.
     _git(
         git,
         ["clone", "--depth", "1", "--branch", ref, source, str(dest)],
@@ -208,15 +168,9 @@ def _clone(git: str, source: str, ref: str, dest: Path) -> None:
 
 
 def _update(git: str, source: str, ref: str, dest: Path) -> None:
-    # Fetch the pinned ref from `source` explicitly (so --source on update can
-    # re-point the origin) and hard-reset the managed clone to it.
+    # Fetch from `source` explicitly so `--source` on update re-points the clone.
     _git(git, ["-C", str(dest), "fetch", "--depth", "1", source, ref], cwd=str(dest))
     _git(git, ["-C", str(dest), "reset", "--hard", "FETCH_HEAD"], cwd=str(dest))
-
-
-# ---------------------------------------------------------------------------
-# entry point
-# ---------------------------------------------------------------------------
 
 
 def install(
@@ -227,13 +181,9 @@ def install(
     ref: str | None = None,
     lsp: bool = True,
 ) -> None:
-    """Install or update the unified rtl-buddy-nvim plugin.
+    """Install or update the rtl-buddy-nvim plugin and rewrite the managed setup file.
 
-    ``force`` removes any existing install and re-clones. ``update`` syncs an
-    existing clone to the pinned ref (re-cloning if the dir is not a git repo).
-    ``source`` / ``ref`` (or the ``RTL_BUDDY_NVIM_SOURCE`` / ``RTL_BUDDY_NVIM_REF``
-    env vars) override the upstream repo and pinned revision. ``lsp`` controls
-    whether the managed setup file auto-starts ``verible-verilog-ls``.
+    `force` re-clones. `update` syncs an existing clone to the ref, re-cloning if it is not a git checkout. `source` and `ref` (or the `RTL_BUDDY_NVIM_SOURCE` and `RTL_BUDDY_NVIM_REF` environment variables) override the repository and ref. `lsp` adds the `verible-verilog-ls` auto-start block to the setup file.
     """
     git = shutil.which("git")
     if git is None:
@@ -268,8 +218,7 @@ def install(
         _clone(git, source, ref, pack)
         cloned = True
 
-    # Always (re)write the managed setup file and clear the legacy plugin so a
-    # plain re-run repairs a partial/old install.
+    # Runs on every invocation so a plain re-run repairs a partial install.
     setup_path = _write_setup_file(lsp=lsp)
     removed_legacy = _remove_legacy()
 
