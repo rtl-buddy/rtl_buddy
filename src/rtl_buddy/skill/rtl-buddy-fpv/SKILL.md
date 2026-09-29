@@ -7,36 +7,24 @@ description: Run and review rtl_buddy formal verification; use for UNKNOWN resul
 
 Report `rb --version` at the top of every run summary.
 
-Use `rb --machine`; read `rb fpv --help`, `rb fpv-regression --help`, and
-`rb --machine docs show concepts/fpv` for configs and worked procedures.
+Use `rb --machine`. For configs and worked procedures read `rb fpv --help`, `rb fpv-regression --help` and `rb --machine docs show concepts/fpv`.
 
 ## Run and interpret
 
 - Gate the environment with `rb --machine tool-check --required-for fpv`.
-- `fpv` and `fpv-regression` exit 0 when every result counts as successful, 1
-  for any `FAIL` or strict `XPASS`, and 2 for a fatal configuration or
-  environment error. `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful.
-- Treat `artefacts/<run>/sby_workdir/status` as the formal verdict when present,
-  and read each machine result's `vacuity` and `coi` blocks.
-- A PASS with unreachable covers, vacuous properties, or dead assumptions is a
-  false green. Report those guardrails with the result.
-- `UNKNOWN` in `mode: prove` can mean the property is true but non-inductive.
-  Strengthen the invariant or exclude unreachable predecessor states before
-  merely increasing depth.
+- `fpv` and `fpv-regression` exit 0 when every result counts as successful (`PASS`, `SKIP`, `XFAIL`, non-strict `XPASS`), 1 for any `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
+- `artefacts/<run>/sby_workdir/status` is the formal verdict when present. Read each machine result's `vacuity` and `coi` blocks too.
+- A PASS with unreachable covers, vacuous properties or dead assumptions is a false green. Report those guardrails with the result.
+- `UNKNOWN` in `mode: prove` can mean the property is true but not inductive. Strengthen the invariant or exclude unreachable predecessor states before raising depth.
 
 ## Authoring guardrails
 
-- Probe the installed slang/Yosys build's supported SVA constructs; support can
-  vary by build even when the nominal version matches.
-- Constrain reset/initial state so proof does not begin in unreachable state.
+- Probe the installed slang/Yosys build's supported SVA constructs; support varies by build even at the same nominal version.
+- Constrain reset and initial state so the proof does not start in an unreachable state.
 - Confirm every intended cover is reachable.
-- Make one deliberate mutation and confirm the expected assertion fails before
-  reporting a proof environment as trustworthy.
-- Track intentionally non-inductive cases with the documented
-  `xfail`/`xfail_strict` semantics: they excuse a property sby disproved, not
-  an `UNKNOWN`, a solver timeout, or an sby error, which stay FAIL.
+- Make one deliberate mutation and confirm the expected assertion fails before calling a proof environment trustworthy.
+- Track intentionally non-inductive cases with `xfail`/`xfail_strict`. They excuse a property sby disproved, not an `UNKNOWN`, a solver timeout or an sby error, which stay `FAIL`.
 
-For mutation campaigns, use `rb --machine docs show concepts/mut`. Survivors are
-verification holes; mutants that cannot build are errors, not kills.
-`mut run` exits 0 when it produces a scorable campaign and 1 when nothing is
-scorable; score and survivor count do not gate it. Fatal errors exit 2.
+## Mutation campaigns
+
+Use `rb --machine docs show concepts/mut`. Survivors are verification holes; mutants that cannot build are errors, not kills. `mut run` exits 0 when the campaign is scorable and 1 when nothing is scorable; score and survivor count do not gate it. Fatal errors exit 2.
