@@ -16,23 +16,10 @@ class FpgaPlatformConfigFile:
 
 
 class FpgaPlatformConfig:
-    """A reusable FPGA target: a device part plus its default constraints.
+    """A reusable FPGA target from ``cfg-fpga-platforms``: a device part plus default constraints.
 
-    Parallel to ``cfg-pnr-platforms`` for ASIC P&R: the platform lifts
-    the device choice out of individual ``fpga.yaml`` runs so one suite
-    can sweep the same RTL across several parts via ``platform:`` refs.
-
-    ``board`` and ``package`` are informational only. Vivado part names
-    already encode the package (e.g. ``ffvc1156`` inside
-    ``xczu7ev-ffvc1156-2-e``), so ``package`` is never re-attached to
-    the part string — it exists for documentation and for backends
-    whose part naming splits device and package.
-
-    ``xdc`` lists the platform's default constraint files (board clocks,
-    pinout), resolved relative to ``root_config.yaml`` — the file that
-    owns the platform definition — following the same anchoring
-    convention as ``cfg-pdks`` asset paths. Per-run ``xdc:`` entries in
-    ``fpga.yaml`` extend (not replace) this set.
+    ``board`` and ``package`` are informational; ``package`` is never appended to ``part``.
+    ``xdc`` files resolve relative to ``root_config.yaml``; per-run ``xdc:`` entries in ``fpga.yaml`` extend them.
     """
 
     def __init__(self, cfg: FpgaPlatformConfigFile, root_cfg_path: str):

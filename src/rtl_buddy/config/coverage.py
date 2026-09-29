@@ -6,13 +6,7 @@ from serde import serde, field
 
 @dataclass
 class CoverageConfig:
-    """
-    Coverage post-processing configuration for a simulator family.
-
-    Attributes:
-      name (str): Simulator family name, e.g. "verilator" or "vcs".
-      use_lcov (bool): Whether LCOV output should be emitted for this simulator.
-    """
+    """Coverage post-processing settings for one simulator family (`name`, `use_lcov`)."""
 
     name: str
     use_lcov: bool
@@ -29,9 +23,7 @@ class CoverageConfig:
 
 @serde
 class CoverageConfigFile:
-    """
-    YAML-backed coverage configuration entry.
-    """
+    """YAML entry for `CoverageConfig`."""
 
     name: str
     use_lcov: bool = field(rename="use-lcov", default=False)

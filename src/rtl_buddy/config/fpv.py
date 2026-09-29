@@ -1,10 +1,6 @@
 """Configuration schema for FPV (formal property verification) runs.
 
-Mirrors the CDC schema (``config/cdc.py``): each ``fpv.yaml`` lists one
-or more verification runs; each run names a model, the top module, a
-list of SystemVerilog property files, the formal mode (bmc / prove /
-cover), depth, and engines. The project's ``root_config.yaml``
-declares the available FPV tools under ``cfg-fpv-tools``.
+Each ``fpv.yaml`` lists verifications: a model, property files, mode, depth and engines. ``root_config.yaml`` declares the tools under ``cfg-fpv-tools``.
 """
 
 import logging
@@ -33,9 +29,7 @@ class FpvToolOpts:
     timeout: int | None = None
     extra_args: str = ""
     solver_versions: dict[str, str] = dc_field(default_factory=dict)
-    # Absolute or project-relative path to the yosys-slang shared
-    # library. Required when any verification picks `frontend: slang`;
-    # ignored for the default verilog frontend.
+    # Absolute or project-relative path to the yosys-slang shared library; required when any verification uses `frontend: slang`.
     plugin_path: str | None = None
 
 
@@ -43,10 +37,7 @@ class FpvToolOpts:
 class FpvToolOptsFile:
     timeout: int | None = field(rename="timeout", default=None)
     extra_args: str = field(rename="extra-args", default="")
-    # Optional pins so CI proofs reproduce across machines. Map solver
-    # name (yices / z3 / boolector / btormc / abc) -> exact version
-    # string. SbyFpv probes each before running and hard-fails on
-    # mismatch.
+    # Solver name (yices, z3, boolector, btormc, abc) to exact version; SbyFpv fails on a mismatch.
     solver_versions: dict[str, str] = field(
         rename="solver-versions", default_factory=dict
     )
@@ -65,20 +56,14 @@ class FpvToolConfig:
 
     def __init__(self, cfg: FpvToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
-        # Directory relative `tool:` candidates are existence-tested
-        # against: the one holding root_config.yaml, never the process
-        # cwd (rb is routinely invoked from a suite directory).
+        # Never the process cwd: rb is often run from a suite directory.
         self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
-
-        ``tool:`` may be a single value or a list of candidates in
-        preference order; see :mod:`rtl_buddy.config.toolpath`.
-        """
+        """Tool executable with ``~`` and ``$VAR`` expanded; see :mod:`rtl_buddy.config.toolpath`."""
         return resolve_tool_path(
             self._cfg.tool,
             base_dir=self._base_dir,
@@ -112,40 +97,21 @@ class FpvToolConfig:
 _VALID_MODES = ("bmc", "prove", "cover", "live")
 _VALID_FRONTENDS = ("verilog", "slang")
 
-# A `params:` name must be a plain SystemVerilog identifier — it is
-# emitted straight into a yosys script line.
+# A `params:` name is emitted straight into a yosys script line.
 _PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
-# Characters a rendered value may not carry, because the token is spliced
-# verbatim into a yosys *script line*. Measured against yosys 0.64+193:
-#
-# * whitespace — yosys tokenises a script line on it, so the tail of the
-#   value becomes a bogus extra argument.
-# * `#` — starts a comment for the REST OF THE LINE, mid-line included. A
-#   value containing one silently swallows every argument after it,
-#   including the source files: `read_verilog -DW=4 #x w.v` fails with
-#   "Command syntax error: No filename given".
-# * `;` — does NOT separate commands in a script file (it reaches the
-#   frontend and dies as a syntax error *inside the design source*), which
-#   is if anything a worse diagnostic: nothing in it points back at
-#   fpv.yaml. Rejected for the same reason the whole validator exists.
-#
-# None of these is a security boundary — fpv.yaml is project-authored — and
-# none is meaningful in a SystemVerilog parameter value.
+# Characters a value may not carry because it is spliced verbatim into a yosys script line:
+# whitespace splits the token, `#` comments out the rest of the line (including the source files),
+# and `;` does not separate commands but reaches the frontend as a syntax error.
 _SCRIPT_UNSAFE_RE = re.compile(r"[\s;#]")
 
 
 def render_param_value(value: int | bool | str) -> str:
-    """Render one `params:` value as the token a yosys script takes.
+    """Render one `params:` value as a yosys script token.
 
-    - `bool` -> `1` / `0`. YAML's `true` is the natural way to write a
-      one-bit enable; SystemVerilog has no bare `true`.
-    - `int` -> decimal, verbatim.
-    - `str` -> **verbatim SystemVerilog expression text**, so a sized
-      literal (`"8'h20"`) passes through unchanged. A *string-typed*
-      parameter therefore needs its own quotes inside the YAML scalar
-      (`MODE: '"small"'`); yosys tokenises a script line on whitespace
-      and does not strip quotes, so the inner quotes survive to slang.
+    - `bool` becomes `1` or `0`.
+    - `int` is written in decimal.
+    - `str` is passed through as SystemVerilog expression text (`"8'h20"`). A string-typed parameter needs inner quotes (`MODE: '"small"'`).
     """
     if isinstance(value, bool):
         return "1" if value else "0"
@@ -153,12 +119,7 @@ def render_param_value(value: int | bool | str) -> str:
 
 
 def validate_params(name: str, params: dict | None) -> dict[str, int | bool | str]:
-    """Validate a verification's `params:` map, or raise.
-
-    Fatal at config-load time rather than at elaboration: a bad override
-    otherwise surfaces as a yosys syntax error inside a generated script,
-    which is a much longer walk back to the typo.
-    """
+    """Validate a verification's `params:` map, raising ``FatalRtlBuddyError`` at config load."""
     if params is None:
         return {}
     if not isinstance(params, dict):
@@ -172,8 +133,7 @@ def validate_params(name: str, params: dict | None) -> dict[str, int | bool | st
                 f"{name}: fpv `params:` name {key!r} is not a valid "
                 f"SystemVerilog identifier"
             )
-        # `bool` is a subclass of `int`, so it is already admitted here —
-        # `render_param_value` is where the two part company.
+        # `bool` is an `int` subclass, so it passes here.
         if not isinstance(value, (int, str)):
             raise FatalRtlBuddyError(
                 f"{name}: fpv `params:` value for '{key}' must be an integer, "
@@ -205,64 +165,25 @@ class FpvConfigFile:
     tool: str
     top: str | None = None
     properties: list[str] = field(default_factory=list)
-    # Optional SVA/Verilog file with clock and reset `assume property`
-    # statements (and any other environment constraints). Read into the
-    # sby script *before* `properties:` so the assumes are in scope
-    # when the assertions are elaborated. Analogous to `constraints:`
-    # in `pnr.yaml` — separating intent ("environment") from "what to
-    # prove" lets multiple verifications share one boilerplate file.
+    # SVA/Verilog file of environment `assume property` statements (clock, reset); read before `properties:`.
     constraints: str | None = None
     mode: str = "bmc"
     depth: int = 20
     engines: list[str] = field(default_factory=lambda: ["smtbmc yices"])
-    # Top-module parameter overrides applied at elaboration, for
-    # reduced-configuration proofs (#359): the properties are
-    # size-generic, and shrinking a depth/width parameter collapses the
-    # state space enough to make the bounded proof tractable. Values are
-    # scalars — int, bool, or a string carrying SystemVerilog literal
-    # text (`K: "8'h20"`); see `validate_params`.
+    # Top-module parameter overrides applied at elaboration; see `validate_params`.
     params: dict | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
-    # IDs of spec coverage items this verification addresses — the same
-    # `covers:` a test declares in `tests.yaml` (see `config/test.py`).
-    # Read by `rb spec check-coverage` and the design knowledge graph's
-    # config tier; has no effect on the proof itself.
+    # Spec coverage item ids, as in tests.yaml; read by `rb spec check-coverage` and the graph, no effect on the proof.
     covers: list[str] | None = None
     tool_overrides: dict | None = None
-    # When true (default for `bmc` / `prove`), run a secondary sby pass
-    # in `cover` mode after the primary proof using auto-derived cover
-    # properties for every `a |-> b` antecedent in the property set.
-    # Surfaces vacuous proofs (antecedent never holds → assert never
-    # actually constrained the design). Skipped automatically for
-    # `cover` / `live` modes.
+    # Default true for `bmc` / `prove`, false for `cover` / `live`: runs a secondary cover pass on every `a |-> b` antecedent to expose vacuous proofs.
     vacuity: bool | None = None
-    # When true (default), run a yosys cone-of-influence walk after the
-    # primary proof and report what % of design cells are reachable
-    # from at least one assertion. A direct "what's still unverified"
-    # signal; complements the proof verdict.
+    # Default true: after the proof, report the % of design cells reachable from at least one assertion.
     coi: bool | None = None
-    # SystemVerilog frontend for sby + yosys. "verilog" (default) uses
-    # yosys's native Verilog frontend — fast, no plugin, limited SVA
-    # subset (no `|->` / `|=>` / sequences). "slang" uses the
-    # yosys-slang plugin path; required for concurrent SVA implications
-    # and for `bind` directives to elaborate. When set to slang, the
-    # `cfg-fpv-tools[].opts.plugin-path` must point at the built
-    # slang.so.
+    # "verilog" is yosys's native frontend with a limited SVA subset (no `|->`, `|=>` or sequences).
+    # "slang" needs `cfg-fpv-tools[].opts.plugin-path` and is required for concurrent SVA implications and `bind`.
     frontend: str = "verilog"
-    # Expected-fail markers (pytest-style xfail). A verification is treated
-    # as expected-to-fail when *either* `xfail` or `xfail_strict` is true:
-    # a FAIL is reported as `XFAIL` and counts as a pass (does not fail the
-    # run / regression), and SKIP/NA pass through unchanged. The two flags
-    # differ only in how an *unexpected* pass (`XPASS`) is counted:
-    #
-    #   xfail: true         — non-strict. XPASS is reported but still
-    #                         counts as a pass (does not fail the run).
-    #   xfail_strict: true  — strict. XPASS counts as a FAILURE, so a stale
-    #                         xfail (the property started holding) is loud.
-    #
-    # If both are set, strict wins. Use for known-not-to-hold properties
-    # (e.g. a true-but-not-inductive property under `mode: prove`) so they
-    # can live in a regression without turning it red.
+    # Either flag turns a FAIL into XFAIL, which counts as a pass. An unexpected pass (XPASS) passes for `xfail` and fails for `xfail_strict`, which wins if both are set.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
@@ -321,16 +242,13 @@ class FpvConfig:
     engines: list[str]
     _reglvl: int | dict | None
     constraints: str | None = dc_field(default=None)
-    # Spec coverage-item ids, mirroring `TestConfig.covers`: consumers
-    # (`build_coverage_map`, the graph's config tier) read the attribute
-    # by the same name on both.
+    # Same attribute name as `TestConfig.covers`; consumers read both alike.
     covers: list[str] | None = dc_field(default=None)
     tool_overrides: dict | None = dc_field(default=None)
     vacuity: bool | None = dc_field(default=None)
     coi: bool | None = dc_field(default=None)
     frontend: str = dc_field(default="verilog")
-    # Validated top-module parameter overrides (#359), insertion-ordered
-    # so the generated script is stable across runs.
+    # Insertion-ordered so the generated script is stable.
     params: dict[str, int | bool | str] = dc_field(default_factory=dict)
     xfail: bool = dc_field(default=False)
     xfail_strict: bool = dc_field(default=False)
@@ -339,9 +257,7 @@ class FpvConfig:
         return self.frontend
 
     def get_params(self) -> dict[str, int | bool | str]:
-        # A copy: the return value is stamped onto a graph node and
-        # serialized, and config state should not share an object with a
-        # payload someone downstream may mutate.
+        # A copy: callers stamp the result onto graph nodes.
         return dict(self.params)
 
     def get_param_tokens(self) -> list[tuple[str, str]]:
@@ -359,25 +275,13 @@ class FpvConfig:
         return self.xfail_strict
 
     def vacuity_enabled(self) -> bool:
-        """Whether to run the vacuity cover pass for this verification.
-
-        Defaults to True for the proof modes (`bmc` / `prove`) and False
-        for cover/live modes where the user is already exploring
-        reachability directly. A user-supplied `vacuity:` field
-        overrides either way.
-        """
+        """Whether to run the vacuity cover pass: `vacuity:` if set, else true for `bmc` and `prove` only."""
         if self.vacuity is not None:
             return bool(self.vacuity)
         return self.mode in ("bmc", "prove")
 
     def coi_enabled(self) -> bool:
-        """Whether to run the COI coverage pass for this verification.
-
-        Defaults to True — the analysis is fast (yosys structural walk,
-        no SMT) and gives a coverage signal independent of how many
-        cycles the proof bound covered. Users disable it by setting
-        ``coi: false`` in `fpv.yaml`.
-        """
+        """Whether to run the cone-of-influence coverage pass: `coi:` if set, else true."""
         if self.coi is not None:
             return bool(self.coi)
         return True
@@ -470,10 +374,7 @@ class FpvSuiteConfig:
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
         config_dir = os.path.dirname(os.path.abspath(path))
-        # A verification's own `top:` wins over the model's and lands in a
-        # yosys script line (`prep -top <top>`), the chparam lines and the
-        # `bind_to` construction, so it answers to the same rule the model
-        # top does — checked here, once, rather than escaped per generator.
+        # A verification `top:` reaches yosys script lines, so it gets the model top's validation.
         for v in data.verifications:
             if v.top is not None:
                 validate_top(
