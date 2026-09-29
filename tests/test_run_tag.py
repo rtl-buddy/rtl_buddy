@@ -1,17 +1,9 @@
-"""Tests for ``--run-tag``, the per-invocation artefact namespace (#541).
+"""Tests for ``--run-tag``, which moves a run's whole artefact tree under
+``artefacts/.runs/<tag>/``.
 
-Two regression tiers of one checkout — one per simulator — have no serial
-dependency, but #73's tree lock is workspace-wide and the per-test paths
-carry no run identity, so the second run dies on the first suite it
-reaches. ``--run-tag <name>`` moves a run's whole tree under
-``artefacts/.runs/<tag>/``, which makes the lock per-tag and the paths
-disjoint.
-
-The invariant every test here exists to protect is that **an untagged run
-does not move**: same directories, same lock file, same log, same result
-envelope bytes. The shared build directory does not move either — it is
-keyed on the compile fingerprint, so two tags that compile the same thing
-must keep sharing one ``obj_dir``.
+An untagged run must not move: same directories, lock file, log and result envelope
+bytes. The shared build directory stays keyed on the compile fingerprint, so tags
+that compile the same thing share one ``obj_dir``.
 """
 
 from __future__ import annotations
@@ -59,7 +51,7 @@ def _last_json(output: str) -> dict:
 
 @pytest.fixture
 def locks():
-    """An ArtifactLocks manager that always drops its locks on teardown."""
+    """An ArtifactLocks manager that releases its locks on teardown."""
     managers = []
 
     def make():
@@ -70,11 +62,6 @@ def locks():
     yield make
     for m in managers:
         m.release_all()
-
-
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
 
 
 def test_untagged_path_helpers_are_todays_layout():
@@ -100,16 +87,14 @@ def test_tagged_path_helpers_nest_under_the_runs_directory():
 
 
 def test_the_runs_directory_is_dot_prefixed():
-    # Load-bearing, not cosmetic: every reader of the artefact tree already
-    # skips dot names (the overlay scan's `_is_test_dir`, the `+incdir+`
-    # walk prune), so a tag can never be mistaken for a test directory.
+    # Artefact-tree readers skip dot names, so a tag is never taken for a test
+    # directory.
     assert RUNS_DIRNAME.startswith(".")
 
 
 def test_shared_build_dir_is_not_namespaced_by_a_tag():
-    # The point of the namespace is separate *results*, not separate
-    # compiles: the compile key already tells two toolchains apart, so two
-    # tags that compile the same thing must reuse one obj_dir.
+    # Tags separate results, not compiles: the same compile under two tags reuses one
+    # obj_dir.
     assert shared_build_dir("/tmp/suite", "cafe0123") == Path(
         "/tmp/suite/artefacts/.shared-builds/obj_dir_cafe0123"
     )
@@ -150,11 +135,6 @@ def test_an_invalid_tag_is_rejected_before_a_path_is_built():
         run_artifact_root("/tmp/suite", "../escape")
 
 
-# ---------------------------------------------------------------------------
-# Execution context
-# ---------------------------------------------------------------------------
-
-
 def test_execution_context_moves_the_artifact_root_and_log_under_the_tag(tmp_path):
     config = tmp_path / "suite" / "tests.yaml"
     config.parent.mkdir(parents=True)
@@ -170,8 +150,7 @@ def test_execution_context_moves_the_artifact_root_and_log_under_the_tag(tmp_pat
     )
     assert tagged.run_tag == "sim-a"
     assert tagged.artifact_root == config.parent / "artefacts" / RUNS_DIRNAME / "sim-a"
-    # The log moves too: it is opened for writing and the first open
-    # truncates, so two concurrent runs sharing one path erase each other.
+    # The log moves too; runs sharing one log path would truncate each other.
     assert tagged.log_path == tagged.artifact_root / "rtl_buddy.log"
 
 
@@ -183,9 +162,7 @@ def test_execution_context_for_dir_namespaces_the_same_way(tmp_path):
 
 
 def test_an_explicit_artifact_root_is_namespaced_too(tmp_path):
-    # The reserved override has to mean the same thing wherever the tree
-    # was redirected to, or a future --artifact-root would quietly put two
-    # concurrent runs back onto one lock.
+    # The override is namespaced wherever the tree was redirected to.
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     assert (
@@ -203,11 +180,6 @@ def test_an_explicit_artifact_root_is_namespaced_too(tmp_path):
         ).artifact_root
         == scratch / RUNS_DIRNAME / "sim-a"
     )
-
-
-# ---------------------------------------------------------------------------
-# The tree lock is per-tag
-# ---------------------------------------------------------------------------
 
 
 def test_two_tags_in_one_suite_do_not_contend(tmp_path, locks):
@@ -231,11 +203,6 @@ def test_a_tagged_run_does_not_contend_with_an_untagged_one(tmp_path, locks):
     locks().acquire(run_artifact_root(suite, "sim-a"), command="regression")
 
 
-# ---------------------------------------------------------------------------
-# CLI: the layout, and the untagged layout staying put
-# ---------------------------------------------------------------------------
-
-
 def test_cli_run_tag_namespaces_the_whole_tree(minimal_project: Path):
     runner, rb = _runner()
     result = runner.invoke(
@@ -248,11 +215,11 @@ def test_cli_run_tag_namespaces_the_whole_tree(minimal_project: Path):
     assert (tagged / "basic" / "result.json").is_file()
     assert (tagged / LOCK_FILENAME).is_file()
     assert (tagged / "rtl_buddy.log").is_file()
-    # Nothing landed in the flat tree, including its lock and its log.
+    # Nothing landed in the flat tree, including its lock and log.
     assert not (minimal_project / "artefacts" / "basic").exists()
     assert not (minimal_project / "artefacts" / LOCK_FILENAME).exists()
     assert not (minimal_project / "rtl_buddy.log").exists()
-    # ...and the machine envelope says which tree the result came from.
+    # The machine envelope names the tree.
     assert _last_json(result.output)["meta"]["run_tag"] == "sim-a"
 
 
@@ -270,13 +237,13 @@ def test_cli_without_a_run_tag_keeps_the_flat_layout(minimal_project: Path):
 
 
 def test_cli_regression_namespaces_every_suite_it_visits(minimal_project: Path):
-    # The #541 case: a whole tier under one tag. The manifest root gets a
-    # tagged tree too, because that is where the head's own lock and log go.
+    # A whole tier under one tag; the manifest root gets a tagged tree for the head's
+    # own lock and log.
     runner, rb = _runner()
     result = runner.invoke(
         rb.app,
-        # `-M debug` because the stub builder in the fixture only declares
-        # that mode; `rb regression` would otherwise default to `reg`.
+        # The fixture's stub builder only declares the debug mode; the regression
+        # default is reg.
         ["--machine", "-E", "comp", "-M", "debug", "regression", "--run-tag", "sim-a"],
     )
     assert result.exit_code == 0, result.output
@@ -291,7 +258,6 @@ def test_cli_regression_namespaces_every_suite_it_visits(minimal_project: Path):
 def test_cli_run_is_blocked_only_by_a_run_holding_the_same_tag(
     minimal_project: Path, locks
 ):
-    # The lock the second simulator's run used to die on, now per-tag.
     locks().acquire(run_artifact_root(minimal_project, "sim-a"), command="regression")
 
     runner, rb = _runner()
@@ -348,8 +314,7 @@ def test_the_result_envelope_names_the_tag_only_when_there_is_one(minimal_projec
     flat = json.loads(
         (minimal_project / "artefacts" / "basic" / "result.json").read_text()
     )
-    # Absent, not null: an untagged run's envelope stays byte-identical to
-    # a pre-#541 one.
+    # The key is absent, not null, so an untagged envelope is unchanged.
     assert "run_tag" not in flat
 
 
@@ -359,11 +324,6 @@ def test_write_result_json_omits_the_key_without_a_tag(tmp_path):
         tmp_path / "result.json", test_name="t", run_id=None, results=results
     )
     assert "run_tag" not in json.loads(path.read_text())
-
-
-# ---------------------------------------------------------------------------
-# rb graph results
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -402,8 +362,7 @@ def test_collect_results_reads_only_the_named_run_tree(results_project: Path):
     flat = collect_results(results_project, coverage=False)
     tagged = collect_results(results_project, coverage=False, run_tag="sim-a")
 
-    # One entry each, and the statuses do not cross over. The flat scan in
-    # particular must not report `.runs` as a test that ran.
+    # One entry each; the flat scan must not report `.runs` as a test.
     assert [e["status"] for e in flat.entries.values()] == ["FAIL"]
     assert [e["status"] for e in tagged.entries.values()] == ["PASS"]
     assert not any(RUNS_DIRNAME in node_id for node_id in flat.entries)
@@ -437,11 +396,6 @@ def test_cli_graph_results_writes_the_tagged_overlay(results_project: Path):
     assert payload["overlay"] == str(
         Path("artefacts") / RUNS_DIRNAME / "sim-a" / "graph" / RESULTS_OVERLAY_NAME
     )
-
-
-# ---------------------------------------------------------------------------
-# Dispatch: head and job agree on the tree
-# ---------------------------------------------------------------------------
 
 
 def _test_spec(**kwargs) -> _TestJobSpec:

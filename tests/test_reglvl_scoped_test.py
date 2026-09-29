@@ -1,10 +1,7 @@
-"""Tests for #339 — ``rb test`` gains long-form ``--reg-level`` /
-``--start-level`` options, producing SKIP results for tests outside the
-level window (same semantics as ``rb regression``).
+"""Tests for ``rb test --reg-level`` and ``--start-level``.
 
-The ``minimal_project`` fixture declares ``basic`` at reglvl 0 and
-``extra`` at reglvl 5. ``-E comp`` keeps compiled tests at the neutral
-early-stop result NA (see #336) instead of running the stub sim.
+Tests outside the level window report SKIP, as in ``rb regression``. The
+``minimal_project`` fixture declares ``basic`` at reglvl 0 and ``extra`` at reglvl 5.
 """
 
 from __future__ import annotations
@@ -132,22 +129,18 @@ def test_invalid_test_selections_fail_before_running(
 def test_help_declares_reg_level_without_stealing_rnd_last_short_flag(
     minimal_project: Path,
 ):
-    """``-l`` must stay bound to ``--rnd-last``; ``--reg-level`` has no short
-    flag (``-l`` is already taken on ``rb test``, unlike ``rb regression``)."""
+    """``-l`` stays bound to ``--rnd-last``; ``--reg-level`` has no short flag."""
     runner = CliRunner()
     rb = RtlBuddy(name="test_reglvl_help")
     result = runner.invoke(rb.app, ["test", "--help"])
     assert result.exit_code == 0, result.output
 
-    # Strip rich's box-drawing/ANSI so line matching is layout-independent.
     output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
     assert "--reg-level" in output
     assert "--start-level" in output
 
-    # Match the short flag "-l" as its own token, not the "-l" inside
-    # "--reg-level"/"--rnd-last" themselves (negative lookahead excludes a
-    # following letter).
+    # Match "-l" as its own token, not the "-l" inside "--reg-level" or "--rnd-last".
     short_flag_l = re.compile(r"-l(?![A-Za-z])")
 
     rnd_last_line = next(line for line in output.splitlines() if "--rnd-last" in line)
