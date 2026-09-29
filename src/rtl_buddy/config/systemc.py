@@ -1,8 +1,8 @@
 """Optional ``cfg-systemc`` block in ``root_config.yaml``.
 
-Pins the SystemC install (``home``), an optional C++ compiler (``cxx``) and project-wide ``cflags`` / ``ldflags``. Per-testbench ``systemc.cflags`` / ``systemc.ldflags`` in tests.yaml are appended to these.
+Pins the SystemC install (``home``), an optional C++ compiler (``cxx``) and project-wide ``cflags`` / ``ldflags``, which per-testbench ``systemc.cflags`` / ``systemc.ldflags`` in tests.yaml extend. The include and library paths derived from ``home`` are added automatically, so ``cflags`` and ``ldflags`` need not repeat them.
 
-``home`` resolves from the config value (``~`` and ``$VAR`` expanded), then ``$SYSTEMC_HOME``, then None. SystemCSim fails when a SystemC testbench needs a home that did not resolve.
+``home`` resolves from the config value (``~`` and ``$VAR`` expanded), then ``$SYSTEMC_HOME``, then None. When it is None, SystemCSim logs ``systemc.home_unresolved`` and fails a SystemC testbench.
 """
 
 import os
@@ -29,7 +29,7 @@ class SystemCConfig:
     def get_home(self) -> str | None:
         """SystemC install root, or None.
 
-        Falls back to $SYSTEMC_HOME when `home` is unset or references an unset variable.
+        Falls back to $SYSTEMC_HOME when `home` is unset or references an unset variable. An unset variable is never left in the returned path, so a missing home is caught as ``systemc.home_unresolved`` before Verilator runs.
         """
         if self.home is not None:
             expanded = os.path.expanduser(os.path.expandvars(self.home))
