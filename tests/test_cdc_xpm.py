@@ -4,11 +4,13 @@ XPM CDC macros ship in the vendor install tree, so the analyzer sees a bodyless 
 
 Regenerate the fixtures from the repository root, so `location.file` stays repo-relative:
 
-    rtl-buddy-cdc lint --top cdc_xpm_macro_top
-      --sdc tests/fixtures/cdc/cdc_xpm_macro_top.sdc
-      --format json --output tests/fixtures/cdc/cdc_xpm_macro_report.json
-      --emit-domain-map tests/fixtures/cdc/cdc_xpm_macro_domain_map.json
-      tests/fixtures/cdc/cdc_xpm_macro_top.sv
+    rtl-buddy-cdc lint --top cdc_xpm_macro_top \\
+        --sdc tests/fixtures/cdc/cdc_xpm_macro_top.sdc \\
+        --format json --output tests/fixtures/cdc/cdc_xpm_macro_report.json \\
+        --emit-domain-map tests/fixtures/cdc/cdc_xpm_macro_domain_map.json \\
+        tests/fixtures/cdc/cdc_xpm_macro_top.sv
+
+The separate `cdc_xpm_top` fixture models `xpm_cdc_single` as a bare flop to test the `--check-xdc --recognize-sync` escape hatch, which stays valid for macros outside the XPM family.
 """
 
 from __future__ import annotations
