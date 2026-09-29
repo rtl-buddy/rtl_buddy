@@ -1,12 +1,7 @@
-"""Abstract contract for FPGA implementation backends.
+"""Base class and target resolution shared by FPGA implementation backends.
 
-Adding a new backend (openXC7, Quartus, ...) is:
-  1. Subclass `BaseFpga` and implement `run()` returning a `FpgaResults`.
-  2. Register the class in `runner/fpga_runner.py::_FPGA_BACKENDS`.
-
-Shared resolution logic (target part + effective XDC set) lives here so
-every backend agrees on what device the user asked for and only
-diverges on tool-specific command emission.
+A backend subclasses `BaseFpga`, implements `run()` and is registered in
+`runner/fpga_runner.py::_FPGA_BACKENDS`.
 """
 
 from __future__ import annotations
@@ -24,11 +19,10 @@ from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 
 @dataclass(frozen=True)
 class FpgaTarget:
-    """Resolved implementation target for one fpga run.
+    """Target part and constraint files for one fpga run.
 
-    ``xdc_files`` is the effective constraint list in read order:
-    platform defaults first, per-run files after — later XDC commands
-    win in Vivado, so run-level constraints override platform defaults.
+    ``xdc_files`` is in read order: platform files first, then per-run files,
+    so run-level constraints override platform ones.
     """
 
     part: str
@@ -36,17 +30,12 @@ class FpgaTarget:
 
 
 def resolve_target(fpga_cfg: FpgaConfig, root_cfg) -> FpgaTarget:
-    """Resolve the target device + constraint set for one fpga run.
+    """Resolve the part and constraint set, applying ``cfg-fpga-platforms`` when referenced.
 
-    This is the single seam where the platform abstraction
-    (``cfg-fpga-platforms``, issue #286) plugs in — backends must go
-    through it rather than reading ``fpga_cfg.get_part()`` /
-    ``get_xdc_files()`` directly, so platform-referencing and
-    inline-part runs look identical downstream.
+    Backends call this instead of reading the part and XDC files from ``fpga_cfg``.
 
     Raises:
-      FatalRtlBuddyError: when the run references an unknown platform
-        (or references one with no RootConfig available).
+      FatalRtlBuddyError: the run names a platform that is unknown or that has no root config.
     """
     platform_name = fpga_cfg.get_platform()
     if not platform_name:
@@ -87,12 +76,6 @@ class BaseFpga(ABC):
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
 
-    # ------------------------------------------------------------------
-    # Shared filelist handling — every backend resolves the model's
-    # sources the same way; only the tool-specific command emission
-    # differs.
-    # ------------------------------------------------------------------
-
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "fpga.f")
 
@@ -131,5 +114,5 @@ class BaseFpga(ABC):
         return incdirs_from_filelist(fl_path)
 
     @abstractmethod
-    def run(self) -> FpgaResults:  # pragma: no cover - abstract
+    def run(self) -> FpgaResults:  # pragma: no cover
         ...

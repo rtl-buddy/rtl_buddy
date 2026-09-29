@@ -1,11 +1,7 @@
-"""rtl-buddy-cdc tool wrapper.
+"""Wrapper around the standalone ``rtl-buddy-cdc lint`` CLI.
 
-Drives the standalone ``rtl-buddy-cdc lint`` CLI: hands it the model's
-filelist of SystemVerilog sources, the SDC, and an optional waiver
-file, then parses the JSON report it emits to populate
-:class:`CdcResults`. Keeping the integration at subprocess granularity
-means rtl_buddy isn't tied to the analyzer's Python API and can pick
-up new releases via ``uv sync`` without code changes here.
+Passes it the model's sources, the SDC and an optional waiver file, and parses its JSON
+report into :class:`CdcResults`.
 """
 
 from __future__ import annotations
@@ -38,10 +34,7 @@ _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f
 
 
 def warn_unsupported_incdirs(analysis: str, fl_path: str) -> None:
-    """rtl-buddy-cdc takes plain source paths and has no include-path option,
-    so a filelist ``+incdir+`` cannot reach it. Say so rather than narrowing
-    the `` `include `` search path silently (#519); the analyzer's own
-    ``Cannot find include file`` error then has a cause on the log."""
+    """Warn that filelist ``+incdir+`` entries are not passed to rtl-buddy-cdc, which has no include-path option."""
     incdirs = incdirs_from_filelist(fl_path)
     if not incdirs:
         return
@@ -60,15 +53,10 @@ _FILELIST_SOURCE_PREFIX = "-v "
 
 @functools.lru_cache(maxsize=None)
 def _lint_supports_project_root(executable: str) -> bool:
-    """Whether ``<executable> lint`` accepts ``--project-root`` (rtl-buddy-cdc#245).
+    """Whether ``<executable> lint --help`` lists ``--project-root``; False on any probe failure.
 
-    The analyzer is resolved off PATH / the tool config and is *not*
-    pinned by rtl_buddy, and its ``version`` command reports a static
-    string — so the only reliable capability signal is the ``--help``
-    surface. We probe once per executable (cached) and degrade to
-    ``False`` on any failure (missing binary, timeout, non-zero exit), so
-    an older analyzer that predates the flag keeps working instead of
-    hard-failing on an unknown option.
+    The analyzer version is not pinned and its ``version`` output is static, so
+    ``--help`` is the only capability signal.
     """
     try:
         proc = subprocess.run(
@@ -84,7 +72,7 @@ def _lint_supports_project_root(executable: str) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def _lint_supports_single_unit(executable: str) -> bool:
-    """Whether ``<executable> lint`` accepts ``--single-unit`` (#277)."""
+    """Whether ``<executable> lint --help`` lists ``--single-unit``; False on any probe failure."""
     try:
         proc = subprocess.run(
             [executable, "lint", "--help"],
@@ -111,20 +99,15 @@ class RtlBuddyCdc:
         self.cdc_cfg = cdc_cfg
         self.tool_cfg = tool_cfg
         self.root_cfg = root_cfg
-        # When set, additionally request the structured clock-domain and
-        # reset-domain maps (the inputs for `rb cdc --emit-constraints`, #291).
+        # Also request the domain and reset maps that `rb cdc --emit-constraints` reads.
         self.emit_maps = emit_maps
-        # The cdc.yaml's directory (see ``_do_cdc_suite``). Used as the
-        # analyzer's ``--project-root`` so relative paths in a config's
-        # ``extra_args`` resolve against the config — not against the
-        # nested artefact cwd we run the subprocess from (#245).
+        # The cdc.yaml directory; passed as ``--project-root`` so relative ``extra_args`` paths
+        # resolve against it, not the artefact cwd.
         self.suite_dir = suite_dir
 
         artefact_root = Path(suite_dir) / "artefacts" / cdc_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
-
-    # --- artefact paths -----------------------------------------------------
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "cdc.f")
@@ -142,8 +125,7 @@ class RtlBuddyCdc:
         return os.path.join(self.artefact_dir, "reset_map.json")
 
     def read_emitted_maps(self) -> tuple[dict | None, dict | None]:
-        """Return the (domain_map, reset_map) dicts produced by an
-        ``emit_maps`` run, or ``(None, None)`` if they were not written."""
+        """Return the (domain_map, reset_map) dicts from an ``emit_maps`` run; None for a missing map."""
 
         def _load(path):
             try:
@@ -154,14 +136,11 @@ class RtlBuddyCdc:
         return _load(self._domain_map_path()), _load(self._reset_map_path())
 
     def read_report(self) -> dict:
-        """Return the parsed cdc.json report (with ``violations`` /
-        ``suppressed`` / ``crossings``), or ``{}`` if not produced."""
+        """Return the parsed cdc.json report, or ``{}`` if it was not produced."""
         try:
             return json.loads(Path(self._report_path("json")).read_text())
         except (OSError, json.JSONDecodeError):
             return {}
-
-    # --- helpers ------------------------------------------------------------
 
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
@@ -176,12 +155,7 @@ class RtlBuddyCdc:
         return fl_path
 
     def _source_files_from_filelist(self, fl_path: str) -> list[str]:
-        """Return absolute source file paths from a stripped filelist.
-
-        Mirrors the helper in :mod:`tools.synth_yosys` rather than
-        importing it, because the synth tool's helper is private. If we
-        grow more tool wrappers that need this, factor it out.
-        """
+        """Return absolute source file paths from a stripped filelist."""
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
         paths: list[str] = []
         with open(fl_path) as f:
@@ -197,21 +171,12 @@ class RtlBuddyCdc:
         return paths
 
     def _clear_stale_outputs(self) -> list[str]:
-        """Delete the analyzer-written artefacts before invoking it.
+        """Delete the reports and domain maps written by a previous run and return the removed paths.
 
-        Exit 1 is rtl-buddy-cdc's "rule violations found" code, so a crash
-        that exits 1 passes the returncode gate below and the fixed-path
-        read then picks up whatever ``cdc.json`` the artefact dir already
-        held (#469). ``cdc.log`` is not cleared here because :meth:`_run`
-        truncates it (mode ``"w"``) on the first of the two invocations.
-
-        The domain maps go whether or not this invocation asked for them.
-        They are written only under ``emit_maps``, but they are read back by
-        ``rb cdc --emit-constraints`` and ``--check-xdc`` off a fixed path, so
-        an ordinary run that leaves an earlier constraint-generation run's
-        maps in place lets those commands answer from a design state this
-        analysis never confirmed — the same reasoning that makes the FPGA
-        backends clear a bitstream they were not asked to build.
+        Exit 1 means "violations found", so a crash exiting 1 would otherwise be read
+        against a stale ``cdc.json``. The maps are cleared even when this run does not
+        emit them, because ``--emit-constraints`` and ``--check-xdc`` read them from
+        fixed paths. ``cdc.log`` is truncated by :meth:`_run`.
         """
         return clear_stale_artefacts(
             [
@@ -224,31 +189,19 @@ class RtlBuddyCdc:
         )
 
     def _fail_after_analyzer(self, desc: str) -> CdcFailResults:
-        """Fail a run that has already invoked the analyzer, publishing nothing.
+        """Clear the analyzer's outputs and return a tool-stage FAIL.
 
-        rtl-buddy-cdc writes its report and maps before it finishes, so an
-        unsupported exit code or an unparsable report can arrive with a
-        half-written ``cdc.json`` — or a complete one from the *text* pass —
-        on disk, at the fixed path ``read_report`` and ``read_emitted_maps``
-        consult after ``run`` returns (#469). Every post-analyzer failure
-        return goes through here.
+        A failed analyzer run can leave a partial ``cdc.json`` or maps behind.
         """
         self._clear_stale_outputs()
-        # No violation count came back, so the FAIL is the analyzer's, not
-        # the design's, and an xfail marker does not excuse it (#553).
+        # fail_stage="tool": an xfail marker does not excuse an analyzer failure.
         return CdcFailResults(
             name=self.cdc_cfg.get_name(), violations=0, desc=desc, fail_stage="tool"
         )
 
-    # --- run ----------------------------------------------------------------
-
     def run(self) -> CdcResults:
-        # Configuration is validated first, before the availability check
-        # below: a broken analysis is broken on every machine, and reporting
-        # it as "analyzer not installed" on a box that merely lacks the tool
-        # would send the user after the wrong problem. These all raise — and
-        # a config error is a *failed run*, so it clears on the way out
-        # rather than leaving the previous run's reports to be read (#469).
+        # Validate the config before checking for the analyzer, so a broken analysis is not
+        # reported as "analyzer not installed". A config error clears the previous outputs.
         try:
             fl_path = self._write_filelist()
             sources = self._source_files_from_filelist(fl_path)
@@ -268,24 +221,14 @@ class RtlBuddyCdc:
                     f"{self.cdc_cfg.get_name()}: waivers file not found: {waivers_path}"
                 )
         except Exception:
-            # Deliberately every exception, not a list of the ones we expect.
-            # This caught `FatalRtlBuddyError` alone, and `_write_filelist`
-            # raises `FilelistError` — a *sibling* under `RtlBuddyError`, not
-            # a subclass — so a rerun after a source file disappeared kept the
-            # previous run's reports (#469). Enumerating exception types is
-            # what went wrong; the rule is simply that a run which fails
-            # before the analyzer publishes nothing, whatever it failed on.
-            # Re-raised immediately, so this masks nothing.
+            # Catch everything: `_write_filelist` raises FilelistError, which is not a
+            # FatalRtlBuddyError. Re-raised, so nothing is masked.
             self._clear_stale_outputs()
             raise
 
         executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
         if not shutil.which(executable):
-            # Ahead of the clear, mirroring the Vivado backend: a box without
-            # the analyzer never ran it, so it must not delete the reports a
-            # box that has it produced. Without this the clear happened first
-            # and `run_managed_process` then raised out of Popen, losing them
-            # (#469).
+            # Skip before clearing: a host without the analyzer must not delete reports.
             log_event(
                 logger,
                 logging.WARNING,
@@ -304,9 +247,6 @@ class RtlBuddyCdc:
 
         warn_unsupported_incdirs(self.cdc_cfg.get_name(), fl_path)
 
-        # Everything past the skip is a run of this analysis, however it ends,
-        # so the previous run's reports go now rather than being left to be
-        # read as this run's (#469).
         stale = self._clear_stale_outputs()
         if stale:
             log_event(
@@ -317,8 +257,7 @@ class RtlBuddyCdc:
                 paths=stale,
             )
 
-        # Always emit JSON so we can parse violation counts; also keep a
-        # human-readable text report alongside for the user.
+        # JSON is parsed for the verdict; the text report is for the user.
         json_report = self._report_path("json")
         text_report = self._report_path("txt")
         log_path = self._log_path()
@@ -335,11 +274,7 @@ class RtlBuddyCdc:
                 "install an rtl-buddy-cdc build containing rtl-buddy-cdc#277"
             )
 
-        # Anchor the analyzer's relative path args (chiefly any in
-        # ``extra_args`` — `--yosys-plugin` / `--emit-*`) to the cdc.yaml
-        # dir, matching how `constraints:` / `waivers:` already resolve
-        # (#245). Skipped (with a debug note) when the installed analyzer
-        # predates the flag, so we never hard-fail an older tool.
+        # Older analyzers lack --project-root; run without it.
         if _lint_supports_project_root(executable):
             project_root_args = ["--project-root", self.suite_dir]
         else:
@@ -375,8 +310,6 @@ class RtlBuddyCdc:
             if self.cdc_cfg.single_unit:
                 cmd.append("--single-unit")
             for module in self.cdc_cfg.blackbox:
-                # Repeated `--blackbox <module>` (rtl-buddy-cdc#259). An
-                # empty list adds nothing.
                 cmd += ["--blackbox", module]
             if self.emit_maps:
                 cmd += [
@@ -386,8 +319,7 @@ class RtlBuddyCdc:
                     self._reset_map_path(),
                 ]
             if opts.extra_args:
-                # After project_root_args so a config can still override
-                # the anchor in its own extra_args if it must.
+                # After project_root_args, so extra_args can override it.
                 cmd += opts.extra_args.split()
             cmd += sources
             return cmd
@@ -404,16 +336,11 @@ class RtlBuddyCdc:
                 tool=executable,
                 top=self.cdc_cfg.get_top(),
             )
-            # Run twice: once for human-readable text, once for JSON we
-            # parse below. Both invocations elaborate the design; if
-            # this becomes a hotspot, switch to running once with JSON
-            # and rendering the text from the parsed payload.
+            # Two invocations, so the design is elaborated twice.
             text_proc = self._run(cmd_text, log_path)
             json_proc = self._run(cmd_json, log_path, append=True)
 
-        # Either invocation succeeding (exit 0) or returning the rule-
-        # violation exit code (1) is a successful run; anything else
-        # (typically 2 = elaboration failure) is a hard fail.
+        # Exit 0 (clean) and 1 (violations) are successful runs; 2 is an elaboration failure.
         for proc in (text_proc, json_proc):
             if proc.returncode not in (0, 1):
                 return self._fail_after_analyzer(
@@ -421,21 +348,14 @@ class RtlBuddyCdc:
                 )
 
         if not os.path.isfile(json_report):
-            # The *text* pass may still have written `cdc.txt` and the maps.
-            # A run that reports failure publishes none of it: `--emit-
-            # constraints` reads those maps back off a fixed path.
             return self._fail_after_analyzer(
                 f"no JSON report produced (see {log_path})"
             )
 
         try:
             payload = json.loads(Path(json_report).read_text())
-            # Shape validation belongs *inside* the guard, not after it.
-            # `json.loads` succeeding only says the bytes were valid JSON: a
-            # top-level list, or a non-numeric `summary.violations`, parses
-            # fine and then raises on `.get` or `int()`. Outside the guard
-            # that escaped `_fail_after_analyzer` entirely, so the command
-            # died with the report it had just rejected still on disk (#469).
+            # Shape checks stay inside this guard so a malformed report goes through
+            # _fail_after_analyzer.
             if not isinstance(payload, dict):
                 raise ValueError(
                     f"expected a JSON object at the top level, got "
@@ -453,12 +373,7 @@ class RtlBuddyCdc:
         except (json.JSONDecodeError, ValueError, TypeError, AttributeError) as e:
             return self._fail_after_analyzer(f"could not parse JSON report: {e}")
 
-        # Best-effort hub publish. When a hub is running for this
-        # project, push the violations as a `diagnostics_set` event so
-        # the SPA's badge layer + nvim diagnostics namespace light up
-        # immediately. Silently no-ops when no hub is reachable, and
-        # is wrapped in a broad except so a sidecar UI bug can never
-        # fail the CDC analysis itself.
+        # Best-effort hub publish; a hub bug must never fail the analysis.
         try:
             from .cdc_publisher import publish_cdc_report
 

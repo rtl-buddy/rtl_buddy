@@ -1,47 +1,9 @@
-"""rtl-buddy-axi-profiler tool wrappers.
+"""Wrappers around the standalone ``axi-profiler`` CLI, one per ``rb axi-profile`` subcommand.
 
-Drives the standalone ``axi-profiler`` CLI in subprocess-granularity
-mode: rtl_buddy is not coupled to the profiler's Python API, and a
-profiler release can be picked up via ``uv sync`` (or by re-installing
-the standalone binary) without code changes here.
-
-Four wrappers, one per ``rb axi-profile`` subcommand:
-
-* :class:`RtlBuddyAxiProfileDiscover` — ``rb axi-profile discover <model>``:
-  parses RTL via ``axi-profiler discover`` and writes
-  ``axi-bundles.yaml``. Output defaults to ``model.axi_bundles`` (the
-  checked-in manifest path) when set, falling back to
-  ``artefacts/axi/<model>/axi-bundles.yaml``.
-
-* :class:`RtlBuddyAxiProfileRun` — ``rb axi-profile run <test>``: ingests
-  a per-test trace and writes ``axi-perf.json``. Resolves the model
-  (from ``tests.yaml``), the checked-in manifest (from
-  ``models.yaml``'s ``axi_bundles``), the trace input
-  (newest of ``dump.fst`` / ``dump.vcd`` / ``vcdplus.vpd`` under
-  ``<suite_dir>/artefacts/<test>/`` — so the builder used for the
-  debug run is auto-detected: Verilator dumps FST, VCS's
-  ``$vcdpluson`` dumps VPD, which is converted to FST on the fly via
-  ``vpd2vcd`` + ``vcd2fst``), and the testbench top scope (from the
-  test's ``tb.name`` in ``tests.yaml``) without further user input.
-  The ``tb_prefix`` override lets the user replace the auto-extracted
-  value when the wrapping scope name diverges from the testbench
-  name (e.g. a custom Verilator wrapper).
-
-* :class:`RtlBuddyAxiProfileGenMonitor` — ``rb axi-profile gen-monitor
-  <model>``: emits a SystemVerilog bind-style monitor for the stream
-  ingest path. Reads the manifest from ``model.axi_bundles`` and
-  writes to ``model.axi_monitor_out`` — both come from the
-  ``models.yaml`` entry so the testbench's filelist can pick up the
-  generated file without per-test config.
-
-* :class:`RtlBuddyAxiProfileNotebook` — ``rb axi-profile notebook
-  <test>``: resolves the per-test ``axi-txns.parquet`` (from the
-  ``--emit-txns-parquet`` flag on ``axi-profiler run``) and spawns
-  ``marimo edit`` against the packaged notebook template shipped
-  inside the ``rtl_buddy_axi_profiler.notebook`` subpackage. The
-  parquet path is exported as ``$AXI_TXNS_PARQUET`` so the template
-  picks it up; the user gets an interactive deep-dive UI without
-  hand-writing pyarrow scripts.
+The profiler runs as a subprocess. The wrappers are :class:`RtlBuddyAxiProfileDiscover`
+(writes ``axi-bundles.yaml``), :class:`RtlBuddyAxiProfileRun` (writes ``axi-perf.json``),
+:class:`RtlBuddyAxiProfileGenMonitor` (emits the SystemVerilog monitor) and
+:class:`RtlBuddyAxiProfileNotebook` (opens the marimo notebook on a test's parquet).
 """
 
 from __future__ import annotations
@@ -63,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def _require_axi_profiler(executable: str) -> None:
-    """Resolve ``executable`` to a runnable axi-profiler or raise."""
+    """Raise FatalRtlBuddyError unless ``executable`` is a runnable axi-profiler."""
     if os.sep in executable or (os.altsep and os.altsep in executable):
         if not (os.path.isfile(executable) and os.access(executable, os.X_OK)):
             raise FatalRtlBuddyError(
@@ -79,9 +41,10 @@ def _require_axi_profiler(executable: str) -> None:
 
 
 class RtlBuddyAxiProfileDiscover:
-    """Generates a filelist + invokes ``axi-profiler discover``.
+    """Write a filelist and run ``axi-profiler discover`` for a model.
 
-    Single-shot. Constructed per ``rb axi-profile discover`` invocation.
+    The output is ``model.axi_bundles`` (models.yaml) when set, else
+    ``artefacts/axi/<model>/axi-bundles.yaml``; ``output`` overrides both.
     """
 
     def __init__(
@@ -113,9 +76,6 @@ class RtlBuddyAxiProfileDiscover:
     def _resolve_output_path(self) -> str:
         if self.output_override:
             return self.output_override
-        # Prefer the checked-in manifest path from models.yaml when set;
-        # otherwise drop the output under artefacts/ so discover stays
-        # usable for models that don't yet have the field configured.
         configured = self.model_cfg.get_axi_bundles_path()
         if configured:
             os.makedirs(os.path.dirname(configured), exist_ok=True)
@@ -185,29 +145,18 @@ class RtlBuddyAxiProfileDiscover:
 
 
 class RtlBuddyAxiProfileRun:
-    """Per-test ingest + aggregate via ``axi-profiler run``.
+    """Run ``axi-profiler run`` on a test's trace.
 
-    Resolves model + manifest + trace + tb_prefix automatically from
-    ``tests.yaml`` / ``models.yaml`` / the standard artefact layout —
-    the user only types ``rb axi-profile run <test>``. Override hooks
-    exist for ``--output`` and ``--tb-prefix`` so unusual setups can
-    redirect without editing config files.
+    The model, manifest (``axi_bundles`` in models.yaml), trace and testbench scope
+    prefix come from the test config and the artefact layout; ``output`` and
+    ``tb_prefix_override`` replace the defaults.
 
-    The trace input is auto-detected from what the debug run dumped
-    (newest mtime wins among the candidates), so the same command
-    works regardless of which builder ran the test:
+    The trace is the newest of these under ``artefacts/<test>/``:
 
-    * ``dump.fst`` — Verilator (``$dumpfile`` on the VERILATOR branch
-      of the testbench dump hook). Ingested directly.
-    * ``dump.vcd`` — any simulator dumping plain VCD. The profiler's
-      wellen reader auto-detects VCD, so it is ingested directly too.
-    * ``vcdplus.vpd`` — VCS (``$vcdpluson``). VPD is Synopsys-
-      proprietary, so it is converted on the fly: ``vpd2vcd`` (ships
-      with VCS) to a temporary VCD, then ``vcd2fst`` (ships with
-      GTKWave) to a cached ``vcdplus.fst`` next to the VPD. The
-      conversion is skipped when the cached FST is already newer than
-      the VPD. Without ``vcd2fst`` the intermediate VCD is kept and
-      ingested as-is (correct, just ~15x larger on disk).
+    * ``dump.fst`` (Verilator) and ``dump.vcd`` are ingested directly.
+    * ``vcdplus.vpd`` (VCS) is converted with ``vpd2vcd`` then ``vcd2fst`` to a cached
+      ``vcdplus.fst``, skipped when the cache is newer than the VPD. Without ``vcd2fst``
+      the VCD is kept and ingested as is (about 15x larger).
     """
 
     def __init__(
@@ -228,11 +177,7 @@ class RtlBuddyAxiProfileRun:
         self.suite_dir = os.path.abspath(suite_dir)
         self.output_override = output
         self.tb_prefix_override = tb_prefix_override
-        # None  → don't emit a parquet (axi-perf.json only, legacy default).
-        # str "" → emit at the artefact-dir default (axi-txns.parquet next
-        #          to axi-perf.json — convention `rb axi-profile notebook`
-        #          looks for).
-        # str path → emit at that explicit path.
+        # None: no parquet. "": axi-txns.parquet in the artefact dir. Otherwise: that path.
         self.emit_txns_parquet = emit_txns_parquet
         self.executable = executable
 
@@ -252,10 +197,7 @@ class RtlBuddyAxiProfileRun:
     def _default_parquet_path(self) -> str:
         return os.path.join(self.artefact_dir, "axi-txns.parquet")
 
-    # Trace candidates under artefacts/<test>/ (same dir convention as
-    # `rb wave`), in the order they are named in errors. Newest mtime
-    # wins so the profiler follows whichever builder ran last. Shared with
-    # `rb wave` via tools/wave_trace.py so both commands agree on the set.
+    # Shared with `rb wave` (tools/wave_trace.py); the newest mtime wins.
     _TRACE_CANDIDATES = TRACE_CANDIDATES
 
     def _trace_dir(self) -> str:
@@ -298,23 +240,11 @@ class RtlBuddyAxiProfileRun:
         return newest
 
     def _convert_vpd(self, vpd: str) -> str:
-        """Convert a VCS VPD dump to FST, cached next to the VPD.
+        """Convert a VCS VPD dump to FST and return the path to ingest.
 
-        ``vpd2vcd`` ships with VCS itself, so requiring it adds no new
-        dependency for anyone who produced a VPD in the first place.
-        The intermediate VCD is deleted once ``vcd2fst`` shrinks it;
-        when ``vcd2fst`` (GTKWave) is absent the VCD is kept and
-        ingested directly — wellen reads VCD natively.
-
-        Deliberate artifact-layout deviation: the cached
-        ``vcdplus.fst`` / ``vcdplus.vcd`` live next to the VPD in the
-        *test* command's artefact dir, not under this command's own
-        ``artefacts/axi/<test>/`` root. The cache is a re-encoding of
-        the test's trace (not an analysis product): co-location keeps
-        the mtime-based invalidation against the VPD self-evident, and
-        puts the converted FST where the ``rb wave`` convention
-        (``artefacts/<test>/``) can open it. The conversion *log* is an
-        axi-profile artifact and stays under ``self.artefact_dir``.
+        ``vpd2vcd`` ships with VCS. The cached ``vcdplus.fst`` (or ``vcdplus.vcd`` when
+        ``vcd2fst`` is missing) sits next to the VPD in ``artefacts/<test>/`` so that
+        `rb wave` can open it; the conversion log is in ``self.artefact_dir``.
         """
         trace_dir = os.path.dirname(vpd)
         cached_fst = os.path.join(trace_dir, "vcdplus.fst")
@@ -345,8 +275,7 @@ class RtlBuddyAxiProfileRun:
         tmp_vcd = os.path.join(trace_dir, "vcdplus.tmp.vcd")
         with task_status(f"axi-profile vpd2vcd {self.test_name}"):
             with open(log_path, "w") as log_f:
-                # -full64 first: 64-bit-only VCS installs ship no 32-bit
-                # vpd2vcd.exe and the bare wrapper fails outright.
+                # -full64 first: 64-bit-only VCS installs have no 32-bit vpd2vcd.exe.
                 proc = None
                 for argv in (
                     ["vpd2vcd", "-full64", vpd, tmp_vcd],
@@ -400,10 +329,7 @@ class RtlBuddyAxiProfileRun:
     def _resolve_tb_prefix(self) -> str:
         if self.tb_prefix_override is not None:
             return self.tb_prefix_override
-        # Auto-extract: the testbench wraps the DUT, and Verilator names
-        # the top scope after the testbench module — which is what
-        # tests.yaml's `testbenches:` section names. Empty if the user
-        # explicitly opts out via --tb-prefix=''.
+        # Verilator names the top scope after the testbench module.
         tb = self.test_cfg.get_testbench()
         return tb.get_name() if tb is not None else ""
 
@@ -455,8 +381,6 @@ class RtlBuddyAxiProfileRun:
         trace = self._resolve_input_path()
         tb_prefix = self._resolve_tb_prefix()
         out_path = self.output_override or self._default_output_path()
-        # Resolve the parquet destination: empty-string → artefact-dir
-        # default (canonical location for `rb axi-profile notebook`).
         parquet_path: str | None
         if self.emit_txns_parquet is None:
             parquet_path = None
@@ -502,14 +426,11 @@ class RtlBuddyAxiProfileRun:
 
 
 class RtlBuddyAxiProfileGenMonitor:
-    """Emit the SV bind-style monitor for a model via ``axi-profiler gen-monitor``.
+    """Emit the SystemVerilog bind-style monitor with ``axi-profiler gen-monitor``.
 
-    Single-shot. Both the manifest input and the SV output path are
-    looked up in ``models.yaml`` (``axi_bundles`` /
-    ``axi_monitor_out``), so the user just types
-    ``rb axi-profile gen-monitor <model>`` and the wrapper handles
-    discovery + destination. The user is responsible for adding the
-    generated SV to the testbench's filelist once.
+    The manifest and output path come from ``axi_bundles`` and ``axi_monitor_out`` in
+    models.yaml; ``output`` overrides the latter. Add the generated file to the
+    testbench filelist once.
     """
 
     def __init__(
@@ -589,9 +510,7 @@ class RtlBuddyAxiProfileGenMonitor:
 
         manifest = self._resolve_manifest_path()
         out_path = self._resolve_output_path()
-        # The downstream gen-monitor opens the output for write; make
-        # sure the parent directory exists so a typical
-        # `../verif/<tb>/gen/...` path doesn't fail on first run.
+        # gen-monitor does not create the output directory.
         os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
 
         cmd = self._build_cmd(manifest, out_path)
@@ -625,29 +544,13 @@ class RtlBuddyAxiProfileGenMonitor:
 
 
 class RtlBuddyAxiProfileNotebook:
-    """Launch the packaged marimo notebook against a test's parquet.
+    """Run ``marimo edit`` on the packaged notebook template for a test's parquet.
 
-    Resolves three things up front:
-
-    1. The per-test parquet at
-       ``<suite_dir>/artefacts/axi/<test>/axi-txns.parquet`` — produced
-       by ``rb axi-profile run <test>`` when ``axi-profiler`` is
-       installed with the ``[parquet]`` extra. Missing → clear
-       ``FatalRtlBuddyError`` pointing at the prerequisite command.
-    2. The notebook template via
-       ``importlib.resources.files('rtl_buddy_axi_profiler.notebook')
-       / 'template.py'`` — always present once axi-profiler is
-       installed, regardless of the ``[notebook]`` extra (the extra
-       only adds marimo + altair + polars to the dep closure).
-    3. The marimo binary on ``$PATH`` — gated by the ``[notebook]``
-       extra. Missing → install hint pointing at
-       ``rtl-buddy-axi-profiler[notebook]``.
-
-    Spawns ``marimo edit <template>`` with ``$AXI_TXNS_PARQUET``
-    exported so the template's first cell reads it. Foreground by
-    default (matches ``rb hub start``); ``--daemon`` is accepted but
-    falls back to foreground for v1 (background detach is a
-    follow-up — same pattern as hub).
+    Requires ``artefacts/axi/<test>/axi-txns.parquet`` (from ``rb axi-profile run
+    --emit-txns-parquet``, needs the axi-profiler ``[parquet]`` extra), the template in the
+    ``rtl_buddy_axi_profiler.notebook`` package and ``marimo`` (the ``[notebook]`` extra)
+    on PATH. The parquet path is passed as ``$AXI_TXNS_PARQUET``. Always runs in the
+    foreground; ``foreground=False`` only logs a warning.
     """
 
     def __init__(
@@ -667,11 +570,7 @@ class RtlBuddyAxiProfileNotebook:
         self.suite_dir = os.path.abspath(suite_dir)
         self.port = port
         self.foreground = foreground
-        # ``headless`` is for the hub-launched flow (Phase 2 of the
-        # marimo umbrella) — the SPA opens the URL itself, so marimo
-        # shouldn't auto-pop a browser, and the auth token is
-        # disabled so the SPA can link directly without juggling
-        # secrets across the IPC boundary.
+        # headless: the hub launches this and the SPA opens the URL, so no browser and no auth token.
         self.headless = headless
         self.marimo_executable = marimo_executable
 
@@ -694,10 +593,6 @@ class RtlBuddyAxiProfileNotebook:
         return p
 
     def _resolve_template_path(self) -> str:
-        # The notebook subpackage ships inside the axi-profiler wheel,
-        # so resources.files() returns a real filesystem path when the
-        # wheel is unpacked. We don't need a CM here — marimo just
-        # opens the file directly.
         try:
             from importlib import resources
 
@@ -744,16 +639,12 @@ class RtlBuddyAxiProfileNotebook:
         if self.port is not None:
             cmd += ["--port", str(self.port)]
         if self.headless:
-            # --headless: no auto-browser-pop; the SPA opens the URL.
-            # --no-token: the SPA can navigate to the URL without
-            # threading a per-session token through the hub → browser
-            # handoff. Loopback-only, so the security trade is fine.
+            # --no-token is acceptable because marimo listens on loopback only.
             cmd += ["--headless", "--no-token"]
         return cmd
 
     def run(self) -> int:
-        # Resolve the parquet + template + binary up front so failures
-        # surface before marimo spins up its tornado server.
+        # Resolve inputs first so failures surface before marimo starts.
         parquet = self._resolve_parquet_path()
         template = self._resolve_template_path()
         self._require_marimo()

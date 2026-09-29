@@ -1,34 +1,19 @@
-"""Parsers for Vivado post-route report files (``rb fpga``).
+"""Parse the Vivado reports written by the flow in :mod:`.fpga_vivado_flow`.
 
-Pure text -> dict parsing for the reports the batch flow in
-:mod:`.fpga_vivado_flow` emits: ``report_utilization``,
-``report_timing_summary``, ``report_power``, ``report_drc``,
-``report_methodology``. No subprocess code lives here — the P1 backend
-reads the ``.rpt`` files from ``artefacts/<run>/`` and feeds the text
-through these functions.
-
-The contract is tested against real, sanitized Vivado 2022.1.2 reports
-under ``tests/fixtures/fpga/`` (part ``xczu7ev-ffvc1156-2-e``). Each
-parser tolerates the standard report headers (``Copyright ... | Tool
-Version ...``) and raises :class:`ValueError` when the text does not
-contain the report's anchor section — garbage in, exception out.
+Covers ``report_utilization``, ``report_timing_summary``, ``report_power``, ``report_drc``
+and ``report_methodology``. Each parser takes the report text and raises :class:`ValueError`
+when the report's anchor section is missing.
 """
 
 from __future__ import annotations
 
 import re
 
-# ---------------------------------------------------------------------------
-# Shared helpers
-
 
 def _num(cell: str) -> int | float | None:
-    """Parse a numeric table cell.
+    """Parse a table cell to ``int`` or ``float``; ``None`` for blanks, ``NA`` and dashes.
 
-    Returns an ``int`` for integer-looking cells, a ``float`` otherwise
-    (e.g. ``0.5`` Block RAM tiles), and ``None`` for blanks / ``NA`` /
-    dashes. Vivado prints ``<0.01`` for sub-resolution utilization — the
-    ``<`` is dropped, so the value parses as its printed bound (0.01).
+    A leading ``<`` is dropped, so ``<0.01`` parses as 0.01.
     """
     cell = cell.strip().lstrip("<")
     if not cell or cell in {"-", "_", "---", "NA", "n/a"}:
@@ -47,19 +32,9 @@ def _split_table_row(line: str) -> list[str]:
 
 
 def _iter_ascii_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
-    """Yield ``(header_cells, data_rows)`` for each ``+---+`` table.
+    """Return ``(header_cells, data_rows)`` for each ``+---+`` ASCII table.
 
-    Vivado tables are::
-
-        +------+------+
-        | Head | Head |
-        +------+------+
-        | data | data |
-        +------+------+
-
-    Rows between the second and final separator are data rows. Tables
-    without a data section (e.g. empty Black Boxes tables) yield zero
-    rows.
+    Data rows lie between the second and last separator; a table without them has zero rows.
     """
     tables: list[tuple[list[str], list[list[str]]]] = []
     lines = text.splitlines()
@@ -68,13 +43,11 @@ def _iter_ascii_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
         if not re.fullmatch(r"\+[-+]+\+", lines[i].strip()):
             i += 1
             continue
-        # Separator found: next line should be the header row.
         if i + 2 >= len(lines) or not lines[i + 1].lstrip().startswith("|"):
             i += 1
             continue
         header = _split_table_row(lines[i + 1])
         if not re.fullmatch(r"\+[-+]+\+", lines[i + 2].strip()):
-            # A header-only table (no second separator) — skip.
             i += 2
             continue
         rows: list[list[str]] = []
@@ -92,12 +65,7 @@ def _iter_ascii_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
     return tables
 
 
-# ---------------------------------------------------------------------------
-# report_utilization
-
-
-# Canonical resource aliases. UltraScale+ reports say "CLB LUTs" /
-# "CLB Registers"; 7-series says "Slice LUTs" / "Slice Registers".
+# UltraScale+ reports say "CLB LUTs"/"CLB Registers"; 7-series says "Slice LUTs"/"Slice Registers".
 _RESOURCE_ALIASES: dict[str, tuple[str, ...]] = {
     "lut": ("CLB LUTs", "Slice LUTs"),
     "ff": ("CLB Registers", "Slice Registers"),
@@ -120,10 +88,8 @@ def parse_utilization(text: str) -> dict:
           "dsp": {...} | None,
         }
 
-    Every row of every ``Site Type`` table is captured (first occurrence
-    wins when a site type repeats across tables, so the headline "CLB
-    Logic" numbers take precedence over the "CLB Logic Distribution"
-    breakdown). Blank cells parse as ``None``.
+    Every row of every ``Site Type`` table is captured; the first occurrence of a
+    repeated site type wins. Blank cells are ``None``.
 
     Raises:
       ValueError: if the text is not a Vivado utilization report.
@@ -165,12 +131,7 @@ def parse_utilization(text: str) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# report_timing_summary
-
-
-# Field order of the "Design Timing Summary" (and "Intra Clock Table")
-# numeric columns in a Vivado 2022.1 report.
+# Column order of the "Design Timing Summary" and "Intra Clock Table" rows.
 _TIMING_FIELDS: tuple[str, ...] = (
     "wns_ns",
     "tns_ns",
@@ -194,9 +155,7 @@ def _timing_values(tokens: list[str]) -> dict:
     return values
 
 
-# Path detail blocks in the "Timing Details" section. Each path opens
-# with `Slack (VIOLATED) :        -0.882ns  (...)` followed by indented
-# `Key:                  value` lines until the location table.
+# Each path in "Timing Details" opens with `Slack (VIOLATED) : -0.882ns` and is followed by `Key: value` lines.
 _PATH_SLACK_RE = re.compile(r"^Slack \((VIOLATED|MET)\)\s*:\s*(-?[\d.]+)ns")
 _PATH_FIELD_RE = re.compile(
     r"^(Source|Destination|Path Group|Path Type|Requirement|"
@@ -205,14 +164,9 @@ _PATH_FIELD_RE = re.compile(
 
 
 def _parse_detail_paths(lines: list[str]) -> list[dict]:
-    """Extract the per-path blocks from the "Timing Details" section.
+    """Return one dict per ``Slack (VIOLATED|MET)`` block in the "Timing Details" section.
 
-    Returns one dict per ``Slack (VIOLATED|MET)`` block (Max *and* Min
-    Delay Paths — ``path_type`` distinguishes Setup from Hold).
-    Continuation lines (the parenthesized cell/clock annotations under
-    ``Source:`` / ``Destination:``) don't match the field pattern and
-    are skipped; the location-delay table never matches either, so the
-    scan is safe to run over the whole report tail.
+    ``path_type`` distinguishes Setup from Hold paths.
     """
     paths: list[dict] = []
     current: dict | None = None
@@ -261,21 +215,15 @@ def _parse_detail_paths(lines: list[str]) -> list[dict]:
 def parse_timing_summary(text: str) -> dict:
     """Parse a ``report_timing_summary`` report.
 
-    Returns the "Design Timing Summary" numbers (WNS/TNS/WHS/THS/WPWS/
-    TPWS in ns plus failing/total endpoint counts), the per-clock rows
-    of the "Intra Clock Table" under ``"clocks"``, and ``"timing_met"``
-    derived from Vivado's own verdict line ("All user specified timing
-    constraints are met." / "Timing constraints are not met."), falling
-    back to a non-negative WNS/WHS check when neither line is present.
+    Returns the "Design Timing Summary" numbers (WNS/TNS/WHS/THS/WPWS/TPWS in ns plus
+    failing and total endpoint counts), the "Intra Clock Table" rows under ``"clocks"``
+    and ``"timing_met"``. ``timing_met`` follows Vivado's verdict line, or WNS and WHS
+    being non-negative when the line is absent.
 
-    For the timing-closure loop two derived keys are included:
-    ``failing_endpoints`` (setup + hold endpoints with negative slack,
-    from the headline TNS/THS counts) and ``failing_paths`` — the
-    ``Slack (VIOLATED)`` path blocks from the report's "Timing Details"
-    section as ``{"slack_ns", "source", "destination", "path_group",
-    "path_type", "requirement_ns", "data_path_delay_ns",
-    "logic_levels", "met"}`` dicts (the report carries the single worst
-    path per clock pair by default).
+    ``failing_endpoints`` is the setup plus hold failing-endpoint count. ``failing_paths``
+    lists the ``Slack (VIOLATED)`` blocks from "Timing Details" as dicts with ``slack_ns``,
+    ``source``, ``destination``, ``path_group``, ``path_type``, ``requirement_ns``,
+    ``data_path_delay_ns``, ``logic_levels`` and ``met``.
 
     Raises:
       ValueError: if the text has no "Design Timing Summary" section.
@@ -285,12 +233,11 @@ def parse_timing_summary(text: str) -> dict:
 
     lines = text.splitlines()
 
-    # --- headline numbers ------------------------------------------------
     summary: dict | None = None
     for i, line in enumerate(lines):
         if not line.strip().startswith("WNS(ns)"):
             continue
-        # Header row -> dashed underline -> values row.
+        # The values row is two lines below the header (dashed underline between).
         if i + 2 < len(lines):
             tokens = lines[i + 2].split()
             if tokens:
@@ -299,7 +246,6 @@ def parse_timing_summary(text: str) -> dict:
     if summary is None:
         raise ValueError("Vivado timing summary has no headline values row")
 
-    # --- per-clock rows ---------------------------------------------------
     clocks: list[dict] = []
     try:
         intra_at = next(
@@ -308,8 +254,6 @@ def parse_timing_summary(text: str) -> dict:
     except StopIteration:
         intra_at = None
     if intra_at is not None:
-        # Layout: "Clock  WNS(ns) ..." column header, a dashed underline
-        # row, then one row per clock until a blank line.
         header_at = next(
             (
                 i
@@ -328,7 +272,6 @@ def parse_timing_summary(text: str) -> dict:
                     break
                 clocks.append({"clock": tokens[0], **_timing_values(tokens[1:])})
 
-    # --- verdict ----------------------------------------------------------
     if "Timing constraints are not met." in text:
         timing_met = False
     elif "All user specified timing constraints are met." in text:
@@ -338,7 +281,6 @@ def parse_timing_summary(text: str) -> dict:
         whs = summary["whs_ns"]
         timing_met = (wns is None or wns >= 0) and (whs is None or whs >= 0)
 
-    # --- timing-closure loop fields ----------------------------------------
     endpoint_counts = [
         summary["tns_failing_endpoints"],
         summary["ths_failing_endpoints"],
@@ -357,10 +299,6 @@ def parse_timing_summary(text: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# report_power
-
-
 _POWER_SUMMARY_KEYS: dict[str, str] = {
     "total_on_chip_w": r"Total On-Chip Power \(W\)",
     "dynamic_w": r"Dynamic \(W\)",
@@ -372,10 +310,9 @@ _POWER_SUMMARY_KEYS: dict[str, str] = {
 def parse_power(text: str) -> dict:
     """Parse a ``report_power`` report.
 
-    Returns total on-chip / dynamic / device-static power in watts, the
-    junction temperature in Celsius, and the overall confidence level
-    string from the report's Summary table. Non-numeric values
-    (``NA`` / ``Unspecified*``) parse as ``None``.
+    Returns total on-chip, dynamic and device-static power in watts, the junction
+    temperature in Celsius and the confidence level string. Non-numeric values
+    (``NA``, ``Unspecified*``) are ``None``.
 
     Raises:
       ValueError: if the text is not a Vivado power report.
@@ -400,23 +337,15 @@ def parse_power(text: str) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# report_drc
-
-
 _DRC_SEVERITIES = ("Advisory", "Warning", "Critical Warning", "Error", "Fatal")
 _DRC_DETAIL_RE = re.compile(r"^([\w-]+#\d+)\s+(" + "|".join(_DRC_SEVERITIES) + r")\s*$")
 
 
 def _parse_rule_report(text: str) -> tuple[int, dict[str, int], list[dict]]:
-    """Shared machinery for the DRC-shaped rule reports.
+    """Parse the layout shared by ``report_drc`` and ``report_methodology``.
 
-    ``report_drc`` and ``report_methodology`` share one layout: a
-    ``Violations found: N`` headline, a REPORT SUMMARY table
-    (Rule | Severity | Description | Violations) and REPORT DETAILS
-    entries (``NSTD-1#1``-style ids). Returns
-    ``(total, by_severity, entries)`` with the summary table aggregated
-    by severity, falling back to the details when the table is absent.
+    Returns ``(total, by_severity, entries)``. ``by_severity`` comes from the REPORT
+    SUMMARY table, or from the REPORT DETAILS entries when the table is absent.
     """
     total = 0
     m = re.search(r"Violations found:\s*(\d+)", text)
@@ -435,7 +364,7 @@ def _parse_rule_report(text: str) -> tuple[int, dict[str, int], list[dict]]:
                 continue
             by_severity[row[1]] = by_severity.get(row[1], 0) + int(count)
 
-    # Details: "<RULE>#<n> <Severity>" followed by a description line.
+    # A detail entry is "<RULE>#<n> <Severity>" followed by a description line.
     entries: list[dict] = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
@@ -467,11 +396,8 @@ def parse_drc(text: str) -> dict:
           "violations": [{"id", "severity", "description"}, ...],
         }
 
-    ``violations`` lists the REPORT DETAILS entries (``NSTD-1#1``-style
-    ids, one entry per violation instance); ``by_severity`` aggregates
-    the REPORT SUMMARY rule table, falling back to the details when the
-    summary table is absent. A clean report yields zero counts and an
-    empty list.
+    ``violations`` has one entry per REPORT DETAILS item. A clean report gives zero
+    counts and an empty list.
 
     Raises:
       ValueError: if the text is not a Vivado DRC report.
@@ -487,10 +413,6 @@ def parse_drc(text: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# report_methodology
-
-
 def parse_methodology(text: str) -> dict:
     """Parse a ``report_methodology`` report.
 
@@ -502,11 +424,8 @@ def parse_methodology(text: str) -> dict:
           "warnings": [{"id", "severity", "description"}, ...],
         }
 
-    A methodology report shares the DRC report layout (REPORT SUMMARY
-    rule table + ``TIMING-18#1``-style REPORT DETAILS entries), so the
-    same machinery applies. The vendor's rule ids and severities are
-    surfaced verbatim — informational, not adopted as rtl_buddy's own
-    taxonomy. A clean report yields zero counts and an empty list.
+    Rule ids and severities are Vivado's, verbatim. A clean report gives zero counts
+    and an empty list.
 
     Raises:
       ValueError: if the text is not a Vivado methodology report.

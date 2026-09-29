@@ -1,31 +1,17 @@
 """Vivado non-project batch-Tcl flow template for ``rb fpga``.
 
-This module pins down the Tcl contract between rtl_buddy and Vivado
-before any invocation code exists (issue #284). It deliberately contains
-no subprocess code — the P1 backend renders :data:`FLOW_TCL_TEMPLATE`
-via :func:`render_flow_tcl` and drives::
-
-    vivado -mode batch -source flow.tcl -nojournal -log <log>
-
-Stage order (non-project mode): read sources + XDC -> ``synth_design``
--> ``opt_design`` -> ``place_design`` -> ``route_design`` -> post-route
-reports -> ``write_bitstream``.
-
-The stage list (:data:`FLOW_STAGES`) and report set
-(:data:`REPORT_FILES`) are module data so the backend, the report
-parsers (:mod:`.fpga_vivado_reports`), and the tests all agree on one
-contract. The template uses the same ``{{ key }}`` placeholder style as
-``rtl_buddy/pnr/flow.tcl.template``.
+:func:`render_flow_tcl` renders :data:`FLOW_TCL_TEMPLATE`, run as
+``vivado -mode batch -source flow.tcl -nojournal -log <log>``. Stages: read sources and XDC,
+``synth_design``, ``opt_design``, ``place_design``, ``route_design``, reports, ``write_bitstream``.
+:data:`FLOW_STAGES` and :data:`REPORT_FILES` are shared with the backend, the report
+parsers (:mod:`.fpga_vivado_reports`) and the tests. Placeholders use ``{{ key }}``.
 """
 
 from __future__ import annotations
 
 import re
 
-# Implementation stages in execution order. Each entry is
-# (stage_name, tcl_command). Stage names are stable identifiers the P1
-# runner can use for progress reporting; the synth command carries the
-# ``{{ top }}`` / ``{{ part }}`` placeholders resolved at render time.
+# (stage_name, tcl_command) in execution order.
 FLOW_STAGES: tuple[tuple[str, str], ...] = (
     ("synth", "synth_design -top {{ top }} -part {{ part }}{{ include_dirs }}"),
     ("opt", "opt_design"),
@@ -33,10 +19,8 @@ FLOW_STAGES: tuple[tuple[str, str], ...] = (
     ("route", "route_design"),
 )
 
-# Post-route reports: report key -> output filename (relative to the
-# Vivado cwd, i.e. ``artefacts/<run>/``). Keys match the parser names in
-# fpga_vivado_reports (parse_<key>) and the fixture files under
-# ``tests/fixtures/fpga/``.
+# Post-route reports: key -> filename under ``artefacts/<run>/``. Keys match the
+# ``parse_<key>`` functions in fpga_vivado_reports.
 REPORT_FILES: dict[str, str] = {
     "utilization": "util.rpt",
     "timing_summary": "timing_summary.rpt",
@@ -56,10 +40,10 @@ _REPORT_TCL: dict[str, str] = {
 
 
 def report_tcl_commands(report_files: dict[str, str] | None = None) -> list[str]:
-    """Render the ``report_*`` command block from a report-file mapping.
+    """Render the ``report_*`` commands for a report-file mapping.
 
-    Unknown report keys raise so a typo'd report name fails at template
-    time rather than producing a silent gap in the artefacts.
+    Raises:
+      RuntimeError: a key is not a known report name.
     """
     files = REPORT_FILES if report_files is None else report_files
     commands: list[str] = []
@@ -106,11 +90,7 @@ FLOW_TCL_TEMPLATE: str = _build_template()
 
 
 def _read_source_commands(verilog_sources: list[str]) -> list[str]:
-    """Emit one read command per source file.
-
-    ``.sv`` sources get ``read_verilog -sv``; ``.vhd``/``.vhdl`` get
-    ``read_vhdl``; everything else is plain ``read_verilog``.
-    """
+    """One read command per source: ``read_verilog -sv`` for ``.sv``, ``read_vhdl`` for ``.vhd``/``.vhdl``, else ``read_verilog``."""
     commands: list[str] = []
     for src in verilog_sources:
         lower = src.lower()
@@ -124,18 +104,16 @@ def _read_source_commands(verilog_sources: list[str]) -> list[str]:
 
 
 def tcl_string(value: str) -> str:
-    """``value`` as a double-quoted Tcl word that evaluates to exactly
-    ``value``: backslash, double quote, ``$`` and brackets are escaped so
-    no substitution or command runs, and spaces stay inside the word."""
+    """Return ``value`` as a double-quoted Tcl word with backslash, quote, ``$`` and brackets escaped."""
     escaped = re.sub(r'([\\"$\[\]])', r"\\\1", value)
     return f'"{escaped}"'
 
 
 def include_dirs_arg(include_dirs: list[str]) -> str:
-    """``synth_design``'s ``-include_dirs`` option for the filelist's ``+incdir+``
-    directories, or the empty string when there are none. Built with
-    ``[list ...]`` of :func:`tcl_string` words, so a path with spaces stays
-    one list element and a path with Tcl metacharacters stays a path."""
+    """Return ``synth_design``'s ``-include_dirs`` option for the filelist's ``+incdir+`` directories, or ``""``.
+
+    Paths are quoted with :func:`tcl_string`, so spaces and Tcl metacharacters are safe.
+    """
     if not include_dirs:
         return ""
     return " -include_dirs [list " + " ".join(tcl_string(d) for d in include_dirs) + "]"
@@ -163,7 +141,7 @@ def render_flow_tcl(
         ``synth_design -include_dirs``.
       bitstream: Output bitstream filename. Defaults to ``<top>.bit``.
       emit_bitstream: When False, the ``write_bitstream`` stage is
-        replaced with a comment (smoke/timing runs don't need bitgen).
+        replaced with a comment.
       report_files: Override the default report-file mapping
         (:data:`REPORT_FILES`); keys must be known report names.
 
@@ -184,13 +162,8 @@ def render_flow_tcl(
     if emit_bitstream:
         bitstream_cmd = "\n".join(
             [
-                # write_bitstream's precondition DRC escalates NSTD-1 /
-                # UCIO-1 (no IOSTANDARD / no pin LOC) to errors. rb fpga
-                # targets IP-level models that usually have no board
-                # pinout, so downgrade the two checks to warnings just
-                # for bitgen — report_drc above already ran and records
-                # them at their original severity. Board projects that
-                # constrain every pin are unaffected.
+                # IP-level models lack pin constraints, which bitgen reports as
+                # NSTD-1/UCIO-1 errors; report_drc already recorded them.
                 "set_property SEVERITY {Warning} [get_drc_checks NSTD-1]",
                 "set_property SEVERITY {Warning} [get_drc_checks UCIO-1]",
                 f"write_bitstream -force {bitstream or f'{top}.bit'}",
@@ -213,8 +186,6 @@ def render_flow_tcl(
     for key, value in substitutions.items():
         script = script.replace("{{ " + key + " }}", str(value))
 
-    # Surface any unsubstituted placeholders early (same guard as the
-    # pnr flow template).
     leftover = re.findall(r"\{\{\s*[\w]+\s*\}\}", script)
     if leftover:
         raise RuntimeError(

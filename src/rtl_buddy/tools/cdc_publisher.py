@@ -1,38 +1,13 @@
-"""Publish ``rb cdc`` JSON-report findings to the rtl-buddy-hub.
+"""Publish ``rb cdc`` JSON-report violations to a running hub as a ``diagnostics_set`` event.
 
-When a hub is running for the current project, every ``rb cdc``
-run pushes its violation list as a ``diagnostics_set`` event so the
-SPA's on-canvas badge layer (rtl-buddy-view#82) and nvim's
-``rtlbuddy`` diagnostics namespace (rtl-buddy-nvim main) light up
-the findings immediately — no manual ``rb hub send diagnose``
-copy-paste.
+Publishing is best-effort: a missing hub, a connect failure or an unreadable report is
+logged at debug level and never fails the analysis. The event source is
+``rb-cdc:<analysis_name>``, so each analysis keeps its own diagnostics slot.
 
-The publisher is best-effort by design: missing hub, no live PID,
-connect failure, or a malformed JSON payload all silently no-op
-with a debug-level log line. ``rb cdc`` is a tool for CI as well
-as interactive use; failing the analysis because a sidecar UI is
-unreachable would be the wrong tradeoff.
-
-Source-key convention:
-
-    ``rb-cdc:<analysis_name>``
-
-…one cache slot per analysis. Re-running an analysis after a fix
-naturally replaces (or clears) just that slot, so a project with
-several analyses doesn't have one fix wiping all the others.
-
-Wire mapping (rtl-buddy-cdc JSON → ``diagnostics_set`` items):
-
-    rule_id        → code
-    severity       → severity                 (verbatim — same enum)
-    message        → message
-    instance_path  → instance_path            (list-of-segments → "." join)
-    location.file  → file
-    location.start_line  → line
-    location.start_column → col (default 1)
-
-Items missing ``location.file`` are dropped — the wire requires
-``file`` non-empty and the SPA can't anchor them to a node anyway.
+Report fields map to items as: ``rule_id`` -> ``code``, ``severity``, ``message``,
+``instance_path`` (segments joined with ``.``), ``location.file`` -> ``file``,
+``location.start_line`` -> ``line``, ``location.start_column`` -> ``col``.
+Violations without a file, line, valid severity or message are dropped.
 """
 
 from __future__ import annotations
@@ -50,9 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def _wire_item(v: dict[str, Any]) -> dict[str, Any] | None:
-    """Translate one rtl-buddy-cdc violation entry into a
-    ``diagnostics_set`` item dict, or ``None`` if the entry is too
-    incomplete to be useful (missing file or message)."""
+    """Translate one violation into a ``diagnostics_set`` item, or ``None`` if required fields are missing."""
 
     severity = v.get("severity")
     message = v.get("message")
@@ -108,10 +81,9 @@ def _wire_item(v: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def build_items_from_cdc_report(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Walk a parsed rtl-buddy-cdc JSON report and return the wire
-    items for its ``violations`` list. Suppressed and baseline-
-    carryover findings are intentionally excluded — they don't drive
-    the exit code and a noisy badge layer hurts more than it helps.
+    """Return the items for a parsed report's ``violations`` list.
+
+    Suppressed and baseline-carryover findings are not in that list and are not published.
     """
     violations = payload.get("violations")
     if not isinstance(violations, list):
@@ -132,16 +104,10 @@ def publish_cdc_report(
     json_report_path: str | Path,
     project_root: Path | None = None,
 ) -> bool:
-    """Read the JSON report at ``json_report_path`` and push its
-    violations to the running hub as a ``diagnostics_set`` event.
+    """Push the report's violations to the running hub.
 
-    Returns ``True`` when something was published, ``False`` when the
-    hub is unavailable or the report can't be parsed. Never raises —
-    the call site treats this as a best-effort side effect.
-
-    ``analysis_name`` is the rtl-buddy-cdc analysis name (e.g.
-    ``ip_dma_lint``); the wire ``source`` is ``rb-cdc:<analysis_name>``
-    so concurrent analyses cache independently.
+    Returns ``True`` when published, ``False`` when the hub is unavailable or the
+    report cannot be read. Never raises.
     """
 
     import json as _json

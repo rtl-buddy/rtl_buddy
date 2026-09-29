@@ -1,20 +1,12 @@
-"""Vivado ``report_cdc`` backend for ``rb cdc`` (#287).
+"""Vivado ``report_cdc`` backend for ``rb cdc``.
 
-A second-opinion CDC backend: elaborate the model with ``synth_design``
-(no place/route), run ``report_cdc -details``, and parse the report into
-the same :class:`CdcResults` shape the rtl-buddy-cdc backend produces.
-Vivado's findings are surfaced verbatim — rule id (``CDC-1`` ...),
-severity, and description — tagged with the backend name; rtl_buddy does
-NOT adopt Vivado's rule taxonomy as its own canonical ruleset.
+Elaborates the model with ``synth_design`` (no place/route), runs ``report_cdc -details``
+and returns the same :class:`CdcResults` shapes as the rtl-buddy-cdc backend. Vivado's
+findings (rule id, severity, description) are passed through verbatim in ``findings``.
+``Critical`` and ``Warning`` findings count as violations; ``Info`` findings do not.
 
-Severity mapping to rtl_buddy's pass/fail surface: ``Critical`` and
-``Warning`` findings count as violations (a non-zero count is a FAIL),
-``Info`` findings are informational only. Every finding, whatever its
-severity, rides along in the ``findings`` payload.
-
-The target part for elaboration comes from the ``cfg-cdc-tools`` vivado
-entry's ``opts.part`` (overridable per analysis via
-``tool_overrides.vivado.part``).
+The device part comes from the vivado entry's ``opts.part`` in ``cfg-cdc-tools``, which
+``tool_overrides.vivado.part`` overrides per analysis.
 """
 
 from __future__ import annotations
@@ -44,30 +36,18 @@ from ..runner.cdc_results import (
 
 BACKEND_NAME = "vivado"
 
-# Vivado error lines look like `ERROR: [Synth 8-439] module ...` — match
-# on the bracketed message-id form (same scan as the rb fpga backend).
+# Matches Vivado errors such as `ERROR: [Synth 8-439] ...`.
 _VIVADO_ERROR_RE = re.compile(r"^ERROR: \[")
 
-# Of Vivado's CDC severities (Critical / Warning / Info), the ones
-# rtl_buddy counts as violations. Info findings (e.g. CDC-3, a properly
-# ASYNC_REG-synchronized crossing) are informational.
+# Info findings (e.g. CDC-3, a properly ASYNC_REG-synchronized crossing) are not violations.
 _VIOLATION_SEVERITIES = frozenset({"Critical", "Warning"})
 
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 
-# ---------------------------------------------------------------------------
-# report_cdc parsing
-# ---------------------------------------------------------------------------
-
-
 def _column_spans(underline: str) -> list[tuple[int, int]]:
-    """Column extents from a ``---  -----  ---`` underline row.
-
-    The last span is open-ended (the description/destination column may
-    exceed its dashes when values are wider than the header).
-    """
+    """Column extents from a ``---  -----  ---`` underline row; the last span is open-ended."""
     spans = [(m.start(), m.end()) for m in re.finditer(r"-+", underline)]
     if spans:
         spans[-1] = (spans[-1][0], 10**9)
@@ -77,7 +57,8 @@ def _column_spans(underline: str) -> list[tuple[int, int]]:
 def parse_report_cdc(text: str) -> dict:
     """Parse a Vivado ``report_cdc -details`` report.
 
-    Returns::
+    Rule counts come from the summary table; ``findings`` has one verbatim entry per
+    crossing endpoint in the detail tables. Returns::
 
         {
           "by_id": {"CDC-1": {"severity", "count", "description"}, ...},
@@ -88,10 +69,8 @@ def parse_report_cdc(text: str) -> dict:
           "violations": int,       # Critical + Warning summary count
         }
 
-    The summary table ("ID  Severity  Count  Description") provides the
-    per-rule counts; the per-clock-pair detail tables provide one finding
-    per crossing endpoint, kept verbatim. Raises :class:`ValueError`
-    when the text is not a Vivado CDC report.
+    Raises:
+      ValueError: the text is not a Vivado CDC report.
     """
     if "CDC Report" not in text:
         raise ValueError("not a Vivado CDC report")
@@ -176,11 +155,6 @@ def parse_report_cdc(text: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Tcl script
-# ---------------------------------------------------------------------------
-
-
 def render_cdc_tcl(
     *,
     top: str,
@@ -190,12 +164,7 @@ def render_cdc_tcl(
     report_file: str = "cdc.rpt",
     include_dirs: list[str] | None = None,
 ) -> str:
-    """Render the batch-Tcl script for one Vivado CDC analysis.
-
-    Elaboration only — ``synth_design`` then ``report_cdc -details``;
-    no place/route. The SDC is read via ``read_xdc`` (``create_clock``
-    et al. are valid XDC constraints).
-    """
+    """Render the batch Tcl script: read sources and the SDC (via ``read_xdc``), ``synth_design``, ``report_cdc -details``."""
     if not top:
         raise RuntimeError("vivado cdc: top module name is required")
     if not part:
@@ -228,13 +197,8 @@ def render_cdc_tcl(
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Backend
-# ---------------------------------------------------------------------------
-
-
 class VivadoCdc:
-    """``report_cdc``-driven CDC backend (second opinion, not authority)."""
+    """CDC backend driven by Vivado ``report_cdc``."""
 
     def __init__(
         self,
@@ -254,8 +218,6 @@ class VivadoCdc:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
 
-    # --- artefact paths -----------------------------------------------------
-
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "cdc.f")
 
@@ -267,8 +229,6 @@ class VivadoCdc:
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "vivado.log")
-
-    # --- helpers ------------------------------------------------------------
 
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
@@ -310,8 +270,6 @@ class VivadoCdc:
             )
         return opts.part
 
-    # --- run ----------------------------------------------------------------
-
     def _clear_stale_report(self) -> None:
         """Remove the previous run's `cdc.rpt`."""
         stale = clear_stale_artefacts(
@@ -327,44 +285,24 @@ class VivadoCdc:
             )
 
     def _fail_after_vivado(self, desc: str) -> CdcFailResults:
-        """Fail a run that has already invoked Vivado, publishing no report.
-
-        `report_cdc` writes `cdc.rpt` partway through the Tcl, so Vivado can
-        exit non-zero — or log an ERROR, or emit a report this wrapper cannot
-        parse — with a complete or partial report on disk at the fixed path
-        the next run's parse would read (#469). Every post-Vivado failure
-        return goes through here.
-        """
+        """Remove `cdc.rpt`, which a failed Vivado run may have partly written, and return a tool-stage FAIL."""
         self._clear_stale_report()
-        # No violation count came back, so the FAIL is Vivado's, not the
-        # design's, and an xfail marker does not excuse it (#553).
+        # fail_stage="tool": an xfail marker does not excuse a Vivado failure.
         return CdcFailResults(
             name=self.cdc_cfg.get_name(), violations=0, desc=desc, fail_stage="tool"
         )
 
     def run(self) -> CdcResults:
-        # Resolved up front, and ahead of the tool skip below, because a
-        # missing or invalid `opts.part` is a config error (exit 2) whether
-        # or not Vivado is installed. Raising it over a previously successful
-        # run's `cdc.rpt` would leave exactly the stale report this fix
-        # removes, so a config error clears on its way out — it is a failed
-        # run, not a skip (#469).
+        # Config errors are raised before the Vivado availability skip and clear the old report.
         try:
             part = self._resolve_part()
-            # Validated here, ahead of the availability skip below, for the
-            # same reason as the part: an analysis pointing at a missing SDC
-            # is broken on every machine, and reporting it as "vivado not
-            # installed" on a box that merely lacks the tool sends the user
-            # after the wrong problem (#469).
             sdc_path = self.cdc_cfg.get_constraints()
             if not os.path.isfile(sdc_path):
                 raise FatalRtlBuddyError(
                     f"{self.cdc_cfg.get_name()}: SDC not found: {sdc_path}"
                 )
         except Exception:
-            # Every exception, not a list of the expected ones — enumerating
-            # them is how the open backend came to miss `FilelistError`.
-            # Re-raised at once, so nothing is masked.
+            # Catch everything (FilelistError is not a FatalRtlBuddyError); re-raised.
             self._clear_stale_report()
             raise
         executable = self.tool_cfg.get_executable() or "vivado"
@@ -395,19 +333,11 @@ class VivadoCdc:
                 ),
             )
 
-        # Everything past the skip above is a run of this analysis, however it
-        # ends. Vivado can exit 0 with no matching ERROR line and still not
-        # have written report_cdc, and the filelist step below returns early
-        # on its own — so clear here, ahead of both, and the fixed-path read
-        # cannot pick up an earlier run's crossings (#469). Deliberately
-        # *after* the skip: a box without Vivado never ran the tool, so it has
-        # no business deleting a report a box with Vivado produced.
+        # After the skip: a host without Vivado must not delete another host's report.
         self._clear_stale_report()
 
         if self.cdc_cfg.get_waivers() is not None:
-            # rtl-buddy-cdc waiver files don't translate to Vivado; the
-            # finding payload still carries everything so consumers can
-            # filter downstream.
+            # rtl-buddy-cdc waivers do not apply to Vivado; consumers filter `findings`.
             log_event(
                 logger,
                 logging.WARNING,
@@ -481,9 +411,7 @@ class VivadoCdc:
             return self._fail_after_vivado(f"no CDC report produced (see {log_path})")
         try:
             parsed = parse_report_cdc(Path(report_path).read_text())
-            # Read the fields inside the guard too, so the whole shape
-            # contract is enforced where the failure is handled rather than
-            # resting on a `return` statement in another module (#469).
+            # Field reads stay inside the guard so a malformed report is a tool FAIL.
             violations = parsed["violations"]
             crossings = parsed["crossings"]
             findings = parsed["findings"]
@@ -514,8 +442,6 @@ class VivadoCdc:
                 suppressed=0,
                 crossings=crossings,
             )
-        # Vivado's findings ride along verbatim, tagged with the backend
-        # name — second opinion, not rtl_buddy's canonical taxonomy.
         res.results["backend"] = BACKEND_NAME
         res.results["findings"] = findings
         return res
