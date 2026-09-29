@@ -6,24 +6,10 @@
   <title>rtl-buddy-gph</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
-  <!--
-    Served by rtl_buddy.hub.graph_page at GET /graph (rtl_buddy#382).
-
-    Offline on purpose: no CDN, no web font, no build step. The hub is
-    routinely run on machines with no route off localhost, and a viewer
-    that needs one is a viewer that does not open. The one stylesheet
-    link is same-origin — /hub/theme.css is served by this same hub
-    process (rtl-buddy/rtl_buddy#398), so the page still needs no route
-    off the machine; the block below repeats only the tokens the page
-    cannot render without, as a fallback for a sheet that 404s (an old
-    hub serving a new pane).
-
-    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
-    select :root, so they tie on specificity and document order decides
-    — a fallback placed after the link would permanently shadow the
-    sheet, including its @media (prefers-color-scheme: dark) block, and
-    every later palette edit would silently stop reaching this pane.
-  -->
+  <!-- Served by rtl_buddy.hub.graph_page at GET /gph. -->
+  <!-- Offline: no CDN, no web font, no build step. The only stylesheet link is the hub's same-origin /hub/theme.css. -->
+  <!-- The inline :root block below holds the tokens the page cannot render without, as a fallback if that sheet 404s. -->
+  <!-- Keep the fallback BEFORE the sheet link: both select :root, so a later fallback would shadow the sheet, including its dark-mode block. -->
   <style>
     :root {
       color-scheme: light dark;
@@ -38,9 +24,7 @@
       --ok:          #16a34a;
       --warn:        #b45309;
       --err:         #dc2626;
-      /* One colour per column (see COLUMNS below). Eight hues, each
-         legible on both surfaces: pink, blue, green, amber, violet,
-         cyan, lime, slate. */
+      /* One colour per column (see COLUMNS below); each legible on both surfaces. */
       --col-spec:          #be185d;
       --col-design:        #1f6fd0;
       --col-test-config:   #0f7a52;
@@ -49,19 +33,12 @@
       --col-cdc-config:    #0e7490;
       --col-test-cocotb:   #557c0b;
       --col-other:         #6b7688;
-      /* Coverage ramp, shared with the /cov app and the schematic
-         overlay: hsl(pct * 1.2, --tint-s, --cov-l). */
+      /* Coverage ramp shared with /cov and the schematic overlay: hsl(pct * 1.2, --tint-s, --cov-l). */
       --tint-s:   70%;
       --cov-l:    82%;
       --cov-none: #e5e7eb;
-      /* Heat ramp, shared with the /phy pane: the continuous fill is
-         hsl(var(--heat-h), var(--heat-s),
-             calc(--heat-l0 + (--heat-l1 - --heat-l0) * --f)),
-         so these are the tokens the module tints cannot render without
-         — a missing sheet would otherwise paint every module node
-         black. They live in the SHEET, beside the coverage ramp, and
-         never in a pane: one ramp in two places is how the cov pane's
-         saturation drifted. */
+      /* Fallback copy of the heat ramp shared with /phy: hsl(var(--heat-h), var(--heat-s), calc(--heat-l0 + (--heat-l1 - --heat-l0) * --f)). */
+      /* The sheet is the source of truth; without these, module nodes paint black if it is missing. */
       --heat-h:      18;
       --heat-s:      85%;
       --heat-l0:     96%;
@@ -77,9 +54,7 @@
   </style>
   <link rel="stylesheet" href="/hub/theme.css">
   <style>
-    /* Page-local derivations of the shared tokens. Edges are the one
-       thing the graph needs that no other app does, so they are
-       expressed here in terms of the sheet rather than tokenized. */
+    /* Edge colours are page-local, derived from the sheet's tokens. */
     :root {
       --edge:     var(--line-strong);
       --edge-hot: var(--accent);
@@ -141,14 +116,10 @@
     .link.hot { stroke: var(--edge-hot); stroke-width: 1.8; }
     .link.dim { opacity: .12; }
     .node circle.body { stroke: var(--bg); stroke-width: 1.2; cursor: pointer; }
-    /* A dangling target's ghost: hollow, dashed, in the column colour —
-       the CSS class is load-bearing because this rule must beat the
-       .body stroke above, which presentation attributes cannot. */
+    /* Ghost of a dangling target: hollow and dashed. A CSS class, because presentation attributes lose to the .body stroke above. */
     .node circle.body.dangling { stroke: var(--col-other); stroke-width: 1.4; stroke-dasharray: 3 2; }
     .node circle.ring { fill: none; stroke-width: 2.4; }
-    /* Coverage tint. The ramp lives in the token sheet so the graph
-       pane, the /cov app and the schematic overlay cannot drift apart;
-       only the hue is per node, and it is set inline from the ratio. */
+    /* Coverage tint: the ramp is in the token sheet; only the hue is set inline, from the ratio. */
     .node circle.body.cov { fill: hsl(var(--h), var(--tint-s), var(--cov-l)); }
     .node circle.body.cov.none { fill: var(--cov-none); }
     .node text.badge {
@@ -162,13 +133,8 @@
       background: hsl(var(--h), var(--tint-s), var(--cov-l));
     }
     .cov-swatch.none { background: var(--cov-none); }
-    /* Physical heat (rtl-buddy/rtl_buddy#596). One rule, both themes,
-       driven by --f — the same ramp the /phy pane tints its table cells
-       with, so a module that reads hot there reads hot here. Both
-       endpoints are sheet tokens; the script only ever sets the 0..1
-       fraction. `fill` rather than `background` because a node is an
-       SVG circle, which is the only reason this is not the phys pane's
-       own rule verbatim. */
+    /* Physical heat: --f (0..1, set by the script) drives the sheet's ramp, as in the /phy table cells. */
+    /* Uses `fill` because a node is an SVG circle. */
     .node circle.body.heat {
       --f: 0;
       fill: hsl(var(--heat-h), var(--heat-s),
@@ -205,9 +171,7 @@
       display: inline-block; padding: 0 .4rem; border-radius: 999px;
       border: 1px solid currentColor; font-size: 11px;
     }
-    /* The cross-app row at the top of the inspector. Same buttons as the
-       header, one size down, because they are about the selection rather
-       than about the pane. */
+    /* Cross-app row at the top of the inspector: the header buttons one size down. */
     .actions {
       display: flex; gap: .25rem; flex-wrap: wrap; margin: 0 0 .6rem;
     }
@@ -225,16 +189,12 @@
       padding: .3rem .75rem; color: var(--fg-muted);
       display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
     }
-    /* Shared hub chrome: connection dot + one vocabulary
-       (connected / connecting… / offline) — docs/concepts/hub.md. */
+    /* Shared hub chrome: connection dot and status words (connected / connecting… / offline), see docs/concepts/hub.md. */
     .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
     .dot.connected { background: var(--ok); }
     .dot.connecting { background: var(--warn); }
     .dot.offline { background: var(--err); }
-    /* A fourth strip state, and the only one that is also a control:
-       another tab of THIS pane took the hub slot, and the words are the
-       way back (`showSuperseded`). Not a status word — it says what
-       happened and what a click will do. */
+    /* Superseded: another tab of this pane took the hub slot. The word is also the control that takes it back (`showSuperseded`). */
     .take-back {
       color: var(--err); font-weight: 600;
       cursor: pointer; text-decoration: underline;
@@ -338,44 +298,32 @@
 
   var GRAPH_URL = window.__RTL_BUDDY_GRAPH_URL__ || '/graph.json';
 
-  // The physical model's data route, injected by
-  // rtl_buddy.hub.graph_page.render_graph_html off the same manifest
-  // probe the landing page's phys card uses
-  // (rtl-buddy/rtl_buddy#596). `null` — the global left out — means no
-  // run under this project left a manifest, so the heat control is
-  // muted rather than pointed at a route that would 404.
+  // Data route of the physical model, injected by graph_page.render_graph_html.
+  // `null` (global omitted) means no manifest under the project; the heat
+  // control is muted.
   //
-  // Decided at page render, so a `rb synth` that lands AFTER this tab
-  // opened needs the tab reloaded before the control lights up. Same
-  // caveat as the landing card, and the same fix.
+  // Decided when the page renders, so after a later `rb synth` the tab needs a
+  // reload.
   var PHY_URL = window.__RTL_BUDDY_PHY_URL__ || null;
 
-  // The metric switcher, left to right: `hub.metrics` off the payload is
-  // authoritative, and this is the fallback for a body from an older
-  // hub. It is the /phy pane's list and the `phys_focus.metric` enum,
-  // verbatim — one vocabulary, three surfaces.
+  // Metric switcher order. `hub.metrics` in the payload wins; this is the
+  // fallback for an older hub. Same list as the /phy pane and the
+  // `phys_focus.metric` enum.
   var HEAT_METRICS = ['cells', 'area', 'leakage', 'dynamic', 'total'];
 
-  // Which command fills each half — the map rtl_buddy/phys/query.py
-  // keys HALF_PRODUCER on, so this pane's hints and the CLI's say the
-  // same thing.
+  // Command that fills each half, matching HALF_PRODUCER in
+  // rtl_buddy/phys/query.py.
   var HEAT_HALF_PRODUCER = { modules: 'rb synth', instances: 'rb power' };
 
-  // The muted control's wording, and it is the LANDING CARD's
-  // (hub/landing_page.py, the phys card's note) rather than a second
-  // sentence about the same absence. The reload hint is this pane's
-  // own: the presence probe ran when the document was rendered.
+  // Muted-control wording, the same as the landing page's phys card note. The
+  // reload hint is local: the presence probe ran when the page rendered.
   var HEAT_ABSENT =
     'no physical model — run `rb synth` or `rb power` first, then reload this tab';
 
-  // Left-to-right column order. Columns are NOT tiers: the spec on the
-  // left, the design in the middle, one column per verification flow on
-  // the right. The server computes each node's column into `category`
-  // (rtl_buddy.hub.graph_page.categorize_nodes) because two of the inputs
-  // — which design-tier nodes came from a testbench elaboration, and which
-  // flow the suite that owns them runs — are graph-wide joins not worth
-  // redoing per render. `graph.hub.columns` is authoritative when served;
-  // this list is the fallback for an older payload.
+  // Left-to-right column order. Columns are not tiers. The server puts each
+  // node's column in `category` (graph_page.categorize_nodes);
+  // `graph.hub.columns` wins when served and this list is the fallback for an
+  // older payload.
   var COLUMNS = [
     'spec', 'design', 'test-config', 'syn-config',
     'formal-config', 'cdc-config', 'test-cocotb', 'other'
@@ -390,8 +338,8 @@
     'test-cocotb': 'var(--col-test-cocotb)',
     'other': 'var(--col-other)'
   };
-  // Last-resort mapping for a node the server did not categorise (a
-  // payload from an older hub, or a dangling target the page invented).
+  // Column for a node the server did not categorise (older hub, or a dangling
+  // target the page created).
   var TIER_FALLBACK = {
     design: 'design', config: 'test-config', binding: 'test-cocotb'
   };
@@ -399,8 +347,8 @@
     PASS: 'var(--ok)', FAIL: 'var(--err)', SKIP: 'var(--warn)',
     NA: 'var(--warn)', UNKNOWN: 'var(--warn)'
   };
-  // Node radius by type: the things a person navigates by are bigger
-  // than the things that hang off them.
+  // Node radius by type: navigation targets are larger than what hangs off
+  // them.
   var RADIUS = {
     module: 9, instance: 7, test: 8, testbench: 7, suite: 8,
     model: 8, spec_block: 8, coverage_item: 5, spec_doc: 6,
@@ -444,12 +392,12 @@
     out: Object.create(null), inc: Object.create(null),
     hiddenCols: Object.create(null), filter: '',
     selected: null, hovered: null, coverage: null, categories: {},
-    // The physical half: the `/phy.json` body, the join computed off it
-    // (`joinPhys`), the metric the tints rank on, and which run the body
-    // came from (`null` = whichever is newest, the bare route).
+    // Physical half: the `/phy.json` body, the join computed from it
+    // (`joinPhys`), the metric the tints rank on, and the run the body came
+    // from (`null` = newest).
     phys: null, heat: null, heatMetric: null, physDir: null,
-    // Extra nodes an inbound `phys_focus` highlighted beside the
-    // selection (one RTL module exported under several ids).
+    // Extra nodes highlighted beside the selection by an inbound `phys_focus`
+    // (one module exported under several ids).
     focusIds: null,
     view: { x: 0, y: 0, k: 1 }, ticks: 0, raf: 0
   };
@@ -478,9 +426,8 @@
     return node.results && node.results.status ? String(node.results.status) : null;
   }
   // ---- coverage -------------------------------------------------
-  // The overlay's coverage join (rtl-buddy/rtl_buddy#402): a design
-  // node carries a ratio, a `covitem:` node carries a verdict, and a
-  // test carries the scalars its own run produced.
+  // Overlay coverage join: a design node carries a ratio, a `covitem:` node a
+  // verdict, a test the scalars of its own run.
   var ITEM_COLOR = {
     'exercised': 'var(--ok)',
     'declared-only': 'var(--warn)',
@@ -508,9 +455,8 @@
   function pct(ratio) {
     return ratio == null ? '\u2014' : (ratio * 100).toFixed(1) + '%';
   }
-  // Same formula as the /cov app and the schematic overlay: only the
-  // hue moves, saturation and lightness come from the token sheet, so
-  // one palette edit reaches all three.
+  // Same formula as /cov and the schematic overlay: only the hue moves, so one
+  // palette edit reaches all three.
   function tintHue(el, ratio) {
     if (ratio == null) { el.classList.add('none'); return el; }
     el.classList.remove('none');
@@ -520,23 +466,17 @@
   function coverageOn() {
     return !!(state.coverage && els.optCov.checked);
   }
-  // ---- physical heat (rtl-buddy/rtl_buddy#596) -------------------
-  // The physical model's numbers, painted onto `module:` nodes. The
-  // model is the one `/phy` reads (rtl_buddy/phys/model.py): a
-  // `modules` half of per-RTL-module rows (`cell_count`, `area_um2`)
-  // and an `instances` half of per-leaf power rows.
+  // ---- physical heat -------------------------------------
+  // Physical model numbers painted onto `module:` nodes. The model is the one
+  // /phy reads (rtl_buddy/phys/model.py): per-module rows (`cell_count`,
+  // `area_um2`) and per-leaf power rows.
   //
-  // Everything between the markers below is pure — no DOM, no page
-  // state — so `tests/test_hub_graph_page.py` can slice it out and run
-  // the join in bare `node`. The join is the only part of this pane
-  // that can be silently, numerically wrong, so it is the part that is
-  // tested away from the browser.
+  // Code between the heat-join markers is pure (no DOM, no page state) so tests
+  // can run it in bare node.
 
   // >>> heat-join
-  // Which half answers each metric, and how its number reads. `dynamic`
-  // has no column anywhere: it is internal + switching, summed in the
-  // browser because no producer writes it down (rtl_buddy/phys/query.py
-  // POWER_COLUMNS), which is exactly what the /phy pane does with it.
+  // Which half answers each metric. `dynamic` has no column: it is internal +
+  // switching power, summed here (POWER_COLUMNS in rtl_buddy/phys/query.py).
   var HEAT_METRIC_DEFS = {
     cells:   { half: 'modules',   unit: '',    kind: 'count' },
     area:    { half: 'modules',   unit: 'µm²', kind: 'real' },
@@ -546,25 +486,16 @@
   };
 
 
-  // The instance-path separator is the TOOL's choice: OpenSTA prints
-  // `/` for a netlist it read from Verilog, while every RTL-side
-  // consumer — view.json, the schematic, the graph's own `inst:` ids —
-  // spells the same path with `.`. The graph's vocabulary is dots, so
-  // a model row is levelled on the way in and nothing is rewritten.
+  // Instance-path separator: OpenSTA prints `/` for a netlist read from
+  // Verilog, but the graph's `inst:` ids and the schematic use `.`. Model rows
+  // are converted to dots on the way in.
   //
-  // Not inside an ESCAPED IDENTIFIER, though: a name that is not a
-  // legal bare identifier is written `\gen[0].u_x` and terminated by
-  // whitespace, and both a `/` and a `.` in there are part of the NAME
-  // — rewriting one would split a single leaf into two levels and
-  // attribute its power to a module that does not contain it. So a
-  // backslash that OPENS a segment runs atomically to the whitespace
-  // that ends it, and the terminator is dropped so the two spellings
-  // compare equal.
+  // An escaped identifier (`\gen[0].u_x`, ended by whitespace) is one atomic
+  // segment: a `/` or `.` inside it is part of the name, so it is not split.
+  // Its terminator is dropped so both spellings compare equal.
   //
-  // This is `level_path` in rtl_buddy/phys/query.py and `toWirePath` in
-  // hub/phys_page.html, in the graph's separator. The three are
-  // separate copies on either side of the wire and must not drift: a
-  // change here needs the same change there.
+  // Mirrors `level_path` in rtl_buddy/phys/query.py and `toWirePath` in
+  // hub/phys_page.html; change all three together.
   function levelPath(path) {
     var text = String(path == null ? '' : path), out = '', at = true, i = 0;
     while (i < text.length) {
@@ -584,37 +515,27 @@
     return out;
   }
 
-  // The suite qualifier off the end of an id.
+  // Suite qualifier off the end of an id.
   //
-  // `rb graph build` appends `@<suite>` to the WHOLE id of anything two
-  // files claimed (graph.build.QUALIFIER_SEP) and reads it back off the
-  // LAST `@` (`rpartition` in its `_collision_label_index`), so that is
-  // the rule here too. Splitting on the FIRST `@`, or per path level,
-  // is wrong for a suite path that contains a dot:
-  // `inst:blk/blk.u_sub@verif/fifo.v2` split per component keeps `v2`
-  // as a level and keys the index on `u_sub.v2`, a coordinate no model
-  // row can answer to — and the module that owns those leaves then
-  // paints as unmeasured.
+  // `rb graph build` appends `@<suite>` to the WHOLE id
+  // (graph.build.QUALIFIER_SEP) and reads it back off the LAST `@`. Split on
+  // the last `@` of the whole id, never per path level: for
+  // `inst:blk/blk.u_sub@verif/fifo.v2` a per-level split keeps `v2` as a level
+  // and misses the module.
   function stripQualifier(text) {
     var value = String(text == null ? '' : text);
     var at = value.lastIndexOf('@');
     return at < 0 ? value : value.slice(0, at);
   }
 
-  // An `inst:` id read as `{root, path}`, where `path` is ROOTLESS.
+  // An `inst:` id as `{root, path}` with a ROOTLESS path.
   //
-  // A design-tier instance id is `inst:<root>/<dot.path>` and the dot
-  // path starts AT that root (`inst:X/X` is X's own root scope), while
-  // a model row is relative to the design top and carries no root at
-  // all (`u_sub/_64_`). So the first level comes off, and the empty
-  // string is the top's own scope — which is a real answer, not a
-  // missing one: a leaf instantiated directly in the top module is
-  // owned by the top module.
+  // Design-tier ids are `inst:<root>/<dot.path>` and the path starts at the
+  // root (`inst:X/X` is X's own scope); model rows are relative to the top and
+  // carry no root. So the first level comes off, and the empty string is the
+  // top's own scope, which is a valid answer.
   //
-  // The suite qualifier comes off the WHOLE id first, before the path
-  // is levelled: it disambiguates an id and is not part of any
-  // instance's name, and its own value can contain the separator the
-  // levelling splits on (see `stripQualifier`).
+  // The suite qualifier comes off the whole id first (see `stripQualifier`).
   function instanceCoord(id) {
     var text = String(id == null ? '' : id);
     if (text.indexOf('inst:') !== 0) { return null; }
@@ -626,26 +547,19 @@
     return { root: levels[0], path: levels.slice(1).join('.') };
   }
 
-  // Rootless instance path -> the module that instance is of, for the
-  // ONE elaboration rooted at the physical model's top.
+  // Rootless instance path -> module, for the ONE elaboration rooted at the
+  // model's top.
   //
-  // Restricted to that root on purpose. `rb graph build` exports the
-  // design tier once per model and once per testbench (#377), so the
-  // same rootless path means two different coordinates in two
-  // elaborations: `u_dut.u_sub` under a testbench root and `u_sub`
-  // under the DUT root are the same instance reached two ways, and
-  // attributing the model's rows through the testbench copy would file
-  // the DUT's power under whatever the testbench wraps it in. The
-  // model's rows are rootless *relative to its own top*, so the only
-  // elaboration that can answer them is the one rooted there.
+  // The design tier is exported once per model and once per testbench, so the
+  // same rootless path means different coordinates in different elaborations.
+  // Attributing model rows through a testbench copy would file the DUT's power
+  // under the wrapper.
   //
-  // `rooted: false` says the graph has no elaboration under that top —
-  // a graph built with `--model` for something else, or a synthesis run
-  // on a wrapper the graph does not carry. Then nothing is attributed
-  // and the pane says so, rather than borrowing another root's paths.
+  // `rooted: false` means the graph has no elaboration under that top; nothing
+  // is attributed and the pane says so.
   //
-  // First link wins on a repeated path — link order, the same tie-break
-  // `shallowestInstancePath` takes.
+  // First link wins on a repeated path (link order, as in
+  // `shallowestInstancePath`).
   function instanceModuleIndex(links, top) {
     var wanted = String(top == null ? '' : top);
     var index = Object.create(null);
@@ -664,35 +578,22 @@
     return { index: index, rooted: rooted };
   }
 
-  // Which module PAYS for a leaf row: the module of the deepest
-  // instance node that properly contains it.
+  // The module that PAYS for a leaf row: the module of the deepest instance
+  // node that properly contains it.
   //
-  // The power half cannot be joined by name. Its `module` column is the
-  // LIBERTY CELL each leaf is an instance of — `DFF_X1`, `NAND2_X1` —
-  // because a mapped netlist's leaves are cells and not RTL modules
-  // (docs/concepts/phys.md, "What the module join can answer"). A
-  // name-join between that column and RTL module names is precisely
-  // what the rtl-buddy/rtl_buddy#558 review removed: on any collision
-  // — an RTL module called `DFF_X1`, a cell named after a block — a
-  // module's whole total was added once per leaf. So the join here is
-  // by PATH, consumer-side, which is the same thing `rb phys instance
-  // <path>` does when it sums a subtree at query time.
+  // The power half cannot be joined by name: its `module` column is the Liberty
+  // cell (`DFF_X1`), not an RTL module (docs/concepts/phys.md, "What the module
+  // join can answer"), and a name join double-counts on collisions. Join by
+  // PATH, as `rb phys instance <path>` does.
   //
-  // A PROPER ancestor, never the row's own path. A leaf that also has
-  // an instance node of its own — an explicitly instantiated macro, a
-  // black box — is still instantiated in its PARENT's body, and
-  // attributing it to itself would move its power out of the module
-  // that pays for it and into the module it is.
+  // Use a PROPER ancestor, never the row's own path: a leaf with its own
+  // instance node (macro, black box) is instantiated in its parent's body.
   //
-  // The walk is longest-prefix-first and ends at the root scope, so a
-  // design tier missing an intermediate level attributes to the
-  // deepest level it does carry rather than dropping the row.
+  // The walk is longest-prefix-first and ends at the root scope, so a missing
+  // intermediate level attributes to the deepest level present.
   //
-  // The answer carries the instance PATH it was found at, not only the
-  // module: two leaves owned by `u_a` and by `u_b` are two
-  // instantiations of one module, and the roll-up has to be able to say
-  // so — its sum is over instantiations, while the synthesis half's
-  // cells and area are the module definition's.
+  // The result carries the instance PATH as well as the module: the roll-up
+  // sums over instantiations, unlike the synthesis half.
   function ownerEntryOfPath(index, path) {
     var levels = String(path == null ? '' : path).split('.');
     for (var i = levels.length - 1; i >= 0; i--) {
@@ -707,17 +608,11 @@
     return found ? found.module : null;
   }
 
-  // The same walk, stopping one level short of the ROOT scope.
-  //
-  // Only the inbound-focus path needs this. Every path is inside the
-  // top, so the root scope answers every reading of one — which means
-  // an answer that fell through to it says nothing about whether that
-  // reading was the one the sender meant. A reading that lands on a
-  // real enclosing INSTANCE is therefore preferred, and the root scope
-  // is the last resort across all readings rather than the first
-  // reading's own. (For the roll-up there is nothing to disambiguate: a
-  // model row is rootless by construction, and a leaf in the top's own
-  // body is genuinely the top module's.)
+  // Same walk, stopping one level short of the ROOT scope. Only inbound focus
+  // needs it: the root scope contains every path, so falling through to it says
+  // nothing about which reading the sender meant. A reading that lands on a
+  // real enclosing instance is preferred; the root scope is the last resort
+  // across all readings.
   function ownerOfPathBelowRoot(index, path) {
     var levels = String(path == null ? '' : path).split('.');
     for (var i = levels.length - 1; i >= 1; i--) {
@@ -727,39 +622,28 @@
     return null;
   }
 
-  // `null` is not zero, everywhere below. A column no producer measured
-  // — Yosys writes no `area_um2` without a Liberty — must not read as
-  // "this module is free"; it reads as "nobody said".
+  // `null` is not zero: a column no producer measured (Yosys writes no
+  // `area_um2` without a Liberty) means "nobody said", not "free".
   function heatNum(value) {
     return typeof value === 'number' && isFinite(value) ? value : null;
   }
 
-  // Sum, with those semantics: null + null stays null, and one measured
-  // half of a pair is still a partial answer worth showing.
+  // Sum with those semantics: null + null stays null, and one measured half is
+  // a partial answer.
   function heatAdd(total, value) {
     var add = heatNum(value);
     if (add === null) { return total; }
     return (total === null ? 0 : total) + add;
   }
 
-  // The power half, rolled up per module. Own-module only, and NOT
-  // hierarchical: a submodule's leaves are that submodule's power, the
-  // same way `cell_count` counts a module's own cells. (`area_um2` is
-  // the exception, and it is the synthesis half's own choice — Yosys
-  // rolls submodule area up, so a module's area already includes its
-  // children's and its cells do not.)
+  // Power half rolled up per module: own-module only, not hierarchical.
+  // (`area_um2` is the exception; Yosys rolls submodule area up.)
   //
-  // **The two halves do not count over the same thing, and every
-  // surface has to say so.** A module's cells and area are its
-  // DEFINITION's, counted once however many times it is instantiated;
-  // this sum is over every INSTANTIATION of it, because every leaf
-  // inside every one of them burns real power. A design with eight
-  // FIFOs has one FIFO row in the synthesis half and eight FIFOs' worth
-  // of leakage here. That sum is the right number for a heat map —
-  // "which module is this design spending its power on" — and the wrong
-  // number to divide by the area, so the entry carries `instances` (how
-  // many instantiations contributed) beside `leaves` (how many rows were
-  // summed), and the inspector prints both with the caveat.
+  // The halves count different things. Cells and area are the module
+  // DEFINITION's, counted once; this sum is over every INSTANTIATION. Eight
+  // FIFOs give one synthesis row and eight FIFOs' worth of leakage. That suits
+  // a heat map but not dividing by area, so the entry carries `instances`
+  // beside `leaves` and the inspector prints both with the caveat.
   function rollUpPower(rows, index) {
     var byModule = Object.create(null);
     var seen = Object.create(null);
@@ -775,8 +659,7 @@
           instances: 0, leaves: 0
         };
       }
-      // Distinct owning instance PATHS, not rows: `u_a/_1_` and
-      // `u_a/_2_` are two leaves of one instantiation.
+      // Distinct owning instance paths, not rows.
       var owners = seen[owner.module] ||
         (seen[owner.module] = Object.create(null));
       if (!owners[owner.key]) { owners[owner.key] = true; acc.instances++; }
@@ -792,22 +675,16 @@
     };
   }
 
-  // The whole join, module name -> one entry, out of a `/phy.json` body
-  // and the graph's links.
+  // The whole join, module name -> entry, from a `/phy.json` body and the
+  // graph's links.
   //
-  // Two different joins, because the two halves are two namespaces:
+  // * Synthesis half: joined BY NAME. Its `module` column is an RTL module
+  //   name, as is a graph `module:` node.
+  // * Power half: joined BY PATH, rolled up through the instance nodes
+  //   (`rollUpPower`).
   //
-  //   * the synthesis half joins BY NAME, which is sound in that
-  //     direction only — its `module` column IS an RTL module name, as
-  //     Yosys' `stat` saw it, and a graph `module:` node carries the
-  //     same source-level name;
-  //   * the power half joins BY PATH, rolled up through the instance
-  //     nodes (`rollUpPower` above).
-  //
-  // A name that only the power roll-up reaches still gets an entry: a
-  // module the graph knows and the synthesis half does not count (an
-  // unmapped run, a module Yosys inlined) can still be the enclosing
-  // module of leaves that burn power.
+  // A name only the power roll-up reaches still gets an entry: a module Yosys
+  // inlined can still enclose leaves that burn power.
   function joinPhys(links, payload) {
     var top = String((payload && payload.top) || '');
     var index = instanceModuleIndex(links, top);
@@ -817,8 +694,8 @@
       var found = modules[name];
       if (!found) {
         found = modules[name] = {
-          // `cells`/`area` are the module DEFINITION's;
-          // `instances`/`leaves` say what the power sum ran over.
+          // `cells`/`area` are the module DEFINITION's; `instances`/`leaves`
+          // say what the power sum ran over.
           cells: null, area: null, leakage: null, internal: null,
           switching: null, total: null, instances: 0, leaves: 0
         };
@@ -843,9 +720,8 @@
     return {
       modules: modules, top: top, rooted: index.rooted, index: index.index,
       attributed: power.attributed, unattributed: power.unattributed,
-      // Row counts per half, not the payload's own `halves` block:
-      // what the switcher needs to know is whether there is anything to
-      // rank, and a half that is `present` with no rows ranks nothing.
+      // Row counts per half, not the payload's `halves` block: a `present` half
+      // with no rows ranks nothing.
       rows: {
         modules: ((payload && payload.modules) || []).length,
         instances: ((payload && payload.instances) || []).length
@@ -853,10 +729,8 @@
     };
   }
 
-  // One entry's value for one metric, with `dynamic` resolved. The
-  // single place a metric name becomes a number, so the tints, the
-  // badges, the legend and the inspector cannot disagree about what a
-  // metric means.
+  // One entry's value for one metric, with `dynamic` resolved. The single place
+  // a metric name becomes a number.
   function heatValueOf(found, metric) {
     if (!found) { return null; }
     if (metric === 'cells') { return found.cells; }
@@ -870,11 +744,9 @@
     return null;
   }
 
-  // The ramp's top end: the largest value among the module names the
-  // GRAPH carries, not among the model's rows. The tint answers "how
-  // does this module compare with the worst one on screen", and a
-  // maximum taken over rows the picture does not show would flatten
-  // every visible node against a module nobody can see.
+  // Ramp top end: the largest value among modules the GRAPH carries, not among
+  // all model rows, so modules absent from the picture cannot flatten every
+  // visible node.
   function heatMaxOf(names, join, metric) {
     var max = null;
     (names || []).forEach(function (name) {
@@ -884,19 +756,16 @@
     return max;
   }
 
-  // The metric the overlay opens on. Total power is what a person
-  // ticking this control is usually chasing, but a run with no power
-  // half would then open on an empty column and read as broken — so a
-  // model with only a synthesis half opens on `cells`, which every
-  // synthesis records (`area_um2` is null for an unmapped run).
+  // Metric the overlay opens on: total power when the run has a power half,
+  // otherwise `cells`, which every synthesis records (`area_um2` is null for an
+  // unmapped run).
   function initialHeatMetric(payload) {
     return ((payload && payload.instances) || []).length ? 'total' : 'cells';
   }
 
-  // A number, at a precision that keeps a badge scannable: a leakage
-  // figure of 0.079 µW and a total of 41822 µW are the same metric, and
-  // neither may render as `8e-2` or as fifteen digits. The /phy pane's
-  // `fmt`, which is where these rules were settled.
+  // A number at a precision that keeps a badge scannable: 0.079 µW and 41822 µW
+  // must not render as `8e-2` or fifteen digits. Same rules as the /phy pane's
+  // `fmt`.
   function heatFmt(value, metric) {
     if (typeof value !== 'number' || !isFinite(value)) { return '—'; }
     var def = HEAT_METRIC_DEFS[metric] || {};
@@ -909,9 +778,8 @@
       else { text = abs >= 1 ? value.toFixed(2)
         : abs === 0 ? '0' : value.toPrecision(3); }
     }
-    // Thousands separators on the INTEGER spellings only: the regex
-    // groups every run of three digits, so a `0.0790` would come back
-    // as `0.0,790`.
+    // Thousands separators on integer spellings only: `0.0790` would become
+    // `0.0,790`.
     if (group) { text = text.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
     return def.unit ? text + ' ' + def.unit : text;
   }
@@ -921,12 +789,9 @@
     return !!(state.heat && els.optHeat.checked);
   }
 
-  // The tint for one module node: the entry's value over the largest on
-  // screen. Linear, and against the MAXIMUM rather than the total,
-  // because the question a tint answers is "how does this compare with
-  // the worst offender" — a share-of-total ramp on a design with a
-  // thousand modules is a thousand nodes of the palest tint. The same
-  // rule, and the same reason, as the /phy pane's `heatCell`.
+  // Tint for one module node: the entry's value over the largest on screen.
+  // Linear against the MAXIMUM, not the total: a share-of-total ramp over a
+  // thousand modules is all pale. Same as /phy's `heatCell`.
   function heatTint(el, value, max) {
     if (typeof value !== 'number' || max === null || max <= 0) {
       el.classList.add('none');
@@ -937,26 +802,16 @@
     return el;
   }
 
-  // The module NAME a node joins the model on: `moduleNameFor` minus
-  // the suite qualifier (`@<suite>`, graph.build.QUALIFIER_SEP), which
-  // is appended to an id two files claimed and is not part of the
-  // module's name. Yosys counted its rows for `fifo`, so a
-  // `module:fifo@verif/fifo` node has to ask about `fifo` — the same
-  // strip `activeModelRoots` and the instance index apply to their own
-  // halves of the same identity.
+  // The module NAME a node joins the model on: `moduleNameFor` minus the suite
+  // qualifier, so `module:fifo@verif/fifo` asks about `fifo`.
   function heatModuleName(n, out) {
     var name = moduleNameFor(n, out);
     return name ? (stripQualifier(name) || null) : null;
   }
 
-  // One module's numbers as one line, for the node's native tooltip.
-  // Every metric, not only the selected one: the tint answers one
-  // question, and the hover is where the rest of the row lives.
-  //
-  // The counts are spelled out rather than implied, because the two
-  // halves do not count over the same thing: cells and area are the
-  // module definition's, and the power is summed over every
-  // instantiation of it (`rollUpPower`).
+  // One module's numbers as a line for the node's tooltip: every metric, not
+  // only the selected one. Counts are spelled out because cells and area are
+  // the definition's while power is summed over instantiations (`rollUpPower`).
   function heatTooltip(name, found) {
     var parts = [name];
     HEAT_METRICS.forEach(function (metric) {
@@ -996,15 +851,12 @@
 
   var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
   var activeModel = null;
-  // Set when a hello was refused because the graph slot was taken, so
-  // the NEXT hello asks the hub to evict the incumbent. Cleared on
-  // welcome, so a later reconnect starts polite again.
+  // Set when a hello was refused because the graph slot was taken; the NEXT
+  // hello then asks the hub to evict the incumbent. Cleared on welcome.
   var pendingTakeover = false;
-  // The hub kicked this tab out because a NEWER graph tab registered.
-  // Racing back would only kick that tab out in turn — two tabs evicting
-  // each other every retry is exactly the defect this state exists to
-  // stop — so auto-reconnect stands down until the user asks for the
-  // slot back.
+  // Set when the hub evicted this tab for a newer graph tab. Auto-reconnect
+  // stands down until the user asks for the slot back; reconnecting would make
+  // two tabs evict each other.
   var superseded = false;
 
   function refreshActiveModel() {
@@ -1014,22 +866,13 @@
   }
 
   // >>> hello-payload
-  // The hello payload, built rather than inlined so the takeover rule is
-  // one pure function.
+  // Hello payload builder. `takeover` is opt-in per hello: omitted on the first
+  // (polite) hello, set only on a retry after `not_connected: graph client
+  // already registered`. Sending it always makes two tabs supersede each other
+  // in a loop.
   //
-  // `takeover` is opt-in PER HELLO. The first hello of a connection is
-  // polite — the field is omitted entirely, which `_run_handshake` in
-  // hub/server.py reads as false — and only a retry, after the hub
-  // answered `not_connected: graph client already registered`, asks it
-  // to evict whoever holds the slot. Sending it unconditionally is what
-  // made two tabs of this pane supersede each other in a loop.
-  //
-  // Same flow as the schematic SPA (rtl-buddy-view,
-  // viewer/src/composables/useHub.js — its `_pendingTakeover` /
-  // `superseded` handling), hand-duplicated here because a pane is a
-  // self-contained single file by design; cov_page.html carries the same
-  // helper with its own client and capabilities. Change the rule in one
-  // and change it in all three, or the tabs start fighting again.
+  // Same flow as the SPA (useHub.js `_pendingTakeover` / `superseded`) and
+  // cov_page.html; change all three together.
   function helloPayload(takeover) {
     var payload = {
       client: 'graph', version: '1.0.0', capabilities: ['graph_focus']
@@ -1058,9 +901,8 @@
     });
     ws.addEventListener('close', function () {
       wsReady = false;
-      // The hub closes the socket right after superseding us. That close
-      // must not repaint the strip over the take-back affordance, and
-      // must not restart the retry loop.
+      // The hub closes the socket after superseding. That close must not
+      // repaint the strip over the take-back control or restart the retry loop.
       if (superseded) { return; }
       els.wsDot.className = 'dot offline';
       els.wsStatus.textContent = 'offline';
@@ -1094,8 +936,8 @@
 
   function applyEnvelope(env) {
     if (!env || typeof env !== 'object') { return; }
-    // Correlation is by echoed `id`: a response carries the request's
-    // own id (there is no separate in_reply_to field on the wire).
+    // Responses are correlated by the echoed `id` (the wire has no in_reply_to
+    // field).
     if ((env.kind === 'response' || env.kind === 'error') && pending[env.id]) {
       var cb = pending[env.id]; delete pending[env.id];
       cb(env);
@@ -1103,7 +945,6 @@
     switch (env.type) {
       case 'welcome':
         wsReady = true; retryMs = 500;
-        // Hello accepted — the next reconnect starts polite again.
         pendingTakeover = false;
         refreshActiveModel();
         clearTakeBack();
@@ -1114,29 +955,20 @@
         break;
       case 'peer_joined':
       case 'bye':
-        // Cheap refresh: ask the hub who is connected rather than
-        // maintaining a shadow registry that can drift.
+        // Ask the hub who is connected rather than keeping a shadow registry.
         request('state_snapshot', {}, function (reply) {
           if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
         });
         break;
       case 'view_changed':
-        // The schematic switched models. Nothing repaints here, but the
-        // cached model is now what a `module:` click resolves AGAINST
-        // (`currentModelRoots`), and that decision is synchronous — it
-        // cannot go ask the hub mid-click. So take the model off the
-        // broadcast the hub already sends instead of resolving against
-        // the model the SPA left half an hour ago.
+        // The schematic switched models. Nothing repaints, but the cached model
+        // is what a `module:` click resolves against (`currentModelRoots`),
+        // synchronously.
         //
-        // Both broadcasters of `view_changed` carry `model`, so caching it
-        // is right in both — but note what is cached is the ACTIVE MODEL's
-        // roots, not "the roots the schematic is showing". Under
-        // `view_mode: 'tb'` the elaboration on screen is rooted at the
-        // testbench top, which `activeModelRoots` does not model: it
-        // follows `maps_to`, which only ever reaches the model's DUT top.
-        // Harmless, because the DUT-rooted path is the shallower one and
-        // therefore already won before #414 — so tb mode gets exactly its
-        // old answer, not a wrong new one.
+        // It is the ACTIVE MODEL's roots, not necessarily what the schematic
+        // shows: under `view_mode: 'tb'` the elaboration is rooted at the
+        // testbench top, which `activeModelRoots` does not model. Harmless: the
+        // DUT-rooted path is shallower and wins anyway.
         if (env.payload && typeof env.payload.model === 'string' && env.payload.model) {
           activeModel = env.payload.model;
         }
@@ -1152,10 +984,9 @@
         focusByInstancePath(ip);
         break;
       case 'phys_focus':
-        // A coordinate in the PHYSICAL model — `rb hub send phys-focus`,
-        // or a click in the /phy pane. This pane answers it with the
-        // node that coordinate belongs to and emits nothing back
-        // (rtl-buddy/rtl_buddy#596).
+        // A coordinate in the PHYSICAL model (`rb hub send phys-focus`, or a
+        // click in /phy). Answered by selecting the matching node; nothing is
+        // emitted back.
         if (env.origin === 'graph') { break; }
         applyPhysFocus(env.payload);
         break;
@@ -1167,31 +998,24 @@
     }
   }
 
-  // The two hub errors that are about this tab's REGISTRATION rather
-  // than about a request it made. Returns true when the error has been
-  // dealt with here, in which case the message area stays out of it —
-  // one event, one surface.
+  // The two hub errors about this tab's REGISTRATION rather than a request it
+  // made. Returns true when handled here, so the message area stays out of it.
   //
-  // Mirrors the schematic SPA's `error` case (rtl-buddy-view,
-  // viewer/src/composables/useHub.js); cov_page.html carries the same
-  // handler. One one-client-per-origin rule, three apps that have to
-  // obey it identically.
+  // Mirrors the SPA's `error` case (useHub.js) and cov_page.html.
   function handleHubError(payload) {
-    // Superseded: a newer graph tab owns the slot now. The strip says so
-    // and offers the way back; auto-reconnect stops, because winning the
-    // race back would only evict that tab.
+    // Superseded: a newer graph tab owns the slot. The strip offers the way
+    // back; auto-reconnect stops.
     if (payload.code === 'superseded') {
       superseded = true;
       showSuperseded();
       if (ws) { try { ws.close(); } catch (e) { /* already gone */ } }
       return true;
     }
-    // The polite hello lost to an incumbent. Ask once more, this time
-    // asking the hub to evict it. Once, not in a loop: if the takeover
-    // hello fails too, the next error falls through to the message area.
-    // The hub drops the socket after refusing a hello, so this send
-    // usually goes nowhere and the flag rides the reconnect instead —
-    // both routes end in the same takeover hello.
+    // The polite hello lost to an incumbent: ask once more, requesting
+    // takeover. Once, not in a loop; if that fails too, the next error falls
+    // through to the message area. The hub drops the socket after refusing a
+    // hello, so this send usually goes nowhere and the flag rides the
+    // reconnect.
     if (payload.code === 'not_connected' && !pendingTakeover &&
         /already registered/i.test(payload.message || '')) {
       pendingTakeover = true;
@@ -1223,9 +1047,8 @@
     els.wsStatus.removeAttribute('tabindex');
   }
 
-  // The user asking for the slot back. The other tab still holds it, so
-  // the hello that reclaims it has to ask for the takeover the first
-  // hello deliberately did not.
+  // The user asks for the slot back: the hello must request takeover, which the
+  // first hello did not.
   function takeBack() {
     if (!superseded) { return; }
     superseded = false;
@@ -1239,28 +1062,17 @@
   }
 
   // >>> origin-labels
-  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
-  // WIRE vocabulary and it does not move for a rebrand: the schematic
-  // app registers as `view`, the graph pane as `graph` and the phys
-  // pane as `phys`, and all three keep doing so until protocol v2.
-  // Their DISPLAY names are `sch`, `gph` and `phy` (rtl-buddy-sch,
-  // rtl-buddy-gph, rtl-buddy-phys), so this map is the seam, and
-  // every place an origin reaches a user goes through it -- the peer
-  // strip below, the header switcher's sibling labels, the `send -> X`
-  // buttons and the cross-model button. An origin with no entry is
-  // shown verbatim, which is what keeps a peer from a newer hub legible
-  // instead of blank.
+  // Wire origin -> displayed name. Wire values (`view`, `graph`, `phys`) stay
+  // until protocol v2; display names are `sch`, `gph` and `phy`. Every place an
+  // origin reaches a user goes through this map: the peer strip, the switcher's
+  // sibling labels, the `send -> X` buttons and the cross-model button. An
+  // origin with no entry is shown verbatim.
   //
-  // It is also the one knob for a short name: change `gph` here and
-  // every graph label in this file follows.
+  // Change `gph` here and every graph label in this file follows.
   //
-  // A pane is a self-contained single file by design, so this helper is
-  // hand-duplicated into cov_page.html, phys_page.html and
-  // landing_page.html beside it, and the SPA keeps its own copy under
-  // the same contract (rtl-buddy-sch, viewer/src/displayNames.js).
-  // Change the map in one and change it in all five, or the tabs start
-  // calling the same peer different things. The cross-repo checklist is
-  // rtl-buddy-sch docs/hub-protocol.md section 13.
+  // Hand-duplicated into cov_page.html, phys_page.html, landing_page.html and
+  // the SPA (rtl-buddy-sch viewer/src/displayNames.js); change all five
+  // together (rtl-buddy-sch docs/hub-protocol.md section 13).
   var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
 
   function originLabel(origin) {
@@ -1270,10 +1082,8 @@
   }
   // <<< origin-labels
 
-  // The switcher's sibling links carry `data-origin`, so their labels
-  // come from the map too (outside the markers: this one touches the
-  // DOM). The text in the markup is what a person reading the file
-  // sees; this is what the browser shows.
+  // The switcher's sibling links carry `data-origin`; their labels come from
+  // the map (outside the markers because this touches the DOM).
   function relabelSwitcher() {
     var links = document.querySelectorAll('.switcher a[data-origin]');
     for (var i = 0; i < links.length; i++) {
@@ -1281,9 +1091,8 @@
     }
   }
 
-  // The latest peer list, kept rather than only printed: the inspector's
-  // cross-app row asks it which sibling apps are open, and "send" to an
-  // app nobody is running is a click with no effect and no explanation.
+  // Latest peer list: the inspector's cross-app row uses it to show which
+  // sibling apps are open.
   var peers = [];
 
   function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
@@ -1295,35 +1104,22 @@
     peers = next;
     els.peers.textContent =
       'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
-    // An app that just opened (or just closed) changes which of the
-    // inspector's buttons are live, and the user is looking at that row
-    // right now — repaint it rather than leaving it a click behind.
-    // Only the row: re-rendering the inspector would throw its scroll
-    // position away over a peer coming and going.
+    // Repaint only the cross-app row when the peer list changes; re-rendering
+    // the inspector would reset its scroll.
     if (changed) { refreshActions(); }
   }
 
   // >>> version-label
-  // One version label, said the same way by all three hub apps: this
-  // pane, cov_page.html beside it, and the schematic SPA (rtl-buddy-view,
-  // viewer/src/buildInfo.js). A pane is a self-contained single file by
-  // design, so this helper is hand-duplicated into cov_page.html rather
-  // than shared, and the SPA keeps its own copy under the same
-  // contract. Change the rule in one and change it in all three, or the
-  // three tabs start disagreeing about which build is running.
+  // Version label shared by all hub surfaces (this pane, cov_page.html,
+  // landing_page.html, the SPA's buildInfo.js); change the rule in every copy
+  // together.
   //
-  // The input is rtl_buddy's own version as setuptools-scm writes it:
-  // `6.26.2` from a release tag, `6.26.2.dev13+g3f5b890e3.d20260806`
-  // from anything built past one. Everything before `+` is the version
-  // a person quotes. The local segment after it carries the git SHA as
-  // a `g`-prefixed hex run, alongside a `.dYYYYMMDD` build date that
-  // says nothing the SHA does not — so the SHA is the payload, the date
-  // is dropped, and nine hex digits is as much of a SHA as anyone
-  // actually reads.
+  // The input is rtl_buddy's setuptools-scm version: `6.26.2` from a tag,
+  // `6.26.2.dev13+g3f5b890e3.d20260806` past one. The label is the base version
+  // plus the first nine hex digits of the `g<hex>` SHA in the local segment;
+  // the build date is dropped.
   //
-  // A local segment with no `g<hex>` run is not an error — `1.0+local`
-  // is a legal version — it simply has no build to point at, and the
-  // base alone is the label.
+  // A local segment with no `g<hex>` run (`1.0+local`) yields the base alone.
   function versionLabel(raw) {
     var text = String(raw == null ? '' : raw);
     var plus = text.indexOf('+');
@@ -1335,11 +1131,9 @@
   }
   // <<< version-label
 
-  // Re-read on every welcome, not just the first: a reconnect can land
-  // on a hub that was restarted on a newer build, and a label frozen at
-  // the version of the first connection would then be quietly wrong.
-  // Kept so the strip's tooltip can be restored after a state that
-  // borrowed it (`showSuperseded` explains itself there instead).
+  // Re-read on every welcome: a reconnect can land on a hub restarted on a
+  // newer build. Kept so the strip's tooltip can be restored after
+  // `showSuperseded` borrows it.
   var hubTitle = '';
 
   function setHubVersion(raw) {
@@ -1370,8 +1164,8 @@
   function showEmpty(message) {
     els.empty.classList.add('show');
     els.emptyMsg.textContent = '';
-    // The one piece of artwork this pane carries: a small mascot on the
-    // "no data yet" panel, per the hub's identity-marks-only rule.
+    // Mascot on the "no data yet" panel: the pane's only artwork (identity
+    // marks only).
     var art = document.createElement('img');
     art.src = '/hub/assets/rtl-buddy-mascot-240.png';
     art.width = 120; art.height = 120; art.alt = '';
@@ -1392,49 +1186,39 @@
   // the physical model: /phy.json, its run selector, its muted state
   // ---------------------------------------------------------------
 
-  // The label the markup gives the heat control, kept so the muted
-  // state can borrow the title and give it back.
+  // The label the markup gives the heat control, kept so the muted state can
+  // borrow the title and give it back.
   var heatTitle = els.optHeatWrap.title;
   var heatRunTitle = els.heatRunWrap.title;
 
   // >>> heat-run-url
-  // The run selector, as pure rules: which run to ask for as a URL,
-  // what a selector value means, how one entry reads, and which entries
-  // the control offers.
+  // The run selector as pure rules: the URL for a run, what a selector value
+  // means, how an entry reads, and which entries are offered.
   //
-  // `null` — which is what an empty selector value becomes — is the
-  // newest manifest under the project: the bare `/phy.json` the route
-  // has always served. A pane nobody has touched therefore paints with
-  // the run that finished last, and a reader who picks the entry marked
-  // `newest` is choosing to keep doing that rather than pinning the
-  // directory that happens to be newest today. Both halves of that rule
-  // are the /phy pane's (`requestedDir` and `runValue` there): one
-  // `?dir=` coordinate, two panes, so a run chosen in either is the
-  // same run.
+  // `null` (an empty selector value) means the newest manifest, the bare
+  // `/phy.json`. A pane left alone follows the run that finished last; choosing
+  // the entry marked `newest` keeps following rather than pinning today's
+  // newest directory. Same as the /phy pane's `requestedDir` and `runValue`:
+  // one `?dir=` coordinate, so a run chosen in either pane is the same run.
   function heatPhyUrl(base, dir) {
     if (!dir) { return base; }
     return base + (base.indexOf('?') >= 0 ? '&' : '?') +
            'dir=' + encodeURIComponent(dir);
   }
 
-  // The run this TAB opened on, off its own query string: `/gph?dir=<phys
-  // dir>` pins one, so a link out of another tool — or a duplicated tab
-  // — keeps painting with the run its author meant. With no parameter
-  // the selector starts where /phy starts, on the newest.
+  // The run this TAB opened on, from its query string (`/gph?dir=<phys dir>`).
+  // With no parameter the selector starts on the newest, as in /phy.
   function openedDir(search) {
     var found = /[?&]dir=([^&]*)/.exec(String(search == null ? '' : search));
     return found ? decodeURIComponent(found[1].replace(/\+/g, ' ')) : null;
   }
 
-  // `run · top · mode (activity)`, with every part the producers did
-  // not record left out. A compact form of the /phy pane's entry: that
-  // pane is where a run is chosen from its full sentence, while this is
-  // one control among six in a header — so the artefact directory and
-  // the configuration fingerprint ride on the hover instead.
+  // Entry label `run · top · mode (activity)`, leaving out parts the producers
+  // did not record. A compact form of /phy's entry; the artefact directory and
+  // configuration fingerprint go on the hover.
   //
-  // Both marks are shown, because they are different facts and either
-  // can be the surprising one: which run the tints are OF, and which
-  // one a reload with nothing selected would follow.
+  // Both marks are shown: which run the tints are OF, and which one a reload
+  // with nothing selected would follow.
   function heatRunLabel(entry, shownManifest) {
     var parts = [(entry && entry.run) || (entry && entry.phys_dir) || '(unnamed)'];
     var mode = entry && entry.mode;
@@ -1449,15 +1233,10 @@
     return parts.join(' · ') + (marks.length ? ' [' + marks.join(', ') + ']' : '');
   }
 
-  // The run being SHOWN, as a selector entry, synthesised from the
-  // payload's own header.
-  //
-  // The listing is headed (`phys_page.RUNS_LIMIT`), so the run on
-  // screen can legitimately be off the end of it: a reader switches to
-  // an older run and then a batch of newer ones lands. Putting it back
-  // keeps the control showing what the picture shows; the alternative
-  // is a selector whose value silently disagrees with the tints under
-  // it. (phys_page.html's `shownEntry`, same reason.)
+  // The run being SHOWN, as a selector entry built from the payload header. The
+  // listing is capped (`phys_page.RUNS_LIMIT`), so the shown run can fall off
+  // its end when newer runs land; putting it back keeps the control consistent
+  // with the tints (phys_page.html `shownEntry`).
   function shownRunEntry(payload) {
     if (!payload) { return null; }
     return {
@@ -1482,39 +1261,27 @@
     return entries;
   }
 
-  // What an entry selects with, which is not always its directory: the
-  // newest selects with the EMPTY value, because pinning its directory
-  // would end the following at the moment a reader chose it.
+  // What an entry selects with: the newest uses the EMPTY value, since pinning
+  // its directory would stop following.
   function heatRunValue(entry) {
     return entry && entry.newest ? '' : String((entry && entry.phys_dir) || '');
   }
   // <<< heat-run-url
 
   // >>> heat-load-step
-  // What one finished `/phy.json` fetch does to the pane, as a pure
-  // decision. `shown` is what the pane is holding —
-  // `{phys: <payload|null>, dir: <selected run|null>}` — and `result`
-  // is `{ok, requested, body, message}`.
+  // What one finished `/phy.json` fetch does to the pane, as a pure decision.
+  // `shown` is `{phys: <payload|null>, dir: <selected run|null>}`; `result` is
+  // `{ok, requested, body, message}`.
   //
-  // The rule the whole state machine exists for: **a refused run switch
-  // is a refusal of the SWITCH, not of the model on screen.** The
-  // selected run is therefore committed only when a body arrives, and a
-  // failure with a payload in hand keeps that payload, keeps the run it
-  // came from and keeps the overlay painting — the reader is still
-  // looking at the run they had, and the one control that could pick a
-  // different one must not be the control that just switched itself
-  // off. This is the /phy pane's `load` / `loadFailed` pair (it commits
-  // `state.dir` inside the success branch for the same reason), and the
-  // two panes must not disagree about what a 403 or a 404 on `?dir=`
-  // means.
+  // A refused run switch is a refusal of the SWITCH, not of the model on
+  // screen: the selected run is committed only when a body arrives, and a
+  // failure with a payload in hand keeps the payload, the run and the overlay.
+  // Mirrors /phy's `load` / `loadFailed`.
   //
-  // With nothing ever loaded there are two cases, and they are not the
-  // same refusal. A `?dir=` the TAB WAS OPENED WITH can be a typo, or a
-  // run pruned since the link was made: the model the project does have
-  // is one fetch away, so the answer is `refetch` — ask for the newest
-  // and say the requested run was not found — rather than a pane with
-  // no heat at all and no way to ask for any. With no run requested
-  // there is nothing left to try, and that is the muted control.
+  // With nothing ever loaded: a `?dir=` the tab was opened with may be a typo
+  // or a pruned run, so the answer is `refetch` (ask for the newest and say the
+  // requested run was not found). With no run requested there is nothing to try
+  // and the control is muted.
   function physLoadStep(shown, result) {
     var held = shown && shown.phys;
     if (result && result.ok) {
@@ -1542,21 +1309,18 @@
   }
   // <<< heat-load-step
 
-  // Which fetch is current. A response from a request a later one has
-  // superseded — two run switches in quick succession — says nothing
-  // about the run now selected and must not commit its own.
+  // Which fetch is current: a response from a request a later one superseded
+  // must not commit.
   var physGeneration = 0;
 
-  // A one-shot status line for the NEXT successful ingest. The fallback
-  // above refetches immediately, so a warning written before that fetch
-  // would be overwritten by its own `loading…` line before anyone read
-  // it.
+  // One-shot status line for the NEXT successful ingest; the fallback refetches
+  // at once, so a warning written earlier would be overwritten by `loading…`.
   var physPendingNote = null;
 
   function loadPhys(requested) {
     if (!PHY_URL) { mutePhys(HEAT_ABSENT); return; }
-    // The run this FETCH is for, which is not yet the run the pane is
-    // showing: `state.physDir` moves in `applyPhysLoad`, on success only.
+    // The run this FETCH is for; `state.physDir` moves in `applyPhysLoad`, on
+    // success only.
     var dir = arguments.length ? (requested || null) : state.physDir;
     var url = heatPhyUrl(PHY_URL, dir);
     var generation = ++physGeneration;
@@ -1589,8 +1353,8 @@
     }
     if (result.ok) { ingestPhys(next.phys); return; }
     if (next.phys) {
-      // The model on screen is untouched, so only the picker moves —
-      // back onto the run the pane is still showing.
+      // The model on screen is untouched, so only the picker moves, back to the
+      // run being shown.
       renderHeatControls();
       note(next.message, next.level);
       return;
@@ -1598,18 +1362,13 @@
     mutePhys(next.message);
   }
 
-  // No model to paint with AT ALL — no manifest under the project, or a
-  // first load that had nothing left to fall back to. The control
-  // carries the reason (the 404's own body when the server sent one,
-  // since that message already names the two commands that produce a
-  // model) and the tints come off.
+  // No model to paint with AT ALL (no manifest, or a first load with nothing to
+  // fall back to). The control carries the reason (the 404 body when sent,
+  // which names the commands that produce a model) and the tints come off. A
+  // refused SWITCH never reaches here (`physLoadStep`).
   //
-  // A refused SWITCH never reaches here: `physLoadStep` keeps the
-  // payload, and with it the live control.
-  //
-  // The controls alone. Split out because START-UP mutes them without
-  // a status line: the graph's own load is about to write there, and
-  // "no physical model" is not what a pane opens by saying.
+  // Controls only: start-up mutes them without a status line, because the
+  // graph's own load writes there.
   function mutePhysControl(message) {
     els.optHeat.checked = false;
     els.optHeat.disabled = true;
@@ -1628,21 +1387,19 @@
     render();
     renderInspector(state.selected ? state.byId[state.selected] : null);
     note(message || HEAT_ABSENT, 'warn');
-    // A focus held for a model that is not coming still has an answer
-    // when its target is a `module:` the graph carries — see
-    // `drainPhysFocus`.
+    // A focus held for a model that is not coming can still be answered when
+    // its target is a `module:` the graph carries (`drainPhysFocus`).
     drainPhysFocus();
   }
 
   function ingestPhys(payload) {
     state.phys = payload || null;
     var hub = (payload && payload.hub) || {};
-    // The switcher's order is the payload's when it carries one; the
-    // built-in list is the fallback for a body from an older hub.
+    // Switcher order: the payload's, else the built-in list (older hub).
     if (Array.isArray(hub.metrics) && hub.metrics.length) { HEAT_METRICS = hub.metrics; }
     state.heat = joinPhys(state.links, state.phys);
-    // A first load has to land on a metric this model can answer; a
-    // metric the reader has since chosen is theirs and is kept.
+    // A first load lands on a metric this model can answer; a metric the reader
+    // chose is kept.
     if (!state.heatMetric || HEAT_METRICS.indexOf(state.heatMetric) < 0) {
       state.heatMetric = initialHeatMetric(payload);
     }
@@ -1655,15 +1412,13 @@
     renderInspector(state.selected ? state.byId[state.selected] : null);
     noteHeat();
     if (physPendingNote) { note(physPendingNote, 'warn'); physPendingNote = null; }
-    // A focus that arrived before the model did is answered now.
+    // A focus that arrived before the model is answered now.
     drainPhysFocus();
   }
 
-  // What the join actually managed, said out loud. A tint that is
-  // silently empty is indistinguishable from a design that burns
-  // nothing, and the two reasons it can be empty — no synthesis half,
-  // and no elaboration the rows can be attributed through — are
-  // different problems with different fixes.
+  // Say what the join managed: an empty tint looks like a design that burns
+  // nothing. The two causes (no synthesis half; no elaboration to attribute
+  // rows through) have different fixes.
   function noteHeat() {
     var join = state.heat;
     if (!join || !els.optHeat.checked) { return; }
@@ -1684,9 +1439,8 @@
     note(parts.join('  ·  '));
   }
 
-  // The overlay's two selects come and go with the overlay itself: a
-  // metric switcher for tints nobody is showing is a control that does
-  // nothing, and neither can be populated before the payload lands.
+  // The overlay's two selects appear with the overlay and cannot be populated
+  // before the payload lands.
   function renderHeatControls() {
     if (!state.phys || !els.optHeat.checked) {
       els.heatMetricWrap.hidden = true;
@@ -1706,9 +1460,8 @@
       var def = HEAT_METRIC_DEFS[metric] || {};
       var opt = document.createElement('option');
       opt.value = metric;
-      // A metric whose half this run did not produce is kept rather
-      // than dropped — the absence is the information — and says which
-      // command would fill it, exactly as the /phy pane's switcher does.
+      // A metric whose half this run did not produce is kept, with the command
+      // that would fill it, as in /phy.
       opt.textContent = (def.half && !rows[def.half])
         ? metric + ' (run ' + (HEAT_HALF_PRODUCER[def.half] || '?') + ')'
         : metric;
@@ -1723,9 +1476,7 @@
     var shown = (state.phys || {}).manifest || null;
     var entries = heatRunEntries(state.phys, block);
     while (els.heatRun.firstChild) { els.heatRun.removeChild(els.heatRun.firstChild); }
-    // RESET, never append: this runs on every render — every load, every
-    // tick of the control — and appending grew the hover one sentence
-    // per render.
+    // RESET, never append: this runs on every render.
     els.heatRunWrap.title = heatRunTitle;
     entries.forEach(function (entry) {
       var opt = document.createElement('option');
@@ -1740,8 +1491,7 @@
       els.heatRunWrap.title = heatRunTitle + ' Showing the newest ' +
         entries.length + ' of ' + block.count + ' runs; `rb phys runs` lists them all.';
     }
-    // One run is not a choice, and the /phy pane hides its own selector
-    // on the same test.
+    // One run is not a choice; /phy hides its selector on the same test.
     els.heatRunWrap.hidden = !els.optHeat.checked || entries.length < 2;
   }
 
@@ -1766,9 +1516,9 @@
     state.inc = Object.create(null);
     state.nodes.forEach(function (n) { state.byId[n.id] = n; });
     state.links.forEach(function (l) {
-      // A link endpoint with no node of its own is a dangling target
-      // (graph.merge.dangling_targets) — still a real answer, so it is
-      // materialised as an attribute-less node instead of dropped.
+      // A link endpoint with no node is a dangling target
+      // (graph.merge.dangling_targets); materialise it as an attribute-less
+      // node.
       [l.source, l.target].forEach(function (id) {
         if (!state.byId[id]) {
           var ghost = { id: id, type: 'dangling', label: id, dangling: true };
@@ -1782,22 +1532,16 @@
     var hub = (payload.graph && payload.graph.hub) || {};
     if (Array.isArray(hub.columns) && hub.columns.length) { COLUMNS = hub.columns; }
     state.coverage = hub.coverage || null;
-    // The control appears only when there is coverage to show, and
-    // arrives ticked: a run that produced coverage is a run whose
-    // coverage is the reason the pane was opened.
+    // Show the control only when there is coverage, ticked.
     els.optCovWrap.hidden = !state.coverage;
     if (state.coverage && !els.optCov.dataset.touched) { els.optCov.checked = true; }
-    // The physical join is over BOTH documents, and this one just
-    // moved: a rebuilt graph renames, adds and drops the very instance
-    // nodes the power roll-up walks, so the join is recomputed here
-    // rather than left pointing at the elaboration of a graph that has
-    // been replaced. The model itself is not re-fetched — `reload`
-    // does that, and only while the overlay is on.
+    // The physical join spans both documents and the graph just changed (a
+    // rebuild renames, adds and drops the instance nodes the roll-up walks), so
+    // recompute it. The model is not re-fetched; `reload` does that while the
+    // overlay is on.
     if (state.phys) {
       state.heat = joinPhys(state.links, state.phys);
-      // The switcher's per-half annotations and the picker's marks are
-      // rendered off the join, so they follow it rather than staying at
-      // the previous graph's answer.
+      // Per-half annotations and picker marks follow the join.
       renderHeatControls();
     }
     renderHeader(hub);
@@ -1840,9 +1584,9 @@
     els.legend.textContent = '';
     COLUMNS.forEach(function (col) {
       var count = counts[col] || 0;
-      // An empty flow column is a fact about the project (no fpv suites
-      // yet), so it keeps its band and its label; only an empty "other"
-      // — which means nothing went unplaced — drops out of the legend.
+      // An empty flow column is a fact about the project (no fpv suites yet),
+      // so it keeps its band and label; only an empty `other` drops out of the
+      // legend.
       if (!count && col === 'other') { return; }
       var label = document.createElement('label');
       label.className = 'chk';
@@ -1878,10 +1622,8 @@
     els.legend.appendChild(ramp);
   }
 
-  // The heat ramp's own legend: the same three stops plus "not
-  // measured", labelled with the VALUES they stand for rather than with
-  // fractions, because a tint is only readable against the number at
-  // the top of the ramp.
+  // Heat ramp legend: the three stops plus "not measured", labelled with the
+  // values they stand for.
   function renderHeatLegend() {
     if (!heatOn()) { return; }
     var max = heatMaxOf(moduleNamesInGraph(), state.heat, state.heatMetric);
@@ -1907,9 +1649,8 @@
     els.legend.appendChild(ramp);
   }
 
-  // Every module name the GRAPH carries, which is what the ramp is
-  // scaled over (`heatMaxOf`) — a model row for a module this graph
-  // does not contain cannot be the node that looks pale.
+  // Every module name the graph carries: the domain of the ramp scale
+  // (`heatMaxOf`).
   function moduleNamesInGraph() {
     var names = [];
     state.nodes.forEach(function (n) {
@@ -1921,7 +1662,7 @@
   }
 
   // ---------------------------------------------------------------
-  // layout: tier columns + a small force relaxation
+  // layout: columns + a small force relaxation
   // ---------------------------------------------------------------
 
   var colX = [];
@@ -1944,8 +1685,7 @@
       var i = seen[c] = (seen[c] || 0);
       seen[c] = i + 1;
       var total = perCol[c] || 1;
-      // Deterministic seeding: a reload lands on the same picture, so a
-      // node the user just looked at is still where they left it.
+      // Deterministic seeding: a reload gives the same picture.
       n.x = colX[c] + ((i % 7) - 3) * 14;
       n.y = ((i + 0.5) / total) * H;
       n.vx = 0; n.vy = 0;
@@ -1959,10 +1699,8 @@
 
   function tick() {
     var i, n, m;
-    // Repulsion, restricted to a uniform grid neighbourhood. The
-    // all-pairs form is quadratic and a merged graph on a real project
-    // is thousands of nodes, so the grid is what keeps the relaxation
-    // interactive rather than a page freeze.
+    // Repulsion over a uniform grid neighbourhood; the all-pairs form is
+    // quadratic and freezes the page on thousands of nodes.
     var grid = Object.create(null);
     for (i = 0; i < state.nodes.length; i++) {
       n = state.nodes[i];
@@ -1992,7 +1730,6 @@
         }
       }
     }
-    // Springs along links.
     for (i = 0; i < state.links.length; i++) {
       var a = state.byId[state.links[i].source], z = state.byId[state.links[i].target];
       if (!a || !z) { continue; }
@@ -2002,9 +1739,8 @@
       var ux = (lx / ld) * force, uy = (ly / ld) * force;
       a.vx += ux; a.vy += uy; z.vx -= ux; z.vy -= uy;
     }
-    // Column anchor (the "tiered" half) + weak vertical centring, then
-    // damping. The x anchor is stiff: a node must stay in its tier's
-    // band, which is what makes the picture readable at a glance.
+    // Column anchor (stiff, so nodes stay in their band) plus weak vertical
+    // centring, then damping.
     var halfBand = (W / COLUMNS.length) * 0.42;
     for (i = 0; i < state.nodes.length; i++) {
       n = state.nodes[i];
@@ -2014,8 +1750,8 @@
       n.vx *= 0.82; n.vy *= 0.82;
       n.x += Math.max(-24, Math.min(24, n.vx));
       n.y += Math.max(-24, Math.min(24, n.vy));
-      // The anchor spring alone loses to a well-connected node's link
-      // springs; the band promise above is only real with a hard clamp.
+      // Hard clamp: the anchor spring alone loses to a well-connected node's
+      // link springs.
       var bandC = colX[colOf(n)];
       if (n.x < bandC - halfBand) { n.x = bandC - halfBand; n.vx = 0; }
       else if (n.x > bandC + halfBand) { n.x = bandC + halfBand; n.vx = 0; }
@@ -2069,9 +1805,7 @@
     });
 
     var cov = coverageOn();
-    // The heat overlay's scale is graph-wide, so it is taken once per
-    // render rather than per node — a maximum recomputed inside the
-    // loop is the same answer O(modules) times.
+    // The heat scale is graph-wide: compute it once per render, not per node.
     var heat = heatOn();
     var heatMax = heat
       ? heatMaxOf(moduleNamesInGraph(), state.heat, state.heatMetric) : null;
@@ -2079,9 +1813,8 @@
       var g = el('g', { class: 'node' });
       var r = radiusOf(n);
       var status = statusOf(n);
-      // A test's ring is its last verdict; a coverage item's ring is
-      // whether the run exercised it. Both answer "how did this go",
-      // so they share the ring rather than competing for the fill.
+      // A test's ring is its last verdict; a coverage item's is whether the run
+      // exercised it. Both share the ring.
       var item = cov ? itemStatus(n) : null;
       var ringColor = item
         ? ITEM_COLOR[item]
@@ -2089,17 +1822,12 @@
       if (ringColor) {
         g.appendChild(el('circle', { class: 'ring', r: r + 3.5, stroke: ringColor }));
       }
-      // Coverage mode repaints the design column with the ramp; the
-      // column bands behind the nodes still carry the column identity,
-      // so nothing is lost by borrowing the fill.
+      // Coverage mode repaints the design column with the ramp; the column
+      // bands still carry identity.
       var tinted = cov && categoryOf(n) === 'design' && !n.dangling;
-      // The heat overlay borrows the same fill, and only on `module:`
-      // nodes: a module is the coordinate the physical model's two
-      // halves can both be read at (its synthesis row by name, its
-      // leaves' power by path), and an instance node would need a
-      // second, different join to say anything. The two overlays are
-      // mutually exclusive at the checkbox, so there is one fill and
-      // one meaning on screen at a time.
+      // The heat overlay borrows the fill, on `module:` nodes only: a module is
+      // where both halves of the model can be read (synthesis row by name, leaf
+      // power by path). The overlays are mutually exclusive at the checkbox.
       var heatName = heat && n.type === 'module' && !n.dangling
         ? heatModuleName(n, state.out[n.id]) : null;
       var heatValue = heatName
@@ -2114,9 +1842,7 @@
       if (tinted) { tintHue(body, designRatio(n)); }
       if (heatName) { heatTint(body, heatValue, heatMax); }
       g.appendChild(body);
-      // The numbers themselves, on the hover: a tint ranks, it does not
-      // quantify, and the whole point of this overlay is that the graph
-      // can answer "how much" without leaving the picture.
+      // Numbers on the hover: a tint ranks, it does not quantify.
       if (heatName) {
         var tip = el('title');
         tip.textContent = heatTooltip(heatName, state.heat.modules[heatName]);
@@ -2125,8 +1851,7 @@
       var label = el('text', { x: r + 5, y: 4 });
       label.textContent = labelOf(n);
       g.appendChild(label);
-      // Only where there is a number: a badge reading "—" on every test
-      // that ran without coverage is nine labels saying nothing.
+      // Only where there is a number.
       var ratio = n.type === 'test' ? testRatio(n) : (tinted ? designRatio(n) : null);
       if (cov && ratio != null) {
         var bt = el('text', { class: 'badge', x: r + 5, y: 15 });
@@ -2175,10 +1900,9 @@
   }
 
   function neighbours(id) {
-    // BFS to `depth` hops, both edge directions — direction encodes
-    // role, not reachability, same as `rb graph path`. Nodes in hidden
-    // columns are not entered: expanding through an invisible node
-    // would light two islands with no visible edge between them.
+    // BFS to `depth` hops over both edge directions (direction encodes role,
+    // not reachability, as in `rb graph path`). Nodes in hidden columns are not
+    // entered, or two islands would light with no visible edge.
     var set = Object.create(null); set[id] = true;
     var depth = parseInt(els.optHops.value, 10) || 1;
     var frontier = [id];
@@ -2206,24 +1930,20 @@
       var n = state.byId[id];
       var g = gfx.nodes[id].g;
       var hidden = state.hiddenCols[categoryOf(n)];
-      // A node an inbound `phys_focus` named: selected-looking, and not
-      // dimmed for being outside the hop ball around the one node that
-      // holds the selection proper.
+      // A node named by an inbound `phys_focus`: looks selected and is not
+      // dimmed for being outside the hop ball.
       var also = !!(state.focusIds && state.focusIds.indexOf(id) >= 0);
       var dim = hidden || !matches(n) || (near && !near[id] && !also);
       g.setAttribute('class', 'node' + (dim ? ' dim' : '') +
         (id === state.selected || also ? ' sel' : ''));
       g.style.display = hidden && !state.filter ? 'none' : '';
-      // Labels are noise at a distance; show them for the nodes that
-      // matter right now plus the big structural ones.
+      // Labels only for nodes that matter now plus the big structural ones.
       var showLabel = !dim && (state.view.k > 0.55 || radiusOf(n) >= 8 || id === focus);
       gfx.nodes[id].label.style.display = showLabel ? '' : 'none';
     }
     for (var i = 0; i < gfx.links.length; i++) {
       var line = gfx.links[i];
-      // An edge is hot when it lies inside the highlighted N-hop ball —
-      // both endpoints reached — so the lit subgraph is coherent rather
-      // than a star around the focus.
+      // An edge is hot when both endpoints are inside the highlighted ball.
       var hot = near && near[line.__link.source] && near[line.__link.target];
       var off = state.hiddenCols[categoryOf(line.__a)] || state.hiddenCols[categoryOf(line.__z)];
       line.setAttribute('class', 'link' + (hot ? ' hot' : (focus ? ' dim' : '')));
@@ -2338,50 +2058,31 @@
   // ---------------------------------------------------------------
 
   // >>> active-model
-  // Which elaboration roots belong to the schematic's ACTIVE model.
+  // Elaboration roots of the schematic's ACTIVE model.
   //
-  // A design-tier instance id is `inst:<root>/<dot.path>` and the dot
-  // path starts at that same root (`inst:X/X` is X's own root scope),
-  // so the first component of an instance path names the elaboration it
-  // was reached through — which is exactly what `maybeWarnCrossModel`
-  // already compares against the active model.
+  // Design-tier ids are `inst:<root>/<dot.path>` and the path starts at the
+  // root, so the first component of an instance path names its elaboration;
+  // `maybeWarnCrossModel` compares it with the active model.
   //
-  // The model → root mapping is read off the served payload rather than
-  // assumed: a `model:` node is stitched to the module it names by a
-  // `maps_to` link (`config_tier.MAPS_TO`), so the targets of the ACTIVE
-  // model's own `maps_to` links are its roots.
+  // Roots are read from the payload: the targets of the active model's
+  // `maps_to` links (`config_tier.MAPS_TO`). The model NAME is a fallback for
+  // one shape only, a design-tier-only graph with no `model:` node. Do not seed
+  // the name unconditionally (with `top:`, model `foo` topped at `bar` would
+  // own both names), and do not fall back whenever the stitch is missing (a
+  // `graph: false` model has a `model:` node and no stitch, and its name can be
+  // another model's `top:`). Either mistake makes `shallowestInstancePath`
+  // prefer another model's instance, landing the selection in a model that is
+  // not on screen.
   //
-  // The model NAME is a FALLBACK for one payload shape only: a
-  // design-tier-only graph, where no config tier has been built and so
-  // there is no `model:` node for the active model to read a stitch
-  // off. There the naming convention is all there is.
+  // A `model:` node with no stitch is an answer (no roots). A suite qualifier
+  // (`@<suite>`, graph.build.QUALIFIER_SEP) is not part of the module name and
+  // comes off.
   //
-  // Two things had to be ruled out to get here. Seeding the name
-  // unconditionally was wrong once `top:` existed: an active model
-  // `foo` topped at `bar` would own both names, so an instance rooted
-  // at a *different* selected model named `foo` scored as the active
-  // model's own. Falling back whenever the STITCH is missing was wrong
-  // too, because a `graph: false` model has a `model:` node and no
-  // stitch by design (#479) — and its name is a legal `top:` for some
-  // other model, since opted-out models are excluded from the build's
-  // top-collision check. Both mistakes end the same way:
-  // `shallowestInstancePath` prefers another model's instance, landing
-  // the selection in a model that is not on screen, which is the exact
-  // bug the active-model preference exists to prevent.
-  //
-  // So the question is not "did we find a stitch" but "does this
-  // payload know this model at all". A `model:` node with no stitch is
-  // an answer — no roots — not an absence of one. A suite qualifier
-  // (`@<suite>`, `graph.build.QUALIFIER_SEP`) is appended to an id two
-  // files claimed; it is not part of the module name, so it comes off.
-  //
-  // An unknown model — no `state_snapshot` yet, or a hub with no active
-  // model at all — returns an EMPTY set, and an empty set is what makes
-  // `shallowestInstancePath` behave exactly as it did before: no state
-  // from the hub, no new preference. A model the graph simply does not
-  // cover (a build narrowed with `--model`) is indistinguishable from
-  // the design-tier-only shape from here, and takes the same fallback:
-  // a root nothing matches costs nothing.
+  // An unknown model (no `state_snapshot` yet, or no active model) returns an
+  // EMPTY set, which leaves `shallowestInstancePath` with no preference. A
+  // model the graph does not cover (a build narrowed with `--model`) looks like
+  // the design-tier-only shape and takes the same fallback; a root nothing
+  // matches is harmless.
   function activeModelRoots(links, model, nodes) {
     var roots = Object.create(null);
     if (typeof model !== 'string' || !model) { return roots; }
@@ -2406,27 +2107,16 @@
     return roots;
   }
 
-  // The inverse stitch, for the ONE thing that needs it: naming the model
-  // the schematic should switch to.
+  // Inverse stitch, for naming the model the schematic should switch to.
   //
-  // A root is a MODULE name and `GET /view.json?model=` takes a MODEL
-  // name. While a model was always named after its top the two were the
-  // same string, so the cross-model warning could offer the root
-  // verbatim; since a models.yaml `top:` decoupled them (rtl_buddy 6.44)
-  // a root is frequently a name no models.yaml declares, and the switch
-  // would ask the hub to build a model that does not exist. The same
-  // `maps_to` stitch `activeModelRoots` reads forwards answers it
-  // backwards: whoever maps to this module declares it.
+  // A root is a MODULE name but `GET /view.json?model=` takes a MODEL name. A
+  // models.yaml `top:` decouples them, so a root can be a name no models.yaml
+  // declares. The `maps_to` stitch read backwards answers it: the model that
+  // maps to this module.
   //
-  // The module name itself is the fallback, for exactly the payload shape
-  // `activeModelRoots` falls back on — a design-tier-only graph has no
-  // `model:` node to read a stitch off, and there the naming convention
-  // is all there is. Offering a name the hub may reject beats offering
-  // nothing: the failure is reported, a disabled button is not.
-  //
-  // Two models topped at the same module cannot both be the answer; the
-  // first stitch wins, which is link order — the same rule
-  // `shallowestInstancePath` breaks its ties with.
+  // The fallback is the module name (design-tier-only graph). Offering a name
+  // the hub may reject beats a disabled button, since the failure is reported.
+  // If two models share a top, the first stitch wins (link order).
   function modelForRoot(links, root) {
     if (typeof root !== 'string' || !root) { return null; }
     var found = null;
@@ -2444,31 +2134,18 @@
     return found || root;
   }
 
-  // The instance a person means by "show me this module": the shallowest
-  // one, PREFERRING the active model's own elaboration (#414).
+  // The instance meant by "show me this module": the shallowest one, PREFERRING
+  // the active model's elaboration.
   //
-  // Ranking every loaded model's instances together silently landed the
-  // selection in a model that is not on screen — where the schematic
-  // highlights nothing, so the pane read as stuck, and the cross-model
-  // warning that followed named a model the user never picked. A
-  // candidate rooted in the active model therefore beats a shallower one
-  // from anywhere else. Only when the active model instantiates the
-  // module NOWHERE does the old all-models shallowest answer stand: a
-  // vendor block the current model never touches is still worth landing
-  // on, and refusing to resolve it would trade one silent miss for
-  // another.
+  // Ranking all loaded models together can land the selection in a model that
+  // is not on screen, where the schematic highlights nothing. Only when the
+  // active model instantiates the module nowhere does the all-models shallowest
+  // answer stand. Depth ties keep the first candidate (link order).
   //
-  // Depth ties keep the first candidate — link order, the same rule and
-  // the same answer as before.
-  //
-  // The root component is de-qualified before the lookup. `_qualify_graph`
-  // appends `@<suite>` to a whole `inst:` id, so it normally lands on the
-  // LAST path component (`inst:tb/tb.u_dut@verif/x` -> `tb.u_dut@verif/x`)
-  // and the first component is already clean — but a root-scope instance
-  // (`inst:X/X@verif/x` -> `X@verif/x`) has the qualifier on the only
-  // component there is. `activeModelRoots` strips `@` from its side, so
-  // without this the two halves of the same identity disagree and an
-  // instance genuinely inside the active model scores as foreign.
+  // The root component is de-qualified before lookup: `_qualify_graph` appends
+  // `@<suite>` to the whole `inst:` id, so a root-scope instance
+  // (`inst:X/X@verif/x`) has it on its only component. `activeModelRoots`
+  // strips it on its side; both must agree.
   function rootComponent(p) {
     return p.split('.')[0].split('@')[0];
   }
@@ -2489,11 +2166,9 @@
   }
   // <<< active-model
 
-  // `activeModelRoots` over the payload on screen, memoised on the
-  // things that can change it: the hub's active model and the ingested
-  // graph (`ingest` replaces `state.nodes` and `state.links` wholesale,
-  // so their identities are sound cache keys). Both halves of the graph
-  // are keys because the answer now reads nodes as well as links.
+  // `activeModelRoots` over the payload on screen, memoised on the hub's active
+  // model and the ingested nodes and links (`ingest` replaces both wholesale,
+  // so their identities are sound keys).
   var modelRootsCache = null;
   function currentModelRoots() {
     if (!modelRootsCache || modelRootsCache.model !== activeModel ||
@@ -2507,9 +2182,8 @@
     return modelRootsCache.roots;
   }
 
-  // The design tier's instance ids carry the hub resolver's identity
-  // verbatim: `inst:<top>/<dot.path>`. An explicit `instance_path`
-  // attribute wins when the exporter provides one.
+  // Design-tier instance ids carry the hub resolver's identity,
+  // `inst:<top>/<dot.path>`. An explicit `instance_path` attribute wins.
   function instancePathFor(n) {
     if (!n) { return null; }
     if (typeof n.instance_path === 'string' && n.instance_path) { return n.instance_path; }
@@ -2519,10 +2193,8 @@
       if (slash >= 0) { return rest.slice(slash + 1); }
     }
     if (n.type === 'module') {
-      // A module is not a coordinate the schematic can select — its
-      // instances are. Collect every one of them and let
-      // `shallowestInstancePath` pick: the shallowest, inside the
-      // active model when the active model has any.
+      // A module is not a schematic coordinate; its instances are. Collect them
+      // and let `shallowestInstancePath` pick.
       var paths = [];
       (state.inc[n.id] || []).forEach(function (l) {
         if (l.type !== 'instance_of') { return; }
@@ -2535,49 +2207,30 @@
   }
 
   // >>> module-name
-  // The coarser identity, for a node `instancePathFor` cannot place.
-  // A project-tier graph — the common case, and all you get before a
-  // design tier is built — carries its design content on `model:`
-  // nodes, so every click on one broadcast nothing at all and the pane
-  // looked inert. A module name is the fallback the schematic can
-  // still act on: it highlights every instance of that module.
+  // Coarser identity for a node `instancePathFor` cannot place, such as
+  // `model:` nodes in a project-tier graph (before a design tier is built). The
+  // schematic highlights every instance of the module.
   //
-  // A model is named after its top module, so the fragment after `#`
-  // in `model:design/common/models.yaml#ip_async_fifo` IS the module
-  // name. A `module:` node only reaches here when no `instance_of`
-  // link was extracted for it, and then its id minus the prefix is the
-  // name. Everything else — tests, suites, covitems, testbenches — is
-  // not a design coordinate at all, and returning a name for those
-  // would move the schematic on every click that had nothing to do
-  // with it.
+  // A `module:` node reaches here only with no `instance_of` link; its id minus
+  // the prefix is the name. Tests, suites, covitems and testbenches are not
+  // design coordinates and return null; naming one would move the schematic on
+  // unrelated clicks.
   //
-  // The name goes out verbatim: no `baseModuleName` strip, which is
-  // the rule cov_page.html needs because COVERAGE speaks the
-  // simulator's elaborated names (`ip_async_fifo__DB13`). Both ends of
-  // this wire speak the SOURCE vocabulary instead — the graph is built
-  // from the source, and so is the schematic's hierarchy — so there
-  // is no suffix to remove here, and stripping one would corrupt a
-  // real module whose name happens to end in `__<alnum>`.
+  // The name goes out verbatim. Unlike cov_page.html, which strips the
+  // simulator's elaborated suffix (`ip_async_fifo__DB13`), both ends here speak
+  // source names, and stripping would corrupt a module whose name ends in
+  // `__<alnum>`.
   //
-  // A `model:` node is resolved through its OUTGOING `maps_to` stitch
-  // (`out`, the page's `state.out[id]`), never through the `#<name>`
-  // fragment in its id. The fragment is the model's NAME, and since
-  // rtl_buddy 6.44 a models.yaml `top:` decouples that from the module
-  // it roots at — a model named `pp_axi` topped at `axi_xbar` would
-  // otherwise focus `module:pp_axi`, which no graph has, and a
-  // graph_focus miss is silent. The stitch is the same one
-  // `activeModelRoots` reads and the same one `config_tier` writes, so
-  // there is exactly one answer to "which module is this model".
+  // A `model:` node resolves through its outgoing `maps_to` stitch
+  // (`state.out[id]`), not the `#<name>` fragment of its id: with a models.yaml
+  // `top:` the model name need not be a module in the graph, and a graph_focus
+  // miss is silent.
   //
-  // No stitch means no coordinate. That is not a defensive default: a
-  // model that declared `graph: false` is deliberately absent from the
-  // design tier and has no `maps_to`, so inventing `module:<name>` for
-  // it would send the schematic and the cov pane after a node the graph
-  // does not contain. `sendTo` says so out loud instead.
+  // No stitch means no coordinate: a `graph: false` model is absent from the
+  // design tier, and inventing `module:<name>` would send the schematic and the
+  // cov pane to a node the graph lacks. `sendTo` reports it.
   //
-  // The suite qualifier (`@<suite>`, `graph.build.QUALIFIER_SEP`) comes
-  // off, exactly as `activeModelRoots` strips it: it disambiguates an
-  // id, it is not part of the module's name.
+  // The suite qualifier (`@<suite>`) comes off, as in `activeModelRoots`.
   function moduleNameFor(n, out) {
     if (!n) { return null; }
     var id = String(n.id == null ? '' : n.id);
@@ -2600,32 +2253,24 @@
   // <<< module-name
 
   // >>> cov-target
-  // A graph node's coordinate in the COVERAGE model, or null when it has
-  // none. The vocabulary is `cov_focus.target` from the wire schema —
-  // `test:`, `module:` or `file:` — and the rule is "send what the cov
-  // pane's `applyFocus` can actually resolve", which is why each branch
-  // below names the thing it resolves against:
+  // A node's coordinate in the COVERAGE model, or null. The vocabulary is
+  // `cov_focus.target` (`test:`, `module:` or `file:`); send what the cov
+  // pane's `applyFocus` can resolve:
   //
-  // * a `test:` node → the run's per-test attribution. The graph's id is
-  //   `test:<suite>#<name>`; the coverage model keys tests by the BARE
-  //   name (`cov/model.py` writes `artefacts.name`), so the fragment
-  //   after the last `#` is what lands. The id goes out whole anyway —
-  //   `focusTest` falls back to the fragment — because the suite is real
-  //   information the schema's own example carries.
-  // * a `model:`/`module:` node → the module, via the same derivation
-  //   the schematic is sent (`moduleNameFor`); the cov pane resolves
-  //   the source name onto its elaborated keys itself.
-  // * a `coverage_item` node → its spec block read as a module, with the
-  //   metric pinned to `cover` and the item id as the point name. Both
-  //   narrowings are soft misses at the far end, so the worst case is
-  //   landing on the module with the cover column up.
-  // * anything else that has a `file` → that file, at its line. The
-  //   graph stores paths project-root-relative (`_rel(project_root, …)`
-  //   in the tier builders) and `/cov.json` keys files the same way, so
-  //   the path crosses verbatim.
+  // * `test:` node -> per-test attribution. The graph id is
+  //   `test:<suite>#<name>` and the coverage model keys tests by the bare name,
+  //   so the fragment after the last `#` is what lands (`focusTest` falls back
+  //   to it; the id goes out whole).
+  // * `model:` / `module:` node -> the module via `moduleNameFor`; the cov pane
+  //   maps the source name onto its elaborated keys.
+  // * `coverage_item` node -> its spec block as a module, metric pinned to
+  //   `cover`, item id as point name. Both narrowings are soft misses at the
+  //   far end.
+  // * anything else with a `file` -> that file at its line; the graph and
+  //   `/cov.json` both key files project-root-relative.
   //
-  // Order matters: a `module:` node has a `file` too, and the module is
-  // the better answer.
+  // Order matters: a `module:` node also has a `file`, and the module is the
+  // better answer.
   function covTargetFor(n, out) {
     if (!n) { return null; }
     var id = String(n.id == null ? '' : n.id);
@@ -2634,13 +2279,9 @@
     }
     var mod = moduleNameFor(n, out);
     if (mod) { return { target: 'module:' + mod }; }
-    // A `model:` node that resolved to no module opted out of the design
-    // tier (#479), and it stops here rather than falling through to the
-    // file branch below. Its `file` is the models.yaml that declares it,
-    // and a YAML file is not a coverage coordinate — the cov pane would
-    // focus a file with no coverage, so the button reads as live and the
-    // click does nothing useful. `sendTo` says the node is not a
-    // coverage coordinate instead.
+    // A `model:` node with no module (opted out of the design tier) stops here
+    // instead of falling to the file branch: its `file` is a models.yaml, which
+    // is not a coverage coordinate. `sendTo` reports it.
     if (n.type === 'model') { return null; }
     if (n.type === 'coverage_item') {
       var block = n.block == null ? '' : String(n.block);
@@ -2650,9 +2291,7 @@
     }
     var file = n.file == null ? '' : String(n.file);
     if (!file) { return null; }
-    // Named apart from the `out` parameter: same-named `var` and
-    // parameter share one binding, so reusing the name would read as if
-    // the links were being overwritten mid-function.
+    // Not named `out`: a same-named `var` would share the parameter's binding.
     var focus = { target: 'file:' + file };
     var line = Number(n.line);
     if (line >= 1) { focus.line = Math.floor(line); }
@@ -2660,15 +2299,13 @@
   }
   // <<< cov-target
 
-  // A selection whose root is not the schematic's active model
-  // highlights nothing there — which reads as "the schematic is stuck".
-  // The cached model can be stale (the SPA picker switches without
-  // telling us), so reconfirm before accusing the click.
+  // A selection whose root is not the schematic's active model highlights
+  // nothing there, which reads as "the schematic is stuck". The cached model
+  // can be stale (the SPA picker switches without telling us), so reconfirm
+  // before warning.
   //
-  // The fix is one hub request away (`GET /view.json?model=` builds and
-  // activates, and the hub broadcasts `view_changed` to the SPA), so
-  // the warning arms the `switch model` button instead of telling
-  // the user to go find the SPA's model picker.
+  // `GET /view.json?model=` builds and activates the model, so the warning arms
+  // the `switch model` button.
   var crossModel = null;
   function setCrossModel(target) {
     crossModel = target;
@@ -2685,43 +2322,28 @@
     }
   }
 
-  // The root is compared against the active model's ROOTS, not its name,
-  // and the switch target is translated back through the same stitch.
+  // Compare the root against the active model's ROOTS (`activeModelRoots`), not
+  // its name, and translate the switch target back through `modelForRoot`. With
+  // a models.yaml `top:`, comparing against the name reports selections in the
+  // preferred root as cross-model and offers `?model=<module>`, which the hub
+  // cannot activate. `rootComponent` de-qualifies, as the ranking does.
   //
-  // Comparing the root with the name was right only while the two were
-  // the same string. With a models.yaml `top:`, an active model `foo`
-  // topped at `bar` makes `bar` the root `shallowestInstancePath` just
-  // *preferred* — so every one of those selections was reported as
-  // cross-model, and the button then offered `?model=bar`, a module name
-  // the hub cannot activate. Both halves come off `activeModelRoots` /
-  // `modelForRoot` instead, so there is one answer to "whose elaboration
-  // is this" and one to "what is that called as a model".
-  //
-  // `rootComponent` de-qualifies, for the same reason the ranking does:
-  // a root-scope instance carries `@<suite>` on its only component, and
-  // the two halves of one identity must agree about it.
-  //
-  // The CACHED model never decides anything on its own. Only a hub with
-  // no active model at all short-circuits; every real selection asks for
-  // a `state_snapshot` first and judges against the answer. The cache is
-  // there for the synchronous ranking, which cannot go ask mid-click, and
-  // it can be behind — the schematic may have switched while this socket
-  // was disconnected, or before its `view_changed` was applied. Letting a
-  // cached-root match suppress the warning would be a silent failure in
-  // exactly that window: the schematic is showing another model, the
-  // click highlights nothing there, and the pane says nothing and offers
-  // no switch. Suppression is the outcome that has to be earned, so it is
-  // the one that must never run on stale state.
+  // The CACHED model never decides on its own. Only a hub with no active model
+  // short-circuits; every real selection asks for a `state_snapshot` and judges
+  // against the answer. The cache serves the synchronous ranking and can be
+  // behind (the schematic may have switched while this socket was
+  // disconnected). Suppressing the warning on a stale match would fail
+  // silently, so suppression must be earned from fresh state.
   function maybeWarnCrossModel(ip) {
     var root = rootComponent(ip);
     if (!activeModel) { setCrossModel(null); return; }
     request('state_snapshot', {}, function (reply) {
-      // Unconfirmable: neither accuse the click nor leave the PREVIOUS
-      // selection's switch target armed under this one.
+      // Unconfirmable: neither warn nor leave the previous selection's switch
+      // target armed.
       if (reply.kind !== 'response') { setCrossModel(null); return; }
       activeModel = reply.payload.active_model;
       // Re-read after the refresh: `currentModelRoots` is memoised on the
-      // active model, so this is the freshly confirmed model's roots.
+      // active model.
       if (activeModel && !currentModelRoots()[root]) {
         var target = modelForRoot(state.links, root);
         setCrossModel({ model: target, ip: ip });
@@ -2743,7 +2365,7 @@
       .then(function (resp) {
         if (!resp.ok) {
           // The hub answers failures with a structured envelope
-          // (view_generation_failed & co) — surface its detail.
+          // (view_generation_failed and others); show its detail.
           return resp.json().then(
             function (body) {
               throw new Error((body && body.error && body.error.detail) ||
@@ -2755,8 +2377,7 @@
       })
       .then(function () {
         activeModel = target.model;
-        // Re-send the selection so the freshly switched view lands on
-        // the node the user actually clicked.
+        // Re-send the selection so the switched view lands on the clicked node.
         emit('selection_changed', { instance_path: target.ip });
         note('schematic switched to ' + target.model);
         setCrossModel(null);
@@ -2767,17 +2388,14 @@
       });
   });
 
-  // The envelope that puts the schematic on a node, or null when the
-  // node is not a design coordinate at all. The instance path is the
-  // exact answer; without one the coarser module name still moves the
-  // schematic (it highlights every instance of that module — see
-  // `moduleNameFor`). The echo back from the hub is ignored either way:
-  // inbound graph_focus breaks on `origin === 'graph'`.
+  // The envelope that puts the schematic on a node, or null when the node is
+  // not a design coordinate. It prefers the instance path, else the module name
+  // (`moduleNameFor`). The hub's echo is ignored: inbound graph_focus breaks on
+  // `origin === 'graph'`.
   //
-  // Spelled as a value rather than inline, because two callers take this
-  // same decision: the click path below (gated on the `sync schematic`
-  // checkbox) and the inspector's explicit `send → sch` button
-  // (which is not).
+  // A value rather than inline because two callers share the decision: the
+  // click path (gated on `sync schematic`) and the inspector's `send → sch`
+  // button (not gated).
   function viewTargetFor(n, out) {
     var ip = instancePathFor(n);
     if (ip) {
@@ -2799,8 +2417,8 @@
 
   function activate(n, opts) {
     opts = opts || {};
-    // Any activation is a single selection: a multi-node highlight
-    // belongs to the `phys_focus` that set it and to nothing after.
+    // Any activation is a single selection; a multi-node highlight belongs to
+    // the `phys_focus` that set it.
     state.focusIds = null;
     state.selected = n.id;
     renderInspector(n);
@@ -2811,10 +2429,8 @@
       var view = viewTargetFor(n, state.out[n.id]);
       var sent = !!view && emit(view.type, view.payload);
       if (sent) { did.push(view.note); }
-      // The cross-model warning is about a selected INSTANCE. Anything
-      // else — a module fallback, an undeliverable send, a node the
-      // schematic cannot place — must clear it, or a stale "sch → X" fixes the
-      // wrong click.
+      // The cross-model warning is about a selected INSTANCE; any other outcome
+      // (module fallback, undeliverable send, unplaceable node) must clear it.
       if (sent && view.ip) { maybeWarnCrossModel(view.ip); }
       else { setCrossModel(null); }
     }
@@ -2864,13 +2480,11 @@
   // cross-app actions
   // ---------------------------------------------------------------
 
-  // One control per sibling app: `send → X` puts the current selection
-  // on the X tab that is already open and does not navigate. Opening an
-  // app fresh is the header switcher's job — and a tab opened AFTER a
-  // send still lands on the selection, because the hub caches the
-  // latest selection_changed / graph_focus / cov_focus and replays them
-  // to each peer as it registers (`_replay_cached_state` in
-  // hub/server.py). No deep links, no new wire types.
+  // One control per sibling app: `send → X` puts the selection on the
+  // already-open X tab without navigating. Opening an app is the header
+  // switcher's job. A tab opened after a send still lands on the selection,
+  // because the hub replays the cached selection_changed / graph_focus /
+  // cov_focus to new peers (`_replay_cached_state` in hub/server.py).
   var APPS = [
     {
       origin: 'view', prose: 'the schematic',
@@ -2878,8 +2492,8 @@
       send: function (t) { return emit(t.type, t.payload); },
       label: function (t) { return t.coord; },
       after: function (t) { if (t.ip) { maybeWarnCrossModel(t.ip); } },
-      // Broadcast, not point-to-point: the coverage pane reads
-      // selection_changed too (it guesses a module off the leaf name).
+      // Broadcast: the coverage pane also reads selection_changed (it guesses a
+      // module off the leaf name).
       overlap: 'This is a hub broadcast — an instance-path send also ' +
         'nudges the coverage pane, which resolves instance paths onto ' +
         'modules of its own accord.',
@@ -2899,8 +2513,8 @@
   ];
 
   function sendTo(app, n) {
-    // Both `targetFor`s resolve a `model:` node through its `maps_to`
-    // stitch, so both need the node's outgoing links.
+    // Both `targetFor`s resolve `model:` nodes through `maps_to`, so both need
+    // the node's outgoing links.
     var t = app.targetFor(n, state.out[n.id]);
     if (!t) { note(app.why, 'warn'); return false; }
     if (!app.send(t)) { note('hub not connected', 'error'); return false; }
@@ -2917,10 +2531,8 @@
     return b;
   }
 
-  // Sends only: opening an app fresh is the header switcher's job, so
-  // there is no open-↗ variant here (it was redundant with those links,
-  // and the hub replays its cached focus to late joiners anyway — send
-  // first, then open from the header, lands the same way).
+  // Sends only; there is no open variant, since the header switcher opens apps
+  // and the hub replays cached focus to late joiners.
   function renderActions(n) {
     var box = document.createElement('div');
     box.className = 'actions';
@@ -2939,7 +2551,7 @@
     return box;
   }
 
-  // Rebuilt in place when the peer list moves — see `setPeers`.
+  // Rebuilt in place when the peer list moves (`setPeers`).
   var actionsEl = null, actionsNode = null;
 
   function refreshActions() {
@@ -2956,8 +2568,8 @@
   function row(dl, key, value) {
     var dt = document.createElement('dt'); dt.textContent = key;
     var dd = document.createElement('dd');
-    // Duck-typed rather than `instanceof Node`: values here are either a
-    // scalar out of the graph or an element we just built.
+    // Duck-typed rather than `instanceof Node`: values are scalars or elements
+    // just built.
     if (value && typeof value === 'object' && value.nodeType === 1) {
       dd.appendChild(value);
     } else {
@@ -2976,9 +2588,8 @@
       els.inspector.appendChild(hint);
       return;
     }
-    // First, above the identity: the row is about what you can DO with
-    // the selection, and it must not need a scroll on a node with fifty
-    // edges to be found.
+    // First, above the identity, so it needs no scroll on a node with many
+    // edges.
     actionsEl = renderActions(n);
     els.inspector.appendChild(actionsEl);
     var dl = document.createElement('dl');
@@ -3052,9 +2663,8 @@
     }).join('  ') || '\u2014';
   }
 
-  // The declared-vs-observed answer, spelled out: which cover points a
-  // spec item correlated with (and off which rung of the match ladder),
-  // which tests declared they cover it, and how those tests did.
+  // Declared vs observed: the cover points a spec item correlated with (and the
+  // match rung), the tests that declared they cover it, and how they did.
   function renderCoverage(n) {
     var c = covOf(n);
     if (!c) { return; }
@@ -3069,9 +2679,8 @@
       row(dl, 'metrics', metricLine(c.totals || {}));
       if ((c.tests || []).length) { row(dl, 'tests', c.tests.join(', ')); }
       (c.files || []).forEach(function (f, i) { row(dl, i ? '' : 'files', f); });
-      // Cover points in this module that no `covers:` entry claims —
-      // they have no node of their own to be selected, so the module
-      // they live in is where they can be seen at all.
+      // Cover points no `covers:` entry claims have no node of their own; the
+      // module is where they can be seen.
       ((state.coverage && state.coverage.undeclared) || [])
         .filter(function (u) { return u.module === c.module; })
         .forEach(function (u, i) {
@@ -3108,18 +2717,14 @@
     els.inspector.appendChild(dl);
   }
 
-  // The physical half of a selected module: the synthesis row's own
-  // numbers, and the power of every leaf instance the roll-up put
-  // inside this module. Only for a `module:` node, and only while the
-  // overlay is on — a section that appeared on every click would be a
-  // section about a document the reader did not ask to see.
+  // Physical half of a selected module: the synthesis row's numbers and the
+  // power of every leaf the roll-up put inside it. Only for a `module:` node,
+  // and only while the overlay is on.
   //
-  // The two halves are labelled apart on purpose. `cells` is the
-  // module's OWN cells and `area` already includes its submodules'
-  // (Yosys' `stat` rolls area up and cell counts not at all), and the
-  // power lines are the leaves inside this module and no deeper
-  // module's. Adding them up is the one thing a reader must not do, so
-  // the note says which is which rather than reconciling them.
+  // The halves are labelled apart: `cells` is the module's OWN cells and `area`
+  // includes its submodules (Yosys `stat` rolls area up, cell counts not at
+  // all), while the power lines cover the leaves in this module and no deeper.
+  // The note says which is which; adding them is wrong.
   function renderPhysical(n) {
     if (!heatOn() || !n || n.type !== 'module' || n.dangling) { return; }
     var name = heatModuleName(n, state.out[n.id]);
@@ -3144,9 +2749,8 @@
     row(dl, 'internal', heatFmt(found.internal, 'dynamic'));
     row(dl, 'switching', heatFmt(found.switching, 'dynamic'));
     row(dl, 'leakage', heatFmt(found.leakage, 'leakage'));
-    // What the power sum ran over, beside the power: the two halves do
-    // not count over the same thing, and a reader comparing a module's
-    // power with its area has to be told which is which.
+    // What the power sum ran over, beside the power: a reader comparing power
+    // with area must know the halves count different things.
     row(dl, 'instances', found.instances);
     row(dl, 'leaf rows', found.leaves);
     var hint = document.createElement('span');
@@ -3161,36 +2765,26 @@
   }
 
   // >>> phys-focus
-  // An inbound `phys_focus`, read as a graph coordinate.
+  // An inbound `phys_focus` as a graph coordinate. Targets are the physical
+  // model's: `module:<name>` or `instance:<rootless path>`, a bare string being
+  // an instance path (schemas/hub-protocol-v1.json). A module is a node here
+  // and lands directly. An instance is a netlist LEAF (a Liberty cell), which
+  // no RTL graph contains: try the instance node of that path first (a sender
+  // copying from `rb phys instance`), then fall back to the module whose body
+  // contains the leaf, via the heat join's roll-up index.
   //
-  // The wire's targets are the physical model's: `module:<name>` or
-  // `instance:<rootless path>`, with a bare string read as an instance
-  // path (schemas/hub-protocol-v1.json). A module is a node here, so it
-  // lands directly. An instance is a NETLIST LEAF — a Liberty cell
-  // instance, which no RTL graph contains — so the instance node it
-  // names is tried first (a path that does happen to be an RTL
-  // instance, and the case a sender copying out of `rb phys instance`
-  // hits) and the module whose body contains the leaf is the fallback,
-  // through the same roll-up index the heat join uses.
+  // `rooted` paths: /phy sends paths rooted at the design top (the schematic's
+  // coordinate) and `rb hub send phys-focus` sends the model's rootless
+  // spelling. Both readings are tried and the graph decides, as in /phy's
+  // `inboundCandidates`.
   //
-  // `rooted` paths: the /phy pane sends the path rooted at the design
-  // top, because that is the schematic's coordinate, while `rb hub send
-  // phys-focus` carries the model's own rootless spelling. Both
-  // readings are tried and the graph decides which one names a node —
-  // the same rule the /phy pane's `inboundCandidates` applies in the
-  // other direction.
+  // Pure: state is passed in and an id or null comes back. Nothing is emitted
+  // for a focus; answering a broadcast with a broadcast loops.
   //
-  // Pure: the page's own state is passed in, and what comes back is an
-  // id or null. Nothing is emitted for a focus — this pane's own
-  // envelopes are unchanged by the physical overlay, and answering a
-  // broadcast with a broadcast is a loop.
-  // Which instance NODE a rootless path names, or null. The id is
-  // composed when the elaboration is known (`inst:<root>/<root>.<path>`
-  // — a design-tier id embeds the root it was reached through), and the
-  // ids are asked directly otherwise: before the model has been read
-  // there is no top to compose with, and a suite-qualified id
-  // (`@<suite>`, appended to the whole id) defeats an exact lookup even
-  // when there is.
+  // Instance NODE for a rootless path, or null. The id is composed
+  // (`inst:<root>/<root>.<path>`) when the elaboration is known; otherwise ids
+  // are asked directly, since before the model is read there is no top and a
+  // suite-qualified id defeats an exact lookup.
   function instanceNodeId(byId, path, root) {
     var direct = root
       ? 'inst:' + root + '/' + (path ? root + '.' + path : root) : null;
@@ -3204,15 +2798,11 @@
     return null;
   }
 
-  // Every node whose DE-QUALIFIED module name is this one.
-  //
-  // A suite qualifier disambiguates an ID, not a module:
-  // `module:sub@verif/fifo` and `module:sub@verif/dma` are two exports
-  // of one RTL module, the synthesis half has ONE row for it, and the
-  // join reads them both under the bare name (`heatModuleName`). So a
-  // `module:sub` target belongs to all of them, and all of them are
-  // returned — picking one by key order would highlight an arbitrary
-  // export and leave its twins looking unrelated to the message.
+  // Every node whose de-qualified module name is this one.
+  // `module:sub@verif/fifo` and `module:sub@verif/dma` are two exports of one
+  // module with one synthesis row (`heatModuleName`); a `module:sub` target
+  // belongs to all of them, and picking one by key order would highlight an
+  // arbitrary export.
   function moduleNodesNamed(byId, name) {
     var wanted = String(name == null ? '' : name);
     var found = [];
@@ -3236,12 +2826,10 @@
       ? text.slice('instance:'.length) : text);
     if (!path) { return []; }
     var root = levelPath(top == null ? '' : top);
-    // The model's own rootless spelling first, then the same path with
-    // one leading top level removed: a sender is a convention and the
-    // graph is a fact, so both readings are offered and the nodes
-    // decide. (Under a top named `blk`, the rootless row `blk.u_x` is a
-    // `blk` instance inside the top and a prefix test alone would read
-    // it as already rooted.)
+    // The model's rootless spelling first, then the path with one leading top
+    // level removed; the nodes decide. (Under a top named `blk`, rootless
+    // `blk.u_x` is an instance inside the top, and a prefix test would read it
+    // as already rooted.)
     var readings = [path];
     if (root && path.indexOf(root + '.') === 0) {
       readings.push(path.slice(root.length + 1));
@@ -3250,19 +2838,14 @@
       var id = instanceNodeId(byId, readings[i], root);
       if (id) { return [id]; }
     }
-    // No instance node for either reading — the ordinary case, since a
-    // model row is a Liberty cell instance and the RTL graph has no
-    // node for one. The module whose body contains the leaf is the
-    // answer a person wanted anyway.
-    //
-    // A real enclosing instance first, for EVERY reading, before the
-    // root scope is allowed to answer: the root contains every path, so
-    // letting it answer the first reading would decide the ambiguity by
-    // provenance rather than by the graph.
+    // No instance node for either reading, the ordinary case (a model row is a
+    // Liberty cell). Use the module whose body contains the leaf. A real
+    // enclosing instance is tried first for EVERY reading, before the root
+    // scope, which contains every path and would otherwise settle the ambiguity
+    // by provenance.
     var table = index || Object.create(null);
-    // The owning module comes out of the index de-qualified, so it is
-    // resolved back to nodes the same way a `module:` target is: every
-    // export of it, not the first one an id lookup happens to hit.
+    // The owning module comes out de-qualified; resolve it back to nodes like a
+    // `module:` target (every export).
     var answer = function (owner) {
       var nodes = owner ? moduleNodesNamed(byId, owner) : [];
       return nodes.length ? nodes : null;
@@ -3282,12 +2865,9 @@
   // A `phys_focus` held for a model that had not arrived yet.
   var physPendingFocus = null;
 
-  // Drained by the ingest that answers it — and ALSO when the load
-  // fails, because a `module:` target names a node this graph carries
-  // whether or not the model could be read, and dropping the message
-  // silently would be the pane answering it by forgetting it.
-  // (phys_page.html drains its own pending focus in `loadFailed` for
-  // the same reason.)
+  // Drained by the ingest that answers it, and also when the load fails: a
+  // `module:` target names a node the graph carries either way. (phys_page.html
+  // drains in `loadFailed` for the same reason.)
   function drainPhysFocus() {
     var held = physPendingFocus;
     if (!held) { return; }
@@ -3296,23 +2876,19 @@
   }
 
   function applyPhysFocus(payload, deferred) {
-    // A `phys_focus` is a HEAT request: it names a coordinate in the
-    // physical model and carries the metric to foreground. An instance
-    // target cannot be resolved at all without the model — a leaf row
-    // is a Liberty cell instance, and only the roll-up index knows
-    // which module's body holds it — so when there is a model to read
-    // and it has not been read yet, the overlay is turned on, the model
-    // is fetched, and the focus is applied when the body lands. The
-    // /phy pane holds a focus that beats its own fetch the same way
-    // (`state.pending` there).
+    // A `phys_focus` is a HEAT request: it names a physical-model coordinate
+    // and the metric to foreground. An instance target needs the model (only
+    // the roll-up index knows which module holds a leaf), so when a model
+    // exists but is unread, turn the overlay on, fetch it, and apply the focus
+    // when the body lands (as /phy's `state.pending`).
     //
-    // `deferred` is the second pass, after that load settled either
-    // way: it never defers again, so a failed load cannot loop.
+    // `deferred` is the second pass after that load settles; it never defers
+    // again, so a failed load cannot loop.
     if (!deferred && PHY_URL && !state.phys) {
       physPendingFocus = payload;
       if (!els.optHeat.checked) {
         els.optHeat.checked = true;
-        // One fill, one meaning — the same exchange the checkbox makes.
+        // Same exclusion as the checkbox handler.
         els.optCov.checked = false;
         els.optCov.dataset.touched = '1';
       }
@@ -3320,9 +2896,8 @@
       return;
     }
     var metric = payload && payload.metric;
-    // The metric hint is applied even when the target misses: it is a
-    // statement about the view, not about the row, which is how the
-    // /phy pane reads it too.
+    // The metric hint applies even when the target misses: it describes the
+    // view, not the row.
     if (metric) { setHeatMetric(String(metric)); }
     var target = payload && payload.target;
     var ids = physFocusNodes(
@@ -3332,14 +2907,12 @@
         (state.heat ? '' : ' (no physical model read)'), 'warn');
       return;
     }
-    // The first is the selection — it gets the inspector and the
-    // centring — and the rest are highlighted beside it: a
-    // suite-qualified module is several nodes of one RTL module, and
-    // the message is about the module.
+    // The first node is the selection (inspector and centring); the rest are
+    // highlighted beside it, since a suite-qualified module is several nodes of
+    // one module.
     focusById(ids[0], { emit: false, announce: false });
     if (ids.length > 1) {
-      // Set AFTER the focus lands: `activate` clears the set, because a
-      // click on a node is a new, single selection.
+      // Set AFTER the focus lands: `activate` clears the set.
       state.focusIds = ids;
       applyClasses();
     }
@@ -3356,12 +2929,11 @@
   });
   els.optHops.addEventListener('change', applyClasses);
   els.optCov.addEventListener('change', function () {
-    // Remembered so a payload refresh does not re-tick a box the
-    // person just unticked. Not persisted: a new tab starts ticked.
+    // Remembered so a payload refresh does not re-tick a box the person
+    // unticked. Not persisted.
     els.optCov.dataset.touched = '1';
-    // One fill, one meaning: coverage and heat both repaint the node
-    // body, and two ramps on one circle would be a colour nobody can
-    // read back to a number. Ticking either unticks the other.
+    // Coverage and heat both repaint the node body; ticking one unticks the
+    // other.
     if (els.optCov.checked) { els.optHeat.checked = false; }
     renderHeatControls();
     renderLegend(state.categories);
@@ -3371,14 +2943,13 @@
   els.optHeat.addEventListener('change', function () {
     if (els.optHeat.checked) {
       els.optCov.checked = false;
-      // Remembered for the same reason the cov box remembers: a graph
-      // reload must not re-tick the coverage overlay over the heat one.
+      // Remembered like the cov box, so a graph reload does not re-tick
+      // coverage over heat.
       els.optCov.dataset.touched = '1';
     }
     renderHeatControls();
-    // Fetched on the first tick rather than on load: a real design's
-    // power half is megabytes of leaf rows, and a pane opened to look
-    // at the graph should not pay for a document nobody asked for.
+    // Fetched on the first tick, not on load: the power half can be megabytes
+    // of leaf rows.
     if (els.optHeat.checked && !state.phys) { loadPhys(); return; }
     renderLegend(state.categories);
     render();
@@ -3389,14 +2960,12 @@
     setHeatMetric(els.heatMetric.value);
   });
   els.heatRun.addEventListener('change', function () {
-    // The value is the run's project-relative artefact directory, and
-    // the empty one means "follow discovery" — `heatPhyUrl` turns both
-    // into the same route the /phy pane asks for.
+    // The value is the run's project-relative artefact directory; empty means
+    // follow discovery (`heatPhyUrl`).
     //
-    // Passed to the fetch rather than written into `state.physDir`: the
-    // pane is still showing the run it had until a body arrives, and a
-    // refused switch must leave that run — and this control's value —
-    // where they were (`physLoadStep`).
+    // Passed to the fetch rather than written to `state.physDir`: a refused
+    // switch must leave the shown run and this control's value where they were
+    // (`physLoadStep`).
     loadPhys(els.heatRun.value || null);
   });
   els.search.addEventListener('keydown', function (ev) {
@@ -3407,17 +2976,13 @@
   });
   document.getElementById('reload').addEventListener('click', function () {
     load();
-    // The physical model is a second document, re-read only when the
-    // overlay that shows it is on: `reload` is the button that answers
-    // "another rb synth / rb power has finished", and a heat overlay
-    // left pointing at the previous run would be the one stale thing
-    // on the page.
+    // The physical model is a second document, re-read only while its overlay
+    // is on. `reload` answers "another rb synth / rb power has finished".
     if (els.optHeat.checked) { loadPhys(); }
   });
   window.addEventListener('resize', applyClasses);
-  // The strip's status word doubles as the take-back control while this
-  // tab is superseded; `takeBack` no-ops in every other state, so the
-  // listener is bound once here rather than added and removed.
+  // The strip's status word is the take-back control while superseded;
+  // `takeBack` no-ops otherwise, so the listener is bound once.
   els.wsStatus.addEventListener('click', takeBack);
   els.wsStatus.addEventListener('keydown', function (ev) {
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
@@ -3426,9 +2991,8 @@
   relabelSwitcher();
   connect();
   load();
-  // The physical overlay's own two pieces of start-up state: which run
-  // this tab was opened on, and — with no manifest under the project —
-  // the muted control that names the commands that make one.
+  // Physical overlay start-up: the run this tab opened on and, with no
+  // manifest, the muted control naming the commands that make one.
   state.physDir = openedDir(location.search);
   if (!PHY_URL) { mutePhysControl(HEAT_ABSENT); }
 })();

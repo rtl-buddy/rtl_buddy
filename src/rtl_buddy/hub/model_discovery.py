@@ -1,12 +1,6 @@
 """Model discovery for ``rb hub start --model NAME``.
 
-Walks the project tree for ``models.yaml`` files, aggregates the
-named entries, and resolves a single match for the user-supplied
-``--model NAME`` (with optional ``--models-file`` override).
-
-Cross-file name collisions are explicit errors that point the user
-at ``--models-file PATH`` for disambiguation. This matches the
-contract spelled out in issue #167.
+Walks the project for ``models.yaml`` files and resolves one match for the model name, with an optional ``--models-file`` override. Cross-file name collisions are errors that point at ``--models-file PATH``.
 """
 
 from __future__ import annotations
@@ -25,10 +19,8 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
-# Directories we never descend into during the discovery walk. Build
-# artefacts and VCS metadata can contain copied YAML files (e.g.
-# example fixtures vendored under tests/), which would otherwise show
-# up as spurious matches.
+# Directories the walk never enters: build output and VCS metadata can hold
+# copied YAML that would show up as spurious matches.
 _SKIP_DIRS = frozenset(
     {
         ".git",
@@ -58,32 +50,23 @@ class ModelMatch:
 
 
 def discover_models_files(root: Path) -> list[Path]:
-    """Return every ``models.yaml`` reachable under ``root``.
+    """Return every ``models.yaml`` under ``root``, in alphabetical order.
 
-    Skips conventional build/VCS directories so vendored fixtures
-    don't pollute the candidate set, and skips nested git worktrees
-    (each one is a parallel checkout of the same project, so its
-    ``models.yaml`` files duplicate the parent's and would otherwise
-    fail discovery as cross-file name collisions). Order is
-    deterministic (alphabetical) so collision-error messages don't
-    churn between invocations.
+    Skips build and VCS directories and nested git worktrees, whose
+    ``models.yaml`` files duplicate the parent's and would collide.
     """
 
     root_resolved = Path(root).resolve()
     results: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        # Skip git worktree subdirectories. Each worktree root has
-        # ``.git`` as a *file* (containing ``gitdir: <path>``) pointing
-        # back at the main repo's ``.git/worktrees/<name>`` metadata.
-        # The main checkout has ``.git`` as a directory and is already
-        # walked into normally — we only want to prune nested worktrees,
-        # not the starting root itself.
+        # A nested worktree has ``.git`` as a file; the starting root's ``.git``
+        # is a directory and must not be pruned.
         if Path(dirpath).resolve() != root_resolved and ".git" in filenames:
             git_entry = Path(dirpath) / ".git"
             if git_entry.is_file():
                 dirnames.clear()
                 continue
-        # Mutate dirnames in place so os.walk skips our excludes.
+        # In place, so os.walk skips the excluded directories.
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         if "models.yaml" in filenames:
             results.append(Path(dirpath) / "models.yaml")
@@ -91,10 +74,10 @@ def discover_models_files(root: Path) -> list[Path]:
 
 
 def _read_model_names(path: Path) -> list[str]:
-    """Best-effort name extraction without full ``ModelConfigLoader``
-    validation — the discovery walk shouldn't fatal-error on a
-    sibling project's malformed models.yaml that the user isn't
-    asking about. Returns ``[]`` on parse failure (logged at DEBUG).
+    """Model names in a ``models.yaml``, without full validation.
+
+    Returns ``[]`` on parse failure (logged at DEBUG), so a malformed file the
+    user did not ask about does not fail discovery.
     """
 
     try:
@@ -112,9 +95,7 @@ def _read_model_names(path: Path) -> list[str]:
 
 
 def find_matches(models_files: list[Path], model_name: str) -> list[ModelMatch]:
-    """Return every ``(models_file, model_name)`` pair where ``models_file``
-    contains an entry named ``model_name``.
-    """
+    """Return a match for every file that has an entry named ``model_name``."""
 
     matches: list[ModelMatch] = []
     for mf in models_files:
@@ -129,22 +110,17 @@ def resolve_model(
     *,
     models_file: Path | None = None,
 ) -> tuple[Path, "ModelConfigLoader"]:
-    """Resolve ``model_name`` to the owning ``models.yaml`` + loader.
+    """Resolve ``model_name`` to its ``models.yaml`` and loader.
 
-    - ``models_file`` set → load directly, no discovery walk.
-    - ``models_file`` unset → walk the project root for every
-      ``models.yaml``. Error on zero or multiple matches.
-
-    Returns ``(models_yaml_path, ModelConfigLoader)``. The loader's
-    duplicate-name guard runs as part of construction (per #169).
+    With ``models_file`` set, load it directly. Otherwise walk ``root`` and
+    require exactly one match. Returns ``(models_yaml_path, ModelConfigLoader)``.
     """
 
     if models_file is not None:
         if not models_file.is_file():
             raise FatalRtlBuddyError(f"--models-file {models_file}: not a file")
         loader = ModelConfigLoader(str(models_file))
-        # Trigger lookup so a missing model name surfaces with the
-        # loader's own diagnostic.
+        # Surfaces a missing model name with the loader's own diagnostic.
         loader.get_model(model_name)
         return models_file, loader
 
@@ -157,8 +133,7 @@ def resolve_model(
 
     matches = find_matches(models_files, model_name)
     if len(matches) == 0:
-        # Build a sample list of names from every file so the user
-        # can see if they had a typo.
+        # Candidates for the error message, to expose typos.
         sample: list[str] = []
         for mf in models_files:
             for n in _read_model_names(mf):

@@ -2,34 +2,9 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The hub-served design-knowledge-graph pane (#382).
+"""Hub-served design-knowledge-graph pane: the payload behind ``GET /graph.json`` and the page at ``GET /gph``.
 
-A static per-directory ``graph.html`` would be the lazy answer; the hub can do
-better, because it is the process that already owns view↔wave↔src
-coordinate resolution and speaks ``selection_changed`` / ``open_source``
-to every connected peer. This module is the two halves of that pane:
-
-* :func:`build_graph_payload` — ``artefacts/graph/graph.json`` joined
-  with ``artefacts/graph/results-overlay.json`` **in memory**, served at
-  ``GET /graph.json``. The join is :func:`~rtl_buddy.graph.results.annotate_graph`,
-  i.e. exactly the one the query verbs use, so the picture and the
-  answers can never disagree. It also stamps each node with the
-  ``category`` column it renders in (:func:`categorize_nodes`).
-  ``graph.json`` on disk is never written — that is what keeps it
-  hash-stable across regressions (#379), and the same rule is why
-  ``category`` exists only in the served body.
-* :func:`render_graph_html` — the page at ``GET /gph``, a single
-  self-contained HTML document. No CDN, no bundler, no build step: the
-  hub is frequently run on machines with no route to the internet, and
-  a viewer that needs one is a viewer that does not open.
-
-The page is a hub *peer*, registering as ``origin=graph`` (see
-:class:`~rtl_buddy.hub.protocol.Origin`) so it can be open at the same
-time as the schematic SPA rather than evicting it. Clicking a node
-emits the same envelopes the SPA emits: ``selection_changed`` for
-anything that resolves to an instance path in the schematic, ``open_source``
-for anything that knows its file. ``rb hub send graph-focus <node>``
-drives it from the other direction.
+:func:`build_graph_payload` joins ``graph.json`` with ``results-overlay.json`` in memory, so ``graph.json`` on disk stays hash-stable. :func:`render_graph_html` returns one self-contained HTML document with no CDN or build step. The page registers as hub peer ``origin=graph`` and emits ``selection_changed`` and ``open_source`` envelopes; ``rb hub send graph-focus <node>`` drives it.
 """
 
 from __future__ import annotations
@@ -67,34 +42,24 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
-#: Bumped when the ``GET /graph.json`` envelope changes incompatibly.
-#: Independent of the graph's own ``schema_version`` — this versions the
-#: ``graph.hub`` block the pane reads, not the node/edge vocabulary.
-#: 3 adds ``graph.hub.coverage`` and the per-node ``coverage`` key.
+#: Version of the ``graph.hub`` block in the ``GET /graph.json`` body, bumped on
+#: incompatible changes. Independent of the graph's own ``schema_version``.
 PAGE_SCHEMA_VERSION = 3
 
 #: Route serving the merged graph + overlay join.
 GRAPH_JSON_ROUTE = "/graph.json"
 
-#: Route serving the interactive page — the app's short name, matching
-#: ``/sch`` and ``/cov`` (#423). ``/graph`` still answers, with a 307.
-#: ``GRAPH_JSON_ROUTE`` above is a DATA route and does not move.
+#: Route serving the interactive page, named like ``/sch`` and ``/cov``.
 GRAPH_PAGE_ROUTE = "/gph"
 
-#: The pre-#423 spelling, answered with a 307 to :data:`GRAPH_PAGE_ROUTE`.
+#: Old page route, answered with a 307 to :data:`GRAPH_PAGE_ROUTE`.
 LEGACY_GRAPH_PAGE_ROUTE = "/graph"
 
 #: Left-to-right column order on the page.
 #:
-#: Columns are **not** tiers. A tier says which tool produced a node,
-#: which is a fact about the build, not about the design: `design` and
-#: `config` between them hold the spec, the DUT, four different flows'
-#: suites and every testbench hierarchy, so a three-column picture put
-#: two thirds of the graph in one stripe. Columns are what a person is
-#: looking for — the spec on the left, the design in the middle, and one
-#: column per verification flow on the right. A node the rules below
-#: cannot place lands in the trailing ``other`` column rather than being
-#: dropped.
+#: Columns are not tiers: they are what a person looks for (the spec, the
+#: design, one column per verification flow). A node no rule places lands in
+#: ``other``.
 COLUMN_ORDER = (
     "spec",
     "design",
@@ -106,19 +71,14 @@ COLUMN_ORDER = (
     "other",
 )
 
-#: The config tier's ``flow`` stamp -> the column it lands in. FPGA
-#: implementation shares ``syn-config`` with synthesis: it *is* the
-#: synthesis flow carried through place-and-route, it never has its own
-#: suites in a project that does not do FPGA work, and a column that is
-#: empty in almost every project is a column that costs more than it says.
+#: The config tier's ``flow`` stamp -> its column. FPGA shares ``syn-config``
+#: with synthesis and style lint shares ``cdc-config``, so rarely used flows
+#: do not add mostly empty columns.
 FLOW_COLUMNS = {
     FLOW_SIM: "test-config",
     FLOW_SYNTH: "syn-config",
     FLOW_FPV: "formal-config",
     FLOW_CDC: "cdc-config",
-    # Style lint shares the CDC column for the FPGA-and-synthesis reason:
-    # both are static lint flows with no testbench, and a column that is
-    # empty in almost every project costs more than it says.
     FLOW_LINT: "cdc-config",
     FLOW_FPGA: "syn-config",
 }
@@ -136,10 +96,8 @@ FALLBACK_FLOW_COLUMN = "test-config"
 def _flow_column(flow: object) -> str | None:
     """Column for a ``flow`` attribute (a string, or a list when shared).
 
-    A suite claimed by two regressions is resolved in
-    :data:`~rtl_buddy.graph.config_tier.FLOW_SOURCES` order — the order the
-    stamp itself was built in, so the answer does not depend on which
-    consumer asks.
+    A suite claimed by two regressions resolves in
+    :data:`~rtl_buddy.graph.config_tier.FLOW_SOURCES` order.
     """
 
     values = [flow] if isinstance(flow, str) else flow
@@ -155,36 +113,20 @@ def _flow_column(flow: object) -> str | None:
 def _tb_hierarchy_suites(nodes: list[dict], links: list[dict]) -> dict[str, str]:
     """Design-tier node id -> the suite whose testbench elaboration owns it.
 
-    ``rb graph build`` exports the design tier twice: once rooted at each
-    model, and once per testbench rooted at its top (#377). Both halves are
-    ``tier: design``, and the whole point of the second half is that its
-    ``module:<dut>`` is *the same node* as the first half's — so "which
-    export did this node come from?" is not a question a tier tells you.
+    ``rb graph build`` exports the design tier once per model and once per
+    testbench, and a node does not say which export it came from. Rules,
+    cheapest first:
 
-    Three rules answer it without re-running anything, cheapest first:
+    1. ``qualified_by`` (set on any id two files claimed) is the suite directory.
+    2. A module that a ``tb:`` node ``elaborates_as`` is that testbench's root,
+       unless a ``model:`` node ``maps_to`` it too (cocotb and SystemC
+       testbenches top at the DUT). The edge type tells the source kind.
+    3. An ``inst:<root>/<path>`` id embeds its root, so every instance under a
+       testbench root belongs to that testbench.
 
-    1. ``qualified_by`` — set by the build on any id two files claimed, and
-       its value already *is* the suite directory.
-    2. A module a ``tb:`` node ``elaborates_as`` is that testbench's root,
-       unless a ``model:`` node ``maps_to`` it too: a cocotb or SystemC
-       testbench tops at the DUT itself, and a module a ``models.yaml``
-       declares is design whatever else elaborates it. The two stitches are
-       separate edge types (#376), so the source kind is read off the edge
-       rather than off the id prefix.
-    3. An ``inst:<root>/<path>`` id embeds the root it was reached from, so
-       every instance under a testbench root belongs to that testbench.
-
-    Ports and parameters follow their ``owner`` module.
-
-    A *module* node under a testbench root that is neither of those is left
-    in the design column on purpose. Modules are the weld between the two
-    exports, so nothing in the merged graph says which one produced them —
-    "every instance of it is a testbench instance" would be the only test
-    available, and it is wrong for exactly the case that matters: a DUT no
-    ``models.yaml`` declares, reached only through the testbench that
-    instantiates it, is design and not test plumbing. Under-claiming here
-    costs a driver module the right column; over-claiming would file a
-    vendor IP block under someone's testbench.
+    Ports and parameters follow their ``owner`` module. Any other module under
+    a testbench root stays in the design column: a DUT reached only through
+    its testbench is design, not test plumbing.
     """
 
     by_id = {n["id"]: n for n in nodes if n.get("id")}
@@ -225,11 +167,8 @@ def _tb_hierarchy_suites(nodes: list[dict], links: list[dict]) -> dict[str, str]
             if suite:
                 owned[node_id] = suite
 
-    # Ports and parameters need their module's answer, so they run second.
-    # A port's `owner` is the bare module *name*, so when that name had to
-    # be suite-qualified the lookup has to find the qualified id — and only
-    # when exactly one claims the name, or the port would inherit an
-    # arbitrary suite.
+    # Second pass: a port's `owner` is a bare module name, so a suite-qualified
+    # module is found by prefix, and only when exactly one claims the name.
     for node in nodes:
         node_id, owner = node.get("id"), node.get("owner")
         if not node_id or node_id in owned or node.get("tier") != "design":
@@ -251,14 +190,8 @@ def _tb_hierarchy_suites(nodes: list[dict], links: list[dict]) -> dict[str, str]
 def categorize_nodes(payload: dict) -> dict[str, str]:
     """Node id -> :data:`COLUMN_ORDER` column, for one served payload.
 
-    Computed here rather than in the page because two of the inputs are
-    graph-wide joins the browser would have to redo on every render (which
-    design-tier nodes belong to a testbench elaboration, and which flow the
-    suite that owns them runs), and because a rule that is wrong is easier
-    to see in a test than in a picture.
-
-    Deliberately **not** written into ``graph.json``: the column layout is a
-    presentation choice that must never make the built graph churn.
+    Computed server-side because it needs graph-wide joins. Never written into
+    ``graph.json``: the layout is presentation and must not churn the built graph.
     """
 
     nodes = [n for n in (payload.get("nodes") or []) if n.get("id")]
@@ -276,9 +209,7 @@ def categorize_nodes(payload: dict) -> dict[str, str]:
         if node_type in SPEC_TYPES:
             categories[node_id] = "spec"
         elif node_type == "model":
-            # A model *is* its module under another name — the `maps_to`
-            # stitch is an identity, so it belongs beside the design it
-            # aliases rather than in a flow column.
+            # `maps_to` is an identity: a model sits beside the design it aliases.
             categories[node_id] = "design"
         elif tier == "binding":
             categories[node_id] = "test-cocotb"
@@ -310,27 +241,18 @@ def build_graph_payload(
     graph_path: str | os.PathLike | None = None,
     overlay_path: str | os.PathLike | None = None,
 ) -> dict:
-    """``graph.json`` + the results overlay, joined, as one JSON body.
+    """``graph.json`` plus the results overlay, joined, as one JSON body.
 
-    The returned object is still NetworkX node-link JSON — the pane
-    consumes the same envelope every other graph consumer does — with
-    four additions: each node that has a result carries it under
-    ``results`` (:func:`~rtl_buddy.graph.results.annotate_graph`), each
-    node the coverage join knows carries it under ``coverage``
-    (:func:`~rtl_buddy.graph.coverage.annotate_coverage`), each node
-    carries the ``category`` column it renders in
-    (:func:`categorize_nodes`), and ``graph.hub`` carries what the page
-    needs to render a header without a second round-trip (where the two
-    files were read from, node/link counts, the overlay's summary, the
-    coverage run's header, per-tier and per-column counts).
+    The result is NetworkX node-link JSON with four additions: per-node
+    ``results`` (:func:`~rtl_buddy.graph.results.annotate_graph`), per-node
+    ``coverage`` (:func:`~rtl_buddy.graph.coverage.annotate_coverage`), per-node
+    ``category`` (:func:`categorize_nodes`), and a ``graph.hub`` block with what
+    the page header needs: source paths, counts, the overlay summary, the
+    coverage header and per-tier and per-column counts. The joins are the ones
+    the query verbs use and run in memory only.
 
-    Both joins are the ones the query verbs use, so the picture and the
-    answers can never disagree — and both are in-memory, so
-    ``graph.json`` on disk stays hash-stable.
-
-    Raises :class:`~rtl_buddy.graph.query.GraphQueryError` when there is
-    no graph to serve — its message already names ``rb graph build``,
-    which is the actionable half of the 404 the caller will render.
+    Raises :class:`~rtl_buddy.graph.query.GraphQueryError` when there is no
+    graph; its message names ``rb graph build``.
     """
 
     ctx = load_context(
@@ -379,14 +301,12 @@ def build_graph_payload(
         },
         "tiers": dict(sorted(tiers.items())),
         "types": dict(sorted(types.items())),
-        # Ordered, not sorted: this IS the left-to-right layout, and the
-        # page renders its legend straight from it.
+        # Ordered, not sorted: the page renders its legend from it.
         "columns": list(COLUMN_ORDER),
         "categories": {name: columns.get(name, 0) for name in COLUMN_ORDER},
         "overlay_summary": (ctx.overlay or {}).get("summary"),
-        # Header only: the per-node map is already joined onto the nodes,
-        # and repeating it here would double the body for no reader. The
-        # undeclared list has no node to hang off, so it does ride along.
+        # Header only: the per-node map is already on the nodes. The
+        # undeclared list has no node, so it rides along.
         "coverage": _coverage_header(coverage_block(ctx.overlay)),
         "item_statuses": [
             STATUS_EXERCISED,
@@ -412,10 +332,8 @@ def graph_payload_bytes(
 ) -> tuple[int, bytes]:
     """``(status, body)`` for ``GET /graph.json``.
 
-    A missing graph is a 404 with a JSON ``error`` naming the command
-    that makes one, not an exception escaping into the websockets
-    layer's opaque failure body — the same shape ``/api/axi-profile/
-    notebook`` uses for its errors.
+    A missing graph gives a 404 with a JSON ``error`` naming the command that
+    builds one.
     """
 
     try:
@@ -434,12 +352,7 @@ def graph_payload_bytes(
 
 
 def graph_json_path(project_root: str | os.PathLike) -> Path:
-    """Where ``graph.json`` lives for this root.
-
-    The single spelling of the "is there a graph?" coordinate: every
-    presence check (this module's, the landing's) derives from this
-    path, so they cannot drift apart.
-    """
+    """Where ``graph.json`` lives for this root; every presence check derives from it."""
 
     from ..graph.config_tier import default_graph_dir
 
@@ -449,8 +362,7 @@ def graph_json_path(project_root: str | os.PathLike) -> Path:
 def graph_files_present(project_root: str | os.PathLike) -> bool:
     """Whether ``artefacts/graph/graph.json`` exists for this root.
 
-    Cheap enough to call per request; used to decide whether the index
-    page advertises the ``/gph`` link.
+    Cheap enough to call per request; decides whether the index page links ``/gph``.
     """
 
     return graph_json_path(project_root).is_file()
@@ -464,24 +376,14 @@ def render_graph_html(
 ) -> bytes:
     """The ``GET /gph`` document, with the hub address injected.
 
-    Everything is inline. The page must work on a machine with no route
-    off localhost, so there is no CDN reference, no web font and no
-    external stylesheet anywhere in it.
+    Everything is inline: no CDN, web font or external stylesheet.
 
     ``phys_url`` is the physical model's data route
-    (:data:`~rtl_buddy.hub.phys_page.PHYS_JSON_ROUTE`) when this project
-    has one, and the pane's heat overlay reads its module rows through
-    it (rtl-buddy/rtl_buddy#596). It is *injected* rather than carried in
-    ``graph.hub`` for two reasons: the landing page already advertises
-    the same route the same way — one presence probe, one spelling, so a
-    pane and a card cannot disagree about whether there is a model — and
-    ``GET /graph.json`` is 404 on a project with no graph, which would
-    make the pointer arrive only where it is least needed.
-
-    ``None`` omits the global entirely, exactly as the landing page
-    omits its own: the page then reads the absence as "no manifest under
-    this root" and mutes the heat control with the landing card's
-    wording rather than fetching a route that is going to 404.
+    (:data:`~rtl_buddy.hub.phys_page.PHYS_JSON_ROUTE`) when the project has
+    one; the heat overlay reads module rows through it. It is injected rather
+    than carried in ``graph.hub`` so the pane and the landing card share one
+    presence probe, and because ``/graph.json`` is a 404 on a project with no
+    graph. ``None`` omits the global and the page mutes the heat control.
     """
 
     preamble = (
@@ -500,12 +402,7 @@ def _graph_page_template() -> str:
 
 
 GRAPH_PAGE_HTML: str = _graph_page_template()
-"""The page source, loaded once at import.
-
-Kept in a sibling ``.html`` file rather than a Python string so an
-editor treats it as HTML and the JS inside it stays reviewable; the
-wheel ships it via hatchling's package data (it lives under
-``src/rtl_buddy/``)."""
+"""The page source, loaded once at import from the sibling ``graph_page.html``."""
 
 
 __all__ = [
