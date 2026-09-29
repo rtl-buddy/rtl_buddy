@@ -1,4 +1,4 @@
-"""Tests for the power-analysis config schema."""
+"""Tests for the power-analysis config schema and the OpenRoadPower backend."""
 
 import hashlib
 import json
@@ -23,20 +23,10 @@ from rtl_buddy.phys.manifest import load_manifest, resolve
 from rtl_buddy.tools import pnr_abstract
 
 
-# ---------------------------------------------------------------------------
-# PowerToolConfig — minimal name/executable resolution
-# ---------------------------------------------------------------------------
-
-
 def test_power_tool_cfg_exposes_name_and_executable():
     cfg = PowerToolConfig(PowerToolConfigFile(name="openroad", tool="openroad"))
     assert cfg.get_name() == "openroad"
     assert cfg.get_executable() == "openroad"
-
-
-# ---------------------------------------------------------------------------
-# PowerSuiteConfig — YAML loading + initialise
-# ---------------------------------------------------------------------------
 
 
 _POWER_YAML_STATIC = dedent("""\
@@ -135,11 +125,6 @@ def test_power_suite_loads_dynamic_with_saif(tmp_path):
     assert activity.saif == str(tmp_path.parent / "sim" / "dma_traffic.saif")
     assert activity.vcd is None
     assert activity.scope == "tb.dut"
-
-
-# ---------------------------------------------------------------------------
-# Validation failures
-# ---------------------------------------------------------------------------
 
 
 def test_power_suite_missing_synth_raises(tmp_path):
@@ -241,11 +226,6 @@ def test_power_suite_unknown_run_raises(tmp_path):
         suite.get_runs("does_not_exist")
 
 
-# ---------------------------------------------------------------------------
-# reglvl polymorphism
-# ---------------------------------------------------------------------------
-
-
 def _make_power_cfg(reglvl):
     return PowerConfig(
         name="demo",
@@ -296,11 +276,6 @@ def test_power_reglvl_malformed_raises():
         cfg.get_reglvl("openroad")
 
 
-# ---------------------------------------------------------------------------
-# Activity dataclass smoke
-# ---------------------------------------------------------------------------
-
-
 def test_power_activity_has_trace():
     a = PowerActivity(
         saif=None,
@@ -338,11 +313,6 @@ def test_power_activity_file_default_values():
     assert a.scope is None
     assert a.default_toggle_rate == pytest.approx(0.1)
     assert a.default_static_prob == pytest.approx(0.5)
-
-
-# ---------------------------------------------------------------------------
-# Activity-source resolution (lives on PowerConfig so every backend agrees)
-# ---------------------------------------------------------------------------
 
 
 def _activity(saif=None, vcd=None):
@@ -395,14 +365,9 @@ def test_activity_source_dynamic_no_trace_is_synthetic():
 
 
 def test_activity_source_static_ignores_trace():
-    """Static mode trumps trace presence — no activity command is emitted."""
+    """Static mode wins over a trace: no activity command is emitted."""
     cfg = _make_power_cfg_with("static", _activity(saif="/tmp/x.saif"))
     assert cfg.get_activity_source() == "default"
-
-
-# ---------------------------------------------------------------------------
-# Backend registry — dispatch is data-driven, not hardcoded
-# ---------------------------------------------------------------------------
 
 
 def test_power_backends_registry_contains_openroad():
@@ -413,11 +378,6 @@ def test_power_backends_registry_contains_openroad():
     assert "openroad" in _POWER_BACKENDS
     assert _POWER_BACKENDS["openroad"] is OpenRoadPower
     assert issubclass(OpenRoadPower, BasePower)
-
-
-# ---------------------------------------------------------------------------
-# Post-PnR power: netlist-source selector + pnr/pnr-path fields
-# ---------------------------------------------------------------------------
 
 
 _POWER_YAML_PNR_SOURCE = dedent("""\
@@ -440,7 +400,7 @@ _POWER_YAML_PNR_SOURCE = dedent("""\
 
 
 def test_power_default_netlist_source_is_synth(tmp_path):
-    """Backward-compat: existing yamls without netlist-source default to synth."""
+    """A yaml without netlist-source defaults to synth."""
     p = tmp_path / "power.yaml"
     p.write_text(_POWER_YAML_STATIC)
     suite = PowerSuiteConfig(str(p))
@@ -501,11 +461,6 @@ def test_power_pnr_source_requires_pnr_path(tmp_path):
         PowerSuiteConfig(str(p))
 
 
-# ---------------------------------------------------------------------------
-# phys-run — naming the synthesis run the power half is published beside
-# ---------------------------------------------------------------------------
-
-
 def _phys_run_yaml(value: str, *, source: str = "synth") -> str:
     upstream = (
         '    synth: "demo_synth"\n    synth-path: "../synth/synth.yaml"\n'
@@ -525,8 +480,7 @@ def _phys_run_yaml(value: str, *, source: str = "synth") -> str:
 
 
 def test_power_phys_run_is_absent_by_default(tmp_path):
-    """The co-location convention is unchanged for every config that says
-    nothing: the power half is published into the run's own directory."""
+    """Without `phys-run:` the power half is published into the run's own directory."""
     p = tmp_path / "power.yaml"
     p.write_text(_POWER_YAML_STATIC)
     run = PowerSuiteConfig(str(p)).get_runs("demo_static_power")[0]
@@ -541,9 +495,9 @@ def test_power_phys_run_names_a_synthesis_run(tmp_path):
 
 
 def test_power_phys_run_rejects_a_path(tmp_path):
-    """A run name, not a directory. The value is joined onto the synth
-    suite's `artefacts/`, and refusing a separator here is what keeps that
-    join from reaching anywhere else (#589)."""
+    """`phys-run` is a run name, not a path; a separator is refused so the join onto the
+    synth suite's `artefacts/` cannot reach elsewhere.
+    """
     p = tmp_path / "power.yaml"
     p.write_text(_phys_run_yaml("../../elsewhere/artefacts/nightly"))
     with pytest.raises(FatalRtlBuddyError, match="not a path"):
@@ -558,9 +512,9 @@ def test_power_phys_run_rejects_a_bare_parent_directory(tmp_path):
 
 
 def test_power_phys_run_requires_a_synth_netlist_source(tmp_path):
-    """A `netlist-source: pnr` run records no netlist hash, so its half can
-    never merge with a synthesis' — pointing it at one would replace the
-    module rows rather than complete them."""
+    """`phys-run` requires a synth netlist source: a `netlist-source: pnr` half records no
+    netlist hash, so it could not merge with a synthesis.
+    """
     p = tmp_path / "power.yaml"
     p.write_text(_phys_run_yaml("demo_synth", source="pnr"))
     with pytest.raises(FatalRtlBuddyError, match="netlist-source"):
@@ -568,7 +522,7 @@ def test_power_phys_run_requires_a_synth_netlist_source(tmp_path):
 
 
 def test_power_synth_source_still_requires_synth_fields(tmp_path):
-    """Synth-source path keeps its existing required-field validation."""
+    """The synth source keeps its required-field validation."""
     p = tmp_path / "power.yaml"
     p.write_text(
         dedent("""\
@@ -586,7 +540,7 @@ def test_power_synth_source_still_requires_synth_fields(tmp_path):
 
 
 def test_power_get_top_dispatches_on_netlist_source():
-    """get_top() picks the right resolver based on netlist_source."""
+    """get_top() picks the resolver from netlist_source."""
     from unittest.mock import MagicMock
 
     cfg = _make_power_cfg(0)
@@ -614,11 +568,6 @@ def test_power_resolve_pnr_cfg_fatal_when_not_configured():
     cfg = _make_power_cfg(0)
     with pytest.raises(FatalRtlBuddyError, match="resolve_pnr_cfg.*not configured"):
         cfg.resolve_pnr_cfg()
-
-
-# ---------------------------------------------------------------------------
-# PowerPassResults — netlist_source surfaces for the table renderer
-# ---------------------------------------------------------------------------
 
 
 def test_power_pass_results_carries_netlist_source():
@@ -687,19 +636,14 @@ def test_power_suite_loads_xfail_flags(tmp_path):
     assert suite.get_runs("power_normal")[0].is_xfail() is False
 
 
-# ---------------------------------------------------------------------------
-# OpenRoadPower backend — stale-report masking (#469)
-# ---------------------------------------------------------------------------
-
-
 class _FakePdk:
     """A `cfg-pdks` corner as the power script reads it: two LEF paths."""
 
     def __init__(self, tech_lef, macro_lef=None, fill_cells=()):
         self._tech_lef = tech_lef
         self._macro_lef = macro_lef
-        # `filler_placement` puts tens of thousands of these in a routed
-        # database; they have no Liberty and no power by construction.
+        # `filler_placement` adds tens of thousands of these to a routed database; they
+        # have no Liberty and no power.
         self._fill_cells = list(fill_cells)
 
     def get_name(self):
@@ -718,17 +662,15 @@ class _FakePdk:
 class _FakePlatform:
     """A `cfg-pnr-platforms` entry: one Liberty, over one PDK corner.
 
-    Named paths rather than a `MagicMock`, because the power fingerprint
-    digests the technology the script reads and a mock answers every call
-    with a different object (#570).
+    Named paths rather than a `MagicMock`, because the power fingerprint digests the
+    technology and a mock answers every call with a new object.
     """
 
     def __init__(self, liberty="/pdk/fake/nangate45_typ.lib", pdk=None, corners=None):
         self._liberty = liberty
         self._pdk = pdk or _FakePdk("/pdk/fake/tech.lef")
-        # corner -> Liberty, primary first, for a multi-corner platform
-        # (#104, #105); `None` is the single-corner platform every other
-        # test uses.
+        # corner -> Liberty, primary first, for a multi-corner platform; `None` is the
+        # single-corner platform other tests use.
         self._corners = corners
 
     def get_sta_lib_path(self):
@@ -745,8 +687,9 @@ class _FakePlatform:
 
 
 def _make_power_backend(tmp_path, platform=None):
-    """An OpenRoadPower over a synthetic netlist, with input/platform
-    resolution stubbed out — the run() gate under test is downstream of both."""
+    """An OpenRoadPower over a synthetic netlist, with input and platform resolution
+    stubbed.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.config.power import PowerActivity
     from rtl_buddy.tools.power_openroad import OpenRoadPower
@@ -795,8 +738,9 @@ def _make_power_backend(tmp_path, platform=None):
 
 
 def test_power_ignores_a_previous_runs_report(tmp_path, monkeypatch):
-    """OpenROAD exiting 0 with no [ERROR] is not proof it rewrote power.rpt;
-    a report left by an earlier run must not be quoted as this run's (#469)."""
+    """A report left by an earlier run is not quoted as this run's, even if OpenROAD exits
+    0 without [ERROR].
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.tools import power_openroad
     from rtl_buddy.runner.power_results import PowerFailResults
@@ -826,8 +770,9 @@ def test_power_ignores_a_previous_runs_report(tmp_path, monkeypatch):
 
 
 def test_power_writes_report_then_fails_publishes_nothing(tmp_path, monkeypatch):
-    """`report_power` writes before the script ends, so OpenROAD can exit
-    non-zero with `power.rpt` on disk. A FAIL publishes nothing (#469)."""
+    """`report_power` writes before the script ends, so OpenROAD can exit non-zero with
+    `power.rpt` on disk; a FAIL publishes nothing.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.tools import power_openroad
     from rtl_buddy.runner.power_results import PowerFailResults
@@ -853,7 +798,7 @@ def test_power_writes_report_then_fails_publishes_nothing(tmp_path, monkeypatch)
 
 
 def test_power_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
-    """Same for a report with no parseable `Total` row (#469)."""
+    """A report with no parseable `Total` row publishes nothing."""
     from unittest.mock import MagicMock
     from rtl_buddy.tools import power_openroad
     from rtl_buddy.runner.power_results import PowerFailResults
@@ -879,10 +824,11 @@ def test_power_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
 
 
 def test_power_missing_input_without_openroad_is_a_config_error(tmp_path, monkeypatch):
-    """`_write_script` is where this flow validates its configuration. Running
-    it after the availability check reported a missing SDC as "openroad not
-    found" on a box that merely lacks the tool, and left the previous report
-    in place after a failed run (#469)."""
+    """A missing input without OpenROAD is a config error, not "openroad not found".
+
+    `_write_script` validates the configuration, so it runs before the availability
+    check; a failed run also clears the previous report.
+    """
     from rtl_buddy.tools import power_openroad
     from rtl_buddy.runner.power_results import PowerFailResults
 
@@ -908,9 +854,9 @@ def test_power_missing_input_without_openroad_is_a_config_error(tmp_path, monkey
 
 
 def test_power_valid_config_without_openroad_keeps_the_report(tmp_path, monkeypatch):
-    """The no-deletion behaviour survives for a genuinely valid config: a box
-    without OpenROAD never ran it, so it must not delete a report a box that
-    has it produced (#469)."""
+    """A valid config on a box without OpenROAD keeps an existing report, since that box
+    never ran the tool.
+    """
     from rtl_buddy.tools import power_openroad
     from rtl_buddy.runner.power_results import PowerFailResults
 
@@ -925,11 +871,6 @@ def test_power_valid_config_without_openroad_keeps_the_report(tmp_path, monkeypa
     assert isinstance(res, PowerFailResults)
     assert "not found" in res.results["desc"]
     assert kept.exists()
-
-
-# ---------------------------------------------------------------------------
-# Per-instance power -> phys-model.json (#558, delivering #114)
-# ---------------------------------------------------------------------------
 
 
 _TOTAL_RPT = (
@@ -949,8 +890,9 @@ _INSTANCE_CELLS = "_18_ XOR2_X1\nu_sub/_64_ DFF_X1\n"
 
 
 def test_power_script_walks_the_hierarchy_for_per_instance_numbers(tmp_path):
-    """One `report_power -instances` call over the whole cell list, not one
-    call per cell: the per-cell spelling reruns propagation every time."""
+    """One `report_power -instances` call covers the whole cell list; a call per cell
+    reruns propagation each time.
+    """
     backend = _make_power_backend(tmp_path)
 
     script = Path(backend._write_script()).read_text()
@@ -960,14 +902,15 @@ def test_power_script_walks_the_hierarchy_for_per_instance_numbers(tmp_path):
         f"report_power -instances $rb_insts > {backend._instances_report_path()}"
         in (script)
     )
-    # The design-total report is written first, so a failure in the walk
-    # cannot cost the run its headline numbers.
+    # The design-total report is written first, so a failure in the walk cannot cost the
+    # headline numbers.
     assert script.index("report_power >") < script.index("report_power -instances")
 
 
 def test_power_script_wraps_the_walk_in_a_catch(tmp_path):
-    """A Tcl error escaping to the top level would abort the script and take
-    the exit code with it, failing a run whose totals are already on disk."""
+    """The walk is wrapped in a `catch`, so a Tcl error does not abort the script and its
+    exit code.
+    """
     backend = _make_power_backend(tmp_path)
 
     lines = Path(backend._write_script()).read_text().splitlines()
@@ -978,10 +921,12 @@ def test_power_script_wraps_the_walk_in_a_catch(tmp_path):
 
 
 def test_power_script_records_the_liberty_cell_of_each_instance(tmp_path):
-    """`report_power` prints the path and the powers, never the master — so
-    the walk writes the mapping the model's module column needs. Under a
-    staging name, like the report beside it: a `foreach` that raised part-way
-    would otherwise leave half the mapping at the published path (#560)."""
+    """The walk records the Liberty cell of each instance, since `report_power` never
+    prints the master.
+
+    The mapping is written under a staging name so a `foreach` that raises part-way
+    leaves no half mapping at the published path.
+    """
     backend = _make_power_backend(tmp_path)
 
     script = Path(backend._write_script()).read_text()
@@ -1038,14 +983,10 @@ def _run_prepared_power(backend, monkeypatch, *, instances=None, cells=None):
 def _make_pnr_power_backend(tmp_path, routed_sdc_text, pnr_run="demo_pnr"):
     """A `netlist-source: pnr` backend with no explicit `constraints:`.
 
-    Which is the ordinary spelling: the routed SDC is an artefact of the
-    `rb pnr` run this reads, so nobody names it in `power.yaml`.
-    `_resolve_inputs` is the thing that knows where it is, and it is
-    stubbed here exactly as the synth fixture stubs it.
-
-    ``pnr_run`` names the upstream `rb pnr` entry, so a caller can build
-    two backends that differ in nothing but which routed database they
-    read.
+    The routed SDC is an artefact of the `rb pnr` run, so `power.yaml` does not name it;
+    `_resolve_inputs` locates it and is stubbed as in the synth fixture. ``pnr_run``
+    names the upstream `rb pnr` entry, so two backends can differ only in the routed
+    database.
     """
     backend = _make_power_backend(tmp_path)
     backend.power_cfg.netlist_source = "pnr"
@@ -1067,13 +1008,12 @@ def _make_pnr_power_backend(tmp_path, routed_sdc_text, pnr_run="demo_pnr"):
 
 
 def test_a_pnr_power_run_records_the_routed_sdc_it_actually_read(tmp_path, monkeypatch):
-    """The config block is what tells two runs apart, and for a `pnr` run
-    the constraints are not in the config at all: with no explicit
-    `constraints:` the analysis reads `<pnr artefact>/<top>.routed.sdc`,
-    the post-CTS constraints the router wrote. Publishing the config
-    field recorded `null` and hashed nothing, so two analyses against
-    two different routed SDCs -- different clock periods, a different
-    CTS -- fingerprinted identically while measuring different timing."""
+    """A `pnr` run records the routed SDC it read.
+
+    With no explicit `constraints:`, the analysis reads `<pnr
+    artefact>/<top>.routed.sdc`, so the config block alone would fingerprint runs
+    against different routed SDCs identically.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
 
@@ -1092,7 +1032,7 @@ def test_a_pnr_power_run_records_the_routed_sdc_it_actually_read(tmp_path, monke
 
 
 def test_two_pnr_runs_with_different_routed_sdcs_read_apart(tmp_path, monkeypatch):
-    """The point of recording it: the hash is what a reader compares."""
+    """Different routed SDCs give different hashes."""
     from rtl_buddy.phys.model import load_model
 
     hashes = []
@@ -1112,11 +1052,11 @@ def test_two_pnr_runs_with_different_routed_sdcs_read_apart(tmp_path, monkeypatc
 
 
 def test_a_trace_rewritten_in_place_gives_the_run_a_new_identity(tmp_path, monkeypatch):
-    """`rb test` overwrites `artefacts/<test>/dump.saif` every time the
-    test behind it runs, and `rb saif` converts it in place, so the path a
-    `power.yaml` names is a name and not an identity. Two analyses of the
-    same netlist against two captures of one trace are two measurements,
-    and before the hash their activity blocks were byte-identical."""
+    """A trace rewritten in place gives the run a new identity.
+
+    `rb test` and `rb saif` rewrite `dump.saif` in place, so the path names the trace
+    but does not identify it. Two captures of one trace are two measurements.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.provenance import activity_label
     from rtl_buddy.phys.publish import sha256_of
@@ -1171,13 +1111,9 @@ def _saif_backend(tmp_path):
 
 
 def test_the_trace_is_hashed_before_openroad_reads_it(tmp_path, monkeypatch):
-    """The finding (#570 round-15 review, Codex P2). The hash was taken in
-    `_publish_phys_model`, *after* an analysis that runs for minutes, so a
-    `dump.saif` the test behind it re-captured mid-run was identified by
-    its replacement and the document claimed bytes the watts beside them
-    were never measured from. The identity is now taken as the subprocess
-    is launched, which is the only moment the file on disk is the file
-    being read."""
+    """The trace is hashed as OpenROAD is launched, not at publish, so a trace re-captured
+    mid-run is not identified by its replacement.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
@@ -1213,13 +1149,12 @@ def test_the_trace_is_hashed_before_openroad_reads_it(tmp_path, monkeypatch):
 def test_a_trace_rewritten_under_the_run_is_recorded_as_unknown(
     tmp_path, monkeypatch, caplog
 ):
-    """Hashing at the start narrows the window; it does not close it. So
-    the hash is confirmed when OpenROAD returns, and a trace that moved
-    in between has *no* identity this run can vouch for — the first hash
-    names bytes OpenROAD may not have finished reading, the second names
-    bytes it certainly did not start with. `null` is the model's word for
-    unknown, and the warning is what stops it reading as "this run
-    measured no trace"."""
+    """A trace rewritten during the run is recorded as unknown.
+
+    The hash is taken at launch and confirmed when OpenROAD returns. If the trace moved,
+    neither hash is trustworthy, so `null` (unknown) is recorded and a warning stops it
+    reading as "no trace".
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
@@ -1248,21 +1183,20 @@ def test_a_trace_rewritten_under_the_run_is_recorded_as_unknown(
     activity = load_model(result.results["phys_model"])["provenance"]["power"][
         "activity"
     ]
-    # Neither hash is recorded: not the bytes at the start, not the ones
-    # on disk now.
+    # Neither hash is recorded: not the bytes at the start, not the ones on disk now.
     assert activity["trace_sha256"] is None
     assert sha256_of(trace) is not None
-    # The path is still recorded — what the run read is known, which
-    # bytes it read is not.
+    # The path is still recorded: which file was read is known, which bytes is not.
     assert activity["trace"].endswith("dump.saif")
     assert "trace_changed_during_run" in caplog.text
 
 
 def test_a_static_run_hashes_no_trace_and_reads_none(tmp_path, monkeypatch):
-    """The fixture's own shape: `mode: static` with a trace still named in
-    the config. The Tcl emits no `read_saif`, so there is nothing to
-    identify -- and a VCD is the largest file in an artefact tree, which
-    is reason enough not to read one the analysis ignored."""
+    """A static run hashes no trace and reads none.
+
+    The fixture names a trace with `mode: static`; the Tcl emits no `read_saif`, and a
+    VCD is large enough that reading an ignored one is wasteful.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.config.power import PowerActivity
 
@@ -1302,11 +1236,9 @@ def test_a_static_run_hashes_no_trace_and_reads_none(tmp_path, monkeypatch):
 def test_the_power_options_digest_ignores_the_field_no_backend_reads(
     tmp_path, monkeypatch
 ):
-    """`tool_overrides` is accepted in `power.yaml` and read by nothing --
-    `PowerConfig.get_tool_overrides()` has no caller -- so two analyses
-    that differ only in it are the same analysis. Digesting it reported a
-    difference the numbers cannot have, and implied the block had been
-    applied."""
+    """The options digest ignores `tool_overrides`, which `power.yaml` accepts but no
+    backend reads (`PowerConfig.get_tool_overrides()` has no caller).
+    """
     from rtl_buddy.phys.model import load_model
 
     digests = []
@@ -1328,11 +1260,12 @@ def test_the_power_options_digest_ignores_the_field_no_backend_reads(
 def test_two_power_runs_over_two_netlists_do_not_share_a_fingerprint(
     tmp_path, monkeypatch
 ):
-    """The finding (#570 round-16, Codex P2). `netlist_source` names the
-    *kind* of upstream, not which one, so two power entries differing only
-    in `synth:`/`synth-path:` fed OpenROAD two different netlists and came
-    out with one config fingerprint — and `rb phys runs` reads manifests
-    only, so a listing showed two designs as one experiment."""
+    """Two power runs over two netlists have different fingerprints.
+
+    `netlist_source` names the kind of upstream, not which one, so entries differing
+    only in `synth:`/`synth-path:` must still differ, or `rb phys runs` would list them
+    as one experiment.
+    """
     from rtl_buddy.phys.model import load_model
 
     digests = []
@@ -1367,10 +1300,11 @@ def test_two_power_runs_over_two_netlists_do_not_share_a_fingerprint(
 def test_two_pnr_power_runs_over_two_databases_do_not_share_a_fingerprint(
     tmp_path, monkeypatch
 ):
-    """The other half of the same finding. A `netlist-source: pnr` run
-    records no netlist hash at all, so without the resolved database's path
-    two analyses of two routed designs — same platform, same activity, same
-    routed SDC text — were one fingerprint."""
+    """Two `netlist-source: pnr` runs over two databases have different fingerprints.
+
+    Such a run records no netlist hash, so the resolved database path distinguishes
+    them.
+    """
     from rtl_buddy.phys.model import load_model
 
     digests = []
@@ -1395,13 +1329,14 @@ def test_two_pnr_power_runs_over_two_databases_do_not_share_a_fingerprint(
 def test_the_upstream_identity_in_the_digest_is_not_an_absolute_path(
     tmp_path, monkeypatch
 ):
-    """A digest that moved with the checkout would tell one run apart from
-    itself, and the publish path cannot relativise this one: it rewrites the
-    paths *inside* the config block, by which time the options mapping has
-    already been hashed."""
-    # The marker `project_root_for_dir` walks up for; without a project
-    # around it every path is outside the tree and kept verbatim, which is
-    # the documented fallback and not the case under test.
+    """The upstream identity in the digest is not an absolute path, so the digest does not
+    move with the checkout.
+
+    The publish path cannot relativise it because it rewrites paths inside the config
+    block after the options mapping is hashed.
+    """
+    # The marker `project_root_for_dir` walks up for; without a project every path is
+    # outside the tree and kept verbatim, which is not the case under test.
     (tmp_path / "root_config.yaml").write_text("")
     backend, _routed = _make_pnr_power_backend(
         tmp_path, "create_clock -period 3 [get_ports clk]\n"
@@ -1437,8 +1372,8 @@ def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
     assert model["instances"][1]["total_uw"] == pytest.approx(2.42)
     # Watts on the way in, microwatts in the document.
     assert model["totals"]["total_uw"] == pytest.approx(28.3)
-    # Bound to the netlist this run read, which is what a later `rb synth`
-    # into the same directory tests its own output against (#560 review).
+    # Bound to the netlist this run read, which a later `rb synth` into the same
+    # directory tests its own output against.
     assert (
         model["provenance"]["power"]["netlist_sha256"]
         == hashlib.sha256((tmp_path / "synth_netlist.v").read_bytes()).hexdigest()
@@ -1454,11 +1389,11 @@ def test_a_passing_power_run_publishes_the_phys_model(tmp_path, monkeypatch):
 def test_the_manifest_names_the_netlist_behind_the_provenance_hash(
     tmp_path, monkeypatch
 ):
-    """The finding (#560 round-16, Codex P2). `power_netlist.v` is kept
-    precisely so the analyzed bytes survive the run, but a provenance hash
-    with no path beside it in the manifest leaves an archived result nothing
-    to verify against: the reader knows the analysis was pinned to one
-    netlist and cannot find which."""
+    """The manifest names the netlist behind the provenance hash.
+
+    `power_netlist.v` is kept so the analyzed bytes survive the run; a hash with no path
+    beside it leaves an archived result nothing to verify against.
+    """
     from rtl_buddy.phys.manifest import POWER_KEYS, load_manifest
     from rtl_buddy.phys.model import load_model
 
@@ -1470,8 +1405,7 @@ def test_the_manifest_names_the_netlist_behind_the_provenance_hash(
     assert "netlist_path" in POWER_KEYS
     recorded = manifest["power"]["netlist_path"]
     assert recorded.endswith("power_netlist.v")
-    # The named file is the snapshot, and hashing it reproduces the
-    # provenance hash — which is the whole point of naming it.
+    # The named file is the snapshot, and hashing it reproduces the provenance hash.
     snapshot = Path(backend._netlist_snapshot_path())
     assert snapshot.name == Path(recorded).name
     assert (
@@ -1483,8 +1417,7 @@ def test_the_manifest_names_the_netlist_behind_the_provenance_hash(
 
 
 def test_a_post_pnr_run_names_no_netlist_in_the_manifest(tmp_path):
-    """Null, not absent: the key is always there, and a routed-database run
-    has no snapshot to name (#560)."""
+    """A post-pnr run names no netlist in the manifest: the key is present and null."""
     from rtl_buddy.phys.manifest import POWER_KEYS, load_manifest
     from rtl_buddy.phys.publish import publish_power
 
@@ -1511,10 +1444,9 @@ RESYNTHESISED = "module demo_top(); // resynthesised\nendmodule\n"
 
 
 def test_the_script_reads_this_runs_own_copy_of_the_netlist(tmp_path):
-    """The finding (#560 round-11 review, Codex P1). Hashing the upstream
-    netlist leaves a window however tightly it is drawn, so the analysis does
-    not read the upstream netlist at all: it reads a copy in its own artefact
-    directory, which is the file it hashes."""
+    """The script reads this run's own copy of the netlist, in its own artefact directory,
+    and that copy is what gets hashed.
+    """
     backend = _make_power_backend(tmp_path)
 
     script = Path(backend._write_script()).read_text()
@@ -1527,14 +1459,13 @@ def test_the_script_reads_this_runs_own_copy_of_the_netlist(tmp_path):
 def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
     tmp_path, monkeypatch, swap_at
 ):
-    """The hash names the bytes OpenROAD parsed, whenever the swap lands.
+    """The recorded netlist hash is of the bytes OpenROAD was given, whenever an upstream
+    swap lands.
 
-    A `rb synth` into the upstream artefact directory can rewrite the netlist
-    at any moment after the script is written: before the copy is taken, or
-    while OpenROAD is reading it. Either way the run measures one file — its
-    own copy — and records the hash of that file, so the merge cannot read a
-    real mismatch as a match (#560 round-9, closed by construction in
-    round-11)."""
+    A concurrent `rb synth` can rewrite the upstream netlist before the copy or during
+    the read. The run measures its own copy and records that file's hash, so the merge
+    cannot read a real mismatch as a match.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.tools import power_openroad
@@ -1546,9 +1477,8 @@ def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
     monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
 
     if swap_at == "before_openroad":
-        # The clear runs between the script write and the copy, so a swap
-        # here lands in the one gap left after `_write_script` named the
-        # copy the script reads.
+        # The clear runs between the script write and the copy, so a swap here lands in
+        # the one gap left after `_write_script` named the copy.
         clear = backend._clear_stale_report
 
         def _clear_then_resynthesise():
@@ -1565,8 +1495,7 @@ def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
         seen["read"] = snapshot.read_bytes()
         if swap_at == "during_openroad":
             netlist.write_text(RESYNTHESISED)
-        # Unmoved by the swap — the copy is inside this run's own artefact
-        # directory, which no other command writes into.
+        # Unmoved by the swap: the copy is inside this run's own artefact directory.
         seen["read_after"] = snapshot.read_bytes()
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         Path(backend._report_path()).write_text(_TOTAL_RPT)
@@ -1582,8 +1511,8 @@ def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
     recorded = load_model(result.results["phys_model"])["provenance"]["power"]
     assert recorded["netlist_sha256"] == hashlib.sha256(seen["read"]).hexdigest()
     if swap_at == "during_openroad":
-        # The upstream netlist has moved on; the hash still names what was
-        # measured, so a later `rb synth` sees the mismatch.
+        # The upstream netlist has moved on; the hash still names what was measured, so
+        # a later `rb synth` sees the mismatch.
         assert (
             recorded["netlist_sha256"]
             != hashlib.sha256(netlist.read_bytes()).hexdigest()
@@ -1591,10 +1520,11 @@ def test_the_recorded_netlist_hash_is_of_the_bytes_openroad_was_given(
 
 
 def test_a_netlist_that_cannot_be_staged_fails_the_run(tmp_path, monkeypatch):
-    """The generated script names the copy, so a copy that did not happen
-    leaves `read_verilog` nothing to read: this is a failed run, not a
-    by-product warning. The staging file goes with it — a half-written
-    `power_netlist.v` must never be readable as a netlist."""
+    """A netlist that cannot be staged fails the run.
+
+    The script names the copy, so a failed copy leaves `read_verilog` nothing to read.
+    The staging file is removed so a half-written `power_netlist.v` is never readable.
+    """
     from rtl_buddy.runner.power_results import PowerFailResults
     from rtl_buddy.tools import power_openroad
 
@@ -1621,13 +1551,13 @@ def test_a_netlist_that_cannot_be_staged_fails_the_run(tmp_path, monkeypatch):
 
 
 def test_a_netlist_rewritten_mid_copy_is_copied_again(tmp_path, monkeypatch):
-    """The finding (#560 round-16, Codex P1). A private copy is immutable but
-    not automatically *coherent*: when the upstream synthesis lives in another
-    suite the two commands hold different artefact-tree locks, so a concurrent
-    `rb synth` can rewrite the netlist under `copyfile`'s read and leave a torn
-    prefix that the recorded sha256 would authenticate. The source is stat'd
-    either side of the copy, and a copy that straddled a rewrite is taken
-    again."""
+    """A netlist rewritten mid-copy is copied again.
+
+    When the upstream synthesis is in another suite the two commands hold different
+    artefact-tree locks, so a concurrent `rb synth` can leave a torn copy that the
+    sha256 would authenticate. The source is stat'd either side of the copy, and a copy
+    that straddled a rewrite is retaken.
+    """
     from rtl_buddy.tools import power_openroad
 
     backend = _make_power_backend(tmp_path)
@@ -1642,8 +1572,8 @@ def test_a_netlist_rewritten_mid_copy_is_copied_again(tmp_path, monkeypatch):
         copies.append(str(src))
         real_copyfile(src, dst)
         if len(copies) == 1:
-            # Lands after the pre-copy stat and after the read: exactly the
-            # window that makes the staging file a prefix of two netlists.
+            # Lands after the pre-copy stat and after the read: the window that makes
+            # the staging file a prefix of two netlists.
             netlist.write_text(resynthesised)
 
     monkeypatch.setattr(power_openroad.shutil, "copyfile", _copy_then_resynthesise)
@@ -1658,10 +1588,9 @@ def test_a_netlist_rewritten_mid_copy_is_copied_again(tmp_path, monkeypatch):
 
 
 def test_a_netlist_that_never_holds_still_fails_the_run(tmp_path, monkeypatch):
-    """Retrying is bounded, so a writer rewriting the netlist in a loop fails
-    this run instead of pinning it. Refusing is the cheaper error: a rerun
-    recovers a refusal, while watts measured over bytes that were never one
-    netlist are not detectably wrong afterwards (#560)."""
+    """Retries are bounded: a netlist rewritten in a loop fails the run rather than pinning
+    it, since a rerun recovers a refusal but bad watts are undetectable.
+    """
     from rtl_buddy.runner.power_results import PowerFailResults
     from rtl_buddy.tools import power_openroad
 
@@ -1675,8 +1604,8 @@ def test_a_netlist_that_never_holds_still_fails_the_run(tmp_path, monkeypatch):
     def _never_settles(src, dst, **kwargs):
         real_copyfile(src, dst)
         copies.append(str(src))
-        # A different length every time, so no retry can stat its way to a
-        # matching pair.
+        # A different length every time, so no retry can stat its way to a matching
+        # pair.
         netlist.write_text(f"module demo_top(); {'/' * len(copies)}\nendmodule\n")
 
     monkeypatch.setattr(power_openroad.shutil, "copyfile", _never_settles)
@@ -1699,8 +1628,9 @@ def test_a_netlist_that_never_holds_still_fails_the_run(tmp_path, monkeypatch):
 def test_a_previous_runs_netlist_copy_does_not_survive_a_failed_rerun(
     tmp_path, monkeypatch
 ):
-    """The copy is the largest thing this flow writes and nothing reads it
-    once OpenROAD has, so it is cleared like the reports beside it."""
+    """A previous run's netlist copy is cleared after a failed rerun, like the reports
+    beside it.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.runner.power_results import PowerFailResults
     from rtl_buddy.tools import power_openroad
@@ -1722,9 +1652,7 @@ def test_a_previous_runs_netlist_copy_does_not_survive_a_failed_rerun(
 
 
 def test_a_post_pnr_run_snapshots_nothing_and_records_no_hash(tmp_path):
-    """`netlist-source: pnr` reads a routed database, not a netlist. There
-    are no bytes to copy and none to identify, which is what it recorded
-    before the copy existed."""
+    """`netlist-source: pnr` reads a routed database, so there is nothing to copy or hash."""
     odb = tmp_path / "demo_top.routed.odb"
     odb.write_bytes(b"\x00routed\n")
     sdc = tmp_path / "constraints.sdc"
@@ -1750,8 +1678,9 @@ def test_a_post_pnr_run_snapshots_nothing_and_records_no_hash(tmp_path):
 def test_a_power_run_without_the_per_instance_report_still_passes(
     tmp_path, monkeypatch
 ):
-    """Same resilience rule as the synth half: the design totals are already
-    parsed and reported by the time the model is built (#558)."""
+    """A missing per-instance report does not fail the run; the design totals are already
+    parsed and reported.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.runner.power_results import PowerPassResults
 
@@ -1764,8 +1693,7 @@ def test_a_power_run_without_the_per_instance_report_still_passes(
 
 
 def test_power_ignores_a_previous_runs_per_instance_report(tmp_path, monkeypatch):
-    """The per-instance half is read back inside the same `run()`, so it
-    takes the same stale-artefact treatment as `power.rpt` (#469)."""
+    """A previous run's per-instance report is ignored, like `power.rpt`."""
     from rtl_buddy.phys.model import load_model
 
     backend = _make_power_backend(tmp_path)
@@ -1781,11 +1709,12 @@ def test_power_ignores_a_previous_runs_per_instance_report(tmp_path, monkeypatch
 def test_a_failed_power_rerun_withdraws_the_instances_half_it_published(
     tmp_path, monkeypatch
 ):
-    """Publication happens only on a pass, so a rerun that fails leaves the
-    last run's per-instance watts in `phys-model.json` with the report behind
-    them already cleared. The clear withdraws them instead — and leaves the
-    synthesis half, whose own artefacts are untouched, exactly as it was
-    (#558)."""
+    """A failed rerun withdraws the instances half it published.
+
+    Publication happens only on a pass, so without the withdrawal `phys-model.json`
+    would keep the last run's per-instance watts after their report was cleared. The
+    synthesis half is left as it was.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import publish_synth
@@ -1798,8 +1727,8 @@ def test_a_failed_power_rerun_withdraws_the_instances_half_it_published(
     model_path = Path(result.results["phys_model"])
     assert load_model(model_path)["instances"]
 
-    # A synthesis into the same artefact directory, as a co-named `rb synth`
-    # would have left it.
+    # A synthesis into the same artefact directory, as a co-named `rb synth` would have
+    # left it.
     publish_synth(
         artefact_dir=backend.artefact_dir,
         top="demo_top",
@@ -1824,8 +1753,9 @@ def test_a_failed_power_rerun_withdraws_the_instances_half_it_published(
 
 
 def test_power_script_marks_where_the_by_product_begins(tmp_path):
-    """The marker sits after the design-total report and before the walk, so
-    the log gate can tell a fatal diagnostic from a by-product one (#558)."""
+    """The script marks where the by-product begins: after the design-total report and
+    before the walk, so the log gate can tell fatal diagnostics from by-product ones.
+    """
     from rtl_buddy.tools.power_openroad import OpenRoadPower
 
     backend = _make_power_backend(tmp_path)
@@ -1839,9 +1769,10 @@ def test_power_script_marks_where_the_by_product_begins(tmp_path):
 
 
 def test_an_error_in_the_by_product_half_costs_only_that_half(tmp_path, monkeypatch):
-    """An OpenSTA without `report_power -instances` prints an `[ERROR ...]`
-    before the `catch` swallows the failure. The totals are already on disk
-    by then, so the run passes and loses its `instances` half (#558)."""
+    """An OpenSTA without `report_power -instances` prints an `[ERROR ...]` before the
+    `catch` swallows it. The totals are on disk, so the run passes and loses its
+    `instances` half.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.runner.power_results import PowerPassResults
     from rtl_buddy.tools.power_openroad import OpenRoadPower
@@ -1862,8 +1793,9 @@ def test_an_error_in_the_by_product_half_costs_only_that_half(tmp_path, monkeypa
 
 
 def test_an_error_before_the_marker_still_fails_the_run(tmp_path, monkeypatch):
-    """Everything up to the marker is the analysis itself: a diagnostic there
-    means the watts cannot be trusted, and the report goes with it (#558)."""
+    """An `[ERROR ...]` before the marker fails the run and removes the report, since the
+    watts cannot be trusted.
+    """
     from rtl_buddy.runner.power_results import PowerFailResults
     from rtl_buddy.tools.power_openroad import OpenRoadPower
 
@@ -1884,8 +1816,7 @@ def test_an_error_before_the_marker_still_fails_the_run(tmp_path, monkeypatch):
 
 
 def test_a_log_without_the_marker_is_scanned_whole(tmp_path, monkeypatch):
-    """Backward compatibility: a log from a script that predates the marker
-    has no by-product half to exempt, so every `[ERROR ...]` is fatal."""
+    """A log without the marker is scanned whole: every `[ERROR ...]` is fatal."""
     from rtl_buddy.runner.power_results import PowerFailResults
 
     _backend, result = _run_power_with(
@@ -1898,18 +1829,13 @@ def test_a_log_without_the_marker_is_scanned_whole(tmp_path, monkeypatch):
     assert "1 ERROR(s) in OpenROAD log" in result.results["desc"]
 
 
-# ---------------------------------------------------------------------------
-# Publishing the per-instance reports only on success (#560 round-17)
-# ---------------------------------------------------------------------------
-
-
 def test_the_per_instance_block_writes_under_staging_names(tmp_path):
-    """The finding (#560 round-17, Codex P2). Tcl's `>` creates the file
-    before the command it redirects runs, so a `report_power -instances` that
-    emits two thirds of the design and then raises leaves a nonempty report at
-    the published path — and the `catch` around it hides that it failed. The
-    block therefore redirects into a staging name and never into the published
-    one."""
+    """The per-instance block redirects into staging names, never the published ones.
+
+    Tcl's `>` creates the file before the redirected command runs, so a `report_power
+    -instances` that raises part-way would leave a nonempty report at the published
+    path.
+    """
     backend = _make_power_backend(tmp_path)
     instances = backend._instances_report_path()
     cells = backend._instances_cells_path()
@@ -1926,9 +1852,11 @@ def test_the_per_instance_block_writes_under_staging_names(tmp_path):
 
 
 def test_the_per_instance_reports_are_renamed_on_success_only(tmp_path):
-    """The publication is two renames, and Tcl reaches them only when every
-    command before them returned — an atomic publish-on-success. A block that
-    raised leaves the staging files, which the trailing deletes remove."""
+    """The per-instance reports are renamed into place only on success.
+
+    Tcl reaches the two renames only if every earlier command returned. A block that
+    raised leaves staging files, which the trailing deletes remove.
+    """
     backend = _make_power_backend(tmp_path)
     instances = backend._instances_report_path()
     cells = backend._instances_cells_path()
@@ -1940,11 +1868,11 @@ def test_the_per_instance_reports_are_renamed_on_success_only(tmp_path):
     rename_cells = lines.index(f"    file rename -force {cells_tmp} {cells}")
     rename_insts = lines.index(f"    file rename -force {instances_tmp} {instances}")
     report = lines.index(f"    report_power -instances $rb_insts > {instances_tmp}")
-    # Both renames follow the command that can fail, and both are inside the
-    # `catch` block — the closing brace comes after them.
+    # Both renames follow the command that can fail, and both are inside the `catch`
+    # block.
     assert report < rename_cells < rename_insts
     assert lines.index("}") > rename_insts
-    # And the staging files a failed block leaves do not outlive the script.
+    # The staging files a failed block leaves do not outlive the script.
     assert f"catch {{file delete -force {cells_tmp}}}" in lines
     assert f"catch {{file delete -force {instances_tmp}}}" in lines
 
@@ -1952,11 +1880,12 @@ def test_the_per_instance_reports_are_renamed_on_success_only(tmp_path):
 def test_a_partial_per_instance_report_is_not_published_as_complete(
     tmp_path, monkeypatch
 ):
-    """What the staging name buys. A block that emitted rows and then raised
-    leaves them under the staging name and nothing at the published one, which
-    is the state the publish already reads as "this run produced no
-    breakdown" — a null half plus the existing warning, not two thirds of a
-    design presented as all of it."""
+    """A partial per-instance report is not published as complete.
+
+    A block that emitted rows and then raised leaves them under the staging name and
+    nothing at the published one, which the publish reads as a null half plus the
+    existing warning.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.runner.power_results import PowerPassResults
@@ -1969,8 +1898,8 @@ def test_a_partial_per_instance_report_is_not_published_as_complete(
     def _emits_then_raises(cmd, **kwargs):
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         Path(backend._report_path()).write_text(_TOTAL_RPT)
-        # The rows the redirection had already flushed when the Tcl error
-        # unwound the block — under the staging name, never renamed.
+        # The rows flushed before the Tcl error unwound the block: under the staging
+        # name, never renamed.
         Path(backend._staging_path(backend._instances_report_path())).write_text(
             _INSTANCE_RPT
         )
@@ -1989,9 +1918,9 @@ def test_a_partial_per_instance_report_is_not_published_as_complete(
 def test_a_staging_report_left_by_a_killed_run_does_not_survive_the_clear(
     tmp_path, monkeypatch
 ):
-    """An OpenROAD killed inside the block never reaches its trailing deletes,
-    and a staging file left in the artefact directory would be the next run's
-    to rename over its own."""
+    """A staging report left by a killed OpenROAD does not survive the clear, or the next
+    run would rename over its own.
+    """
     backend = _make_power_backend(tmp_path)
     orphan = Path(backend._staging_path(backend._instances_report_path()))
     orphan.parent.mkdir(parents=True, exist_ok=True)
@@ -2002,19 +1931,14 @@ def test_a_staging_report_left_by_a_killed_run_does_not_survive_the_clear(
     assert not orphan.exists()
 
 
-# ---------------------------------------------------------------------------
-# Publishing the top the script was generated from (#560 round-17)
-# ---------------------------------------------------------------------------
-
-
 def test_the_published_top_is_the_one_the_script_was_generated_from(
     tmp_path, monkeypatch
 ):
-    """The finding (#560 round-17, Codex P2). Resolving a second time at
-    publish re-reads the synth YAML this analysis references, minutes after
-    OpenROAD was launched against the first answer: a `top:` edited in between
-    would have these watts attributed to a design they do not describe, and
-    merged against a co-named publication of another one."""
+    """The published top is the one the script was generated from.
+
+    Resolving again at publish would re-read a synth YAML that may have been edited
+    minutes into the run, attributing the watts to another design.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.tools import power_openroad
@@ -2027,8 +1951,8 @@ def test_the_published_top_is_the_one_the_script_was_generated_from(
     def _fake_run(cmd, **kwargs):
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         Path(backend._report_path()).write_text(_TOTAL_RPT)
-        # The referenced synth.yaml is edited while OpenROAD works: the same
-        # entry now names another design.
+        # The referenced synth.yaml is edited while OpenROAD works: the same entry now
+        # names another design.
         backend._resolve_inputs = lambda: {**script_inputs, "top": "other_top"}
         return MagicMock(returncode=0)
 
@@ -2042,9 +1966,9 @@ def test_the_published_top_is_the_one_the_script_was_generated_from(
 def test_a_referenced_entry_that_vanishes_mid_run_does_not_null_the_top(
     tmp_path, monkeypatch
 ):
-    """The other half of the same finding: a resolution that *raises* at
-    publish used to fall back to `{}` and record no top at all, so the run
-    lost the design it had just measured."""
+    """A referenced entry that vanishes mid-run does not null the top: a resolution that
+    raises at publish must not record no top.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.tools import power_openroad
@@ -2069,14 +1993,10 @@ def test_a_referenced_entry_that_vanishes_mid_run_does_not_null_the_top(
     assert load_model(result.results["phys_model"])["design"]["top"] == "demo_top"
 
 
-# ---------------------------------------------------------------------------
-# A stale half that cannot be withdrawn stops the run (#560 round-17)
-# ---------------------------------------------------------------------------
-
-
 def _lock_the_publication(monkeypatch):
-    """Make every `_publication_lock` acquisition time out, as a holder that
-    outlives `PUBLISH_LOCK_TIMEOUT_SEC` does."""
+    """Make every `_publication_lock` acquisition time out, as a holder that outlives
+    `PUBLISH_LOCK_TIMEOUT_SEC` does.
+    """
     import contextlib as _contextlib
     from rtl_buddy.phys import publish as publish_mod
 
@@ -2089,11 +2009,11 @@ def _lock_the_publication(monkeypatch):
 
 
 def test_a_half_that_cannot_be_withdrawn_stops_the_power_run(tmp_path, monkeypatch):
-    """The finding (#560 round-17, Codex P2). The clear has already deleted
-    the per-instance report, so a withdrawal that failed leaves the previous
-    run's watts discoverable over nothing. Logging that at DEBUG and running
-    anyway made the stale rows survive every failure after it; the run stops
-    instead."""
+    """A half that cannot be withdrawn stops the power run.
+
+    The clear has already deleted the per-instance report, so a failed withdrawal would
+    leave the previous run's watts discoverable over nothing.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.runner.power_results import PowerFailResults
     from rtl_buddy.tools import power_openroad
@@ -2116,14 +2036,15 @@ def test_a_half_that_cannot_be_withdrawn_stops_the_power_run(tmp_path, monkeypat
     desc = rerun.results["desc"]
     assert "could not be withdrawn" in desc
     assert "phys-publish.lock" in desc
-    # And the rows are still there, which is exactly why the run stopped.
+    # The rows are still there, which is why the run stopped.
     assert load_model(model_path)["instances"]
 
 
 def test_a_failed_withdrawal_is_named_in_a_post_openroad_failure(tmp_path, monkeypatch):
-    """`_fail_after_openroad` runs the same clear. The run was over either
-    way, but the user has to learn that the artefact directory still publishes
-    rows over the report it just deleted."""
+    """`_fail_after_openroad` runs the same clear; a failed withdrawal is named in the
+    failure so the user learns the artefact directory still publishes rows over the
+    deleted report.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.runner.power_results import PowerFailResults
     from rtl_buddy.tools import power_openroad
@@ -2139,8 +2060,8 @@ def test_a_failed_withdrawal_is_named_in_a_post_openroad_failure(tmp_path, monke
         return MagicMock(returncode=3)
 
     monkeypatch.setattr(power_openroad.subprocess, "run", _dies)
-    # The start-of-run gate fires first; reach the post-OpenROAD path by
-    # letting that one through and failing the tool instead.
+    # The start-of-run gate fires first; reach the post-OpenROAD path by letting it
+    # through and failing the tool instead.
     monkeypatch.setattr(backend, "_clear_stale_report", _one_clean_clear(backend))
     rerun = backend.run()
 
@@ -2152,9 +2073,8 @@ def test_a_failed_withdrawal_is_named_in_a_post_openroad_failure(tmp_path, monke
 def _one_clean_clear(backend):
     """`_clear_stale_report` that succeeds once and fails thereafter.
 
-    The start-of-run clear and the post-OpenROAD one are the same method, so
-    a test that wants the second to report a failed withdrawal has to let the
-    first through.
+    The start-of-run clear and the post-OpenROAD one are the same method, so the first
+    must pass for the second to report a failed withdrawal.
     """
     real = backend._clear_stale_report
     calls = {"n": 0}
@@ -2167,20 +2087,14 @@ def _one_clean_clear(backend):
     return _clear
 
 
-# ---------------------------------------------------------------------------
-# The constraints hash is of the bytes the tool read (#570 round-17)
-# ---------------------------------------------------------------------------
-
-
 def test_a_routed_sdc_replaced_mid_run_records_no_constraints_hash(
     tmp_path, monkeypatch, caplog
 ):
-    """The finding (#570 round-17, Codex P2). The digest used to be taken
-    inside the publish, minutes after OpenROAD started — so a `<top>.routed.sdc`
-    rewritten by a concurrent `rb pnr` was hashed as the constraints these
-    watts were measured under, which is the exact substitution the hash exists
-    to catch. Hashed at launch and confirmed on return instead; a file that
-    moved has no identity this run can vouch for."""
+    """A routed SDC replaced mid-run records no constraints hash.
+
+    The hash is taken at launch and confirmed on return, so a `<top>.routed.sdc`
+    rewritten by a concurrent `rb pnr` has no identity this run can vouch for.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
@@ -2193,8 +2107,8 @@ def test_a_routed_sdc_replaced_mid_run_records_no_constraints_hash(
     monkeypatch.setattr(power_openroad, "task_status", lambda *a, **k: nullcontext())
 
     def _fake_run(cmd, **kwargs):
-        # A concurrent `rb pnr` re-routing the same entry, landing
-        # mid-analysis and rewriting the SDC in place.
+        # A concurrent `rb pnr` re-routing the same entry, landing mid-analysis and
+        # rewriting the SDC in place.
         routed.write_text("create_clock -period 9 [get_ports clk]\n")
         Path(cmd[cmd.index("-log") + 1]).write_text("")
         Path(backend._report_path()).write_text(_TOTAL_RPT)
@@ -2209,8 +2123,7 @@ def test_a_routed_sdc_replaced_mid_run_records_no_constraints_hash(
     # Neither hash: not the bytes at the start, not the ones on disk now.
     assert config["constraints_sha256"] is None
     assert sha256_of(routed) is not None
-    # The path is still recorded — which file the run read is known, which
-    # bytes it read is not.
+    # The path is still recorded: which file was read is known, which bytes is not.
     assert config["constraints"].endswith("demo_top.routed.sdc")
     assert "constraints_changed_during_run" in caplog.text
 
@@ -2218,8 +2131,9 @@ def test_a_routed_sdc_replaced_mid_run_records_no_constraints_hash(
 def test_an_unchanged_sdc_is_recorded_by_the_hash_taken_at_launch(
     tmp_path, monkeypatch
 ):
-    """The success path is untouched: hash-before and confirm-after agree,
-    and what is recorded is the file the analysis read."""
+    """An unchanged SDC is recorded by the hash taken at launch, and the file recorded is
+    the one the analysis read.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.publish import sha256_of
 
@@ -2235,19 +2149,14 @@ def test_an_unchanged_sdc_is_recorded_by_the_hash_taken_at_launch(
     assert config["constraints_sha256"] == sha256_of(routed)
 
 
-# ---------------------------------------------------------------------------
-# The power fingerprint covers the technology it reads (#570 round-17)
-# ---------------------------------------------------------------------------
-
-
 def test_two_power_runs_over_two_libraries_do_not_share_a_fingerprint(
     tmp_path, monkeypatch
 ):
-    """The finding (#570 round-17, Codex P2). `_write_script` emits
-    `read_liberty` / `read_lef` from the resolved platform, and the options
-    mapping recorded only the platform *name* — so a `cfg-pnr-platforms` entry
-    repointed at another corner analysed a different technology under one
-    fingerprint, and a run listing showed the two as one experiment."""
+    """Two power runs over two libraries have different fingerprints.
+
+    `_write_script` emits `read_liberty` and `read_lef` from the resolved platform, so a
+    `cfg-pnr-platforms` entry repointed at another corner must not share a fingerprint.
+    """
     from rtl_buddy.phys.model import load_model
 
     digests = []
@@ -2272,9 +2181,9 @@ def test_two_power_runs_over_two_libraries_do_not_share_a_fingerprint(
 
 
 def test_the_power_fingerprint_lists_the_technology_in_script_order(tmp_path):
-    """`read_liberty` and `read_lef` are order-sensitive, so the list is the
-    script's order and not a sort — the same rule the synthesis library
-    fingerprints keep."""
+    """The fingerprint lists the technology in script order, since `read_liberty` and
+    `read_lef` are order-sensitive.
+    """
     backend = _make_power_backend(
         tmp_path,
         platform=_FakePlatform(
@@ -2292,8 +2201,9 @@ def test_the_power_fingerprint_lists_the_technology_in_script_order(tmp_path):
 
 
 def test_a_platform_without_macro_lef_lists_only_what_the_script_reads(tmp_path):
-    """The macro LEF line is conditional in the script, so it is conditional
-    in the fingerprint: a null entry would be a file the run never read."""
+    """The macro LEF line is conditional in the script and in the fingerprint; a null entry
+    would name a file never read.
+    """
     backend = _make_power_backend(tmp_path)
     backend._write_script()
 
@@ -2301,11 +2211,6 @@ def test_a_platform_without_macro_lef_lists_only_what_the_script_reads(tmp_path)
         "/pdk/fake/nangate45_typ.lib",
         "/pdk/fake/tech.lef",
     ]
-
-
-# ---------------------------------------------------------------------------
-# phys-run — where the power half is published (#589)
-# ---------------------------------------------------------------------------
 
 
 _STAT_JSON = (
@@ -2329,18 +2234,14 @@ def _synth_suite_yaml(entries) -> str:
 def _make_paired_power_backend(
     tmp_path, *, phys_run="demo_synth", entries=("demo_synth",), synth_in_project=True
 ):
-    """A power backend in the layout `phys-run:` exists for (#589).
+    """A power backend in the layout `phys-run:` is for.
 
-    The synthesis suite under `synth/demo/` and the power suite under
-    `power/demo/`, so the two runs' artefact directories cannot coincide
-    by accident and the co-location convention produces two half-filled
-    models. Re-callable on one ``tmp_path``: a test that runs the same
-    entry twice builds a second backend over the directories the first
-    one left.
+    The synthesis suite is under `synth/demo/` and the power suite under `power/demo/`,
+    so their artefact directories cannot coincide by accident. It can be called
+    repeatedly on one ``tmp_path``.
 
-    Returns the backend, the synthesis run's artefact directory, and the
-    netlist that directory holds — the file the analysis is stubbed to
-    read, as an `rb synth` into it would have written.
+    Returns the backend, the synthesis run's artefact directory, and the netlist that
+    directory holds, as an `rb synth` into it would have written.
     """
     from unittest.mock import MagicMock
     from rtl_buddy.config.power import PowerActivity
@@ -2424,9 +2325,9 @@ def _publish_the_synthesis_half(artefacts, netlist):
 def test_phys_run_publishes_the_power_half_into_the_synthesis_directory(
     tmp_path, monkeypatch
 ):
-    """The whole of the field: the model goes where the synthesis writes
-    its own half, and the raw output stays with the run that produced it
-    (#589)."""
+    """`phys-run` publishes the model into the synthesis run's directory, where the
+    synthesis writes its own half; the raw output stays with the power run.
+    """
     backend, synth_artefacts, _netlist = _make_paired_power_backend(tmp_path)
 
     result = _run_prepared_power(
@@ -2438,14 +2339,13 @@ def test_phys_run_publishes_the_power_half_into_the_synthesis_directory(
     own = Path(backend.artefact_dir)
     assert not (own / "phys-model.json").exists()
     assert not (own / "phys-manifest.json").exists()
-    # The reports, the log and the netlist copy are this run's own output
-    # and are read back from its own directory.
+    # The reports, the log and the netlist copy are this run's own output and are read
+    # from its own directory.
     assert (own / "power.rpt").exists()
     assert (own / "power_instances.rpt").exists()
     assert (own / "power_netlist.v").exists()
-    # And the manifest reaches them from where it now sits: the paths are
-    # project-relative, so they join back onto the power run's directory
-    # from the synthesis run's.
+    # The manifest paths are project-relative, so they join back onto the power run's
+    # directory from the synthesis run's.
     manifest_path = synth_artefacts / "phys-manifest.json"
     manifest = load_manifest(str(manifest_path))
     report = manifest["power"]["report"]
@@ -2456,8 +2356,7 @@ def test_phys_run_publishes_the_power_half_into_the_synthesis_directory(
 def test_without_phys_run_the_model_stays_in_the_runs_own_directory(
     tmp_path, monkeypatch
 ):
-    """The convention `phys-run:` overrides, unchanged for a config that
-    says nothing."""
+    """Without `phys-run:` the model stays in the run's own directory."""
     backend, synth_artefacts, _netlist = _make_paired_power_backend(
         tmp_path, phys_run=None
     )
@@ -2473,9 +2372,9 @@ def test_without_phys_run_the_model_stays_in_the_runs_own_directory(
 def test_phys_run_completes_the_synthesis_half_already_published_there(
     tmp_path, monkeypatch
 ):
-    """The half-filled model the field exists to end: the two suites are in
-    two directories, so nothing but the name pairs them — and with the name
-    given, one document comes out holding both halves (#589)."""
+    """`phys-run` completes the synthesis half already published there: with the name
+    given, one document holds both halves.
+    """
     from rtl_buddy.phys.model import load_model
 
     backend, synth_artefacts, netlist = _make_paired_power_backend(tmp_path)
@@ -2493,8 +2392,9 @@ def test_phys_run_completes_the_synthesis_half_already_published_there(
 
 
 def test_a_phys_run_naming_no_synthesis_entry_fails_the_analysis(tmp_path, monkeypatch):
-    """A typo or a rename would otherwise publish a merged model into a
-    directory no run owns — harder to find than the half-filled pair."""
+    """A `phys-run` naming no synthesis entry fails the analysis, rather than publishing a
+    merged model into a directory no run owns.
+    """
     from rtl_buddy.runner.power_results import PowerFailResults
 
     backend, _artefacts, _netlist = _make_paired_power_backend(
@@ -2508,8 +2408,9 @@ def test_a_phys_run_naming_no_synthesis_entry_fails_the_analysis(tmp_path, monke
 
 
 def test_a_phys_run_outside_the_project_is_refused(tmp_path, monkeypatch):
-    """`synth-path:` reaching into another checkout would put the merged
-    model where this project's `rb phys` discovery never walks."""
+    """A `phys-run` outside the project is refused, since the merged model would be where
+    `rb phys` discovery never walks.
+    """
     from rtl_buddy.runner.power_results import PowerFailResults
 
     backend, _artefacts, _netlist = _make_paired_power_backend(
@@ -2525,9 +2426,9 @@ def test_a_phys_run_outside_the_project_is_refused(tmp_path, monkeypatch):
 def test_a_paired_run_says_so_when_the_synthesis_half_read_another_netlist(
     tmp_path, monkeypatch, caplog
 ):
-    """The pairing was asked for by name, so the gate refusing it is news.
-    Without the field there is no expectation to disappoint and the same
-    mismatch stays quiet."""
+    """A paired run warns when the synthesis half read another netlist; without `phys-run:`
+    the same mismatch stays quiet.
+    """
     from rtl_buddy.phys.model import load_model
 
     backend, synth_artefacts, _netlist = _make_paired_power_backend(tmp_path)
@@ -2547,7 +2448,7 @@ def test_a_paired_run_says_so_when_the_synthesis_half_read_another_netlist(
 
 
 def test_a_paired_run_is_quiet_when_the_two_halves_agree(tmp_path, monkeypatch, caplog):
-    """The ordinary pair. A warning here would be noise on every run."""
+    """The ordinary pair is quiet."""
     backend, synth_artefacts, netlist = _make_paired_power_backend(tmp_path)
     _publish_the_synthesis_half(synth_artefacts, netlist)
 
@@ -2562,9 +2463,9 @@ def test_a_paired_run_is_quiet_when_the_two_halves_agree(tmp_path, monkeypatch, 
 def test_a_failed_paired_rerun_withdraws_its_half_from_the_synthesis_directory(
     tmp_path, monkeypatch
 ):
-    """The withdrawal follows the publication. A rerun that fails has
-    deleted the reports behind its rows, so the rows go too — out of the
-    synthesis run's directory, leaving the synthesis' own half alone."""
+    """A failed paired rerun withdraws its half from the synthesis run's directory and
+    leaves the synthesis half alone.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.tools import power_openroad
@@ -2593,16 +2494,8 @@ def test_a_failed_paired_rerun_withdraws_its_half_from_the_synthesis_directory(
     assert [row["module"] for row in model["modules"]] == ["demo_top"]
 
 
-# ---------------------------------------------------------------------------
-# Macro Liberty reaches the power run, and a macro with none is not a
-# silent zero (#627)
-# ---------------------------------------------------------------------------
-
-
-#: What `_make_power_backend`'s fixture generates with no macro anywhere:
-#: the script this flow emitted before #627, line for line. The paths are
-#: the run's own, so the template is filled from the backend under test
-#: rather than pinned absolutely.
+# What `_make_power_backend`'s fixture generates with no macro anywhere. The paths are
+# the run's own, so the template is filled from the backend under test.
 _BASELINE_SCRIPT = """\
 # Generated by rtl_buddy power flow
 read_liberty /pdk/fake/nangate45_typ.lib
@@ -2636,9 +2529,7 @@ exit
 def _capture_power_events(monkeypatch):
     """Record every `log_event` the power backend emits, with its level.
 
-    Rather than caplog: `log_event` renders a human sentence into the
-    message, so asserting on the text would pass on any wording that
-    happened to carry the event id.
+    Asserting on rendered text would pass on any wording that carried the event id.
     """
     from rtl_buddy.tools import power_openroad
 
@@ -2677,10 +2568,9 @@ def _write_upstream_suites(
 ):
     """A models/synth/pnr trio the power config resolves through for real.
 
-    The inheritance rule is a statement about the *referenced run*, so the
-    tests that assert it load that run out of YAML rather than stub it.
-    ``lef`` goes on both entries, as a real macro's LEF does: P&R places
-    it and synthesis links against it.
+    The inheritance rule is about the referenced run, so tests load that run from YAML.
+    ``lef`` goes on both entries, as a real macro's LEF does: P&R places it and
+    synthesis links against it.
     """
     (tmp_path / "models.yaml").write_text(
         dedent("""\
@@ -2737,11 +2627,8 @@ def _power_suite(tmp_path, body):
     return PowerSuiteConfig(str(path))
 
 
-# --- config: the new `lib-paths` key ---------------------------------------
-
-
 def test_power_lib_paths_default_to_nothing(tmp_path):
-    """Every `power.yaml` written before #627 declares no macro Liberty."""
+    """A `power.yaml` with no `lib-paths` declares no macro Liberty."""
     suite = _power_suite(
         tmp_path,
         """
@@ -2756,8 +2643,7 @@ def test_power_lib_paths_default_to_nothing(tmp_path):
 
 
 def test_power_lib_paths_resolve_against_the_power_yaml(tmp_path):
-    """Relative like every other path on the entry — against the directory
-    holding `power.yaml`, never the process cwd."""
+    """`lib-paths` resolve against the directory holding `power.yaml`, not the process cwd."""
     suite = _power_suite(
         tmp_path,
         """
@@ -2773,9 +2659,6 @@ def test_power_lib_paths_resolve_against_the_power_yaml(tmp_path):
         os.path.normpath(str(tmp_path.parent / "pdk" / "sram" / "sram.lib")),
         str(tmp_path / "extra.lib"),
     ]
-
-
-# --- inheritance ------------------------------------------------------------
 
 
 def _inputs_with_upstream(
@@ -2799,9 +2682,9 @@ def _inputs_with_upstream(
 
 
 def test_a_pnr_power_run_inherits_the_pnr_runs_macro_liberty(tmp_path):
-    """The macro's Liberty reaches `rb pnr` through that run's `lib-paths`;
-    without inheriting it the power analysis reads only the platform corner
-    and the macro contributes exactly zero (#627)."""
+    """A `pnr` power run inherits the P&R run's macro Liberty (its `lib-paths`); otherwise
+    the macro contributes exactly zero.
+    """
     lib = _write_macro_liberty(tmp_path / "sram.lib")
     backend = _inputs_with_upstream(tmp_path, source="pnr", pnr_lib=["sram.lib"])
 
@@ -2813,8 +2696,9 @@ def test_a_pnr_power_run_inherits_the_pnr_runs_macro_liberty(tmp_path):
 
 
 def test_a_synth_power_run_inherits_the_synth_runs_macro_liberty_and_lef(tmp_path):
-    """`read_verilog` + `link_design` builds the database out of LEF masters,
-    so the synthesis source needs the LEF as well as the Liberty."""
+    """A synth power run inherits the synth run's macro Liberty and LEF, since
+    `read_verilog` + `link_design` builds the database from LEF masters.
+    """
     lib = _write_macro_liberty(tmp_path / "sram.lib")
     lef = tmp_path / "sram.lef"
     lef.write_text("MACRO sram_32x256\nEND sram_32x256\n")
@@ -2829,8 +2713,9 @@ def test_a_synth_power_run_inherits_the_synth_runs_macro_liberty_and_lef(tmp_pat
 
 
 def test_an_explicit_lib_path_is_added_after_the_inherited_ones(tmp_path):
-    """`read_liberty` is order-sensitive, and the inherited list is the base
-    a `power.yaml` adds to."""
+    """An explicit `lib-path` is added after the inherited ones: `read_liberty` is
+    order-sensitive.
+    """
     inherited = _write_macro_liberty(tmp_path / "sram.lib")
     own = _write_macro_liberty(tmp_path / "pll.lib", cell="pll")
     backend = _inputs_with_upstream(tmp_path, source="pnr", pnr_lib=["sram.lib"])
@@ -2840,8 +2725,9 @@ def test_an_explicit_lib_path_is_added_after_the_inherited_ones(tmp_path):
 
 
 def test_a_library_named_on_both_sides_is_read_once(tmp_path):
-    """De-duplicated on the resolved path, in first-named order: reading one
-    Liberty twice makes OpenSTA re-register every cell in it."""
+    """A library named on both sides is read once, de-duplicated on the resolved path in
+    first-named order.
+    """
     lib = _write_macro_liberty(tmp_path / "sram.lib")
     other = _write_macro_liberty(tmp_path / "pll.lib", cell="pll")
     backend = _inputs_with_upstream(
@@ -2851,9 +2737,6 @@ def test_a_library_named_on_both_sides_is_read_once(tmp_path):
     backend.power_cfg.lib_paths = [str(tmp_path / "." / "sram.lib")]
 
     assert backend._resolve_inputs()["macro_libs"] == [lib, other]
-
-
-# --- the generated script ---------------------------------------------------
 
 
 def _script_with_macros(tmp_path, *, libs=(), lefs=()):
@@ -2868,7 +2751,9 @@ def _script_with_macros(tmp_path, *, libs=(), lefs=()):
 
 
 def test_the_script_reads_the_macro_liberty_after_the_platform_corner(tmp_path):
-    """After, so a macro library can never shadow a standard cell."""
+    """The macro Liberty is read after the platform corner, so it cannot shadow a standard
+    cell.
+    """
     lib = _write_macro_liberty(tmp_path / "sram.lib")
     lef = tmp_path / "sram.lef"
     lef.write_text("MACRO sram_32x256\nEND sram_32x256\n")
@@ -2883,9 +2768,9 @@ def test_the_script_reads_the_macro_liberty_after_the_platform_corner(tmp_path):
 
 
 def test_a_run_with_no_macros_generates_the_script_it_always_did(tmp_path):
-    """Byte-identity with the pre-#627 flow. Both new lists are empty for a
-    design with no macros, and every existing power run has to keep its
-    compile-identical script — the whole fingerprint rests on it."""
+    """A run with no macros generates a byte-identical script, on which the fingerprint
+    depends.
+    """
     backend = _make_power_backend(tmp_path)
 
     script = Path(backend._write_script()).read_text()
@@ -2898,9 +2783,9 @@ def test_a_run_with_no_macros_generates_the_script_it_always_did(tmp_path):
 def test_a_configured_macro_library_that_is_not_on_disk_stops_the_run(
     tmp_path, monkeypatch
 ):
-    """Before OpenROAD is launched, and at ERROR, the way a stream-out judges
-    its own inputs: a `read_liberty` of a path that is not there is a line in
-    a log nobody reads and a macro back at 0 W (#627)."""
+    """A configured macro library missing from disk stops the run at ERROR before OpenROAD
+    launches, instead of a `read_liberty` failure in an unread log.
+    """
     from rtl_buddy.tools import power_openroad
     from rtl_buddy.runner.power_results import PowerFailResults
 
@@ -2929,9 +2814,9 @@ def test_a_configured_macro_library_that_is_not_on_disk_stops_the_run(
 
 
 def test_the_fingerprint_lists_the_macro_libraries_in_script_order(tmp_path):
-    """A run that reads a macro's Liberty and one that does not measure the
-    same netlist and report different watts — the before and after of #627 —
-    so they must not digest identically (#570)."""
+    """The fingerprint lists the macro libraries in script order, so runs that read a
+    macro's Liberty and those that do not digest differently.
+    """
     lib = _write_macro_liberty(tmp_path / "sram.lib")
 
     backend, _script = _script_with_macros(tmp_path, libs=[lib])
@@ -2941,9 +2826,6 @@ def test_the_fingerprint_lists_the_macro_libraries_in_script_order(tmp_path):
         lib,
         "/pdk/fake/tech.lef",
     ]
-
-
-# --- the macro with no library at all ---------------------------------------
 
 
 _MACRO_INSTANCE_RPT = (
@@ -2972,9 +2854,11 @@ def _run_with_a_macro(tmp_path, monkeypatch, *, libs=()):
 def test_a_macro_with_no_liberty_is_named_rather_than_reported_as_zero(
     tmp_path, monkeypatch
 ):
-    """The instance is in the design, in the report, and at 0.00e+00 in all
-    four columns. Nothing in the report tells that apart from a cell that
-    burns nothing, so the run says it (#627)."""
+    """A macro with no Liberty is named, not reported as zero.
+
+    The instance is in the report at 0.00e+00 in all four columns, which is
+    indistinguishable from a cell that burns nothing.
+    """
     events = _capture_power_events(monkeypatch)
     _backend, res = _run_with_a_macro(tmp_path, monkeypatch)
 
@@ -2990,8 +2874,9 @@ def test_a_macro_with_no_liberty_is_named_rather_than_reported_as_zero(
 
 
 def test_the_verdict_is_unchanged_by_an_unpowered_macro(tmp_path, monkeypatch):
-    """The watts reported are a real measurement of everything that had a
-    library; refusing them would cost a user the standard-cell figure."""
+    """An unpowered macro does not change the verdict: the watts for everything with a
+    library are a real measurement.
+    """
     _backend, res = _run_with_a_macro(tmp_path, monkeypatch)
 
     assert res.is_pass()
@@ -2999,8 +2884,7 @@ def test_the_verdict_is_unchanged_by_an_unpowered_macro(tmp_path, monkeypatch):
 
 
 def test_a_macro_whose_liberty_the_run_read_is_not_flagged(tmp_path, monkeypatch):
-    """The cell is declared in a Liberty the script named, so whatever the
-    report says about it is a measurement."""
+    """A macro whose Liberty the run read is not flagged."""
     lib = _write_macro_liberty(tmp_path / "sram.lib")
     events = _capture_power_events(monkeypatch)
 
@@ -3014,8 +2898,9 @@ def test_a_macro_whose_liberty_the_run_read_is_not_flagged(tmp_path, monkeypatch
 def test_an_instance_at_zero_whose_cell_has_a_library_is_not_flagged(
     tmp_path, monkeypatch
 ):
-    """Both conditions, not either: a standard cell that really does sit at
-    zero has power data and is nobody's configuration error."""
+    """An instance at zero whose cell has a Liberty is not flagged: a standard cell at zero
+    has power data.
+    """
     backend = _make_power_backend(tmp_path)
     liberty = tmp_path / "platform.lib"
     _write_macro_liberty(liberty, cell="DFF_X1")
@@ -3034,8 +2919,7 @@ def test_an_instance_at_zero_whose_cell_has_a_library_is_not_flagged(
 
 
 def test_an_unpowered_macro_is_in_the_machine_row(tmp_path, monkeypatch):
-    """`--machine` is the whole output for a consumer that cannot re-read the
-    table, so the qualifier has to be a field and not only prose."""
+    """An unpowered macro is in the `--machine` row as a field, not only prose."""
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     _backend, res = _run_with_a_macro(tmp_path, monkeypatch)
@@ -3047,9 +2931,11 @@ def test_an_unpowered_macro_is_in_the_machine_row(tmp_path, monkeypatch):
 
 
 def test_the_published_model_carries_the_macros_own_watts(tmp_path, monkeypatch):
-    """The roll-up `rb phys` does over `power_instances.rpt` is name-based, so
-    a macro reaches a module total exactly when its row reaches the model with
-    its Liberty cell in the module column (#558, #627)."""
+    """The published model carries the macro's own watts.
+
+    The `rb phys` roll-up over `power_instances.rpt` is name-based, so a macro reaches a
+    module total when its row has its Liberty cell in the module column.
+    """
     from rtl_buddy.phys.model import load_model
     from rtl_buddy.phys.query import is_descendant, subtree_rollup
 
@@ -3084,12 +2970,12 @@ def test_the_published_model_carries_the_macros_own_watts(tmp_path, monkeypatch)
 
 
 def test_the_pdks_fill_cells_are_not_reported_as_unpowered(tmp_path, monkeypatch):
-    """`rb pnr` ends with `filler_placement`, so a routed database holds
-    tens of thousands of fill instances that are in the layout and not in
-    the netlist. They have no Liberty and no power by construction; the
-    PDK names them, and reporting them would bury the one macro this
-    exists to find (#627). Measured on the sky130hd pipeclean: 26 076
-    instances of four fill cells beside a single SRAM."""
+    """The PDK's fill cells are not reported as unpowered.
+
+    `rb pnr` ends with `filler_placement`, so a routed database holds tens of thousands
+    of fill instances with no Liberty and no power. The PDK names them, and reporting
+    them would bury the macro this check exists to find.
+    """
     backend = _make_power_backend(
         tmp_path,
         platform=_FakePlatform(
@@ -3109,11 +2995,6 @@ def test_the_pdks_fill_cells_are_not_reported_as_unpowered(tmp_path, monkeypatch
 
     assert res.results["unpowered_cells"] == ["sram_32x256"]
     assert res.results["unpowered_instance_count"] == 1
-
-
-# ---------------------------------------------------------------------------
-# OpenROAD thread count (#654)
-# ---------------------------------------------------------------------------
 
 
 def _no_allocation(monkeypatch):
@@ -3161,8 +3042,9 @@ def test_power_threads_clamped_to_a_slurm_allocation(tmp_path, monkeypatch):
 
 
 def test_power_threads_never_read_a_previous_runs_log(tmp_path, monkeypatch):
-    """OpenROAD truncates `power.log` only once running; a launch that dies
-    earlier must not report the previous run's ORD-0030 count (#654)."""
+    """A launch that dies before OpenROAD truncates `power.log` does not report the
+    previous run's ORD-0030 count.
+    """
     from unittest.mock import MagicMock
     from rtl_buddy.tools import power_openroad
 
@@ -3184,11 +3066,6 @@ def test_power_threads_never_read_a_previous_runs_log(tmp_path, monkeypatch):
     assert res.results["openroad_threads"]["effective"] == 2
 
 
-# ---------------------------------------------------------------------------
-# Extracted parasitics: reading the P&R run's routed SPEF (#101, #104 item 1)
-# ---------------------------------------------------------------------------
-
-
 def _age(path, seconds):
     """Set a file's mtime `seconds` into the past."""
     st = os.stat(path)
@@ -3200,9 +3077,8 @@ def _pnr_artefact_with_spef(
 ):
     """A P&R artefact dir as `rb pnr` leaves it: script first, SPEF last.
 
-    ``extracted`` says whether the flow script carries a `write_spef`
-    command, i.e. whether the run that wrote the ODB was configured with
-    `rcx-rules`. Ages are seconds into the past.
+    ``extracted`` says whether the flow script carries a `write_spef` command, meaning
+    the run was configured with `rcx-rules`. Ages are seconds into the past.
     """
     root.mkdir(parents=True, exist_ok=True)
     script = root / "pnr.tcl"
@@ -3234,9 +3110,11 @@ def test_no_spef_is_rejected_as_absent(tmp_path):
 
 
 def test_a_spef_older_than_the_pnr_run_is_stale(tmp_path):
-    """The case the clear list cannot cover: an rtl_buddy that predates the
-    SPEF reruns P&R, rewrites the script and the ODB, and leaves the previous
-    run's SPEF where it was."""
+    """A SPEF older than the P&R run is stale.
+
+    The clear list cannot cover the case where an older rtl_buddy reran P&R and rewrote
+    the script and ODB, leaving the previous SPEF.
+    """
     from rtl_buddy.tools.power_openroad import routed_spef_rejection
 
     spef, script = _pnr_artefact_with_spef(tmp_path, spef_age=120.0)
@@ -3244,7 +3122,9 @@ def test_a_spef_older_than_the_pnr_run_is_stale(tmp_path):
 
 
 def test_a_spef_beside_a_run_that_did_not_extract_is_stale(tmp_path):
-    """However new it is: the script that produced the ODB never wrote it."""
+    """A SPEF beside a run that did not extract is stale, however new: the script never
+    wrote it.
+    """
     from rtl_buddy.tools.power_openroad import routed_spef_rejection
 
     spef, script = _pnr_artefact_with_spef(tmp_path, extracted=False)
@@ -3287,7 +3167,9 @@ def test_a_pnr_power_run_reads_the_trusted_spef_instead_of_estimating(tmp_path):
 
 
 def test_a_pnr_power_run_without_a_spef_estimates_as_before(tmp_path):
-    """The ODB-only fallback — Nangate45, which ships no rules — unchanged."""
+    """A `pnr` power run without a SPEF estimates parasitics; this is the ODB-only fallback
+    (Nangate45 ships no rules).
+    """
     backend, spef = _make_spef_power_backend(tmp_path, spef=False)
 
     script = Path(backend._write_script()).read_text()
@@ -3313,7 +3195,7 @@ def test_a_stale_spef_falls_back_to_the_estimate_and_says_so(tmp_path, monkeypat
 
 
 def test_a_missing_spef_is_not_a_warning(tmp_path, monkeypatch):
-    """No rules, no SPEF: the ordinary Nangate45 run has nothing to warn about."""
+    """A missing SPEF is not a warning: no rules, no SPEF, nothing to warn about."""
     backend, _spef = _make_spef_power_backend(tmp_path, spef=False)
     events = _capture_power_events(monkeypatch)
 
@@ -3341,13 +3223,12 @@ def test_a_synth_source_run_records_no_parasitics(tmp_path, monkeypatch):
 def test_spef_and_estimated_runs_over_one_odb_do_not_share_a_fingerprint(
     tmp_path, monkeypatch
 ):
-    """Same ODB, same SDC, same activity: timed on extracted parasitics and
-    on the global-route estimate they are two measurements."""
+    """SPEF-timed and estimate-timed runs over one ODB have different fingerprints."""
     from rtl_buddy.phys.model import load_model
 
     digests = []
-    # One directory for both, so the ODB path — the rest of the upstream
-    # identity — is the same; only the SPEF beside it comes and goes.
+    # One directory for both, so the ODB path is the same; only the SPEF beside it comes
+    # and goes.
     for spef in (True, False):
         backend, spef_path = _make_spef_power_backend(tmp_path)
         if not spef:
@@ -3362,9 +3243,6 @@ def test_spef_and_estimated_runs_over_one_odb_do_not_share_a_fingerprint(
     assert digests[0] is not None and digests[0] != digests[1]
 
 
-# --- hardened blocks the upstream run consumed (#679) ----------------------
-
-
 _BLOCKS_YAML = (
     "    blocks:\n      - {name: blk_top, pnr: blk_pnr, pnr-path: blk/pnr.yaml}\n"
 )
@@ -3373,8 +3251,8 @@ _BLOCKS_YAML = (
 def _publish_block_abstract(tmp_path, *, module="blk_top"):
     """A block pnr.yaml whose `harden: true` run published an abstract.
 
-    Its Liberty is what `write_timing_model` writes: the block as a cell,
-    with timing and no power tables.
+    Its Liberty is what `write_timing_model` writes: the block as a cell, with timing
+    and no power tables.
     """
     suite = tmp_path / "blk" / "pnr.yaml"
     suite.parent.mkdir(parents=True, exist_ok=True)
@@ -3402,11 +3280,12 @@ def _publish_block_abstract(tmp_path, *, module="blk_top"):
 
 
 def test_a_pnr_power_run_resolves_blocks_but_reads_no_block_liberty(tmp_path):
-    """The block is resolved (#679), but its `write_timing_model` Liberty
-    is not read: no output has a `function`, so OpenSTA would propagate
-    zero activity out of every block output and the parent logic it drives
-    would read as static (#684). The macro set is the P&R run's own
-    `lib-paths`, then the power run's."""
+    """A `pnr` power run resolves blocks but reads no block Liberty.
+
+    A `write_timing_model` Liberty has no output `function`, so OpenSTA would propagate
+    zero activity out of every block output and the logic it drives would read as
+    static. The macro set is the P&R run's `lib-paths`, then the power run's.
+    """
     sram = _write_macro_liberty(tmp_path / "sram.lib")
     own = _write_macro_liberty(tmp_path / "pll.lib", cell="pll")
     out = _publish_block_abstract(tmp_path)
@@ -3424,9 +3303,9 @@ def test_a_pnr_power_run_resolves_blocks_but_reads_no_block_liberty(tmp_path):
 
 
 def test_a_synth_power_run_reads_the_block_lef_and_not_its_liberty(tmp_path):
-    """`link_design` builds the database out of LEF masters, so the block's
-    LEF is read — without it the blackbox the netlist instances has no
-    master at all. Its Liberty is not, for the reason above (#684)."""
+    """A synth power run reads the block LEF, since `link_design` needs a master for the
+    blackbox, but not its Liberty.
+    """
     out = _publish_block_abstract(tmp_path)
     backend = _inputs_with_upstream(tmp_path, source="synth", blocks_yaml=_BLOCKS_YAML)
 
@@ -3437,7 +3316,9 @@ def test_a_synth_power_run_reads_the_block_lef_and_not_its_liberty(tmp_path):
 
 
 def test_a_block_whose_abstract_is_gone_stops_the_run_naming_it(tmp_path):
-    """Reading on without it would report the partition at zero watts."""
+    """A block whose abstract is gone stops the run naming it; reading on would report the
+    partition at zero watts.
+    """
     out = _publish_block_abstract(tmp_path)
     (out / "abstract.manifest.json").unlink()
     backend = _inputs_with_upstream(tmp_path, source="pnr", blocks_yaml=_BLOCKS_YAML)
@@ -3494,10 +3375,12 @@ def _run_with_a_block(tmp_path, monkeypatch):
 def test_a_block_at_zero_watts_is_named_although_its_abstract_was_read(
     tmp_path, monkeypatch
 ):
-    """A `power.yaml` can still name the abstract in its own `lib-paths`.
-    It declares the block as a cell, but a timing model carries no power
-    tables, so reading it vouches for nothing: the partition is still an
-    instance the analysis could say nothing about."""
+    """A block at zero watts is named although its abstract was read.
+
+    A `power.yaml` can name the abstract in its own `lib-paths`, but a timing model
+    carries no power tables, so the partition is still an instance the analysis said
+    nothing about.
+    """
     _out, res = _run_with_a_block(tmp_path, monkeypatch)
 
     assert res.is_pass()
@@ -3507,8 +3390,9 @@ def test_a_block_at_zero_watts_is_named_although_its_abstract_was_read(
 def test_the_blocks_the_run_read_are_in_its_result_and_machine_row(
     tmp_path, monkeypatch
 ):
-    """The rows `rb pnr` reports, without the staleness this run does not
-    assess."""
+    """The result and machine row carry the blocks the run read, as `rb pnr` reports them,
+    without the staleness this run does not assess.
+    """
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     out, res = _run_with_a_block(tmp_path, monkeypatch)

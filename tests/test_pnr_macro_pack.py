@@ -1,15 +1,9 @@
-"""Unit tests for the P&R flow's macro packer (`rtl_buddy/pnr/macro_pack.tcl`).
+"""Unit tests for the P&R macro packer (`rtl_buddy/pnr/macro_pack.tcl`).
 
-The packer is Tcl because the only place a macro's footprint is known is the
-OpenROAD database, after the LEFs are read and the netlist linked. It is a
-separate file, free of OpenROAD commands, so these tests can drive it with a
-plain Tcl interpreter — `tclsh`, or the one CPython's `tkinter` embeds —
-instead of a full P&R run.
-
-Both run in a subprocess, never in this one: importing `_tkinter` starts a
-Tcl notifier thread that never exits, and on macOS a later fork+exec from
-such a process can wedge its child in `close()` forever (#641). That is
-also why the constraint reader has a worker process.
+The packer is a separate Tcl file free of OpenROAD commands, so these tests drive it
+with `tclsh` or the interpreter CPython's `tkinter` embeds. Both run in a subprocess,
+since importing `_tkinter` starts a Tcl notifier thread that never exits and can wedge a
+later fork+exec on macOS.
 """
 
 import math
@@ -20,25 +14,22 @@ from importlib.resources import files
 
 import pytest
 
-# The issue's three macros, in microns: an OpenRAM 1 kB SRAM and two
-# hardened partitions (#626).
+# Three macros, in microns: an OpenRAM 1 kB SRAM and two hardened partitions.
 SRAM = ("sram", 479.78, 397.50)
 PART_A = ("part_a", 98.94, 98.94)
 PART_B = ("part_b", 89.47, 89.47)
 
 DBU_PER_MICRON = 1000
-# What `flow.tcl.template` passes: the standard-cell site grid as
-# {site_width row_height}. The packing tests use a fine one so their
-# expected coordinates read straight off the halo arithmetic; the row-grid
-# tests below use sky130hd's real site.
+# What `flow.tcl.template` passes: the site grid as {site_width row_height}. Packing
+# tests use a fine grid so expected coordinates read off the halo arithmetic; the
+# row-grid tests use sky130hd's real site.
 GRID = "{5 5}"
 SKY130HD_SITE = (0.46, 2.72)
 
 
-#: Runs the script `tkinter` embeds a Tcl interpreter for, in a child
-#: process, and writes the answer on stdout. A CPython built without the
-#: `_tkinter` extension — or with one whose Tcl library is missing — fails
-#: here and the `tclsh` binary is used instead.
+# Runs the script in the interpreter `tkinter` embeds, in a child process, and writes
+# the answer on stdout.
+# A CPython without a working `_tkinter` fails here and `tclsh` is used instead.
 _EMBEDDED_DRIVER = """
 import sys
 try:
@@ -53,9 +44,8 @@ sys.stdout.write(str(interp.eval(sys.stdin.read())))
 def _tcl_eval(script: str) -> str:
     """Run `script`, which must leave its answer in `result`, and return it.
 
-    Prefers the interpreter `tkinter` embeds (no external binary needed),
-    falls back to `tclsh`, and skips when neither is available. Both run
-    out of process, so the answer travels on stdout either way.
+    Prefers the `tkinter` interpreter, falls back to `tclsh`, and skips when neither is
+    available. Both run out of process.
     """
     embedded = subprocess.run(
         [sys.executable, "-c", _EMBEDDED_DRIVER],
@@ -120,8 +110,8 @@ def _place(
 ):
     """Run the packer and return {name: (x_um, y_um)}, or None for no fit.
 
-    `anchor` and `keepouts` (rectangles in microns) are passed only when
-    given, so the default call is the one the flow has always made."""
+    `anchor` and `keepouts` (rectangles in microns) are passed only when given.
+    """
     extra = ""
     if anchor is not None or keepouts is not None:
         extra = f" {anchor or 'lower-left'} {{{_keepout_list(keepouts or [])}}}"
@@ -188,21 +178,14 @@ def _gap(box_a, box_b) -> float:
     return max(dx, dy)
 
 
-# ----------------------------------------------------------------------
-# Packing
-# ----------------------------------------------------------------------
-
-
 def test_mixed_size_macros_fit_the_design_sized_core():
-    """The issue's reproduction: one big SRAM and two small partitions in a
-    core sized for the design, which the equal-slot rule could not do (#626)."""
+    """One big SRAM and two small partitions fit a core sized for the design."""
     macros = [SRAM, PART_A, PART_B]
     placement = _place(macros, 695.0, 695.0, 12.0)
 
     assert placement is not None, "the issue's three macros must fit 695 x 695"
-    # Tallest first: the SRAM opens the bottom row, the first partition fits
-    # beside it, the second starts the row above — rather than each macro
-    # taking a slot sized for the SRAM, which needed ~2x this core.
+    # Tallest first: the SRAM opens the bottom row, the first partition fits beside it,
+    # the second starts the row above.
     assert placement == {
         "sram": (12.0, 12.0),
         "part_a": (503.78, 12.0),
@@ -241,14 +224,14 @@ def test_the_halo_is_kept_to_every_core_edge():
 
 
 def test_a_larger_halo_can_push_a_macro_into_the_next_row():
-    """Same core, same macros: the halo is what decides how many fit a row."""
+    """Same core, same macros: the halo decides how many fit a row."""
     macros = [SRAM, PART_A, PART_B]
     tight = _place(macros, 695.0, 695.0, 2.0)
     loose = _place(macros, 695.0, 695.0, 12.0)
 
     assert tight is not None and loose is not None
-    # 479.78 + 98.94 + 89.47 = 668.19 um of macro leaves 26.81 um for four
-    # 2 um channels but not for four 12 um ones.
+    # 479.78 + 98.94 + 89.47 = 668.19 um of macro leaves 26.81 um for four 2 um channels
+    # but not for four 12 um ones.
     assert len({y for _, y in tight.values()}) == 1
     assert len({y for _, y in loose.values()}) == 2
 
@@ -264,9 +247,7 @@ def _on_grid(value_um: float, pitch_um: float, origin_um: float) -> bool:
 
 
 def test_origins_are_snapped_to_the_site_grid_from_the_core_corner():
-    """Rows start at the core's lower-left corner, so that — not zero — is
-    where the site grid is counted from; the y pitch is the row height and
-    the x pitch the site width."""
+    """Origins snap to the site grid counted from the core's lower-left corner."""
     macros = [("odd", 100.003, 100.007), PART_A]
     origin = 20.0
     placement = _place(
@@ -282,11 +263,10 @@ def test_origins_are_snapped_to_the_site_grid_from_the_core_corner():
 
 
 def test_issue_639_second_shelf_lands_on_a_row_boundary():
-    """The regression in #639: two OpenRAM 1 kB SRAMs on sky130hd at a 20 um
-    core margin and halo. The second shelf used to start at 457.5 um, 0.42 um
-    under the row boundary at 457.92 um; the detailed placer's padding check
-    rounded the macro up to that row and scanned the row above the macro's
-    top edge as the macro's own, failing DPL-0011 on one macro.
+    """The second shelf of two OpenRAM 1 kB SRAMs on sky130hd lands on a row boundary.
+
+    At a 20 um core margin and halo, a shelf starting just under the boundary fails
+    DPL-0011 in the detailed placer.
     """
     macros = [("sram_a", *SRAM[1:]), ("sram_b", *SRAM[1:])]
     origin, halo = 20.0, 20.0
@@ -297,9 +277,8 @@ def test_issue_639_second_shelf_lands_on_a_row_boundary():
     site_w, row_h = SKY130HD_SITE
     ys = sorted(y for _, y in placement.values())
     assert len(ys) == 2, "the two SRAMs must stack, one per shelf"
-    # Row 8 (20 + 8 * 2.72 = 41.76 um) is the first row that clears the
-    # 20 um halo; the shelf above it, 41.76 + 397.5 + 20 = 459.26 um, snaps
-    # up to row 162.
+    # Row 8 (20 + 8 * 2.72 = 41.76 um) is the first row that clears the 20 um halo; the
+    # shelf above it, 41.76 + 397.5 + 20 = 459.26 um, snaps up to row 162.
     assert math.isclose(ys[0], origin + 8 * row_h, abs_tol=1e-9)
     assert math.isclose(ys[1], origin + 162 * row_h, abs_tol=1e-9)
     for name, (x, y) in placement.items():
@@ -320,9 +299,8 @@ def test_equal_size_macros_are_placed_in_rows_left_to_right():
     placement = _place(macros, 460.0, 460.0, 10.0)
 
     assert placement is not None
-    # 4 x 100 um plus five 10 um channels is 450 um, so all four share the
-    # bottom row of a 460 um core, in name order, and none is centred in a
-    # slot of its own.
+    # 4 x 100 um plus five 10 um channels is 450 um, so all four share the bottom row of
+    # a 460 um core, in name order.
     assert sorted(placement.values()) == [
         (10.0, 10.0),
         (120.0, 10.0),
@@ -352,15 +330,9 @@ def test_placement_is_deterministic_and_independent_of_input_order():
 
     assert first == again
     assert first == reversed_input
-    # `part_a` and `part_c` have identical footprints, so only the name
-    # breaks the tie; the tie must break the same way every time, and the
-    # earlier name is packed first — here into the row below.
+    # `part_a` and `part_c` have identical footprints, so only the name breaks the tie;
+    # the earlier name is packed first, into the row below.
     assert first["part_a"][1] < first["part_c"][1]
-
-
-# ----------------------------------------------------------------------
-# No fit
-# ----------------------------------------------------------------------
 
 
 def test_a_macro_wider_than_the_core_does_not_fit():
@@ -394,27 +366,19 @@ def test_the_reported_minimum_core_actually_fits_and_a_hair_less_does_not():
 
 
 def test_no_fit_reports_the_impossible_case_rather_than_a_number():
-    # One macro 100x taller than a core no scaling inside the search range
-    # can reach.
+    # One macro 100x taller than the core, beyond any scaling in the search range.
     message = _no_fit_message([("huge", 10.0, 100000.0)], 10.0, 10.0, 1.0)
 
     assert "no core up to 64x this one fits these macros at this halo" in message
 
 
-# ----------------------------------------------------------------------
-# Rendered flow
-# ----------------------------------------------------------------------
-
-
 def test_the_rendered_flow_sources_the_packer_and_is_valid_tcl():
-    """The packer file is substituted into pnr.tcl verbatim, so the flow's
-    own call has to agree with its procedure names and arity."""
+    """The flow's call must agree with the packer's procedure names and arity."""
     source = files("rtl_buddy.pnr").joinpath("macro_pack.tcl").read_text()
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
 
     assert "{{ macro_pack_procs }}" in template
-    # The call itself is the `pack` placement block, rendered into the
-    # template's `{{ macro_place_block }}` (#95).
+    # The call is the `pack` placement block rendered into `macro_place_block`.
     from rtl_buddy.config.pnr import PnrFloorplan
     from rtl_buddy.tools.pnr_openroad import _macro_place_block
 
@@ -427,8 +391,7 @@ def test_the_rendered_flow_sources_the_packer_and_is_valid_tcl():
     assert _run("set result [info args rb::macro_pack::solve]") == (
         "core macros halo grid dbu_per_micron anchor keepouts"
     )
-    # The two trailing arguments are optional, and default to the packing
-    # the flow did before they existed (#105).
+    # The two trailing arguments are optional and default to the plain packing.
     assert (
         _run(
             "set result [list [info default rb::macro_pack::solve anchor a] $a "
@@ -438,10 +401,6 @@ def test_the_rendered_flow_sources_the_packer_and_is_valid_tcl():
     )
     assert source.strip().endswith("}")
 
-
-# ----------------------------------------------------------------------
-# Anchor corner (#105)
-# ----------------------------------------------------------------------
 
 ANCHORS = ("lower-left", "lower-right", "upper-left", "upper-right")
 
@@ -476,8 +435,9 @@ def test_an_explicit_lower_left_anchor_is_the_default_packing():
 
 @pytest.mark.parametrize("anchor", ANCHORS)
 def test_each_anchor_is_the_default_packing_reflected_into_its_corner(anchor):
-    """On a core the grid divides evenly, an anchor is an exact reflection:
-    the same rows, the same order, the same channels, from another corner."""
+    """On a core the grid divides evenly, an anchor is an exact reflection of the
+    default packing.
+    """
     macros = [SRAM, PART_A, PART_B, ("part_c", 150.0, 60.0)]
     base = _place(macros, 695.0, 695.0, 12.0)
     anchored = _place(macros, 695.0, 695.0, 12.0, anchor=anchor)
@@ -497,10 +457,10 @@ def test_a_single_macro_lands_in_the_anchor_corner_inside_the_halo(anchor):
 
 @pytest.mark.parametrize("anchor", ANCHORS)
 def test_anchored_origins_stay_on_the_site_grid_counted_from_the_lower_left(anchor):
-    """The rows belong to the real core, so a mirrored packing still snaps
-    every *origin* (the macro's lower-left corner) to the grid counted from
-    the core's lower-left corner — on a core the grid does not divide, and
-    with footprints that are no multiple of it either."""
+    """Mirrored origins still snap to the grid counted from the core's lower-left
+    corner, even when the grid does not divide the core and footprints are not grid
+    multiples.
+    """
     macros = [("odd", 100.003, 100.007), PART_A, ("slab", 180.01, 30.3)]
     origin, halo = 20.0, 3.3331
     core_w, core_h = 400.123, 401.777
@@ -533,8 +493,9 @@ def test_anchored_origins_stay_on_the_site_grid_counted_from_the_lower_left(anch
 
 @pytest.mark.parametrize("anchor", ANCHORS)
 def test_the_first_macro_hugs_the_anchor_corner_within_one_grid_step(anchor):
-    """Snapping away from the anchor edge widens that channel by less than
-    one site (x) or one row (y), never more."""
+    """Snapping away from the anchor edge widens that channel by less than one site (x)
+    or row (y).
+    """
     origin, halo = 20.0, 20.0
     core_w, core_h = 960.123, 960.777
     placement = _place(
@@ -552,8 +513,9 @@ def test_the_first_macro_hugs_the_anchor_corner_within_one_grid_step(anchor):
 
 @pytest.mark.parametrize("anchor", ANCHORS)
 def test_issue_639_rows_stay_row_aligned_from_every_corner(anchor):
-    """The #639 pair of SRAMs, stacked one per shelf, from each corner: both
-    bottoms on row boundaries and the channel between them at least the halo."""
+    """Two SRAMs stacked one per shelf, from each corner: both bottoms on row boundaries
+    and the channel at least the halo.
+    """
     macros = [("sram_a", *SRAM[1:]), ("sram_b", *SRAM[1:])]
     origin, halo = 20.0, 20.0
     placement = _place(
@@ -586,7 +548,7 @@ def test_the_no_fit_message_names_a_non_default_anchor():
     assert (
         "packing from the upper-right core corner (floorplan.macro-anchor)" in message
     )
-    # The minimum is still one this packer, from this corner, would fit.
+    # The minimum is one this packer, from this corner, would fit.
     quoted = [
         line for line in message.splitlines() if "smallest core at this aspect" in line
     ][0]
@@ -594,11 +556,6 @@ def test_the_no_fit_message_names_a_non_default_anchor():
         float(v) for v in quoted.split(":")[1].replace("um", "").split("x")
     )
     assert _place(macros, width, height, 12.0, anchor="upper-right") is not None
-
-
-# ----------------------------------------------------------------------
-# Hard-blockage keep-outs (#105)
-# ----------------------------------------------------------------------
 
 
 def _overlaps(box, rect) -> bool:

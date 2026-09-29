@@ -1,25 +1,19 @@
-"""
-Tests for #558 phase 2 — the `rb phys` verbs and the artefacts they read.
+"""Tests for the `rb phys` verbs and the artefacts they read.
 
-What these pin:
+Pinned behaviour:
 
-* `rb phys summary` / `module` / `instance` answer from a run's
-  `phys-manifest.json` and the model it names, and run nothing;
-* their `--machine` payloads are exactly the dicts the payload builders
-  return, since a later MCP tool wraps them verbatim;
-* discovery precedence: an explicit `--manifest` beats `--phys-dir`, which
-  beats the newest manifest under the project root;
-* a model with only one half says which half is missing and which command
-  would produce it, rather than reporting zeros;
-* an unknown module or instance exits 2 with near misses, and a project
-  with no artefacts at all exits 2 naming the commands that write them.
+- `rb phys summary` / `module` / `instance` answer from a run's `phys-manifest.json` and
+  the model it names, and run nothing;
+- their `--machine` payloads are exactly the dicts the payload builders return;
+- discovery precedence is an explicit `--manifest`, then `--phys-dir`, then the newest
+  manifest under the project root;
+- a model with only one half names the missing half and the command that produces it,
+  rather than reporting zeros;
+- an unknown module or instance exits 2 with near misses, and a project with no
+  artefacts exits 2 naming the commands that write them.
 
-Console assertions read `result.output` rather than caplog: the CLI's own
-events do not reach a caplog handler. Every such assertion of more than
-one word goes through `_flat()` — the console is Rich, Rich wraps at the
-terminal width, and the width is a property of the machine the suite
-runs on, so a sentence asserted verbatim passes on a wide terminal and
-fails in CI with the break landing mid-phrase (#570).
+Console assertions read `result.output`, not caplog. Any assertion on more than one word
+goes through `_flat()`, because Rich wraps at the terminal width.
 """
 
 from __future__ import annotations
@@ -56,9 +50,8 @@ _MODULES = [
     {"module": "sub", "cell_count": 40, "area_um2": 96.0},
 ]
 
-# The leaves name Liberty cells, the synthesis rows name RTL modules —
-# two namespaces, kept apart here so `_COLLIDING_INSTANCES` below is the
-# case it is meant to be.
+# Leaves name Liberty cells and synthesis rows name RTL modules; the namespaces are kept
+# apart so `_COLLIDING_INSTANCES` is a real collision.
 _INSTANCES = [
     {
         "instance_path": "u_sub/_64_",
@@ -79,14 +72,13 @@ _INSTANCES = [
 ]
 
 
-#: A design whose Liberty cell is named after one of its RTL modules.
+# A design whose Liberty cell is named after one of its RTL modules.
 _COLLIDING_INSTANCES = [{**row, "module": "sub"} for row in _INSTANCES]
 
 
-#: Both halves of a fixture run record the same netlist hash, because
-#: that is what a `rb synth` then `rb power` pair records and what the
-#: merge requires before either half inherits the other (see
-#: :func:`rtl_buddy.phys.model.may_inherit_other_half`).
+# Both halves of a fixture run record the same netlist hash, as an `rb synth` then `rb
+# power` pair does; the merge requires it before either half inherits the other (see
+# :func:`rtl_buddy.phys.model.may_inherit_other_half`).
 _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
@@ -203,8 +195,8 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", root)
     _write_run(root, "old_synth", modules=_MODULES, mtime=1_000_000)
     _write_run(root, "power_only", instances=_INSTANCES, mtime=1_500_000)
-    # A power run off a routed database: no netlist to hash, so nothing a
-    # later synthesis could pair its own netlist with.
+    # A power run off a routed database has no netlist to hash, so no later synthesis
+    # can pair with it.
     _write_run(
         root,
         "pnr_power",
@@ -239,14 +231,10 @@ def phys_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _flat(output: str) -> str:
-    """The console output with Rich's wrapping folded away, so a sentence
-    longer than a line can still be asserted on as one.
+    """The console output with Rich's wrapping folded away.
 
-    Not an optional convenience: Rich wraps to the *terminal's* width,
-    which is the CI runner's and not the developer's, so `"rb synth" in
-    result.output` is a test that passes locally and fails on a narrower
-    console with the break between the two words (#570). Any assertion
-    on more than one word of console text belongs here.
+    Rich wraps to the terminal's width, which differs between CI and a developer
+    machine, so multi-word console assertions belong here.
     """
     return " ".join(output.split())
 
@@ -254,9 +242,6 @@ def _flat(output: str) -> str:
 def _machine(result) -> dict:
     assert result.exit_code in (0, 1, 2), result.output
     return json.loads(result.output.strip().splitlines()[-1])
-
-
-# --- summary ----------------------------------------------------------------
 
 
 def test_phys_summary_reads_the_newest_manifest(phys_project):
@@ -315,9 +300,9 @@ def test_phys_summary_limit_truncates_the_rankings(phys_project):
 
 
 def test_phys_summary_limit_heads_both_rankings_and_says_so(phys_project):
-    """The shared flag is unchanged, and the payload reports what each
-    ranking was headed at — the per-ranking block reads back as `--limit`
-    when neither override is given (#606)."""
+    """`--limit` still heads both rankings, and the payload reports each ranking's own
+    limit.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["--machine", "phys", "summary", "--limit", "1"])
@@ -328,10 +313,9 @@ def test_phys_summary_limit_heads_both_rankings_and_says_so(phys_project):
 
 
 def test_phys_summary_instances_limit_none_drops_the_instance_rows(phys_project):
-    """The #606 ask: the complete module table without every leaf instance
-    row behind it. `--limit 0` means *all* on both rankings, so "none" is
-    a word rather than a number — and `counts` still reports how many rows
-    the model holds, so an empty ranking cannot be read as an empty half."""
+    """`--instances-limit none` drops the instance rows while `counts` still reports how
+    many rows the model holds.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(
@@ -351,8 +335,7 @@ def test_phys_summary_instances_limit_none_drops_the_instance_rows(phys_project)
     assert [row["module"] for row in payload["modules"]] == ["blk", "sub"]
     assert payload["instances"] == []
     assert payload["limits"] == {"modules": 0, "instances": "none"}
-    # Truthful about what was suppressed: the model's own row counts, and
-    # the halves block, are what they were.
+    # The model's row counts and the halves block are unchanged by suppression.
     assert payload["counts"] == {"modules": 2, "instances": 2}
     assert payload["missing_halves"] == []
 
@@ -373,8 +356,7 @@ def test_phys_summary_modules_limit_overrides_the_shared_limit(phys_project):
 
 
 def test_phys_summary_modules_limit_none_renders_no_module_table(phys_project):
-    """The console obeys the same suppression the payload does, since both
-    read the one list the builder returned."""
+    """The console suppresses the same list the payload does."""
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["phys", "summary", "--modules-limit", "none"])
@@ -386,8 +368,9 @@ def test_phys_summary_modules_limit_none_renders_no_module_table(phys_project):
 
 @pytest.mark.parametrize("bad", ["all", "-1", ""])
 def test_phys_summary_rejects_a_per_ranking_limit_it_cannot_read(phys_project, bad):
-    """A usage error, not a traceback, and not a silent fallback to a
-    number the caller did not write."""
+    """An unreadable per-ranking limit is a usage error, not a traceback or a silent
+    fallback.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(
@@ -395,15 +378,14 @@ def test_phys_summary_rejects_a_per_ranking_limit_it_cannot_read(phys_project, b
     )
 
     assert result.exit_code == 2, result.output
-    # The usage error is click's own rendering, which colours the flag
-    # name piecewise when the console is forced to colour (as CI's is).
+    # The usage error is click's own rendering, which colours the flag name piecewise
+    # when the console is forced to colour.
     plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
     assert "instances-limit" in _flat(plain)
 
 
 def test_phys_summary_without_the_overrides_is_unchanged(phys_project):
-    """The flags are additive: an invocation that names neither gets the
-    ranking pair it always got, headed at the same default."""
+    """Without the overrides the ranking pair and default limit are unchanged."""
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["--machine", "phys", "summary"])
@@ -419,9 +401,9 @@ def test_phys_summary_without_the_overrides_is_unchanged(phys_project):
 
 
 def test_summary_payload_does_not_rank_a_suppressed_half(phys_project):
-    """Suppression is worth having only if it skips the work: a 300k-row
-    ranking costs a sort and a serialisation before anyone drops it. The
-    builder is asked for a model whose rows would raise if sorted."""
+    """A suppressed ranking is not sorted: the builder is given rows that raise if
+    sorted.
+    """
     ctx = phys_query_mod.load_context(str(phys_project))
 
     class _Explodes(dict):
@@ -435,11 +417,8 @@ def test_summary_payload_does_not_rank_a_suppressed_half(phys_project):
     )
 
     assert payload["instances"] == []
-    # The count is a len(), not a read of the rows, so it stays truthful.
+    # The count is a len(), not a read of the rows.
     assert payload["counts"]["instances"] == 2
-
-
-# --- discovery precedence ---------------------------------------------------
 
 
 def test_explicit_phys_dir_beats_discovery(phys_project):
@@ -498,10 +477,7 @@ def test_phys_verbs_fail_loudly_with_no_artefacts(tmp_path, monkeypatch):
 def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
     phys_project, document
 ):
-    """The finding (#561 review, Codex P2). A JSON root that is not an object
-    used to raise `AttributeError` out of the query layer, so `--machine`
-    emitted a traceback and no envelope — the one thing an agent surface
-    cannot read. It is a refusal like any other now."""
+    """A JSON root that is not an object yields an error envelope under `--machine`."""
     (phys_project / "verif" / "blk" / "artefacts" / "both" / document).write_text(
         "[]", encoding="utf-8"
     )
@@ -514,9 +490,7 @@ def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
     error = envelope["payload"]["error"]
     assert document in error and "an array" in error
 
-    # Without machine mode it is the same refusal the other unanswerable
-    # reads make: a `FatalRtlBuddyError` carrying the path, not a traceback
-    # from somewhere inside the reader.
+    # Without machine mode it raises a `FatalRtlBuddyError` carrying the path.
     runner, rb = _runner()
     rendered = runner.invoke(rb.app, ["phys", "summary"])
     assert rendered.exit_code != 0
@@ -528,9 +502,7 @@ def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
     "document, field, malformed, described",
     [
         (MANIFEST_FILENAME, "synth", [], "an array"),
-        # A list-valued `phys_dir` passed the block check until #563
-        # round 7 and then raised `TypeError` out of `project_root_for`,
-        # which is a traceback and no envelope.
+        # A list-valued `phys_dir` yields an error envelope, not a `TypeError`.
         (MANIFEST_FILENAME, "phys_dir", ["artefacts"], "an array"),
         ("phys-model.json", "modules", 7, "a number"),
         ("phys-model.json", "totals", "x", "a string"),
@@ -545,10 +517,9 @@ def test_a_document_that_is_not_an_object_still_yields_an_error_envelope(
 def test_a_document_whose_blocks_are_the_wrong_shape_yields_an_error_envelope(
     phys_project, document, field, malformed, described
 ):
-    """The finding (#561 review, Codex P2). The version check passes a
-    document whose blocks are the wrong shape straight into the builders,
-    where the failure is a `TypeError` or an `AttributeError` — a traceback
-    and no envelope, which is the one thing an agent surface cannot read."""
+    """A document whose blocks have the wrong shape yields an error envelope, not a
+    traceback.
+    """
     path = phys_project / "verif" / "blk" / "artefacts" / "both" / document
     body = json.loads(path.read_text(encoding="utf-8"))
     body[field] = malformed
@@ -563,9 +534,6 @@ def test_a_document_whose_blocks_are_the_wrong_shape_yields_an_error_envelope(
     assert document in error
     assert f"`{field}`" in error
     assert described in error
-
-
-# --- module -----------------------------------------------------------------
 
 
 def test_phys_module_reports_a_liberty_cells_instance_power(phys_project):
@@ -591,10 +559,9 @@ def test_phys_module_reports_an_rtl_modules_own_row(phys_project):
 
 
 def test_phys_module_names_both_namespaces_on_a_collision(phys_project):
-    """The finding (#561 review, Codex P2): one name, two measurements of two
-    different things. The payload says so and the CLI prints it, rather than
-    showing a module's cells and area beside a cell type's power as though
-    they were one block's numbers."""
+    """One name that is both a module and a cell type: the payload and CLI name both
+    namespaces instead of mixing their numbers.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(
@@ -629,15 +596,15 @@ def test_phys_module_renders_its_instances(phys_project):
 
     assert result.exit_code == 0, result.output
     assert "instances of DFF_X1: 2/2" in _flat(result.output)
-    # The table ellipsizes a path too long for the column, as the coverage
-    # tables do; the prefix is what a reader matches on.
+    # The table ellipsizes a path too long for the column; the prefix is what a reader
+    # matches on.
     assert "u_sub/u_leaf" in result.output
 
 
 def test_phys_module_prints_the_join_note_instead_of_a_bare_empty_table(phys_project):
-    """`blk` is an RTL module; every instance row names a Liberty cell, so
-    the join misses and the user must be told that rather than shown an
-    empty instances section."""
+    """When the join misses because every instance row names a Liberty cell, the CLI
+    prints a join note instead of an empty instances section.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["phys", "module", "blk"])
@@ -655,15 +622,14 @@ def test_phys_module_carries_the_join_note_in_its_machine_payload(phys_project):
     payload = _machine(result)["payload"]
     assert payload["instance_count"] == 0
     assert payload["instance_join"] == INSTANCE_JOIN_LIBERTY_ONLY
-    # A cell name the join does reach carries no note at all.
+    # A cell name the join reaches carries no note.
     runner, rb = _runner()
     reached = _machine(runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1"]))
     assert reached["payload"]["instance_join"] is None
 
 
 def test_phys_instance_accepts_the_dotted_spelling_of_a_stored_path(phys_project):
-    """OpenSTA stores `/`; the hub pane and the RTL side spell the same
-    path with `.`, and pasting one into the other must still resolve."""
+    """OpenSTA stores `/`; the dotted spelling of the same path also resolves."""
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["--machine", "phys", "instance", "u_sub._64_"])
@@ -674,8 +640,7 @@ def test_phys_instance_accepts_the_dotted_spelling_of_a_stored_path(phys_project
 
 
 def test_a_negative_limit_is_rejected_rather_than_silently_meaning_all(phys_project):
-    """`0` means every row, so a negative value is a typo, not a request —
-    and the help says `min=0`, which the parser now agrees with."""
+    """A negative limit is rejected: `0` means every row and the help says `min=0`."""
     for verb, extra in (
         ("summary", []),
         ("module", ["sub"]),
@@ -687,9 +652,7 @@ def test_a_negative_limit_is_rejected_rather_than_silently_meaning_all(phys_proj
 
 
 def test_phys_module_machine_payload_honours_the_limit(phys_project):
-    """The finding (#561 review, Codex P2). Under `--machine` the payload
-    *is* the output, so a `--limit` the console honoured and the payload
-    ignored was the flag lying to the one consumer that cannot re-count."""
+    """Under `--machine` the payload honours `--limit`."""
     runner, rb = _runner()
     complete = _machine(
         runner.invoke(rb.app, ["--machine", "phys", "module", "DFF_X1"])
@@ -703,8 +666,8 @@ def test_phys_module_machine_payload_honours_the_limit(phys_project):
     )["payload"]
     assert [row["instance_path"] for row in headed["instances"]] == ["u_sub/_64_"]
     assert headed["limit"] == 1
-    # A headed list is self-describing, and the total is the whole cell
-    # type's rather than the listed rows'.
+    # A headed list is self-describing, and the total is the whole cell type's rather
+    # than the listed rows'.
     assert headed["instance_count"] == 2
     assert headed["power"] == complete["power"]
 
@@ -716,8 +679,7 @@ def test_phys_module_machine_payload_honours_the_limit(phys_project):
 
 
 def test_phys_module_console_counts_the_instances_it_did_not_list(phys_project):
-    """The table is now the payload's own list, so the `n/total` line has
-    to come from `instance_count` rather than from what it was handed."""
+    """The `n/total` line comes from `instance_count`, not from the listed rows."""
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["phys", "module", "DFF_X1", "--limit", "1"])
@@ -727,7 +689,7 @@ def test_phys_module_console_counts_the_instances_it_did_not_list(phys_project):
 
 
 def test_phys_instance_machine_payload_honours_the_limit(phys_project):
-    """The finding (#561 review, Codex P2), the subtree half of it."""
+    """Under `--machine` the instance payload's subtree rows honour the limit."""
     runner, rb = _runner()
     complete = _machine(
         runner.invoke(rb.app, ["--machine", "phys", "instance", "u_sub"])
@@ -784,9 +746,6 @@ def test_phys_module_prints_candidates_without_machine_mode(phys_project):
     assert "did you mean" in _flat(result.output)
 
 
-# --- instance ---------------------------------------------------------------
-
-
 def test_phys_instance_answers_an_exact_leaf(phys_project):
     runner, rb = _runner()
 
@@ -812,9 +771,8 @@ def test_phys_instance_rolls_up_a_subtree(phys_project):
     ]
     assert payload["rollup"]["instances"] == 2
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
-    # No area: the model has no per-cell area to sum, and joining the
-    # module's total in once per leaf would multiply it (Phase 5 owns the
-    # hierarchy join that can answer this).
+    # No area: the model has no per-cell area to sum, and joining the module's total
+    # once per leaf would multiply it.
     assert "area_um2" not in payload["rollup"]
     assert "modules_matched" not in payload["rollup"]
 
@@ -830,9 +788,8 @@ def test_phys_instance_renders_the_rollup(phys_project):
     assert "subtree area" not in _flat(result.output)
 
 
-#: `u_blk` is a measured leaf and a prefix of two more rows: the shape
-#: `instance_payload`'s docstring allows and the console has to be honest
-#: about.
+# `u_blk` is a measured leaf and a prefix of two more rows, the shape
+# `instance_payload`'s docstring allows.
 _LEAF_WITH_DESCENDANTS = [
     {"instance_path": "u_blk", "module": "DFF_X1", "total_uw": 4.0},
     {"instance_path": "u_blk/_1_", "module": "INV_X1", "total_uw": 1.0},
@@ -843,10 +800,9 @@ _LEAF_WITH_DESCENDANTS = [
 def test_phys_instance_console_does_not_describe_a_subtree_it_did_not_sum(
     phys_project,
 ):
-    """The finding (#561 round-16, Codex P2). The header reads the match kind
-    and the rollup count off the same payload, so an exact match that summed
-    its descendants printed "exact match" over a subtree total. It now sums
-    the named row, and says why the rows below it are on the table."""
+    """An exact match sums its own row, and the header says why the rows below it are
+    listed instead of describing an unsummed subtree.
+    """
     phys_dir = _write_run(
         phys_project, "both_shapes", instances=_LEAF_WITH_DESCENDANTS, mtime=3_200_000
     )
@@ -896,8 +852,9 @@ def test_phys_instance_on_a_synth_only_model_names_the_power_command(phys_projec
 def test_the_missing_half_note_offers_the_merge_only_when_it_can_happen(
     phys_project,
 ):
-    """A power half that recorded a netlist hash is one a later `rb synth`
-    can merge onto, so the plain note is the true one."""
+    """A power half that recorded a netlist hash can be merged onto by a later `rb
+    synth`, so the plain note is the true one.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(
@@ -913,10 +870,9 @@ def test_the_missing_half_note_offers_the_merge_only_when_it_can_happen(
 
 
 def test_the_missing_half_note_never_promises_an_impossible_merge(phys_project):
-    """The finding (#561 round-10 review, Codex P2). A `netlist-source: pnr`
-    power half records no netlist hash, so the symmetric provenance gate
-    makes a later `rb synth` *replace* the model rather than complete it —
-    and the note was sending the reader to destroy the rows they have."""
+    """A `netlist-source: pnr` power half records no netlist hash, so a later `rb synth`
+    would replace the model; the note must not offer that merge.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(
@@ -933,9 +889,9 @@ def test_the_missing_half_note_never_promises_an_impossible_merge(phys_project):
 
 
 def test_phys_instance_says_which_half_is_missing(phys_project):
-    """The verb reads a power-only model perfectly well, and the reader still
-    needs telling that `area` and the module rows are one command away — the
-    same note `summary` and `module` print."""
+    """`rb phys instance` on a power-only model says that `area` and the module rows are
+    one command away, like `summary` and `module`.
+    """
     runner, rb = _runner()
 
     result = runner.invoke(
@@ -946,9 +902,6 @@ def test_phys_instance_says_which_half_is_missing(phys_project):
     assert result.exit_code == 0, result.output
     assert "no per-module rows in this model" in _flat(result.output)
     assert "rb synth" in _flat(result.output)
-
-
-# --- rb phys runs (#568) ----------------------------------------------------
 
 
 def test_phys_runs_lists_every_run_newest_first(phys_project):
@@ -976,8 +929,9 @@ def test_phys_runs_lists_every_run_newest_first(phys_project):
 
 
 def test_phys_runs_reports_the_power_mode_and_the_experiment_identity(phys_project):
-    """The reason the verb exists: two runs of one design differ by their
-    configuration and their stimulus, not by their top."""
+    """Two runs of one design differ by configuration and stimulus, so `runs` reports
+    the power mode and experiment identity.
+    """
     runner, rb = _runner()
 
     payload = _machine(runner.invoke(rb.app, ["--machine", "phys", "runs"]))["payload"]
@@ -986,8 +940,7 @@ def test_phys_runs_reports_the_power_mode_and_the_experiment_identity(phys_proje
     assert newest["mode"] == "dynamic"
     assert newest["activity"]["label"] == "saif csr_smoke"
     assert newest["fingerprint"].startswith("nangate45 · timing-opt · opts ")
-    # A run that recorded none of it says so with nulls, not with zeros
-    # or with an invented default.
+    # A run that recorded none of it reports nulls, not zeros or an invented default.
     older = next(entry for entry in payload["runs"] if entry["run"] == "power_only")
     assert older["mode"] is None and older["activity"] is None
     assert older["fingerprint"] is None
@@ -1000,9 +953,8 @@ def test_phys_runs_renders_a_table_naming_the_default_run(phys_project):
 
     assert result.exit_code == 0, result.output
     flat = _flat(result.output)
-    # The directories are printed under the table, not in it: a table
-    # cell wraps or ellipsises a long path, and this is the one value a
-    # reader copies into the next command.
+    # Directories are printed under the table because a table cell wraps or ellipsizes a
+    # long path.
     assert "verif/blk/artefacts/both" in flat
     assert "verif/blk/artefacts/old_synth" in flat
     assert "* the newest run" in flat
@@ -1010,8 +962,7 @@ def test_phys_runs_renders_a_table_naming_the_default_run(phys_project):
 
 
 def test_the_backends_cell_names_only_the_halves_that_ran():
-    """`none` in a column about what produced this run's numbers is two
-    words of padding for something the absence already says."""
+    """The backends cell names only the halves that ran."""
     assert RtlBuddy._phys_backends({"synth": "yosys", "power": "openroad"}) == (
         "yosys+openroad"
     )
@@ -1020,16 +971,14 @@ def test_the_backends_cell_names_only_the_halves_that_ran():
 
 
 def test_the_power_cell_pairs_the_mode_with_what_drove_it():
-    """The label is the payload's, so the table, the MCP answer and the
-    pane's dropdown say the same words about the same run."""
+    """The power cell pairs the mode with what drove it, using the payload's label."""
     assert (
         RtlBuddy._phys_power_cell(
             {"mode": "dynamic", "activity": {"label": "saif csr_smoke"}}
         )
         == "dynamic (saif csr_smoke)"
     )
-    # A document from before the mode was recorded says what it knows
-    # rather than inventing the half it does not.
+    # A document that predates the recorded mode reports only what it knows.
     assert RtlBuddy._phys_power_cell({"mode": "static", "activity": None}) == "static"
     assert RtlBuddy._phys_power_cell({"mode": None, "activity": None}) == "-"
 
@@ -1046,8 +995,9 @@ def test_phys_runs_heads_the_list_and_says_it_did(phys_project):
 def test_phys_runs_on_a_project_with_no_artefacts_is_not_an_error(
     tmp_path, monkeypatch
 ):
-    """The other three verbs exit 2 — they were asked about a run. This one
-    is asking what runs there are, and "none" is an answer."""
+    """`rb phys runs` on a project with no artefacts lists none and exits 0; the other
+    verbs exit 2.
+    """
     root = tmp_path / "empty"
     root.mkdir()
     shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", root)
@@ -1071,15 +1021,11 @@ def test_phys_runs_machine_payload_is_the_builders_verbatim(phys_project):
     )
 
 
-# --- the read verbs write nothing, including the log -------------------------
-
-
 def _log_is_writable_only_by_owner(path: Path) -> bool:
     """Whether ``chmod`` actually denies this process a write.
 
-    Root ignores the permission bits, and some CI images run as root, so
-    the test below would pass there for the wrong reason (nothing was
-    refused because nothing could be). Checked rather than assumed.
+    Root ignores permission bits, so the test below would pass as root for the wrong
+    reason.
     """
     try:
         with path.open("a"):
@@ -1089,13 +1035,11 @@ def _log_is_writable_only_by_owner(path: Path) -> bool:
 
 
 def test_a_read_verb_does_not_open_the_project_log_for_writing(phys_project):
-    """A read verb answers from artefacts on disk and writes nothing —
-    the log included.
+    """A read verb writes nothing, the log included.
 
-    The file handler is opened for writing and a process's first open of
-    a path truncates it, so attaching one here failed a read in a
-    read-only checkout and, worse, silently emptied the log of the run
-    the reader was asking about. `list_only=True` now skips it (#561).
+    Opening the log file handler for writing truncates it, which fails in a read-only
+    checkout and empties the log of the run being asked about. Read verbs skip it via
+    `list_only=True`.
     """
     log = phys_project / "rtl_buddy.log"
     log.write_text("the flow that produced these artefacts said this\n")
@@ -1115,12 +1059,7 @@ def test_a_read_verb_does_not_open_the_project_log_for_writing(phys_project):
 
 
 def test_a_read_verb_leaves_the_previous_run_s_log_intact(phys_project):
-    """The truncating half of the same bug, on a writable log.
-
-    Asking what the last run measured is the moment its log matters
-    most; a read that empties it takes away the evidence it was called
-    to explain.
-    """
+    """A read verb leaves the previous run's log intact on a writable log."""
     log = phys_project / "rtl_buddy.log"
     log.write_text("power: OpenROAD reported 3.171 uW\n")
     runner, rb = _runner()

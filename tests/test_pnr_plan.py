@@ -1,4 +1,4 @@
-"""Block-before-top ordering of a whole-suite `rb pnr` (#95 step 4)."""
+"""Tests for block-before-top ordering of a whole-suite `rb pnr`."""
 
 from pathlib import Path
 
@@ -41,9 +41,6 @@ def _names(plan):
     return [p.name for p in plan]
 
 
-# --- the plan ----------------------------------------------------------------
-
-
 def test_a_suite_with_no_blocks_keeps_its_file_order(tmp_path):
     suite = _suite(tmp_path / "pnr.yaml", _run("c"), _run("a"), _run("b"))
 
@@ -54,8 +51,9 @@ def test_a_suite_with_no_blocks_keeps_its_file_order(tmp_path):
 
 
 def test_blocks_go_before_the_run_that_consumes_them(tmp_path):
-    """The top is listed first; its two blocks still go first, in file order,
-    and the unrelated run keeps its place relative to them."""
+    """The top is listed first; its two blocks run first in file order, and the
+    unrelated run keeps its place.
+    """
     suite = _suite(
         tmp_path / "pnr.yaml",
         _run("top", [("csr", "csr_pnr", None), ("cmp", "cmp_pnr", None)]),
@@ -83,8 +81,9 @@ def test_a_block_can_itself_be_built_from_blocks(tmp_path):
 
 
 def test_a_block_in_another_pnr_yaml_is_pulled_in_first(tmp_path):
-    """Asking for a suite asks for everything it is built from — and that
-    block's own blocks, in their own file, in turn."""
+    """Asking for a suite pulls in the blocks it is built from, and their blocks in
+    turn.
+    """
     _suite(tmp_path / "leaf" / "pnr.yaml", _run("leaf_pnr"), _run("unrelated"))
     _suite(
         tmp_path / "blk" / "pnr.yaml",
@@ -175,12 +174,9 @@ def test_another_file_is_loaded_once(tmp_path):
 
     plan = pnr_plan.plan_pnr_runs(suite, load_suite=_load)
 
-    # Each top as soon as its own block has run.
+    # Each top runs as soon as its own block has run.
     assert _names(plan) == ["x", "t1", "y", "t2"]
     assert len(loads) == 1
-
-
-# --- the driver --------------------------------------------------------------
 
 
 class _Locks:
@@ -192,8 +188,9 @@ class _Locks:
 
 
 def _driver(monkeypatch, verdicts):
-    """An RtlBuddy whose P&R runner records the order and answers from
-    ``verdicts`` (run name -> pass?), default pass."""
+    """An RtlBuddy whose P&R runner records the order and answers from ``verdicts`` (run
+    name to pass?), default pass.
+    """
     ran = []
 
     class _Runner:
@@ -232,9 +229,9 @@ def test_the_driver_runs_blocks_first(tmp_path, monkeypatch):
 
 
 def test_a_failed_block_blocks_its_dependents_naming_it(tmp_path, monkeypatch):
-    """Not attempted, and FAIL — with a stage no xfail marker excuses — so a
-    suite with a broken block never passes. An unrelated run still runs,
-    and a run two levels up is blocked through the one in between."""
+    """A failed block leaves its dependents unattempted and FAIL, transitively, without
+    an xfail excuse. Unrelated runs still run.
+    """
     suite = _suite(
         tmp_path / "pnr.yaml",
         _run("blk"),
@@ -262,8 +259,9 @@ def test_a_failed_block_blocks_its_dependents_naming_it(tmp_path, monkeypatch):
 
 
 def test_a_block_skipped_by_reglvl_does_not_block_its_top(tmp_path, monkeypatch):
-    """The top consumes whatever abstract is published, as a named run
-    does; a missing one fails there, naming the block."""
+    """A block skipped by reglvl does not block its top; the top fails naming the block
+    if no abstract is published.
+    """
     suite = _suite(
         tmp_path / "pnr.yaml",
         _run("blk", reglvl=2000),
@@ -299,8 +297,7 @@ def test_a_pulled_in_run_runs_in_its_own_suite_under_its_own_lock(
 
 
 def test_a_named_run_does_not_pull_in_or_run_its_blocks(tmp_path, monkeypatch):
-    """It consumes the published abstract and fails fast without one; it
-    never re-runs a block behind the user's back."""
+    """A named run consumes the published abstract and never re-runs its blocks."""
     suite = _suite(
         tmp_path / "pnr.yaml", _run("top", [("b", "blk", None)]), _run("blk")
     )
@@ -326,7 +323,9 @@ def test_a_cycle_fails_the_command_before_anything_runs(tmp_path, monkeypatch):
 
 
 def test_an_expected_failure_of_a_block_still_blocks_its_top(tmp_path, monkeypatch):
-    """An XFAIL passes the suite, and published no abstract all the same."""
+    """An XFAIL block passes the suite but publishes no abstract, so it still blocks its
+    top.
+    """
     suite = _suite(
         tmp_path / "pnr.yaml",
         _run("blk", xfail=True),
@@ -385,12 +384,10 @@ def test_two_suites_in_one_directory_defining_one_run_name_are_refused(tmp_path)
         plan_pnr_runs(suite)
 
 
-# --- rb pnr --synth -----------------------------------------------------------
-
-
 def _synth_driver(monkeypatch, verdicts, synth_verdicts):
-    """As `_driver`, with `_do_synth_suite` recording which syntheses ran
-    and answering from ``synth_verdicts`` (synth name -> result)."""
+    """As `_driver`, with `_do_synth_suite` recording which syntheses ran and answering
+    from ``synth_verdicts``.
+    """
     from rtl_buddy.runner.synth_results import SynthFailResults, SynthPassResults
 
     rb, ran = _driver(monkeypatch, verdicts)
@@ -419,9 +416,9 @@ def _synth_run(name, synth, blocks=(), *, reglvl=0):
 
 
 def _synth_yaml(path: Path, *names, blocks=None):
-    """A real synth.yaml (and the models.yaml it reads) defining ``names``;
-    ``blocks`` maps a synthesis to its own `blocks:` list of
-    (block, pnr run, pnr-path)."""
+    """A real synth.yaml and models.yaml defining ``names``; ``blocks`` maps a synthesis
+    to (block, pnr run, pnr-path) entries.
+    """
     text = "rtl-buddy-filetype: synth_config\nsyntheses:\n"
     for name in names:
         text += (
@@ -442,8 +439,9 @@ def _synth_yaml(path: Path, *names, blocks=None):
 
 
 def test_synth_runs_each_synthesis_just_before_its_pnr(tmp_path, monkeypatch):
-    """The top's synthesis reads the blocks' abstracts, so it lands after
-    their P&R — and a synthesis two P&R runs share runs once."""
+    """A top's synthesis runs after its blocks' P&R; a synthesis shared by two P&R runs
+    runs once.
+    """
     _synth_yaml(tmp_path / "synth.yaml", "top_s", "blk_s")
     suite = _suite(
         tmp_path / "pnr.yaml",
@@ -463,7 +461,6 @@ def test_synth_runs_each_synthesis_just_before_its_pnr(tmp_path, monkeypatch):
     assert synth["suite"] == str(tmp_path / "synth.yaml")
     row = RtlBuddy._pnr_result_row(rb, results["top"])
     assert row["synth"] == synth
-    # Taken up front, once per run that needs it (a re-acquire is a no-op).
     assert set(rb._artifact_locks.acquired) == {tmp_path / "artefacts"}
 
 
@@ -509,7 +506,7 @@ def test_synth_is_not_run_for_a_pnr_run_that_is_skipped(tmp_path, monkeypatch):
 
 
 def test_synth_resolves_every_synthesis_before_anything_runs(tmp_path, monkeypatch):
-    """A typo in the top's `synth:` must not wait for its blocks' P&R."""
+    """A typo in the top's `synth:` fails before any block's P&R runs."""
     _synth_yaml(tmp_path / "synth.yaml", "blk_s")
     suite = _suite(
         tmp_path / "pnr.yaml",
@@ -524,8 +521,9 @@ def test_synth_resolves_every_synthesis_before_anything_runs(tmp_path, monkeypat
 
 
 def test_synth_waits_for_the_blocks_its_synthesis_names(tmp_path, monkeypatch):
-    """The synthesis reads the abstracts in its own `blocks:`, which the P&R
-    run need not list: with --synth those are edges too, and pulled in."""
+    """With --synth, the blocks in the synthesis's own `blocks:` are dependency edges
+    and are pulled in.
+    """
     _suite(tmp_path / "b" / "pnr.yaml", _synth_run("blk", "blk_s"))
     _synth_yaml(
         tmp_path / "synth.yaml",
@@ -544,12 +542,8 @@ def test_synth_waits_for_the_blocks_its_synthesis_names(tmp_path, monkeypatch):
     assert [d.block for d in with_synth[1].deps] == ["b"]
 
 
-# --- rb pnr -j ------------------------------------------------------------------
-
-
 def test_independent_blocks_run_side_by_side_and_the_top_waits(tmp_path):
-    """Both blocks are inside `step` at once — neither can finish until the
-    other has started — and the top starts only after both finished."""
+    """Both blocks are inside `step` at once, and the top starts only after both finish."""
     import threading
 
     suite = _suite(
@@ -667,7 +661,7 @@ def test_once_map_computes_each_key_once_across_threads():
 def test_a_run_that_raises_is_its_own_fail_and_keeps_the_others(
     tmp_path, monkeypatch, jobs
 ):
-    """Under -j a sibling still in OpenROAD must not be thrown away with it."""
+    """Under -j a sibling still in OpenROAD survives a run that raises."""
     suite = _suite(
         tmp_path / "pnr.yaml",
         _run("boom"),

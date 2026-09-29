@@ -1,14 +1,7 @@
-"""One-off ``rb test --plusarg`` runtime plusarg overrides (#552).
+"""Tests for the one-off ``rb test --plusarg`` runtime override.
 
-The flag adds or replaces a single ``plusargs:`` entry for one invocation,
-so a throwaway variation on a configured test — a deliberate-fault pass
-reading ``test_cfg.get_plusarg("mutate")``, a bumped ``+timeout_us`` — needs
-no edit to a ``tests.yaml`` several agents share.
-
-``TestRunner`` is stubbed out, so these run no simulator: the assertions are
-on the ``TestConfig`` handed to it, which is the same object the ``preproc``
-hook is exec'd with and the one the simulator command line's plusargs are
-built from.
+``TestRunner`` is stubbed, so no simulator runs. The assertions are on the
+``TestConfig`` handed to it.
 """
 
 from __future__ import annotations
@@ -71,9 +64,6 @@ def _ran_with(stub_runner: type[_StubTestRunner]) -> dict | None:
     return stub_runner.last_init["test_cfg"].get_plusargs()
 
 
-# --- the parser ------------------------------------------------------------
-
-
 def test_the_parser_reads_values_and_valueless_keys():
     assert parse_plusarg_overrides(["mutate=1", "trace", "path=/a/b=c"]) == {
         "mutate": "1",
@@ -114,11 +104,8 @@ def test_malformed_values_are_rejected(raw, expected):
 
 
 def test_a_plus_in_a_value_is_kept():
-    """Only the NAME may not carry a ``+``; a value is passed through."""
+    """Only the name may not carry a ``+``; a value is passed through."""
     assert parse_plusarg_overrides(["opts=a+b"]) == {"opts": "a+b"}
-
-
-# --- the merge -------------------------------------------------------------
 
 
 def test_the_merge_leaves_a_config_alone_without_overrides(minimal_project: Path):
@@ -134,23 +121,17 @@ def test_the_merge_copies_rather_than_editing_the_loaded_suite(minimal_project: 
     merged = cfg.with_plusarg_overrides({"test_cycles": "5", "mutate": "1"})
     assert merged is not cfg
     assert merged.get_plusargs() == {"test_cycles": "5", "mutate": "1"}
-    # The suite's own config is what tests.yaml says, so a second read of it
-    # (the summary's builder line, a re-expansion) is not the merged view.
+    # The suite's own config still reflects tests.yaml, not the merged view.
     assert cfg.get_plusargs() == {"test_cycles": 50}
-
-
-# --- rb test ---------------------------------------------------------------
 
 
 def test_a_plusarg_is_added_to_a_test_that_configures_none(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """The negative-control case from the issue: the entry has no plusargs
-    at all, and the hook still has to be able to read the one flag."""
+    """A test with no plusargs at all still exposes the flag to the hook."""
     result, _ = _invoke(["test", "basic", "-c", "tests.yaml", "--plusarg", "mutate=1"])
     assert result.exit_code == 0, result.output
     assert _ran_with(stub_runner) == {"mutate": "1"}
-    # What the preproc hook actually calls.
     assert stub_runner.last_init["test_cfg"].get_plusarg("mutate") == "1"
 
 
@@ -164,9 +145,8 @@ def test_a_plusarg_overrides_the_configured_value(
         ["test", "basic", "-c", "tests.yaml", "--plusarg", "test_cycles=5"]
     )
     assert result.exit_code == 0, result.output
-    # A CLI value is always a string (argv has no types); an untouched YAML
-    # entry keeps whatever YAML made of it — here `yes` as a bool. Both end
-    # up interpolated into `+KEY=VALUE` the same way.
+    # A CLI value is always a string; an untouched YAML value keeps its YAML type (`yes`
+    # is a bool). Both interpolate into `+KEY=VALUE` the same way.
     assert _ran_with(stub_runner) == {"test_cycles": "5", "keep": True}
 
 
@@ -200,7 +180,7 @@ def test_a_bare_key_runs_as_a_valueless_plusarg(
 def test_a_run_without_the_flag_keeps_the_configured_plusargs(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """Byte-parity for every existing run: no copy, no added result key."""
+    """Without the flag there is no copy and no added result key."""
     _configure_plusargs(minimal_project, "    plusargs:\n      test_cycles: 50\n")
     result, _ = _invoke(["test", "basic", "-c", "tests.yaml"])
     assert result.exit_code == 0, result.output
@@ -229,8 +209,9 @@ def test_list_rejects_a_plusarg_it_could_not_apply(minimal_project: Path):
 def test_the_result_envelope_records_the_overrides(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """A durable run has to be distinguishable from the yaml entry it
-    otherwise looks exactly like — the overrides are the only difference."""
+    """The result envelope records the overrides so a run is distinguishable from the
+    yaml entry.
+    """
     result, _ = _invoke(
         [
             "test",
@@ -283,8 +264,7 @@ def test_the_machine_row_omits_the_key_without_the_flag(
 def test_an_override_applies_to_every_selected_test(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The flag is per invocation, not per test: a whole-suite negative
-    control run is the point."""
+    """The override applies to every selected test."""
     seen = {}
 
     class _Recording(_StubTestRunner):
@@ -301,8 +281,7 @@ def test_an_override_applies_to_every_selected_test(
 def test_the_summary_footer_names_the_overrides(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
-    """A human reading the table has to be able to tell it apart from a run
-    of the configured entry, the way `Master Seed:` already does (#552)."""
+    """The summary footer names the overrides."""
     result, _ = _invoke(
         [
             "test",
@@ -328,8 +307,9 @@ def test_the_summary_footer_is_unchanged_without_the_flag(
 
 
 def test_overriding_the_managed_seed_plusarg_is_refused(minimal_project: Path):
-    """rtl_buddy restores that plusarg from the resolved seed after `preproc`,
-    so merging an override into it would drop it silently (#552)."""
+    """Overriding the managed seed plusarg is refused, since rtl_buddy restores it after
+    `preproc`.
+    """
     tests_yaml = minimal_project / "tests.yaml"
     tests_yaml.write_text(
         tests_yaml.read_text().replace(
@@ -340,7 +320,6 @@ def test_overriding_the_managed_seed_plusarg_is_refused(minimal_project: Path):
     with pytest.raises(FatalRtlBuddyError) as excinfo:
         cfg.with_plusarg_overrides({"stim": "7"})
     assert "sim-rand-seed-plusarg" in str(excinfo.value)
-    # An unrelated key is still merged.
     assert cfg.with_plusarg_overrides({"mutate": "1"}).get_plusargs() == {"mutate": "1"}
 
 

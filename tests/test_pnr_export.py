@@ -1,26 +1,20 @@
-"""Tests for `rb pnr-export` — exporting a saved P&R result (#618).
+"""Tests for `rb pnr-export`, which exports a saved P&R result.
 
-What these pin:
+Pinned behaviour:
 
-* the acceptance test of the issue: with synthesis and the OpenROAD launch
-  point rigged to raise, an export still produces GDS and PNG from a saved
-  routed DEF;
-* the up-front validation — DEF present, non-empty, and *this design's* —
-  and that each failure stops before KLayout;
-* that an export never touches the routed DEF, ODB, netlist or SDC, on the
-  failing path as much as the passing one;
-* the exit-code contract: in export-only the export is the job, so a
-  failure is a FAIL in both modes, while a published-but-incomplete
-  `preview` layout stays a qualified pass;
-* the PNG-only re-render, its `--lyp` / resolution overrides on the KLayout
-  command line, and the qualifier it inherits from the report beside the
-  GDS;
-* the export record, and that no failure leaves a stale successful output.
+- with synthesis and OpenROAD launch rigged to raise, an export still produces GDS and
+  PNG from a saved routed DEF;
+- up-front validation (DEF present, non-empty, this design's) stops before KLayout;
+- an export never touches the routed DEF, ODB, netlist or SDC, on failing paths too;
+- exit codes: a failed export is a FAIL in both modes, while a published-but-incomplete
+  `preview` layout is a qualified pass;
+- the PNG-only re-render, its `--lyp` and resolution overrides, and the qualifier it
+  inherits from the report beside the GDS;
+- the export record, and that no failure leaves a stale successful output.
 
-Backend log assertions go through `_capture_pnr_events` rather than
-caplog: `task_status` initialises rtl_buddy's own logging on the first
-console write, which clears the handlers pytest installed (#619). Console
-assertions read `result.output` for the same reason.
+Backend log assertions use `_capture_pnr_events` and console assertions read
+`result.output`, because `task_status` reinitialises logging and clears pytest's
+handlers.
 """
 
 import hashlib
@@ -41,8 +35,8 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 _GDS_BYTES = b"\x00\x06\x00\x02\x00\x07"
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n"
 
-#: What the routed result on disk holds. Bytes, so a test can assert the
-#: export left every one of them alone.
+# What the routed result on disk holds, as bytes, so tests can assert the export left it
+# alone.
 _ROUTED = {
     "{design}.def": "DESIGN {design} ;\nEND DESIGN\n",
     "{design}.routed.v": "module {design}(); endmodule\n",
@@ -64,9 +58,7 @@ def _touch(*paths):
 def _make_stream_pdk(tmp_path, **overrides):
     """A PDK whose stream-out inputs all exist on disk.
 
-    An input the config names and the disk does not have stops the export
-    before KLayout is launched (#617), so a test that wants to reach the
-    tool has to put those files there.
+    A configured input missing from disk stops the export before KLayout launches.
     """
     base = dict(
         name="nangate45",
@@ -132,10 +124,8 @@ def _one_event(events, name):
 
 
 def _write_synth_config(tmp_path, design="demo_top"):
-    """The upstream synth *entry* an export reads its design name from.
-
-    Deliberately without any synth artefact: the point of #618 is that the
-    export needs the configuration and none of the products.
+    """The upstream synth entry an export reads its design name from, with no synth
+    artefacts.
     """
     (tmp_path / "models.yaml").write_text(
         dedent(f"""\
@@ -174,10 +164,9 @@ def _fake_klayout(
 ):
     """A `subprocess.run` stand-in for both bundled KLayout helpers.
 
-    The stream-out writes the GDS and then the JSON report that says which
-    cells came out empty, exiting with the helper's error count; the render
-    writes the PNG. Every command line is appended to `seen`, which is how
-    the `--lyp` and resolution overrides are checked.
+    The stream-out writes the GDS and the JSON report of empty cells, exiting with the
+    helper's error count; the render writes the PNG. Every command line is appended to
+    `seen`.
     """
     artefacts = Path(backend.artefact_dir)
     out_gds = artefacts / f"{design}.gds"
@@ -241,9 +230,7 @@ def _export_backend(
 ):
     """An `OpenRoadPnr` over a saved routed result, with no tools on PATH.
 
-    `subprocess.run` is left unpatched on purpose — a test that wants
-    KLayout patches it with `_fake_klayout`, and one that does not would
-    rather a stray launch blow up than succeed quietly.
+    `subprocess.run` is left unpatched so a stray launch fails loudly.
     """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -280,8 +267,7 @@ def _export_backend(
 
 
 def _routed_digests(artefacts, design="demo_top"):
-    """SHA-256 of every routed artefact, so an export can be shown to have
-    left the P&R result exactly as it found it."""
+    """SHA-256 of every routed artefact."""
     return {
         name: hashlib.sha256(
             (artefacts / name.format(design=design)).read_bytes()
@@ -290,17 +276,12 @@ def _routed_digests(artefacts, design="demo_top"):
     }
 
 
-# ---------------------------------------------------------------------------
-# The acceptance test: an export launches neither synthesis nor OpenROAD
-# ---------------------------------------------------------------------------
-
-
 def test_export_only_produces_a_layout_without_synthesis_or_openroad(
     tmp_path, monkeypatch
 ):
-    """The issue's acceptance criterion. Every path that would launch a
-    synthesis or a P&R is rigged to raise, and the export still streams the
-    saved DEF out and renders it (#618)."""
+    """With every synthesis and P&R launch rigged to raise, the export still streams out
+    and renders the saved DEF.
+    """
     from rtl_buddy.runner.synth_runner import SynthRunner
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -334,13 +315,14 @@ def test_export_only_produces_a_layout_without_synthesis_or_openroad(
     assert (artefacts / "demo_top.png").read_bytes() == _PNG_BYTES
     assert res.results["gds_path"] == str(artefacts / "demo_top.gds")
     assert res.results["png_path"] == str(artefacts / "demo_top.png")
-    # Only KLayout was ever launched (the version probe included).
+    # Only KLayout was launched (the version probe included).
     assert {os.path.basename(str(cmd[0])) for cmd in seen} == {"klayout"}
 
 
 def test_export_only_leaves_every_routed_artefact_byte_identical(tmp_path, monkeypatch):
-    """`run` starts by clearing the DEF, ODB, netlist and SDC; an export
-    over a saved result must clear only what it publishes (#618)."""
+    """An export over a saved result clears only what it publishes, unlike `run`, which
+    clears the DEF, ODB, netlist and SDC.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, emit_png=True)
@@ -357,8 +339,7 @@ def test_export_only_leaves_every_routed_artefact_byte_identical(tmp_path, monke
 def test_a_failed_strict_export_still_leaves_the_routed_result_alone(
     tmp_path, monkeypatch
 ):
-    """The failing path is the one that matters: a strict export that
-    publishes nothing withdraws its own layout and nothing else."""
+    """A failed strict export withdraws its own layout and nothing else."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, mode="strict")
@@ -378,18 +359,8 @@ def test_a_failed_strict_export_still_leaves_the_routed_result_alone(
     assert _routed_digests(artefacts) == before
 
 
-# ---------------------------------------------------------------------------
-# Up-front validation: nothing is launched over a result that is not there
-# ---------------------------------------------------------------------------
-
-
 def _refuse_every_subprocess(monkeypatch):
-    """Fail the test if anything but the KLayout version probe is launched.
-
-    The probe is the readiness check every export makes up front and reads
-    nothing; a stream-out, a render, OpenROAD or yosys over a result that
-    did not pass validation is the defect being pinned.
-    """
+    """Fail the test if anything but the KLayout version probe is launched."""
     from rtl_buddy.tools import pnr_openroad
 
     def _must_not_run(cmd, **_kwargs):
@@ -420,8 +391,7 @@ def test_export_without_a_routed_def_fails_and_launches_nothing(tmp_path, monkey
 
 
 def test_export_with_an_empty_routed_def_fails(tmp_path, monkeypatch):
-    """A zero-length DEF is a run that did not finish, not a design with
-    nothing in it — and KLayout would stream it into a plausible layout."""
+    """A zero-length DEF is an unfinished run, not an empty design."""
     backend, artefacts = _export_backend(tmp_path, monkeypatch)
     (artefacts / "demo_top.def").write_text("")
     _refuse_every_subprocess(monkeypatch)
@@ -435,8 +405,7 @@ def test_export_with_an_empty_routed_def_fails(tmp_path, monkeypatch):
 
 
 def test_export_refuses_a_def_that_belongs_to_another_design(tmp_path, monkeypatch):
-    """The staleness check: the DEF's own `DESIGN` statement has to be the
-    design this run's synth entry names (#618)."""
+    """The DEF's `DESIGN` statement must name the design of this run's synth entry."""
     backend, artefacts = _export_backend(tmp_path, monkeypatch)
     (artefacts / "demo_top.def").write_text("DESIGN other_top ;\nEND DESIGN\n")
     _refuse_every_subprocess(monkeypatch)
@@ -464,8 +433,9 @@ def test_export_refuses_a_file_that_is_not_a_def(tmp_path, monkeypatch):
 
 
 def test_export_reads_an_explicit_def_and_checks_its_design(tmp_path, monkeypatch):
-    """`--def` exports a DEF from elsewhere, with the platform and the top
-    still coming from the run's configuration."""
+    """`--def` exports a DEF from elsewhere; the platform and top still come from the
+    run's configuration.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, routed=False)
@@ -503,9 +473,9 @@ def test_export_with_a_def_of_the_wrong_design_fails_before_klayout(
 
 
 def test_export_without_klayout_fails_and_publishes_nothing(tmp_path, monkeypatch):
-    """In export-only the render *is* the job, so a missing KLayout fails
-    the command in preview mode too — unlike `rb pnr`, where it is a
-    warning over a P&R verdict that stands."""
+    """In export-only a missing KLayout fails the command even in preview mode, unlike
+    `rb pnr`.
+    """
     backend, artefacts = _export_backend(tmp_path, monkeypatch, klayout=None)
     _refuse_every_subprocess(monkeypatch)
     events = _capture_pnr_events(monkeypatch)
@@ -536,8 +506,7 @@ def test_export_without_a_klayout_tech_fails(tmp_path, monkeypatch):
 
 
 def test_export_with_a_configured_input_off_disk_fails(tmp_path, monkeypatch):
-    """#617's gate, reached from the export-only path: every missing input
-    is named, and KLayout is not launched."""
+    """Every missing configured input is named, and KLayout is not launched."""
     pdk = _make_stream_pdk(tmp_path)
     Path(pdk.get_cell_gds()).unlink()
     backend, artefacts = _export_backend(tmp_path, monkeypatch, pdk=pdk)
@@ -569,16 +538,17 @@ def test_export_with_a_missing_lyp_fails_before_anything_runs(tmp_path, monkeypa
     assert res.results["fail_stage"] == "setup"
     assert "dark.lyp" in res.results["desc"]
     _one_event(events, "pnr_export.no_lyp")
-    # The sweep happens before the validation, so a failure on the inputs
-    # leaves no earlier layout at the path a reader takes for this one's.
+    # The layout sweep runs before validation, so an input failure leaves no earlier
+    # layout at the path.
     assert not (artefacts / "demo_top.gds").exists()
 
 
 def test_export_whose_synth_entry_cannot_be_resolved_fails_in_setup(
     tmp_path, monkeypatch
 ):
-    """The design name comes from the synth *configuration*; when that
-    cannot be read there is nothing to name the DEF or the GDS."""
+    """An unreadable synth configuration fails in setup, since nothing names the DEF or
+    GDS.
+    """
     backend, _artefacts = _export_backend(tmp_path, monkeypatch)
     (tmp_path / "synth.yaml").unlink()
     _refuse_every_subprocess(monkeypatch)
@@ -591,14 +561,8 @@ def test_export_whose_synth_entry_cannot_be_resolved_fails_in_setup(
     _one_event(events, "pnr_export.no_design")
 
 
-# ---------------------------------------------------------------------------
-# No stale successful outputs after a failure (#469)
-# ---------------------------------------------------------------------------
-
-
 def test_a_failed_export_removes_the_previous_export_s_outputs(tmp_path, monkeypatch):
-    """A GDS and PNG from an earlier export must not survive a failure and
-    be read as this one's result (#469)."""
+    """A failed export removes the GDS and PNG of the previous export."""
     backend, artefacts = _export_backend(tmp_path, monkeypatch, emit_png=True)
     (artefacts / "demo_top.gds").write_bytes(b"older layout")
     (artefacts / "demo_top.png").write_bytes(b"older image")
@@ -639,8 +603,7 @@ def test_a_stream_out_that_writes_no_gds_fails_and_leaves_nothing(
 
 
 def test_a_failed_render_fails_the_export_and_leaves_no_png(tmp_path, monkeypatch):
-    """The GDS is complete, but `--png` asked for an image and there is
-    none, so the export did not deliver."""
+    """A missing PNG fails the export even though the GDS is complete."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, emit_png=True)
@@ -653,20 +616,14 @@ def test_a_failed_render_fails_the_export_and_leaves_no_png(tmp_path, monkeypatc
     assert res.results["result"] == "FAIL"
     assert "PNG render failed" in res.results["desc"]
     assert not (artefacts / "demo_top.png").exists()
-    # Preview keeps the layout it did produce; the failure is the image.
+    # Preview keeps the layout it produced; the failure is the image.
     assert (artefacts / "demo_top.gds").exists()
-
-
-# ---------------------------------------------------------------------------
-# Completeness and the exit-code contract
-# ---------------------------------------------------------------------------
 
 
 def test_preview_publishes_an_incomplete_layout_as_a_qualified_pass(
     tmp_path, monkeypatch
 ):
-    """Consistent with #619: an incomplete layout preview kept is reported
-    as incomplete, not as a failure."""
+    """An incomplete layout kept by preview is reported as incomplete, not as a failure."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, mode="preview")
@@ -721,11 +678,6 @@ def test_allowed_empty_cells_keep_an_export_complete(tmp_path, monkeypatch):
     assert res.results["gds_allowed_empty_cells"] == ["fakeram45_64x32"]
 
 
-# ---------------------------------------------------------------------------
-# PNG-only re-render
-# ---------------------------------------------------------------------------
-
-
 def _existing_layout(artefacts, design="demo_top", *, missing=()):
     """A published GDS with the stream-out report that vouches for it."""
     (artefacts / f"{design}.gds").write_bytes(_GDS_BYTES)
@@ -749,8 +701,9 @@ def _existing_layout(artefacts, design="demo_top", *, missing=()):
 def test_png_only_rerenders_from_the_existing_gds_with_the_overrides(
     tmp_path, monkeypatch
 ):
-    """The whole point of a re-render: no stream-out, and the layer
-    properties and the resolution reach the KLayout command line (#618)."""
+    """A re-render launches no stream-out, and the layer properties and resolution reach
+    the KLayout command line.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     lyp = tmp_path / "dark.lyp"
@@ -787,8 +740,7 @@ def test_png_only_rerenders_from_the_existing_gds_with_the_overrides(
 def test_png_only_carries_the_incomplete_qualifier_from_the_report(
     tmp_path, monkeypatch
 ):
-    """A layout streamed with cells that had no GDS is incomplete however
-    it is rendered, so the re-render says so too."""
+    """A layout streamed with empty cells is incomplete however it is rendered."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, mode="preview")
@@ -812,8 +764,9 @@ def test_png_only_carries_the_incomplete_qualifier_from_the_report(
 def test_strict_png_only_refuses_an_incomplete_layout_but_keeps_the_gds(
     tmp_path, monkeypatch
 ):
-    """Strict publishes nothing it cannot vouch for — and withdraws only
-    the image it made itself: the GDS was published by someone else."""
+    """Strict withdraws only the image it made itself, not the GDS published by someone
+    else.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, mode="strict")
@@ -834,8 +787,7 @@ def test_strict_png_only_refuses_an_incomplete_layout_but_keeps_the_gds(
 
 
 def test_png_only_without_a_report_is_qualified_not_complete(tmp_path, monkeypatch):
-    """Nothing vouched for that layout, so the re-render does not claim it
-    is complete (#619) — preview renders it and says so."""
+    """Without a report the re-render is qualified, not complete."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _export_backend(tmp_path, monkeypatch, mode="preview")
@@ -863,11 +815,6 @@ def test_png_only_without_a_gds_fails(tmp_path, monkeypatch):
     assert res.results["result"] == "FAIL"
     assert "no GDS to re-render" in res.results["desc"]
     _one_event(events, "pnr_export.no_gds")
-
-
-# ---------------------------------------------------------------------------
-# The export record
-# ---------------------------------------------------------------------------
 
 
 def test_export_records_its_tool_inputs_and_outcome(tmp_path, monkeypatch):
@@ -920,8 +867,7 @@ def test_export_records_its_tool_inputs_and_outcome(tmp_path, monkeypatch):
     assert record["outputs"]["png"].endswith("demo_top.png")
     assert record["outcome"]["status"] == "complete"
     assert record["outcome"]["delivered"] is True
-    # And the result points at it, so a machine consumer never has to guess
-    # where the record went.
+    # The result points at the record.
     assert res.results["export_provenance"] == str(artefacts / "export.provenance.json")
 
 
@@ -967,8 +913,7 @@ def test_an_export_record_does_not_touch_the_pnr_run_s_own_records(
 
 
 def test_a_fresh_pnr_run_clears_a_previous_export_record(tmp_path, monkeypatch):
-    """A run replaces an export rather than leaving its record vouching for
-    a DEF the run is about to overwrite."""
+    """A fresh run clears the previous export record."""
     backend, artefacts = _export_backend(tmp_path, monkeypatch)
     (artefacts / "export.provenance.json").write_text('{"schema_version": 1}')
 
@@ -977,14 +922,10 @@ def test_a_fresh_pnr_run_clears_a_previous_export_record(tmp_path, monkeypatch):
     assert not (artefacts / "export.provenance.json").exists()
 
 
-# ---------------------------------------------------------------------------
-# Runner, tool-check and CLI wiring
-# ---------------------------------------------------------------------------
-
-
 def test_the_export_runner_never_resolves_the_pnr_tool(tmp_path, monkeypatch):
-    """A box whose OpenROAD is absent or misconfigured can still export:
-    the runner never asks `cfg-pnr-tools` for an executable (#618)."""
+    """The export runner never asks `cfg-pnr-tools` for an executable, so a box without
+    OpenROAD can export.
+    """
     from rtl_buddy.runner.pnr_runner import PnrExportRunner
 
     root_cfg = MagicMock()
@@ -1025,8 +966,7 @@ def test_the_export_runner_skips_a_run_above_the_filter(tmp_path):
 
 
 def test_tool_check_requires_klayout_for_the_export_but_not_openroad():
-    """`rb tool-check --required-for pnr-export` gates on KLayout alone —
-    the command runs no P&R and no synthesis (#618)."""
+    """`rb tool-check --required-for pnr-export` gates on KLayout alone."""
     from rtl_buddy.tool_manifest import get_manifest, subcommand_readiness
 
     subs = subcommand_readiness([], get_manifest())
@@ -1034,15 +974,15 @@ def test_tool_check_requires_klayout_for_the_export_but_not_openroad():
     assert subs["pnr-export"]["tools"] == ["klayout"]
     assert "openroad" not in subs["pnr-export"]["tools"]
     assert "yosys" not in subs["pnr-export"]["tools"]
-    # KLayout is an opt-in extra to `rb pnr`, which runs P&R without it,
-    # and a hard requirement of the export that is nothing else.
+    # KLayout is optional for `rb pnr` but required for the export.
     assert subs["pnr-export"]["optional_feature"] is False
     assert subs["pnr"]["optional_feature"] is True
 
 
 def test_export_failures_have_dedicated_human_messages():
-    """Every WARNING/ERROR event carries a sentence a user can act on,
-    rather than the generic "event name plus fields" fallback."""
+    """Every WARNING/ERROR event carries an actionable sentence, not the generic
+    fallback.
+    """
     from rtl_buddy.logging_utils import _human_message
 
     stale = _human_message(
@@ -1180,17 +1120,15 @@ def _runner():
 
 
 def _flat(output: str) -> str:
-    """The console output with Rich's wrapping folded away (#570)."""
+    """The console output with Rich's wrapping folded away."""
     return " ".join(output.split())
 
 
 def _klayout_only(monkeypatch, artefacts, **kwargs):
     """Fake KLayout, and hand every other command to the real runner.
 
-    `subprocess.run` is process-global — `pnr_openroad.subprocess` *is*
-    the module — and a CLI invocation shells out to `uname` while
-    RootConfig is loading and to `git` for the machine envelope. Only the
-    commands that start with the (patched) KLayout path are answered here.
+    `subprocess.run` is process-global, and a CLI invocation shells out to `uname` and
+    `git`, so only commands starting with the patched KLayout path are answered.
     """
     from rtl_buddy.tools import pnr_openroad
 
@@ -1249,8 +1187,7 @@ def test_cli_machine_output_carries_the_export_row(export_project, monkeypatch):
 def test_cli_fails_with_a_non_zero_exit_when_the_export_is_not_delivered(
     export_project, monkeypatch
 ):
-    """In export-only the export is the job: no KLayout, no export, exit 1
-    — even in the default preview mode."""
+    """In export-only an undelivered export exits 1, even in preview mode."""
     from rtl_buddy.tools import pnr_openroad
 
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
@@ -1264,8 +1201,7 @@ def test_cli_fails_with_a_non_zero_exit_when_the_export_is_not_delivered(
 
 
 def test_cli_def_needs_a_single_named_run(export_project):
-    """One DEF cannot be several runs' saved result, and guessing which is
-    exactly the staleness this command refuses."""
+    """`--def` needs a single named run, since one DEF cannot be several runs' result."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     runner, rb = _runner()
@@ -1289,11 +1225,6 @@ def test_cli_lists_the_runs_without_touching_the_artefacts(export_project):
     assert result.exit_code == 0
     assert "demo_pnr" in result.output
     assert _routed_digests(artefacts) == before
-
-
-# ---------------------------------------------------------------------------
-# --checkpoint (#653)
-# ---------------------------------------------------------------------------
 
 
 def test_cli_checkpoint_needs_a_single_named_run(export_project):
@@ -1325,8 +1256,9 @@ def test_cli_checkpoint_and_def_are_exclusive(export_project):
 
 
 def test_cli_machine_row_labels_a_checkpoint_export(export_project, monkeypatch):
-    """The row names the checkpoint and says it is not final; the routed
-    result beside it is untouched."""
+    """The machine row names the checkpoint and says it is not final; the routed result
+    is untouched.
+    """
     root, artefacts = export_project
     before = _routed_digests(artefacts)
     run_dir = artefacts / "checkpoints" / "20260925T101500-42"

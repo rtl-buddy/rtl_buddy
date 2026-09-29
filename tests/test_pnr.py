@@ -1,4 +1,4 @@
-"""Tests for the P&R config schema, OpenRoadPnr backend, and rb pnr wiring."""
+"""Tests for the P&R config schema, the OpenRoadPnr backend and `rb pnr` wiring."""
 
 import json
 import logging
@@ -20,11 +20,6 @@ from rtl_buddy.runner.pnr_results import (
     PnrPassResults,
     PnrSkipResults,
 )
-
-
-# ---------------------------------------------------------------------------
-# PdkConfig
-# ---------------------------------------------------------------------------
 
 
 def _make_pdk_cfg(tmp_path, **overrides):
@@ -55,9 +50,7 @@ def _touch(*paths):
 def _make_stream_pdk(tmp_path, **overrides):
     """A PDK whose stream-out inputs all exist on disk.
 
-    `_run_def2stream` refuses to launch KLayout when an input the config
-    names is missing (#617), so a test that wants to reach the tool has to
-    put those files there.
+    `_run_def2stream` refuses to launch KLayout when a configured input is missing.
     """
     base = dict(klayout_tech="pdk/klayout/tech.lyt", cell_gds="pdk/gds/cells.gds")
     base.update(overrides)
@@ -77,10 +70,8 @@ _GDS_BYTES = b"\x00\x06\x00\x02\x00\x07"
 def _capture_pnr_events(monkeypatch):
     """Record every `log_event` the P&R backend emits, with its level.
 
-    `caplog` cannot be used past the first console write: `task_status`
-    initialises rtl_buddy's own logging, which clears the root handlers
-    pytest installed. Recording at the call site tests the same contract —
-    which event, at which level, carrying which fields.
+    `caplog` cannot be used past the first console write: `task_status` initialises
+    rtl_buddy's logging, which clears pytest's root handlers.
     """
     from rtl_buddy.tools import pnr_openroad
 
@@ -115,10 +106,9 @@ def _fake_klayout(
 ):
     """A `subprocess.run` stand-in that does what `def2stream.py` does.
 
-    It writes the GDS, then the JSON report that says which cells came out
-    empty, and exits with the helper's error count (#619). `report=False`
-    writes none and `report=<str>` writes that text verbatim, which is how
-    a helper that died mid-stream and a corrupt report are simulated.
+    It writes the GDS, then the JSON report of empty cells, and exits with the helper's
+    error count. `report=False` writes no report and `report=<str>` writes that text
+    verbatim.
     """
     out_gds = Path(backend.artefact_dir) / f"{design}.gds"
     report_path = Path(backend.artefact_dir) / "def2stream.report.json"
@@ -195,13 +185,8 @@ def test_pdk_exposes_configured_pin_layers(tmp_path):
     assert pdk.get_pin_layer_vertical() == "met2"
 
 
-# ---------------------------------------------------------------------------
-# PdkConfig — placement, don't-use cells, PDN (#101)
-# ---------------------------------------------------------------------------
-
-
 def test_pdk_leaves_the_new_process_keys_unset_by_default(tmp_path):
-    """A PDK that names none of them says so, rather than guessing."""
+    """A PDK that names none of the process keys leaves them unset."""
     pdk = _make_pdk_cfg(tmp_path)
     assert pdk.get_placement_density() is None
     assert pdk.get_placement_padding() is None
@@ -236,7 +221,7 @@ def test_pdk_rejects_a_negative_macro_halo(tmp_path, halo):
 
 
 def test_pdk_accepts_a_macro_halo_of_zero(tmp_path):
-    """Zero is a legal, if PDN-hostile, request: macros may abut."""
+    """A macro halo of zero is legal: macros may abut."""
     from rtl_buddy.config.pdk import PlacementFile
 
     pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(macro_halo=0.0))
@@ -270,7 +255,7 @@ def test_pdk_rejects_a_placement_padding_that_is_not_a_natural_number(
 
 
 def test_pdk_accepts_a_density_of_one_and_a_padding_of_zero(tmp_path):
-    """The range is half-open at zero and closed at one; padding may be 0."""
+    """Density is in (0, 1]; padding may be 0."""
     from rtl_buddy.config.pdk import PlacementFile
 
     pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(density=1.0, padding=0))
@@ -328,16 +313,12 @@ def test_new_pdk_and_platform_keys_are_spelled_in_kebab_case(tmp_path):
 
 @pytest.mark.parametrize("cell", ["", "   ", "AND2_X1 OR2_X1"])
 def test_pdk_rejects_an_unusable_dont_use_entry(tmp_path, cell):
-    """One pattern per entry: a whitespace-carrying entry would silently
-    become two arguments on a Yosys command line."""
+    """A don't-use entry carrying whitespace is rejected, since it would become two
+    arguments on a Yosys command line.
+    """
     with pytest.raises(FatalRtlBuddyError) as excinfo:
         _make_pdk_cfg(tmp_path, dont_use_cells=[cell])
     assert "dont-use-cells" in str(excinfo.value)
-
-
-# ---------------------------------------------------------------------------
-# SynthPlatformConfig — pdk lookup, corner resolution, lef composition
-# ---------------------------------------------------------------------------
 
 
 def test_synth_platform_defaults_to_first_corner(tmp_path):
@@ -372,11 +353,6 @@ def test_synth_platform_lef_paths_are_pdk_lefs_only(tmp_path):
     ]
 
 
-# ---------------------------------------------------------------------------
-# PnrPlatformConfig — pdk + sta corner
-# ---------------------------------------------------------------------------
-
-
 def test_pnr_platform_defaults_to_first_corner(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     cfg = PnrPlatformConfig(
@@ -405,7 +381,7 @@ def _platform(pdk, **overrides):
 
 
 def test_pnr_platform_placement_falls_back_to_the_flow_defaults(tmp_path):
-    """Neither block says anything: the values the flow always emitted."""
+    """With neither block set, placement uses the flow defaults."""
     cfg = _platform(_make_pdk_cfg(tmp_path))
     assert cfg.get_placement_density() == 0.7
     assert cfg.get_placement_padding() == 1
@@ -422,7 +398,7 @@ def test_pnr_platform_placement_takes_the_pdk_values(tmp_path):
 
 
 def test_pnr_platform_placement_overrides_the_pdk_field_by_field(tmp_path):
-    """The platform wins where it says something, the PDK where it does not."""
+    """The platform wins where it sets a value, the PDK where it does not."""
     from rtl_buddy.config.pdk import PlacementFile
 
     pdk = _make_pdk_cfg(
@@ -459,11 +435,6 @@ def test_pnr_platform_cts_buffer_takes_a_name_or_a_list(tmp_path):
     assert unset.get_cts_buffers() == []
 
 
-# ---------------------------------------------------------------------------
-# PnrSuiteConfig — YAML loading + initialise
-# ---------------------------------------------------------------------------
-
-
 _PNR_YAML = dedent("""\
     rtl-buddy-filetype: pnr_config
 
@@ -494,7 +465,7 @@ def test_pnr_suite_loads_runs(tmp_path):
     assert run.get_floorplan().utilization == pytest.approx(0.6)
     assert run.get_floorplan().core_margin == pytest.approx(3.0)
     assert run.get_reglvl("openroad") == 1000
-    # synth-path and constraints are resolved relative to pnr.yaml
+    # synth-path and constraints resolve relative to pnr.yaml
     assert run.get_synth_suite_path() == str(tmp_path.parent / "synth" / "synth.yaml")
     assert run.get_constraints() == str(tmp_path.parent / "synth" / "constraints.sdc")
 
@@ -543,11 +514,6 @@ def test_pnr_suite_unknown_run_raises(tmp_path):
         suite.get_runs("does_not_exist")
 
 
-# ---------------------------------------------------------------------------
-# OpenRoadPnr — backend skip / template render (without invoking openroad)
-# ---------------------------------------------------------------------------
-
-
 def _make_pnr_cfg(tmp_path, **overrides):
     from rtl_buddy.config.pnr import PnrFloorplan
 
@@ -568,7 +534,7 @@ def _make_pnr_cfg(tmp_path, **overrides):
 
 
 def test_pnr_runner_resolves_executable_from_cfg_pnr_tools(tmp_path):
-    """PnrRunner should resolve the executable via cfg-pnr-tools when present."""
+    """PnrRunner resolves the executable via cfg-pnr-tools when present."""
     from rtl_buddy.config.pnr import PnrToolConfig, PnrToolConfigFile
     from rtl_buddy.runner.pnr_runner import PnrRunner
 
@@ -632,7 +598,7 @@ def test_openroad_pnr_skips_when_executable_missing(tmp_path):
 
 
 def test_openroad_pnr_template_substitutes_all_placeholders(tmp_path):
-    """Templating should resolve every `{{ key }}` placeholder."""
+    """Templating resolves every `{{ key }}` placeholder."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     pdk = _make_pdk_cfg(tmp_path)
@@ -644,10 +610,10 @@ def test_openroad_pnr_template_substitutes_all_placeholders(tmp_path):
         ),
         lambda _name: pdk,
     )
-    # routing-layers default empty strings → still substitute, just produce empty values.
+    # routing-layers defaults to empty strings, which still substitute.
 
     pnr_cfg = _make_pnr_cfg(tmp_path)
-    # Stub the synth-side resolution so we don't have to materialize a synth.yaml.
+    # Stub the synth-side resolution so no synth.yaml is needed.
     resolved_synth = MagicMock()
     resolved_synth.get_top.return_value = "demo_top"
     resolved_synth.get_name.return_value = "demo_synth"
@@ -707,11 +673,6 @@ def test_openroad_pnr_can_disable_cts_sink_clustering(tmp_path):
     assert "{{" not in text
 
 
-# ---------------------------------------------------------------------------
-# Tcl rendering — placement, PDN, don't-use, CTS buffer list (#101)
-# ---------------------------------------------------------------------------
-
-
 def _render_flow(tmp_path, platform, suite_dir=None, **overrides):
     """The `pnr.tcl` this platform renders, as text."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -767,9 +728,9 @@ def test_pin_constraints_missing_file_fails(tmp_path):
 
 
 def test_pnr_flow_is_unchanged_when_no_new_key_is_set(tmp_path):
-    """Back-compat pin: a config that sets none of the #101 keys renders the
-    Tcl the flow rendered before they existed — same placement line, same
-    CTS invocation, and no trace of the conditional stages."""
+    """A config that sets none of the newer keys renders the original flow: same placement
+    line and CTS invocation, none of the conditional stages.
+    """
     text = _render_flow(
         tmp_path, _platform(_make_pdk_cfg(tmp_path), cts_buffer="BUF_X4")
     )
@@ -813,8 +774,7 @@ def test_pnr_flow_renders_a_configured_macro_halo(tmp_path):
 
 
 def test_pnr_flow_embeds_the_macro_packer(tmp_path):
-    """The packer file is substituted verbatim, so pnr.tcl is self-contained
-    and the run does not depend on a second file surviving a dispatch."""
+    """The packer file is substituted verbatim, so pnr.tcl is self-contained."""
     from importlib.resources import files
 
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
@@ -838,8 +798,9 @@ def test_pnr_flow_placement_honours_the_platform_override(tmp_path):
 
 
 def test_pnr_flow_emits_dont_use_before_any_optimisation(tmp_path):
-    """`set_dont_use` has to land before the first pass that may pick a
-    cell — placement, repair, CTS — so the exclusions actually hold."""
+    """`set_dont_use` lands before the first pass that may pick a cell (placement, repair,
+    CTS).
+    """
     pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1", "*_X32"])
     text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
 
@@ -850,8 +811,9 @@ def test_pnr_flow_emits_dont_use_before_any_optimisation(tmp_path):
 
 
 def test_pnr_flow_sources_the_pdn_snippet_and_runs_pdngen(tmp_path):
-    """ORFS convention: the snippet declares the grid, the flow calls
-    `pdngen`, after macro placement and before global placement."""
+    """The flow sources the PDN snippet and calls `pdngen` after macro placement and before
+    global placement.
+    """
     pdk = _make_pdk_cfg(tmp_path, pdn_config="pdk/pdn.tcl")
     text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
 
@@ -891,8 +853,9 @@ def test_pnr_flow_renders_a_one_entry_list_exactly_like_a_name(tmp_path):
 def test_pnr_run_rejects_a_missing_pdn_config_before_launching_openroad(
     tmp_path, monkeypatch
 ):
-    """A snippet the config names and the disk does not have is a setup
-    failure, not a Tcl `source` error minutes into the run."""
+    """A named PDN snippet missing from disk is a setup failure, not a Tcl `source` error
+    mid-run.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -925,7 +888,7 @@ def test_pnr_run_rejects_a_missing_pdn_config_before_launching_openroad(
 
 
 def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
-    """The same run, with the snippet present, reaches OpenROAD."""
+    """With the snippet present, the run reaches OpenROAD."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -964,11 +927,6 @@ def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
     assert launched
 
 
-# ---------------------------------------------------------------------------
-# PnrResults shapes
-# ---------------------------------------------------------------------------
-
-
 def test_pnr_pass_result_carries_metrics():
     r = PnrPassResults(
         name="demo/results",
@@ -996,11 +954,6 @@ def test_pnr_fail_is_not_pass():
     r = PnrFailResults(name="demo/results", desc="OpenROAD exited with code 1")
     assert not r.is_pass()
     assert r.results["result"] == "FAIL"
-
-
-# ---------------------------------------------------------------------------
-# OpenROAD version probe + KLayout helpers
-# ---------------------------------------------------------------------------
 
 
 def test_parse_version_token_handles_yyqn_and_semver():
@@ -1041,7 +994,7 @@ def test_pnr_pass_result_carries_gds_and_png_paths():
 
 
 def test_openroad_pnr_png_implies_gds():
-    """`--png` without `--gds` should still trigger GDS streamout."""
+    """`--png` without `--gds` still triggers GDS stream-out."""
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     backend = OpenRoadPnr.__new__(OpenRoadPnr)
@@ -1062,11 +1015,10 @@ def test_openroad_pnr_png_implies_gds():
 def test_def2stream_preview_keeps_an_incomplete_gds_and_names_the_cells(
     tmp_path, monkeypatch
 ):
-    """KLayout's def2stream exits non-zero when a macro has no GDS body, but
-    the streamout still produces a valid GDS with the macro as an empty
-    placeholder. `preview` keeps that GDS (so `--png` can still render it)
-    and reports which cells have no layout — a picture with a hole in it is
-    still useful, as long as nobody is told it is complete (#619)."""
+    """`preview` keeps a GDS that def2stream produced with empty macro placeholders
+    (non-zero exit) and reports the cells with no layout, so `--png` can still render
+    it.
+    """
     import logging
 
     from rtl_buddy.tools import pnr_openroad
@@ -1112,8 +1064,9 @@ def test_def2stream_preview_keeps_an_incomplete_gds_and_names_the_cells(
 
 
 def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
-    """If KLayout fails before producing any GDS bytes the export is a
-    failure, so the downstream PNG render is skipped."""
+    """If KLayout fails before producing any GDS bytes, the export fails and the PNG render
+    is skipped.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -1144,8 +1097,7 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
 
 
 def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
-    """A failed streamout must not return the GDS an earlier run left behind
-    — it would then be rendered and reported as this run's layout (#469)."""
+    """A failed stream-out does not return a GDS left by an earlier run."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -1179,13 +1131,8 @@ def test_def2stream_ignores_a_previous_runs_gds(tmp_path, monkeypatch):
     assert not stale_gds.exists()
 
 
-# ---------------------------------------------------------------------------
-# Stream-out inputs: multi-GDS and the macro LEF handoff (#617)
-# ---------------------------------------------------------------------------
-
-
 def test_pdk_cell_gds_accepts_a_single_path(tmp_path):
-    """The key took one string before the list form and still does."""
+    """`pdk cell-gds` accepts a single path as well as a list."""
     pdk = _make_pdk_cfg(tmp_path, cell_gds="pdk/gds/cells.gds")
     assert pdk.get_cell_gds() == str(tmp_path / "pdk" / "gds" / "cells.gds")
     assert pdk.get_cell_gds_paths() == [str(tmp_path / "pdk" / "gds" / "cells.gds")]
@@ -1206,7 +1153,7 @@ def test_pdk_cell_gds_accepts_a_list_resolved_entry_by_entry(tmp_path):
         str(tmp_path / "pdk" / "gds" / "cells.gds"),
         str(tmp_path.parent / "shared" / "sram.gds"),
     ]
-    # The single-valued getter still answers, with the first entry.
+    # The single-valued getter returns the first entry.
     assert pdk.get_cell_gds() == str(tmp_path / "pdk" / "gds" / "cells.gds")
 
 
@@ -1218,7 +1165,7 @@ def test_pdk_cell_gds_path_with_spaces_is_one_path(tmp_path):
 
 
 def test_pdk_cell_gds_from_yaml(tmp_path):
-    """Both spellings have to survive deserialization, not just the ctor."""
+    """Both spellings survive deserialization, not just the ctor."""
     from serde.yaml import from_yaml
 
     one = from_yaml(PdkConfigFile, "name: sky130hd\ncell-gds: pdk/cells.gds\n")
@@ -1269,8 +1216,8 @@ def test_pnr_run_without_gds_paths_has_none(tmp_path):
 def test_def2stream_inputs_are_ordered_and_deduplicated(tmp_path):
     """Standard cells then macros; tech LEF, PDK macro LEF, then run LEFs.
 
-    The reader order is OpenROAD's own, and a macro the PDK and the run both
-    name is one input — handing it twice re-registers every master in it.
+    A macro named by both the PDK and the run is one input, since handing it twice
+    re-registers every master in it.
     """
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -1312,10 +1259,9 @@ def test_def2stream_inputs_are_ordered_and_deduplicated(tmp_path):
 def test_def2stream_reports_every_missing_input_and_skips_klayout(
     tmp_path, monkeypatch, caplog
 ):
-    """A configured input that is not on disk stops the export up front.
-
-    KLayout would otherwise stream a GDS with the unresolvable masters left
-    empty, which is a layout that looks produced (#617)."""
+    """A configured input missing from disk stops the export up front, before KLayout
+    streams a GDS with empty masters.
+    """
     import logging
 
     from rtl_buddy.tools import pnr_openroad
@@ -1365,7 +1311,7 @@ def test_def2stream_reports_every_missing_input_and_skips_klayout(
 def test_def2stream_hands_klayout_a_json_manifest_that_survives_spaces(
     tmp_path, monkeypatch
 ):
-    """Paths reach the helper as a list, not a whitespace-joined string."""
+    """Paths reach the helper as a list in a JSON manifest, so spaces survive."""
     from rtl_buddy.pnr.klayout.def2stream import load_inputs
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -1412,11 +1358,10 @@ def test_def2stream_hands_klayout_a_json_manifest_that_survives_spaces(
 
 
 def test_merge_lef_files_appends_after_the_technologys_own(tmp_path):
-    """The `.lyt`'s LEF list is kept, and its entries are not re-added.
+    """The `.lyt`'s LEF list is kept and its entries are not re-added.
 
-    Replacing it would strip the masters the existing flow relies on; a
-    relative entry in it resolves against the `.lyt`'s directory, which is
-    where KLayout reads it from."""
+    A relative entry resolves against the `.lyt`'s directory.
+    """
     from rtl_buddy.pnr.klayout.def2stream import merge_lef_files
 
     tech_file = str(tmp_path / "pdk" / "tech.lyt")
@@ -1437,7 +1382,7 @@ def test_merge_lef_files_appends_after_the_technologys_own(tmp_path):
 
 
 def test_merge_gds_reads_every_input_and_extends_the_lef_list(tmp_path):
-    """The helper takes a GDS *list* and hands the extra LEFs to the reader."""
+    """The helper takes a GDS list and hands the extra LEFs to the reader."""
     from rtl_buddy.pnr.klayout import def2stream
 
     read: list[str] = []
@@ -1519,17 +1464,12 @@ def test_merge_gds_reads_every_input_and_extends_the_lef_list(tmp_path):
     ]
 
 
-# ---------------------------------------------------------------------------
-# Stream-out completeness: strict vs preview (#619)
-# ---------------------------------------------------------------------------
-
-
 def test_classify_empty_cells_splits_the_intentional_from_the_missing():
     """`gds-allow-empty` takes names or globs; the legacy regex still counts.
 
-    A cell the run declared abstract is not a shortfall — it is layout the
-    design says it does not have. Everything else is a cell whose GDS the
-    stream-out could not find, which is what makes an export incomplete."""
+    A cell the run declared abstract is intentionally empty. Every other empty cell is a
+    missing GDS and makes the export incomplete.
+    """
     from rtl_buddy.pnr.klayout.def2stream import classify_empty_cells
 
     allowed, missing = classify_empty_cells(
@@ -1609,8 +1549,7 @@ def _fake_pya_for(empty_cells, design_name="demo_top"):
 
 
 def test_merge_gds_reports_missing_and_allowed_empty_cells(tmp_path):
-    """The helper writes its verdict as JSON rather than leaving the caller
-    to scrape cell names out of KLayout's stdout (#619)."""
+    """The helper writes its verdict as a JSON report."""
     from rtl_buddy.pnr.klayout import def2stream
 
     report_file = tmp_path / "def2stream.report.json"
@@ -1681,7 +1620,7 @@ def _stream_backend(tmp_path, monkeypatch, *, run_overrides=None, **backend_kwar
 
 
 def test_export_of_a_complete_gds_is_unqualified(tmp_path, monkeypatch):
-    """Every cell has layout: nothing to qualify, in either mode."""
+    """A GDS with layout for every cell is unqualified in either mode."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, platform = _stream_backend(tmp_path, monkeypatch)
@@ -1703,8 +1642,8 @@ def test_export_reports_an_allow_listed_macro_as_intentionally_empty(
 ):
     """A macro the run declares abstract is complete-as-intended.
 
-    The declaration travels in the input manifest, not in an environment
-    variable the helper reads behind the caller's back (#619)."""
+    The declaration travels in the input manifest, not in an environment variable.
+    """
     from rtl_buddy.pnr.klayout.def2stream import load_inputs
     from rtl_buddy.tools import pnr_openroad
 
@@ -1734,8 +1673,7 @@ def test_export_reports_an_allow_listed_macro_as_intentionally_empty(
 
 
 def test_strict_export_of_a_missing_macro_publishes_nothing(tmp_path, monkeypatch):
-    """A design that simply forgot its SRAM GDS gets a failure, not a
-    plausible picture with a hole in it (#619)."""
+    """A strict export of a missing macro fails and publishes nothing."""
     import logging
 
     from rtl_buddy.tools import pnr_openroad
@@ -1830,8 +1768,9 @@ def test_strict_export_fails_without_a_klayout_technology(tmp_path, monkeypatch)
 
 
 def test_export_fails_when_the_render_fails(tmp_path, monkeypatch):
-    """A complete GDS whose PNG never rendered is not what `--png` asked
-    for; strict publishes neither, preview keeps the GDS and says so."""
+    """A complete GDS whose PNG never rendered fails: strict publishes neither, preview
+    keeps the GDS and says so.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     for mode, keeps_gds in (("preview", True), ("strict", False)):
@@ -1874,8 +1813,9 @@ def test_export_fails_when_the_render_fails(tmp_path, monkeypatch):
     ids=["absent", "corrupt", "wrong-schema"],
 )
 def test_export_fails_when_the_report_says_nothing(tmp_path, monkeypatch, report):
-    """No readable report means nobody vouched for this layout, so it is a
-    failed export rather than a complete one — in either mode (#619)."""
+    """An unreadable report fails the export in either mode, since nothing vouches for the
+    layout.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, platform = _stream_backend(tmp_path, monkeypatch)
@@ -1893,8 +1833,7 @@ def test_export_fails_when_the_report_says_nothing(tmp_path, monkeypatch, report
 
 
 def test_export_ignores_a_previous_runs_report(tmp_path, monkeypatch):
-    """A stale report is the #469 failure in its purest form: it is the file
-    that says a layout is complete."""
+    """A previous run's report is ignored."""
     from rtl_buddy.tools import pnr_openroad
 
     backend, platform = _stream_backend(tmp_path, monkeypatch)
@@ -1917,8 +1856,9 @@ def test_export_ignores_a_previous_runs_report(tmp_path, monkeypatch):
 def test_export_fails_on_errors_the_missing_cells_do_not_account_for(
     tmp_path, monkeypatch
 ):
-    """Preview covers cells without layout, nothing else. An orphan cell is
-    a different failure and fails the export in both modes (#619)."""
+    """Preview covers cells without layout only; an orphan cell fails the export in both
+    modes.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, platform = _stream_backend(tmp_path, monkeypatch)
@@ -2091,10 +2031,11 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
 def test_strict_export_failure_fails_the_run_but_keeps_the_routed_database(
     tmp_path, monkeypatch
 ):
-    """The P&R verdict is a pass and its outputs are trustworthy — OpenROAD
-    finished cleanly — but the export the user asked for was not delivered,
-    so the run fails and says which cells (#619). The stage is named so an
-    `xfail:` marker on the design's timing cannot excuse it (#553)."""
+    """A strict export failure fails the run and names the cells, but keeps the routed
+    database.
+
+    The stage is named so an `xfail:` marker on timing cannot excuse it.
+    """
     backend, artefacts = _run_backend_with_export(
         tmp_path, monkeypatch, mode="strict", missing=["sram_32x64"]
     )
@@ -2108,7 +2049,7 @@ def test_strict_export_failure_fails_the_run_but_keeps_the_routed_database(
     assert res.results["gds_missing_cells"] == ["sram_32x64"]
     assert res.results["gds_missing_cell_count"] == 1
     assert res.results["gds_mode"] == "strict"
-    # The measurements P&R did make are still reported beside the failure.
+    # The measurements P&R made are still reported beside the failure.
     assert res.results["area_um2"] == 123.45
     assert res.results["cell_count"] == 42
     # No layout published; the routed database stays for `rb power`.
@@ -2118,8 +2059,9 @@ def test_strict_export_failure_fails_the_run_but_keeps_the_routed_database(
 
 
 def test_preview_export_qualifies_an_otherwise_passing_run(tmp_path, monkeypatch):
-    """Preview keeps the incomplete layout, and every place the result is
-    read says it is incomplete — including the `desc` a table shows."""
+    """Preview keeps the incomplete layout, and every place the result is read, including
+    the `desc` a table shows, says so.
+    """
     backend, artefacts = _run_backend_with_export(
         tmp_path, monkeypatch, mode="preview", missing=["sram_32x64"]
     )
@@ -2149,7 +2091,7 @@ def test_complete_export_leaves_the_pass_unqualified(tmp_path, monkeypatch):
 
 
 def test_pnr_result_row_carries_the_export_status():
-    """The machine output names the cells, not just a count (#619)."""
+    """The machine output names the cells, not just a count."""
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     results = PnrPassResults(
@@ -2171,13 +2113,13 @@ def test_pnr_result_row_carries_the_export_status():
     assert row["gds_missing_cells"] == ["sram_32x64"]
     assert row["gds_missing_cell_count"] == 1
     assert row["gds_path"] == "/a/demo_top.gds"
-    # An empty list is "nothing to report", not a field worth carrying.
+    # An empty list is omitted rather than carried as a field.
     assert "gds_allowed_empty_cells" not in row
     assert "sram_32x64" in row["desc"]
 
 
 def test_pnr_outputs_column_qualifies_an_incomplete_export():
-    """The human table says it too, in the Outputs column (#619)."""
+    """The Outputs column of the human table qualifies an incomplete export."""
     from rtl_buddy.rtl_buddy import _pnr_outputs_cell
 
     complete = {"gds_path": "a.gds", "png_path": "a.png", "gds_status": "complete"}
@@ -2238,23 +2180,17 @@ def test_pnr_suite_loads_xfail_flags(tmp_path):
     assert suite.get_runs("pnr_normal")[0].is_xfail() is False
 
 
-# ---------------------------------------------------------------------------
-# Pre-run artefact clearing (#469)
-# ---------------------------------------------------------------------------
-
-
 def test_pnr_clear_list_covers_every_non_log_template_output():
-    """`run_output_paths` and `flow.tcl.template` must not drift apart: every
-    non-log file the template writes under `$OUT_DIR` has to be cleared before
-    the run, or a failed rerun leaves it behind at its fixed path (#469)."""
+    """`run_output_paths` and `flow.tcl.template` stay in step: every non-log file the
+    template writes under `$OUT_DIR` is cleared before a run.
+    """
     import re
     from importlib.resources import files
     from rtl_buddy.tools import pnr_openroad
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
     written = set(re.findall(r"\$OUT_DIR/(\S+)", template))
-    # Logs are deliberately exempt — each is the one artefact worth keeping
-    # when the tool dies early.
+    # Logs are exempt: each is worth keeping when the tool dies early.
     written = {name for name in written if not name.endswith(".log")}
     assert written, "no $OUT_DIR write targets found; did the template move?"
 
@@ -2274,11 +2210,12 @@ def test_pnr_clear_list_covers_every_non_log_template_output():
 
 
 def test_pnr_template_legalizes_after_every_cell_inserting_repair():
-    """Every pass that inserts or moves cells must be followed by a
-    `detailed_placement` before `global_route`, or the router meets cells at
-    unlegalized locations and fails with DRT-0073 "no access point" on
-    exactly the inserted instances (#591). `repair_timing -hold` after CTS
-    was the one that shipped without it."""
+    """Every pass that inserts or moves cells is followed by `detailed_placement` before
+    `global_route`.
+
+    Otherwise the router meets unlegalized cells and fails with DRT-0073 "no access
+    point" on the inserted instances.
+    """
     from importlib.resources import files
 
     template = files("rtl_buddy.pnr").joinpath("flow.tcl.template").read_text()
@@ -2304,17 +2241,18 @@ def test_pnr_template_legalizes_after_every_cell_inserting_repair():
             "routing (#591)"
         )
 
-    # The legalization that closes placement is also checked, so a repair
-    # that legalization cannot absorb fails there — with a named cell —
-    # rather than as a router mystery.
+    # The closing legalization is also checked, so a repair it cannot absorb fails there
+    # with a named cell.
     last_dp = len(pre_route) - 1 - pre_route[::-1].index("detailed_placement")
-    # `-verbose` is what names the cell (#639).
+    # `-verbose` is what names the cell.
     assert "check_placement -verbose" in pre_route[last_dp + 1 :]
 
 
 def test_pnr_template_packs_macros_by_their_own_size():
-    """The flow hands every macro's own footprint to the packer and places
-    the result FIRM. The packing itself is tested in test_pnr_macro_pack.py."""
+    """The flow hands every macro's own footprint to the packer and places the result FIRM.
+
+    Packing is tested in test_pnr_macro_pack.py.
+    """
     from importlib.resources import files
 
     from rtl_buddy.config.pnr import PnrFloorplan
@@ -2333,23 +2271,23 @@ def test_pnr_template_packs_macros_by_their_own_size():
     assert "rb::macro_pack::solve \\" in pack
     assert "$inst setPlacementStatus FIRM" in pack
     assert "rtl_macro_placer" not in pack
-    # No slot is sized for the largest macro any more (#626).
+    # No slot is sized for the largest macro.
     assert "max_macro_w" not in template
     assert "slot_w" not in template
 
 
 def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatch):
-    """A run that reaches OpenROAD but writes nothing must score zero DRCs
-    rather than a previous run's violation count, and must not leave the
-    previous ODB for `rb power` to analyse (#469)."""
+    """A run that reaches OpenROAD but writes nothing scores zero DRCs, not a previous
+    run's count, and leaves no previous ODB for `rb power`.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
     monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
 
-    # `_make_pnr_cfg` points at `<tmp>/synth.yaml::demo_synth`; the run
-    # resolves it to name the design's artefacts.
+    # `_make_pnr_cfg` points at `<tmp>/synth.yaml::demo_synth`; the run resolves it to
+    # name the design's artefacts.
     (tmp_path / "models.yaml").write_text(
         dedent("""\
         rtl-buddy-filetype: model_config
@@ -2414,9 +2352,11 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
 
 
 def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
-    """pnr's DEF/ODB are the fixed-path inputs `rb power` resolves, so the
-    clear runs before even the tool-availability check: a box without
-    OpenROAD must not leave the previous ODB for a later `rb power` (#469)."""
+    """A missing OpenROAD still clears the previous ODB.
+
+    The DEF/ODB are fixed-path inputs `rb power` resolves, so the clear runs before the
+    tool-availability check.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2452,9 +2392,8 @@ def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
     stale_odb.write_bytes(b"\x00stale odb\x00")
     stale_drc = artefacts / "route.drc.rpt"
     stale_drc.write_text("violation\n")
-    # The generated flow script goes with them: a run that never reaches
-    # `_write_script` must not leave the previous script beside its absent
-    # outputs, where it reads as the script this run used (#527).
+    # The generated flow script is cleared too, so a run that never reaches
+    # `_write_script` does not leave the previous script beside its absent outputs.
     stale_script = Path(backend._script_path())
     stale_script.write_text("# previous run's flow\n")
 
@@ -2473,8 +2412,7 @@ def test_pnr_missing_openroad_still_clears_the_odb(tmp_path, monkeypatch):
 def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
     tmp_path, monkeypatch
 ):
-    """Naming the design needs the synth back-reference, but a broken one must
-    not hijack the error the run would otherwise report (#469)."""
+    """A broken synth back-reference does not preempt the tool-missing error."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2487,8 +2425,8 @@ def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
     artefacts = Path(backend.artefact_dir)
     stale_drc = artefacts / "route.drc.rpt"
     stale_drc.write_text("violation\n")
-    # Design-named outputs cannot be named without the synth reference, but
-    # `rb power` accepts the ODB by existence alone, so they must go anyway.
+    # Design-named outputs cannot be named without the synth reference, but `rb power`
+    # accepts the ODB by existence alone, so they are removed anyway.
     design_named = {
         name: artefacts / name
         for name in (
@@ -2514,10 +2452,9 @@ def test_pnr_unresolvable_synth_ref_does_not_preempt_the_tool_error(
 
 
 def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
-    """The flow's `write_db` runs before the script ends, so OpenROAD can be
-    killed or exit non-zero with a complete or partial `<top>.routed.odb` on
-    disk. `rb power` accepts that ODB by existence, so a FAIL must not leave
-    it behind (#469)."""
+    """If OpenROAD fails after `write_db`, the complete or partial `<top>.routed.odb` is
+    removed, since `rb power` accepts an ODB by existence.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2584,10 +2521,11 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
 
 
 def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypatch):
-    """A Tcl error — the macro packer refusing a floorplan, say — is written
-    to stderr, which OpenROAD's own `-log` does not carry. It has to survive
-    the run: the whole diagnostic in the log, its first line in the verdict
-    (#626)."""
+    """A Tcl error (say, the macro packer refusing a floorplan) goes to stderr, which
+    OpenROAD's `-log` does not carry.
+
+    The whole diagnostic reaches the log and its first line the verdict.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2657,11 +2595,10 @@ def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypat
 
 
 def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
-    """A FAIL past OpenROAD publishes no outputs but keeps `pnr.tcl`.
+    """A FAIL past OpenROAD publishes no outputs but keeps `pnr.tcl`, the script OpenROAD
+    ran.
 
-    The script on disk at that point is the one OpenROAD really ran, so it is
-    what someone reading `pnr.log` needs; only the up-front clear touches it
-    (#527). The outputs still go — that contract is unchanged.
+    Only the up-front clear removes the script.
     """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
@@ -2733,8 +2670,9 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
 
 
 def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
-    """Same for the other post-run gate: an `[ERROR ...]` line fails the run,
-    so the ODB written before it must go (#469)."""
+    """An `[ERROR ...]` line in the log fails the run and removes the ODB written before
+    it.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2799,9 +2737,7 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
 
 
 def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
-    """A zero-length GDS is what the size check rejects, and it is still a
-    file — leaving it means the next run's `isfile` sees a layout where none
-    was produced (#469)."""
+    """A zero-length GDS is removed, so the next run's `isfile` does not see a layout."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2830,8 +2766,7 @@ def test_def2stream_removes_a_zero_length_gds(tmp_path, monkeypatch):
 
 
 def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
-    """KLayout can render part of the image and then fail; a partial PNG left
-    here is reported as this run's layout by the next one (#469)."""
+    """A partial PNG left by a failed KLayout render is removed."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -2867,19 +2802,15 @@ def test_gds2png_removes_a_partial_png(tmp_path, monkeypatch):
     assert not out_png.exists()
 
 
-# ---------------------------------------------------------------------------
-# Platform-scoped don't-use cells + the post-route don't-use check (#656)
-# ---------------------------------------------------------------------------
-
-
 def test_pnr_platform_dont_use_cells_default_to_the_pdk_list(tmp_path):
     pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1", "*_X32"])
     assert _platform(pdk).get_dont_use_cells() == ["AND2_X1", "*_X32"]
 
 
 def test_pnr_platform_dont_use_cells_add_to_the_pdk_list(tmp_path):
-    """Additive, PDK first, a pattern named by both kept once: a platform
-    can exclude more than its PDK, never less."""
+    """Platform don't-use cells add to the PDK list: PDK first, a pattern named by both
+    kept once.
+    """
     pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1", "*_X32"])
     platform = _platform(pdk, dont_use_cells=["probe*", "AND2_X1", "probe*"])
     assert platform.get_dont_use_cells() == ["AND2_X1", "*_X32", "probe*"]
@@ -2899,8 +2830,9 @@ def test_pnr_platform_rejects_an_unusable_dont_use_entry(tmp_path, cell):
 
 
 def test_synth_platform_dont_use_cells_add_to_the_pdk_list(tmp_path):
-    """The synth platform takes the same key, merged the same way, so a
-    platform exclusion also keeps the cell out of tech mapping."""
+    """The synth platform takes the same key and merges it the same way, so the exclusion
+    also applies to tech mapping.
+    """
     pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1"])
     cfg = SynthPlatformConfig(
         SynthPlatformConfigFile(
@@ -2949,8 +2881,7 @@ def test_pnr_flow_emits_the_platform_dont_use_cells(tmp_path):
 
 
 def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
-    """No exclusions, no check: the route-to-fill seam renders as it did
-    before the check existed."""
+    """Without don't-use cells the route-to-fill seam renders without a check."""
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
 
     assert "Don't-use check" not in text
@@ -2959,8 +2890,9 @@ def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
 
 
 def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path):
-    """After the last pass that can add a cell (hold repair, then routing),
-    before the PDK's own fill cells go in and before anything is written."""
+    """The check runs after routing (the last pass that can add a cell), before the PDK's
+    fill cells and before anything is written.
+    """
     pdk = _make_pdk_cfg(tmp_path, dont_use_cells=["AND2_X1"])
     text = _render_flow(tmp_path, _platform(pdk))
 
@@ -3070,8 +3002,9 @@ def test_dont_use_check_passes_a_clean_design():
 
 
 def test_dont_use_check_names_every_offender_and_fails():
-    """Each placed don't-use instance is named with its master and the
-    pattern that excluded it, and the script stops with a Tcl error."""
+    """Each placed don't-use instance is named with its master and the excluding pattern,
+    and the script stops with a Tcl error.
+    """
     lines, error = _run_dont_use_check(
         ["AND2_X2", "*/probe*"],
         {"u1": "AND2_X1", "repair_buffer": "probec_p_8", "u3": "AND2_X2"},
@@ -3143,8 +3076,9 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
 
 
 def test_pnr_fails_naming_a_placed_dont_use_cell(tmp_path, monkeypatch):
-    """The check's Tcl error exits OpenROAD non-zero; the verdict names the
-    offender rather than the exit code, and nothing is published."""
+    """The check's Tcl error exits OpenROAD non-zero; the verdict names the offender, not
+    the exit code, and nothing is published.
+    """
     events = _capture_pnr_events(monkeypatch)
     backend, odb = _dont_use_backend(
         tmp_path,
@@ -3181,7 +3115,7 @@ def test_pnr_fails_naming_a_placed_dont_use_cell(tmp_path, monkeypatch):
 
 
 def test_pnr_never_passes_with_a_dont_use_violation_in_the_log(tmp_path, monkeypatch):
-    """Even with a clean exit, a violation line in the log is a FAIL."""
+    """A violation line in the log is a FAIL even with a clean exit."""
     backend, _odb = _dont_use_backend(
         tmp_path,
         monkeypatch,
@@ -3197,8 +3131,9 @@ def test_pnr_never_passes_with_a_dont_use_violation_in_the_log(tmp_path, monkeyp
 
 
 def test_pnr_warns_about_a_dont_use_pattern_that_matched_nothing(tmp_path, monkeypatch):
-    """OpenROAD only warns (STA-0122) and excludes nothing; rb names the
-    pattern. STA prints the cell part of a `lib/cell` pattern."""
+    """OpenROAD only warns (STA-0122) for an unmatched pattern and excludes nothing; rb
+    names the pattern. STA prints the cell part of a `lib/cell` pattern.
+    """
     events = _capture_pnr_events(monkeypatch)
     backend, _odb = _dont_use_backend(
         tmp_path,
@@ -3232,8 +3167,9 @@ def test_pnr_is_quiet_when_every_dont_use_pattern_matched(tmp_path, monkeypatch)
 
 
 def test_dont_use_events_have_readable_messages():
-    """Both events are WARNING or above, so each gets a dedicated message
-    naming what to act on rather than the generic fallback."""
+    """Both events are WARNING or above, so each has a dedicated message naming what to act
+    on.
+    """
     from rtl_buddy.logging_utils import _human_message, _machine_field_value
 
     unmatched = _human_message(
@@ -3260,8 +3196,7 @@ def test_dont_use_events_have_readable_messages():
 def test_pnr_warns_about_a_lib_cell_pattern_whose_library_is_missing(
     tmp_path, monkeypatch
 ):
-    """A `lib/cell` pattern naming no library draws STA-0121 only — the cell
-    half is never looked up — and must still be reported (#656)."""
+    """A `lib/cell` pattern naming no library draws STA-0121 only, and is still reported."""
     events = _capture_pnr_events(monkeypatch)
     backend, _odb = _dont_use_backend(
         tmp_path,
@@ -3278,9 +3213,9 @@ def test_pnr_warns_about_a_lib_cell_pattern_whose_library_is_missing(
 
 
 def test_pnr_does_not_read_a_previous_runs_log(tmp_path, monkeypatch):
-    """OpenROAD truncates `pnr.log` only once it is running; one that dies
-    before that must not leave the previous run's violation lines to be read
-    as this run's (#656)."""
+    """A run that dies before OpenROAD truncates `pnr.log` does not have the previous run's
+    violation lines read as its own.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, _odb = _dont_use_backend(
@@ -3306,15 +3241,11 @@ def test_pnr_does_not_read_a_previous_runs_log(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("cell", ["probe[c]_p_8", "a$b", "x{y}", 'q"', "a\\b", "a;b"])
 def test_dont_use_cells_reject_tcl_metacharacters(tmp_path, cell):
-    """Each entry is spliced into a Tcl list unquoted; a metacharacter would be
-    executed, not matched (#656)."""
+    """Don't-use entries are spliced unquoted into a Tcl list, so metacharacters are
+    rejected.
+    """
     with pytest.raises(FatalRtlBuddyError, match=r"only the `\*` and `\?`"):
         _make_pdk_cfg(tmp_path, dont_use_cells=[cell])
-
-
-# ---------------------------------------------------------------------------
-# OpenRCX extraction + routed SPEF (#101 Phase 3, #104 item 1)
-# ---------------------------------------------------------------------------
 
 
 def test_pdk_leaves_rcx_rules_unset_by_default(tmp_path):
@@ -3339,9 +3270,9 @@ def test_pdk_resolves_rcx_rules_against_the_root_config(tmp_path):
 
 
 def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
-    """Back-compat pin for the one region #101 Phase 3 touches: no rules,
-    no extraction, and the final reports are timed on the global-route
-    estimate exactly as before — byte for byte across the fill/report seam."""
+    """Without rcx rules there is no extraction, and the final reports are timed on the
+    global-route estimate, byte for byte across the fill/report seam.
+    """
     text = _render_flow(
         tmp_path, _platform(_make_pdk_cfg(tmp_path), cts_buffer="BUF_X4")
     )
@@ -3368,9 +3299,9 @@ def test_pnr_flow_without_rcx_rules_keeps_the_estimated_final_reports(tmp_path):
 
 
 def test_pnr_flow_extracts_writes_and_times_on_the_routed_spef(tmp_path):
-    """With rules: extract after fill, write the SPEF, and read it back for
-    the final reports in place of the estimate — OpenROAD's own test flow
-    and ORFS' final report, in that order."""
+    """With rules: extract after fill, write the SPEF, and read it back for the final
+    reports in place of the estimate.
+    """
     pdk = _make_pdk_cfg(tmp_path, rcx_rules="pdk/rcx.rules")
     text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
 
@@ -3395,15 +3326,15 @@ def test_pnr_flow_extracts_writes_and_times_on_the_routed_spef(tmp_path):
     ]
     positions = [text.index(marker) for marker in order]
     assert positions == sorted(positions), order
-    # The estimate the reports used to run on is gone, not layered under.
+    # The estimate is gone, not layered under.
     assert "estimate_parasitics -global_routing" not in text
     assert "{{" not in text
 
 
 def test_pnr_clear_list_covers_the_rendered_spef_target(tmp_path):
-    """The SPEF write lives in Python, not in the template text the static
-    coverage test scans, so check the rendered script: every `$OUT_DIR`
-    target it writes is cleared before a run (#469, #101)."""
+    """The SPEF write is not in the template text the static coverage test scans, so check
+    the rendered script: every `$OUT_DIR` target it writes is cleared before a run.
+    """
     import re
     from rtl_buddy.tools import pnr_openroad
 
@@ -3432,8 +3363,9 @@ def test_pnr_clear_list_covers_the_rendered_spef_target(tmp_path):
 def test_pnr_run_rejects_missing_rcx_rules_before_launching_openroad(
     tmp_path, monkeypatch
 ):
-    """Rules are read only after detailed route; a typo in the path is a
-    setup failure, not a Tcl error at the end of a long run."""
+    """Rules are read only after detailed route, so a path typo is a setup failure, not a
+    Tcl error at the end of a long run.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -3509,9 +3441,9 @@ def _pnr_backend_over_a_real_synth(tmp_path, monkeypatch, pdk):
 
 
 def test_a_rerun_without_rcx_rules_clears_the_previous_spef(tmp_path, monkeypatch):
-    """A SPEF surviving beside a fresh ODB would be read by `rb power` as
-    this run's extracted parasitics. A run that writes none — its PDK has
-    no rules any more — must not leave the last one there (#101)."""
+    """A run that writes no SPEF removes the previous one, so `rb power` does not read it
+    as this run's parasitics.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend = _pnr_backend_over_a_real_synth(
@@ -3539,9 +3471,9 @@ def test_a_rerun_without_rcx_rules_clears_the_previous_spef(tmp_path, monkeypatc
 
 
 def test_a_run_that_dies_after_write_spef_publishes_no_spef(tmp_path, monkeypatch):
-    """`write_spef` runs before the reports and the other writes, so a
-    failure later in the script leaves a SPEF this run never stood behind;
-    `_fail_after_openroad` takes it with the ODB (#469, #101)."""
+    """A run that dies after `write_spef` publishes no SPEF; `_fail_after_openroad` removes
+    it with the ODB.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     rules = tmp_path / "pdk/rcx.rules"
@@ -3569,8 +3501,9 @@ def test_a_run_that_dies_after_write_spef_publishes_no_spef(tmp_path, monkeypatc
 
 
 def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch):
-    """The rules check comes before checkpoint allocation, so a typo in the
-    path does not leave an empty `checkpoints/<run-id>/` per attempt."""
+    """The rules check precedes checkpoint allocation, so a path typo leaves no empty
+    `checkpoints/<run-id>/`.
+    """
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -3597,12 +3530,10 @@ def test_missing_rcx_rules_leaves_no_checkpoint_run_behind(tmp_path, monkeypatch
     )
 
 
-# --- macro-cell-halo: no standard cell abuts a macro (#673) ----------------
-
-
 def test_the_macro_cell_halo_defaults_to_one_micron(tmp_path):
-    """Neither block says anything: a keep-out wide enough that a cell pin is
-    never inside met1 spacing of a bloated abstract obstruction."""
+    """The macro-cell halo defaults to one micron, a keep-out that keeps cell pins out of
+    met1 spacing of a bloated abstract obstruction.
+    """
     pdk = _make_pdk_cfg(tmp_path)
     assert pdk.get_placement_macro_cell_halo() is None
     assert _platform(pdk).get_placement_macro_cell_halo() == 1.0
@@ -3631,9 +3562,11 @@ def test_pdk_rejects_an_unusable_macro_cell_halo(tmp_path, halo):
 
 
 def test_pnr_flow_blocks_cells_around_each_macro_after_placing_it(tmp_path):
-    """A hard blockage per macro, once its location is FIRM and before the
-    PDN and any standard-cell placement; never `cut_rows`, which breaks the
-    followpins the PDN lays along the rows."""
+    """A hard blockage per macro, once its location is FIRM and before the PDN and any
+    standard-cell placement.
+
+    Never `cut_rows`, which breaks the followpins the PDN lays along the rows.
+    """
     text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
 
     assert "set MACRO_CELL_HALO 1\n" in text
@@ -3651,9 +3584,6 @@ def test_pnr_flow_renders_a_configured_macro_cell_halo(tmp_path):
     text = _render_flow(tmp_path, _platform(pdk))
 
     assert "set MACRO_CELL_HALO 2.5\n" in text
-
-
-# --- macro-placement: rtl-mp (#95 step 5) ------------------------------------
 
 
 def _rtl_mp_yaml(tmp_path, floorplan_extra):
@@ -3694,8 +3624,7 @@ def test_an_unknown_macro_placement_is_refused_naming_the_choices(tmp_path):
 
 
 def test_macro_anchor_with_rtl_mp_is_refused(tmp_path):
-    """The anchor steers the packer only; silently ignoring it would leave a
-    floorplan that does not say what it gets."""
+    """The anchor steers only the packer, so combining it with rtl-mp is refused."""
     pnr_yaml = _rtl_mp_yaml(
         tmp_path,
         "      macro-placement: rtl-mp\n      macro-anchor: upper-right\n",
@@ -3726,8 +3655,9 @@ def test_rtl_mp_renders_rtl_macro_placer_with_the_halo_both_ways():
 
 
 def test_rtl_mp_goes_into_the_abstract_digest_only_when_set(tmp_path):
-    """A block hardened before the key existed keeps its digest; one that
-    switches placer is a different block."""
+    """The placer enters the abstract digest only when set, so an older block keeps its
+    digest and one that switches placer differs.
+    """
     from dataclasses import replace
 
     from rtl_buddy.config.pnr import MacroPlacement

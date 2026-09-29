@@ -1,21 +1,18 @@
-"""Tests for P&R stage checkpoints and progress (#653).
+"""Tests for P&R stage checkpoints and progress.
 
-The flow side is exercised for real: the generated `pnr.tcl` is run under
-a plain Tcl interpreter with every OpenROAD command stubbed (`_HARNESS`),
-so the traces, the checkpoint writes and the JSON-lines events are the
-ones the rendered script really produces. A stub can be told to fail —
-or to SIGKILL its own interpreter — at a named command, which is how a
-routing failure and a wall-limit kill are staged.
+The generated `pnr.tcl` runs under a plain Tcl interpreter with every OpenROAD command
+stubbed (`_HARNESS`). A stub can fail, or SIGKILL its interpreter, at a named command to
+stage routing failures and wall-limit kills.
 
-What these pin, beyond the issue's acceptance list:
+Pinned behaviour:
 
-* a run without `checkpoints:` renders the flow byte-for-byte as before;
-* checkpoints are never `*.routed.*` and never at a path `rb power` or a
-  plain `rb pnr-export` reads;
-* every run gets its own directory; `latest` is retired up front by every
-  run and re-pointed only by one that launched OpenROAD with checkpoints;
-* `rb pnr-export --checkpoint` writes below the checkpoint and labels the
-  export as not final, with the congestion grid unavailable (not zero).
+- a run without `checkpoints:` renders the flow unchanged;
+- checkpoints are never `*.routed.*` and never at a path `rb power` or a plain
+  `rb pnr-export` reads;
+- every run gets its own directory, and `latest` is retired by every run and
+  re-pointed only by one that launched OpenROAD with checkpoints;
+- `rb pnr-export --checkpoint` writes below the checkpoint, labels the export not
+  final, and reports the congestion grid as unavailable.
 """
 
 import json
@@ -48,11 +45,10 @@ from rtl_buddy.tools import pnr_checkpoints
 
 DESIGN = "demo_top"
 
-#: Stub OpenROAD: every command the flow calls, as a Tcl proc or through
-#: `unknown`. The writers put a recognisable file at the path they are
-#: given (a DEF with its DESIGN statement, so the export's design check
-#: passes). `RB_STUB_FAIL=<cmd>` makes that command raise an OpenROAD-style
-#: error; `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry to it.
+# Stub OpenROAD: every command the flow calls, as a Tcl proc or through `unknown`.
+# Writers put a recognisable file at the given path (a DEF with its DESIGN statement).
+# `RB_STUB_FAIL=<cmd>` raises an OpenROAD-style error in that command;
+# `RB_STUB_KILL=<cmd>` SIGKILLs the interpreter on entry.
 _HARNESS = r"""
 # `clock format` loads msgcat through the auto-loader, which the catch-all
 # `unknown` below would swallow; load it first.
@@ -93,8 +89,8 @@ proc write_global_route_segments {path} { rb_write $path "segments" }
 source [lindex $argv 0]
 """
 
-#: The embedded-Tcl fallback when there is no `tclsh`: the same harness in
-#: the interpreter `tkinter` carries, in a child process (#641).
+# Embedded-Tcl fallback when there is no `tclsh`: the same harness in the `tkinter`
+# interpreter, in a child process.
 _EMBEDDED_DRIVER = """
 import sys, tkinter
 interp = tkinter.Tcl()
@@ -111,8 +107,7 @@ except tkinter.TclError as e:
 """
 
 
-#: Looked up at import: the backend tests patch `shutil.which` (it is one
-#: module, shared) to pretend OpenROAD is installed.
+# Looked up at import: backend tests patch the shared `shutil.which` to fake OpenROAD.
 _TCLSH = shutil.which("tclsh")
 _REAL_RUN = subprocess.run
 
@@ -243,8 +238,8 @@ def _backend(tmp_path, monkeypatch, *, checkpoints=CHECKPOINT_STAGES, env=None):
 
 def _events(run_dir) -> list[dict]:
     lines = Path(run_dir, "progress.jsonl").read_text().splitlines()
-    # Every line is a JSON object — including the one carrying an error
-    # message with quotes and a newline in it.
+    # Every line is a JSON object, including one whose error message has quotes and a
+    # newline.
     return [json.loads(line) for line in lines]
 
 
@@ -254,11 +249,6 @@ def _runs(artefacts: Path) -> list[Path]:
 
 
 _ROUTED = ("demo_top.def", "demo_top.routed.odb", "demo_top.routed.sdc")
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 
 def _cfg_file(**kw):
@@ -317,11 +307,6 @@ def test_checkpoints_key_loads_from_yaml(tmp_path):
     assert suite.get_runs("one")[0].get_checkpoints() == ("global_route",)
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
-
-
 def _render(tmp_path, checkpoints):
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -339,9 +324,7 @@ def _render(tmp_path, checkpoints):
 
 
 def test_flow_without_checkpoints_renders_the_template_unchanged(tmp_path):
-    """No `checkpoints:` key, no trace of the feature: the placeholder sits
-    on what was a blank line, so the flow is byte-identical to the one the
-    template rendered before it existed."""
+    """Without `checkpoints:` the flow is byte-identical to the template render."""
     text = _render(tmp_path, None).read_text()
     assert 'file mkdir $OUT_DIR\n\nputs ">>> Reading Liberty + LEF"' in text
     assert "rb::ckpt" not in text
@@ -358,11 +341,6 @@ def test_flow_with_checkpoints_arms_only_the_requested_stages(tmp_path):
     assert '"' + str(tmp_path / "ck" / "run" / "progress.jsonl") + '"' in arm
     # Armed before the first flow command, so every step is traced.
     assert text.index("rb::ckpt::arm") < text.index("read_liberty $LIBERTY")
-
-
-# ---------------------------------------------------------------------------
-# Runs under the stub OpenROAD
-# ---------------------------------------------------------------------------
 
 
 def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
@@ -415,8 +393,8 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
     kinds = [e["event"] for e in events]
     assert kinds[0] == "run_start" and kinds[1] == "flow_begin"
     assert kinds[-2:] == ["flow_end", "run_end"]
-    # The floorplan checkpoint is written between the macros/PDN and global
-    # placement; the CTS one between hold-repair legalization and routing.
+    # The floorplan checkpoint is written between macros/PDN and global placement; the
+    # CTS one between hold-repair legalization and routing.
     order = [(e["event"], e.get("step") or e.get("stage")) for e in events]
     assert order.index(("checkpoint", "floorplan")) < order.index(
         ("step_begin", "global_placement")
@@ -436,9 +414,9 @@ def test_successful_run_writes_every_checkpoint_and_a_complete_manifest(
 def test_failure_before_detailed_routing_leaves_labelled_pre_route_checkpoints(
     tmp_path, monkeypatch
 ):
-    """The issue's first acceptance case: the run dies at detailed routing;
-    every earlier stage's checkpoint is retained and labelled not final,
-    and nothing is published as the routed result."""
+    """A run that dies at detailed routing retains every earlier checkpoint, labelled
+    not final, and publishes no routed result.
+    """
     backend, artefacts = _backend(
         tmp_path, monkeypatch, env={"RB_STUB_FAIL": "detailed_route"}
     )
@@ -484,8 +462,9 @@ def test_failure_during_global_route_keeps_the_cts_checkpoint(tmp_path, monkeypa
 
 
 def test_a_killed_run_names_the_step_it_was_in(tmp_path, monkeypatch):
-    """A wall-limit kill: no Tcl error, no exit — the progress file alone
-    says where the run was, and the checkpoints before it survive."""
+    """A wall-limit kill leaves no Tcl error; the progress file names the step, and
+    earlier checkpoints survive.
+    """
     backend, artefacts = _backend(
         tmp_path, monkeypatch, env={"RB_STUB_KILL": "detailed_route"}
     )
@@ -503,8 +482,7 @@ def test_a_killed_run_names_the_step_it_was_in(tmp_path, monkeypatch):
 
 
 def test_a_failed_run_does_not_leave_the_previous_routed_outputs(tmp_path, monkeypatch):
-    """Checkpoints do not change the routed outputs' lifecycle: a previous
-    run's routed database is gone after a checkpointed run fails (#469)."""
+    """A failed checkpointed run removes the previous run's routed database."""
     backend, artefacts = _backend(
         tmp_path, monkeypatch, env={"RB_STUB_FAIL": "global_route"}
     )
@@ -542,9 +520,9 @@ def test_a_second_run_never_overwrites_the_first_runs_checkpoints(
 def test_a_run_that_never_launches_retires_latest_but_keeps_old_runs(
     tmp_path, monkeypatch
 ):
-    """`latest` answers "which checkpoints are this run's"; a run that died
-    before OpenROAD has none, so the pointer goes and the old directory,
-    still addressable by its id, stays."""
+    """A run that dies before OpenROAD retires `latest` but keeps old run directories,
+    still addressable by id.
+    """
     from rtl_buddy.tools import pnr_openroad
 
     backend, artefacts = _backend(tmp_path, monkeypatch)
@@ -583,11 +561,6 @@ def test_an_empty_stage_list_records_progress_without_databases(tmp_path, monkey
         "progress.jsonl",
     ]
     assert "step_begin" in [e["event"] for e in _events(run_dir)]
-
-
-# ---------------------------------------------------------------------------
-# Resolving and exporting a checkpoint
-# ---------------------------------------------------------------------------
 
 
 def test_resolve_refuses_a_checkpoint_whose_write_never_completed(tmp_path):
@@ -662,8 +635,8 @@ def test_export_of_a_pre_route_checkpoint_is_labelled_and_kept_apart(
     )
     backend.run()
     (run_dir,) = _runs(artefacts)
-    # A routed layout from some earlier, successful export: the checkpoint
-    # export must neither replace nor remove it.
+    # A routed layout from an earlier export: the checkpoint export must neither replace
+    # nor remove it.
     (artefacts / "demo_top.gds").write_bytes(b"routed")
     for path in _pdk(tmp_path).get_cell_gds_paths() + [
         _pdk(tmp_path).get_klayout_tech(),
@@ -701,7 +674,7 @@ def test_export_of_a_pre_route_checkpoint_is_labelled_and_kept_apart(
     ck = provenance["checkpoint"]
     assert ck["stage"] == "cts" and ck["run_id"] == run_dir.name
     assert ck["final"] is False and ck["global_routed"] is False
-    # No global route, so no congestion grid: unavailable, not zero.
+    # No global route, so the congestion grid is unavailable, not zero.
     assert ck["congestion"]["available"] is False
     assert ck["congestion"]["reason"]
 
@@ -762,8 +735,7 @@ def test_a_failed_run_logs_where_it_stopped_and_what_it_kept(tmp_path, monkeypat
     [
         ("error", "failed in step global_route (error)"),
         ("running", "failed in step global_route (running)"),
-        # The last traced step finished; an untraced command after it (a
-        # blockage, a user snippet) stopped the run.
+        # The last traced step finished; an untraced command after it stopped the run.
         ("ok", "failed after step global_route"),
     ],
 )
@@ -785,7 +757,7 @@ def test_retained_checkpoint_message_names_where_the_run_stopped(status, expecte
 
 
 def test_a_filesystem_without_symlinks_keeps_the_run(tmp_path, monkeypatch):
-    """A failed `latest` pointer is a warning, not a failed setup (#653)."""
+    """A failed `latest` pointer is a warning, not a failed setup."""
     from rtl_buddy.tools import pnr_checkpoints
 
     def _no_symlinks(*_a, **_k):
