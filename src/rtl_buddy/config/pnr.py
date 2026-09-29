@@ -82,6 +82,19 @@ class MacroAnchor(StrEnum):
     UPPER_RIGHT = "upper-right"
 
 
+class MacroPlacement(StrEnum):
+    """Who places the hard macros (#95 step 5).
+
+    ``PACK`` is rtl_buddy's size-aware shelf packer (#610, #632), steered by
+    `macro-anchor` and the hard blockages. ``RTL_MP`` hands them to
+    OpenROAD's `rtl_macro_placer`, which clusters the netlist and places
+    macros by connectivity, wirelength and orientation.
+    """
+
+    PACK = "pack"
+    RTL_MP = "rtl-mp"
+
+
 class BlockageType(StrEnum):
     """Standard-cell placement blockage kinds, as OpenROAD has them (#105).
 
@@ -120,6 +133,9 @@ class PnrFloorplanFile:
     macro_anchor: str = field(
         rename="macro-anchor", default=MacroAnchor.LOWER_LEFT.value
     )
+    macro_placement: str = field(
+        rename="macro-placement", default=MacroPlacement.PACK.value
+    )
     blockages: list[PnrBlockageFile] = field(default_factory=list)
 
 
@@ -130,6 +146,7 @@ class PnrFloorplan:
     core_margin: float
     macro_anchor: MacroAnchor = MacroAnchor.LOWER_LEFT
     blockages: list[PnrBlockage] = dc_field(default_factory=list)
+    macro_placement: MacroPlacement = MacroPlacement.PACK
 
 
 _MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
@@ -301,6 +318,24 @@ class PnrConfigFile:
                 f"{self.floorplan.macro_anchor!r} "
                 f"(expected one of {', '.join(a.value for a in MacroAnchor)})"
             ) from None
+        try:
+            macro_placement = MacroPlacement(self.floorplan.macro_placement)
+        except ValueError:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': unknown 'floorplan.macro-placement' "
+                f"{self.floorplan.macro_placement!r} "
+                f"(expected one of {', '.join(m.value for m in MacroPlacement)})"
+            ) from None
+        if (
+            macro_placement is MacroPlacement.RTL_MP
+            and macro_anchor is not MacroAnchor.LOWER_LEFT
+        ):
+            # The anchor steers the packer; `rtl_macro_placer` would ignore it.
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': 'floorplan.macro-anchor' steers the "
+                "packer and has no effect with 'macro-placement: rtl-mp' — "
+                "remove one of them"
+            )
         blockages = [
             _load_blockage(self.name, i, entry)
             for i, entry in enumerate(self.floorplan.blockages)
@@ -358,6 +393,7 @@ class PnrConfigFile:
                 core_margin=self.floorplan.core_margin,
                 macro_anchor=macro_anchor,
                 blockages=blockages,
+                macro_placement=macro_placement,
             ),
             lef_paths=lef_paths,
             lib_paths=lib_paths,

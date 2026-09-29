@@ -14,7 +14,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
-from ..config.pnr import BlockageType, GdsMode, MacroAnchor, PnrConfig, PnrFloorplan
+from ..config.pnr import (
+    BlockageType,
+    GdsMode,
+    MacroAnchor,
+    MacroPlacement,
+    PnrConfig,
+    PnrFloorplan,
+)
 from ..logging_utils import log_event, task_status
 from ..pnr.klayout.def2stream import REPORT_SCHEMA
 from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
@@ -438,6 +445,55 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     return blockages_block, directives
 
 
+# The size-aware shelf packer (#610, #632): the macro placement a run gets
+# unless it asks for `rtl-mp`, and the text the flow has always rendered.
+_PACK_PLACEMENT = """\
+  set core [$block getCoreArea]
+  set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
+  set footprints {{}}
+  foreach inst $macros {{
+    set master [$inst getMaster]
+    lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
+  }}
+  set placement [rb::macro_pack::solve \\
+      [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \\
+      $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{directives}]
+  foreach inst $macros {{
+    lassign [dict get $placement [$inst getName]] x y
+    $inst setLocation $x $y
+    $inst setPlacementStatus FIRM
+    puts ">>>   placed [$inst getName] at ($x, $y) DBU"
+  }}
+"""
+
+# OpenROAD's RTL-MP (#95 step 5). It reads the placement blockages already
+# in the database, clusters the IO pins it finds unplaced, and leaves every
+# macro LOCKED, snapped and possibly rotated. The halo moved from its own
+# options to `set_macro_base_halo` in 2026; both spellings are kept so an
+# older OpenROAD still runs this.
+_RTL_MP_PLACEMENT = """\
+  file mkdir $OUT_DIR/rtlmp
+  if {[llength [info commands set_macro_base_halo]]} {
+    set_macro_base_halo $MACRO_HALO $MACRO_HALO
+    rtl_macro_placer -report_directory $OUT_DIR/rtlmp
+  } else {
+    rtl_macro_placer -halo_width $MACRO_HALO -halo_height $MACRO_HALO \\
+        -report_directory $OUT_DIR/rtlmp
+  }
+  foreach inst $macros {
+    lassign [$inst getLocation] x y
+    puts ">>>   placed [$inst getName] at ($x, $y) DBU [$inst getOrient] (rtl-mp)"
+  }
+"""
+
+
+def _macro_place_block(fp: PnrFloorplan, directives: str) -> str:
+    """The macro-placement Tcl inside the flow's `if` over the macros."""
+    if fp.macro_placement is MacroPlacement.RTL_MP:
+        return _RTL_MP_PLACEMENT
+    return _PACK_PLACEMENT.format(directives=directives)
+
+
 class OpenRoadPnr:
     """OpenROAD-driven P&R backend.
 
@@ -699,7 +755,7 @@ class OpenRoadPnr:
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
-            "macro_pack_directives": macro_pack_directives,
+            "macro_place_block": _macro_place_block(fp, macro_pack_directives),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,

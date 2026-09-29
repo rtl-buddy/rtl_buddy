@@ -32,6 +32,7 @@ from pathlib import Path
 
 from ..config.blocks import BlockRef
 from ..config.pdk import DEFAULT_PLACEMENT_MACRO_CELL_HALO
+from ..config.pnr import MacroPlacement
 from .artifact_paths import project_relative, project_root_or_none
 
 #: Where a hardened run publishes its abstract, under its artefact dir.
@@ -195,6 +196,13 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 }
                 for b in fp.blockages
             ],
+            # Only when away from the packer, so the abstracts hardened
+            # before the key existed keep their digest (#95).
+            **(
+                {"macro_placement": str(fp.macro_placement)}
+                if fp.macro_placement is not MacroPlacement.PACK
+                else {}
+            ),
         },
         "placement": {
             "density": platform.get_placement_density(),
