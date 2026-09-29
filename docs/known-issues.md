@@ -262,19 +262,23 @@ In that mode, an input the hashing cap excludes is keyed by size and modificatio
 A build stamp decides whether a shared build can be reused. What it tracks depends on the simulator.
 
 - **Verilator** reports the headers, library files, standard includes and binary it consumed, so changes to them invalidate the stamp.
-- Tracked inputs under the project root are compared by content hash. That includes a filelist source that is a symlink into a tree outside the root.
-- Inputs outside the root are compared by size and mtime: the toolchain's includes and binary, any single input above 64 MB (`compile.hash_skipped_large` names those), and a reported dependency whose declared path lies outside the root.
-- A dependency is recorded by the path the build used, not its resolved target. A header symlinked in from a shared tree under a project-relative name is hashed like any other input, and retargeting the link invalidates the stamp.
-- **VCS and Icarus** emit no dependency file, and their stamps record `deps: null`. The stamp instead lists every file in each `+incdir+` and `-y` directory the filelist names, compared content-first. Editing, adding or removing a file there rebuilds.
-- That listing over-approximates on purpose: editing a header nothing includes still rebuilds. Over-invalidating costs a recompile, while under-invalidating reports a stale binary as green.
+  - Tracked inputs under the project root are compared by content hash. That includes a filelist source that is a symlink into a tree outside the root.
+  - Inputs outside the root are compared by size and mtime: the toolchain's includes and binary, any single input above 64 MB (`compile.hash_skipped_large` names those), and a reported dependency whose declared path lies outside the root.
+  - A dependency is recorded by the path the build used, not its resolved target. A header symlinked in from a shared tree under a project-relative name is hashed like any other input, and retargeting the link invalidates the stamp.
+- **VCS and Icarus** emit no dependency file, and their stamps record `deps: null`. The stamp instead lists every file in each `+incdir+` and `-y` directory the filelist names, compared content-first.
+  - Editing, adding or removing a file there rebuilds.
+  - The listing over-approximates on purpose: editing a header nothing includes still rebuilds. Over-invalidating costs a recompile, while under-invalidating reports a stale binary as green.
 
-Where the build does report its dependencies, the include-directory listing is compared by file name only. The dependency file already decides the content of every input the build opened. The names catch what it cannot see: a file that appears or vanishes, which for `-y` changes the next elaboration's module resolution.
+For Verilator the same directory listing is also kept, but it is compared by file name only. The dependency file already decides the content of every input the build opened. The names catch what it cannot see: a file that appears or vanishes, which for `-y` changes the next elaboration's module resolution. See [Shared-build include-directory listings](#shared-build-include-directory-listings).
 
 ## Shared-build include-directory listings
 
-The listing walks a `+incdir+` directory recursively, because `` `include "nested/deep.svh" `` resolves beneath it. A `-y` directory is listed flat, because library resolution maps a module name to a file in the directory itself. Neither is filtered by suffix, since `+libext+` can be set in `builder-opts.compile-time` and never reach `run.f`.
+For VCS and Icarus, and as a name-only check for Verilator, the build stamp lists the files in every `+incdir+` and `-y` directory. The listing is rebuilt on every stamp validation.
 
-The walk runs on every stamp validation. It takes a fraction of a second for a few thousand files, but an `+incdir+` pointed at a large tree makes every reuse check walk it.
+- A `+incdir+` directory is walked recursively, because `` `include "nested/deep.svh" `` resolves beneath it.
+- A `-y` directory is listed flat, because library resolution maps a module name to a file in the directory itself.
+- Neither is filtered by suffix, since `+libext+` can be set in `builder-opts.compile-time` and never reach `run.f`.
+- The walk takes a fraction of a second for a few thousand files, but an `+incdir+` pointed at a large tree makes every reuse check walk it.
 
 Some names are left out:
 
@@ -288,6 +292,8 @@ Every other file is listed, dot-prefixed ones included, because `` `include ".co
 The exclusions exist because rtl_buddy writes into artefact directories after the fingerprint is taken. A listing that contained those files could never validate, and every run would recompile. Pruning `artefacts/` covers an `+incdir+` that is an ancestor of the artefact tree, such as `+incdir+.` in a `tests.yaml`. A simulator's own scratch output is not excluded, so pointing an `+incdir+` at a directory a builder writes into still makes every run recompile.
 
 ## What shared-build tracking does not cover
+
+A shared build is reused when its stamp validates. These inputs are not part of the stamp:
 
 - A directory that cannot be read is recorded as untracked.
 - A symlinked subdirectory under an `+incdir+` is not descended, which bounds the walk against link loops.
@@ -308,14 +314,15 @@ Unshared builds have no lock and no build job. When no planned test can share a 
 
 ## Slurm serialises build jobs of the same suite
 
-Under `--dispatch slurm`, each build job is named after the suite whose shared-build tree it writes and is submitted with `--dependency=singleton`. A second run of the same suite therefore waits until every earlier job of that name and owner has terminated, then revalidates the shared build and reuses it if the inputs are unchanged. A split suite's verilate job carries the same clause under its own `rb-verilate-<hash>` name. An interrupted run's orphaned build job is waited on rather than raced.
+Under `--dispatch slurm`, a build job writes the suite's shared-build tree. It is named after the suite and submitted with `--dependency=singleton`, so a second run of the same suite waits until every earlier job of that name and owner has terminated. It then revalidates the shared build and reuses it if unchanged.
+A split suite's verilate job carries the same clause under its own `rb-verilate-<hash>` name. An interrupted run's orphaned build job is waited on rather than raced.
 
 `dispatch.build_job_deduped` names the job being waited on when the head's `squeue` probe can see it. The probe only supplies the message. A failed probe is not retried for the rest of the run.
 
 The guarantee has bounds:
 
 - The name covers the suite directory alone, not the planned tests, builder mode or compile keys. An unrelated run of the same suite makes the second job wait for a build it may then redo, which costs queue latency.
-- `singleton` is per user, so two users building into one shared tree still meet at the `flock`.
+- `singleton` is per user, so two users building into one shared tree still meet at the advisory `flock` described in [Shared-build locking](#shared-build-locking).
 - A `--dependency` of your own that uses the any-of separator `?` cannot be composed with, because Slurm allows one separator per expression. The dedup stands down and records `dispatch.build_dedup_unavailable` at DEBUG, leaving your gate unchanged.
 - A gate exported as `SBATCH_DEPENDENCY` counts as yours. It is folded into the same composition when `sbatch-args` names no dependency.
 - Where a site sets `DependencyParameters=disable_remote_singleton`, two invocations routed to different clusters of one federation that share this filesystem are not serialised. Pin a cluster with `-M`, or rely on the `flock`. A multi-cluster `sbatch-args` selection records this caveat once per run at DEBUG.
