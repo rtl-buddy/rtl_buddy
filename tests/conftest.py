@@ -16,19 +16,7 @@ _FIXTURES_ROOT = Path(__file__).parent / "fixtures"
 def clean_environ():
     """Restore ``os.environ`` after every test.
 
-    ``RootConfig.__init__`` calls ``apply_env_file``, which writes into
-    ``os.environ`` directly — so *any* test constructing a RootConfig in
-    a project carrying ``.rtl-buddy/.env`` mutates the process
-    environment for the rest of the session. ``monkeypatch`` cannot undo
-    that: ``delenv(..., raising=False)`` on a key that did not exist
-    records nothing to restore. Autouse because the leak is a property of
-    the constructor, not of the tests that happen to know about it.
-
-    Teardown ordering makes this safe for tests that swap ``os.environ``
-    for a plain dict via ``monkeypatch.setattr``: function-scoped
-    ``monkeypatch`` is set up after this fixture and torn down before it,
-    so the real environment is back in place by the time the snapshot is
-    restored.
+    Autouse because ``RootConfig.__init__`` writes ``.rtl-buddy/.env`` into ``os.environ`` directly, and ``monkeypatch`` cannot undo that.
     """
     snapshot = dict(os.environ)
     yield
@@ -41,12 +29,7 @@ def clean_environ():
 def reset_cancellation_latch():
     """Un-latch ``process_utils`` cancellation between tests.
 
-    The latch is one-way *per process* by design — nothing resumes a
-    cancelled run — so a test that sets it (directly, or by calling
-    ``terminate_live_managed_processes``) would otherwise stop every later
-    test in the session from spawning a tool process at all. Autouse for the
-    same reason as the fixtures above: the state belongs to the module, not
-    to the tests that know about it.
+    The latch is one-way per process, so a test that sets it would otherwise block every later test from spawning tool processes.
     """
     from rtl_buddy import process_utils
 
@@ -59,17 +42,7 @@ def reset_cancellation_latch():
 def reset_tool_path_warning_dedupe():
     """Forget the process-global "already warned" sets between tests.
 
-    ``config.toolpath._UNRESOLVED_WARNED`` and
-    ``config.verible._EXE_FALLBACK_WARNED`` dedupe a diagnostic that is a
-    static property of the config plus the environment, so they never
-    clear themselves in a real run. Under pytest that makes any test
-    asserting on one of those warnings order-dependent: an earlier test
-    resolving the same key (the fixture projects reuse names like
-    ``surfer-default``) swallows the warning the later one asserts on,
-    and it only fails under a particular ``-k`` / random ordering.
-    Autouse for the same reason as ``clean_environ``: the leak belongs to
-    the module, not to the tests that happen to know about it
-    (#439 review).
+    Without this, a warning asserted in one test is swallowed when an earlier test already emitted it for the same key.
     """
     from rtl_buddy.config import toolpath, verible
 
@@ -92,29 +65,15 @@ def reset_print_failures_only():
 
 @pytest.fixture
 def minimal_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Copy the minimal_project fixture to a tmp dir, chdir into it, and return its path.
-
-    The fixture provides a valid root_config.yaml + regression.yaml + tests.yaml
-    + models.yaml so commands that walk through RootConfig load can be exercised
-    end-to-end without touching real EDA tooling.
-    """
+    """Copy the minimal_project fixture to a tmp dir, chdir into it, and return its path."""
     target = tmp_path / "project"
     shutil.copytree(_FIXTURES_ROOT / "minimal_project", target)
     monkeypatch.chdir(target)
     return target
 
 
-# ---------------------------------------------------------------------------
-# constraint reader backends (#641)
-
-
 def _force_constraint_backend(monkeypatch: pytest.MonkeyPatch, backend: str) -> str:
-    """Pin the SDC/XDC reader backend for one test.
-
-    Both backends are held to the same observable contract, so a test that
-    reads constraints should say which one it is exercising rather than
-    inheriting whatever the running Python happens to support.
-    """
+    """Pin the SDC/XDC reader backend for one test."""
     from rtl_buddy.constraints import tcl_reader
 
     if backend == tcl_reader.TCL_BACKEND and not tcl_reader.tcl_available():
@@ -127,10 +86,7 @@ def _force_constraint_backend(monkeypatch: pytest.MonkeyPatch, backend: str) -> 
 def constraint_backend(request, monkeypatch: pytest.MonkeyPatch) -> str:
     """Run the test once per constraint reader backend.
 
-    ``tcl`` is skipped where the worker process cannot start a Tcl
-    interpreter — a Python without ``_tkinter`` (Homebrew python without
-    ``python-tk``, a distro python without ``python3-tkinter``) — which is
-    exactly the host the ``tokenizer`` fallback exists for.
+    ``tcl`` is skipped where the worker cannot start a Tcl interpreter (Python without ``_tkinter``).
     """
     return _force_constraint_backend(monkeypatch, request.param)
 

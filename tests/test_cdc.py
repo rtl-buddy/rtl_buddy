@@ -1,6 +1,4 @@
-"""Tests for the CDC config surface: tool config, per-analysis config,
-suite/regression YAML loading. Mirrors the structure of ``test_synth.py``.
-"""
+"""Tests for the CDC config surface: tool config, per-analysis config and suite/regression YAML loading."""
 
 import logging
 from pathlib import Path
@@ -16,11 +14,6 @@ from rtl_buddy.config.cdc import (
     CdcToolConfigFile,
     CdcToolOptsFile,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _tool_cfg(
@@ -60,11 +53,6 @@ def _make_cdc_cfg(
     )
 
 
-# ---------------------------------------------------------------------------
-# CdcToolConfig — opts and overrides
-# ---------------------------------------------------------------------------
-
-
 def test_cdc_tool_config_returns_base_opts():
     cfg = _tool_cfg(sync_depth=3, extra_args="--strict")
     opts = cfg.get_opts()
@@ -83,18 +71,13 @@ def test_cdc_tool_config_partial_override_keeps_unset_base():
     cfg = _tool_cfg(sync_depth=2, extra_args="--baseline")
     opts = cfg.get_opts({"sync_depth": 4})
     assert opts.sync_depth == 4
-    assert opts.extra_args == "--baseline"  # unchanged
+    assert opts.extra_args == "--baseline"
 
 
 def test_cdc_tool_config_none_override_returns_base():
     cfg = _tool_cfg(sync_depth=2)
     assert cfg.get_opts(None).sync_depth == 2
     assert cfg.get_opts({}).sync_depth == 2
-
-
-# ---------------------------------------------------------------------------
-# CdcConfig — reglvl semantics (mirrors synth's int/dict/default behavior)
-# ---------------------------------------------------------------------------
 
 
 def test_cdc_config_top_is_model_name():
@@ -118,11 +101,11 @@ def test_cdc_config_reglvl_dict_tool_specific():
     )
     assert cfg.get_reglvl("rtl-buddy-cdc") == 100
     assert cfg.get_reglvl("spyglass-cdc") == 200
-    assert cfg.get_reglvl("questa-cdc") == 50  # falls back to default
+    assert cfg.get_reglvl("questa-cdc") == 50
 
 
 def test_cdc_config_reglvl_dict_default_only():
-    """A dict with only `default` must be honored for any tool."""
+    """A dict with only `default` is honored for any tool."""
     cfg = _make_cdc_cfg(reglvl={"default": 100})
     assert cfg.get_reglvl("rtl-buddy-cdc") == 100
     assert cfg.get_reglvl("anything") == 100
@@ -135,11 +118,6 @@ def test_cdc_config_reglvl_malformed_dict_raises():
     cfg = _make_cdc_cfg(reglvl={"some-other-tool": 100})
     with pytest.raises(FatalRtlBuddyError, match="reglvl"):
         cfg.get_reglvl("rtl-buddy-cdc")
-
-
-# ---------------------------------------------------------------------------
-# CdcConfig — tool_overrides (nested by tool name)
-# ---------------------------------------------------------------------------
 
 
 def test_cdc_config_tool_overrides_for_matching_tool():
@@ -158,8 +136,7 @@ def test_cdc_config_tool_overrides_none():
 
 
 def test_cdc_config_tool_overrides_merge_through_tool_cfg():
-    """End-to-end: a per-analysis tool_overrides entry overrides the root
-    config baseline when passed through CdcToolConfig.get_opts()."""
+    """A per-analysis tool_overrides entry overrides the root baseline in CdcToolConfig.get_opts()."""
     cdc_cfg = _make_cdc_cfg(
         tool_overrides={"rtl-buddy-cdc": {"sync_depth": 4, "extra_args": "--strict"}}
     )
@@ -167,11 +144,6 @@ def test_cdc_config_tool_overrides_merge_through_tool_cfg():
     opts = tool_cfg.get_opts(cdc_cfg.get_tool_overrides_for(tool_cfg.get_name()))
     assert opts.sync_depth == 4
     assert opts.extra_args == "--strict"
-
-
-# ---------------------------------------------------------------------------
-# CdcConfig — frontend (per-analysis elaboration frontend selector)
-# ---------------------------------------------------------------------------
 
 
 def test_cdc_config_frontend_defaults_to_none():
@@ -198,10 +170,6 @@ def test_cdc_config_single_unit_explicit_true():
     cfg = _make_cdc_cfg(single_unit=True)
     assert cfg.single_unit is True
 
-
-# ---------------------------------------------------------------------------
-# CdcSuiteConfig — YAML loading + path resolution
-# ---------------------------------------------------------------------------
 
 _SUITE_YAML = dedent("""\
     rtl-buddy-filetype: cdc_config
@@ -261,8 +229,7 @@ def test_cdc_suite_config_get_by_name(tmp_path):
 
 
 def test_cdc_suite_config_paths_resolved_relative_to_yaml(tmp_path):
-    """constraints and waivers paths must be resolved relative to the
-    cdc.yaml file (matches the synth/test convention)."""
+    """Constraints and waivers paths resolve relative to the cdc.yaml file."""
     suite_yaml = _write_suite(tmp_path)
     cfg = CdcSuiteConfig(str(suite_yaml))
     cdc_a = cfg.get_analyses("cdc_a")[0]
@@ -283,9 +250,7 @@ def test_cdc_suite_config_missing_name_raises(tmp_path):
 
 
 def test_cdc_suite_config_duplicate_analysis_raises(tmp_path):
-    """Two analyses with the same name in one cdc.yaml is a hard
-    error — the dict-comprehension in CdcSuiteConfig.__init__
-    would silently overwrite the first with the second otherwise."""
+    """Two analyses with the same name in one cdc.yaml raise."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
     (tmp_path / "models.yaml").write_text(_MODELS_YAML)
@@ -315,13 +280,13 @@ def test_cdc_suite_config_duplicate_analysis_raises(tmp_path):
 
 
 def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
-    """Per-analysis `frontend:` round-trips through CdcConfigFile -> CdcConfig."""
+    """Per-analysis `frontend:` round-trips through CdcConfigFile and CdcConfig."""
     suite_yaml = _write_suite(tmp_path)
     cfg = CdcSuiteConfig(str(suite_yaml))
     cdc_a = cfg.get_analyses("cdc_a")[0]
     cdc_b = cfg.get_analyses("cdc_b")[0]
-    assert cdc_a.frontend is None  # not set in YAML -> default
-    assert cdc_b.frontend == "slang"  # explicit in YAML
+    assert cdc_a.frontend is None
+    assert cdc_b.frontend == "slang"
 
 
 def test_cdc_suite_config_picks_up_single_unit_field(tmp_path):
@@ -334,18 +299,14 @@ def test_cdc_suite_config_picks_up_single_unit_field(tmp_path):
 
 
 def test_cdc_suite_config_picks_up_blackbox_field(tmp_path):
-    """Per-analysis `blackbox:` round-trips through CdcConfigFile -> CdcConfig."""
+    """Per-analysis `blackbox:` round-trips through CdcConfigFile and CdcConfig."""
     suite_yaml = _write_suite(tmp_path)
     cfg = CdcSuiteConfig(str(suite_yaml))
     cdc_a = cfg.get_analyses("cdc_a")[0]
     cdc_b = cfg.get_analyses("cdc_b")[0]
-    assert cdc_a.blackbox == []  # not set in YAML -> default empty list
-    assert cdc_b.blackbox == ["sram_macro", "pll_wrap"]  # explicit in YAML
+    assert cdc_a.blackbox == []
+    assert cdc_b.blackbox == ["sram_macro", "pll_wrap"]
 
-
-# ---------------------------------------------------------------------------
-# CdcRegConfig — YAML loading + per-suite path resolution
-# ---------------------------------------------------------------------------
 
 _REG_YAML = dedent("""\
     rtl-buddy-filetype: cdc_reg_config
@@ -372,20 +333,11 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
     assert suites[0].get_analyses("cdc_b")[0].single_unit is True
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyCdc — frontend argv plumbing
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(autouse=True)
 def _analyzer_on_path(monkeypatch):
     """Pretend rtl-buddy-cdc is installed.
 
-    `RtlBuddyCdc.run` skips when the analyzer is not on PATH (#469), and
-    rtl_buddy does not depend on it — so without this the argv tests below
-    would pass on a developer box that happens to have it and skip-and-fail
-    in CI. Tests that care about the analyzer being absent re-patch `which`
-    themselves; the later `setattr` wins.
+    `RtlBuddyCdc.run` skips when the analyzer is not on PATH, so argv tests need this to behave the same on every host. Tests about an absent analyzer re-patch `which`; the later `setattr` wins.
     """
     from rtl_buddy.tools import cdc_rtl_buddy as _mod
 
@@ -395,13 +347,9 @@ def _analyzer_on_path(monkeypatch):
 def _setup_lint_run(
     tmp_path, frontend=None, single_unit=False, blackbox=None, emit_maps=False
 ):
-    """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
-    build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
+    """Build a ready-to-call RtlBuddyCdc wrapper and return ``(wrapper, cmd_calls_list)``.
 
-    The subprocess is mocked: each invocation is appended to the returned
-    list, and the mock writes a minimal valid JSON report so run() can
-    finish parsing its output. Use the captured argv to assert on the
-    --frontend plumbing.
+    The subprocess is mocked: each invocation is appended to the list, and the mock writes a minimal valid JSON report so run() can finish parsing.
     """
     from contextlib import nullcontext
     from rtl_buddy.config.cdc import CdcToolConfig, CdcToolConfigFile, CdcToolOptsFile
@@ -450,8 +398,6 @@ def _setup_lint_run(
 
     def _fake_run(cmd, stdout, stderr, **kwargs):
         calls.append(list(cmd))
-        # Subprocess succeeded; write the minimal payload run() expects so
-        # downstream parsing finishes cleanly.
         json_report.write_text('{"summary": {"violations": 0, "suppressed": 0}}')
         return ManagedProcessResult(returncode=0)
 
@@ -504,7 +450,7 @@ def test_lint_argv_omits_frontend_when_unset(tmp_path, monkeypatch):
 
     wrapper.run()
 
-    assert len(calls) == 2  # text + json
+    assert len(calls) == 2
     for cmd in calls:
         assert "--frontend" not in cmd
 
@@ -524,9 +470,7 @@ def test_lint_argv_adds_frontend_slang(tmp_path, monkeypatch):
 
 
 def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
-    """An explicit `frontend: "yosys"` is forwarded as well — useful for
-    pinning a config to a specific frontend independent of the tool's own
-    default, and as a regression guard against future default changes."""
+    """An explicit `frontend: "yosys"` is forwarded."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="yosys")
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
@@ -582,13 +526,8 @@ def test_lint_single_unit_requires_analyzer_support(tmp_path, monkeypatch):
     assert calls == []
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyCdc — --blackbox argv plumbing (rtl-buddy-cdc#259)
-# ---------------------------------------------------------------------------
-
-
 def test_lint_argv_omits_blackbox_when_empty(tmp_path, monkeypatch):
-    """An empty/absent blackbox list adds no `--blackbox` args."""
+    """An empty or absent blackbox list adds no `--blackbox` args."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, blackbox=[])
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
@@ -596,7 +535,7 @@ def test_lint_argv_omits_blackbox_when_empty(tmp_path, monkeypatch):
 
     wrapper.run()
 
-    assert len(calls) == 2  # text + json
+    assert len(calls) == 2
     for cmd in calls:
         assert "--blackbox" not in cmd
 
@@ -614,21 +553,13 @@ def test_lint_argv_adds_blackbox_for_each_module(tmp_path, monkeypatch):
 
     assert len(calls) == 2
     for cmd in calls:
-        # Both modules present, each preceded by its own `--blackbox`.
         bb_values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--blackbox"]
         assert bb_values == ["foo", "bar"]
         assert cmd[cmd.index("--blackbox") + 1] == "foo"
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyCdc — --project-root plumbing (rtl-buddy-cdc#245)
-# ---------------------------------------------------------------------------
-
-
 def test_lint_argv_adds_project_root_when_supported(tmp_path, monkeypatch):
-    """When the analyzer advertises `--project-root`, both invocations get
-    `--project-root <suite_dir>` so a config's relative `extra_args` paths
-    resolve against the cdc.yaml dir rather than the nested artefact cwd."""
+    """An analyzer that advertises `--project-root` gets `--project-root <suite_dir>` on both invocations."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
@@ -643,8 +574,7 @@ def test_lint_argv_adds_project_root_when_supported(tmp_path, monkeypatch):
 
 
 def test_lint_argv_omits_project_root_when_unsupported(tmp_path, monkeypatch):
-    """An analyzer that predates the flag must not be handed it — passing an
-    unknown option would hard-fail (exit 2). Degrade silently instead."""
+    """An analyzer without `--project-root` is not passed it."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
@@ -658,10 +588,8 @@ def test_lint_argv_omits_project_root_when_unsupported(tmp_path, monkeypatch):
 
 
 def test_lint_argv_project_root_precedes_extra_args(tmp_path, monkeypatch):
-    """`--project-root` is emitted before `extra_args` so a config can still
-    override the anchor in its own `extra_args` if it ever needs to."""
+    """`--project-root` precedes `extra_args`, so a config can override it there."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
-    # Inject a path-bearing extra_arg of the kind #245 is about.
     wrapper.tool_cfg._cfg.opts.extra_args = "--yosys-plugin build/slang.so"
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
@@ -674,9 +602,7 @@ def test_lint_argv_project_root_precedes_extra_args(tmp_path, monkeypatch):
 
 
 def test_lint_supports_project_root_probe(monkeypatch):
-    """The capability probe greps `lint --help` and degrades to False on a
-    missing/erroring binary (so the cache never sticks a flag onto an old
-    analyzer)."""
+    """The capability probe greps `lint --help` and is False for a missing or erroring binary."""
     from types import SimpleNamespace
     from rtl_buddy.tools import cdc_rtl_buddy as mod
 
@@ -733,20 +659,8 @@ def test_cdc_suite_config_loads_xfail_flags(tmp_path):
     assert cfg.get_analyses("cdc_normal")[0].is_xfail() is False
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyCdc — stale-report masking (#469)
-# ---------------------------------------------------------------------------
-
-
 def test_lint_stale_json_report_is_not_reported_as_this_run(tmp_path, monkeypatch):
-    """A crash that exits 1 without writing a report must not resurrect the
-    previous run's cdc.json (#469).
-
-    Exit code 1 is the analyzer's "rule violations found" code, so a crash
-    that happens to exit 1 passes the returncode gate. Before the fix the
-    stale report left in the artefact dir was parsed and its counts were
-    reported as the current result.
-    """
+    """A crash that exits 1 without writing a report must not resurrect the previous run's cdc.json."""
     wrapper, calls, _fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
@@ -759,7 +673,6 @@ def test_lint_stale_json_report_is_not_reported_as_this_run(tmp_path, monkeypatc
     from rtl_buddy.process_utils import ManagedProcessResult
 
     def _crash(cmd, stdout, stderr, **kwargs):
-        # Exits with the "violations found" code but writes no report.
         return ManagedProcessResult(returncode=1)
 
     monkeypatch.setattr(mod, "run_managed_process", _crash)
@@ -774,8 +687,7 @@ def test_lint_stale_json_report_is_not_reported_as_this_run(tmp_path, monkeypatc
 
 
 def test_lint_stale_domain_maps_are_cleared_when_emitting(tmp_path, monkeypatch):
-    """`--emit-constraints` reads domain_map.json / reset_map.json back off
-    disk; a crashed run must not hand it the previous run's maps (#469)."""
+    """A crashed run must not hand `--emit-constraints` the previous run's domain and reset maps."""
     wrapper, calls, _fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
@@ -802,8 +714,7 @@ def test_lint_stale_domain_maps_are_cleared_when_emitting(tmp_path, monkeypatch)
 
 
 def test_lint_fresh_report_from_this_run_is_still_consumed(tmp_path, monkeypatch):
-    """The pre-run cleanup must not break the happy path: a report the
-    current invocation writes is parsed normally (#469)."""
+    """A report written by the current invocation is parsed normally."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
@@ -822,9 +733,7 @@ def test_lint_fresh_report_from_this_run_is_still_consumed(tmp_path, monkeypatch
 def test_lint_missing_analyzer_skips_and_keeps_the_previous_reports(
     tmp_path, monkeypatch
 ):
-    """A box without rtl-buddy-cdc never ran it, so it must not delete the
-    reports a box that has it produced — the same carve-out the Vivado
-    backend has, and what the docs promise (#469)."""
+    """A missing analyzer skips and keeps the previous run's reports."""
     from rtl_buddy.runner.cdc_results import CdcSkipResults
 
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
@@ -841,16 +750,13 @@ def test_lint_missing_analyzer_skips_and_keeps_the_previous_reports(
     assert isinstance(res, CdcSkipResults)
     assert "not found" in res.results["desc"]
     assert "tool-check" in res.results["desc"]
-    # Nothing was run, so nothing is deleted.
     assert calls == []
     assert kept.exists()
     assert kept_txt.exists()
 
 
 def test_lint_config_error_beats_the_missing_analyzer_skip(tmp_path, monkeypatch):
-    """A broken analysis is broken on every machine. Reporting it as "analyzer
-    not installed" on a box that merely lacks the tool would send the user
-    after the wrong problem, so the config validation runs first (#469)."""
+    """A config error is raised before the missing-analyzer skip."""
     import os
 
     from rtl_buddy.errors import FatalRtlBuddyError
@@ -858,7 +764,6 @@ def test_lint_config_error_beats_the_missing_analyzer_skip(tmp_path, monkeypatch
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
 
-    # The analysis names an SDC that does not exist.
     os.unlink(wrapper.cdc_cfg.get_constraints())
 
     with pytest.raises(FatalRtlBuddyError, match="SDC not found"):
@@ -868,8 +773,7 @@ def test_lint_config_error_beats_the_missing_analyzer_skip(tmp_path, monkeypatch
 def test_lint_missing_analyzer_skip_still_fires_for_a_valid_analysis(
     tmp_path, monkeypatch
 ):
-    """The reorder must not cost the skip: a well-configured analysis on a box
-    without the analyzer still skips with its reports intact (#469)."""
+    """A valid analysis still skips, with its reports intact, when the analyzer is missing."""
     from rtl_buddy.runner.cdc_results import CdcSkipResults
 
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
@@ -885,8 +789,7 @@ def test_lint_missing_analyzer_skip_still_fires_for_a_valid_analysis(
 
 
 def test_lint_config_failure_clears_the_previous_reports(tmp_path, monkeypatch):
-    """A config error is a failed run, so it must not leave the previous
-    run's reports to be read as this one's (#469)."""
+    """A config failure clears the previous run's reports."""
     import os
 
     from rtl_buddy.errors import FatalRtlBuddyError
@@ -903,9 +806,7 @@ def test_lint_config_failure_clears_the_previous_reports(tmp_path, monkeypatch):
 
 
 def test_lint_clears_maps_even_when_not_emitting_them(tmp_path, monkeypatch):
-    """`--emit-constraints` / `--check-xdc` read the maps back off a fixed
-    path, so an ordinary run must not leave an earlier constraint-generation
-    run's maps for them to answer from (#469)."""
+    """An ordinary run clears the constraint-generation maps that `--emit-constraints` and `--check-xdc` read."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=False)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
@@ -924,9 +825,7 @@ def test_lint_clears_maps_even_when_not_emitting_them(tmp_path, monkeypatch):
 
 
 def test_lint_analyzer_writes_then_fails_publishes_nothing(tmp_path, monkeypatch):
-    """The analyzer writes its report before it finishes, so an unsupported
-    exit code can arrive with a report on disk. A FAIL publishes nothing, or
-    `read_report` hands the CLI a report the run disowned (#469)."""
+    """An analyzer that writes a report and then fails publishes nothing."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
@@ -953,7 +852,7 @@ def test_lint_analyzer_writes_then_fails_publishes_nothing(tmp_path, monkeypatch
 
 
 def test_lint_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
-    """Same for a report the wrapper cannot parse (#469)."""
+    """A report the wrapper cannot parse publishes nothing."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
@@ -975,20 +874,17 @@ def test_lint_unparsable_report_publishes_nothing(tmp_path, monkeypatch):
 
 
 def test_lint_filelist_error_clears_the_previous_reports(tmp_path, monkeypatch):
-    """`_write_filelist` raises `FilelistError`, a *sibling* of
-    `FatalRtlBuddyError` under `RtlBuddyError` rather than a subclass. A
-    rerun after a source file disappears must still publish nothing (#469)."""
+    """`FilelistError` from `_write_filelist` also clears the previous run's reports."""
     import os
 
     from rtl_buddy.errors import FatalRtlBuddyError, FilelistError, RtlBuddyError
 
-    # Guard the premise: catching FatalRtlBuddyError alone would miss this.
+    # `FilelistError` is not a `FatalRtlBuddyError`, so catching only the latter would miss it.
     assert not issubclass(FilelistError, FatalRtlBuddyError)
     assert issubclass(FilelistError, RtlBuddyError)
 
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
 
-    # What a previously successful analysis left behind.
     report = Path(wrapper.artefact_dir) / "cdc.json"
     report.write_text('{"summary": {"violations": 31, "crossings": 49}}')
     text = Path(wrapper.artefact_dir) / "cdc.txt"
@@ -998,7 +894,6 @@ def test_lint_filelist_error_clears_the_previous_reports(tmp_path, monkeypatch):
     reset_map = Path(wrapper.artefact_dir) / "reset_map.json"
     reset_map.write_text('{"reset_synchronizers": []}')
 
-    # The source named by the model is gone.
     os.unlink(tmp_path / "top.sv")
 
     with pytest.raises(RtlBuddyError):
@@ -1025,10 +920,7 @@ def test_lint_filelist_error_clears_the_previous_reports(tmp_path, monkeypatch):
 def test_lint_structurally_bad_report_publishes_nothing(
     tmp_path, monkeypatch, payload, why
 ):
-    """`json.loads` succeeding only says the bytes were valid JSON. A
-    top-level list or a non-numeric `summary.violations` parses fine and then
-    raises on `.get` or `int()` — outside the guard that escaped
-    `_fail_after_analyzer`, leaving the rejected report on disk (#469)."""
+    """A report that is valid JSON but structurally wrong publishes nothing and is removed."""
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, emit_maps=True)
     monkeypatch.setattr(mod, "task_status", lambda *a, **k: nullctx())
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)

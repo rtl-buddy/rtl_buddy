@@ -1,13 +1,6 @@
-"""Tests for the per-artefact-tree advisory lock (#73).
+"""Tests for the per-artefact-tree advisory lock and the scoped build-directory lock.
 
-flock(2) treats file descriptors from separate ``open()`` calls as
-independent even within one process, so a second ``ArtifactLocks``
-instance in the same test process genuinely contends with the first —
-no subprocess gymnastics needed.
-
-The second half covers the scoped build-directory lock (#494), which
-shares the idiom but not the policy: it blocks instead of refusing, and
-degrades to unlocked when the filesystem cannot lock.
+A second ``ArtifactLocks`` instance in the same process contends with the first, because flock treats separate ``open()`` calls as independent holders.
 """
 
 from __future__ import annotations
@@ -83,7 +76,7 @@ def test_reacquire_same_root_is_idempotent(tmp_path, locks):
     root = tmp_path / "artefacts"
     manager = locks()
     manager.acquire(root, command="regression")
-    manager.acquire(root, command="regression")  # same suite re-entered
+    manager.acquire(root, command="regression")
 
 
 def test_distinct_roots_do_not_contend(tmp_path, locks):
@@ -105,11 +98,6 @@ def test_corrupt_holder_metadata_still_fails_loud(tmp_path, locks):
     (root / LOCK_FILENAME).write_text("not json{")
     with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run"):
         locks().acquire(root, command="test")
-
-
-# ---------------------------------------------------------------------------
-# CLI wiring: _enter_command_context takes the lock; --list paths don't
-# ---------------------------------------------------------------------------
 
 
 def _runner() -> tuple[CliRunner, RtlBuddy]:
@@ -144,26 +132,16 @@ def test_cli_command_acquires_lock_in_artifact_root(minimal_project: Path):
     rb._artifact_locks.release_all()
 
 
-# ---------------------------------------------------------------------------
-# The scoped shared-build lock (#494)
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture(autouse=True)
 def _forget_degrade_warnings():
-    """The "cannot lock" warning is claimed once per directory per PROCESS,
-    and one pytest process is many runs."""
+    """The "cannot lock" warning is claimed once per directory per process; reset it between tests."""
     artifact_lock_module._reset_degrade_warnings()
     yield
     artifact_lock_module._reset_degrade_warnings()
 
 
 def _nonblocking_acquire(lock_file: Path) -> bool:
-    """Could a *separate* file description take the lock right now?
-
-    Separate ``open()``, so flock treats it as another holder even inside
-    this process — the same property the module docstring relies on.
-    """
+    """Could a separate file description take the lock right now?"""
     fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -187,19 +165,14 @@ def test_build_dir_lock_holds_the_directory_and_releases_it_on_exit(tmp_path):
         assert holder["test"] == "test_a"
         assert holder["started"]
 
-    # Scoped, unlike the tree lock: the compile is over, so the next
-    # process may have the directory.
+    # Unlike the tree lock, the build lock is released once the compile ends.
     assert _nonblocking_acquire(lock_file)
 
 
 def test_build_dir_lock_degrades_when_the_filesystem_cannot_lock(
     tmp_path, monkeypatch, caplog
 ):
-    """ENOLCK (some NFS mounts) or a read-only tree must not fail a build.
-
-    The exit-0 contract outranks the serialisation: losing the lock costs
-    the cross-process guarantee, and the warning says exactly that.
-    """
+    """ENOLCK or a read-only tree must not fail a build."""
     build_dir = tmp_path / "obj_dir_abc"
     build_dir.mkdir()
 
@@ -224,14 +197,7 @@ def test_build_dir_lock_degrades_when_the_filesystem_cannot_lock(
 def test_a_filesystem_that_cannot_lock_warns_once_per_directory(
     tmp_path, monkeypatch, caplog
 ):
-    """One warning per build directory, not one per compile.
-
-    A tree nobody can flock (a shared team checkout this user cannot
-    create the lock file in, an NFS mount answering ENOLCK) cannot flock
-    for the whole run, so the loss of guarantee is a fact about the
-    configuration. Repeating it for every test of every suite would bury
-    the one line that matters.
-    """
+    """An unlockable directory warns once per build directory, not once per compile."""
     first = tmp_path / "obj_dir_abc"
     first.mkdir()
     second = tmp_path / "obj_dir_def"
@@ -258,12 +224,7 @@ def test_a_filesystem_that_cannot_lock_warns_once_per_directory(
 
 @pytest.mark.skipif(os.name != "posix", reason="flock(2) is POSIX")
 def test_a_long_wait_keeps_saying_it_is_a_wait(tmp_path, monkeypatch):
-    """A wait announced once and then silent for an hour reads as a hang.
-
-    The intervals are the module's, so this drives them down rather than
-    sleeping through the real five minutes. Separate ``open()``, which
-    flock counts as another holder even in this process.
-    """
+    """A long wait keeps announcing itself at the module's intervals."""
     build_dir = tmp_path / "obj_dir_abc"
     build_dir.mkdir()
     monkeypatch.setattr(artifact_lock_module, "BUILD_LOCK_POLL_SEC", 0.01)
@@ -292,24 +253,20 @@ def test_a_long_wait_keeps_saying_it_is_a_wait(tmp_path, monkeypatch):
         while len(seen) < 3 and time.time() < deadline:
             time.sleep(0.01)
     finally:
-        os.close(fd)  # releases the flock, so the waiter gets it
+        os.close(fd)
     waiter.join(60)
     assert not waiter.is_alive()
     assert result == {"held": True}
 
     assert len(seen) >= 3, "the wait was announced once and then went quiet"
     assert {event for event, _ in seen} == {"compile.build_lock_wait"}
-    # Every line names the directory being waited for, and carries the
-    # wait so far — 0 on the first, which is what the human message drops
-    # rather than printing "(0s so far)".
+    # Every line names the directory and the wait so far; the human message omits a zero wait.
     assert {fields["build_path"] for _, fields in seen} == {str(build_dir)}
     assert seen[0][1]["waited_sec"] == 0
 
 
 def test_build_dir_lock_degrades_when_the_lock_file_cannot_be_created(tmp_path, caplog):
-    """A directory that vanished under us is the same class of problem:
-    say so and let the compile decide, rather than raising out of a path
-    that may not change an exit code."""
+    """A build directory that vanishes degrades to unlocked instead of raising."""
     with caplog.at_level(logging.WARNING):
         with build_dir_lock(tmp_path / "gone" / "obj_dir_abc", test="test_a") as held:
             assert held is False
@@ -321,20 +278,11 @@ def test_build_dir_lock_degrades_when_the_lock_file_cannot_be_created(tmp_path, 
 
 @pytest.mark.skipif(os.name != "posix", reason="flock(2) is POSIX")
 def test_another_process_blocks_on_the_lock_until_it_is_released(tmp_path):
-    """The case the issue reports: several ``rb`` processes started
-    together against a cold shared build tree (#494).
-
-    A real second process, because that is the whole claim — the #495
-    in-job grouping already serialises threads, and only flock reaches
-    across processes.
-    """
+    """A real second process blocks on the lock until the first releases it."""
     build_dir = tmp_path / "obj_dir_abc"
     build_dir.mkdir()
     marker = tmp_path / "child-at-the-lock"
-    # The child announces that it is *about to* take the lock, so the
-    # parent releases only once the child is provably queued rather than
-    # after a sleep it might still be importing through — the wait it
-    # reports is then a wait and not a slow interpreter start.
+    # The child announces it is about to lock, so the parent releases only once the child is queued.
     script = textwrap.dedent(
         f"""
         import json, time
@@ -365,17 +313,12 @@ def test_another_process_blocks_on_the_lock_until_it_is_released(tmp_path):
                 assert child.poll() is None, "the second process exited early"
                 time.sleep(0.05)
             assert marker.exists(), "the second process never reached the lock"
-            # The marker says the child is about to take the lock, not
-            # that it has tried yet; releasing on the spot could let it
-            # succeed first time and report a wait of zero. This is the
-            # slack for its next statement, and it is what makes the
-            # elapsed-time assertion below deterministic.
+            # Slack for the child's next statement; without it the child could take the lock first try and report a zero wait.
             time.sleep(0.3)
             assert child.poll() is None, "the second process did not wait for the lock"
         out = child.communicate(timeout=60)[0]
     finally:
-        # An assertion inside the `with` would otherwise leave a child
-        # blocked on a flock in tmp_path with nobody to reap it.
+        # Reap the child if an assertion fires inside the ``with``.
         if child is not None and child.poll() is None:
             child.kill()
             child.wait(timeout=60)
@@ -384,35 +327,22 @@ def test_another_process_blocks_on_the_lock_until_it_is_released(tmp_path):
         next(line for line in out.splitlines() if line.startswith("RESULT "))[7:]
     )
     assert result["held"] is True
-    # It blocked: a lock taken on the first try costs nothing, while one
-    # waited for costs at least the poll interval.
+    # A lock taken on the first try costs nothing; a wait costs at least the poll interval.
     assert result["waited"] >= BUILD_LOCK_POLL_SEC, result
-    # And it said so on its own stdout while waiting — a dispatched job
-    # log that simply stops for a compile reads as a hang.
+    # The waiter says so on stdout, so a dispatched job log does not look hung.
     assert "waiting for another rtl-buddy" in out
     assert f"pid {os.getpid()}" in out
 
 
-# ---------------------------------------------------------------------------
-# Stale-lock reclaim (#609)
-#
-# Every test here needs the same unnatural state: a lock file whose flock
-# is genuinely held (so `acquire` cannot take it) but whose *record* names
-# a holder that is gone. A second file description in this process supplies
-# the flock — the property the module docstring opens with — and the record
-# is written underneath it.
-# ---------------------------------------------------------------------------
-
-
 def _dead_pid() -> int:
-    """A pid that existed and does not any more."""
+    """A pid that existed and no longer does."""
     proc = subprocess.Popen([sys.executable, "-c", ""])
     proc.wait(timeout=60)
     return proc.pid
 
 
 def _wedge_lock(root: Path, holder: dict) -> int:
-    """Hold ``root``'s tree flock and write ``holder`` into the file.
+    """Hold ``root``'s tree flock and write ``holder`` into the lock file.
 
     Returns the descriptor holding the flock; the caller closes it.
     """
@@ -426,7 +356,7 @@ def _wedge_lock(root: Path, holder: dict) -> int:
 
 @pytest.fixture
 def wedged():
-    """`_wedge_lock`, with the descriptors closed on the way out."""
+    """`_wedge_lock`, with the descriptors closed on exit."""
     fds = []
 
     def make(root: Path, holder: dict) -> int:
@@ -441,7 +371,7 @@ def wedged():
 
 
 def test_stale_same_host_dead_pid_is_reclaimed(tmp_path, locks, wedged, caplog):
-    """The #609 case: the owner is gone, so the next run takes the tree."""
+    """A same-host record with a dead pid is reclaimed."""
     root = tmp_path / "artefacts"
     dead = _dead_pid()
     wedged(
@@ -463,14 +393,13 @@ def test_stale_same_host_dead_pid_is_reclaimed(tmp_path, locks, wedged, caplog):
     assert holder["host"] == socket.gethostname()
     assert "artifact_lock reclaimed" in caplog.text
 
-    # Reclaimed means *held*, not merely overwritten: the next process
-    # in still finds the tree taken.
+    # Reclaimed means held: the next process still finds the tree taken.
     with pytest.raises(FatalRtlBuddyError, match="another rtl-buddy run"):
         locks().acquire(root, command="pnr")
 
 
 def test_live_holder_is_never_reclaimed(tmp_path, locks, wedged):
-    """A pid that is alive is the holder, whatever else the record says."""
+    """A live pid is the holder, whatever else the record says."""
     root = tmp_path / "artefacts"
     wedged(
         root,
@@ -488,7 +417,7 @@ def test_live_holder_is_never_reclaimed(tmp_path, locks, wedged):
 
 
 def test_lock_from_another_host_is_not_reclaimed_by_pid(tmp_path, locks, wedged):
-    """A shared filesystem: a dead pid *here* says nothing about a pid there."""
+    """A dead pid on another host says nothing about the holder there."""
     root = tmp_path / "artefacts"
     wedged(
         root,
@@ -506,7 +435,7 @@ def test_lock_from_another_host_is_not_reclaimed_by_pid(tmp_path, locks, wedged)
 
 
 def test_lock_without_a_host_is_not_reclaimed(tmp_path, locks, wedged):
-    """A pre-#609 record has unknown identity, which is not "reclaim me"."""
+    """A record without a host is not reclaimed."""
     root = tmp_path / "artefacts"
     wedged(
         root,
@@ -517,7 +446,7 @@ def test_lock_without_a_host_is_not_reclaimed(tmp_path, locks, wedged):
 
 
 def test_reused_pid_is_treated_as_a_dead_holder(tmp_path, locks, wedged):
-    """Alive, but not the process that wrote the record: the start token says so."""
+    """A live pid whose start token differs from the record is treated as dead."""
     root = tmp_path / "artefacts"
     wedged(
         root,
@@ -526,8 +455,7 @@ def test_reused_pid_is_treated_as_a_dead_holder(tmp_path, locks, wedged):
             "command": "pnr",
             "started": "2026-09-20T10:00:00",
             "host": socket.gethostname(),
-            # This process started once; a token from another era means
-            # the recorded holder is gone and its number was handed on.
+            # A token from another era means the recorded pid was reused.
             "start_token": "0",
         },
     )
@@ -536,7 +464,7 @@ def test_reused_pid_is_treated_as_a_dead_holder(tmp_path, locks, wedged):
 
 
 def test_reclaim_does_not_race_a_concurrent_reclaimer(tmp_path, locks, wedged):
-    """Two runs diagnosing one corpse: exactly one of them gets the tree."""
+    """Two concurrent reclaimers: exactly one gets the tree."""
     root = tmp_path / "artefacts"
     wedged(
         root,
@@ -574,7 +502,7 @@ def test_reclaim_does_not_race_a_concurrent_reclaimer(tmp_path, locks, wedged):
 def test_reclaim_picks_up_a_lock_released_between_the_two_attempts(
     tmp_path, locks, monkeypatch
 ):
-    """The holder exits mid-diagnosis: lock it, do not replace the file."""
+    """A holder that exits mid-diagnosis: lock the existing file, do not replace it."""
     root = tmp_path / "artefacts"
     fd = _wedge_lock(
         root,
@@ -590,7 +518,7 @@ def test_reclaim_picks_up_a_lock_released_between_the_two_attempts(
     real_reclaim = artifact_lock_module._reclaim_if_stale
 
     def _release_then_reclaim(*args, **kwargs):
-        os.close(fd)  # the "holder" exits while we are inside the reclaim
+        os.close(fd)
         return real_reclaim(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -603,7 +531,7 @@ def test_reclaim_picks_up_a_lock_released_between_the_two_attempts(
 def test_unlockable_filesystem_is_not_reported_as_contention(
     tmp_path, locks, monkeypatch
 ):
-    """ENOLCK is a broken mount, not another run — say which."""
+    """ENOLCK is reported as an unlockable filesystem, not as contention."""
     root = tmp_path / "artefacts"
 
     def _no_locks(fd, operation):
@@ -612,11 +540,6 @@ def test_unlockable_filesystem_is_not_reported_as_contention(
     monkeypatch.setattr(artifact_lock_module.fcntl, "flock", _no_locks)
     with pytest.raises(FatalRtlBuddyError, match="cannot lock this artefact tree"):
         locks().acquire(root, command="synth")
-
-
-# ---------------------------------------------------------------------------
-# Release paths: the lock comes back on failure and on interrupt (#609)
-# ---------------------------------------------------------------------------
 
 
 def _rb_running(raiser):
@@ -631,7 +554,7 @@ def _rb_running(raiser):
 
 
 def test_run_releases_the_tree_lock_when_a_tool_fails(tmp_path):
-    """An OpenROAD Tcl error surfaces as FatalRtlBuddyError — and unlocks."""
+    """A tool failure surfaces as FatalRtlBuddyError and releases the lock."""
     root = tmp_path / "artefacts"
 
     def _fail(rb):
@@ -643,7 +566,7 @@ def test_run_releases_the_tree_lock_when_a_tool_fails(tmp_path):
 
 
 def test_run_releases_the_tree_lock_on_keyboard_interrupt(tmp_path, capsys):
-    """Ctrl-C during OpenROAD: exit 130, tree given back."""
+    """Ctrl-C exits 130 and releases the lock."""
     root = tmp_path / "artefacts"
 
     def _interrupt(rb):
@@ -667,14 +590,14 @@ def test_run_releases_the_tree_lock_on_success(tmp_path):
 
 
 def test_acquirer_that_loses_the_path_to_a_reclaimer_stands_down(tmp_path, monkeypatch):
-    """#609: a reclaimer may replace the file between our flock and our record."""
+    """An acquirer that loses the path to a reclaimer between flock and record stands down."""
     from rtl_buddy import artifact_lock
 
     real_write = artifact_lock._write_holder
 
     def write_then_lose_the_path(fd, command):
         real_write(fd, command)
-        # What a concurrent reclaimer's os.replace does to the path.
+        # Simulates a concurrent reclaimer's ``os.replace``.
         usurper = tmp_path / "usurper"
         usurper.write_text("{}")
         os.replace(usurper, tmp_path / artifact_lock.LOCK_FILENAME)

@@ -1,12 +1,6 @@
-"""Tests for the rtl-buddy-cdc → hub diagnostics publisher.
+"""Tests for the rtl-buddy-cdc to hub diagnostics publisher.
 
-Covers two layers:
-
-1. ``build_items_from_cdc_report`` — pure translation from a
-   parsed rtl-buddy-cdc JSON report into wire-shaped items. No I/O.
-2. ``publish_cdc_report`` — end-to-end against a real HubServer
-   running on a background thread, including the silent-no-op
-   behaviour when no hub is reachable.
+Covers ``build_items_from_cdc_report`` (pure translation to wire-shaped items) and ``publish_cdc_report`` (end to end against a real HubServer on a background thread, including the no-op when no hub is reachable).
 """
 
 from __future__ import annotations
@@ -27,11 +21,6 @@ from rtl_buddy.tools.cdc_publisher import (
     build_items_from_cdc_report,
     publish_cdc_report,
 )
-
-
-# ---------------------------------------------------------------------------
-# Layer 1 — payload translation
-# ---------------------------------------------------------------------------
 
 
 def _minimal_report(violations: list[dict]) -> dict:
@@ -83,8 +72,7 @@ def test_build_items_from_minimal_violation():
 
 
 def test_build_items_drops_violations_without_location():
-    """No file means the wire payload would fail schema validation
-    AND the SPA can't anchor it to a node anyway."""
+    """A violation without a file fails schema validation and cannot be anchored, so it is dropped."""
 
     report = _minimal_report(
         [
@@ -93,7 +81,6 @@ def test_build_items_drops_violations_without_location():
                 "severity": "warning",
                 "message": "sync depth too shallow",
                 "instance_path": ["top"],
-                # location omitted
             }
         ]
     )
@@ -119,7 +106,7 @@ def test_build_items_drops_violations_with_bad_severity():
         [
             {
                 "rule_id": "CDC-004",
-                "severity": "FATAL",  # not in enum
+                "severity": "FATAL",
                 "message": "m",
                 "location": {"file": "/a.sv", "start_line": 1},
             }
@@ -153,11 +140,10 @@ def test_build_items_skips_instance_path_when_empty():
 
 
 def test_build_items_handles_missing_violations_key():
-    """An ``rtl-buddy-cdc`` report with no violations[] field
-    (older schema or zero-violation pass case) returns [] cleanly."""
+    """A report without a violations[] field returns []."""
 
     assert build_items_from_cdc_report({"summary": {"violations": 0}}) == []
-    assert build_items_from_cdc_report({"violations": None}) == []  # bad shape
+    assert build_items_from_cdc_report({"violations": None}) == []
 
 
 def test_build_items_handles_multiple_violations():
@@ -186,16 +172,8 @@ def test_build_items_handles_multiple_violations():
     assert items[1]["col"] == 3
 
 
-# ---------------------------------------------------------------------------
-# Layer 2 — end-to-end against a live hub
-# ---------------------------------------------------------------------------
-
-
 class _ThreadedHub:
-    """Spin a HubServer on a dedicated asyncio loop in a thread.
-
-    Same shape as test_hub_send_cli's fixture but skipping the
-    resolver (the publisher doesn't need it)."""
+    """Run a HubServer on a dedicated asyncio loop in a thread, without the resolver."""
 
     def __init__(self) -> None:
         self._server: HubServer | None = None
@@ -228,10 +206,7 @@ class _ThreadedHub:
                 self._started.set()
                 raise
             finally:
-                # Same Python 3.12 drain pattern as test_hub_send_cli's
-                # fixture — pending transport callbacks would otherwise
-                # fire against a closed loop and surface as "Event loop
-                # is closed" in sibling files' teardowns.
+                # Drain pending transport callbacks (Python 3.12), or they fire against a closed loop in sibling files' teardowns.
                 try:
                     pending = asyncio.all_tasks(loop)
                     for t in pending:
@@ -259,9 +234,7 @@ class _ThreadedHub:
             fut.result(timeout=5.0)
         except Exception:
             pass
-        # Race: shutdown() completing causes _async_start to return and
-        # the runner thread's finally may run loop.close() before we get
-        # here. Treat RuntimeError as "already stopped".
+        # shutdown() can let the runner thread close the loop first; treat RuntimeError as already stopped.
         try:
             self._loop.call_soon_threadsafe(self._loop.stop)
         except RuntimeError:
@@ -272,13 +245,7 @@ class _ThreadedHub:
 
 @pytest.fixture(scope="module")
 def threaded_hub() -> Iterator[_ThreadedHub]:
-    """Module-scoped so the asyncio loop + reader thread spin up
-    once per test file instead of per test. Python 3.12's asyncio
-    is strict about pending transport callbacks running on a closed
-    loop; repeatedly creating + tearing down loops in quick
-    succession on CI surfaces that strictness as "Event loop is
-    closed" teardown errors in sibling test files. One hub for the
-    whole file keeps the failure surface contained."""
+    """Module-scoped: Python 3.12 asyncio errors on transport callbacks after loop close, so one hub serves the whole file."""
 
     h = _ThreadedHub()
     h.start()
@@ -305,8 +272,7 @@ def discovery_root(tmp_path_factory, threaded_hub: _ThreadedHub, monkeypatch) ->
 def test_publish_cdc_report_pushes_violations_to_running_hub(
     threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
 ):
-    """End-to-end: publisher connects, pushes a diagnostics_set, the
-    hub broadcasts to a peer that hellos before the publish fires."""
+    """The publisher pushes a diagnostics_set that the hub broadcasts to a peer that said hello first."""
 
     report = _minimal_report(
         [
@@ -322,10 +288,7 @@ def test_publish_cdc_report_pushes_violations_to_running_hub(
     json_path = tmp_path / "cdc.json"
     json_path.write_text(json.dumps(report))
 
-    # Subscribe a view peer first so the broadcast lands somewhere
-    # we can inspect. Have to do this with a raw socket since the
-    # blocking HubClient.connect() can't share an event-loop thread
-    # with the publish call below.
+    # A raw socket subscribes the view peer, since the blocking HubClient.connect() cannot share the loop thread with publish.
     import socket as _socket
     from rtl_buddy.hub.protocol import encode, make_hello
 
@@ -334,7 +297,6 @@ def test_publish_cdc_report_pushes_violations_to_running_hub(
         encode(make_hello(client=Origin.VIEW, version="0.0", capabilities=[])).encode()
         + b"\n"
     )
-    # Drain the welcome reply so the next recv is the broadcast.
     buf = b""
     while b"\n" not in buf:
         chunk = sock.recv(4096)
@@ -346,9 +308,7 @@ def test_publish_cdc_report_pushes_violations_to_running_hub(
     ok = publish_cdc_report(analysis_name="ip_dma_lint", json_report_path=json_path)
     assert ok is True
 
-    # Read events until the diagnostics_set lands. The publisher's
-    # ``cli`` hello fires a peer_joined to existing peers first; drain
-    # that (and any other lifecycle chatter) on the way.
+    # Skip lifecycle events (such as the publisher's peer_joined) until the diagnostics_set arrives.
     env = None
     for _ in range(8):
         while b"\n" not in buf:
@@ -374,8 +334,7 @@ def test_publish_cdc_report_pushes_violations_to_running_hub(
 def test_publish_cdc_report_empty_violations_is_a_clear(
     threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
 ):
-    """A clean re-run after a fix must clear the source — empty
-    items[] is the documented `cleared source` signal."""
+    """Empty items[] is the `cleared source` signal for a clean re-run."""
 
     json_path = tmp_path / "cdc.json"
     json_path.write_text(json.dumps(_minimal_report([])))
@@ -385,9 +344,7 @@ def test_publish_cdc_report_empty_violations_is_a_clear(
 
 
 def test_publish_cdc_report_silently_skips_when_no_hub(tmp_path: Path, monkeypatch):
-    """No `.rtl-buddy/hub.json` anywhere, no $RTL_BUDDY_HUB — returns
-    False without raising. The user invokes `rb cdc` from a project
-    that hasn't started a hub, and the analysis still succeeds."""
+    """With no hub.json and no $RTL_BUDDY_HUB, publishing returns False without raising."""
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_BUDDY_HUB", raising=False)

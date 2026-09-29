@@ -33,9 +33,7 @@ def _suite_results():
     ]
 
 
-# Records + the lines their real `_dir_summary_lines` formatter would produce
-# for them — used so tests can assert on the *lines that reach metadata*
-# without re-implementing `_dir_summary_lines`.
+# Records and the lines their real `_dir_summary_lines` formatter would produce, so tests assert on the lines reaching metadata.
 _FAKE_RECORDS = [
     {
         "prefix": "design/x",
@@ -57,11 +55,7 @@ _FAKE_RECORDS = [
 def test_build_metadata_coverview_missing_falls_back_to_lcov_summary(
     monkeypatch, tmp_path
 ):
-    """Regression for #403: when --coverage-coverview is set but the
-    Coverview tool is unavailable, merge_info_process() returns None. The
-    LCOV-based directory summary must be used instead of silently vanishing.
-    This assertion fails on unfixed code (dir_summary output disappears).
-    """
+    """With --coverage-coverview set but Coverview unavailable, merge_info_process() returns None and the LCOV-based directory summary is used instead of vanishing."""
     reporter = CoverageReporter(DummyRootCfg(tmp_path))
 
     fake_lcov_path = str(tmp_path / "merged.info")
@@ -100,9 +94,7 @@ def test_build_metadata_coverview_missing_falls_back_to_lcov_summary(
 def test_build_metadata_coverview_present_uses_dataset_files_summary(
     monkeypatch, tmp_path
 ):
-    """Coverview-present flow is unchanged by the fallback: dataset-files
-    based summary is used and the LCOV-based summary is never invoked.
-    """
+    """When Coverview is present, the dataset-files summary is used and the LCOV-based summary is never invoked."""
     reporter = CoverageReporter(DummyRootCfg(tmp_path))
 
     fake_lcov_path = str(tmp_path / "merged.info")
@@ -118,12 +110,7 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
         "toggle": None,
         "expression": None,
     }
-    # merge_info_process returns (metrics, coverview_zip, dataset_files,
-    # description_files) — four values, as its docstring says. The caller
-    # unpacks all four and reads `description_files["line"]`. The mapping
-    # carries a key per description type (`dict(rby_description_files)`
-    # plus `line`), so the stub does too: a one-key stub would silently
-    # exercise the empty case if the manifest ever iterates them.
+    # merge_info_process returns (metrics, coverview_zip, dataset_files, description_files); the stub's mapping carries a key per description type plus `line`, as the real one does.
     description_files = {
         "line": str(tmp_path / "line.desc.json"),
         "branch": None,
@@ -182,17 +169,15 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
     assert "Merged Coverview: cv.zip" in metadata
     assert dataset_calls["dataset_files"] == dataset_files
     assert dataset_calls["dir_summary_paths"] == ["design/x", "verif/x"]
-    # The LCOV-based summary must not run at all in the coverview flow.
     assert lcov_calls == []
     assert coverage["dir_summary"] == _FAKE_RECORDS
-    # The fourth return value is not decoration: the line description file
-    # is what the manifest records as the merge's `desc`.
+    # The line description file is what the manifest records as the merge's `desc`.
     assert artefact_calls["merged"]["desc"] == description_files["line"]
     assert artefact_calls["descriptions"] == description_files
 
 
 def test_build_metadata_no_coverview_uses_lcov_summary(monkeypatch, tmp_path):
-    """coverage_coverview=False path is unchanged: LCOV-based summary runs."""
+    """With coverage_coverview=False, the LCOV-based summary runs."""
     reporter = CoverageReporter(DummyRootCfg(tmp_path))
 
     fake_lcov_path = str(tmp_path / "merged.info")

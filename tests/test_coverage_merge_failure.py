@@ -1,26 +1,6 @@
-"""Tests for #638 — a raw coverage merge that dies is reported as a failure.
+"""Tests for a raw coverage merge that dies being reported as a failure.
 
-`verilator_coverage --write` is the only source for toggle, expression and
-functional coverage: an LCOV `.info` cannot represent them. When that
-process is killed, the per-test LCOV exports still succeed, so line and
-branch report normally and the metrics the merge carried used to print
-`UNSP` — the same token an uninstrumented metric gets — while
-`cov_dir/manifest.json` kept reporting the per-test toggle totals as
-measured. The console and the manifest disagreed and neither said why, and
-the command exited 0.
-
-What these pin:
-
-* the metrics the dead merge carried print `FAIL`, and a metric that was
-  genuinely never instrumented still prints `UNSP`;
-* `CoverageMetrics.to_dict()`, the run payload, the `artefacts` block and
-  the manifest all carry `merge_failed` / `failed_metrics` explicitly, so
-  no consumer has to infer the failure from `merged.raw == null`;
-* `totals` is left intact — it is built from the per-test databases, which
-  the merge never touched;
-* the console summary says a merge failed, underneath the table;
-* the run exits 1, after every result and artefact has been written.
-"""
+The metrics only the merge carried print `FAIL` (never-instrumented ones stay `UNSP`), the payload and manifest carry `merge_failed` and `failed_metrics`, `totals` stays intact, and the run exits 1 after writing every result."""
 
 from __future__ import annotations
 
@@ -36,7 +16,7 @@ from rtl_buddy.runner.test_results import TestResults
 from rtl_buddy.tools.coverage import CoverageReporter
 from rtl_buddy.tools.vlog_cov import CoverageMetrics, VlogCov
 
-_KILLED = -15  # SIGTERM, the return code the reporter observed
+_KILLED = -15
 
 
 def _dat_record(*, file, line, type_, name, module, col=1, hits=1):
@@ -55,7 +35,7 @@ def _dat_record(*, file, line, type_, name, module, col=1, hits=1):
 
 
 class _RootCfg:
-    """The slice of RootConfig the coverage reporter actually reads."""
+    """The slice of RootConfig the coverage reporter reads."""
 
     def __init__(self, root):
         self._root = str(root)
@@ -122,11 +102,7 @@ def _suite_results(project: Path):
 
 
 def _shim_verilator_coverage(monkeypatch, project, *, merge_returncode):
-    """Shim `verilator_coverage` so the merge can be made to die on demand.
-
-    `--write-info` keeps working — that is the whole point: the per-test
-    LCOV exports succeed and only the raw merge is lost.
-    """
+    """Shim `verilator_coverage` so the merge dies on demand while `--write-info` keeps working."""
     import subprocess
 
     blk = project / "design" / "blk.sv"
@@ -143,19 +119,15 @@ def _shim_verilator_coverage(monkeypatch, project, *, merge_returncode):
                 f"SF:{blk}\nDA:1,1\nDA:2,0\nend_of_record\n", encoding="utf-8"
             )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
-        # `strings` probing and `--annotate` summaries: nothing to report,
-        # which is how a genuinely unsupported metric behaves.
+        # `strings` probing and `--annotate` summaries report nothing, like an unsupported metric.
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     return calls
 
 
-# --- the metrics object -----------------------------------------------------
-
-
 def test_dead_merge_fails_only_the_metrics_it_alone_carried(monkeypatch, project):
-    """`FAIL` for what the merge carried, `UNSP` for what was never there."""
+    """`FAIL` for what only the merge carried, `UNSP` for what was never there."""
     _shim_verilator_coverage(monkeypatch, project, merge_returncode=_KILLED)
     cov = VlogCov(simulator_name="verilator", use_lcov=True, root_cfg=_RootCfg(project))
     cov_dir = project / "verif" / "blk" / "cov_dir"
@@ -166,13 +138,11 @@ def test_dead_merge_fails_only_the_metrics_it_alone_carried(monkeypatch, project
         outdir=str(cov_dir),
     )
 
-    # A failed merge always returns metrics: "the merge died" must not have
-    # to be inferred from a None return.
+    # A failed merge always returns metrics, so callers need not infer failure from None.
     assert metrics is not None
     assert metrics.merged_path is None
     assert metrics.merge_failed is True
-    # Line survives through the LCOV export. Branch is None because the
-    # merged `.info` records no branch point — never instrumented, not lost.
+    # Line survives through the LCOV export; branch is None because the merged `.info` records no branch point.
     assert metrics.failed_metrics == ["toggle", "expression", "functional"]
     assert metrics.line == pytest.approx(0.5)
     assert metrics.summary_str() == "L:0.50 B:UNSP T:FAIL F:FAIL"
@@ -184,7 +154,7 @@ def test_dead_merge_fails_only_the_metrics_it_alone_carried(monkeypatch, project
 
 
 def test_healthy_merge_keeps_an_unmeasured_metric_unsupported(monkeypatch, project):
-    """The same run with a merge that lives reports `UNSP`, not `FAIL`."""
+    """A merge that lives reports `UNSP` for an unmeasured metric, not `FAIL`."""
     _shim_verilator_coverage(monkeypatch, project, merge_returncode=0)
     cov = VlogCov(simulator_name="verilator", use_lcov=True, root_cfg=_RootCfg(project))
     cov_dir = project / "verif" / "blk" / "cov_dir"
@@ -212,8 +182,7 @@ def _lcov_export_inputs(calls):
 
 
 def test_merge_without_lcov_exports_only_the_merged_database(monkeypatch, project):
-    """#661: with `use-lcov` off and no HTML, the per-test exports would feed
-    nothing, so the merge skips them and exports the merged database once."""
+    """With `use-lcov` off and no HTML, the per-test exports are skipped and the merged database is exported once."""
     calls = _shim_verilator_coverage(monkeypatch, project, merge_returncode=0)
     cov = VlogCov(
         simulator_name="verilator", use_lcov=False, root_cfg=_RootCfg(project)
@@ -232,7 +201,7 @@ def test_merge_without_lcov_exports_only_the_merged_database(monkeypatch, projec
 
 
 def test_merge_with_lcov_still_exports_every_part(monkeypatch, project):
-    """`use-lcov` keeps the per-test exports: they build the merged `.info`."""
+    """`use-lcov` keeps the per-test exports, which build the merged `.info`."""
     calls = _shim_verilator_coverage(monkeypatch, project, merge_returncode=0)
     cov = VlogCov(simulator_name="verilator", use_lcov=True, root_cfg=_RootCfg(project))
     cov_dir = project / "verif" / "blk" / "cov_dir"
@@ -246,8 +215,7 @@ def test_merge_with_lcov_still_exports_every_part(monkeypatch, project):
 
 
 def test_dead_merge_without_lcov_fails_line_and_branch_too(monkeypatch, project):
-    """Without the per-test exports the merged database was the only source
-    for every metric, so a dead merge fails all of them — and no export runs."""
+    """Without per-test exports the merged database is the only source, so a dead merge fails every metric and no export runs."""
     calls = _shim_verilator_coverage(monkeypatch, project, merge_returncode=_KILLED)
     cov = VlogCov(
         simulator_name="verilator", use_lcov=False, root_cfg=_RootCfg(project)
@@ -272,7 +240,7 @@ def test_dead_merge_without_lcov_fails_line_and_branch_too(monkeypatch, project)
 
 
 def test_summary_cells_keep_their_width():
-    """`FAIL` is four characters, like `UNSP`: the table does not reflow."""
+    """`FAIL` is four characters like `UNSP`, so the table does not reflow."""
     failed = CoverageMetrics(
         merge_failed=True, failed_metrics=["toggle", "functional"]
     ).summary_str()
@@ -281,11 +249,8 @@ def test_summary_cells_keep_their_width():
     assert len(failed) == len(unsupported)
 
 
-# --- the run payload, the manifest and the console --------------------------
-
-
 def test_failed_merge_reaches_the_payload_manifest_and_console(monkeypatch, project):
-    """One run, end to end: what the summary says the manifest now says too."""
+    """A failed merge reaches the payload, manifest and console."""
     _shim_verilator_coverage(monkeypatch, project, merge_returncode=_KILLED)
     reporter = CoverageReporter(_RootCfg(project))
     suite = project / "verif" / "blk"
@@ -298,7 +263,7 @@ def test_failed_merge_reaches_the_payload_manifest_and_console(monkeypatch, proj
     )
 
     assert "Merged Coverage: L:0.50 B:UNSP T:FAIL F:FAIL" in metadata
-    # The reader's half: one line under the table saying what failed.
+    # One line under the table says what failed.
     assert any(line.startswith("Coverage merge FAILED:") for line in metadata)
     assert any("toggle" in line for line in metadata if "FAILED" in line)
 
@@ -309,19 +274,17 @@ def test_failed_merge_reaches_the_payload_manifest_and_console(monkeypatch, proj
     assert coverage["artefacts"]["merged_raw"] is None
 
     manifest = json.loads((suite / "cov_dir" / MANIFEST_FILENAME).read_text())
-    # The discriminator the reporter had to infer downstream, still true...
     assert manifest["merge_mode"] == "raw"
     assert manifest["merged"]["raw"] is None
-    # ...and the explicit fact, so nobody has to.
+    # `merge_failed` makes the failure explicit.
     assert manifest["merge_failed"] is True
     assert manifest["failed_metrics"] == ["toggle", "expression", "functional"]
-    # `totals` is built from the per-test databases, which the merge never
-    # touched: it stays a real measurement rather than being blanked.
+    # `totals` is built from per-test databases, which the merge never touched.
     assert manifest["totals"]["toggle"]["found"] == 1
 
 
 def test_healthy_merge_writes_the_keys_as_false_and_empty(monkeypatch, project):
-    """The keys are always present: absent must never read as "fine"."""
+    """The failure keys are always present, false and empty for a healthy merge."""
     _shim_verilator_coverage(monkeypatch, project, merge_returncode=0)
     reporter = CoverageReporter(_RootCfg(project))
     suite = project / "verif" / "blk"
@@ -343,7 +306,7 @@ def test_healthy_merge_writes_the_keys_as_false_and_empty(monkeypatch, project):
 
 
 def test_read_verbs_forward_the_verdict(monkeypatch, project):
-    """`rb cov` reads the manifest, so it answers the question too."""
+    """`rb cov` reads the manifest and forwards the verdict."""
     from rtl_buddy.cov import query as query_mod
 
     _shim_verilator_coverage(monkeypatch, project, merge_returncode=_KILLED)
@@ -364,16 +327,10 @@ def test_read_verbs_forward_the_verdict(monkeypatch, project):
     assert payload["failed_metrics"] == ["toggle", "expression", "functional"]
 
 
-# --- the exit code ----------------------------------------------------------
-
-
 def test_failed_merge_exits_one_with_every_result_still_in_the_envelope(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """#334 refused to exit 0 on a coverage request that produced nothing;
-    a request that produced half gets the same answer — after the results
-    and the artefacts have been written, so nothing already produced is
-    lost."""
+    """A failed merge exits 1 after every result and artefact has been written."""
     failed = ["toggle", "expression", "functional"]
 
     def fake_build_metadata(self, suite_results, **kwargs):
@@ -410,5 +367,5 @@ def test_failed_merge_exits_one_with_every_result_still_in_the_envelope(
     assert envelope["exit_code"] == 1
     assert envelope["payload"]["coverage"]["merge_failed"] is True
     assert envelope["payload"]["coverage"]["failed_metrics"] == failed
-    # The whole point of not raising: the run's results survive the failure.
+    # The run's results survive the failure.
     assert [row["name"] for row in envelope["payload"]["results"]] == ["basic"]

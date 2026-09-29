@@ -1,20 +1,6 @@
-"""Tests for #399 — the `rb cov` verbs and the artefacts they read.
+"""Tests for the `rb cov` verbs and the artefacts they read.
 
-What these pin:
-
-* a run writes `cov_dir/manifest.json` and the coverage model **whenever it
-  produced coverage at all** — no merge flag, no Coverview packaging, and in
-  particular per-test attribution is not conditional on either;
-* the run envelope's `payload.coverage.artefacts` names paths, not the display
-  lines (`Merged LCOV: <path>`) it used to be the only record of;
-* `rb cov summary` / `rb cov module` answer from those artefacts alone, and
-  their `--machine` payloads are exactly the dicts the payload builders return
-  (phase 3 wraps them verbatim);
-* an unknown module fails loudly with near misses rather than answering about
-  a different one;
-* the per-run `result.json` side-car is re-persisted after coverage
-  post-processing, so the durable record names its own artefacts.
-"""
+A run writes `cov_dir/manifest.json` and the coverage model whenever it produced coverage, and `rb cov summary` and `rb cov module` answer from those artefacts alone."""
 
 from __future__ import annotations
 
@@ -58,7 +44,7 @@ def _write_raw(path: Path, records: str) -> Path:
 
 
 class _RootCfg:
-    """The slice of RootConfig the coverage reporter actually reads."""
+    """The slice of RootConfig the coverage reporter reads."""
 
     def __init__(self, root):
         self._root = str(root)
@@ -181,11 +167,8 @@ def _build_artefacts(project: Path, **kwargs):
     return suite_results, metadata, coverage
 
 
-# --- artefact emission ------------------------------------------------------
-
-
 def test_manifest_and_model_are_written_without_any_merge_flag(project):
-    """The discovery contract does not depend on how (or whether) we merged."""
+    """The manifest and model are written without any merge flag."""
     _, _, coverage = _build_artefacts(project)
 
     cov_dir = project / "verif" / "blk" / "cov_dir"
@@ -193,12 +176,12 @@ def test_manifest_and_model_are_written_without_any_merge_flag(project):
     assert (cov_dir / MODEL_FILENAME).is_file()
     assert coverage["artefacts"]["manifest"] == "verif/blk/cov_dir/manifest.json"
     assert coverage["artefacts"]["model"] == "verif/blk/cov_dir/coverage-model.json"
-    # No merge ran, so there is nothing merged to name — null, not absent.
+    # No merge ran, so `merged_info` is null, not absent.
     assert coverage["artefacts"]["merged_info"] is None
 
 
 def test_attribution_is_unconditional(project):
-    """Every point carries the tests behind it, with no Coverview packaging."""
+    """Every point carries the tests behind it, without Coverview packaging."""
     _build_artefacts(project)
 
     model = json.loads(
@@ -206,14 +189,13 @@ def test_attribution_is_unconditional(project):
     )
     blk = next(row for row in model["files"] if row["path"] == "design/blk.sv")
     line2 = next(point for point in blk["line"] if point["line"] == 2)
-    # Cold in `basic`, hit in `extra` — that is the question attribution is
-    # for, and it used to require packaging an archive to answer.
+    # Cold in `basic`, hit in `extra`: the question attribution answers.
     assert line2["tests"] == {"basic": 0, "extra": 7}
     assert [row["name"] for row in model["tests"]] == ["basic", "extra"]
 
 
 def test_toggle_and_expression_detail_survive_per_signal(project):
-    """The LCOV export folds both into anonymous records; the model does not."""
+    """Toggle and expression detail survive per signal, though the LCOV export folds them into anonymous records."""
     _build_artefacts(project)
 
     model = json.loads(
@@ -228,8 +210,7 @@ def test_toggle_and_expression_detail_survive_per_signal(project):
 def _elaborated_twice(project: Path):
     """The `extra` test's database, re-elaborating `blk.sv` a second way.
 
-    A multi-key suite's shape: `blk` and `blk__W13` over one file, with
-    the second elaboration's branch and toggle never exercised.
+    `blk` and `blk__W13` share one file, and the second elaboration's branch and toggle are never exercised.
     """
     suite = project / "verif" / "blk"
     _write_raw(
@@ -264,10 +245,10 @@ def _elaborated_twice(project: Path):
 
 
 def test_source_summary_reports_both_figures_and_lands_in_the_manifest(project):
-    """#637 end to end through the reporter: the branch elaborated twice is
-    two points one of which is cold per elaboration, and one covered point
-    per source location. Both figures reach the machine payload, the display
-    lines and the manifest."""
+    """The source summary reports both figures and reaches the machine payload, display lines and manifest.
+
+    The twice-elaborated branch is two points (one cold) per elaboration and one covered point per source location.
+    """
     _elaborated_twice(project)
 
     _, metadata, coverage = _build_artefacts(project, source_summary=True)
@@ -287,9 +268,7 @@ def test_source_summary_reports_both_figures_and_lands_in_the_manifest(project):
 
 
 def test_source_summary_is_omitted_unless_asked_for(project):
-    """The manifest key is unconditional — it is a fact about the run — but
-    the payload block and the display lines follow the flag, so "absent"
-    keeps meaning "not collected"."""
+    """The manifest key is unconditional; the payload block and display lines follow the flag."""
     _, metadata, coverage = _build_artefacts(project)
 
     assert "source_summary" not in coverage
@@ -301,8 +280,7 @@ def test_source_summary_is_omitted_unless_asked_for(project):
 
 
 def test_source_summary_says_so_when_there_is_no_model(tmp_path):
-    """Requested and unanswerable: a run with no coverage model reports the
-    absence rather than zeros, which would read as a coverage hole."""
+    """With no coverage model, the summary reports the absence rather than zeros."""
     reporter = CoverageReporter(_RootCfg(tmp_path))
     suite_results = [
         {
@@ -330,7 +308,7 @@ def test_source_summary_says_so_when_there_is_no_model(tmp_path):
 
 
 def test_manifest_is_not_written_when_nothing_parsed(tmp_path):
-    """A named database that yields no point must not advertise coverage."""
+    """A named database that yields no point does not write a manifest."""
     reporter = CoverageReporter(_RootCfg(tmp_path))
     suite_results = [
         {
@@ -355,14 +333,12 @@ def test_manifest_is_not_written_when_nothing_parsed(tmp_path):
 
 
 def test_manifest_is_not_written_for_a_recordless_info(tmp_path):
-    """An `.info` that exists but holds no point is still no coverage.
+    """An `.info` holding no point is no coverage.
 
-    The test earns a `tests` row — its `.info` parsed, it just parsed to
-    nothing — so the run must be rejected on the file list alone. A
-    manifest here would name a model describing zero coverage points.
+    The test still gets a `tests` row, so the run must be rejected on the file list alone.
     """
     info = tmp_path / "empty.info"
-    # Well-formed LCOV, one source, not a single DA:/BRDA: record.
+    # Well-formed LCOV with one source and no DA:/BRDA: record.
     info.write_text("TN:\nSF:/nowhere/blk.sv\nend_of_record\n", encoding="utf-8")
     reporter = CoverageReporter(_RootCfg(tmp_path))
     suite_results = [
@@ -389,7 +365,7 @@ def test_manifest_is_not_written_for_a_recordless_info(tmp_path):
 
 
 def test_result_side_cars_are_refreshed_after_coverage(project):
-    """The durable per-run record names the artefacts, not just the console."""
+    """The per-run result side-car names the artefacts."""
     rb = RtlBuddy(name="test_cov_verbs")
     suite_results = _suite_results(project)
     envelopes = []
@@ -412,17 +388,13 @@ def test_result_side_cars_are_refreshed_after_coverage(project):
         suite_result["results"].result_json_path = str(path)
         envelopes.append(path)
 
-    # What coverage post-processing does: mutate the per-test dict in place
-    # once the export exists, long after the envelope was written.
+    # Coverage post-processing mutates the per-test dict in place after the envelope was written.
     suite_results[0]["results"].results["coverage"]["lcov_path"] = "cov_dir/a.info"
     rb._refresh_result_side_cars(suite_results)
 
     envelope = json.loads(envelopes[0].read_text())
     assert envelope["run_token"] == "tok0"
     assert envelope["result"]["results"]["coverage"]["lcov_path"] == "cov_dir/a.info"
-
-
-# --- the CLI verbs ----------------------------------------------------------
 
 
 _LIVE: list[RtlBuddy] = []
@@ -461,8 +433,7 @@ def test_cov_summary_reads_the_newest_manifest(cov_project):
     assert envelope["exit_code"] == 0
     payload = envelope["payload"]
     assert payload["counts"] == {"files": 2, "tests": 2, "modules": 2}
-    # Three distinct lines across both files; `blk.sv:2` is cold in `basic`
-    # and hit in `extra`, so the run total counts it covered.
+    # Three distinct lines across both files; `blk.sv:2` is cold in `basic` and hit in `extra`, so the run total counts it covered.
     assert payload["totals"]["line"] == {"found": 3, "hit": 3, "ratio": 1.0}
     assert payload["totals"]["toggle"] == {"found": 1, "hit": 0, "ratio": 0.0}
     assert [row["name"] for row in payload["tests"]] == ["basic", "extra"]
@@ -471,14 +442,13 @@ def test_cov_summary_reads_the_newest_manifest(cov_project):
 
 
 def test_cov_summary_machine_payload_carries_the_source_figure(cov_project):
-    """The payload the MCP `cov_summary` tool wraps verbatim (#637)."""
+    """The machine payload of the MCP `cov_summary` tool carries the source figure."""
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["--machine", "cov", "summary"])
 
     payload = _machine(result)["payload"]
-    # Each module is elaborated once here, so the two figures agree —
-    # they are computed from the same points either way.
+    # Each module is elaborated once here, so the two figures agree.
     assert payload["source_totals"]["line"] == payload["totals"]["line"]
     assert payload["source_totals"]["toggle"] == {"found": 1, "hit": 0, "ratio": 0.0}
     assert "source_totals" in payload["tests"][0]
@@ -492,14 +462,12 @@ def test_cov_summary_renders_without_machine_mode(cov_project):
 
     assert result.exit_code == 0, result.output
     assert "verif/blk/cov_dir/manifest.json" in result.output
-    # Both run rows, so the reader sees the difference rather than one
-    # number whose scoring rule is invisible.
+    # Both run rows are shown, so the scoring difference is visible.
     assert "run (source)" in result.output
 
 
 def test_cov_summary_by_source_reports_the_collapsed_file_figures(cov_project):
-    """`--by-source` is a rendering choice over the one payload: same files,
-    same order, collapsed numbers in the cells."""
+    """`--by-source` renders the same payload: same files, same order, collapsed numbers."""
     runner, rb = _runner()
 
     result = runner.invoke(rb.app, ["cov", "summary", "--by-source"])
