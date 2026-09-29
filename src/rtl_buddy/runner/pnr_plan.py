@@ -14,6 +14,8 @@ fails fast when there is none, as it always has.
 """
 
 import os
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
 from ..config.pnr import PnrConfig, PnrSuiteConfig
@@ -167,3 +169,77 @@ def _find_cycle(keys: list[RunKey], deps: dict[RunKey, list[BlockDep]]):
         path.append(key)
         key = next(d.key for d in deps[key] if d.key in remaining)
     return [*path[on_path[key] :], key]
+
+
+class OnceMap:
+    """Compute a value once per key, however many threads ask for it.
+
+    A synthesis two P&R runs share is run by the first to need it; the
+    other waits for that result rather than starting a second one over the
+    same artefact directory.
+    """
+
+    def __init__(self):
+        self._guard = threading.Lock()
+        self._locks: dict = {}
+        self._values: dict = {}
+
+    def get(self, key, compute):
+        with self._guard:
+            lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
+            if key not in self._values:
+                self._values[key] = compute()
+            return self._values[key]
+
+
+def run_plan(plan: list[PlannedRun], step, *, jobs: int = 1, on_error=None) -> dict:
+    """Call ``step(planned, outcomes)`` for every run of ``plan``; return
+    ``{key: step's return}``.
+
+    ``outcomes`` maps each finished run's key to its `results` object, so a
+    step can see how its blocks went. With ``jobs`` 1 that is the plan's
+    order. Otherwise up to ``jobs`` steps run at once, each started, in
+    plan order, as soon as every block it names that is in the plan has
+    finished — independent blocks harden side by side, and a top still
+    waits for all of its own.
+
+    ``on_error(planned, exc)``, when given, turns an exception a step raised
+    into that run's row, so one run's crash neither discards the rows of the
+    others nor — under ``jobs`` — surfaces only after every sibling still in
+    flight has finished and been thrown away.
+    """
+
+    def _call(planned, outcomes):
+        if on_error is None:
+            return step(planned, outcomes)
+        try:
+            return step(planned, outcomes)
+        except Exception as exc:  # noqa: BLE001 — reported as the run's row
+            return on_error(planned, exc)
+
+    in_plan = {p.key for p in plan}
+    rows: dict[RunKey, dict] = {}
+    outcomes: dict[RunKey, object] = {}
+    if jobs <= 1:
+        for planned in plan:
+            rows[planned.key] = _call(planned, outcomes)
+            outcomes[planned.key] = rows[planned.key]["results"]
+        return rows
+
+    pending = list(plan)
+    running: dict = {}
+    with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="rb-pnr") as pool:
+        while pending or running:
+            for planned in list(pending):
+                if len(running) >= jobs:
+                    break
+                if all(d.key in outcomes or d.key not in in_plan for d in planned.deps):
+                    pending.remove(planned)
+                    running[pool.submit(_call, planned, dict(outcomes))] = planned
+            done, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in done:
+                planned = running.pop(future)
+                rows[planned.key] = future.result()
+                outcomes[planned.key] = rows[planned.key]["results"]
+    return rows

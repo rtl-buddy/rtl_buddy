@@ -188,7 +188,7 @@ from .runner.xfail import apply_xfail, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrExportRunner, PnrRunner
-from .runner.pnr_plan import PlannedRun, plan_pnr_runs
+from .runner.pnr_plan import OnceMap, PlannedRun, plan_pnr_runs, run_plan
 from .runner.pnr_results import PnrFailResults, PnrSkipResults
 from .runner.power_runner import PowerRunner
 from .runner.power_results import PowerSkipResults
@@ -11745,6 +11745,20 @@ class RtlBuddy:
                 ),
             ),
         ] = False,
+        jobs: Annotated[
+            int,
+            typer.Option(
+                "-j",
+                "--jobs",
+                min=1,
+                help=(
+                    "P&R runs at once: independent blocks harden side by side, "
+                    "and a top waits for all of its own. Each is a full "
+                    "OpenROAD session with its own threads: setting, so size "
+                    "the two together"
+                ),
+            ),
+        ] = 1,
         run_synth: Annotated[
             bool,
             typer.Option(
@@ -11791,6 +11805,7 @@ class RtlBuddy:
             gds_mode=gds_mode,
             accept_stale=accept_stale,
             run_synth=run_synth,
+            jobs=jobs,
         )
         exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
         if self.machine:
@@ -11816,10 +11831,9 @@ class RtlBuddy:
         gds_mode: str | None = None,
         accept_stale: bool = False,
         run_synth: bool = False,
+        jobs: int = 1,
     ):
-        root_cfg = self.root_cfg
         suite_path = suite_cfg.get_path()
-        synth_outcomes = {}
 
         def _selected(run):
             level = run.get_reglvl(run.get_tool_name())
@@ -11839,6 +11853,7 @@ class RtlBuddy:
                     p.name if not p.pulled_in else f"{p.name} ({p.suite_path})"
                     for p in plan
                 ],
+                jobs=jobs,
             )
         else:
             # A named run consumes whatever abstract is published, and fails
@@ -11847,148 +11862,206 @@ class RtlBuddy:
                 PlannedRun(suite_path=suite_path, cfg=run)
                 for run in suite_cfg.get_runs(pnr_name)
             ]
-        if run_synth:
-            # Every synthesis the plan will run, resolved now: a typo in a
-            # top's `synth:` stops the command here, not after its blocks
-            # have spent hours in P&R.
-            for planned in plan:
-                if _selected(planned.cfg):
-                    planned.cfg.resolve_synth_cfg()
-        outcomes = {}
-        results = []
+
+        # Every artefact tree the plan will write, locked before anything
+        # runs, on this thread: a contended one stops the command up front
+        # rather than halfway through a hierarchy, and the lock table is
+        # not shared with the workers.
         for planned in plan:
             run = planned.cfg
-            suite_dir = str(Path(planned.suite_path).resolve().parent)
-            row = {"pnr_name": run.get_name()}
-            if planned.pulled_in:
-                row["suite"] = planned.suite_path
-            pnr_level = run.get_reglvl(run.get_tool_name())
-            if reg_level is not None and pnr_level > reg_level:
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "pnr_suite.skip",
-                    pnr=run.get_name(),
-                    reason="above_regression_level",
-                    pnr_level=pnr_level,
-                    reg_level=reg_level,
-                )
-                res = PnrSkipResults(
-                    name=f"{run.get_name()}/results",
-                    desc=(f"reglvl {pnr_level} above {reg_level}"),
-                )
-                outcomes[planned.key] = res
-                results.append({**row, "results": res})
+            if not _selected(run):
                 continue
-            # A block's run delivered its abstract when it passed (an XPASS
-            # did pass), or was skipped and left the published one alone.
-            # An XFAIL is a pass for the suite and still no abstract.
-            blocked_by = [
-                dep
-                for dep in planned.deps
-                if dep.key in outcomes
-                and outcomes[dep.key].results.get("result")
-                not in ("PASS", "XPASS", "SKIP")
-            ]
-            if blocked_by:
-                # Not attempted: its abstract would be missing, or worse, a
-                # stale one left by an earlier run. FAIL rather than SKIP so
-                # the suite does not pass, with a fail_stage an xfail marker
-                # never excuses (#553).
-                names = ", ".join(
-                    f"'{dep.block}' (pnr run '{dep.key[1]}')" for dep in blocked_by
-                )
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "pnr_suite.blocked",
-                    pnr=run.get_name(),
-                    blocks=[dep.block for dep in blocked_by],
-                )
-                noun = "block" if len(blocked_by) == 1 else "blocks"
-                res = PnrFailResults(
-                    name=f"{run.get_name()}/results",
-                    desc=f"blocked: {noun} {names} did not pass",
-                    fail_stage="blocked",
-                    fields={"blocked_by": [dep.block for dep in blocked_by]},
-                )
-                outcomes[planned.key] = res
-                results.append({**row, "results": res})
-                continue
-            synth_row = None
-            if run_synth:
-                synth_row = self._pnr_upstream_synth(
-                    run, synth_outcomes, accept_stale=accept_stale
-                )
-                if synth_row["result"] not in ("PASS", "XPASS"):
-                    # No netlist of this run's own to place: FAIL with a
-                    # stage an xfail marker never excuses, which blocks
-                    # whatever consumes it as a failed P&R would.
-                    res = PnrFailResults(
-                        name=f"{run.get_name()}/results",
-                        desc=(
-                            f"synthesis '{synth_row['name']}' did not pass: "
-                            f"{synth_row['desc']}"
-                        ),
-                        fail_stage="synth",
-                        fields={"synth": synth_row},
-                    )
-                    outcomes[planned.key] = res
-                    results.append({**row, "results": res})
-                    continue
             if planned.pulled_in:
                 # Its own artefact tree, locked like any `rb pnr -c` of it.
                 self._artifact_locks.acquire(
-                    Path(suite_dir) / "artefacts", command="pnr"
+                    Path(planned.suite_path).resolve().parent / "artefacts",
+                    command="pnr",
                 )
-            runner = PnrRunner(
-                name=run.get_name(),
-                root_cfg=root_cfg,
-                pnr_cfg=run,
-                suite_dir=suite_dir,
-                reglvl_filter=reg_level if reg_level else None,
+            if run_synth:
+                # Resolved now too: a typo in a top's `synth:` stops the
+                # command here, not after its blocks have spent hours in P&R.
+                run.resolve_synth_cfg()
+                self._artifact_locks.acquire(
+                    Path(run.get_synth_suite_path()).resolve().parent / "artefacts",
+                    command="pnr",
+                )
+
+        synths = OnceMap()
+
+        def _step(planned, outcomes):
+            return self._pnr_plan_step(
+                planned,
+                outcomes,
+                synths=synths if run_synth else None,
+                reg_level=reg_level,
                 emit_gds=emit_gds,
                 emit_png=emit_png,
                 gds_mode=gds_mode,
                 accept_stale=accept_stale,
             )
-            res = runner.run()
-            if run.is_xfail():
-                self._apply_xfail_logged(res, run, "pnr_suite.xfail")
-            if synth_row is not None:
-                res.results["synth"] = synth_row
-            outcomes[planned.key] = res
-            results.append({**row, "results": res})
-        return results
 
-    def _pnr_upstream_synth(self, run, synth_outcomes, *, accept_stale=False):
+        def _error(planned, exc):
+            # One run's crash is that run's FAIL: the rows of the runs that
+            # finished, or that are still in OpenROAD beside it under `-j`,
+            # are kept and reported, and its consumers are blocked by it.
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_suite.run_error",
+                pnr=planned.name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            row = {"pnr_name": planned.name}
+            if planned.pulled_in:
+                row["suite"] = planned.suite_path
+            return {
+                **row,
+                "results": PnrFailResults(
+                    name=f"{planned.name}/results",
+                    desc=f"did not finish: {exc}",
+                    fail_stage="error",
+                ),
+            }
+
+        rows = run_plan(plan, _step, jobs=jobs, on_error=_error)
+        return [rows[planned.key] for planned in plan]
+
+    def _pnr_plan_step(
+        self,
+        planned,
+        outcomes,
+        *,
+        synths,
+        reg_level,
+        emit_gds,
+        emit_png,
+        gds_mode,
+        accept_stale,
+    ) -> dict:
+        """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
+
+        ``outcomes`` holds the results of the runs already finished, which
+        includes every block of this one that is in the plan. ``synths`` is
+        the `--synth` run-once map, or ``None`` without it. Safe on a
+        worker thread (`rb pnr -j`): it reads ``outcomes`` and returns its
+        row, and the artefact locks are already held.
+        """
+        run = planned.cfg
+        suite_dir = str(Path(planned.suite_path).resolve().parent)
+        row = {"pnr_name": run.get_name()}
+        if planned.pulled_in:
+            row["suite"] = planned.suite_path
+        pnr_level = run.get_reglvl(run.get_tool_name())
+        if reg_level is not None and pnr_level > reg_level:
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr_suite.skip",
+                pnr=run.get_name(),
+                reason="above_regression_level",
+                pnr_level=pnr_level,
+                reg_level=reg_level,
+            )
+            res = PnrSkipResults(
+                name=f"{run.get_name()}/results",
+                desc=(f"reglvl {pnr_level} above {reg_level}"),
+            )
+            return {**row, "results": res}
+        # A block's run delivered its abstract when it passed (an XPASS did
+        # pass), or was skipped and left the published one alone. An XFAIL
+        # is a pass for the suite and still no abstract.
+        blocked_by = [
+            dep
+            for dep in planned.deps
+            if dep.key in outcomes
+            and outcomes[dep.key].results.get("result") not in ("PASS", "XPASS", "SKIP")
+        ]
+        if blocked_by:
+            # Not attempted: its abstract would be missing, or worse, a stale
+            # one left by an earlier run. FAIL rather than SKIP so the suite
+            # does not pass, with a fail_stage an xfail marker never excuses
+            # (#553).
+            names = ", ".join(
+                f"'{dep.block}' (pnr run '{dep.key[1]}')" for dep in blocked_by
+            )
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_suite.blocked",
+                pnr=run.get_name(),
+                blocks=[dep.block for dep in blocked_by],
+            )
+            noun = "block" if len(blocked_by) == 1 else "blocks"
+            res = PnrFailResults(
+                name=f"{run.get_name()}/results",
+                desc=f"blocked: {noun} {names} did not pass",
+                fail_stage="blocked",
+                fields={"blocked_by": [dep.block for dep in blocked_by]},
+            )
+            return {**row, "results": res}
+        synth_row = None
+        if synths is not None:
+            synth_row = self._pnr_upstream_synth(run, synths, accept_stale=accept_stale)
+            if synth_row["result"] not in ("PASS", "XPASS"):
+                # No netlist of this run's own to place: FAIL with a stage an
+                # xfail marker never excuses, which blocks whatever consumes
+                # it as a failed P&R would.
+                res = PnrFailResults(
+                    name=f"{run.get_name()}/results",
+                    desc=(
+                        f"synthesis '{synth_row['name']}' did not pass: "
+                        f"{synth_row['desc']}"
+                    ),
+                    fail_stage="synth",
+                    fields={"synth": synth_row},
+                )
+                return {**row, "results": res}
+        runner = PnrRunner(
+            name=run.get_name(),
+            root_cfg=self.root_cfg,
+            pnr_cfg=run,
+            suite_dir=suite_dir,
+            reglvl_filter=reg_level if reg_level else None,
+            emit_gds=emit_gds,
+            emit_png=emit_png,
+            gds_mode=gds_mode,
+            accept_stale=accept_stale,
+        )
+        res = runner.run()
+        if run.is_xfail():
+            self._apply_xfail_logged(res, run, "pnr_suite.xfail")
+        if synth_row is not None:
+            res.results["synth"] = synth_row
+        return {**row, "results": res}
+
+    def _pnr_upstream_synth(self, run, synths, *, accept_stale=False):
         """Run ``run``'s upstream synthesis for `rb pnr --synth` (#95), once.
 
         Keyed by the synthesis, not the P&R run: two P&R runs of one
         netlist (a flat run and its multi-corner twin, say) synthesize it
-        once. Run whatever its `reglvl` — the P&R run was selected, and
-        this is the netlist it places. Returns the row the P&R result
-        carries as `synth`.
+        once, and under `-j` the second waits for the first. Run whatever
+        its `reglvl` — the P&R run was selected, and this is the netlist it
+        places. Its artefact tree is already locked. Returns the row the
+        P&R result carries as `synth`.
         """
         synth_path = run.get_synth_suite_path()
-        key = (os.path.realpath(synth_path), run.get_synth_name())
-        if key not in synth_outcomes:
-            self._artifact_locks.acquire(
-                Path(synth_path).resolve().parent / "artefacts", command="pnr"
-            )
+
+        def _synthesize():
             [synth] = self._do_synth_suite(
                 SynthSuiteConfig(synth_path),
                 synth_name=run.get_synth_name(),
                 accept_stale=accept_stale,
             )
             res = synth["results"].results
-            synth_outcomes[key] = {
+            return {
                 "name": run.get_synth_name(),
                 "suite": synth_path,
                 "result": res.get("result"),
                 "desc": res.get("desc"),
             }
-        return synth_outcomes[key]
+
+        key = (os.path.realpath(synth_path), run.get_synth_name())
+        return synths.get(key, _synthesize)
 
     def _render_pnr_summary(self, title, pnr_results, *, metadata=None):
         has_cells = any("cell_count" in r["results"].results for r in pnr_results)
