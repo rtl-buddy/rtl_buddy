@@ -2,31 +2,9 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The hub's landing page (rtl-buddy/rtl_buddy#398).
+"""The hub's landing page: the task-oriented index served at ``GET /``.
 
-``GET /`` used to be the schematic SPA, which made it the hub's
-whole identity: nothing told a user the graph pane existed, and the next
-app would have been just as invisible. ``/`` is now a landing that names
-the *tasks* ("explore the design", "navigate the knowledge graph") and
-routes to the app that does each one; the SPA moved to ``/view``, and
-to ``/sch`` in #423 when the page routes became the apps' short names.
-
-Two halves, same split as :mod:`~rtl_buddy.hub.graph_page`:
-
-* :func:`render_landing_html` — the page at ``GET /``, one self-contained
-  document whose only external references are same-origin hub routes
-  (``/hub/theme.css``, ``/hub/assets/*``, ``/hub/state.json``).
-* :func:`build_state_payload` — the body of ``GET /hub/state.json``, the
-  page's whole data source: which apps this hub can actually serve right
-  now, which of them already has a tab attached, and the project state a
-  person needs to know they are looking at the right hub.
-
-The page is deliberately **not** a hub peer. The hub allows one client
-per origin and a second ``hello`` supersedes the first, so a tab that
-only lists the apps must never hold an origin — it would be the thing
-that evicted the app you had open. It polls the JSON instead, and that
-same rule is why each card carries an "already open" warning *before*
-the click rather than an apology after it.
+:func:`render_landing_html` renders the page, whose only external references are same-origin hub routes. :func:`build_state_payload` builds ``GET /hub/state.json``, the page's whole data source: which apps can be served, which already have a tab, and the project state. The page is deliberately not a hub peer, because a second ``hello`` for an origin would evict the app you had open; it polls the JSON instead.
 """
 
 from __future__ import annotations
@@ -47,17 +25,13 @@ LANDING_PAGE_ROUTE = "/"
 #: Route serving the landing page's live state.
 STATE_JSON_ROUTE = "/hub/state.json"
 
-#: Route serving the schematic SPA (``/`` before #398, ``/view`` before
-#: #423). The page route is the app's **short** name, so the apps read as
-#: one set — ``/sch``, ``/gph``, ``/cov``, ``/phy`` — and the URL matches
-#: the chip every app switcher shows.
+#: Route serving the schematic SPA, named like ``/gph``, ``/cov`` and ``/phy``.
 #:
-#: This is a PAGE route only. The hub-protocol origin stays ``view``, as
-#: do ``/view.json`` and every other data route: the wire contract is
-#: protocol v1 and renaming a page does not get to touch it.
+#: A page route only: the hub-protocol origin stays ``view``, as do
+#: ``/view.json`` and the other data routes.
 VIEW_PAGE_ROUTE = "/sch"
 
-#: The pre-#423 spelling, answered with a 307 to :data:`VIEW_PAGE_ROUTE`.
+#: Old page route, answered with a 307 to :data:`VIEW_PAGE_ROUTE`.
 LEGACY_VIEW_PAGE_ROUTE = "/view"
 
 
@@ -65,20 +39,13 @@ LEGACY_VIEW_PAGE_ROUTE = "/view"
 class AppCard:
     """One task-oriented card, and one entry in every app switcher.
 
-    Two names, because the two surfaces read differently. ``name`` is the
-    app's **long** name (``rtl-buddy-schematic``) and only the landing's
-    cards and the docs use it; ``short`` is the chrome label (``sch``)
-    that every switcher, peer strip and ``send →`` button carries. The
-    long name introduces the app once; the short one is what a person
-    then navigates by.
-
-    ``origin`` is the hub :class:`~rtl_buddy.hub.protocol.Origin` the app
-    registers as — the join that lets the landing say "already open", and
-    a WIRE value: it stays ``view`` for the schematic (and ``graph`` for
-    ``rtl-buddy-gph``) until protocol v2, which is exactly why the
-    display names live here rather than being read off the origin.
-    ``status`` is ``"live"`` for an app this build ships and ``"planned"``
-    for one that is announced but not routable yet.
+    ``name`` is the long name (``rtl-buddy-schematic``) used on the landing
+    cards and in docs; ``short`` is the chrome label (``sch``) used by
+    switchers, peer strips and ``send →`` buttons. ``origin`` is the hub
+    :class:`~rtl_buddy.hub.protocol.Origin` the app registers as, a wire value
+    that stays ``view`` for the schematic and ``graph`` for the graph pane
+    until protocol v2. ``status`` is ``"live"`` or ``"planned"`` (announced,
+    not routable).
     """
 
     id: str
@@ -91,15 +58,11 @@ class AppCard:
     status: str = "live"
 
 
-#: The hub's apps, in the order they appear on the landing and in every
-#: app switcher. Every one of them is routable; a card is *muted* when
-#: the app has nothing to show yet, carrying the command that would give
-#: it something, rather than disappearing.
+#: The hub's apps, in landing and switcher order. A card whose app has nothing
+#: to show is muted with the command that fills it, not hidden.
 #:
-#: This tuple is the one place the family's display names are written
-#: down on the server side — the panes carry their own copy of the
-#: origin→short-name map, since a pane is a self-contained single file.
-#: Renaming an app is an edit here plus that map in each pane.
+#: This tuple holds the server-side display names; each pane carries its own
+#: origin -> short-name map, so a rename edits both.
 APPS: tuple[AppCard, ...] = (
     AppCard(
         id="view",
@@ -175,23 +138,10 @@ def build_state_payload(
 ) -> dict:
     """Body for ``GET /hub/state.json``.
 
-    Every input is passed in rather than read off a server object so the
-    advertisement rules — which card is live, which is greyed, which says
-    "already open" — are testable without an event loop.
-
-    Availability follows data presence, the same rule
-    ``_has_graph_json`` already applies to the SPA's graph global. An
-    unavailable app keeps its card (muted, with the command that makes
-    it available) instead of vanishing: "the graph pane exists and you
-    have not built a graph" is the useful message, and it is the one a
-    hidden card cannot deliver.
-
-    A ``planned`` card is never advertised as available — the page gates
-    routability on ``status``, so the two fields must not contradict.
-    No shipped card is planned any more: the cov card went live with the
-    pane (rtl-buddy/rtl_buddy#400), with ``cov_available`` as its
-    data-presence half, the same shape as ``graph_present``, and the
-    phys card with its own (rtl-buddy/rtl_buddy#558).
+    Inputs are passed in rather than read off a server object so the
+    advertisement rules are testable without an event loop. An app is available
+    when its data exists; an unavailable app keeps a muted card naming the
+    command that fixes it. A ``planned`` card is never available.
     """
 
     now = time.time() if now is None else now
@@ -217,9 +167,7 @@ def build_state_payload(
             note = None if graph_present else "run `rb graph build` first"
         elif card.id == "phys":
             available = phys_available
-            # Either command alone fills a half of the model and gives
-            # the pane something to render, so the note names both
-            # rather than picking one.
+            # Either command alone gives the pane something to render.
             note = None if phys_available else "run `rb synth` or `rb power` first"
         else:  # pragma: no cover - defensive; every card is handled above
             available = True
@@ -239,12 +187,8 @@ def build_state_payload(
             }
         )
 
-    # The empty-state predicate reads this, so physical artefacts count
-    # as something built: a project that has run `rb synth` but neither
-    # picked a model nor built a graph showed a live phys card above the
-    # words "Nothing built for this project yet"
-    # (rtl-buddy/rtl_buddy#558). A block rather than a bare flag, to
-    # match `graph` — the other data-presence half the page reads.
+    # The page's empty-state test reads this, so physical artefacts count as built.
+    # A block, to match `graph`.
     phys: dict = {"present": bool(phys_available)}
 
     graph: dict = {"present": bool(graph_present), "path": graph_path}
@@ -273,10 +217,8 @@ def build_state_payload(
 def render_landing_html(*, hub_addr: str) -> bytes:
     """The ``GET /`` document, with the hub address injected.
 
-    The injection mirrors every other hub page's (``%HUB_INJECTION%`` →
-    ``window.__RTL_BUDDY_HUB__``) even though this page does not open a
-    WebSocket: a page served by the hub should be able to say which hub,
-    and DevTools is the first place anyone looks.
+    ``window.__RTL_BUDDY_HUB__`` is set as on every hub page, though this page
+    opens no WebSocket.
     """
 
     preamble = f"window.__RTL_BUDDY_HUB__ = {hub_addr!r};"
@@ -288,9 +230,7 @@ def graph_state(
 ) -> tuple[bool, str | None, float | None]:
     """``(present, project-relative path, mtime)`` for this root's graph.
 
-    Freshness, not just existence: "built 3 days ago" is the difference
-    between a graph the landing should send you to and one that predates
-    the branch you are on.
+    The mtime lets the page show how old the graph is.
     """
 
     if project_root is None:
@@ -298,9 +238,8 @@ def graph_state(
     from . import graph_page
 
     root = Path(project_root)
-    # Same coordinate the /graph.json route serves from: the landing can
-    # never advertise a graph the pane would 404 on (drift guard — the
-    # predicate is derived, not re-spelled).
+    # Derived from the route's own path, so the landing never advertises a
+    # graph the pane would 404 on.
     path = graph_page.graph_json_path(project_root)
     try:
         mtime = path.stat().st_mtime
@@ -320,11 +259,10 @@ def _landing_page_template() -> str:
 
 
 LANDING_PAGE_HTML: str = _landing_page_template()
-"""The page source, loaded once at import — same rule as the graph pane."""
+"""The page source, loaded once at import."""
 
 
-# Re-exported so a pane importing the landing does not also have to know
-# where the token sheet lives.
+# Re-exported for panes that import the landing.
 THEME_CSS_ROUTE = theme.THEME_CSS_ROUTE
 
 
