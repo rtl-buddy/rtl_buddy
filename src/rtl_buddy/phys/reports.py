@@ -2,17 +2,9 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Readers for the raw synth and power tool output (#558).
+"""Readers for Yosys ``stat -json`` and OpenSTA power reports, producing rows for :mod:`rtl_buddy.phys.model`.
 
-Two formats, one job each: turn a file a tool wrote into the rows
-:mod:`rtl_buddy.phys.model` assembles. They are separated from the model
-so a backend that later grows a third producer — a vendor synthesiser's
-report, a post-route power run — adds a reader here and nothing else.
-
-Both are deliberately forgiving. A row that does not parse is dropped
-rather than raising: these files are read *after* a flow has already
-succeeded, and half a model is strictly better than failing a synthesis
-over a column that moved.
+Rows that do not parse are dropped rather than raising.
 """
 
 from __future__ import annotations
@@ -24,24 +16,13 @@ import re
 def parse_stat_json(text: str) -> list[dict]:
     """Per-module rows from Yosys' ``stat -json`` dump.
 
-    Yosys writes a ``modules`` map keyed by the RTLIL name — ``\\top``,
-    with the leading backslash that marks a public identifier — each
-    carrying ``num_cells`` and, when ``stat`` was given a Liberty,
-    ``area``. The sibling ``design`` block is the whole-design roll-up
-    and is *not* returned: the model's totals come from the same log
-    scrape the flow already reports, precisely so the two can be
-    compared.
+    Reads the ``modules`` map, whose keys carry RTLIL's leading backslash. The
+    whole-design ``design`` block is not returned. In a non-flattened design
+    ``num_cells`` counts a submodule instance as one cell but ``area`` includes
+    the submodule, so summing ``area_um2`` across modules double-counts.
 
-    A caveat worth knowing before reading the numbers: ``num_cells``
-    counts a submodule *instance* as one cell, while ``area`` already
-    includes that submodule's area. The two columns are therefore not on
-    the same footing for a non-flattened design, and a consumer summing
-    ``area_um2`` across modules will double-count. This function reports
-    what Yosys reports; deciding what to do about it is the consumer's
-    call, which is the same rule the model applies to hierarchy roll-up.
-
-    :returns: ``[{"module", "cell_count", "area_um2"}]`` sorted by
-        module name. ``area_um2`` is ``None`` when no Liberty was used.
+    :returns: ``[{"module", "cell_count", "area_um2"}]`` sorted by module name.
+        ``area_um2`` is ``None`` when ``stat`` had no Liberty.
     """
     try:
         doc = json.loads(text)
@@ -71,14 +52,10 @@ def _rtlil_name(name: str) -> str:
     return text[1:] if text.startswith("\\") else text
 
 
-#: One instance row of OpenSTA's `report_power -instances`::
+#: One instance row of OpenSTA's `report_power -instances`: four powers in
+#: watts, then the instance path.
 #:
 #:     2.28e-06   6.75e-08   7.91e-08   2.42e-06 u_sub/_64_
-#:
-#: Four powers in watts, then the instance path — which is the last
-#: field rather than the first, so the columns cannot be anchored from
-#: the left and the name is whatever remains. Verilog identifiers carry
-#: no spaces, so "the rest of the line" is unambiguous.
 _INSTANCE_ROW_RE = re.compile(
     r"^\s*"
     r"([-\d.eE+]+)\s+"  # internal
@@ -88,23 +65,15 @@ _INSTANCE_ROW_RE = re.compile(
     r"(\S+)\s*$"
 )
 
-#: Watts as OpenSTA reports them, microwatts as the model records them.
 _W_TO_UW = 1e6
 
 
 def parse_instance_power(text: str, cells: dict | None = None) -> list[dict]:
     """Per-instance rows from OpenSTA's ``report_power -instances`` text.
 
-    The report is one line per leaf instance and carries no module
-    column, so the liberty cell each instance is an instance *of* comes
-    from ``cells`` — the sidecar map the generated Tcl writes alongside
-    (:func:`parse_instance_cells`). An instance missing from the map
-    gets ``module: None`` rather than being dropped: the power numbers
-    are the point, and the map is the half more likely to be absent.
-
-    Rows are returned sorted by instance path. OpenSTA emits them
-    descending by total power, which is a useful default for a human
-    reading the report and a useless one for diffing two models.
+    ``cells`` maps instance path to liberty cell (:func:`parse_instance_cells`);
+    an instance missing from it gets ``module: None``. Rows are sorted by
+    instance path.
 
     :returns: ``[{"instance_path", "module", "leakage_uw",
         "internal_uw", "switching_uw", "total_uw"}]``, powers in µW.
@@ -136,12 +105,7 @@ def parse_instance_power(text: str, cells: dict | None = None) -> list[dict]:
 
 
 def parse_instance_cells(text: str) -> dict:
-    """The ``<instance path> <liberty cell>`` sidecar, as a mapping.
-
-    Written by the generated Tcl's hierarchy walk because
-    ``report_power`` prints the path and nothing else, and joining a
-    power row back to a module is the whole point of recording it.
-    """
+    """The ``<instance path> <liberty cell>`` sidecar written by the generated Tcl, as a mapping."""
     cells = {}
     for line in text.splitlines():
         fields = line.split()

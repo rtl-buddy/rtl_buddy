@@ -10,23 +10,18 @@ import sys
 import os
 
 
-# Version of the JSON result this script writes beside the GDS. The reader
-# is `rb pnr`, which ships in the same wheel as this script, so it demands
-# an exact match: a report it cannot parse — or one an older helper left —
-# is a failed export, never a complete one (#619).
+# Version of the JSON result written beside the GDS; `rb pnr` requires an exact
+# match and treats any other report as a failed export.
 REPORT_SCHEMA = 1
 
 
 def load_inputs(inputs_json):
-    """Read the stream-out input manifest `rb pnr` wrote beside this script.
+    """Read the stream-out input manifest `rb pnr` wrote.
 
-    The inputs travel as JSON rather than as `-rd` strings because a `-rd`
-    string has no list contract: splitting one on whitespace silently
-    breaks any path containing a space (#617). Returns a dict with the
-    `gds` and `lef` path lists, the `allow_empty` cell patterns and the
-    `report` path, each defaulted so an older manifest still loads.
+    Returns a dict with the `gds` and `lef` path lists, the `allow_empty` cell
+    patterns and the `report` path; missing keys default to empty.
 
-    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    Free of `pya`, so it is importable outside KLayout.
     """
     with open(inputs_json) as f:
         data = json.load(f)
@@ -41,12 +36,11 @@ def load_inputs(inputs_json):
 def is_allowed_empty(name, patterns=(), allow_empty_regex=""):
     """Whether an empty cell is empty on purpose.
 
-    `patterns` are the run's `gds-allow-empty` entries: a cell name or an
-    fnmatch glob over one, matched case-sensitively because GDS cell names
-    are. `allow_empty_regex` is the legacy `GDS_ALLOW_EMPTY` environment
-    regex, still honoured and still anchored at the start of the name.
+    `patterns` are the run's `gds-allow-empty` cell names or fnmatch globs,
+    matched case-sensitively. `allow_empty_regex` is the `GDS_ALLOW_EMPTY`
+    environment regex, matched from the start of the name.
 
-    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    Free of `pya`, so it is importable outside KLayout.
     """
     for pattern in patterns:
         if fnmatch.fnmatchcase(name, pattern):
@@ -57,14 +51,12 @@ def is_allowed_empty(name, patterns=(), allow_empty_regex=""):
 
 
 def classify_empty_cells(names, patterns=(), allow_empty_regex=""):
-    """Split empty cells into the deliberately abstract and the missing.
+    """Split empty cells into allowed-empty and missing.
 
-    Returns `(allowed_empty, missing)`, each in the order given. A cell the
-    allow list covers is a preview macro the user declared — reported, but
-    not an error; anything else is a cell whose layout the stream-out could
-    not find, which is what makes an export incomplete (#619).
+    Returns `(allowed_empty, missing)`, each in the order given. Allowed cells
+    are reported but are not errors; missing cells make the export incomplete.
 
-    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    Free of `pya`, so it is importable outside KLayout.
     """
     allowed_empty = []
     missing = []
@@ -77,14 +69,11 @@ def classify_empty_cells(names, patterns=(), allow_empty_regex=""):
 
 
 def write_report(report_file, report):
-    """Write the stream-out result `rb pnr` reads back.
+    """Write the JSON stream-out result `rb pnr` reads back.
 
-    A file rather than a line for the caller to scrape out of KLayout's
-    stdout: cell names are reported verbatim, and a caller that finds no
-    report knows the helper did not finish (#619). Written last, after the
-    layout, so its presence means the GDS beside it was written too.
+    Written after the layout, so a report on disk means the GDS was written.
 
-    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    Free of `pya`, so it is importable outside KLayout.
     """
     if not report_file:
         return
@@ -96,14 +85,10 @@ def write_report(report_file, report):
 def merge_lef_files(tech_lef_files, extra_lef_files, tech_file=""):
     """Append the run's LEFs to the ones the technology file already names.
 
-    The `.lyt` is the PDK's own description of its layers and, usually, of
-    its LEFs; replacing that list would strip the masters the existing flow
-    relies on, so the technology's entries stay first and in their order and
-    the caller's are appended in theirs. Entries are de-duplicated on the
-    resolved path, with a relative one taken against the `.lyt`'s directory,
-    which is where KLayout itself reads it from.
+    The technology's entries stay first, in order. Entries are de-duplicated on
+    the resolved path; a relative path resolves against the `.lyt`'s directory.
 
-    Kept free of `pya` so it is importable — and testable — outside KLayout.
+    Free of `pya`, so it is importable outside KLayout.
     """
     base = os.path.dirname(tech_file)
 
@@ -146,39 +131,28 @@ def merge_gds(
         in_files: List of GDS/OAS files to merge.
         seal_file: Path to seal ring GDS/OAS file (empty string if none).
         out_file: Path to output GDS/OAS file.
-        allow_empty: Legacy `GDS_ALLOW_EMPTY` regex for cells allowed to be
-            empty.
-        lef_files: LEF files the DEF reader needs on top of the technology's
-            own, in reader order (technology LEF, PDK macro LEF, then the
-            run's macro LEFs).
-        allow_empty_patterns: The run's `gds-allow-empty` cell names or
-            globs — the per-run form of `allow_empty`.
-        report_file: Where to write the JSON result the caller reads back
-            (empty string to write none).
+        allow_empty: `GDS_ALLOW_EMPTY` regex for cells allowed to be empty.
+        lef_files: LEF files the DEF reader needs beyond the technology's own.
+        allow_empty_patterns: The run's `gds-allow-empty` names or globs.
+        report_file: Where to write the JSON result (empty string for none).
 
     Returns:
-        Number of errors encountered, which is also the exit code: one per
-        cell with no layout and one per orphan cell. A cell the allow list
-        covers is reported and is not an error.
+        Number of errors, also the exit code: one per cell with no layout and
+        one per orphan cell. Allowed-empty cells are not errors.
     """
     errors = 0
 
-    # Load technology file
     tech = pya_mod.Technology()
     tech.load(tech_file)
     layout_options = tech.load_layout_options
     if len(layer_map) > 0:
         layout_options.lefdef_config.map_file = layer_map
     if lef_files:
-        # Only `lef_files` is touched: `read_lef_with_def`,
-        # `macro_resolution_mode` and the rest stay as the `.lyt` set them,
-        # so a PDK that already streams correctly keeps doing so and only
-        # gains the masters it was missing.
+        # Only `lef_files` changes; the other `.lyt` LEF/DEF options stay as set.
         layout_options.lefdef_config.lef_files = merge_lef_files(
             layout_options.lefdef_config.lef_files, lef_files, tech_file
         )
 
-    # Load def file
     main_layout = pya_mod.Layout()
     print("[INFO] Reporting cells prior to loading DEF ...")
     for i in main_layout.each_cell():
@@ -186,22 +160,18 @@ def merge_gds(
 
     main_layout.read(in_def, layout_options)
 
-    # Clear cells
     top_cell_index = main_layout.cell(design_name).cell_index()
 
-    # remove orphan cell BUT preserve cell with VIA_
-    #  - KLayout is prepending VIA_ when reading DEF that instantiates LEF's via
+    # Keep VIA_ cells: KLayout names LEF vias VIA_* when reading DEF.
     for i in main_layout.each_cell():
         if i.cell_index() != top_cell_index:
             if not i.name.startswith("VIA_") and not i.name.endswith("_DEF_FILL"):
                 i.clear()
 
-    # Load in the gds to merge
     for fil in in_files:
         print("\t{0}".format(fil))
         main_layout.read(fil)
 
-    # Copy the top level only to a new layout
     top_only_layout = pya_mod.Layout()
     top_only_layout.dbu = main_layout.dbu
     top = top_only_layout.create_cell(design_name)
@@ -252,11 +222,9 @@ def merge_gds(
                 )
                 top.insert(pya_mod.CellInstArray(cell.cell_index(), pya_mod.Trans()))
 
-    # Write out the GDS
     top_only_layout.write(out_file)
 
-    # Last, so that a report on disk vouches for the layout beside it: a
-    # caller that reads one knows this script got all the way here.
+    # Last, so a report on disk vouches for the layout.
     write_report(
         report_file,
         {
@@ -267,9 +235,7 @@ def merge_gds(
             "missing_cells": missing_cells,
             "allowed_empty_cells": allowed_empty,
             "orphan_cells": orphan_cells,
-            # Errors the missing cells do not account for, so the caller can
-            # tell "a preview macro has no layout" from "the stream-out went
-            # wrong in some other way" without parsing this script's stdout.
+            # Errors other than missing cells.
             "other_errors": errors - len(missing_cells),
             "errors": errors,
         },
@@ -278,11 +244,9 @@ def merge_gds(
     return errors
 
 
-# When run via klayout -r, globals tech_file, layer_map, in_def, etc.
-# are set by klayout's -rd mechanism.
+# Under klayout -r, the -rd flags set the globals tech_file, layer_map, in_def, etc.
 if pya is not None:
     try:
-        # These globals are set by klayout -rd flags
         manifest = load_inputs(inputs_json)  # noqa: F821
         sys.exit(
             merge_gds(
@@ -301,5 +265,5 @@ if pya is not None:
             )
         )
     except NameError:
-        # Not running under klayout -r, pya available but no -rd globals
+        # pya is importable but no -rd globals are set.
         pass
