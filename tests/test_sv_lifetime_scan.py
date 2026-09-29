@@ -1,4 +1,4 @@
-"""Tests for the pre-synthesis static-lifetime scan (rtl-buddy/rtl_buddy#472)."""
+"""Tests for the pre-synthesis static-lifetime scan."""
 
 from textwrap import dedent
 
@@ -17,13 +17,9 @@ def _names(findings):
     return [(f.line, f.kind, f.name) for f in findings]
 
 
-# ---------------------------------------------------------------------------
-# The issue's repro
-# ---------------------------------------------------------------------------
+# Repro
 
-# Verbatim from rtl-buddy/rtl_buddy#472. `inc` is on line 9 and `same` on
-# line 10 of the module below; both lack `automatic`, so yosys-slang gives
-# each one shared net per formal and aliases the two call sites.
+# `inc` (line 9) and `same` (line 10) lack `automatic`, so yosys-slang shares one net per formal between the call sites.
 _BAD_SV = dedent("""\
     module bad (
       input  logic clk, rst, psh, pop,
@@ -75,9 +71,7 @@ def test_issue_repro_describe_names_file_line_and_function():
     assert findings[0].describe() == "bad.sv:9: function inc"
 
 
-# ---------------------------------------------------------------------------
 # Lifetime resolution
-# ---------------------------------------------------------------------------
 
 
 def test_explicit_static_function_is_a_finding():
@@ -173,9 +167,7 @@ def test_compilation_unit_scope_function_is_a_finding():
     assert _names(scan_text(src, "u.sv")) == [(1, "function", "f")]
 
 
-# ---------------------------------------------------------------------------
 # Exemptions
-# ---------------------------------------------------------------------------
 
 
 def test_class_methods_are_exempt():
@@ -236,7 +228,6 @@ def test_dpi_import_and_export_are_exempt():
           function int sv_cb; return 1; endfunction
         endmodule
     """)
-    # Only the real declaration on line 6 is reported.
     assert _names(scan_text(src, "m.sv")) == [(6, "function", "sv_cb")]
 
 
@@ -271,9 +262,7 @@ def test_interface_class_is_treated_as_a_class():
     assert _names(scan_text(src, "s.sv")) == [(5, "function", "g")]
 
 
-# ---------------------------------------------------------------------------
 # Tokenizer robustness
-# ---------------------------------------------------------------------------
 
 
 def test_keyword_inside_comments_is_not_a_finding():
@@ -344,10 +333,7 @@ def test_void_function_declared_without_a_port_list():
 
 
 def test_nested_function_inside_an_automatic_function_is_exempt():
-    """Pins behaviour on input SystemVerilog does not actually allow — a
-    subroutine body admits no `function`/`task` declaration (LRM A.2.7/A.2.8)
-    and slang rejects this with "expected statement". Kept so the scan's
-    handling of it stays stable, not because the shape is supported."""
+    """Pins the scan's behaviour on a nested function, which SystemVerilog does not allow."""
     src = dedent("""\
         module m;
           function automatic int outer(input int a);
@@ -378,9 +364,7 @@ def test_generate_and_case_blocks_do_not_disturb_scope_tracking():
     ]
 
 
-# ---------------------------------------------------------------------------
 # File-level helpers
-# ---------------------------------------------------------------------------
 
 
 def test_scan_file_reads_from_disk(tmp_path):
@@ -414,13 +398,11 @@ def test_describe_findings_truncates_and_counts_the_remainder():
     assert text.endswith("and 9 more")
 
 
-# ---------------------------------------------------------------------------
-# `include following (review item 2)
-# ---------------------------------------------------------------------------
+# `include following
 
 
 def test_include_relative_to_the_including_file_is_scanned(tmp_path):
-    """The issue's repro split into a header: the declarations still count."""
+    """Declarations in an included header still count."""
     (tmp_path / "fns.svh").write_text(
         "function ptr_t inc(input ptr_t p);     return p + 1; endfunction\n"
         "function bit   same(input ptr_t a, b); return (a == b); endfunction\n"
@@ -436,7 +418,6 @@ def test_include_relative_to_the_including_file_is_scanned(tmp_path):
     )
     findings = scan_files([str(top)])
     assert _names(findings) == [(1, "function", "inc"), (2, "function", "same")]
-    # Reported against the header, not the includer.
     assert all(f.path.endswith("fns.svh") for f in findings)
 
 
@@ -490,7 +471,7 @@ def test_unresolvable_include_is_skipped_and_debug_logged(tmp_path, caplog):
     )
     with caplog.at_level(logging.DEBUG):
         findings = scan_files([str(top)])
-    # The rest of the file is still scanned, and the miss is not fatal.
+    # The rest of the file is still scanned.
     assert [f.name for f in findings] == ["f"]
     events = [
         r
@@ -526,13 +507,11 @@ def test_a_self_including_header_terminates(tmp_path):
     assert [f.name for f in scan_files([str(top)])] == ["f"]
 
 
-# ---------------------------------------------------------------------------
-# Conditional compilation (review item 3)
-# ---------------------------------------------------------------------------
+# Conditional compilation
 
 
 def test_ifndef_region_excluded_by_a_run_define_is_not_reported():
-    """The reviewer's case: a sim-only helper behind `ifndef SYNTHESIS."""
+    """A sim-only helper behind `ifndef SYNTHESIS is skipped."""
     src = dedent("""\
         module ifd;
         `ifndef SYNTHESIS
@@ -544,7 +523,6 @@ def test_ifndef_region_excluded_by_a_run_define_is_not_reported():
     assert _names(scan_text(src, "m.sv", defines={"SYNTHESIS": 1})) == [
         (5, "function", "real_one")
     ]
-    # Without the define the helper is compiled, so it is reported.
     assert _names(scan_text(src, "m.sv")) == [
         (3, "function", "dbg"),
         (5, "function", "real_one"),
@@ -638,9 +616,7 @@ def _two_sources_sharing_a_define(tmp_path):
 
 
 def test_defines_do_not_carry_across_sources_by_default(tmp_path):
-    """Without `--single-unit` slang compiles each file as its own compilation
-    unit, so `SHARED` is not defined while b.sv is read and the guarded
-    function IS compiled. Carrying the macro over would hide a real hazard."""
+    """Without `--single-unit` each file is its own compilation unit, so a macro defined in a.sv is not defined in b.sv."""
     paths = _two_sources_sharing_a_define(tmp_path)
     assert [f.name for f in scan_files(paths)] == ["hidden"]
 
@@ -651,8 +627,7 @@ def test_defines_carry_across_sources_under_single_unit(tmp_path):
 
 
 def test_single_unit_does_not_leak_a_define_backwards(tmp_path):
-    """Order still matters under single-unit: a `define in the *second* file
-    cannot suppress a guard in the first."""
+    """Under `--single-unit`, a `define in the second file does not affect a guard in the first."""
     (tmp_path / "a.sv").write_text(
         "module a;\n`ifndef LATE\n"
         "  function int early; return 1; endfunction\n`endif\nendmodule\n"
@@ -663,7 +638,7 @@ def test_single_unit_does_not_leak_a_define_backwards(tmp_path):
 
 
 def test_run_defines_reseed_every_source(tmp_path):
-    """The run's own `defines:` apply to every file, not only the first."""
+    """The run's `defines:` apply to every file."""
     for name in ("a.sv", "b.sv"):
         (tmp_path / name).write_text(
             f"module {name[0]};\n`ifndef SYNTHESIS\n"
@@ -681,22 +656,19 @@ def test_undef_in_one_source_does_not_reach_the_next(tmp_path):
         "  function int hidden; return 1; endfunction\n`endif\nendmodule\n"
     )
     paths = [str(tmp_path / "a.sv"), str(tmp_path / "b.sv")]
-    # b.sv is re-seeded from the run defines, so the `undef in a.sv is gone.
+    # Each file is seeded from the run defines, so the `undef in a.sv does not reach b.sv.
     assert scan_files(paths, defines={"SYNTHESIS": 1}) == []
-    # ...but under single-unit the `undef really does reach b.sv.
+    # Under single-unit it does.
     assert [
         f.name for f in scan_files(paths, defines={"SYNTHESIS": 1}, single_unit=True)
     ] == ["hidden"]
 
 
-# ---------------------------------------------------------------------------
-# Macro bodies (review item 7)
-# ---------------------------------------------------------------------------
+# Macro bodies
 
 
 def test_declaration_inside_a_define_body_is_not_reported():
-    """A macro body is scanned where it expands, and rtl_buddy does not expand
-    macros — so it must not be reported at the `define either."""
+    """A declaration inside a macro body is not reported at the `define."""
     src = dedent("""\
         `define MK_FN(n) function int n; return 1; endfunction
         module m;
@@ -720,9 +692,7 @@ def test_multi_line_define_body_is_skipped_whole():
 
 
 def test_an_active_multiline_define_body_hides_its_own_conditional():
-    """Directives in a live macro's replacement text belong to the expansion,
-    not to the file: the body is skipped whole, so the `ifdef inside it never
-    opens a conditional here."""
+    """A `ifdef inside a live macro body does not open a conditional."""
     src = (
         "`define WRAPPED \\\n"
         "  `ifdef ALSO_NEVER \\\n"
@@ -736,7 +706,7 @@ def test_an_active_multiline_define_body_hides_its_own_conditional():
 
 
 def _inactive_define(body: str) -> str:
-    """A `define inside a never-taken branch whose macro body is `body`."""
+    """Source with a `define inside a never-taken branch, whose macro body is `body`."""
     return (
         "`ifdef NEVER\n"
         "`define OPENER \\\n"
@@ -760,19 +730,12 @@ def _inactive_define(body: str) -> str:
     ],
 )
 def test_directives_in_an_inactive_macro_body_do_not_move_the_conditional(body):
-    """The disabled-branch skip used to step over the `define token alone, so a
-    continued macro body's own `ifdef was read as a real conditional. The outer
-    branch then stayed open past its `endif and every later declaration --
-    including a static-lifetime one both frontends compile -- was dropped,
-    which under the default slang gate admits the corrupted netlist
-    (rtl-buddy/rtl_buddy#527)."""
+    """A `ifdef in a continued macro body inside a disabled branch does not open a conditional; later declarations are still reported."""
     assert [f.name for f in scan_text(_inactive_define(body), "m.sv")] == ["later"]
 
 
 def test_the_else_branch_of_an_inactive_define_is_still_compiled():
-    """The branch the compiler does take is the one that matters: a macro body
-    left half-read used to attach the `else to the body's own conditional, so
-    the live branch was scanned as dead and its declarations vanished."""
+    """The `else of a disabled branch containing a macro body is scanned as live."""
     src = (
         "`ifdef NEVER\n"
         "`define OPENER \\\n"
@@ -788,8 +751,7 @@ def test_the_else_branch_of_an_inactive_define_is_still_compiled():
 
 
 def test_an_inactive_define_does_not_register_its_macro_name():
-    """Skipping the body must not define the macro: the compiler never reaches
-    the `define, so a later `ifdef on that name is false and its `ifndef true."""
+    """A `define in a skipped branch does not define the macro."""
     src = (
         "`ifdef NEVER\n"
         "`define OPENER \\\n"
@@ -814,8 +776,7 @@ def test_escaped_identifier_is_never_read_as_a_keyword():
           function int f; return 1; endfunction
         endmodule
     """)
-    # The escaped \\begin must not clear the pending `import "DPI-C"` window,
-    # or the DPI prototype would be reported as a declaration.
+    # The escaped \\begin must not clear the pending `import "DPI-C"` window.
     assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
 
 
@@ -829,9 +790,7 @@ def test_escaped_identifier_named_like_a_scope_keyword_is_inert():
     assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
 
 
-# ---------------------------------------------------------------------------
-# Out-of-body class method definitions (review item 6)
-# ---------------------------------------------------------------------------
+# Out-of-body class method definitions
 
 
 @pytest.mark.parametrize(
@@ -852,8 +811,7 @@ def test_out_of_body_definitions_are_exempt(decl):
 
 
 def test_a_scope_resolved_return_type_is_still_reported():
-    """`pkg::t_e` is the return type, not a qualified name — the function is
-    an ordinary module-scope declaration and must not be exempted."""
+    """`pkg::t_e` is a return type, so the function is a module-scope declaration and is reported."""
     src = dedent("""\
         module m;
           function pkg::state_e decode(input int a); return 0; endfunction
@@ -862,18 +820,11 @@ def test_a_scope_resolved_return_type_is_still_reported():
     assert _names(scan_text(src, "m.sv")) == [(2, "function", "decode")]
 
 
-# ---------------------------------------------------------------------------
-# Every inclusion is judged in its own context (review round 3, item 3)
-# ---------------------------------------------------------------------------
+# Every inclusion is judged in its own context
 
 
 def test_a_header_included_in_a_class_then_a_module_is_still_reported(tmp_path):
-    """The exempt context must not shadow the hazardous one.
-
-    A permanent already-scanned set would have taken the class inclusion,
-    found nothing (class methods are automatic by definition), and never
-    looked at the module inclusion that really does share storage.
-    """
+    """A header included from an exempt (class) context is still scanned when included from a hazardous (module) context."""
     (tmp_path / "fns.svh").write_text("function int helper; return 1; endfunction\n")
     top = tmp_path / "top.sv"
     top.write_text(
@@ -924,7 +875,7 @@ def test_a_header_exempt_in_every_context_reports_nothing(tmp_path):
 
 
 def test_a_header_included_by_many_modules_reports_once(tmp_path):
-    """Scanned per inclusion, but one declaration is one finding."""
+    """A header scanned per inclusion yields one finding per declaration."""
     (tmp_path / "fns.svh").write_text("function int helper; return 1; endfunction\n")
     for name in ("a.sv", "b.sv", "c.sv"):
         (tmp_path / name).write_text(
@@ -948,7 +899,7 @@ def test_distinct_declarations_in_one_header_are_all_kept(tmp_path):
 
 
 def test_two_headers_with_the_same_basename_are_both_scanned(tmp_path):
-    """Dedupe keys on the declaration, not the file name."""
+    """Two headers with the same basename are both scanned."""
     for sub, fn in (("x", "from_x"), ("y", "from_y")):
         d = tmp_path / sub
         d.mkdir()
@@ -958,9 +909,7 @@ def test_two_headers_with_the_same_basename_are_both_scanned(tmp_path):
     assert sorted(f.name for f in scan_files(paths)) == ["from_x", "from_y"]
 
 
-# ---------------------------------------------------------------------------
-# Parameterised return types (review round 4, item 3)
-# ---------------------------------------------------------------------------
+# Parameterised return types
 
 
 @pytest.mark.parametrize(
@@ -974,8 +923,7 @@ def test_two_headers_with_the_same_basename_are_both_scanned(tmp_path):
     ],
 )
 def test_parameterised_return_type_on_an_out_of_body_definition_is_exempt(decl):
-    """`R#(int)` parameterises the return type. Stopping at its `(` read `R`
-    as the subroutine name and lost the `C::` that makes it a class method."""
+    """A `C::` method with a parameterised return type `R#(int)` is exempt."""
     src = (
         f"module m;\n  {decl}\n  function int plain; return 1; endfunction\nendmodule\n"
     )
@@ -983,8 +931,7 @@ def test_parameterised_return_type_on_an_out_of_body_definition_is_exempt(decl):
 
 
 def test_parameterised_return_type_on_a_free_function_still_reports_its_name():
-    """The other side: a module-scope function with a parameterised return
-    type is a finding, and must be named for itself, not for its type."""
+    """A module-scope function with a parameterised return type is reported under its own name."""
     src = dedent("""\
         module m;
           function R#(int) make_box(input int a); return null; endfunction
@@ -1003,14 +950,13 @@ def test_nested_parameterisation_is_skipped_whole():
 
 
 def test_an_unclosed_parameterisation_does_not_hang_the_scan():
-    """A truncated header must terminate, not loop."""
+    """A truncated header terminates."""
     src = "module m;\n  function R#(int make_box(input int a);\n"
-    # Whatever it decides to call the declaration, it must return.
     assert isinstance(scan_text(src, "m.sv"), list)
 
 
 def test_a_hash_that_is_not_a_parameterisation_is_ignored():
-    """`#` also introduces a delay; only `#(` parameterises."""
+    """`#` introduces a delay; only `#(` parameterises."""
     src = dedent("""\
         module m;
           function int delayed(input int a); return a; endfunction
@@ -1020,15 +966,7 @@ def test_a_hash_that_is_not_a_parameterisation_is_ignored():
     assert _names(scan_text(src, "m.sv")) == [(2, "function", "delayed")]
 
 
-# ---------------------------------------------------------------------------
-# `undefineall (review round 6, item 1)
-# ---------------------------------------------------------------------------
-
-# `undefineall` semantics differ between the two frontends, verified against
-# each with a deliberate syntax error inside the guarded region:
-#   slang        Preprocessor::undefineAll() clears the macro map and then
-#                re-applies options.predefines, so the -D macros survive.
-#   read_verilog clears `defines` AND `global_defines_cache`, so nothing does.
+# `undefineall` keeps the -D macros in slang and clears them in read_verilog.
 
 _UNDEFINEALL_SRC = dedent("""\
     module m;
@@ -1052,8 +990,7 @@ _UNDEFINEALL_CMDLINE_SRC = dedent("""\
 
 @pytest.mark.parametrize("keeps_predefines", [True, False])
 def test_undefineall_clears_a_source_defined_macro(keeps_predefines):
-    """Both frontends drop a `` `define `` from the source, so the guarded
-    function IS compiled and must be reported."""
+    """`undefineall drops a `define from the source, so the guarded function is compiled and reported."""
     findings = scan_text(
         _UNDEFINEALL_SRC,
         "m.sv",
@@ -1130,8 +1067,7 @@ def test_undefineall_inside_an_inactive_region_is_not_applied():
 
 
 def test_undefineall_in_a_header_reaches_the_includer(tmp_path):
-    """`` `include `` is textual, so the header's `undefineall` clears the
-    includer's macros too."""
+    """A header's `undefineall clears the includer's macros."""
     (tmp_path / "reset.svh").write_text("`undefineall\n")
     top = tmp_path / "top.sv"
     top.write_text(
@@ -1149,8 +1085,7 @@ def test_undefineall_in_a_header_reaches_the_includer(tmp_path):
 
 
 def test_undefineall_does_not_leak_between_sources_without_single_unit(tmp_path):
-    """Each source starts from a fresh seed anyway, so a trailing
-    `undefineall` in one file cannot affect the next."""
+    """A trailing `undefineall in one file does not affect the next."""
     (tmp_path / "a.sv").write_text("`undefineall\nmodule a; endmodule\n")
     (tmp_path / "b.sv").write_text(
         "module b;\n`ifndef SYNTHESIS\n"
@@ -1161,8 +1096,7 @@ def test_undefineall_does_not_leak_between_sources_without_single_unit(tmp_path)
 
 
 def test_undefineall_reaches_the_next_source_under_single_unit(tmp_path):
-    """Under `--single-unit` the macro table is shared, but slang re-applies
-    the -D macros, so the seed still survives."""
+    """Under `--single-unit` the -D macros survive `undefineall."""
     (tmp_path / "a.sv").write_text("`define LOCAL 1\n`undefineall\n")
     (tmp_path / "b.sv").write_text(
         "module b;\n`ifndef LOCAL\n"
@@ -1175,13 +1109,11 @@ def test_undefineall_reaches_the_next_source_under_single_unit(tmp_path):
     assert [f.name for f in findings] == ["hidden"]
 
 
-# ---------------------------------------------------------------------------
-# Include depth is bounded loudly, never silently (review round 7, item 2)
-# ---------------------------------------------------------------------------
+# Include depth is bounded loudly, never silently
 
 
 def _include_chain(tmp_path, length, *, leaf_body):
-    """`f0.sv` includes `f1.svh` includes ... includes the leaf."""
+    """Build a chain in which `f0.sv` includes `f1.svh`, and so on down to the leaf."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     for i in range(length):
         nxt = f"f{i + 1}.svh"
@@ -1193,8 +1125,7 @@ def _include_chain(tmp_path, length, *, leaf_body):
 
 
 def test_a_deep_acyclic_include_chain_is_followed(tmp_path):
-    """The old cap silently dropped the leaf of a chain the compiler would
-    happily keep preprocessing."""
+    """The leaf of a long include chain is scanned."""
     top = _include_chain(
         tmp_path, 60, leaf_body="function int deep; return 1; endfunction\n"
     )
@@ -1204,11 +1135,7 @@ def test_a_deep_acyclic_include_chain_is_followed(tmp_path):
 
 
 def test_a_600_deep_include_chain_does_not_exhaust_the_python_stack(tmp_path):
-    """Expansion recursed through _expand_file and _expand_text, two Python
-    frames per header, so an acyclic chain of roughly 500 headers raised an
-    uncaught RecursionError: no structured failure and no fatal machine
-    envelope, the CLI catching only FatalRtlBuddyError and FilelistError
-    (rtl-buddy/rtl_buddy#527)."""
+    """A 600-deep include chain raises a structured fatal error, not RecursionError."""
     top = _include_chain(
         tmp_path, 600, leaf_body="function int deep; return 1; endfunction\n"
     )
@@ -1218,9 +1145,7 @@ def test_a_600_deep_include_chain_does_not_exhaust_the_python_stack(tmp_path):
 
 
 def test_the_advertised_include_depth_is_the_one_that_fires(tmp_path):
-    """The cap has to be reachable to be the cap: at the real
-    MAX_INCLUDE_DEPTH the leaf is still scanned, and one deeper is the
-    structured fatal error rather than a RecursionError."""
+    """At `MAX_INCLUDE_DEPTH` the leaf is still scanned; one level deeper raises the structured fatal error."""
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.tools import sv_lifetime_scan
 
@@ -1273,8 +1198,7 @@ def test_the_depth_error_names_the_chain(tmp_path):
 
 
 def test_a_cycle_is_still_stopped_quietly(tmp_path):
-    """A cycle is not an error — an include guard re-including its own file is
-    ordinary — so it must not be reported as a depth overflow."""
+    """An include cycle is not reported as a depth overflow."""
     (tmp_path / "a.svh").write_text('`include "b.svh"\n')
     (tmp_path / "b.svh").write_text(
         '`include "a.svh"\nfunction int f; return 1; endfunction\n'
@@ -1284,9 +1208,7 @@ def test_a_cycle_is_still_stopped_quietly(tmp_path):
     assert [f.name for f in scan_files([str(top)])] == ["f"]
 
 
-# ---------------------------------------------------------------------------
-# Attribute instances are not qualifiers (review round 9)
-# ---------------------------------------------------------------------------
+# Attribute instances are not qualifiers
 
 
 def _attributed(attr):
@@ -1298,9 +1220,7 @@ def _attributed(attr):
 
 
 def test_escaped_identifier_in_an_attribute_does_not_exempt_the_function():
-    """The reported case: `\\extern` is a *name*, not the keyword. It used to
-    lose its escaped status in the pending window, so the real function body
-    was taken for an extern prototype and silently exempted."""
+    """An escaped `\\extern` is a name, not the keyword, so the function body is reported."""
     assert _names(scan_text(_attributed(r"(* \extern = 1 *)"), "m.sv")) == [
         (2, "function", "f")
     ]
@@ -1327,12 +1247,10 @@ def test_an_attribute_never_changes_the_verdict(attr):
 
 
 def test_attribute_automatic_is_not_a_lifetime():
-    """`(* automatic *)` decorates the declaration; the lifetime keyword has
-    to sit between `function` and the name to count."""
+    """`(* automatic *)` is an attribute, not a lifetime keyword."""
     assert _names(scan_text(_attributed("(* automatic *)"), "m.sv")) == [
         (2, "function", "f")
     ]
-    # ...and the real keyword still exempts it.
     src = dedent("""\
         module m;
           (* keep *) function automatic int f(input int a); return a; endfunction
@@ -1342,7 +1260,7 @@ def test_attribute_automatic_is_not_a_lifetime():
 
 
 def test_a_real_extern_prototype_is_still_exempt():
-    """The fix must not stop `extern` working where it is the keyword."""
+    """The `extern` keyword still marks a prototype."""
     src = dedent("""\
         class C;
           extern function int g(input int a);
@@ -1355,8 +1273,7 @@ def test_a_real_extern_prototype_is_still_exempt():
 
 
 def test_an_attributed_declaration_does_not_corrupt_scope_tracking():
-    """The bogus-prototype path returned without pushing a scope, so the
-    declaration's `endfunction` popped the enclosing module instead."""
+    """An `(* extern *)` attribute does not make the declaration a prototype, and its `endfunction` does not pop the enclosing module."""
     src = dedent("""\
         module automatic m;
           (* extern *) function int a(input int x); return x; endfunction
@@ -1366,7 +1283,7 @@ def test_an_attributed_declaration_does_not_corrupt_scope_tracking():
           function int c(input int x); return x; endfunction
         endmodule
     """)
-    # a and b are inside `module automatic`; only c is a finding.
+    # Only c is a finding; a and b are inside `module automatic`.
     assert [f.name for f in scan_text(src, "m.sv")] == ["c"]
 
 
@@ -1391,7 +1308,7 @@ def test_a_wildcard_sensitivity_list_is_not_mistaken_for_an_attribute():
 
 
 def test_an_unterminated_attribute_is_left_alone():
-    """`(` that never closes must not swallow the rest of the file."""
+    """An unclosed `(*` does not swallow the rest of the file."""
     src = "module m;\n  (* keep\n  function int f(input int a); return a; endfunction\n"
     assert isinstance(scan_text(src, "m.sv"), list)
 
@@ -1416,15 +1333,11 @@ def test_an_escaped_identifier_named_like_a_qualifier_outside_an_attribute():
     assert _names(scan_text(src, "m.sv")) == [(3, "function", "f")]
 
 
-# ---------------------------------------------------------------------------
-# An escaped name is one identifier, separators and all (review round 10)
-# ---------------------------------------------------------------------------
+# An escaped name is one identifier, separators and all
 
 
 def test_an_escaped_name_containing_a_scope_separator_is_reported():
-    r"""`\C::f` is a single escaped identifier — an ordinary subroutine that
-    happens to be called `C::f` — not `f` defined out of block for class `C`.
-    Deriving "qualified" from the name text exempted it."""
+    r"""`\C::f` is a single escaped identifier, an ordinary subroutine, and is reported."""
     src = "module m;\n  function int \\C::f (input int a); return a; endfunction\nendmodule\n"
     assert _names(scan_text(src, "m.sv")) == [(2, "function", "C::f")]
 
@@ -1440,7 +1353,7 @@ def test_an_escaped_task_name_with_a_separator_is_reported():
 
 
 def test_a_real_out_of_block_definition_is_still_exempt():
-    """The unescaped separator still means an out-of-block class method."""
+    """An unescaped `::` marks an out-of-block class method."""
     src = dedent("""\
         module m;
           function int C::f(input int a); return a; endfunction
@@ -1457,8 +1370,7 @@ def test_an_escaped_name_inside_a_class_is_still_exempt():
 
 
 def test_an_escaped_name_after_a_qualified_return_type_is_reported():
-    r"""`pkg::t_e` is the return type and `\g::h` the name — the fresh
-    unqualified name must clear the separator the type contributed."""
+    r"""With return type `pkg::t_e` and name `\g::h`, the name does not inherit the type's `::`."""
     src = (
         "module m;\n"
         "  function pkg::t_e \\g::h (input int a); return 0; endfunction\n"
@@ -1468,8 +1380,7 @@ def test_an_escaped_name_after_a_qualified_return_type_is_reported():
 
 
 def test_an_escaped_name_ending_in_a_separator_keeps_it():
-    """The dangling-separator trim is for separators this parser added, not
-    for characters that are part of an escaped name."""
+    """A `::` that is part of an escaped name is not trimmed."""
     src = "module m;\n  function int \\f. (input int a); return a; endfunction\nendmodule\n"
     assert [f.name for f in scan_text(src, "m.sv")] == ["f."]
 
@@ -1479,16 +1390,11 @@ def test_an_escaped_name_with_no_separator_is_unaffected():
     assert [f.name for f in scan_text(src, "m.sv")] == ["odd$name"]
 
 
-# ---------------------------------------------------------------------------
-# Anonymous struct/union return types (review round 12)
-# ---------------------------------------------------------------------------
+# Anonymous struct/union return types
 
 
 def test_anonymous_packed_struct_return_type_on_an_out_of_block_method():
-    """An anonymous struct body ends its members with `;`. The header scan
-    used to stop at the first of those, mid-type, losing the `C::` that makes
-    this an automatic class method and naming it after the struct's last
-    member instead."""
+    """A `C::` method returning an anonymous struct is exempt; the struct's `;` does not end the header."""
     src = dedent("""\
         module m;
           function struct packed { logic a; } C::f(); return 0; endfunction
@@ -1507,8 +1413,7 @@ def test_anonymous_packed_union_return_type_on_an_out_of_block_method():
 
 
 def test_anonymous_struct_return_type_on_a_module_scope_function():
-    """The other side: still a finding, and named for itself rather than for
-    the struct's last member."""
+    """A module-scope function returning an anonymous struct is reported under its own name."""
     src = dedent("""\
         module m;
           function struct packed { logic a; } free_fn(); return 0; endfunction
@@ -1541,7 +1446,7 @@ def test_an_anonymous_struct_return_type_with_packed_ranges():
 
 
 def test_an_anonymous_struct_return_type_with_no_argument_list():
-    """The header then terminates on its own `;`, not the struct's."""
+    """The header ends at its own `;`, not the struct's."""
     src = dedent("""\
         module m;
           function struct packed { logic a; } noargs; return 0; endfunction
@@ -1560,8 +1465,7 @@ def test_automatic_still_exempts_a_struct_returning_function():
 
 
 def test_a_struct_returning_task_free_function_is_still_found_after_one():
-    """The struct body must not leave the header scan desynchronised for the
-    declarations that follow it."""
+    """Declarations after an anonymous struct return type are scanned normally."""
     src = dedent("""\
         module m;
           function struct packed { logic a; } first(); return 0; endfunction
@@ -1585,15 +1489,11 @@ def test_a_parameterised_and_struct_returning_out_of_block_method():
     assert scan_text(src, "m.sv") == []
 
 
-# ---------------------------------------------------------------------------
-# Parenthesised return types (review round 13, item 2)
-# ---------------------------------------------------------------------------
+# Parenthesised return types
 
 
 def test_type_reference_return_type_on_an_out_of_block_method_is_exempt():
-    """`type(expr)` is a type reference (LRM 6.23). Its `(` used to be read as
-    the argument list, so the scan stopped before the `C::` and reported an
-    automatic class method as a static free function called `type`."""
+    """`type(expr)` is a type reference (LRM 6.23), so a `C::` method returning it is exempt."""
     src = dedent("""\
         module m;
           function type(int) C::f(); return 0; endfunction
@@ -1654,14 +1554,13 @@ def test_an_unclosed_type_reference_does_not_hang_the_scan():
 
 
 def test_an_escaped_identifier_named_type_is_not_a_type_reference():
-    r"""`\type` is a name, so the `(` after it really is the argument list."""
+    r"""An escaped `\type` is a name, so the following `(` opens the argument list."""
     src = "module m;\n  function int \\type (input int a); return a; endfunction\nendmodule\n"
     assert [f.name for f in scan_text(src, "m.sv")] == ["type"]
 
 
 def test_other_legal_parenthesised_return_type_shapes_are_already_handled():
-    """Checked against slang: an anonymous enum body and a packed dimension
-    holding a call are both legal, and neither confuses the scan."""
+    """An anonymous enum body and a packed dimension containing a call do not confuse the scan."""
     enum_src = dedent("""\
         module m;
           function enum { A, B } from_enum(); return A; endfunction
@@ -1676,38 +1575,26 @@ def test_other_legal_parenthesised_return_type_shapes_are_already_handled():
     assert [f.name for f in scan_text(dim_src, "m.sv")] == ["from_dim"]
 
 
-# ---------------------------------------------------------------------------
-# A class method may not have a static lifetime (review round 13, item 1)
-# ---------------------------------------------------------------------------
+# A class method may not have a static lifetime
 
 
 @pytest.mark.parametrize(
     "src",
     [
-        # In-class declaration.
         "class C;\n  function static int f(input int a); return a; endfunction\nendclass\n",
         "class C;\n  task static run(input int a); endtask\nendclass\n",
         "class C;\n  virtual function static int f(input int a); return a; endfunction\nendclass\n",
-        # Out-of-block definition.
         "module m;\n  function static int C::f(input int a); return a; endfunction\nendmodule\n",
         "module m;\n  task static C::run(input int a); endtask\nendmodule\n",
     ],
 )
 def test_a_static_lifetime_on_a_class_method_is_not_reported(src):
-    """`function static` on a class method is uncompilable, not a hazard.
-
-    slang rejects every one of these at parse time with "class methods cannot
-    have static lifetime" (Parser_members.cpp raises MethodStaticLifetime for
-    an in-class declaration and for a `::`-scoped out-of-block one alike), so
-    there is no elaboration and no netlist to corrupt. Reporting them would
-    fail the run for code the frontend already rejects with a better message.
-    """
+    """`function static` on a class method is not reported; slang rejects it at parse time."""
     assert scan_text(src, "m.sv") == []
 
 
 def test_a_class_static_method_qualifier_is_still_exempt():
-    """`static function` — the qualifier BEFORE the keyword — declares a
-    class-static method and is perfectly legal; it is not a lifetime."""
+    """`static function` declares a class-static method and is not a lifetime."""
     src = dedent("""\
         class C;
           static function int g(input int a); return a; endfunction
@@ -1717,7 +1604,7 @@ def test_a_class_static_method_qualifier_is_still_exempt():
 
 
 def test_an_explicit_static_lifetime_outside_a_class_is_still_reported():
-    """Where the qualifier IS legal, it is still the finding it always was."""
+    """`static` on a non-class function is still reported."""
     src = dedent("""\
         module m;
           function static int f(input int a); return a; endfunction
@@ -1727,25 +1614,10 @@ def test_an_explicit_static_lifetime_outside_a_class_is_still_reported():
     assert [f.name for f in scan_text(src, "m.sv")] == ["f", "run"]
 
 
-# ---------------------------------------------------------------------------
-# Nested subroutines do not exist in SystemVerilog (review round 15)
-# ---------------------------------------------------------------------------
+# Nested subroutines do not exist in SystemVerilog
 
-# A subroutine body admits `tf_item_declaration` — data, type, parameter and
-# `let` declarations — and NOT a `function`/`task` declaration (LRM 1800-2017
-# A.2.7/A.2.8). Subroutines are declared directly in a module, interface,
-# program, package, class or generate block. slang rejects every nested form
-# below with "expected statement", verified for: an in-class method with a
-# nested `function static` and with a nested plain `function`, an out-of-block
-# `C::outer` with a nested `function static`, a module-scope `outer` with a
-# nested `function static` and with a nested plain `function`, and an in-class
-# `task` with a nested `task static`.
-#
-# So there is no legal nested subroutine whose explicit `static` lifetime the
-# class-method exemption could swallow, and `_is_class_method` walking past an
-# enclosing subroutine scope cannot hide a real hazard. These tests pin the
-# scan's behaviour on the uncompilable input rather than assert a verdict on
-# it — the point is that it stays stable and does not crash.
+# A subroutine body cannot contain a `function` or `task` declaration (LRM 1800-2017 A.2.7/A.2.8).
+# These tests pin that the scan is stable on such input; they assert no verdict on it.
 
 _NESTED_IN_CLASS = dedent("""\
     class C;
@@ -1786,12 +1658,9 @@ _NESTED_TASK_IN_CLASS = dedent("""\
 @pytest.mark.parametrize(
     "src, expected",
     [
-        # Inside a real class scope the exemption applies to both.
         (_NESTED_IN_CLASS, []),
         (_NESTED_TASK_IN_CLASS, []),
-        # An out-of-block definition pushes a subroutine scope, not a class
-        # one, so the nested declaration is judged on its own explicit
-        # lifetime. Neither answer is "right" for input that cannot compile.
+        # An out-of-block definition pushes a subroutine scope, not a class scope.
         (_NESTED_OUT_OF_BLOCK, ["inner"]),
         (_NESTED_IN_MODULE, ["inner"]),
     ],
@@ -1801,8 +1670,7 @@ def test_nested_subroutine_shapes_are_stable(src, expected):
 
 
 def test_a_class_method_with_a_legal_body_declaration_is_still_exempt():
-    """What a subroutine body may actually contain — data, parameter, type and
-    `let` declarations — none of which is a subroutine."""
+    """Data, parameter, type and `let` declarations in a subroutine body are not subroutines."""
     src = dedent("""\
         class C;
           function int outer(input int a);
@@ -1831,7 +1699,7 @@ def test_a_module_function_with_a_legal_body_declaration_is_still_reported():
 
 
 def test_a_class_method_does_not_leak_its_exemption_to_a_later_module():
-    """The exemption follows the scope stack, so it ends with the class."""
+    """The class-method exemption ends with the class scope."""
     src = dedent("""\
         class C;
           function int inside(input int a); return a; endfunction

@@ -106,7 +106,7 @@ def test_install_dir_flat_target(tmp_path):
     assert skill.is_file()
     for skill_name in SKILL_DIRNAMES:
         assert (tmp_path / skill_name / SKILL_FILENAME).is_file()
-    # flat layout: no .claude / .agents intermediate dirs
+    # flat layout: no .claude or .agents intermediate dirs
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".agents").exists()
 
@@ -139,7 +139,7 @@ def test_bundled_snippet_patterns_use_skill_dirname():
 
 
 def _legacy_install(parent, version="0.0.1"):
-    """Materialize a legacy-named install (ours: carries the version marker)."""
+    """Create a legacy-named install that carries the version marker."""
     legacy = parent / LEGACY_SKILL_DIRNAME
     legacy.mkdir(parents=True)
     (legacy / SKILL_FILENAME).write_text("---\nname: rtl-buddy\n---\nold\n")
@@ -201,7 +201,7 @@ def test_install_dry_run_does_not_migrate(tmp_path):
 
 
 def test_install_leaves_foreign_legacy_dir_alone(tmp_path):
-    """A `rtl_buddy/` dir without our marker belongs to the user, not us."""
+    """A legacy `rtl_buddy/` directory without the version marker is left alone."""
     legacy = tmp_path / ".claude" / "skills" / LEGACY_SKILL_DIRNAME
     legacy.mkdir(parents=True)
     (legacy / SKILL_FILENAME).write_text("hand-written\n")
@@ -383,8 +383,7 @@ def test_install_family_dry_run_writes_nothing(tmp_path):
 
 
 def test_gitignore_drops_the_pre_rename_patterns(tmp_path):
-    """`.gitignore` is the one tracked file the #434 rename touches, so the
-    dead patterns come out rather than accumulating under the same comment."""
+    """Install removes the legacy `rtl_buddy` ignore patterns from `.gitignore`."""
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text(
         "# rtl_buddy skill (materialized by `rtl-buddy skill install --project`)\n"
@@ -399,13 +398,12 @@ def test_gitignore_drops_the_pre_rename_patterns(tmp_path):
     assert ".agents/skills/rtl_buddy/" not in text
     assert ".claude/skills/rtl-buddy/" in text
     assert ".agents/skills/rtl-buddy/" in text
-    # The comment was already there, so it is not duplicated.
     assert text.count("# rtl_buddy skill") == 1
     assert "removed 2 legacy pattern(s)" in result
 
 
 def test_gitignore_leaves_hand_edited_legacy_lines_alone(tmp_path):
-    """Only an exact match on the shipped pre-rename text is ours to remove."""
+    """Only exact matches of the legacy patterns are removed."""
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text(
         ".claude/skills/rtl_buddy/   # keep: vendored by hand\n"
@@ -420,7 +418,7 @@ def test_gitignore_leaves_hand_edited_legacy_lines_alone(tmp_path):
 
 
 def test_gitignore_prunes_legacy_even_when_new_patterns_are_present(tmp_path):
-    """The early "already present" return must not skip the prune."""
+    """Legacy patterns are removed even when the current patterns are already present."""
     gitignore = tmp_path / ".gitignore"
     gitignore.write_text(_SNIPPET + ".claude/skills/rtl_buddy/\n")
 

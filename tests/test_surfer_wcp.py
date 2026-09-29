@@ -1,7 +1,4 @@
-"""
-Tests for Surfer WCP integration: config path resolution, editor command
-formatting, WCP frame I/O, and source resolver signal extraction.
-"""
+"""Tests for Surfer WCP integration: config, editor commands, WCP framing and waiters, and value readers."""
 
 import logging
 import os
@@ -12,11 +9,6 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from rtl_buddy.config.surfer import SurferConfig, SurferConfigFile
-
-
-# ---------------------------------------------------------------------------
-# pywellen >=0.25 random-access fakes
-# ---------------------------------------------------------------------------
 
 
 class _FakeSignal:
@@ -43,11 +35,7 @@ class _FakeScope:
 
 
 class _FakeWaveform:
-    """Stand-in for the pywellen >=0.25 Waveform random-access surface.
-
-    ``wf[path]`` resolves a hierarchical name to a ``Var`` (or ``Scope``);
-    an unknown path raises ``KeyError``, matching pywellen's lookup-miss.
-    """
+    """Stand-in for the pywellen >=0.25 Waveform; an unknown path raises ``KeyError``."""
 
     def __init__(self, items):
         self._items = items
@@ -58,9 +46,7 @@ class _FakeWaveform:
         return self._items[path]
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_surfer_cfg(
@@ -85,11 +71,6 @@ def _make_surfer_cfg(
         root_cfg_path=root_cfg_path,
         available=available,
     )
-
-
-# ---------------------------------------------------------------------------
-# SurferConfig: path resolution
-# ---------------------------------------------------------------------------
 
 
 class TestSurferConfigPathResolution:
@@ -131,11 +112,6 @@ class TestSurferConfigPathResolution:
         assert cfg.get_surfer_exe() == abs_path
 
 
-# ---------------------------------------------------------------------------
-# SurferConfig: editor command formatting
-# ---------------------------------------------------------------------------
-
-
 class TestSurferConfigEditorCmd:
     def test_f_and_l_substituted(self):
         cfg = _make_surfer_cfg(editor_cmd="vim +%l %f")
@@ -161,11 +137,6 @@ class TestSurferConfigEditorCmd:
     def test_no_placeholders_returns_cmd_unchanged(self):
         cfg = _make_surfer_cfg(editor_cmd="code .")
         assert cfg.format_editor_cmd("/src/foo.sv", 5) == "code ."
-
-
-# ---------------------------------------------------------------------------
-# SurferConfigFile.initialise: available flag
-# ---------------------------------------------------------------------------
 
 
 class TestSurferConfigFileInitialise:
@@ -223,13 +194,8 @@ class TestSurferConfigFileInitialise:
         assert cfg.available is False
 
 
-# ---------------------------------------------------------------------------
-# WCP frame I/O
-# ---------------------------------------------------------------------------
-
-
 class TestWcpFrameIO:
-    """Test null-byte delimited JSON framing using a socketpair."""
+    """Null-byte delimited JSON framing over a socketpair."""
 
     def _make_pair(self):
         a, b = socket.socketpair()
@@ -288,13 +254,8 @@ class TestWcpFrameIO:
         b.close()
 
 
-# ---------------------------------------------------------------------------
-# SurferSourceResolver: signal extraction logic
-# ---------------------------------------------------------------------------
-
-
 class TestSurferSourceResolver:
-    """Test the resolver's variable→signal parsing and grep dispatch."""
+    """Variable-to-signal parsing and grep dispatch in the source resolver."""
 
     def _make_resolver_with_files(self, sv_files):
         """Build a resolver with a pre-set file list, bypassing VlogFilelist."""
@@ -325,18 +286,15 @@ class TestSurferSourceResolver:
         sv = tmp_path / "design.sv"
         sv.write_text("module test_module_3;\n  logic z_bus;\nendmodule\n")
         resolver = self._make_resolver_with_files([str(sv)])
-        # Signal "z_bus" found directly; no need for fallback
         result = resolver.resolve("tb_top.i_dut_2.z_bus")
         assert result is not None
         assert result[1] == 2
 
     def test_resolve_uses_module_fallback_when_signal_not_found(self, tmp_path):
         sv = tmp_path / "design.sv"
-        # Only the module name exists, not a signal named "i_z"
         sv.write_text("module test_module_2;\n  // i_m2 instance\nendmodule\n")
         resolver = self._make_resolver_with_files([str(sv)])
-        # "i_z" not found; fallback to "gen_i" → strip digits → "gen_i" → not found either
-        # then "i_m2" → found on line 2
+        # "i_z" falls back to "gen_i" (not found), then to "i_m2" (line 2)
         result = resolver.resolve("tb_top.i_dut_2.gen_i.i_m2")
         assert result is not None
 
@@ -353,13 +311,8 @@ class TestSurferSourceResolver:
         assert result[1] == 1
 
 
-# ---------------------------------------------------------------------------
-# WaveformValueReader
-# ---------------------------------------------------------------------------
-
-
 class TestWaveformValueReader:
-    """Test value lookup via pywellen (mocked)."""
+    """Value lookup through a mocked pywellen."""
 
     def _make_reader(self, fst_path: str = "/fake/dump.fst"):
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
@@ -379,14 +332,12 @@ class TestWaveformValueReader:
         assert result is None
 
     def test_get_value_returns_none_when_value_absent_at_time(self):
-        # pywellen's value_at returns None before a signal's first change.
         reader = self._make_reader()
         reader._waveform = _FakeWaveform({"tb_top.clk": _FakeVar(None)})
         assert reader.get_value("tb_top.clk", 0) is None
 
     def test_get_value_logs_once_on_api_break(self):
-        # A non-KeyError pywellen error (an API/version break) must surface
-        # loudly — logged once at ERROR — not silently blank the annotation.
+        # A non-KeyError pywellen error is logged at ERROR, not silently blanked.
         class _BrokenVar:
             @property
             def signal(self):
@@ -403,7 +354,7 @@ class TestWaveformValueReader:
         ):
             assert reader.get_value("tb_top.clk", 100) is None
             assert reader.get_value("tb_top.rst", 200) is None
-        # Exactly one ERROR log despite two failing queries.
+        # One ERROR log for two failing queries.
         assert len(logged) == 1
         assert logged[0][1] == logging.ERROR
         assert logged[0][2] == "wave.value_reader.api_error"
@@ -413,18 +364,12 @@ class TestWaveformValueReader:
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         reader = WaveformValueReader("/nonexistent/dump.fst")
-        # pywellen raises when the file does not exist; get_value must catch it
         result = reader.get_value("tb_top.clk", 1000)
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# SurferWcpListener._emit_value: value annotation console output
-# ---------------------------------------------------------------------------
-
-
 class TestWcpValueEmission:
-    """Unit-test _emit_value directly — no network, no threads."""
+    """``_emit_value`` called directly, without network or threads."""
 
     def _make_listener(self, value_reader=None):
         from rtl_buddy.tools.surfer_wcp import (
@@ -492,11 +437,6 @@ class TestWcpValueEmission:
         assert emitted == []
 
 
-# ---------------------------------------------------------------------------
-# _instance_name helper
-# ---------------------------------------------------------------------------
-
-
 class TestInstanceName:
     def test_three_component_path_returns_middle(self):
         from rtl_buddy.tools.surfer_wcp import _instance_name
@@ -517,11 +457,6 @@ class TestInstanceName:
         from rtl_buddy.tools.surfer_wcp import _instance_name
 
         assert _instance_name("tb_top.i_dut.i_sub.rst_n") == "i_sub"
-
-
-# ---------------------------------------------------------------------------
-# ScopeAnnotationCache
-# ---------------------------------------------------------------------------
 
 
 class TestScopeAnnotationCache:
@@ -546,7 +481,6 @@ class TestScopeAnnotationCache:
         cache = ScopeAnnotationCache("tb_top.i_dut", signals, [str(sv)])
         assert "tb_top.i_dut.a" in cache.path_map
         assert "tb_top.i_dut.b" in cache.path_map
-        # Both must point to the same file and line
         assert cache.path_map["tb_top.i_dut.a"] == cache.path_map["tb_top.i_dut.b"]
 
     def test_signal_not_found_in_any_file_not_in_path_map(self, tmp_path):
@@ -565,11 +499,6 @@ class TestScopeAnnotationCache:
         sv.write_text("module foo;\n  logic clk;\nendmodule\n")
         cache = ScopeAnnotationCache("tb_top.i_dut", [], [str(sv)])
         assert cache.path_map == {}
-
-
-# ---------------------------------------------------------------------------
-# WaveformValueReader.get_values_bulk
-# ---------------------------------------------------------------------------
 
 
 class TestWaveformValueReaderBulk:
@@ -609,11 +538,6 @@ class TestWaveformValueReaderBulk:
         assert result == {}
 
 
-# ---------------------------------------------------------------------------
-# WaveformValueReader.get_scope_signals
-# ---------------------------------------------------------------------------
-
-
 class TestWaveformValueReaderScopeSignals:
     def test_returns_empty_list_on_load_failure(self):
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
@@ -640,7 +564,7 @@ class TestWaveformValueReaderScopeSignals:
         ]
 
     def test_returns_empty_when_path_resolves_to_var(self):
-        # A path resolving to a Var (no vars()) must yield [], not raise.
+        # A path that resolves to a Var yields [].
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         reader = WaveformValueReader("/fake/dump.fst")
@@ -655,16 +579,7 @@ class TestWaveformValueReaderScopeSignals:
         assert reader.get_scope_signals("tb_top.nope") == []
 
 
-# ---------------------------------------------------------------------------
-# WaveformValueReader against a real trace
-#
-# The fakes above pin the reader's own branching; this pins the assumptions
-# those fakes encode against the pywellen that is actually installed. pywellen
-# 0.25.0 rewrote this surface and the reader's `except` blocks turned that into
-# blank annotations with nothing in the log (#263), so the contract — KeyError
-# for a miss, None before the first change, plain values otherwise — is worth
-# holding to a real waveform.
-# ---------------------------------------------------------------------------
+# WaveformValueReader against a real trace: checks the fakes' assumptions against the installed pywellen
 
 
 _READER_VCD = """\
@@ -699,7 +614,6 @@ class TestWaveformValueReaderRealTrace:
         return WaveformValueReader(str(vcd))
 
     def test_get_value_at_several_times(self, reader):
-        # At a change, between changes (holds), and after the last one.
         assert reader.get_value("tb_top.clk", 0) == "0"
         assert reader.get_value("tb_top.clk", 10) == "1"
         assert reader.get_value("tb_top.clk", 15) == "1"
@@ -707,19 +621,19 @@ class TestWaveformValueReaderRealTrace:
         assert reader.get_value("tb_top.i_dut.cnt", 10) == "2"
 
     def test_get_value_before_first_change_is_none(self, reader):
-        # rst has no value until t=10; a blank annotation is the right answer.
+        # rst has no value until t=10.
         assert reader.get_value("tb_top.i_dut.rst", 0) is None
         assert reader.get_value("tb_top.i_dut.rst", 10) == "1"
 
     def test_negative_timestamp_is_a_quiet_none(self, reader):
-        """pywellen raises OverflowError on a negative time; not an API break."""
+        """A negative time raises OverflowError inside pywellen and is not logged as an API break."""
         with patch("rtl_buddy.tools.surfer_wcp.log_event") as logged:
             assert reader.get_value("tb_top.i_dut.clk", -1) is None
         logged.assert_not_called()
         assert reader._api_break_logged is False
 
     def test_missing_signal_is_a_quiet_none(self, reader):
-        """A lookup miss must not log — only a real API break does (#263)."""
+        """A lookup miss is not logged."""
         with patch("rtl_buddy.tools.surfer_wcp.log_event") as logged:
             assert reader.get_value("tb_top.nope", 10) is None
         logged.assert_not_called()
@@ -730,7 +644,6 @@ class TestWaveformValueReaderRealTrace:
             ("rst", "tb_top.i_dut.rst"),
             ("cnt", "tb_top.i_dut.cnt"),
         ]
-        # A path that is a signal, not a scope, and an unknown one.
         assert reader.get_scope_signals("tb_top.clk") == []
         assert reader.get_scope_signals("tb_top.nope") == []
 
@@ -741,13 +654,8 @@ class TestWaveformValueReaderRealTrace:
         assert result == {"tb_top.clk": "1", "tb_top.i_dut.cnt": "2"}
 
 
-# ---------------------------------------------------------------------------
-# _push_scope_values same-line grouping
-# ---------------------------------------------------------------------------
-
-
 class TestPushScopeValuesSameLineGrouping:
-    """Unit-test the same-line grouping logic in _push_scope_values."""
+    """``_push_scope_values`` merges signals on the same source line into one annotation."""
 
     def _make_listener(self, scope_cache, value_reader):
         from rtl_buddy.tools.surfer_wcp import (
@@ -772,7 +680,6 @@ class TestPushScopeValuesSameLineGrouping:
     def test_two_signals_on_same_line_combined_into_one_annotation(self):
         from rtl_buddy.tools.surfer_wcp import ScopeAnnotationCache, EditorLauncher
 
-        # Build a mock scope cache whose items() returns two signals at the same line
         fake_filepath = "/proj/foo.sv"
         fake_lineno = 5
         mock_cache = MagicMock(spec=ScopeAnnotationCache)
@@ -782,7 +689,6 @@ class TestPushScopeValuesSameLineGrouping:
             ("tb_top.i_dut.b", fake_filepath, fake_lineno),
         ]
 
-        # Value reader returns both values
         mock_reader = MagicMock()
         mock_reader.get_values_bulk.return_value = {
             "tb_top.i_dut.a": "1'b0",
@@ -809,19 +715,12 @@ class TestPushScopeValuesSameLineGrouping:
             ):
                 listener._push_scope_values(1000)
 
-        # Both signals should be collapsed into a single annotation entry
         assert len(captured_annotations) == 1
         ann_lineno, ann_display, ann_filepath = captured_annotations[0]
         assert ann_lineno == fake_lineno
         assert ann_filepath == fake_filepath
-        # Combined display must mention both signal names
         assert "a=" in ann_display
         assert "b=" in ann_display
-
-
-# ---------------------------------------------------------------------------
-# WaveLauncher._check_nvim_plugin
-# ---------------------------------------------------------------------------
 
 
 class TestWaveLauncherCheckNvimPlugin:
@@ -838,7 +737,7 @@ class TestWaveLauncherCheckNvimPlugin:
         return launcher
 
     def _warnings(self, launcher):
-        """Run the check, capturing WARNING-level log_event calls."""
+        """Run the check and capture WARNING-level ``log_event`` calls."""
         log_calls = []
         with patch(
             "rtl_buddy.tools.wave_launcher.log_event",
@@ -867,17 +766,12 @@ class TestWaveLauncherCheckNvimPlugin:
 
     def test_no_warning_when_editor_sock_empty(self):
         surfer_cfg = _make_surfer_cfg(
-            editor_sock="",  # no sock configured — check returns before is_installed
+            editor_sock="",  # no socket: the check returns before is_installed
             editor_cmd="nvim +%l %f",
         )
         launcher = self._make_launcher(surfer_cfg)
         with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=False):
             assert len(self._warnings(launcher)) == 0
-
-
-# ---------------------------------------------------------------------------
-# EditorLauncher._nvim_exec_lua
-# ---------------------------------------------------------------------------
 
 
 class TestEditorLauncherNvimExecLua:
@@ -899,7 +793,6 @@ class TestEditorLauncherNvimExecLua:
         with patch("subprocess.Popen") as mock_popen:
             EditorLauncher._nvim_exec_lua("/tmp/nvim.sock", lua)
         cmd = mock_popen.call_args[0][0]
-        # The --remote-expr argument should reference nvim_exec2
         expr_idx = cmd.index("--remote-expr")
         expr_val = cmd[expr_idx + 1]
         assert "nvim_exec2" in expr_val
@@ -913,13 +806,7 @@ class TestEditorLauncherNvimExecLua:
         cmd = mock_popen.call_args[0][0]
         expr_idx = cmd.index("--remote-expr")
         expr_val = cmd[expr_idx + 1]
-        # The double-quote must be escaped in the Vimscript string context
         assert '\\"' in expr_val
-
-
-# ---------------------------------------------------------------------------
-# WaveformValueReader.check(): fail-loud trace + pywellen surface validation
-# ---------------------------------------------------------------------------
 
 
 class TestWaveformValueReaderCheck:
@@ -934,16 +821,14 @@ class TestWaveformValueReaderCheck:
     def test_pywellen_without_random_access_api_raises_fatal(
         self, tmp_path, monkeypatch
     ):
-        """The message must name the installed version and the supported
-        range — an AttributeError traceback leaves the user nowhere (#263)."""
+        """The error names the installed pywellen version and the supported range."""
         from rtl_buddy.errors import FatalRtlBuddyError
         from rtl_buddy.tools import pywellen_compat
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         fst = tmp_path / "dump.fst"
         fst.touch()
-        # A Waveform lacking the >=0.25 random-access surface (a stale <0.25
-        # pin, or a future incompatible rewrite).
+        # A Waveform without the >=0.25 random-access surface.
         fake_pywellen = SimpleNamespace(Waveform=type("Waveform", (), {}))
         monkeypatch.setattr(pywellen_compat, "pywellen_version", lambda: "0.24.2")
         reader = WaveformValueReader(str(fst))
@@ -957,18 +842,12 @@ class TestWaveformValueReaderCheck:
         assert "rb wave" in message
 
     def test_passes_with_the_installed_pywellen(self, tmp_path):
-        """No fake here: the guard's table has to agree with the pywellen
-        that is actually resolved, which is the whole point of it."""
+        """The compatibility table accepts the pywellen that is actually installed."""
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         fst = tmp_path / "dump.fst"
         fst.touch()
-        WaveformValueReader(str(fst)).check()  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# WaveLauncher: fail-loud preflight before Surfer starts (#263)
-# ---------------------------------------------------------------------------
+        WaveformValueReader(str(fst)).check()
 
 
 class TestWaveLauncherValueReaderPreflight:
@@ -992,11 +871,6 @@ class TestWaveLauncherValueReaderPreflight:
             with pytest.raises(FatalRtlBuddyError, match="not found"):
                 launcher.launch()
         popen.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# SurferWcpListener.run: graceful teardown on FatalRtlBuddyError (#263)
-# ---------------------------------------------------------------------------
 
 
 class TestListenerFatalErrorTeardown:
@@ -1025,20 +899,17 @@ class TestListenerFatalErrorTeardown:
             "_handle_connection",
             side_effect=FatalRtlBuddyError("could not open waveform trace"),
         ):
-            listener.run()  # must return cleanly, not raise
+            listener.run()
 
         assert listener._stop.is_set()
         fake_conn.close.assert_called()
 
 
 class TestWcpReplyWaiters:
-    """Correlation of WCP response/error frames to pending reply waiters.
+    """WCP response and error frames resolve the matching waiters of a real ``SurferWcpListener``.
 
-    These exercise the real SurferWcpListener waiter subsystem (the
-    wave_hub_bridge tests use a fake listener), covering the genuine
-    success/error reporting path: a response resolves by command name, an
-    error resolves the first error-accepting waiter, and the back-compat
-    await_response ignores errors.
+    A response resolves by command name, an error resolves the first error-accepting waiter,
+    and ``await_response`` ignores errors.
     """
 
     def _make_listener(self):
@@ -1075,7 +946,6 @@ class TestWcpReplyWaiters:
         t, box = self._await_in_thread(
             lambda: listener.await_reply({"ack"}, timeout=2.0)
         )
-        # waiter is registered; dispatch the response
         deadline = _time.monotonic() + 1.0
         while _time.monotonic() < deadline and not listener._waiters:
             _time.sleep(0.01)
@@ -1102,8 +972,7 @@ class TestWcpReplyWaiters:
         import time as _time
 
         listener = self._make_listener()
-        # Two waiters: one for get_item_list, one for ack. A get_item_list
-        # response must wake only the matching waiter.
+        # A get_item_list response wakes only the get_item_list waiter.
         t1, box1 = self._await_in_thread(
             lambda: listener.await_reply({"get_item_list"}, timeout=2.0)
         )
@@ -1117,7 +986,6 @@ class TestWcpReplyWaiters:
         listener._dispatch_response(list_frame)
         t1.join(2.0)
         assert box1["result"] == ("response", list_frame)
-        # The ack waiter is still pending.
         assert len(listener._waiters) == 1
         ack_frame = {"type": "response", "command": "ack"}
         listener._dispatch_response(ack_frame)
@@ -1125,14 +993,11 @@ class TestWcpReplyWaiters:
         assert box2["result"] == ("response", ack_frame)
 
     def test_await_response_ignores_errors(self):
-        """Back-compat await_response (accept_error=False) must not be
-        resolved by an error frame — it times out instead, so the
-        cursor-driven query path is unchanged."""
+        """``await_response`` (``accept_error=False``) is not resolved by an error frame; it times out."""
         listener = self._make_listener()
         t, box = self._await_in_thread(
             lambda: listener.await_response("query_variable_values", timeout=0.3)
         )
-        # Dispatch an error; the response waiter should NOT pick it up.
         listener._dispatch_error({"type": "error", "error": "x", "message": "y"})
         t.join(2.0)
         assert box["result"] is None
