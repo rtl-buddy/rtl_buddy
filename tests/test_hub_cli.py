@@ -1,9 +1,5 @@
-"""CLI smoke tests for ``rb hub`` subcommands.
-
-These exercise option parsing, exit codes, and the read-side of the
-discovery + config layers. The server loop itself lands in PR 2 of
-rtl-buddy/rtl_buddy#115 and is exercised separately.
-"""
+"""CLI smoke tests for ``rb hub`` subcommands: option parsing, exit codes and the
+discovery and config layers."""
 
 from __future__ import annotations
 
@@ -24,12 +20,7 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A tmp dir with the minimum project markers: a ``.git`` directory.
-
-    The hub CLI uses ``discover_project_root()`` which accepts either
-    ``root_config.yaml`` or ``.git``; we use ``.git`` to keep the
-    fixture self-contained.
-    """
+    """A tmp dir with a ``.git`` directory as the minimum project marker."""
 
     (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -100,7 +91,7 @@ def test_status_running_hub(runner: CliRunner, project_root: Path):
 
 
 def test_status_stale_record(runner: CliRunner, project_root: Path):
-    # Use a pid that is virtually guaranteed to be dead.
+    # A pid that is virtually guaranteed to be dead.
     cfg_dir = project_root / ".rtl-buddy"
     cfg_dir.mkdir()
     (cfg_dir / "hub.json").write_text(
@@ -137,12 +128,10 @@ def test_stop_clears_stale_record(runner: CliRunner, project_root: Path):
 
 
 def test_start_runs_preflight_only_when_blocked(runner: CliRunner, project_root: Path):
-    """A live hub already registered must block start without entering the loop.
+    """A live hub already registered blocks start before the serve loop.
 
-    Writing a record for this process's own PID is the cheap way to
-    trip the `HubAlreadyRunningError` path — it short-circuits before
-    `loop.serve` is reached, so the test doesn't need to actually run
-    the asyncio loop in the CliRunner.
+    A record for this process's own PID trips `HubAlreadyRunningError` without
+    running the asyncio loop.
     """
 
     discovery.write_record(
@@ -158,9 +147,7 @@ def test_start_runs_preflight_only_when_blocked(runner: CliRunner, project_root:
 
 
 def test_start_model_requires_serve_viewer(runner: CliRunner, project_root: Path):
-    """``--model`` without ``--serve-viewer`` is a configuration error
-    — the generated view.json is only served by the SPA HTTP layer,
-    so producing it without ``--serve-viewer`` would be silent waste."""
+    """``--model`` without ``--serve-viewer`` is a configuration error."""
     result = runner.invoke(hub_app, ["start", "--model", "demo"])
     assert result.exit_code != 0
     assert "requires --serve-viewer" in str(result.exception)
@@ -169,11 +156,9 @@ def test_start_model_requires_serve_viewer(runner: CliRunner, project_root: Path
 def test_start_models_file_without_model_warns(
     runner: CliRunner, project_root: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``--models-file`` is only meaningful as a disambiguator for
-    ``--model``. Used alone it's almost certainly a mistake."""
-    # Use a live-record block so cmd_start exits before reaching
-    # serve(); we just want to observe the warning emitted by the
-    # preamble.
+    """``--models-file`` without ``--model`` warns."""
+    # A live-record block makes cmd_start exit before serve(), leaving the preamble
+    # warning.
     discovery.write_record(
         project_root,
         pid=os.getpid(),
@@ -191,10 +176,8 @@ def test_start_model_resolves_and_generates_view_json(
     project_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Happy path: discovery finds the models.yaml, the (mocked)
-    view-builder writes view.json at the cache path, and serve() is
-    invoked with that override. We block at serve() so we don't have
-    to actually run the asyncio loop in CliRunner."""
+    """Start resolves the model, writes view.json at the cache path and calls serve()
+    with that override."""
     (project_root / "models.yaml").write_text(
         "rtl-buddy-filetype: model_config\nmodels:\n  - name: demo\n    filelist: []\n"
     )

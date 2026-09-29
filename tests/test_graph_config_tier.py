@@ -1,26 +1,9 @@
-"""Tests for #376 — the config tier of the design knowledge graph.
+"""Tests for the config tier of the design knowledge graph.
 
-The extractor reads ``specs.yaml`` / ``models.yaml`` / ``tests.yaml``
-through the existing loaders and emits NetworkX node-link JSON. These
-tests pin the contract that the design tier (rtl-buddy-view#126) and the
-merge step (#377) rely on: node ids, edge types, and the ``module:<name>``
-stitch point.
-
-Fixture (``tests/fixtures/graph_config_tier/``):
-  spec/blk_a/specs.yaml   -- block "blk_a": 2 docs (one missing), 3 cov items
-  spec/blk_a/README.md    -- the doc that exists
-  spec/blk_a/blk_a_model.py  -- golden model, referenced from verif
-  spec/blk_a/_helper.py   -- private, must not become a node
-  spec/blk_b/specs.yaml   -- block "blk_b", re-declares SHARED-COV
-  design/blk_a/models.yaml -- model "blk_a", spec: -> spec/blk_a
-  design/blk_b/models.yaml -- model "blk_b", no spec: back-pointer
-  verif/blk_a/tests.yaml  -- 3 testbenches (one unused), 2 tests
-  verif/empty_suite/tests.yaml -- declares a testbench, has no tests
-  regression.yaml         -- sim flow; claims verif/blk_a only
-  synth_regression.yaml   -- synth flow -> impl/blk_a/synth.yaml
-  cdc_regression.yaml     -- cdc flow   -> impl/blk_a/cdc.yaml (same dir)
-  fpv_regression.yaml     -- fpv flow   -> fpv/blk_a/fpv.yaml
-  (no fpga_regression.yaml -- a flow the project does not run)
+The extractor reads ``specs.yaml`` / ``models.yaml`` / ``tests.yaml`` through the
+existing loaders and emits NetworkX node-link JSON. The tests pin the node ids,
+edge types and ``module:<name>`` stitch point that the design tier and the merge
+step rely on, using ``tests/fixtures/graph_config_tier/``.
 """
 
 from __future__ import annotations
@@ -65,9 +48,7 @@ def _links_of_type(graph: dict, link_type: str) -> set[tuple[str, str]]:
     }
 
 
-# ---------------------------------------------------------------------------
 # Envelope
-# ---------------------------------------------------------------------------
 
 
 def test_envelope_is_node_link_json_tagged_config_tier(graph):
@@ -91,8 +72,7 @@ def test_every_node_carries_id_type_label_and_tier(graph):
 
 
 def test_config_tier_links_are_all_extracted(graph):
-    # Nothing here is guessed — INFERRED/AMBIGUOUS belong to the binding
-    # tier's dut.<signal> scan (#378), not to config readback.
+    # Nothing is guessed: INFERRED/AMBIGUOUS belong to the binding tier.
     assert {link["confidence"] for link in graph["links"]} == {"EXTRACTED"}
 
 
@@ -103,17 +83,15 @@ def test_no_volatile_data_leaks_into_the_graph(graph):
         assert token not in blob, f"volatile key {token!r} leaked into graph.json"
 
 
-# ---------------------------------------------------------------------------
 # Nodes
-# ---------------------------------------------------------------------------
 
 
 def test_suite_test_and_testbench_node_ids(graph):
     assert set(_nodes_by_type(graph, "suite")) == {
         "suite:verif/blk_a",
         "suite:verif/empty_suite",
-        # The non-simulation flows' suites: no `verif/` walk reaches
-        # these, they come from the repo-level regression files.
+        # Non-simulation suites come from the repo-level regression files, not a
+        # `verif/` walk.
         "suite:impl/blk_a",
         "suite:fpv/blk_a",
     }
@@ -124,8 +102,7 @@ def test_suite_test_and_testbench_node_ids(graph):
         "test:impl/blk_a#blk_a_lint",
         "test:fpv/blk_a#blk_a_safety",
     }
-    # tb_unused is declared but referenced by no test — still a node, or a
-    # dead testbench would be invisible to the graph.
+    # tb_unused is declared but referenced by no test; it is still a node.
     assert set(_nodes_by_type(graph, "testbench")) == {
         "tb:verif/blk_a#tb_hdl",
         "tb:verif/blk_a#tb_cocotb",
@@ -142,8 +119,7 @@ def test_test_node_carries_reglvl_and_cocotb_module(graph):
     assert "xfail" not in basic
 
     cocotb = tests["test:verif/blk_a#t_cocotb"]
-    # The raw per-builder mapping is kept: resolving it needs a builder,
-    # which is a run-time choice with no place in a static graph.
+    # The per-builder mapping is kept raw; resolving it needs a run-time builder.
     assert cocotb["reglvl"] == {"default": 100, "verilator": 0}
     assert cocotb["cocotb_modules"] == ["cocotb_blk_a"]
     assert cocotb["xfail"] is True
@@ -183,24 +159,18 @@ def test_spec_doc_nodes_record_whether_the_file_exists(graph):
 
 def test_golden_model_discovered_by_convention_with_referencing_files(graph):
     goldens = _nodes_by_type(graph, "golden_model")
-    # _helper.py is private plumbing, not a model of the block.
+    # _helper.py is private, not a model of the block.
     assert set(goldens) == {"golden:spec/blk_a/blk_a_model.py"}
     node = goldens["golden:spec/blk_a/blk_a_model.py"]
     assert node["label"] == "blk_a_model"
-    # Scan is textual across verif sources, so both the cocotb module and
-    # the test's `desc:` mention of the file count as references.
+    # The scan is textual, so a test's `desc:` mention counts as a reference.
     assert node["referenced_by"] == [
         "verif/blk_a/cocotb_blk_a.py",
         "verif/blk_a/tests.yaml",
     ]
 
 
-# ---------------------------------------------------------------------------
 # Flow provenance
-#
-# The repo-level regression files are the only place that says which flow
-# owns a suite. Everything below is about that stamp reaching the nodes.
-# ---------------------------------------------------------------------------
 
 
 def _flows(graph: dict, node_type: str) -> dict[str, object]:
@@ -213,11 +183,10 @@ def _flows(graph: dict, node_type: str) -> dict[str, object]:
 def test_suites_are_stamped_with_the_flow_that_runs_them(graph):
     assert _flows(graph, "suite") == {
         "suite:verif/blk_a": "sim",
-        # Claimed by no regression file at all. A tests.yaml nobody has
-        # wired up yet is still a simulation suite.
+        # A tests.yaml no regression file claims is a simulation suite.
         "suite:verif/empty_suite": "sim",
         "suite:fpv/blk_a": "fpv",
-        # One directory, two flows -> a list, in FLOW_SOURCES order.
+        # One directory, two flows: a list in FLOW_SOURCES order.
         "suite:impl/blk_a": ["synth", "cdc"],
     }
 
@@ -229,9 +198,7 @@ def test_tests_and_testbenches_inherit_their_suites_flow(graph):
         "tb:verif/blk_a#tb_unused": "sim",
         "tb:verif/empty_suite#tb_orphan": "sim",
     }
-    # A run in a two-flow directory is stamped with the flow of the file
-    # it was declared in, not with its suite's list: `blk_a_lint` is a CDC
-    # analysis whatever else shares its directory.
+    # A run is stamped with the flow of the file that declared it, not its suite's list.
     assert _flows(graph, "test") == {
         "test:verif/blk_a#t_basic": "sim",
         "test:verif/blk_a#t_cocotb": "sim",
@@ -246,17 +213,13 @@ def test_flow_runs_carry_their_tool_reglvl_and_top(graph):
     synth = tests["test:impl/blk_a#blk_a_generic"]
     assert (synth["tool"], synth["reglvl"], synth["toplevel"]) == ("yosys", 0, "blk_a")
     assert tests["test:fpv/blk_a#blk_a_safety"]["tool"] == "sby"
-    # `reglvl:` is absent from the cdc entry and stays absent — the graph
-    # does not invent a default a tool would have to resolve anyway.
+    # `reglvl:` is absent from the cdc entry and stays absent.
     assert "reglvl" not in tests["test:impl/blk_a#blk_a_lint"]
 
 
 def test_an_fpv_top_that_overrides_the_model_is_where_targets_lands(tmp_path):
-    """`top:` names the module the run elaborates, `model:` the DUT.
-
-    A formal verification often tops at a wrapper that binds the checker
-    alongside the DUT, and it is that wrapper the hierarchy is rooted at.
-    """
+    """`top:` names the module an fpv run elaborates and `model:` the DUT, so `targets`
+    lands on the top."""
 
     design = tmp_path / "design" / "blk"
     design.mkdir(parents=True)
@@ -279,19 +242,15 @@ def test_an_fpv_top_that_overrides_the_model_is_where_targets_lands(tmp_path):
     graph = build_config_tier(tmp_path)
     assert _nodes_by_type(graph, "test")["test:fpv/blk#safety"]["toplevel"] == "blk_fv"
     assert ("test:fpv/blk#safety", "module:blk_fv") in _links_of_type(graph, "targets")
-    # The model still stitches to its own module — the two are different
-    # design-tier nodes and the run is attached to both, through two
-    # different verbs.  A `maps_to` never comes from a run.
+    # The model still stitches to its own module; a run never emits `maps_to`.
     assert ("model:design/blk/models.yaml#blk", "module:blk") in _links_of_type(
         graph, "maps_to"
     )
 
 
 def test_an_fpv_run_with_covers_reaches_the_spec_tier(tmp_path):
-    """`covers:` on an fpv run emits the same run -> coverage-item edge a
-    simulation test gets (rtl-buddy/rtl_buddy#385) — the missing hop that
-    kept formal runs from ever reaching a spec block.
-    """
+    """`covers:` on an fpv run emits the same run -> coverage-item edge as a simulation
+    test."""
 
     spec = tmp_path / "spec" / "blk"
     spec.mkdir(parents=True)
@@ -322,28 +281,22 @@ def test_an_fpv_run_with_covers_reaches_the_spec_tier(tmp_path):
     graph = build_config_tier(tmp_path)
     covers = _links_of_type(graph, "covers")
     assert ("test:fpv/blk#safety", "covitem:blk#BLK-SAFE-1") in covers
-    # An id no block declares gets no edge — same rule as tests.yaml.
+    # An id no block declares gets no edge.
     assert not [t for _, t in covers if t.endswith("#GHOST-COV")]
-    # The chain to the spec block is the block's own `declares`, so
-    # `rb graph path` walks run -> item -> block without a new verb.
+    # `rb graph path` walks run -> item -> block through the block's `declares`.
     assert ("spec:blk", "covitem:blk#BLK-SAFE-1") in _links_of_type(graph, "declares")
 
 
 def test_cocotb_is_stamped_on_the_test_and_its_testbench(graph):
-    """A flat boolean, on both node types.
-
-    ``kind: cocotb`` already says it on a testbench and ``cocotb_modules``
-    implies it on a test, but a consumer bucketing nodes should not have
-    to know which type spells it which way.
-    """
+    """``cocotb`` is a flat boolean on both the test and its testbench."""
     cocotb = {n["id"] for n in graph["nodes"] if n.get("cocotb")}
     assert cocotb == {"test:verif/blk_a#t_cocotb", "tb:verif/blk_a#tb_cocotb"}
-    # Absent rather than false, so the attribute set stays minimal.
+    # Absent rather than false.
     assert "cocotb" not in _nodes_by_type(graph, "test")["test:verif/blk_a#t_basic"]
 
 
 def test_a_flow_with_no_regression_file_contributes_nothing(graph):
-    """There is no ``fpga_regression.yaml`` in the fixture."""
+    """A flow with no regression file contributes nothing."""
 
     assert not [n for n in graph["nodes"] if n.get("flow") == "fpga"]
 
@@ -358,7 +311,7 @@ def test_an_unloadable_regression_file_is_reported_not_raised(tmp_path):
 
 
 def test_flow_stamp_changes_the_input_hashes(tmp_path):
-    """The fingerprint has to see a suite being wired into a flow."""
+    """Wiring a suite into a flow changes the input hashes."""
 
     verif = tmp_path / "verif" / "blk"
     verif.mkdir(parents=True)
@@ -383,15 +336,7 @@ def test_flow_stamp_changes_the_input_hashes(tmp_path):
     assert "regression.yaml" in after_inputs
 
 
-# ---------------------------------------------------------------------------
-# cfg-rtl-reg manifest paths (#389)
-#
-# A project keeping a flow's manifest away from the root declares it under
-# `cfg-rtl-reg` in root_config.yaml. The graph honours those paths with the
-# precedence every `rb <flow>-regression` command applies: the root
-# filename first, the configured path as the fallback — no private,
-# stricter discovery rule.
-# ---------------------------------------------------------------------------
+# cfg-rtl-reg manifest paths
 
 
 def _write_non_root_cdc_project(tmp_path: Path) -> None:
@@ -421,8 +366,8 @@ def _root_config_with(reg_block: str) -> str:
 
 
 def test_a_configured_manifest_away_from_the_root_gains_the_flow_nodes(tmp_path):
-    """Acceptance for #389: `cdc_regression.yaml` under `lint/cdc/`,
-    declared via `cfg-rtl-reg.cdc-reg-cfg-path`, is no longer invisible."""
+    """A `cdc_regression.yaml` under `lint/cdc/` declared via `cfg-rtl-reg.cdc-reg-cfg-
+    path` gains the flow nodes."""
 
     _write_non_root_cdc_project(tmp_path)
     (tmp_path / "root_config.yaml").write_text(
@@ -442,9 +387,7 @@ def test_a_configured_manifest_away_from_the_root_gains_the_flow_nodes(tmp_path)
 
 
 def test_an_undeclared_non_root_manifest_stays_invisible(tmp_path):
-    """No root file, no cfg-rtl-reg key: the filename convention cannot
-    see lint/cdc/, and the graph must not go hunting beyond what
-    `rb cdc-regression` would find."""
+    """Without a root file or cfg-rtl-reg key, `lint/cdc/` stays invisible."""
 
     _write_non_root_cdc_project(tmp_path)
     graph = build_config_tier(tmp_path)
@@ -452,8 +395,7 @@ def test_an_undeclared_non_root_manifest_stays_invisible(tmp_path):
 
 
 def test_the_root_filename_wins_over_the_configured_path(tmp_path):
-    """Same precedence as the commands: the local root manifest is read
-    first, cfg-rtl-reg is the fallback — not an override."""
+    """A root manifest is read first and cfg-rtl-reg is only the fallback."""
 
     _write_non_root_cdc_project(tmp_path)
     (tmp_path / "cdc_regression.yaml").write_text(
@@ -467,13 +409,12 @@ def test_the_root_filename_wins_over_the_configured_path(tmp_path):
     )
 
     graph = build_config_tier(tmp_path)
-    # The root manifest claims nothing, and it won: lint/cdc stays out.
+    # The root manifest claims nothing and wins: lint/cdc stays out.
     assert "suite:lint/cdc" not in _nodes_by_type(graph, "suite")
 
 
 def test_a_configured_path_pointing_nowhere_is_skipped_not_failed(tmp_path):
-    """reg-cfg-path defaults to "regression.yaml" in every template, so a
-    configured-but-absent manifest must not count as a load failure."""
+    """A configured manifest path that does not exist is skipped, not a load failure."""
 
     (tmp_path / "root_config.yaml").write_text(
         _root_config_with(
@@ -497,9 +438,8 @@ def test_a_malformed_cfg_rtl_reg_block_degrades_to_the_filename_convention(
 
 
 def test_a_misspelled_cfg_rtl_reg_key_is_reported_by_name(tmp_path, caplog):
-    """Lenient-on-missing must not mean lenient-on-misspelled: `from_dict`
-    drops keys it does not know, so without this the typo reproduces the
-    exact silence #389 removes — no cdc nodes, no diagnostic."""
+    """A misspelled cfg-rtl-reg key is reported by name, since `from_dict` drops unknown
+    keys."""
 
     _write_non_root_cdc_project(tmp_path)
     (tmp_path / "root_config.yaml").write_text(
@@ -511,9 +451,9 @@ def test_a_misspelled_cfg_rtl_reg_key_is_reported_by_name(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         result = extract_config_tier(tmp_path)
 
-    # Still degrades to the filename convention rather than failing...
+    # It degrades to the filename convention...
     assert "suite:lint/cdc" not in _nodes_by_type(result.graph, "suite")
-    # ...but the key is named, so the user can see why.
+    # ...but names the key.
     messages = [r.message for r in caplog.records]
     assert any(
         "unknown key(s) cdc-reg-cfg-paths" in m and "cdc-reg-cfg-path" in m
@@ -522,7 +462,7 @@ def test_a_misspelled_cfg_rtl_reg_key_is_reported_by_name(tmp_path, caplog):
 
 
 def test_the_correctly_spelled_keys_survive_an_unknown_neighbour(tmp_path):
-    """One typo should not cost a project the flows it spelled right."""
+    """Correctly spelled keys survive an unknown neighbour."""
 
     _write_non_root_cdc_project(tmp_path)
     (tmp_path / "root_config.yaml").write_text(
@@ -537,9 +477,7 @@ def test_the_correctly_spelled_keys_survive_an_unknown_neighbour(tmp_path):
 
 
 def test_configured_manifests_and_root_config_join_the_input_hashes(tmp_path):
-    """Wiring a path into cfg-rtl-reg changes what the graph discovers, so
-    `rb graph build`'s no-op fingerprint has to see both the edit to
-    root_config.yaml and the manifest it points at."""
+    """root_config.yaml and configured manifests join the input hashes."""
 
     _write_non_root_cdc_project(tmp_path)
     cfg_dir = tmp_path / "cfg"
@@ -558,17 +496,14 @@ def test_configured_manifests_and_root_config_join_the_input_hashes(tmp_path):
     paths = {e["path"] for e in result.meta["tiers"][CONFIG_TIER]["inputs"]}
     assert {
         "root_config.yaml",
-        # The sim flow goes through the same machinery: reg-cfg-path has
-        # always been how a project points `rb regression` off-root.
+        # The sim flow goes through the same reg-cfg-path machinery.
         "cfg/regression.yaml",
         "lint/cdc/cdc_regression.yaml",
         "lint/cdc/cdc.yaml",
     } <= paths
 
 
-# ---------------------------------------------------------------------------
 # Edges
-# ---------------------------------------------------------------------------
 
 
 def test_declares_edges_cover_suite_contents_and_block_coverage_items(graph):
@@ -588,8 +523,7 @@ def test_runs_on_and_exercises_edges(graph):
     assert _links_of_type(graph, "exercises") == {
         ("tb:verif/blk_a#tb_hdl", "model:design/blk_a/models.yaml#blk_a"),
         ("tb:verif/blk_a#tb_cocotb", "model:design/blk_a/models.yaml#blk_a"),
-        # A synth / cdc / fpv run has no testbench between it and the
-        # model, so the edge starts at the run itself.
+        # A synth/cdc/fpv run has no testbench, so the edge starts at the run.
         ("test:impl/blk_a#blk_a_generic", "model:design/blk_a/models.yaml#blk_a"),
         ("test:impl/blk_a#blk_a_lint", "model:design/blk_a/models.yaml#blk_a"),
         ("test:fpv/blk_a#blk_a_safety", "model:design/blk_a/models.yaml#blk_a"),
@@ -615,15 +549,15 @@ def test_covers_edges_fan_out_to_every_block_declaring_the_id(graph):
         ("test:verif/blk_a#t_basic", "covitem:blk_a#A-COV-1"),
         ("test:verif/blk_a#t_cocotb", "covitem:blk_a#A-COV-1"),
         ("test:verif/blk_a#t_cocotb", "covitem:blk_a#A-COV-2"),
-        # SHARED-COV is declared by both blocks; `rb spec check-coverage`
-        # matches on the bare id, so the graph must link both.
+        # SHARED-COV is declared by both blocks; `rb spec check-coverage` matches the
+        # bare id, so both link.
         ("test:verif/blk_a#t_cocotb", "covitem:blk_a#SHARED-COV"),
         ("test:verif/blk_a#t_cocotb", "covitem:blk_b#SHARED-COV"),
     }
 
 
 def test_covers_edges_agree_with_the_coverage_map_the_cli_uses(graph):
-    """Single source of truth check against ``rb spec check-coverage``."""
+    """Covers edges agree with ``rb spec check-coverage``."""
     suite_tests, failures = discover_suite_tests(str(_FIXTURE / "verif"))
     assert failures == []
     cov_map = build_coverage_map(suite_tests)
@@ -648,37 +582,28 @@ def test_covers_edges_agree_with_the_coverage_map_the_cli_uses(graph):
 
 
 def test_unknown_coverage_id_produces_no_edge(graph):
-    # t_basic claims GHOST-COV, which no spec block declares.
+    # t_basic claims GHOST-COV, which no block declares.
     assert not [link for link in graph["links"] if "GHOST-COV" in link["target"]]
 
 
-# ---------------------------------------------------------------------------
 # The design-tier stitch
-# ---------------------------------------------------------------------------
 
 
 def test_the_three_stitches_target_design_tier_module_ids(graph):
-    """One relation, three source kinds, three edge types.
-
-    Every one of these points config -> design at a `module:<name>` id;
-    what the type adds is *which kind of config thing said so*, which is
-    the question consumers were otherwise re-deriving from the source
-    id's prefix.
-    """
+    """Models, testbenches and non-simulation runs each stitch to a design-tier
+    `module:<name>` id with their own edge type."""
     # A model declares a module.
     assert _links_of_type(graph, "maps_to") == {
         ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
         ("model:design/blk_b/models.yaml#blk_b", "module:blk_b"),
     }
-    # A testbench with a declared `toplevel:` elaborates from one —
-    # `rb graph build` exports that hierarchy rooted at the testbench,
-    # and this is where the metadata node meets it.
+    # A testbench with a declared `toplevel:` elaborates from one.
     assert _links_of_type(graph, "elaborates_as") == {
         ("tb:verif/blk_a#tb_cocotb", "module:blk_a"),
     }
-    # A non-simulation run runs against one. For synth/cdc it is the
-    # model's own name; for fpv it may be a wrapper the checker binds
-    # into (see test_an_fpv_top_that_overrides_the_model_is_where_targets_lands).
+    # A non-simulation run runs against one: the model's name for synth/cdc, possibly a
+    # wrapper for fpv (see
+    # test_an_fpv_top_that_overrides_the_model_is_where_targets_lands).
     assert _links_of_type(graph, "targets") == {
         ("test:impl/blk_a#blk_a_generic", "module:blk_a"),
         ("test:impl/blk_a#blk_a_lint", "module:blk_a"),
@@ -687,12 +612,8 @@ def test_the_three_stitches_target_design_tier_module_ids(graph):
 
 
 def test_a_testbench_without_a_toplevel_gets_no_elaborates_as(graph):
-    """Guessing the top from the testbench name would be inference.
-
-    The config tier is pure config readback — every link it emits is
-    EXTRACTED. `rb graph build` adds the edge for these from the top the
-    viewer really elaborated.
-    """
+    """A testbench without a `toplevel:` gets no `elaborates_as`; the config tier never
+    infers."""
     declared = {
         node["id"]
         for node in graph["nodes"]
@@ -707,13 +628,13 @@ def test_a_testbench_without_a_toplevel_gets_no_elaborates_as(graph):
 
 
 def test_module_nodes_are_not_created_by_the_config_tier(graph):
-    # `module:<name>` is the design tier's id. Emitting a stub here would
-    # collide on merge; the dangling target IS the stitch point.
+    # `module:<name>` is the design tier's id, so no stub is emitted; the dangling
+    # target is the stitch point.
     assert not [n for n in graph["nodes"] if n["id"].startswith("module:")]
 
 
 def test_cocotb_test_reaches_its_spec_block_through_tb_model_spec(graph):
-    """Acceptance criterion: a path query resolves test -> ... -> spec block."""
+    """A path query resolves test -> ... -> spec block."""
     adjacency: dict[str, set[str]] = {}
     for link in graph["links"]:
         adjacency.setdefault(link["source"], set()).add(link["target"])
@@ -740,9 +661,7 @@ def test_cocotb_test_reaches_its_spec_block_through_tb_model_spec(graph):
     ]
 
 
-# ---------------------------------------------------------------------------
 # Degenerate inputs
-# ---------------------------------------------------------------------------
 
 
 def test_missing_search_directories_yield_an_empty_but_valid_graph(tmp_path):
@@ -772,10 +691,8 @@ def test_search_directories_can_be_overridden(tmp_path):
         design_dir=tmp_path,
     )
     assert set(_nodes_by_type(graph, "spec_block")) == {"spec:blk_b"}
-    # The three search dirs govern spec/design/verif discovery. The
-    # repo-level regression files are found at the project root itself and
-    # are deliberately not overridable — they are what makes the root a
-    # project, so the non-simulation flows survive.
+    # The search dirs govern spec/design/verif discovery. The repo-level regression
+    # files are found at the project root and are not overridable.
     assert set(_nodes_by_type(graph, "test")) == {
         "test:impl/blk_a#blk_a_generic",
         "test:impl/blk_a#blk_a_lint",
@@ -783,9 +700,7 @@ def test_search_directories_can_be_overridden(tmp_path):
     }
 
 
-# ---------------------------------------------------------------------------
 # Meta and serialization
-# ---------------------------------------------------------------------------
 
 
 def test_meta_hashes_every_config_file_read(tmp_path):
@@ -799,8 +714,7 @@ def test_meta_hashes_every_config_file_read(tmp_path):
         "design/blk_b/models.yaml",
         "verif/blk_a/tests.yaml",
         "verif/empty_suite/tests.yaml",
-        # Flow provenance changes the graph, so the files that carry it
-        # have to be able to invalidate `rb graph build`'s no-op check.
+        # Flow provenance must invalidate `rb graph build`'s no-op check.
         "regression.yaml",
         "synth_regression.yaml",
         "cdc_regression.yaml",
@@ -810,8 +724,7 @@ def test_meta_hashes_every_config_file_read(tmp_path):
         "fpv/blk_a/fpv.yaml",
     }
     assert all(len(entry["sha256"]) == 64 for entry in inputs)
-    # Hashes are provenance, not graph content — they must not be baked
-    # into graph.json, where they would churn every merge.
+    # Hashes are provenance, not graph content, so they stay out of graph.json.
     assert "inputs" not in result.graph["graph"]
 
 
@@ -834,21 +747,16 @@ def test_write_helpers_round_trip_through_the_contracted_paths(tmp_path):
     assert not list(out_dir.glob("*.tmp"))
 
 
-# ---------------------------------------------------------------------------
-# Downstream consumers
-#
-# networkx is optional: nothing in rtl_buddy imports it, and the merge
-# step (#377) may run elsewhere. This guards the envelope against the
-# real reader when it happens to be installed.
-# ---------------------------------------------------------------------------
+# Downstream consumers (networkx is optional; this guards the envelope against the real
+# reader)
 
 
 def test_graph_loads_as_a_networkx_multidigraph(graph):
     nx = pytest.importorskip("networkx")
     loaded = nx.node_link_graph(graph, edges="links")
     assert loaded.is_directed() and loaded.is_multigraph()
-    # Every node we emit survives, plus the dangling design-tier module
-    # targets that node-link auto-creates — the stitch points.
+    # Every node survives, plus the dangling design-tier targets that node-link auto-
+    # creates.
     assert set(loaded.nodes) >= {n["id"] for n in graph["nodes"]}
     assert "module:blk_a" in loaded.nodes
     assert loaded.number_of_edges() == len(graph["links"])
