@@ -1,10 +1,7 @@
-"""SymbiYosys (``sby``) tool wrapper for ``rb fpv``.
+"""SymbiYosys (``sby``) wrapper for ``rb fpv``.
 
-Generates a ``fpv.sby`` config from the per-run :class:`FpvConfig`,
-shells out to ``sby -f -d <workdir>``, then reads the workdir
-``status`` file plus the process exit code to populate
-:class:`FpvResults`. Counterexample VCDs (when the proof fails) stay
-inside the engine subdirectory of the workdir for the user to inspect.
+Writes ``fpv.sby`` from the run's :class:`FpvConfig`, runs ``sby -f -d <workdir>``, and fills
+:class:`FpvResults` from the workdir ``status`` file and the exit code.
 """
 
 from __future__ import annotations
@@ -34,10 +31,7 @@ from .fpv_coi import render_chparam, render_slang_read, run_coi_analysis
 from .synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path
 
 
-# Sby's compatibility check requires a minimum yosys; we surface the
-# version we probe for the same reason `pnr_openroad.py` does — gives
-# users a clear signal when their toolchain is older than what we test
-# against.
+# Oldest sby version tested against.
 MIN_SBY_VERSION = "0.40"
 
 
@@ -47,25 +41,15 @@ _DEFINE_PREFIX = "+define+"
 _SOURCE_OPT_PREFIX = "-v "
 _FILELIST_SKIP_PREFIXES = ("-y ", "-F ", "-f ")
 
-# rtl-buddy owns `FORMAL`: both frontends are told to define it so in-RTL
-# `\`ifdef FORMAL` asserts survive preprocessing (#246). A model filelist
-# must not be able to take that away — and it would not even fail the same
-# way on both frontends (yosys's verilog frontend takes the *last* -D for a
-# name, yosys-slang takes the *first*), so a user `+define+FORMAL=...` is
-# dropped with a warning rather than silently changing what gets proved.
+# rtl-buddy owns `FORMAL`. A user `+define+FORMAL=...` is dropped with a warning because the two
+# frontends resolve duplicate -D differently (verilog: last wins, slang: first wins).
 _RESERVED_DEFINE_NAMES = ("FORMAL",)
 
 
-# Union selector for every formal-cell flavor across yosys generations:
-# modern yosys folds assert/assume/cover/live/fair into a single `$check`
-# cell (with a `FLAVOR` parameter); older yosys emits dedicated `$assert`
-# / `$assume` / `$cover` / `$live` cells. The union is non-empty iff the
-# design elaborated at least one property cell.
+# Every formal-cell flavor: modern yosys folds them into `$check`, older yosys emits `$assert` etc.
 _FORMAL_CELL_SELECTOR = "t:$assert t:$assume t:$cover t:$live t:$check"
 
-# yosys prints this when `select -assert-min 1` finds an empty selection.
-# We match on the stable leading phrase so a yosys version that reorders
-# the trailing selector text still triggers the hint.
+# Stable leading phrase of the yosys `select -assert-min 1` empty-selection message.
 _EMPTY_FORMAL_SELECTION_MARKER = "selection contains 0 elements"
 
 
@@ -87,8 +71,6 @@ class SbyFpv:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
 
-    # --- artefact paths -----------------------------------------------------
-
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "fpv.f")
 
@@ -99,7 +81,7 @@ class SbyFpv:
         return os.path.join(self.artefact_dir, "fpv.log")
 
     def _workdir_path(self) -> str:
-        # Sby creates this dir; we hand it `-f` to overwrite on rerun.
+        # `-f` makes sby overwrite the workdir on rerun.
         return os.path.join(self.artefact_dir, "sby_workdir")
 
     def _vacuity_sv_path(self) -> str:
@@ -115,14 +97,7 @@ class SbyFpv:
         return os.path.join(self.artefact_dir, "vacuity_workdir")
 
     def _resolve_plugin_path(self, plugin_path: str | None) -> str | None:
-        """Resolve a yosys plugin path against the project root.
-
-        Delegates to :func:`tools.synth_yosys.resolve_plugin_path`:
-        absolute paths pass through; relative paths are taken relative
-        to the project root (the directory containing
-        ``root_config.yaml``); unconfigured falls back to the
-        ``RTL_BUDDY_SLANG_PLUGIN`` environment variable, then ``None``.
-        """
+        """Resolve the yosys plugin path via :func:`tools.synth_yosys.resolve_plugin_path`."""
         return resolve_plugin_path(plugin_path, self.root_cfg)
 
     def _coi_script_path(self) -> str:
@@ -131,8 +106,6 @@ class SbyFpv:
     def _coi_log_path(self) -> str:
         return os.path.join(self.artefact_dir, "coi.log")
 
-    # --- helpers ------------------------------------------------------------
-
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
         vlog_fl = VlogFilelist(
@@ -140,12 +113,7 @@ class SbyFpv:
             model_cfg=self.fpv_cfg.get_model(),
             output_path=fl_path,
         )
-        # strip=False: keep the option markers (+incdir+, +define+, -v,
-        # +libext+, ...) in the emitted filelist. _parse_filelist below
-        # dispatches on exactly those prefixes to separate include dirs and
-        # defines from sources; stripping them collapses a `+incdir+<dir>`
-        # entry to a bare path, which _parse_filelist then misreads as a
-        # (non-existent) source file.
+        # strip=False keeps the +incdir+/+define+/-v markers that _parse_filelist dispatches on.
         vlog_fl.write_output(
             output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
@@ -154,28 +122,12 @@ class SbyFpv:
     def _parse_filelist(self, fl_path: str) -> tuple[list[str], list[str], list[str]]:
         """Return (source paths, include dirs, defines) from the model filelist.
 
-        Defines come back as raw ``NAME[=VALUE]`` tokens — the frontend
-        renderers turn them into `-D` flags. Three classes are dropped here
-        (each with a warning) so the proof, the vacuity pass and the COI
-        walk all see the same sanitised set, and so the two frontends
-        cannot end up proving different things:
+        Defines are raw ``NAME[=VALUE]`` tokens. These are dropped with a warning, so the proof,
+        the vacuity pass and the COI walk see the same set:
 
-        * `_RESERVED_DEFINE_NAMES` — rtl-buddy owns these (`FORMAL`).
-        * a token carrying **whitespace** (`+define+MSG=hello world`). Both
-          renderers splice the token into a yosys *script line*, which
-          yosys tokenises on whitespace, so the stray word becomes a bogus
-          argument and the failure surfaces as an unrelated `read_slang`
-          error deep in `fpv.log`. There is no quoting that survives, so
-          the entry cannot be honoured — say so at parse time, where the
-          message can name it.
-        * an **earlier** definition of a name defined more than once. This
-          is easy to reach through a `-F` chain that pulls in two vendor
-          filelists, and it is the same failure the reserved-name rule
-          exists to prevent: yosys's verilog frontend keeps the LAST `-D`
-          for a name and yosys-slang keeps the FIRST, so passing both
-          through would prove `WIDTH=16` on one frontend and `WIDTH=8` on
-          the other, silently. Last wins — filelist convention (verilator /
-          VCS) and what the verilog frontend would have done anyway.
+        * names in `_RESERVED_DEFINE_NAMES`;
+        * tokens containing whitespace, which cannot be quoted into a yosys script line;
+        * earlier definitions of a repeated name (last wins).
         """
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
         sources: list[str] = []
@@ -191,9 +143,7 @@ class SbyFpv:
                     incdirs.append(os.path.normpath(os.path.join(fl_dir, inc)))
                     continue
                 if line.startswith(_DEFINE_PREFIX):
-                    # `+define+A+B=C` is already split one-per-line by
-                    # VlogFilelist; split again so a hand-written filelist
-                    # read directly (tests, `-F` chains) behaves the same.
+                    # Split `+define+A+B=C` again for filelists read without VlogFilelist.
                     for token in line[len(_DEFINE_PREFIX) :].split("+"):
                         if not token:
                             continue
@@ -230,13 +180,9 @@ class SbyFpv:
         return sources, incdirs, self._last_definition_wins(defines)
 
     def _last_definition_wins(self, defines: list[str]) -> list[str]:
-        """Collapse repeated define NAMEs to the last one, warning on each.
+        """Keep only the last definition of each repeated define name, warning on each.
 
-        See `_parse_filelist`'s docstring: the two frontends disagree about
-        which duplicate survives, so leaving both in is the "silently proves
-        something different per frontend" failure in a new costume. Order is
-        otherwise preserved — a name keeps the position of its FIRST
-        appearance, so a filelist with no duplicates is byte-identical.
+        Order is preserved, with each name at the position of its first appearance.
         """
         latest: dict[str, str] = {}
         order: list[str] = []
@@ -276,7 +222,6 @@ class SbyFpv:
             )
             return None
         out = (res.stdout or "") + (res.stderr or "")
-        # Output looks like "sby 0.42+12 (yosys-0.51) ..."
         m = re.search(r"sby\s+(\S+)", out)
         return m.group(1) if m else None
 
@@ -294,10 +239,7 @@ class SbyFpv:
             defines=defines or [],
             mode=self.fpv_cfg.get_mode(),
             extra_property_files=[],
-            # Guard the primary proof against a vacuous PASS whenever the
-            # user listed `properties:` — those files are expected to
-            # elaborate at least one formal cell. Inline-assertion suites
-            # (`properties: []`) are not bind-based and opt out.
+            # Only bind-based `properties:` suites are guarded against a vacuous PASS.
             emit_formal_guard=bool(self.fpv_cfg.get_properties()),
         )
 
@@ -319,7 +261,6 @@ class SbyFpv:
 
         lines: list[str] = []
 
-        # [options]
         lines.append("[options]")
         lines.append(f"mode {mode}")
         lines.append(f"depth {cfg.get_depth()}")
@@ -327,15 +268,12 @@ class SbyFpv:
             lines.append(f"timeout {opts.timeout}")
         lines.append("")
 
-        # [engines]
         lines.append("[engines]")
         for engine in cfg.get_engines():
             lines.append(engine)
         lines.append("")
 
-        # [script]
-        # Order: design sources -> constraints (assumes in scope first) ->
-        # properties (asserts that depend on those assumes).
+        # Order matters: sources, then constraints (assumes), then properties (asserts).
         lines.append("[script]")
         frontend = cfg.get_frontend()
         if frontend == "slang":
@@ -347,23 +285,16 @@ class SbyFpv:
                     f"{SLANG_PLUGIN_ENV} environment variable) to point "
                     f"at the built yosys-slang shared library"
                 )
-            # `plugin -i` is idempotent within a yosys session — only
-            # emit the directive when slang is actually used so the
-            # default verilog path stays plugin-free.
+            # Emit `plugin -i` only for slang so the verilog path stays plugin-free.
             lines.append(f"plugin -i {plugin}")
-        # Verilog-frontend incdirs go through verilog_defaults; for slang they
-        # are carried on the read_slang line by render_slang_read (read_slang
-        # ignores verilog_defaults -add -I).
+        # slang ignores verilog_defaults -I; render_slang_read carries incdirs on the read_slang line.
         defines = list(defines or [])
-        # Reduced-configuration proofs (#359): the same overrides go to the
-        # proof, the vacuity pass and the COI walk, or the three would
-        # measure differently sized designs.
+        # The proof, vacuity pass and COI walk must all receive the same parameter overrides.
         params = cfg.get_param_tokens()
         if frontend != "slang":
             for inc in incdirs:
                 lines.append(f"verilog_defaults -add -I {inc}")
-            # yosys's verilog frontend takes defines the same way it takes
-            # include dirs; `read -formal` already defines FORMAL itself.
+            # `read -formal` already defines FORMAL.
             for define in defines:
                 lines.append(f"verilog_defaults -add -D{define}")
         constraints = cfg.get_constraints()
@@ -375,12 +306,8 @@ class SbyFpv:
             + list(extra_property_files)
         )
         if frontend == "slang":
-            # slang elaborates eagerly and handles SV `bind`, concurrent SVA
-            # implications, and sequence operators the native verilog frontend
-            # rejects. The whole filelist is one read_slang command (one
-            # compilation unit, incdirs, formal defines) — see render_slang_read
-            # in fpv_coi, which the COI walk shares so it parses the same design.
-            # Basenames: files are dropped into the sby workdir under [files].
+            # One read_slang command covers the whole filelist; the COI walk shares render_slang_read.
+            # Basenames: files are copied into the sby workdir under [files].
             slang_sources = [os.path.basename(s) for s in all_sources]
             lines.append(
                 render_slang_read(
@@ -389,28 +316,17 @@ class SbyFpv:
             )
         else:
             for src in all_sources:
-                # Use basename — files are dropped into the sby workdir under [files].
                 lines.append(f"read -sv -formal {os.path.basename(src)}")
-            # `chparam` between the reads and `prep`: prep runs `hierarchy`,
-            # which is when yosys derives the parametric module. (The slang
-            # frontend cannot use chparam at all — it elaborates during the
-            # read, so the module is no longer parametric here; its overrides
-            # ride on the read_slang line as `-G`.)
+            # chparam must come before `prep`; slang has no chparam and takes overrides as `-G`.
             lines.extend(render_chparam(cfg.get_top(), params))
         lines.append(f"prep -top {cfg.get_top()}")
         if emit_formal_guard:
-            # Fail loud on a vacuous proof: a compilation-unit-scope
-            # `bind` the verilog frontend cannot resolve leaves the
-            # checker module as `$abstract`, which is then removed as
-            # unused — so zero formal cells reach sby and the proof
-            # PASSes having constrained nothing (#260). Assert at least
-            # one formal cell exists, then restore the full selection so
-            # sby's downstream engine passes see the whole design.
+            # Fail on a vacuous proof: zero formal cells means an unresolved `bind` was dropped.
+            # The clear restores the full selection for sby's engine passes.
             lines.append(f"select -assert-min 1 {_FORMAL_CELL_SELECTOR}")
             lines.append("select -clear")
         lines.append("")
 
-        # [files]
         lines.append("[files]")
         for src in all_sources:
             lines.append(src)
@@ -419,8 +335,6 @@ class SbyFpv:
         with open(output_path, "w") as f:
             f.write("\n".join(lines))
         return output_path
-
-    # --- run ----------------------------------------------------------------
 
     def run(self) -> FpvResults:
         cfg = self.fpv_cfg
@@ -433,8 +347,6 @@ class SbyFpv:
                 f"no `properties:` entries are listed"
             )
 
-        # Validate that all explicit property files exist before we
-        # bother spinning up sby.
         for prop in cfg.get_properties():
             if not os.path.isfile(prop):
                 raise FatalRtlBuddyError(
@@ -451,9 +363,6 @@ class SbyFpv:
             cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
         if opts.solver_versions:
-            # Raises FatalRtlBuddyError on any mismatch so the user
-            # sees the drift before sby produces a wrong-looking
-            # PASS or timeout on a different solver version.
             from .fpv_solver_pin import check_solver_pins
 
             resolved = check_solver_pins(opts.solver_versions)
@@ -470,7 +379,6 @@ class SbyFpv:
         workdir = self._workdir_path()
         executable = self.tool_cfg.get_executable() or "sby"
 
-        # Surface the sby version once per run so the log captures it.
         version = self._probe_sby_version(executable)
         if version is not None:
             log_event(
@@ -481,9 +389,6 @@ class SbyFpv:
                 version=version,
             )
 
-        # `-f` overwrites the workdir if it already exists; `-d <path>`
-        # selects the workdir location so we keep all artefacts under
-        # `<suite>/artefacts/<run>/sby_workdir/`.
         cmd = [executable, "-f", "-d", workdir, sby_path]
 
         with task_status(f"Running FPV {cfg.get_name()}"):
@@ -505,25 +410,17 @@ class SbyFpv:
         status = self._read_status(workdir)
         per_engine = self._read_per_engine(workdir)
 
-        # Optional secondary sby pass: cover-mode reachability check for
-        # every `|->` antecedent so the user learns when a proved
-        # property is vacuously true. Only run when the primary pass
-        # *succeeded* — failure already carries actionable signal.
+        # Secondary cover pass for `|->` antecedents; only after a passing primary proof.
         vacuity = None
         if cfg.vacuity_enabled() and (
             status == "PASS" or (status is None and proc.returncode == 0)
         ):
             vacuity = self._run_vacuity(executable, sources, incdirs, defines)
 
-        # Cone-of-influence coverage: structural-only yosys walk, runs
-        # regardless of the primary verdict because the coverage signal
-        # is just as actionable on a failing run ("the assertion that
-        # caught this only sees X% of the design") as on a passing one.
+        # The COI walk runs whatever the primary verdict.
         coi = None
         if cfg.coi_enabled():
-            # The COI walk needs the same frontend the proof used —
-            # mixing verilog + slang frontends in the same yosys
-            # invocation produces inconsistent `$check` cell sets.
+            # The COI walk must use the proof frontend; mixing frontends gives inconsistent `$check` cells.
             opts_for_coi = self.tool_cfg.get_opts(
                 cfg.get_tool_overrides_for(self.tool_cfg.get_name())
             )
@@ -543,10 +440,7 @@ class SbyFpv:
                 params=cfg.get_param_tokens(),
             )
 
-        # Sby exit code conventions:
-        #   0 -> PASS, 1 -> FAIL, 2 -> UNKNOWN/timeout, other -> ERROR.
-        # We prefer the workdir `status` file when present; the exit
-        # code is the fallback signal when sby crashed before writing.
+        # Exit codes: 0 PASS, 1 FAIL, 2 UNKNOWN/timeout, other ERROR. The status file wins when present.
         if status == "PASS" or (status is None and proc.returncode == 0):
             result = FpvPassResults(
                 name=cfg.get_name(),
@@ -582,25 +476,16 @@ class SbyFpv:
             runtime_s=round(runtime_s, 2),
             desc=f"sby reported {desc_status} (see {log_path}){hint}",
             per_engine=per_engine,
-            # UNKNOWN, a solver timeout or an sby crash: the proof never
-            # reached a verdict, so an xfail marker has nothing to excuse
-            # (#594).
+            # No verdict was reached, so an xfail marker has nothing to excuse.
             fail_stage="tool",
         )
         self._merge_extras(result, vacuity=vacuity, coi=coi)
         return result
 
     def _vacuous_guard_hint(self, log_path: str, workdir: str) -> str:
-        """Return an actionable hint when the formal-cell guard tripped.
+        """Return a hint when the formal-cell guard (``select -assert-min 1``) tripped, else "".
 
-        The guard (`select -assert-min 1 ...` appended after `prep`)
-        makes yosys — and therefore sby — error out when a property set
-        elaborates zero formal cells. That is almost always a
-        compilation-unit-scope `bind` dropped by the verilog frontend
-        (#260). Scans both the user-facing sby log and the workdir
-        logfile for yosys's empty-selection assertion message; returns
-        an empty string for any other ERROR so unrelated failures keep
-        their plain description.
+        The usual cause is a compilation-unit-scope `bind` dropped by the verilog frontend.
         """
         texts: list[str] = []
         if os.path.isfile(log_path):
@@ -623,8 +508,6 @@ class SbyFpv:
             )
         return hint
 
-    # --- vacuity pass -------------------------------------------------------
-
     def _run_vacuity(
         self,
         executable: str,
@@ -632,11 +515,9 @@ class SbyFpv:
         incdirs: list[str],
         defines: list[str] | None = None,
     ) -> dict | None:
-        """Run a secondary sby cover-mode pass for `|->` antecedents.
+        """Run a secondary sby cover pass for `|->` antecedents.
 
-        Returns the structured vacuity summary (`candidates`, per-cover
-        reachability, `vacuous` count) or None when there's nothing to
-        check or sby couldn't run.
+        Returns the vacuity summary, or None if there is nothing to check or sby could not run.
         """
         cfg = self.fpv_cfg
         candidates: list[VacuityCandidate] = extract_candidates(cfg.get_properties())
@@ -649,10 +530,7 @@ class SbyFpv:
             )
             return None
 
-        # Bind the synthesized covers into the DUT so they see clk /
-        # rst_n / signal ports by name — needed for slang (which does
-        # not infer free identifiers) and harmless for the verilog
-        # frontend.
+        # Bind the covers into the DUT so they see clk/rst_n/ports by name; slang needs this.
         vacuity_sv = write_vacuity_module(
             candidates,
             self._vacuity_sv_path(),
@@ -680,8 +558,7 @@ class SbyFpv:
         self._run(cmd, log_path)
 
         log_text = Path(log_path).read_text() if os.path.isfile(log_path) else ""
-        # sby cover mode also writes per-engine output into the workdir
-        # logfile; fall back to that when the user-facing log is empty.
+        # Fall back to the workdir logfile when the user-facing log is empty.
         if not log_text:
             wd_log = os.path.join(workdir, "logfile.txt")
             if os.path.isfile(wd_log):
@@ -692,8 +569,7 @@ class SbyFpv:
         vacuous_count = 0
         for index, c in enumerate(candidates, start=1):
             cover_name = c.cover_name(index)
-            # Default to "unknown" when sby's output didn't tag this
-            # cover either way — surfaces honestly rather than guessing.
+            # Untagged covers stay "unknown" rather than being guessed.
             status: str
             if cover_name in reachable:
                 status = "reachable" if reachable[cover_name] else "unreachable"
@@ -741,32 +617,18 @@ class SbyFpv:
         if coi is not None:
             result.results["coi"] = coi
 
-    # --- result helpers -----------------------------------------------------
-
     @staticmethod
     def _read_status(workdir: str) -> str | None:
-        """Return the contents of ``<workdir>/status`` if present.
-
-        Sby writes one of ``PASS``, ``FAIL``, ``UNKNOWN``, or ``ERROR``
-        to that file after each run. The file is missing when sby died
-        before completing setup.
-        """
+        """Return ``<workdir>/status`` (PASS, FAIL, UNKNOWN or ERROR), or None if sby died before writing it."""
         path = os.path.join(workdir, "status")
         if not os.path.isfile(path):
             return None
         text = Path(path).read_text().strip()
-        # Status lines look like "PASS" or "PASS (engine_0)" — keep the
-        # first whitespace-delimited token.
         return text.split()[0] if text else None
 
     @staticmethod
     def _read_per_engine(workdir: str) -> list[dict]:
-        """Parse per-engine status from ``<workdir>/logfile.txt``.
-
-        Returns an empty list when the logfile is missing (sby died
-        before producing one) — callers treat that as "no engine data
-        available" and surface the overall verdict only.
-        """
+        """Parse per-engine status from ``<workdir>/logfile.txt``; return [] if the logfile is missing."""
         from .fpv_log_parse import parse_engine_summary, read_workdir_log
 
         log_text = read_workdir_log(workdir)
@@ -776,7 +638,7 @@ class SbyFpv:
 
     @staticmethod
     def _counterexample_desc(workdir: str) -> str:
-        """Compose a short failure description pointing at the trace dir."""
+        """Return a short failure description pointing at the trace dir."""
         engine_dir = None
         for entry in sorted(os.listdir(workdir)) if os.path.isdir(workdir) else []:
             if entry.startswith("engine_") and os.path.isdir(
@@ -790,8 +652,6 @@ class SbyFpv:
         if os.path.isfile(trace):
             return f"property disproved (counterexample: {trace})"
         return f"property disproved (engine dir: {os.path.join(workdir, engine_dir)})"
-
-    # --- subprocess helper --------------------------------------------------
 
     def _run(self, cmd: list[str], log_path: str):
         with open(log_path, "w") as logf:

@@ -8,11 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-#: How many times `_snapshot_netlist` re-copies a netlist that changed
-#: underneath it before giving up. Three is enough to ride out a single
-#: upstream rewrite landing at an unlucky moment and short enough that a
-#: writer rewriting the file in a loop fails the run rather than pinning
-#: it (#560).
+#: How many times `_snapshot_netlist` re-copies a netlist that changed underneath it before failing the run.
 _SNAPSHOT_ATTEMPTS = 3
 
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
@@ -41,15 +37,11 @@ from .synth_yosys import library_fingerprint
 
 
 def _within(root: str, path: str) -> bool:
-    """Is ``path`` inside ``root``, by either spelling of the pair?
+    """Return whether ``path`` is inside ``root``, comparing logical paths first, then resolved ones.
 
-    Logical first, for the reason
-    :func:`~rtl_buddy.phys.manifest.project_relative` gives: a suite
-    whose ``artefacts/`` is a link to scratch storage is an ordinary
-    layout, and its run directories are inside the project *as the
-    project is read* even though they resolve out of it. The resolved
-    comparison is the second chance, for the reverse arrangement — a
-    project reached through a link the candidate path is not.
+    Logical first because a suite whose ``artefacts/`` links to scratch storage is inside the
+    project as the project is read (see :func:`~rtl_buddy.phys.manifest.project_relative`), though
+    it resolves outside it. The resolved comparison covers the reverse arrangement.
     """
     for base, candidate in (
         (os.path.abspath(root), os.path.abspath(path)),
@@ -68,22 +60,12 @@ _WRITE_SPEF_RE = re.compile(r"^\s*write_spef\s", re.MULTILINE)
 
 
 def routed_spef_rejection(spef: str, script: str) -> str | None:
-    """Why the routed SPEF beside a P&R result may not be read, or `None`.
+    """Return why the routed SPEF beside a P&R result may not be read, or `None`.
 
-    `rb pnr` clears `<top>.routed.spef` before every run and on every
-    failure, so a SPEF on disk is normally the one the run that wrote the
-    ODB extracted (#101). "Normally" is not enough to time a design on: an
-    rtl_buddy that predates the SPEF does not know to clear it, so a rerun
-    under one leaves a fresh ODB beside the previous run's SPEF, and a
-    copied or restored artefact directory can pair any two files.
-
-    So the SPEF has to be vouched for by the P&R run's own flow script,
-    which every rtl_buddy writes afresh at the start of every run: the
-    script must contain a `write_spef` command — the run that produced the
-    ODB was configured to extract — and the SPEF must be no older than the
-    script, i.e. written by that run rather than an earlier one. mtime,
-    not content, because the script is the run's first write and the SPEF
-    one of its last, minutes apart on any real design.
+    `rb pnr` clears `<top>.routed.spef` before every run, but an older rtl_buddy or a copied
+    artefact directory can leave a SPEF that does not belong to the ODB. The SPEF is accepted only
+    if the P&R run's flow script contains a `write_spef` command and the SPEF is no older than that
+    script (mtime, since the script is the run's first write and the SPEF one of its last).
     """
     if not os.path.isfile(spef):
         return "no routed SPEF"
@@ -104,18 +86,10 @@ def routed_spef_rejection(spef: str, script: str) -> str | None:
 
 
 def _dedup_paths(paths) -> list[str]:
-    """The paths in first-named order, one entry per file, empties dropped.
+    """Return the paths in first-named order, one entry per resolved file, empties dropped.
 
-    De-duplication is on the resolved path, as the P&R backend's own
-    stream-out inputs de-duplicate: a macro Liberty that a `power.yaml`
-    repeats after inheriting it from the run it reads is one library, and
-    `read_liberty` on the same file twice makes OpenSTA re-register every
-    cell in it and warn about each one.
-
-    Order is stable and deterministic because `read_liberty` is: two
-    libraries that define a cell of the same name resolve to whichever
-    was read first, so a set here would make the analysis depend on hash
-    ordering (#627).
+    `read_liberty` on the same file twice re-registers every cell and warns about each. Order is
+    deterministic because the first library to define a cell name wins.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -130,30 +104,18 @@ def _dedup_paths(paths) -> list[str]:
     return out
 
 
-#: A Liberty ``cell (NAME) {`` declaration, and the two-line spelling of
-#: it that generated libraries use. Scanned line by line rather than
-#: parsed, for the reason
-#: :meth:`~rtl_buddy.tools.synth_openroad.OpenRoadSynth._masters_from_lef_and_liberty`
-#: gives: a standard-cell Liberty runs to tens of megabytes and only the
-#: declaration lines matter here.
+#: A Liberty ``cell (NAME) {`` declaration, and the two-line spelling generated libraries use.
+#: Scanned line by line, not parsed, because a Liberty can be tens of MB.
 _LIBERTY_CELL_RE = re.compile(r'^\s*cell\s*\(\s*"?([^"\s()]+)"?\s*\)')
 _LIBERTY_CELL_OPEN_RE = re.compile(r"^\s*cell\s*$")
 _LIBERTY_CELL_NAME_RE = re.compile(r'^\s*\(\s*"?([^"\s()]+)"?\s*\)')
 
 
 def _liberty_cell_names(paths) -> set[str]:
-    """Every cell name the given Liberty files declare.
+    """Return every cell name the given Liberty files declare.
 
-    The synthesis backend's equivalent scans LEF as well, because what it
-    asks is "does OpenROAD have a *master* for this name". This one asks
-    the narrower question the power flow cares about — is there a library
-    cell with power data behind this master — and a `MACRO` in a LEF is
-    exactly the case that answers no (#627).
-
-    A file that cannot be read contributes nothing. That is the safe
-    direction: a name this fails to find is reported as unpowered, which
-    is a warning naming a real instance, where a name it wrongly found
-    would restore the silence the issue is about.
+    Unlike the synthesis backend's scan this ignores LEF, since a `MACRO` has no power data. An
+    unreadable file contributes nothing, so its cells are reported as unpowered.
     """
     names: set[str] = set()
     for path in paths:
@@ -178,18 +140,13 @@ def _liberty_cell_names(paths) -> set[str]:
 
 
 class OpenRoadPower(BasePower):
-    """OpenROAD-driven power-analysis backend.
+    """OpenROAD power-analysis backend.
 
-    Reads the upstream `rb synth` artefact (tech-mapped netlist) together
-    with the platform Liberty + tech/macro LEFs + SDC, applies a
-    switching-activity model (synthetic global activity, SAIF file, or
-    VCD file), and parses OpenROAD's `report_power` output for
-    total/internal/switching/leakage.
-
-    LEF is required even though `report_power` itself only needs Liberty
-    — OpenROAD's gate-level `read_verilog` builds an in-memory database
-    that requires a technology view (`[ERROR ORD-2010] no technology has
-    been read.` otherwise).
+    Reads the upstream `rb synth` netlist (or `rb pnr` routed ODB) with the platform Liberty, tech
+    and macro LEFs and the SDC, applies an activity model (synthetic global activity, SAIF or VCD),
+    and parses `report_power` for total/internal/switching/leakage. LEF is required because
+    OpenROAD's gate-level `read_verilog` needs a technology view (`[ERROR ORD-2010] no technology
+    has been read.`).
     """
 
     def __init__(
@@ -210,65 +167,29 @@ class OpenRoadPower(BasePower):
         artefact_root = Path(suite_dir) / "artefacts" / power_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
-        # Where `phys-model.json` and its manifest go. Every other file
-        # this flow writes — the script, the log, the two reports, the
-        # netlist copy — stays in `artefact_dir`, because they are this
-        # run's raw output and the model is the one document two runs
-        # share. Rebound by `_bind_phys_dir` when `phys-run:` names a
-        # synthesis to publish beside (#589); until then, and for a
-        # config that says nothing, the two are the same directory.
+        # Where `phys-model.json` and its manifest go; every other file stays in `artefact_dir`. Rebound by `_bind_phys_dir` when `phys-run:` is set.
         self.phys_dir = self.artefact_dir
-        # The upstream netlist this run measures, and the hash of the
-        # private copy OpenROAD is actually given; see
-        # `_snapshot_netlist`. Both `None` until the run resolves them,
-        # and for a `netlist-source: pnr` run that reads a routed
-        # database and never a netlist at all.
+        # The upstream netlist this run measures and the hash of the private copy OpenROAD reads (`_snapshot_netlist`). None until resolved and for `netlist-source: pnr`.
         self._netlist_source_path: str | None = None
         self._netlist_sha256: str | None = None
-        # The activity trace's identity, taken as OpenROAD is launched
-        # and confirmed when it returns; see `_hash_trace`. `None` both
-        # before the run and for a static run that reads no trace.
+        # Activity trace identity, taken at OpenROAD launch and confirmed on return (`_hash_trace`). None before the run and for static runs.
         self._trace_sha256: str | None = None
-        # The SDC's identity, on the same schedule as the trace's and for
-        # the same reason; see `_hash_constraints`. `None` before the run
-        # and for a run whose SDC could not be read.
+        # SDC identity, on the same schedule (`_hash_constraints`). None before the run or if the SDC is unreadable.
         self._constraints_sha256: str | None = None
-        # The technology files `_write_script` named, in the order it
-        # named them: `read_liberty` then `read_lef`. Captured there
-        # because the fingerprint has to be of what the script read, and
-        # `None` until it runs (#570).
+        # Technology files `_write_script` named (`read_liberty` then `read_lef`), for the fingerprint. None until it runs.
         self._script_technology: dict | None = None
-        # The PDK cells that are in the layout but not in the netlist —
-        # `filler_placement`'s fill cells. They have no Liberty and no
-        # power, by construction, and must not be read as macros the
-        # analysis could say nothing about; see `_unpowered_instances`.
-        # Captured by `_write_script` with the rest of the platform.
+        # PDK fill cells (`filler_placement`): in the layout but not the netlist, with no power by construction. See `_unpowered_instances`.
         self._physical_only_cells: list[str] = []
-        # What a `netlist-source: pnr` run timed the routed design on —
-        # `PARASITICS_SPEF` or `PARASITICS_ESTIMATED` — decided by
-        # `_write_script` (#101). `None` for a synth-source run, which
-        # has no routing to take parasitics from.
+        # `PARASITICS_SPEF` or `PARASITICS_ESTIMATED`, set by `_write_script` for a `netlist-source: pnr` run; None for synth.
         self._parasitics: str | None = None
-        # What `_resolve_inputs()` said when the script was generated —
-        # the top `link_design` names, the SDC `read_sdc` reads. `None`
-        # until `_write_script` runs; see `_publish_phys_model` for why
-        # publication reads this rather than resolving a second time.
+        # What `_resolve_inputs()` returned when the script was generated (top, SDC); `_publish_phys_model` reads it instead of resolving again.
         self._script_inputs: dict | None = None
-        # The hardened blocks the upstream run consumed through `blocks:`,
-        # resolved by `_resolve_inputs` so their abstracts reach this
-        # session the way they reached that run (#679). Empty when the
-        # upstream run lists none.
+        # Hardened blocks the upstream run consumed through `blocks:`, resolved by `_resolve_inputs`; empty if none.
         self._blocks: list[pnr_abstract.ResolvedBlock] = []
-        # The OpenROAD thread plan `_write_script` resolved; `None` until
-        # it runs (#654).
+        # Thread plan resolved by `_write_script`; None until it runs.
         self._thread_plan: ThreadPlan | None = None
-        # The corners `_write_script` analysed, primary first, under a
-        # multi-corner platform (#104, #105); empty for a single corner.
+        # Corners `_write_script` analysed, primary first, under a multi-corner platform; empty for one corner.
         self._script_corners: list[str] = []
-
-    # ------------------------------------------------------------------
-    # Artefact paths
-    # ------------------------------------------------------------------
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, "power.tcl")
@@ -280,7 +201,7 @@ class OpenRoadPower(BasePower):
         return os.path.join(self.artefact_dir, "power.rpt")
 
     def _corner_report_path(self, corner: str) -> str:
-        """One corner's `report_power` under multi-corner (#104, #105)."""
+        """One corner's `report_power` under multi-corner."""
         return os.path.join(self.artefact_dir, f"power.{corner}.rpt")
 
     def _corner_report_paths_on_disk(self) -> list[str]:
@@ -298,118 +219,55 @@ class OpenRoadPower(BasePower):
         ]
 
     def _instances_report_path(self) -> str:
-        """`report_power -instances`' output: one line per leaf cell (#558)."""
+        """`report_power -instances` output: one line per leaf cell."""
         return os.path.join(self.artefact_dir, "power_instances.rpt")
 
     def _instances_cells_path(self) -> str:
-        """The `<instance path> <liberty cell>` sidecar (#558).
+        """The `<instance path> <liberty cell>` sidecar.
 
-        `report_power` prints the path and the four powers, never the master
-        the instance is an instance *of* — so the hierarchy walk that feeds
-        it writes the mapping out alongside. Without this the model's power
-        rows have no module column and cannot be joined to the synth half.
+        `report_power` does not print each instance's master, so the hierarchy walk writes the
+        mapping here; without it the model's power rows cannot be joined to the synth half.
         """
         return os.path.join(self.artefact_dir, "power_instances.cells")
 
     @staticmethod
     def _staging_path(published: str) -> str:
-        """Where the per-instance block writes ``published`` before it is
-        published (#560).
+        """Return the staging name the per-instance block writes ``published`` under.
 
-        Tcl's ``>`` redirection creates the file before the command it
-        redirects runs, and ``report_power -instances`` streams a row per
-        cell into it. A call that emits two thirds of the design and *then*
-        raises therefore leaves a nonempty report at the published path —
-        and the ``catch`` around the block swallows the error by design,
-        because the detail is a by-product that may not fail a run. The
-        publish that follows reads that prefix as a whole breakdown: real
-        watts, for a third of the instances, presented as the design's.
-        Only an entirely empty parse is caught today, and a failure part-way
-        through is never empty. The ``foreach`` writing the cells sidecar
-        has exactly the same shape.
-
-        So the block writes here and renames onto the published names as
-        its last act, which Tcl reaches only when every command before it
-        returned — an atomic publish on success. A failure leaves the
-        staging file and no published one, which is the state the publish
-        already reads as "this run produced no breakdown"; the trailing
-        cleanup, and the next run's stale-clear, remove it.
+        Tcl creates a redirect target before the command runs, and the `catch` around the block
+        swallows failures, so a failure part-way would leave a partial report at the published path
+        that parses as complete. The block renames staging onto the published names as its last
+        act; a failure leaves only the staging file, which the trailing cleanup and the next run's
+        stale-clear remove.
         """
         return published + ".tmp"
 
     def _netlist_snapshot_path(self) -> str:
-        """This run's own copy of the netlist it hands OpenROAD (#560).
+        """Return this run's private copy of the netlist it hands OpenROAD.
 
-        The analysis reads a netlist another command wrote, in another
-        artefact directory, and records its sha256 as the evidence that
-        these watts and the module rows beside them describe one design.
-        Hashing the upstream path leaves a window however tightly it is
-        drawn: `rb synth` rewriting that file between the hash and
-        OpenROAD's `read_verilog` would have the model name bytes the
-        analysis never measured, and the provenance gate would then read
-        a real mismatch as a match.
-
-        So the netlist is *snapshotted* instead: copied here, hashed
-        here, and read from here. The hash and the bytes OpenROAD parses
-        are then the same file, which no concurrent writer can reach —
-        the upstream directory is not this run's, and this one is.
-
-        The cost is one copy of a netlist that may be megabytes, per
-        power run, in the directory that already holds the run's log and
-        reports; the stale-clear removes it exactly as it removes them.
+        The copy is hashed and read from here, so the recorded sha256 and the bytes OpenROAD parses
+        are one file that no concurrent `rb synth` can rewrite. The stale-clear removes it.
         """
         return os.path.join(self.artefact_dir, "power_netlist.v")
 
     def _bind_phys_dir(self) -> None:
-        """Point `phys_dir` at the run `phys-run:` names, or leave it (#589).
+        """Point `phys_dir` at the run `phys-run:` names, or leave it at this run's directory.
 
-        Without the field a merged model is an accident of naming: the
-        two halves meet because a power run happens to be called after
-        the synthesis it reads *and* configured in the same directory, so
-        both write `artefacts/<one name>/`. Rename either side — or split
-        a project's suites into `synth/` and `power/` — and each half
-        lands in its own directory, each model half-filled, with nothing
-        saying why. `phys-run:` states the pairing instead.
-
-        The directory is *derived*, never taken: the run names an entry
-        in the same `synth.yaml` this analysis already reaches through
-        `synth-path:`, and its half is published into that suite's
-        `artefacts/<run>/` — the path a synthesis of that name writes its
-        own half into. So the knob survives the suite moving, and the
-        config layer having refused any separator in the value leaves
-        exactly one component to join: it cannot name a directory outside
-        that artefacts tree.
-
-        The named run's directory need not exist yet. A power analysis
-        may legitimately land first and the synthesis fill the other half
-        later, which is the whole point of publishing into a directory
-        chosen rather than inherited.
-
-        Called from `_write_script`, which is where this flow validates
-        its configuration (see `run`): a `phys-run:` no entry in the
-        referenced suite carries is broken on every machine and is
-        reported as a failed run rather than as a by-product warning
-        minutes later, and a resolution that failed leaves `phys_dir` at
-        this run's own directory — the right target for the withdrawal
-        `run()` then makes, since nothing was ever published to the
-        directory that could not be resolved.
+        The named entry is looked up in the `synth.yaml` reached through `synth-path:`, and this
+        half is published into that suite's `artefacts/<run>/`. The directory need not exist yet.
+        Called from `_write_script`, so an unknown `phys-run:` fails the run; `phys_dir` then stays
+        at this run's directory, the right target for the withdrawal `run()` makes.
         """
         run = self.power_cfg.get_phys_run()
         if not run:
             return
-        # The config layer requires `synth`/`synth-path` of every
-        # `netlist-source: synth` entry, and refuses `phys-run` on any
-        # other kind.
+        # The config layer requires `synth`/`synth-path` for `netlist-source: synth` and refuses `phys-run` on other kinds.
         suite_path = self.power_cfg.get_synth_suite_path()
         assert suite_path is not None
         phys_dir = os.path.normpath(
             os.path.join(os.path.dirname(suite_path), "artefacts", run)
         )
-        # Where it lands is asked before whether the run exists: a
-        # `synth-path:` pointing out of the project is wrong about the
-        # directory whatever the suite turns out to contain, and asking in
-        # this order keeps a suite that cannot be loaded at all from
-        # answering with a parse error instead.
+        # Ask where it lands before whether the run exists, so an unloadable suite does not mask a bad `synth-path:`.
         root = project_root_or_none(self.artefact_dir)
         if root is not None and not _within(root, phys_dir):
             raise RuntimeError(
@@ -424,53 +282,24 @@ class OpenRoadPower(BasePower):
         self.phys_dir = phys_dir
 
     def _source_identity(self, source: str) -> tuple[int, int]:
-        """`(size, mtime_ns)` of the upstream netlist, as a change witness.
+        """Return `(size, mtime_ns)` of the upstream netlist as a change witness.
 
-        The pair a writer cannot plausibly leave untouched: truncating and
-        rewriting a netlist changes its length, and `write`/`rename` both
-        stamp the mtime. It is a witness, not a lock — two writes inside one
-        mtime tick that land on the same length would present the same pair,
-        which POSIX gives no way to rule out short of holding the file open
-        against a writer that does not want it held. See `_snapshot_netlist`
-        for what that residue costs.
+        Not a lock: two writes in one mtime tick with the same length look identical.
         """
         st = os.stat(source)
         return (st.st_size, st.st_mtime_ns)
 
     def _snapshot_netlist(self) -> str | None:
-        """Copy the upstream netlist in, hash the copy, or say why not.
+        """Copy the upstream netlist into this run's directory and hash the copy, or return why not.
 
-        Called between the stale-clear (which removes the previous run's
-        copy) and OpenROAD, so the file the script names is written once
-        and read once, by this run. Copy-then-rename via a `.tmp`
-        sibling: a crash mid-copy leaves the staging file, never a short
-        `power_netlist.v` that the next reader would take for a netlist.
+        Called between the stale-clear and OpenROAD. The copy goes via a `.tmp` sibling so a crash
+        never leaves a short `power_netlist.v`. The source is stat'd on either side of each copy
+        and the copy is retried while the stats differ, at most `_SNAPSHOT_ATTEMPTS` times, because
+        a concurrent `rb synth` can rewrite it mid-copy. Exhausting the attempts fails the run. A
+        `netlist-source: pnr` run has no netlist, so nothing is copied or hashed.
 
-        The copy is private and therefore immutable, but that alone does
-        not make it *coherent*. When `power.yaml` reads a synthesis in
-        another suite the two commands hold different artefact-tree
-        locks, so a concurrent `rb synth` can truncate and rewrite
-        `synth_netlist.v` under `copyfile`'s read — and the snapshot
-        would then be a torn prefix of two netlists that the recorded
-        sha256 authenticates perfectly. So the source is stat'd either
-        side of each copy and the copy is retried while those stats
-        differ: bounded at `_SNAPSHOT_ATTEMPTS`, because a writer looping
-        over the netlist would otherwise loop this with it.
-
-        Exhausting the attempts fails the run. A power figure over bytes
-        that were never one netlist is worse than a refusal — the refusal
-        is re-runnable, the figure is not detectably wrong.
-
-        A `netlist-source: pnr` run resolves no netlist at all — it reads
-        a routed database — so there is nothing to snapshot and nothing
-        to hash, which is what it recorded before this existed.
-
-        :returns: ``None`` on success (or when there is nothing to do),
-            else a description of the failure. A netlist that cannot be
-            copied into the artefact directory is not a by-product
-            failure to warn about and continue past: the generated
-            script names the copy, so there would be nothing for
-            `read_verilog` to read.
+        :returns: ``None`` on success or when there is nothing to do, else a description of the
+            failure. A failed copy fails the run because the script reads the copy.
         """
         source = self._netlist_source_path
         self._netlist_sha256 = None
@@ -483,14 +312,10 @@ class OpenRoadPower(BasePower):
                 before = self._source_identity(source)
                 shutil.copyfile(source, staging)
                 if self._source_identity(source) != before:
-                    # Somebody rewrote the netlist mid-copy; whatever is in
-                    # the staging file spans the two versions. Drop it and
-                    # read the source again from the top.
+                    # The source was rewritten mid-copy; drop the staging file and copy again.
                     continue
                 os.replace(staging, snapshot)
-                # Of the copy, not of the source: these are the bytes
-                # OpenROAD is about to read, and nothing else writes this
-                # path.
+                # Hash the copy, not the source: it is the file OpenROAD reads.
                 self._netlist_sha256 = sha256_of(snapshot)
                 return None
         except OSError as e:
@@ -508,13 +333,9 @@ class OpenRoadPower(BasePower):
         )
 
     def _trace_path(self) -> str | None:
-        """The activity trace this run hands OpenROAD, or ``None``.
+        """Return the activity trace this run hands OpenROAD, or ``None`` for a static run.
 
-        ``None`` for a static run, which reads no trace at all:
-        :func:`~rtl_buddy.phys.provenance.activity_block` drops a
-        retained trace from such a run's block anyway, and a VCD is the
-        largest file in an artefact tree — a whole pass over one to
-        identify a file the Tcl never opens is a whole pass for nothing.
+        A static run reads no trace, so hashing a large VCD would be wasted work.
         """
         if self.power_cfg.get_activity_source() not in TRACE_SOURCES:
             return None
@@ -522,66 +343,36 @@ class OpenRoadPower(BasePower):
         return activity.saif or activity.vcd
 
     def _hash_trace(self) -> None:
-        """Identify the trace by its bytes, as OpenROAD is launched (#570).
+        """Hash the trace bytes as OpenROAD is launched.
 
-        **Not snapshotted, unlike the netlist.** The netlist is copied
-        into this run's own directory precisely so the hash and the bytes
-        the tool parses are one file no concurrent writer can reach, and
-        that is the stronger guarantee. It is not available here: a SAIF
-        is megabytes and a VCD of a long test is gigabytes, so a copy per
-        power run would multiply the largest artefact in the tree by the
-        number of corners analysed, on a filesystem that is holding the
-        original for the same reason. The netlist is worth the copy
-        because it is small; the trace is not.
-
-        So the trace is hashed in place, immediately before the
-        subprocess starts, and the residual race is the interval between
-        this read and OpenROAD's own — milliseconds, against the minutes
-        the analysis itself takes, and against the whole analysis that
-        the old placement left exposed. `_confirm_trace_unchanged` closes
-        the report on the other end.
+        Unlike the netlist the trace is not copied, since a SAIF is megabytes and a VCD can be
+        gigabytes. The hash is taken in place just before the subprocess starts, and
+        `_confirm_trace_unchanged` checks it again on return.
         """
         self._trace_sha256 = sha256_of(self._trace_path())
 
     def _constraints_path(self) -> str | None:
-        """The SDC this run hands OpenROAD, as the script named it (#570).
+        """Return the SDC this run hands OpenROAD, as `_write_script` resolved it.
 
-        `_write_script`'s own resolution, not a fresh one: on a
-        `netlist-source: pnr` run with no explicit `constraints:` the SDC
-        is `<pnr artefact>/<top>.routed.sdc`, which re-resolving could
-        answer differently, and the point of the digest is to identify
-        the file the generated Tcl reads.
+        Not re-resolved: a `netlist-source: pnr` run without `constraints:` uses
+        `<pnr artefact>/<top>.routed.sdc`, which a second resolution could answer differently.
         """
         return (self._script_inputs or {}).get("sdc")
 
     def _hash_constraints(self) -> None:
-        """Identify the SDC by its bytes, as OpenROAD is launched (#570).
+        """Hash the SDC bytes as OpenROAD is launched.
 
-        Taken here rather than at publication for the reason the trace's
-        is. A `netlist-source: pnr` run reads `<top>.routed.sdc` out of
-        another command's artefact directory, where a concurrent `rb pnr`
-        rewrites it in place; a synthesis SDC is a source file a person
-        edits. Either way a digest computed after an analysis that runs
-        for minutes identifies the replacement and records it as the
-        constraints these watts were measured under — the exact
-        substitution the digest exists to catch, one file over.
-
-        Hashed in place rather than snapshotted: an SDC is a page of
-        text, so the read is free, but it is also small enough that
-        `_confirm_constraints_unchanged` can simply read it again on the
-        way out and close the window from both ends.
+        Hashing at publication would record a replacement written during the analysis (a
+        concurrent `rb pnr` rewrites `<top>.routed.sdc`; a synthesis SDC is edited by hand). The
+        hash is taken in place, and `_confirm_constraints_unchanged` reads the file again on return.
         """
         self._constraints_sha256 = sha256_of(self._constraints_path())
 
     def _confirm_constraints_unchanged(self) -> None:
-        """Withdraw the SDC hash if the file moved under the run (#570).
+        """Withdraw the SDC hash if the file changed during the run.
 
-        The trace's rule, applied to the constraints:
-        :func:`~rtl_buddy.phys.publish.confirm_digest` says whether the
-        bytes hashed at launch are still there, and a mismatch records
-        ``null`` rather than a digest nothing can vouch for. The warning
-        is what keeps that null from reading as "this run had no
-        constraints", which is the opposite of what happened.
+        Uses :func:`~rtl_buddy.phys.publish.confirm_digest`. A mismatch records ``null`` and warns,
+        so the null does not read as "this run had no constraints".
         """
         self._constraints_sha256, changed = confirm_digest(
             self._constraints_path(), self._constraints_sha256
@@ -596,25 +387,11 @@ class OpenRoadPower(BasePower):
             )
 
     def _confirm_trace_unchanged(self) -> None:
-        """Withdraw the trace hash if the file moved under the run (#570).
+        """Withdraw the trace hash if the file changed during the run.
 
-        `dump.saif` is rewritten in place by the next run of the test
-        behind it, and a power analysis is long enough for that to happen
-        while it is reading. Re-hashing at the end and comparing is what
-        turns "the trace probably did not change" into a statement the
-        document can make: equal, and the recorded hash identifies bytes
-        that were on disk for the whole of the run.
-
-        Unequal, and the honest record is that the identity is *unknown*.
-        Neither hash is the answer — the first names bytes OpenROAD may
-        not have finished reading, the second names bytes it certainly
-        did not start with — and a hash nothing can vouch for is worse
-        than no hash, because the provenance gate reads a recorded hash
-        as evidence. ``None`` is the model's own word for unknown, which
-        is what a static run and an unreadable file already record, so
-        the withdrawal needs no new vocabulary. The warning is what makes
-        it findable: a null here otherwise reads as "this run measured no
-        trace", which is the opposite of what happened.
+        `dump.saif` is rewritten in place by the next run of its test. If the re-hash differs the
+        identity is unknown and is recorded as ``None``, with a warning so the null does not read as
+        "no trace measured".
         """
         if self._trace_sha256 is None:
             return
@@ -629,75 +406,37 @@ class OpenRoadPower(BasePower):
         )
         self._trace_sha256 = None
 
-    # ------------------------------------------------------------------
-    # Inputs resolution
-    # ------------------------------------------------------------------
-
     def _resolve_inputs(self) -> dict:
         """Resolve netlist / ODB / SDC paths per `netlist-source`.
 
-        Dispatches on `power_cfg.get_netlist_source()`:
+        - "synth" (default): the post-synth tech-mapped netlist, with Liberty and LEF supplying the
+          technology view. Switching power is under-estimated because there are no real
+          parasitics or CTS clock tree.
+        - "pnr": the post-P&R database (`<top>.routed.odb`) and post-CTS SDC, so
+          `estimate_parasitics -global_routing` reflects the CTS clock tree and routed wires. If
+          the P&R run's PDK declared `rcx-rules`, `<top>.routed.spef` is read instead of
+          estimating; see `routed_spef_rejection`.
 
-        - "synth" (default): post-synth tech-mapped netlist (Liberty +
-          LEF supply the technology view; switching power is
-          under-estimated because there are no real parasitics and no
-          CTS-buffered clock tree).
-        - "pnr": post-PnR OpenROAD binary DB (`<top>.routed.odb`) +
-          post-CTS SDC. The .odb encapsulates placement + routing so
-          rerunning `estimate_parasitics -global_routing` reflects the
-          CTS-buffered clock tree and routed wire capacitance. When the
-          P&R run's PDK declared `rcx-rules`, the run also wrote an
-          OpenRCX-extracted `<top>.routed.spef`, and `_write_script`
-          reads that instead of estimating (#101); see
-          `routed_spef_rejection` for when it is trusted.
+        Returns a dict with keys netlist (None for pnr), odb (None for synth), spef and pnr_script
+        (None for synth), sdc, top, macro_libs, macro_lefs.
 
-        Returns a dict with keys: netlist (None for pnr), odb (None for
-        synth), spef and pnr_script (None for synth), sdc, top,
-        macro_libs, macro_lefs.
+        Macro libraries are resolved here, where the upstream entry they are inherited from is at
+        hand. A hard macro's Liberty reaches the upstream run through its `lib-paths`; without it
+        the macro reads zero power. The `power.yaml`'s own `lib-paths` are appended after them.
 
-        **The macro libraries are resolved here** rather than in
-        `_write_script`, because this is the one place that already holds
-        the upstream entry they are inherited from (#627). A hard macro's
-        Liberty reaches `rb pnr` or `rb synth` through *that* run's
-        `lib-paths`; the power analysis reads only the platform corner,
-        which characterises standard cells, so every macro instance was in
-        the design and in the instance report contributing exactly zero.
-        The libraries the upstream run declares are what this run has to
-        read to say anything about those instances, and the `power.yaml`'s
-        own `lib-paths` are appended after them.
+        `macro_lefs` is the synthesis run's `lef-paths` on the synth path, where `link_design`
+        cannot place an instance of an unseen master. It is empty on the pnr path, where `read_db`
+        already holds every master and would discard a LEF read before it.
 
-        ``macro_lefs`` is empty on the `pnr` path and the synthesis run's
-        `lef-paths` on the `synth` one, because that is where the LEF is
-        load-bearing: `read_verilog` + `link_design` builds the database
-        out of LEF masters and cannot place an instance of a master it has
-        never seen, while `read_db` restores a database in which every
-        master the router placed is already present. Reading the macro LEF
-        again before a `read_db` would not even survive it — the database
-        read replaces the technology the LEF built.
+        A `blocks:` entry on the upstream run is resolved for its LEF (synth path) and for the
+        result's `blocks` rows, without the staleness gate `rb pnr` and `rb synth` apply.
 
-        **A `blocks:` entry on the upstream run is resolved** (#679), for
-        its LEF on the `synth` path, where `link_design` needs the master,
-        and for the result's `blocks` rows. Resolved without the staleness
-        gate `rb pnr` and `rb synth` apply — the analysis reads what was
-        routed, and the abstract on disk is the one that run consumed
-        unless it has been re-hardened since, which is that run's
-        staleness to report, not this one's.
-
-        **The block's abstract Liberty is not read** (#684). It is
-        `write_timing_model` output: timing arcs, no power tables, and no
-        `function` on any output. OpenSTA propagates activity forward from
-        the timing graph's roots and never seeds a clock pin, so with that
-        Liberty loaded every block output hangs off a clock-to-out arc no
-        propagation reaches: it reads zero activity, a SAIF/VCD or
-        `set_power_activity` annotation on it is never applied, and all
-        the parent logic the block drives reads as static. Without it the
-        block is a Liberty-less master, its outputs are roots, and they
-        take the trace's activity or the default input activity — which is
-        what the parent's switching power needs. Reading it would add only
-        the block's input pin capacitance.
+        A block's abstract Liberty is not read. It is `write_timing_model` output with no power
+        tables and no output `function`, so OpenSTA's activity propagation cannot reach the block's
+        outputs and the parent logic they drive would read as static. Without it the block is a
+        Liberty-less master whose outputs take the trace's or the default activity.
         """
-        # Appended after whatever the upstream run declares, so the
-        # inherited list stays the base and a `power.yaml` adds to it.
+        # power.yaml libraries go after the inherited ones.
         own_libs = self.power_cfg.get_lib_paths()
         if self.power_cfg.get_netlist_source() == "pnr":
             pnr_cfg = self.power_cfg.resolve_pnr_cfg()
@@ -755,12 +494,10 @@ class OpenRoadPower(BasePower):
         }
 
     def _resolve_upstream_blocks(self, refs) -> list[pnr_abstract.ResolvedBlock]:
-        """The upstream run's `blocks:`, each resolved to its abstract (#679).
+        """Return the upstream run's `blocks:`, each resolved to its abstract.
 
-        A block whose abstract is gone is a configuration error like a
-        missing macro Liberty (`power.missing_macro_inputs`): reading on
-        without it would report the partition at zero watts, so it fails
-        the run at setup, naming the block.
+        A block whose abstract is missing fails the run at setup, naming the block, like a missing
+        macro Liberty (`power.missing_macro_inputs`).
         """
         if not refs:
             return []
@@ -772,11 +509,7 @@ class OpenRoadPower(BasePower):
             ) from None
 
     def _blocks_fields(self) -> dict:
-        """The `blocks` result field: the abstracts this run read (#679).
-
-        The rows `rb pnr` and `rb synth` report, less their staleness,
-        which this run does not assess.
-        """
+        """Return the `blocks` result field: the abstracts this run read, without the staleness that `rb pnr` and `rb synth` report."""
         rows = []
         for block in self._blocks:
             row = block.result_row()
@@ -786,40 +519,18 @@ class OpenRoadPower(BasePower):
         return {"blocks": rows} if rows else {}
 
     def _upstream_identity(self) -> dict:
-        """Which upstream run this analysis actually read, for the digest.
+        """Return which upstream run this analysis read, for the config digest.
 
-        `netlist_source` names the *kind* of upstream — "synth" or "pnr" —
-        and nothing more. Two power entries pointing at two different
-        synth entries, or at two suites through `synth-path`, resolve
-        different netlists under one spelling of it; `_resolve_inputs`
-        hands OpenROAD that difference and the config fingerprint did not
-        record it, so two runs measuring two designs fingerprinted
-        identically and a run listing showed them as one experiment
-        (#570).
-
-        Digest what the run consumed. A `netlist-source: synth` run
-        already holds the strongest statement available — the sha256 of
-        the netlist copy it measured — and it is better than a path here:
-        two entries that resolve byte-identical netlists *are* one
-        experiment, which is the comparison this block exists to make. A
-        `netlist-source: pnr` run reads a routed database that nothing
-        hashes (an .odb is large, and is read once), so the ODB's path
-        stands in for its contents; it names the pnr run's own artefact
-        directory, which is exactly what two pnr entries differ in.
-
-        Project-relative, because a digest that moved with the checkout
-        would tell one run apart from itself. This is the one path the
-        publish cannot relativise on our behalf: `_publish` rewrites the
-        paths *inside* the config block, and by the time it runs the
-        options mapping has already been digested.
-
-        Unknown stays ``null`` rather than becoming a placeholder — the
-        strict-or-absent rule :func:`options_digest` keeps.
+        `netlist_source` names only the kind ("synth" or "pnr"). A synth run uses the sha256 of the
+        netlist copy it measured, so entries that resolve byte-identical netlists count as one
+        experiment. A pnr run hashes nothing large, so the ODB's path stands in for its contents.
+        Paths are project-relative so the digest does not change with the checkout; `_publish`
+        cannot relativise this one because the options are digested first. Unknown values stay
+        ``null`` (the rule :func:`options_digest` keeps).
         """
         if self.power_cfg.get_netlist_source() != "pnr":
             return {"netlist_sha256": self._netlist_sha256, "input_path": None}
-        # The capture `_write_script` took, not a fresh resolution: this
-        # names the database OpenROAD was given (#560).
+        # Use the capture `_write_script` took: it names the database OpenROAD was given.
         odb = (self._script_inputs or {}).get("odb")
         identity = {
             "netlist_sha256": None,
@@ -829,10 +540,8 @@ class OpenRoadPower(BasePower):
                 else None
             ),
         }
-        # One ODB timed on its extracted SPEF and on the global-route
-        # estimate is two measurements, and has to digest as two (#101).
-        # Only the SPEF case adds the key, so an estimate-path model keeps
-        # the digest it had before extraction existed.
+        # One ODB timed on its extracted SPEF and on the global-route estimate is two measurements.
+        # Only the SPEF case adds the key.
         if self._parasitics == "spef":
             identity["parasitics"] = self._parasitics
         return identity
@@ -841,18 +550,8 @@ class OpenRoadPower(BasePower):
         """Resolve to a PnrPlatformConfig (provides Liberty path)."""
         return self.root_cfg.get_pnr_platform_cfg(self.power_cfg.get_platform())
 
-    # ------------------------------------------------------------------
-    # Tcl script generation
-    # ------------------------------------------------------------------
-
     def _emit_activity_cmds(self) -> list[str]:
-        """Translate the resolved activity source into OpenROAD Tcl.
-
-        The *decision* of which source to use lives on PowerConfig
-        (`get_activity_source()`); this backend just emits the
-        corresponding `read_saif` / `read_power_activities` /
-        `set_power_activity` command.
-        """
+        """Translate the resolved activity source (`PowerConfig.get_activity_source()`) into `read_saif`, `read_power_activities` or `set_power_activity` Tcl."""
         source = self.power_cfg.get_activity_source()
         activity = self.power_cfg.get_activity()
         if source == "saif":
@@ -869,58 +568,25 @@ class OpenRoadPower(BasePower):
             ]
         return []  # "default" → static, no activity commands
 
-    # Printed by the generated script between the design-total `report_power`
-    # and the per-instance block below it. It splits `power.log` into the half
-    # that decides the run and the half that only decides the by-product: see
-    # `_fatal_log_region` (#558).
+    # Printed between the design-total `report_power` and the per-instance block; `_fatal_log_region` fails the run only on errors before it.
     _DETAIL_MARKER = "RB_PHYS_DETAIL_BEGIN"
 
     def _emit_per_instance_cmds(self, multi_corner: bool = False) -> list[str]:
-        """Tcl that attributes the run's power to individual leaf instances.
+        """Return Tcl that attributes the run's power to individual leaf instances.
 
-        This is rtl-buddy/rtl_buddy#114 delivered where the OpenROAD session
-        already lives, rather than as the stand-alone `emit_phys.tcl` that
-        issue predates `rb power` by (#558).
-
-        Three properties the shape is chosen for:
-
-        **One analysis, not one per instance.** `report_power` takes a *list*
-        of instances and prints one line each, so the whole design costs a
-        single extra call on top of the design-total report above it. The
-        obvious `foreach ... {report_power -instances $inst}` spelling reruns
-        the propagation per cell and turns a minute into an afternoon on
-        anything real.
-
-        **Leaf cells only.** `get_cells -hierarchical *` returns the leaves —
-        the instances that have a Liberty cell and therefore a power number.
-        Roll-up to the enclosing modules is the model consumer's job.
-
-        **It cannot fail the run.** Everything here is inside a `catch`: the
-        design totals have already been written by the time this executes, so
-        a `get_cells` that finds nothing, or an OpenSTA without the
-        `-instances` form, must cost the run its per-instance detail and
-        nothing else. A Tcl error escaping to the top level would abort the
-        script and take the exit code with it.
-
-        The `catch` alone is not enough, though: an OpenSTA that rejects
-        `-instances` prints an `[ERROR ...]` diagnostic *before* raising, and
-        the post-run log gate fails any run whose log carries one. So the
-        block opens with a marker line naming where the by-product begins —
-        `_fatal_log_region` scans only what precedes it, and this contract
-        holds without the gate having to guess which diagnostics are benign.
-
-        **And a swallowed failure must publish nothing**, which is why the
-        two files are written under staging names and renamed onto the
-        published ones as the block's last two commands. Failing part-way
-        leaves rows on disk, `catch` hides that it failed, and a partial
-        report at the published path parses as a complete design. See
-        `_staging_path`; the trailing deletes clear the staging files a
-        failed block leaves, and are no-ops after a successful rename.
-
-        **Under multi-corner it is the worst corner's breakdown** (#104,
-        #105): `rb_power_corner`, set by the per-corner block before it,
-        is the corner whose design totals the run reports, and the rows
-        have to add up to those totals.
+        - One `report_power -instances` call takes the list of instances, so the whole design costs
+          one extra analysis; a `foreach` over instances would rerun propagation per cell.
+        - `get_cells -hierarchical *` returns leaf cells only; roll-up to modules is the model
+          consumer's job.
+        - The block cannot fail the run: it is inside a `catch` because the design totals are
+          already written. It opens with `_DETAIL_MARKER` because an OpenSTA that rejects
+          `-instances` logs an `[ERROR ...]` before raising, and `_fatal_log_region` scans only
+          what precedes the marker.
+        - Both files are written under staging names (`_staging_path`) and renamed onto the
+          published names as the last commands, so a swallowed failure publishes nothing. Trailing
+          deletes clear leftover staging files.
+        - Under multi-corner the rows are the worst corner's (`rb_power_corner`), matching the
+          reported totals.
         """
         corner_arg = " -corner $rb_power_corner" if multi_corner else ""
         instances = self._instances_report_path()
@@ -939,8 +605,7 @@ class OpenRoadPower(BasePower):
             "    }",
             "    close $rb_fh",
             f"    report_power -instances $rb_insts{corner_arg} > {instances_tmp}",
-            # Reached only if everything above returned: this is the
-            # publication, and it is one rename per file.
+            # Reached only if everything above succeeded: publish by rename.
             f"    file rename -force {cells_tmp} {cells}",
             f"    file rename -force {instances_tmp} {instances}",
             "  }",
@@ -950,17 +615,12 @@ class OpenRoadPower(BasePower):
         ]
 
     def _write_script(self) -> str:
-        # Before anything else this generates: a `phys-run:` that cannot
-        # be resolved is a configuration error, and the withdrawal the
-        # caller makes on the way out needs to know which directory this
-        # run publishes into (#589).
+        # First: an unresolvable `phys-run:` is a config error, and the caller's withdrawal needs the publish directory.
         self._bind_phys_dir()
         platform = self._resolve_platform()
         pdk = platform.get_pdk()
         liberty = platform.get_sta_lib_path()
-        # Multi-corner (#104, #105): every corner of the platform in this one
-        # session. Empty for a single-corner platform, whose script is then
-        # the one this flow has always emitted, line for line.
+        # Every corner of a multi-corner platform in this one session; empty for a single corner.
         corner_libs = (
             platform.get_sta_corner_lib_paths() if platform.is_multi_corner() else {}
         )
@@ -968,19 +628,13 @@ class OpenRoadPower(BasePower):
         tech_lef = pdk.get_tech_lef()
         macro_lef = pdk.get_macro_lef()
         inputs = self._resolve_inputs()
-        # The script is generated from these, so these are what the run
-        # measured — `_publish_phys_model` reads the capture rather than
-        # resolving again (#560).
+        # The script is generated from these; `_publish_phys_model` reads this capture instead of resolving again.
         self._script_inputs = inputs
         macro_libs = list(inputs.get("macro_libs") or [])
         macro_lefs = list(inputs.get("macro_lefs") or [])
-        # Not part of the script — the fill cells are already in the
-        # database this reads — but resolved here with the rest of the
-        # platform, so the detection below judges the PDK the run was
-        # prepared against (#627).
+        # Not in the script: resolved with the platform so the fill-cell detection judges the PDK the run was prepared against.
         self._physical_only_cells = list(pdk.get_fill_cells() or [])
-        # And the technology the `read_liberty` / `read_lef` lines below
-        # name, in the order they name it, for `_phys_technology` (#570).
+        # The technology the `read_liberty` / `read_lef` lines name, in order, for `_phys_technology`.
         self._script_technology = {
             "liberty": liberty,
             "corner_libs": list(corner_libs.values()),
@@ -1005,12 +659,7 @@ class OpenRoadPower(BasePower):
                 f"power run '{self.power_cfg.get_name()}': "
                 f"pdk '{pdk.get_name()}' has no tech-lef configured"
             )
-        # Every macro input the configuration named, before OpenROAD is
-        # launched and at ERROR, the way a stream-out judges its own
-        # (`pnr.gds_missing_inputs`). A `read_liberty` of a path that is not
-        # there is a diagnostic in a log nobody reads and an analysis that
-        # carries on to report the macro at zero watts — which is the exact
-        # silence this key exists to end, restored by a typo (#627).
+        # Check every configured macro input before launching OpenROAD, at ERROR: a missing `read_liberty` path otherwise gives a log nobody reads and a macro at zero watts.
         missing = [path for path in macro_libs + macro_lefs if not os.path.isfile(path)]
         if missing:
             log_event(
@@ -1039,17 +688,10 @@ class OpenRoadPower(BasePower):
                     f"power run '{self.power_cfg.get_name()}': "
                     f"upstream netlist not found at {netlist} — run `rb synth` first"
                 )
-            # The script reads this run's own copy, not the upstream
-            # path: `_snapshot_netlist` writes it after the stale-clear
-            # below and hashes what it wrote, so the bytes the model
-            # names and the bytes OpenROAD parses are one file that no
-            # concurrent `rb synth` can reach (#560). Recorded here so
-            # that step knows what to copy.
+            # The script reads this run's own copy, written by `_snapshot_netlist` after the stale-clear. Recorded here so that step knows what to copy.
             self._netlist_source_path = netlist
 
-        # Ahead of the first `read_liberty`, and absent when `threads:` is
-        # unset, so such a script is the one this flow has always emitted
-        # (#654).
+        # Ahead of the first `read_liberty`; absent when `threads:` is unset.
         self._thread_plan = plan_threads(
             self.power_cfg.get_threads(), flow="power", run=self.power_cfg.get_name()
         )
@@ -1058,28 +700,19 @@ class OpenRoadPower(BasePower):
         if threads_tcl:
             lines.append(threads_tcl)
         if corner_libs:
-            # Each macro library read into every corner, after the standard
-            # cells; see `openroad_corners.liberty_tcl`.
+            # Each macro library is read into every corner, after the standard cells; see `openroad_corners.liberty_tcl`.
             lines.extend(openroad_corners.liberty_tcl(corner_libs, macro_libs))
         else:
             lines.append(f"read_liberty {liberty}")
-            # After the platform corner, so a macro library never shadows a
-            # standard cell, and in the order resolved. Both lists are empty
-            # for a design with no macros, and the script is then the one
-            # this flow has always emitted, line for line (#627).
+            # After the platform corner so a macro library never shadows a standard cell, in resolved order.
             lines.extend(f"read_liberty {lib}" for lib in macro_libs)
         lines.append(f"read_lef {tech_lef}")
         if macro_lef:
             lines.append(f"read_lef {macro_lef}")
         lines.extend(f"read_lef {lef}" for lef in macro_lefs)
         if source == "pnr":
-            # ODB encapsulates placement + routing. Reading it
-            # repopulates OpenROAD's DB at the post-route state. The
-            # wire parasitics then come from the P&R run's extracted SPEF
-            # when it wrote one this run can trust (#101); otherwise
-            # estimate_parasitics derives them from the global routes, so
-            # the CTS-buffered clock tree still contributes realistically
-            # to switching power.
+            # The ODB restores the post-route state. Wire parasitics come from the P&R run's extracted SPEF
+            # when it is trusted, otherwise `estimate_parasitics` uses the global routes.
             spef = self._choose_parasitics(inputs)
             lines.append(f"read_db {odb}")
             lines.append(f"read_sdc {sdc}")
@@ -1097,9 +730,7 @@ class OpenRoadPower(BasePower):
             )
         lines.extend(self._emit_activity_cmds())
         if corner_libs:
-            # One report per corner, then `power.rpt` at the worst of them —
-            # the corner that drives a budget, chosen in the session so the
-            # per-instance rows below are of the same corner.
+            # One report per corner, then `power.rpt` at the worst, so the per-instance rows are of the same corner.
             lines.extend(
                 openroad_corners.power_report_tcl(
                     list(corner_libs), self._corner_report_path, self._report_path()
@@ -1116,11 +747,10 @@ class OpenRoadPower(BasePower):
         return script_path
 
     def _choose_parasitics(self, inputs: dict) -> str | None:
-        """The routed SPEF to read, or `None` to estimate; logs which (#101).
+        """Return the routed SPEF to read, or `None` to estimate, and log which.
 
-        Sets `_parasitics` for the results and the model's provenance. A
-        SPEF that exists but is refused is a WARNING, naming why: the user
-        configured extraction and is about to get the estimate instead.
+        Sets `_parasitics`. A SPEF that exists but is refused logs a WARNING naming why, since the
+        user configured extraction and gets the estimate.
         """
         spef = inputs.get("spef")
         script = inputs.get("pnr_script")
@@ -1150,10 +780,6 @@ class OpenRoadPower(BasePower):
         )
         return spef if reason is None else None
 
-    # ------------------------------------------------------------------
-    # Report parsing
-    # ------------------------------------------------------------------
-
     # report_power output for the Total line looks like:
     #   Total                 1.50e-04   2.30e-05   8.00e-06   1.81e-04
     _TOTAL_LINE_RE = re.compile(
@@ -1179,54 +805,28 @@ class OpenRoadPower(BasePower):
         except ValueError:
             return None
 
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
-
     def _clear_stale_report(self) -> str | None:
-        """Remove the previous run's `power.rpt` and its per-instance half.
+        """Remove the previous run's `power.rpt`, per-instance reports and netlist snapshot.
 
-        The per-instance report and its cell sidecar are read back inside
-        this same `run()` to build the phys model, so they take the same
-        treatment as the report they accompany: an OpenROAD that exits 0
-        without reaching the `catch` block must not have the last run's
-        per-instance watts published as this one's (#469, #558).
+        An OpenROAD that exits 0 without reaching the `catch` block must not leave the last run's
+        watts to be published as this one's. Call before `_snapshot_netlist`, never after. This
+        flow's half of the phys model is nulled out in `phys_dir` (which may differ from the
+        directory cleared here); the model and manifest stay because a synthesis may have merged
+        its half into them.
 
-        The netlist snapshot goes with them (#560). It is the largest
-        thing this flow writes, nothing reads it after OpenROAD has, and
-        a failed run that left it behind would leave a copy of a netlist
-        no artefact here still describes. `run()` therefore clears
-        *before* `_snapshot_netlist` takes this run's copy, never after.
-
-        The model and its manifest stay -- a synthesis may have merged its
-        own half into them -- but this flow's half is nulled out, because
-        publication happens only on a pass and a failed rerun would otherwise
-        leave the previous run's per-instance watts discoverable with the
-        report behind them already deleted (#558). They are withdrawn from
-        `phys_dir`, which is where this run published them and need not be
-        the directory the reports above are cleared from (#589).
-
-        :returns: ``None``, or the reason the withdrawal did not happen —
-            which every caller turns into a failed run, because the reports
-            behind the still-published half have just been deleted here. See
-            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
+        :returns: ``None``, or the reason the withdrawal failed; every caller turns that into a
+            failed run. See :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
         """
         stale = clear_stale_artefacts(
             [
                 self._report_path(),
                 self._instances_report_path(),
                 self._instances_cells_path(),
-                # The names the per-instance block writes under before it
-                # renames (#560). An OpenROAD killed inside that block never
-                # reaches its trailing deletes, and a staging file left in
-                # the artefact directory would be the next run's to publish.
+                # Staging names the per-instance block writes under; an OpenROAD killed inside it leaves them behind.
                 self._staging_path(self._instances_report_path()),
                 self._staging_path(self._instances_cells_path()),
                 self._netlist_snapshot_path(),
-                # Every per-corner report a multi-corner run wrote (#104,
-                # #105), by pattern rather than by the configured corners:
-                # the platform may have lost a corner since, and its report
-                # must not outlive the run that produced it.
+                # Every per-corner report, by pattern rather than configured corners: the platform may have lost a corner.
                 *self._corner_report_paths_on_disk(),
             ],
             owner=self.power_cfg.get_name(),
@@ -1242,20 +842,11 @@ class OpenRoadPower(BasePower):
         return self._invalidate_phys_half()
 
     def _invalidate_phys_half(self) -> str | None:
-        """Null this flow's half of the model + manifest it publishes (#558).
+        """Null this flow's half of the model and manifest it publishes; the synthesis half is untouched.
 
-        The counterpart of `_publish_phys_model`, called from the clear so a
-        run that never reaches publication withdraws the previous one's
-        per-instance rows rather than leaving them over a deleted report. The
-        synthesis half is untouched -- which matters more under `phys-run:`,
-        where the directory being written is a synthesis run's own (#589).
-
-        A withdrawal that *succeeded* is bookkeeping and logs at DEBUG. One
-        that failed is not: the clear that called this has already deleted
-        the reports the published half was read from, so the rows are now
-        standing over nothing, and carrying on would let a run that dies
-        before publishing leave them there. It warns and hands the reason
-        back for the caller to fail on (#560).
+        Called from the clear so a run that never publishes withdraws the previous run's rows. A
+        successful withdrawal logs at DEBUG; a failed one warns and is returned for the caller to
+        fail on.
 
         :returns: ``None`` on success, else `invalidate_half`'s ``error``.
         """
@@ -1287,54 +878,23 @@ class OpenRoadPower(BasePower):
             return None
 
     def _unpowered_instances(self) -> dict:
-        """Instances the analysis could say nothing about, and their cells.
+        """Return the instances the analysis could say nothing about, and their cells.
 
-        A hard macro whose Liberty never reached the run is *in* the
-        design — placed, routed, and one line of `power_instances.rpt` —
-        and every one of its four columns is `0.00e+00`. Nothing in the
-        report distinguishes that from a cell that genuinely burns
-        nothing, so the design total, the `Macro` group row and the
-        model's per-instance half all read as a measurement when they are
-        an omission (#627).
+        A hard macro whose Liberty never reached the run reports 0.00e+00 in every column, which
+        looks like a measurement. Detection reads the two reports this run produced instead of
+        asking OpenSTA, so the generated script is unchanged. An instance is reported only if all
+        hold:
 
-        Read off the two reports this run already produced, rather than
-        asked of OpenSTA. Emitting the list from Tcl would put a new
-        `get_property` in the hierarchy walk — a property an older
-        OpenSTA may not answer, inside the `catch` that must not cost the
-        run anything — and would change the generated script for every
-        design, including the ones with no macros at all. The reports are
-        already parsed by the publish a few lines further on, and the
-        Liberty files the script named are on disk.
+        - its master is not declared in any Liberty the script read (:func:`_liberty_cell_names`),
+          which keeps a genuinely zero-power cell such as an unclocked flop out;
+        - its total power is exactly zero, so a Liberty spelling the scan misses cannot flag a whole
+          library;
+        - its master is not one of the PDK's fill cells, which `filler_placement` adds to the routed
+          database and which have no Liberty or power by construction.
 
-        All three conditions, not any one:
-
-        - the instance's master is not declared in any Liberty the script
-          read (:func:`_liberty_cell_names`), which is the statement
-          being made;
-        - its total power is exactly zero, which is what makes the
-          statement worth a warning; and
-        - its master is not one of the PDK's fill cells.
-
-        The second keeps a Liberty spelling this scanner misses from
-        turning a whole standard-cell library into a warning: a cell that
-        reports watts has power data whatever the scan concluded. The
-        first keeps an unclocked flop that really does sit at zero out of
-        it. The third is not a refinement but a correction: `rb pnr` ends
-        with `filler_placement`, so a routed database holds tens of
-        thousands of fill instances that are in the layout and not in the
-        netlist. They have no Liberty and no power *by construction*, and
-        reporting them would bury the one macro this exists to find under
-        24 000 lines of noise. They are named by the PDK, which is the
-        same list the flow filled with.
-
-        :returns: ``{"cells": [...], "instances": int}`` — the master
-            names, sorted, and how many instances of them there are. The
-            paths themselves are not carried: a design can hold thousands
-            and the per-instance report and `phys-model.json` both list
-            them with the cell beside each. Empty when there is nothing
-            to say, including when either report is absent — the
-            by-product failure `power.phys_model_incomplete` reports
-            that.
+        :returns: ``{"cells": [...], "instances": int}``: sorted master names and the instance
+            count. Empty when there is nothing to report, including when either report is absent
+            (`power.phys_model_incomplete` reports that).
         """
         empty: dict = {"cells": [], "instances": 0}
         instances_text = self._read_if_present(self._instances_report_path())
@@ -1351,18 +911,11 @@ class OpenRoadPower(BasePower):
             and str(row["module"]) not in physical_only
         ]
         if not rows:
-            # The common case, and the expensive check skipped: no
-            # zero-power instance means no Liberty needs scanning.
+            # Skip the Liberty scan when no instance has zero power.
             return empty
         technology = self._script_technology or {}
-        # A hardened block's abstract Liberty is not read (#684), but a
-        # `power.yaml` can still name one in its own `lib-paths`. It
-        # declares the block as a cell, and `write_timing_model` writes
-        # timing arcs and no power tables, so it cannot vouch for a
-        # zero-watt instance of it: left out, the block is named like any
-        # macro with no Liberty power data (#679). An abstract that did
-        # carry power would report watts, and a row with watts is never
-        # flagged.
+        # A block's abstract Liberty is not read, but a `power.yaml` `lib-paths` can name one. It has no
+        # power tables, so it cannot vouch for a zero-watt instance; exclude it so the block is still flagged.
         block_libs = {os.path.abspath(b.lib) for b in self._blocks}
         known = _liberty_cell_names(
             [
@@ -1383,36 +936,21 @@ class OpenRoadPower(BasePower):
         }
 
     def _fatal_log_region(self, log_text: str) -> str:
-        """The part of `power.log` whose `[ERROR ...]` lines fail the run.
+        """Return the part of `power.log` whose `[ERROR ...]` lines fail the run.
 
-        Everything the generated script prints after `_DETAIL_MARKER` belongs
-        to the per-instance block, which is a by-product: it is `catch`ed, and
-        by the time it runs the design totals are already in `power.rpt`. An
-        `[ERROR ...]` down there (an OpenSTA without `report_power
-        -instances`, say) must cost the model its `instances` half and nothing
-        more — failing the run on it would delete totals this wrapper had
-        already parsed.
-
-        A log with no marker is scanned whole: older scripts predate it, and
-        so does a run that died before reaching the totals.
+        Output after `_DETAIL_MARKER` belongs to the per-instance by-product, so an error there
+        (e.g. an OpenSTA without `report_power -instances`) costs the model its `instances` half
+        but not the parsed totals. A log without the marker is scanned whole.
         """
         marker_at = log_text.find(self._DETAIL_MARKER)
         return log_text if marker_at < 0 else log_text[:marker_at]
 
     def _fail_after_openroad(self, desc: str) -> PowerFailResults:
-        """Fail a run that has already invoked OpenROAD, publishing no report.
+        """Fail a run that has already invoked OpenROAD, leaving no report published.
 
-        `report_power`'s output file is written before the script ends, so
-        OpenROAD can exit non-zero — or log an `[ERROR ...]`, or leave a
-        report this wrapper cannot read or parse — with `power.rpt` on disk
-        at the fixed path the next run would otherwise quote (#469). Every
-        post-OpenROAD failure return goes through here.
-
-        The clear withdraws this flow's published half as it goes, and a
-        withdrawal it could not make is said out loud in the description
-        this run already fails with: the run was over either way, but the
-        user has to know the artefact directory still publishes rows over
-        the reports just deleted (#560).
+        `power.rpt` can be on disk even when OpenROAD exits non-zero or logs an `[ERROR ...]`, so
+        every post-OpenROAD failure return goes through here to clear it. A withdrawal that could
+        not be made is added to the failure description.
         """
         stale_error = self._clear_stale_report()
         if stale_error is not None:
@@ -1422,10 +960,9 @@ class OpenRoadPower(BasePower):
         )
 
     def _with_threads(self, res: PowerResults) -> PowerResults:
-        """Record the run's OpenROAD thread provenance on ``res`` (#654).
+        """Record OpenROAD thread provenance on ``res``, once OpenROAD ran on a script carrying the plan.
 
-        Only once OpenROAD has been launched on a script that carried the
-        plan; the count OpenROAD itself logged wins over the one asked for.
+        The thread count OpenROAD logged wins over the one requested.
         """
         if self._thread_plan is not None:
             try:
@@ -1446,13 +983,9 @@ class OpenRoadPower(BasePower):
             netlist_source=self.power_cfg.get_netlist_source(),
         )
 
-        # Ahead of the "openroad not found" return below: `_write_script`
-        # is where this flow validates its configuration — the SDC, the
-        # platform's tech-lef, the upstream netlist or routed ODB. An
-        # analysis pointing at a missing input is broken on every machine,
-        # and reporting it as "openroad not found" on a box that merely
-        # lacks the tool sends the user after the wrong problem. A config
-        # error is a failed run, so it clears on the way out (#469).
+        # Before the "openroad not found" return: `_write_script` validates the configuration (SDC,
+        # tech-lef, upstream netlist or ODB), and a bad config must not be reported as a missing tool.
+        # A config error is a failed run and clears on the way out.
         try:
             script_path = self._write_script()
         except Exception as e:
@@ -1485,18 +1018,9 @@ class OpenRoadPower(BasePower):
                 fail_stage="setup",
             )
 
-        # Everything past the "openroad not found" return above is a run of
-        # this entry, however it ends — including the script-generation
-        # failure just below. `report_power`'s output file is read back off a
-        # fixed path and OpenROAD exiting 0 with no [ERROR] does not prove it
-        # rewrote it, so clear here and the "power report not produced" path
-        # stays reachable instead of quoting a previous run's watts (#469).
-        #
-        # The clear also withdraws whatever this flow published here last
-        # time, and OpenROAD does not start if it could not: the reports
-        # behind those rows have just been deleted, so a run that went ahead
-        # and then failed would leave a breakdown of a design this directory
-        # no longer holds discoverable as a current one (#560).
+        # Everything past the "openroad not found" return is a run of this entry, however it ends. The
+        # report is read from a fixed path, so clear it here or a run that does not rewrite it would
+        # quote the previous watts. If the withdrawal fails, OpenROAD does not start.
         stale_error = self._clear_stale_report()
         if stale_error is not None:
             return PowerFailResults(
@@ -1505,9 +1029,7 @@ class OpenRoadPower(BasePower):
                 fail_stage="setup",
             )
 
-        # After the clear, before OpenROAD: the script names this run's
-        # own copy of the netlist, and the hash recorded beside the watts
-        # is of that copy (#560).
+        # After the clear, before OpenROAD: the script names this run's copy of the netlist, and the recorded hash is of that copy.
         snapshot_error = self._snapshot_netlist()
         if snapshot_error is not None:
             log_event(
@@ -1524,9 +1046,7 @@ class OpenRoadPower(BasePower):
             )
 
         log_path = self._log_path()
-        # OpenROAD's `-log` truncates only once it is running; a launch that
-        # dies earlier would leave the previous run's log, and its ORD-0030
-        # thread count, to be read as this run's (#654).
+        # OpenROAD's `-log` truncates only once running; remove the old log so an earlier launch failure does not leave the previous ORD-0030 thread count.
         try:
             os.unlink(log_path)
         except FileNotFoundError:
@@ -1550,10 +1070,7 @@ class OpenRoadPower(BasePower):
             cmd=" ".join(cmd),
         )
 
-        # Last thing before the subprocess: the trace's and the SDC's
-        # identities are of the bytes on disk as OpenROAD starts, and the
-        # narrower that window is the less there is to confirm
-        # afterwards (#570).
+        # Last step before the subprocess, to narrow the window between the hashes and OpenROAD's reads.
         self._hash_trace()
         self._hash_constraints()
 
@@ -1617,12 +1134,7 @@ class OpenRoadPower(BasePower):
             if corner_error is not None:
                 return self._fail_after_openroad(corner_error)
 
-        # Before the pass is announced, so the warning reads above the
-        # numbers it qualifies rather than under them. It never changes
-        # the verdict: the watts reported are a real measurement of
-        # everything that had a library, and refusing to report them
-        # would cost a user the standard-cell figure they can act on to
-        # make a point about the macro they already know is a macro.
+        # Before the pass is announced so the warning reads above the numbers. It never changes the verdict: the reported watts are real for everything that had a library.
         unpowered = self._unpowered_instances()
         if unpowered["cells"]:
             log_event(
@@ -1674,15 +1186,11 @@ class OpenRoadPower(BasePower):
         return self._with_threads(passed)
 
     def _parse_corner_reports(self, log_text: str) -> tuple[dict, str | None]:
-        """Per-corner totals and the worst corner of a multi-corner run.
+        """Return per-corner totals and the worst corner of a multi-corner run as ``(fields, error)``.
 
-        Returns ``(fields, error)``. `power.rpt` — already parsed for the
-        scalar fields — is the report at the corner the script chose as
-        worst and printed after `POWER_CORNER_MARKER`; each corner's own
-        report is `power.<corner>.rpt`. A corner whose report is missing or
-        unparsable fails the run like a missing `power.rpt` does: the run
-        was asked for every corner, and reporting fewer would read as a
-        signoff over corners it never saw (#104, #105).
+        `power.rpt` is the worst corner's report, printed after `POWER_CORNER_MARKER`; each corner's
+        own report is `power.<corner>.rpt`. A missing or unparsable corner report fails the run,
+        since fewer corners would read as a signoff over corners never seen.
         """
         worst = openroad_corners.parse_power_corner(self._fatal_log_region(log_text))
         if worst not in self._script_corners:
@@ -1703,42 +1211,18 @@ class OpenRoadPower(BasePower):
         return {"worst_corner": worst, "corners": corners}, None
 
     def _phys_technology(self) -> list[str]:
-        """The Liberty + LEF the generated script reads, as identity (#570).
+        """Return the Liberty and LEF the generated script reads, as identity for the fingerprint.
 
-        `_write_script` emits `read_liberty <liberty>` and one or two
-        `read_lef` lines from the resolved platform, and the options
-        mapping recorded only the platform *name*. A `cfg-pnr-platforms`
-        entry repointed at another corner — a different Liberty, a
-        different tech LEF — is the same name, so two analyses of two
-        technologies fingerprinted identically and a run listing showed
-        them as one experiment. The synthesis fingerprints already close
-        this on their own library lists; this closes it on the power
-        flow's, through the same
-        :func:`~rtl_buddy.tools.synth_yosys.library_fingerprint` — paths
-        rather than contents (a Liberty is tens of megabytes), spelled
-        project-relative, and in script order, because `read_liberty` and
-        `read_lef` are order-sensitive.
-
-        Read from the capture `_write_script` took rather than resolved
-        again: the mapping has to describe the technology the run
-        consumed, not whatever `cfg-pnr-platforms` says now.
-
-        The macro libraries and LEFs sit where the script reads them —
-        the inherited and configured Liberty after the platform corner,
-        the inherited LEFs after the PDK's (#627). They belong in the
-        fingerprint for the reason the platform's do, and more sharply: a
-        run that reads a macro's Liberty and one that does not measure
-        the same netlist and report different watts, so digesting them
-        identically would present the before and after of this very fix
-        as one experiment.
+        The platform name alone does not determine them. Paths, not contents, are digested (a
+        Liberty is tens of MB), project-relative and in script order because `read_liberty` and
+        `read_lef` are order-sensitive. Read from the capture `_write_script` took, not resolved
+        again. Macro libraries and LEFs are included where the script reads them, since a run with a
+        macro Liberty and one without report different watts.
         """
         resolved = self._script_technology or {}
         named = [
             resolved.get("liberty"),
-            # Every corner's Liberty under multi-corner (#104, #105), the
-            # primary's again among them: a run over three corners and a run
-            # over the primary alone are two experiments. Empty, and so
-            # absent from the digest, for a single-corner run.
+            # Every corner's Liberty under multi-corner, the primary's included; empty (so absent from the digest) for one corner.
             *(resolved.get("corner_libs") or []),
             *(resolved.get("macro_libs") or []),
             resolved.get("tech_lef"),
@@ -1750,82 +1234,25 @@ class OpenRoadPower(BasePower):
     def _publish_phys_model(
         self, parsed: dict, *, worst_corner: str | None = None
     ) -> str | None:
-        """Write `phys-model.json` + its manifest for a run that passed (#558).
+        """Write `phys-model.json` and its manifest for a passing run.
 
-        Into `phys_dir`, which is this run's own artefact directory unless
-        `phys-run:` named a synthesis to publish beside (#589). The report
-        paths the manifest records still point into the run's own
-        directory, and they are project-relative there as everywhere, so
-        a reader reaches them from either place.
+        Written into `phys_dir`, this run's directory unless `phys-run:` names a synthesis. The
+        manifest's report paths still point into this run's directory, project-relative.
 
-        Never fails the power analysis. The design totals are already parsed
-        and already reported by the time this runs; the per-instance rows are
-        the by-product, and an OpenSTA that skipped or garbled them costs the
-        model its `instances` half and earns a warning.
+        Never fails the power analysis: a missing or garbled per-instance report costs the model its
+        `instances` half and a warning.
 
-        The top comes from the resolution the *script* was generated from
-        rather than the run name, because the model is keyed on the
-        *design*: it is what decides whether a synthesis' module rows
-        already in this directory describe the same thing and may be merged
-        forward. Resolving a second time here would re-read the synth or pnr
-        YAML this analysis references, minutes after OpenROAD was launched
-        against the first answer — a `top:` edited in between, or a
-        referenced entry renamed away, would then have these watts attributed
-        to a design they do not describe and merged against a co-named
-        publication of another one. So `_write_script` captures what it
-        resolved and this reads the capture, the same capture-at-preparation
-        rule the netlist snapshot follows (#560).
+        Identity recorded:
 
-        The netlist this run read is identified by the hash
-        `_snapshot_netlist` took of the private copy it gave OpenROAD, not
-        by re-reading the upstream path now: it is what a later synthesis
-        into this directory tests its own output against before carrying
-        these per-instance rows forward, and what this publish tests before
-        carrying any module rows already here forward (#558), so it has to
-        be of the bytes the analysis actually measured -- which is why the
-        analysis reads a copy nothing else can rewrite (#560). A
-        `netlist-source: pnr` run resolves no netlist at all -- it reads the
-        routed ODB -- so it records none, and nothing is inherited in either
-        direction. The manifest records where that copy is as well as
-        what it hashed to, so a result read back from an archive can reach
-        the netlist and re-check the hash rather than take it on faith
-        (#560).
-
-        The mode and the activity go in beside them (#568). Without them
-        the model records a µW figure with no statement of what it is a
-        figure OF: static leakage-plus-internal and a SAIF-driven dynamic
-        total print in the same column, and two runs of one design that
-        differ only in their stimulus are one document read twice. Both
-        are the resolved values this run actually dispatched on -- the
-        same `get_mode()` / `get_activity_source()` pair
-        `_emit_activity_cmds` branches on -- so the record cannot claim a
-        source the Tcl did not use. The trace is identified by its
-        SHA-256 as well as its path: `dump.saif` is rewritten in place by
-        the next run of the test behind it, so the path alone cannot tell
-        a re-captured trace from the one this run measured. That hash is
-        `_hash_trace`'s, taken as OpenROAD was launched and confirmed
-        when it returned, not re-read here -- a hash taken at this point
-        would identify a replacement written while the analysis ran, and
-        `_confirm_trace_unchanged` records `null` rather than a hash
-        nothing can vouch for. Two reads of one file, and only on a run
-        that read it at all.
-
-        The constraints recorded are the RESOLVED SDC, the `sdc` of the
-        resolution `_write_script` generated from, and not the config's
-        `constraints:` field. On a
-        `netlist-source: pnr` run they are not the same thing: with no
-        explicit `constraints:` the analysis reads `<pnr
-        artefact>/<top>.routed.sdc`, the post-CTS constraints the router
-        wrote, and the field is empty -- so the config block recorded
-        `null` and its hash with it, and two runs against two different
-        routed SDCs fingerprinted identically while measuring different
-        timing. The rest of the block is what the run dispatched on; this
-        one field was what it was configured with, which is the same
-        value only when the reader spelt it out. Its hash is
-        `_hash_constraints`' -- taken as OpenROAD was launched and
-        confirmed when it returned, for the reason the trace's is: a
-        routed SDC is rewritten in place by a concurrent `rb pnr`, and a
-        digest computed here would name the replacement (#570).
+        - The top and SDC come from the resolution `_write_script` generated from, not from a second
+          resolution or the config's `constraints:` field. A `netlist-source: pnr` run with no
+          explicit `constraints:` uses the router's `<top>.routed.sdc`.
+        - The netlist is identified by the hash `_snapshot_netlist` took of the private copy, which
+          gates merging module rows already in the directory. The manifest also records the copy's
+          location. A pnr run records none and inherits nothing.
+        - The mode and activity source are the resolved values the Tcl dispatched on. The trace and
+          SDC hashes are those taken at launch (`_hash_trace`, `_hash_constraints`) and confirmed on
+          return, not re-read here.
         """
         self._confirm_trace_unchanged()
         self._confirm_constraints_unchanged()
@@ -1840,10 +1267,7 @@ class OpenRoadPower(BasePower):
             run=self.power_cfg.get_name(),
             netlist_source=self.power_cfg.get_netlist_source(),
             netlist_sha256=self._netlist_sha256,
-            # The snapshot, not the upstream path: the manifest names the
-            # bytes the hash beside it identifies, and only the copy is
-            # still guaranteed to be those bytes. Null exactly when the
-            # hash is -- a `netlist-source: pnr` run snapshots nothing.
+            # The snapshot, not the upstream path: only the copy is guaranteed to be the hashed bytes. Null exactly when the hash is (`netlist-source: pnr`).
             netlist_path=(
                 self._netlist_snapshot_path()
                 if self._netlist_sha256 is not None
@@ -1853,14 +1277,7 @@ class OpenRoadPower(BasePower):
             activity=activity_block(
                 source=source,
                 trace=trace,
-                # Taken as OpenROAD was launched and confirmed when it
-                # returned (`_hash_trace`), not re-read now: the analysis
-                # is long, `dump.saif` is rewritten in place by the next
-                # run of the test behind it, and a hash taken afterwards
-                # would identify the replacement rather than the bytes
-                # this run measured. `None` where the run read no trace,
-                # or where the trace changed underneath it and the
-                # identity is therefore unknown.
+                # `_hash_trace`'s value, not re-read now. None where no trace was read or it changed underneath the run.
                 trace_sha256=self._trace_sha256,
                 scope=activity.scope,
                 toggle_rate=activity.default_toggle_rate,
@@ -1872,30 +1289,17 @@ class OpenRoadPower(BasePower):
             options={
                 "tool": self.power_cfg.get_tool_name(),
                 "netlist_source": self.power_cfg.get_netlist_source(),
-                # The Liberty and LEF the script reads: the platform name
-                # alone does not determine them, so two corners behind one
-                # name digested identically (#570).
+                # The platform name alone does not determine the Liberty and LEF.
                 "technology": self._phys_technology(),
-                # Which upstream run, not merely which kind of one; see
-                # `_upstream_identity` (#570).
+                # Which upstream run, not just its kind; see `_upstream_identity`.
                 **self._upstream_identity(),
                 "mode": self.power_cfg.get_mode(),
                 "activity_source": source,
-                # Under a multi-corner platform the watts and per-instance
-                # rows are the worst corner's; say which, so the model is
-                # not read as the primary corner's. Absent for one corner,
-                # keeping those digests as they were (#104).
+                # Under a multi-corner platform the watts and rows are the worst corner's; say which. Absent for one corner.
                 **({"corner": worst_corner} if worst_corner else {}),
                 "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),
-                # `tool_overrides` is deliberately absent. Nothing in this
-                # backend reads it -- `PowerConfig.get_tool_overrides()` has
-                # no caller at all, so a `power.yaml` that carries the block
-                # runs exactly as one that does not -- and a fingerprint over
-                # a field that shapes nothing tells two identical analyses
-                # apart, which is the one thing the digest exists not to do.
-                # Recording it would also be a quiet claim that it was
-                # applied. If the field is ever wired in, it belongs back
-                # here in the same change.
+                # `tool_overrides` is deliberately absent: nothing in this backend reads it, so digesting it would
+                # tell identical analyses apart and imply it was applied. Add it if it is ever wired in.
             },
             report_path=self._report_path(),
             instances_path=self._instances_report_path(),
@@ -1916,15 +1320,9 @@ class OpenRoadPower(BasePower):
                 error=published["error"],
             )
         if self.power_cfg.get_phys_run() and published["paired"] is False:
-            # Only under `phys-run:`. The pairing was asked for by name,
-            # and the netlist hashes say the module rows in that
-            # directory were counted off a netlist this analysis did not
-            # read -- so the gate dropped them and the model written
-            # there is this half alone. Said out loud, because a config
-            # that names the run it wants to pair with and then quietly
-            # produces a half-filled model is the same silence the field
-            # exists to end (#589). Not a failure: the watts are sound
-            # and re-running the synthesis pairs them.
+            # Only under `phys-run:`. The netlist hashes say the module rows already there were counted off
+            # a different netlist, so the gate dropped them and the model is this half alone. Not a
+            # failure: the watts are sound and re-running the synthesis pairs them.
             log_event(
                 logger,
                 logging.WARNING,
