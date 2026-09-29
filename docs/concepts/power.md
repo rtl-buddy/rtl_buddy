@@ -10,7 +10,7 @@ description: Run OpenROAD gate-level power analysis from synthesis or P&R output
 
 OpenROAD 25Q1 or newer must be on `PATH` or configured under `cfg-power-tools`. Only `tool: openroad` is supported; other tools report `SKIP`.
 
-The run's `platform` supplies the PDK and Liberty corner. A platform with `corners:` analyses every listed corner in one session; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners).
+The run's `platform` names a `cfg-pnr-platforms` entry (see [Place-and-Route: Configure the physical platform](pnr.md#configure-the-physical-platform)) that supplies the PDK and Liberty corner. A platform with `corners:` analyses every listed corner in one session; see [Place-and-Route: Sign off at several corners](pnr.md#sign-off-at-several-corners).
 
 ## Choose the design source
 
@@ -23,7 +23,7 @@ The `synth` source suits early leakage and activity comparisons but underestimat
 
 ## Extracted parasitics
 
-A `pnr` source reads the P&R run's extracted SPEF with `read_spef` when the PDK sets [`rcx-rules`](pnr.md#tune-the-process-dependent-steps). Otherwise it uses `estimate_parasitics -global_routing`.
+A `pnr` source reads the P&R run's extracted `<top>.routed.spef`, written beside the routed ODB, with `read_spef` when the PDK sets [`rcx-rules`](pnr.md#tune-the-process-dependent-steps). Otherwise it uses `estimate_parasitics -global_routing`.
 
 The SPEF is read only when the P&R run vouches for it: its `pnr.tcl` must contain `write_spef`, and the SPEF must be no older than that `pnr.tcl`. Otherwise the SPEF is left unread with a `power.spef_rejected` warning that names the reason, and the run uses the estimate.
 

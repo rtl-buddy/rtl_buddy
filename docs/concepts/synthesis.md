@@ -144,6 +144,8 @@ cfg-synth-tools:
 
 Build the plugin against the same Yosys installation. `plugin-path` resolves from the project root. If it is omitted, `RTL_BUDDY_SLANG_PLUGIN` is used; that value must be an absolute path, though `~` is expanded.
 
+An unknown `frontend` or a missing slang plugin fails the run as a configuration error (exit 2) before any gate runs. It is not a synthesis `FAIL`.
+
 - `single-unit: true` shares preprocessor definitions across source files. Set it only when the sources rely on that.
 - `best-effort-hierarchy: true` forwards `read_slang --best-effort-hierarchy` and keeps module instances as hierarchy. yosys-slang otherwise inlines every instance and drops `(* keep_hierarchy *)`. Set it when mapping needs the hierarchy, for example when a flattened cone of `keep_hierarchy` multipliers stalls ABC. Reports still include the hierarchy roll-up.
 - Both options apply only to slang. With the Verilog frontend they are ignored with a warning. A non-Boolean value is fatal.
@@ -209,14 +211,12 @@ Limits, in both directions:
 | An unresolvable `` `include `` is skipped (DEBUG log) | That header's declarations are missed; the run does not fail |
 | Scope nesting is tracked by keyword pairing | Pathological legal code can change which declarations are exempt |
 
-An unknown `frontend` or a missing slang plugin fails the run as a configuration error (exit 2), not as a synthesis `FAIL`.
-
 ## Preprocessor definitions in the scan
 
 The macro table starts with the filelist's `+define+` entries, then the run's `defines:`, then the frontend's own macros. `read_verilog` predefines `SYNTHESIS` and `YOSYS`. `read_slang` predefines `SYNTHESIS` and slang's built-ins but not `YOSYS`. So a `` `ifndef YOSYS `` helper is reported only under `frontend: slang`.
 
 - A bare `+define+X` takes the value the selected frontend gives a valueless `-D`. Tools disagree on it (Verilator and `read_verilog` use empty, Icarus and slang use `1`), so write `+define+X=1` when a value is meant.
-- When `defines:` overrides a filelist entry with a different value, one `synth.filelist_defines_overridden` warning names both. Simulation then uses the filelist value and synthesis the `synth.yaml` one; drop one to make them agree.
+- When `defines:` overrides a filelist entry, one `synth.filelist_defines_overridden` warning names both. It fires when the values differ, and when the filelist entry is bare (no value) and `defines:` sets any value, because the tools disagree on what a bare macro means. Simulation then uses the filelist value and synthesis the `synth.yaml` one; drop one to make them agree.
 - A filelist `+define+` value containing whitespace is fatal, because a Yosys script line cannot carry it.
 - After `` `undefineall ``, slang keeps command-line macros and `read_verilog` does not. A `` `ifndef `` on a `defines:` macro can therefore compile under `verilog` and not under `slang`.
 - With `single-unit: false` (default) the macro table is re-seeded for each source file. `single-unit: true` shares it. A header always shares its includer's table.
