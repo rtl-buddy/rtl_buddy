@@ -1,12 +1,5 @@
-"""Tests for the macOS LaunchAgent integration (issue #122).
-
-The render path is platform-independent and exercised everywhere
-(it's pure XML string construction). The install/uninstall paths
-are macOS-only — Linux CI runs them through the
-:class:`LaunchAgentUnsupportedError` guard, the macOS path is
-covered with ``platform``-patched fakes plus a captured
-``launchctl`` so we exercise the real flow without depending on
-``launchctl`` being on PATH (the test machine often won't have it).
+"""Tests for the macOS LaunchAgent integration. Rendering is platform-independent;
+install and uninstall use patched platform checks and a captured ``launchctl``.
 """
 
 from __future__ import annotations
@@ -29,13 +22,8 @@ from rtl_buddy.hub.launchagent import (
 )
 
 
-# --- render path (platform-independent) -------------------------------------
-
-
 def test_render_plist_is_valid_xml(tmp_path: Path):
-    """The generated XML must parse cleanly and carry the canonical
-    LaunchAgent keys. Standin for ``plutil -lint`` which isn't
-    guaranteed on every CI host."""
+    """The generated XML parses and carries the canonical LaunchAgent keys."""
     xml = render_plist(
         python="/usr/bin/python3",
         project_root=tmp_path,
@@ -64,7 +52,6 @@ def test_render_plist_label_matches_constant(tmp_path: Path):
 def test_render_plist_program_args_run_rb_hub_start(tmp_path: Path):
     xml = render_plist(python="/opt/homebrew/bin/python3.13", project_root=tmp_path)
     root = ET.fromstring(xml)  # noqa: S314
-    # Find ProgramArguments → array → string list.
     args: list[str] = []
     for el in root.iter("dict"):
         children = list(el)
@@ -92,9 +79,7 @@ def test_render_plist_escapes_xml_special_chars(tmp_path: Path):
     weird = tmp_path / "ampersand & quote"
     weird.mkdir()
     xml = render_plist(project_root=weird)
-    # If the escape worked, ET.fromstring round-trips.
     root = ET.fromstring(xml)  # noqa: S314
-    # Find the WorkingDirectory string sibling.
     for el in root.iter("dict"):
         children = list(el)
         for i, child in enumerate(children):
@@ -114,9 +99,6 @@ def test_render_plist_default_log_path_under_rtl_buddy_dir(tmp_path: Path):
     assert expected in xml
 
 
-# --- install / uninstall on non-macOS ---------------------------------------
-
-
 @pytest.mark.skipif(is_supported(), reason="runs on non-macOS hosts only")
 def test_install_on_non_macos_raises_unsupported():
     with pytest.raises(LaunchAgentUnsupportedError, match="macOS-only"):
@@ -129,16 +111,8 @@ def test_uninstall_on_non_macos_raises_unsupported():
         uninstall()
 
 
-# --- install / uninstall on simulated macOS ---------------------------------
-
-
 def _force_macos(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pretend the test host is macOS so the install path exercises.
-
-    Two surfaces gate macOS-only behaviour: :func:`is_supported`
-    (consulted by ``install`` / ``uninstall``) and any direct read
-    of :data:`sys.platform`. Patch both.
-    """
+    """Pretend the host is macOS by patching ``is_supported`` and ``sys.platform``."""
     monkeypatch.setattr(launchagent, "is_supported", lambda: True)
     monkeypatch.setattr("sys.platform", "darwin")
 
@@ -174,8 +148,7 @@ def test_install_writes_plist_and_loads_via_launchctl(
     assert target == plist_path
     assert plist_path.exists()
     assert "<plist" in plist_path.read_text()
-    # The install should have run a single ``load`` (no prior
-    # plist → no preliminary ``unload``).
+    # A first install runs a single ``load`` and no ``unload``.
     assert calls == [[str(fake_launchctl), "load", str(plist_path)]]
 
 
@@ -207,8 +180,7 @@ def test_install_unloads_prior_plist_before_reload(
         plist_path=plist_path,
         launchctl=str(fake_launchctl),
     )
-    # The first call must be an unload of the prior plist; the
-    # second a load of the freshly-written one.
+    # An unload of the prior plist comes first, then a load of the new one.
     assert calls[0] == [str(fake_launchctl), "unload", str(plist_path)]
     assert calls[1] == [str(fake_launchctl), "load", str(plist_path)]
 

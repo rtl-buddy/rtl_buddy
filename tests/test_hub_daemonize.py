@@ -1,21 +1,5 @@
-"""Tests for ``rb hub start --daemon`` background detach (issue #387).
-
-``--daemon`` used to print "not implemented yet" and then block in the
-foreground forever. These cover the three seams of the real detach:
-
-* :func:`build_daemon_argv` — the child command line, and above all
-  that it always carries ``--foreground`` (otherwise the daemon
-  re-daemonises itself in a loop).
-* :func:`wait_for_record` — the readiness handshake: return only on the
-  child's *own* record, fail loudly with the log tail otherwise.
-* the CLI wiring — ``--daemon`` must hand off *before* the expensive
-  start-up work (view.json generation, viewer-bundle discovery, socket
-  binds), so all of it runs in the exec'd child rather than in a forked
-  copy of the parent interpreter.
-
-Plus one end-to-end run of the real CLI, which is the actual #387
-regression: the command has to return promptly, leave ``hub.json``
-behind, and leave a live hub serving on the recorded ports.
+"""Tests for ``rb hub start --daemon``: child argv, readiness handshake, hand-off order
+and an end-to-end detach.
 """
 
 from __future__ import annotations
@@ -33,11 +17,6 @@ from typer.testing import CliRunner
 
 from rtl_buddy.hub import daemonize, discovery
 from rtl_buddy.hub.cli import app as hub_app
-
-
-# --------------------------------------------------------------------------
-# build_daemon_argv
-# --------------------------------------------------------------------------
 
 
 def test_argv_always_forces_foreground():
@@ -95,11 +74,6 @@ def test_argv_keeps_port_zero_distinct_from_unset():
     assert "--listen-port" not in daemonize.build_daemon_argv(listen_port=None)
 
 
-# --------------------------------------------------------------------------
-# spawn_detached
-# --------------------------------------------------------------------------
-
-
 def test_spawn_detached_new_session_devnull_stdin_and_log(tmp_path: Path):
     """The child leads its own session, has no stdin, and logs to file."""
     log = tmp_path / ".rtl-buddy" / "hub.log"
@@ -130,11 +104,6 @@ def test_spawn_detached_appends_rather_than_truncates(tmp_path: Path):
     )
     assert proc.wait(timeout=30) == 0
     assert log.read_text().splitlines() == ["earlier run", "later run"]
-
-
-# --------------------------------------------------------------------------
-# wait_for_record
-# --------------------------------------------------------------------------
 
 
 class _FakeProc:
@@ -217,8 +186,7 @@ def test_wait_for_record_accepts_a_record_written_just_before_exit(tmp_path: Pat
         return code
 
     proc.poll = poll_and_publish  # type: ignore[method-assign]
-    # First iteration: no record, poll() returns None and publishes one.
-    # Second iteration reads it.
+    # First poll() publishes the record; the second loop iteration reads it.
     record = daemonize.wait_for_record(
         tmp_path,
         proc=proc,  # type: ignore[arg-type]
@@ -248,11 +216,6 @@ def test_ready_timeout_env_override(monkeypatch: pytest.MonkeyPatch):
     assert daemonize.ready_timeout_s() == daemonize.DEFAULT_READY_TIMEOUT_S
 
 
-# --------------------------------------------------------------------------
-# CLI wiring
-# --------------------------------------------------------------------------
-
-
 @pytest.fixture
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / ".git").mkdir()
@@ -263,12 +226,8 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_cli_daemon_defers_all_start_work_to_the_child(
     project_root: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The ordering guarantee behind the fix.
-
-    ``--daemon`` must not run the server loop (nor the ``--model``
-    view.json build, nor viewer-bundle discovery, all of which live
-    behind it) in this process — that work belongs to the exec'd child,
-    after the detach.
+    """``--daemon`` hands off to the exec'd child before any server loop, view.json
+    build or bundle discovery runs in this process.
     """
     from rtl_buddy.hub import cli as hub_cli
 
@@ -311,14 +270,8 @@ def test_cli_daemon_defers_all_start_work_to_the_child(
 def test_cli_daemon_absolutises_relative_paths_before_the_handoff(
     project_root: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A relative path must not change meaning across the detach.
-
-    The child runs with ``cwd=project_root`` while the user typed the path
-    against the invocation cwd, so anything forwarded verbatim would resolve
-    somewhere else entirely in the daemon. `--axi-perf-from` is the sharpest
-    case: its existence check runs in the parent, against the invocation
-    cwd, so an unresolved hand-off means the preflight no longer guards the
-    file the child opens.
+    """Path options are resolved against the invocation cwd before being forwarded to a
+    child that runs in the project root.
     """
     from rtl_buddy.hub import cli as hub_cli
 
@@ -376,11 +329,8 @@ def test_cli_daemon_absolutises_relative_paths_before_the_handoff(
 def test_wait_for_record_timeout_message_reports_the_deadline_it_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The reported number is the one the deadline was computed from.
-
-    Reading `$RTL_BUDDY_HUB_DAEMON_TIMEOUT` a second time to format the
-    message would let the two disagree — and a message that names a timeout
-    the code did not use sends the reader looking in the wrong place.
+    """The timeout named in the error is the one the deadline used, even if the env var
+    changes afterwards.
     """
     monkeypatch.setenv(daemonize.READY_TIMEOUT_ENV, "0.05")
     proc = _FakeProc(pid=4242)
@@ -388,8 +338,7 @@ def test_wait_for_record_timeout_message_reports_the_deadline_it_used(
     with pytest.raises(daemonize.DaemonStartError) as excinfo:
         daemonize.wait_for_record(tmp_path, proc=proc, log_path=tmp_path / "hub.log")
 
-    # Env is re-read as something else; the message must still say 0s, the
-    # value the deadline came from.
+    # Changing the env var afterwards must not change the reported timeout.
     monkeypatch.setenv(daemonize.READY_TIMEOUT_ENV, "999")
     assert "timed out after 0s" in str(excinfo.value)
 
@@ -416,11 +365,6 @@ def test_cli_start_help_documents_the_detach():
     assert "not implemented" not in result.output
 
 
-# --------------------------------------------------------------------------
-# end-to-end (#387 regression)
-# --------------------------------------------------------------------------
-
-
 def _http_status(url: str, *, timeout: float = 5.0) -> int:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
@@ -431,11 +375,8 @@ def _http_status(url: str, *, timeout: float = 5.0) -> int:
 
 @pytest.fixture
 def reap_daemon(tmp_path: Path):
-    """Kill whatever hub ``tmp_path``'s hub.json names, pass or fail.
-
-    Registered *before* the assertions, not around them: a test that
-    fails on its first assertion would otherwise leak a live daemon
-    into the developer's session.
+    """Kill the hub named by ``tmp_path``'s hub.json; registered before the assertions
+    so a failing test does not leak a daemon.
     """
     yield
     record_path = tmp_path / ".rtl-buddy" / "hub.json"
@@ -457,10 +398,8 @@ def reap_daemon(tmp_path: Path):
 
 
 def test_e2e_daemon_serve_viewer_returns_and_serves(tmp_path: Path, reap_daemon: None):
-    """#387: ``--daemon --serve-viewer`` from a non-tty must not hang.
-
-    stdin/stdout are pipes here (never a tty), which is the exact shape
-    of the agent-shell invocation in the bug report.
+    """``--daemon --serve-viewer`` from a non-tty returns promptly and leaves a live
+    hub.
     """
     (tmp_path / "root_config.yaml").write_text(
         "rtl-buddy-filetype: project_root_config\n"
@@ -499,8 +438,7 @@ def test_e2e_daemon_serve_viewer_returns_and_serves(tmp_path: Path, reap_daemon:
     record_path = tmp_path / ".rtl-buddy" / "hub.json"
     assert record_path.is_file(), f"no hub.json after {elapsed:.1f}s: {output}"
     record = json.loads(record_path.read_text())
-    # It really detached: the `rb` invocation has returned, and the hub
-    # it started is a different, still-live process.
+    # The rb invocation has returned and the hub is a separate, live process.
     assert record["pid"] != os.getpid()
     assert discovery._pid_is_live(record["pid"])  # noqa: SLF001
     assert (tmp_path / ".rtl-buddy" / "hub.log").is_file()

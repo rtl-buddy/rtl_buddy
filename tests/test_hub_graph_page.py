@@ -1,35 +1,6 @@
-"""Tests for the hub-served design-knowledge-graph pane (#382).
-
-Six surfaces, in the order a user meets them:
-
-1. ``GET /graph.json`` — ``artefacts/graph/graph.json`` joined with
-   ``artefacts/graph/results-overlay.json`` in memory. The join must not
-   touch ``graph.json`` on disk: hash stability across regressions is
-   the whole reason the overlay is a separate file (#379).
-2. Column bucketing — every node lands in exactly one of the eight
-   :data:`~rtl_buddy.hub.graph_page.COLUMN_ORDER` columns, computed
-   server-side because two of its inputs are graph-wide joins. This is
-   also where the ``category`` stamp is pinned as *served only*: writing
-   it back to disk would be the churn #379 exists to prevent.
-3. ``GET /graph`` — one self-contained HTML document. The offline rule
-   is asserted structurally (no external ``src``/``href``, no CDN host),
-   because "it worked on my laptop" is exactly the failure mode a hub
-   running on an air-gapped build machine hits.
-4. ``graph_focus`` — the wire type behind ``rb hub send graph-focus``:
-   schema-valid, broadcast to peers, and replayed to a peer that
-   connects after the fact.
-5. Module-level schematic sync — the fallback for a node that has no
-   instance path, which on a project-tier graph is every node. Its pure
-   helper is sliced out of the page between markers and exercised in
-   ``node``, the same convention ``tests/test_hub_cov_page.py`` uses.
-6. Physical heat — the pane's `module:` nodes painted with the model
-   `GET /phy.json` serves (rtl-buddy/rtl_buddy#596). The join is the
-   part that can be silently wrong, so its pure rules are sliced out
-   and run in ``node``; the wiring and the muted state are asserted on
-   the rendered document and over HTTP.
-7. The version label in the status strip — one wording of "which build
-   am I looking at" shared with the coverage pane and the schematic SPA, so
-   its cases are asserted identically in all three.
+"""Tests for the hub-served design-knowledge-graph pane: the ``/graph.json`` join,
+column bucketing, the offline ``/graph`` page, ``graph_focus``, module-level
+schematic sync, physical heat and the version label.
 """
 
 from __future__ import annotations
@@ -61,11 +32,6 @@ from rtl_buddy.hub.server import HubServer
 from rtl_buddy.hub.viewer_http import ViewerServer, render_index_html
 from rtl_buddy.phys.manifest import build_manifest, write_manifest
 from rtl_buddy.phys.model import build_synth_model, write_model
-
-
-# ---------------------------------------------------------------------------
-# fixtures — a minimal built graph on disk
-# ---------------------------------------------------------------------------
 
 
 _GRAPH = {
@@ -168,15 +134,6 @@ def built_graph(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# ---------------------------------------------------------------------------
-# column bucketing
-#
-# One graph per rule, rather than one big one: the interesting cases are
-# the design-tier nodes that came from a *testbench* elaboration, and the
-# only way to state what should happen to them is to name them.
-# ---------------------------------------------------------------------------
-
-
 def _node(node_id: str, node_type: str, tier: str, **attrs) -> dict:
     return {
         "id": node_id,
@@ -196,26 +153,21 @@ def _link(source: str, target: str, link_type: str) -> dict:
     }
 
 
-#: Every column, exercised once. The `fpv` testbench hierarchy is
-#: synthetic — today only `tests.yaml` suites produce `tb:` nodes with a
-#: hierarchy — but the rule is driven by the suite's `flow`, not by which
-#: config file it came from, and that is the property worth pinning.
+# Every column, exercised once. The ``fpv`` testbench hierarchy is synthetic; the rule
+# follows the suite's ``flow``, not its config file.
 _BUCKET_GRAPH = {
     "directed": True,
     "multigraph": True,
     "graph": {"schema_version": 1, "project_root_rel": "."},
     "nodes": [
-        # spec
         _node("spec:fifo", "spec_block", "config"),
         _node("covitem:fifo#F-COV-1", "coverage_item", "config"),
         _node("doc:spec/fifo/README.md", "spec_doc", "config"),
         _node("golden:spec/fifo/fifo_model.py", "golden_model", "config"),
-        # design — the DUT hierarchy, plus the model that aliases it
         _node("model:design/fifo/models.yaml#fifo", "model", "config"),
         _node("module:fifo", "module", "design"),
         _node("inst:fifo/fifo.u_wr", "instance", "design"),
         _node("port:fifo.clk", "port", "design", owner="fifo"),
-        # sim suite + its SystemVerilog testbench hierarchy
         _node("suite:verif/fifo", "suite", "config", flow="sim"),
         _node("test:verif/fifo#smoke", "test", "config", flow="sim"),
         _node("tb:verif/fifo#tb_top", "testbench", "config", flow="sim"),
@@ -228,19 +180,15 @@ _BUCKET_GRAPH = {
             "design",
             qualified_by="verif/fifo",
         ),
-        # Not qualified (no other file declares a `tb_top` parameter of
-        # this name), so it has to reach its column through its owner.
+        # Not qualified, so it reaches its column through its owner.
         _node("param:tb_top.WIDTH", "parameter", "design", owner="tb_top"),
-        # synth
         _node("suite:synth/fifo", "suite", "config", flow="synth"),
         _node("test:synth/fifo#generic", "test", "config", flow="synth"),
-        # fpv, with a testbench hierarchy of its own
         _node("suite:fpv/fifo", "suite", "config", flow="fpv"),
         _node("test:fpv/fifo#safety", "test", "config", flow="fpv"),
         _node("tb:fpv/fifo#fv_top", "testbench", "config", flow="fpv"),
         _node("module:fifo_fv_top", "module", "design"),
         _node("inst:fifo_fv_top/fifo_fv_top.u_dut", "instance", "design"),
-        # cdc, and fpga sharing the synthesis column
         _node("suite:lint/cdc", "suite", "config", flow="cdc"),
         _node("test:lint/cdc#fifo_lint", "test", "config", flow="cdc"),
         _node("suite:fpga/fifo", "suite", "config", flow="fpga"),
@@ -260,11 +208,10 @@ _BUCKET_GRAPH = {
         _link("model:design/fifo/models.yaml#fifo", "module:fifo", "maps_to"),
         _link("tb:verif/fifo#tb_top", "module:tb_top@verif/fifo", "elaborates_as"),
         _link("tb:fpv/fifo#fv_top", "module:fifo_fv_top", "elaborates_as"),
-        # A cocotb testbench tops at the DUT itself; that must not drag
-        # the DUT's whole hierarchy into a flow column.
+        # A cocotb testbench tops at the DUT itself; that must not pull the DUT
+        # hierarchy into a flow column.
         _link("tb:verif/fifo#tb_cocotb", "module:fifo", "elaborates_as"),
-        # A non-simulation run's `top:`. Same target namespace, third
-        # verb — and, like today, not a testbench-ownership signal: the
+        # A non-simulation run's ``top:`` is not a testbench-ownership signal: the
         # module a synth run names is still design.
         _link("test:synth/fifo#generic", "module:fifo", "targets"),
     ],
@@ -299,8 +246,8 @@ def test_spec_types_and_models_bucket_by_type(bucket_graph: Path):
         "golden:spec/fifo/fifo_model.py",
     ):
         assert columns[node_id] == "spec"
-    # A model *is* its module under another name, so it sits beside the
-    # design it aliases rather than in the suite's flow column.
+    # A model aliases its module, so it sits beside the design rather than in the
+    # suite's flow column.
     assert columns["model:design/fifo/models.yaml#fifo"] == "design"
 
 
@@ -310,8 +257,7 @@ def test_flow_stamp_picks_the_config_column(bucket_graph: Path):
     assert columns["test:synth/fifo#generic"] == "syn-config"
     assert columns["test:fpv/fifo#safety"] == "formal-config"
     assert columns["test:lint/cdc#fifo_lint"] == "cdc-config"
-    # FPGA implementation is the synthesis flow carried further, and
-    # shares its column rather than earning a near-always-empty one.
+    # FPGA implementation shares the synthesis column.
     assert columns["test:fpga/fifo#a35t"] == "syn-config"
 
 
@@ -320,42 +266,35 @@ def test_cocotb_wins_over_the_suites_flow(bucket_graph: Path):
     assert columns["test:verif/fifo#cocotb"] == "test-cocotb"
     assert columns["tb:verif/fifo#tb_cocotb"] == "test-cocotb"
     assert columns["py:verif/fifo/cocotb_fifo.py"] == "test-cocotb"
-    # Its suite is still a simulation suite.
     assert columns["suite:verif/fifo"] == "test-config"
 
 
 def test_dut_hierarchy_stays_in_the_design_column(bucket_graph: Path):
     columns = _columns(bucket_graph)
-    # `module:fifo` is pointed at by all three config->design verbs at
-    # once — a model's `maps_to`, a cocotb testbench's `elaborates_as`
-    # and a synth run's `targets`. The model's claim wins, which is the
-    # rule that keeps a DUT out of a flow column.
+    # ``module:fifo`` is targeted by ``maps_to``, ``elaborates_as`` and ``targets`` at
+    # once; the model's claim wins.
     assert columns["module:fifo"] == "design"
     assert columns["inst:fifo/fifo.u_wr"] == "design"
     assert columns["port:fifo.clk"] == "design"
 
 
 def test_testbench_hierarchy_follows_its_suites_flow(bucket_graph: Path):
-    """The point of the split: a testbench is not the design.
-
-    Both halves of a `rb graph build` are `tier: design`, so the tier
-    cannot say which is which; the suite that owns the elaboration can.
+    """A testbench is not the design: both halves of a ``rb graph build`` are ``tier:
+    design``, so the owning suite decides.
     """
 
     columns = _columns(bucket_graph)
     assert columns["module:tb_top@verif/fifo"] == "test-config"
     assert columns["inst:tb_top/tb_top.u_dut@verif/fifo"] == "test-config"
-    # Reached through its `owner`, whose id had to be suite-qualified.
+    # Reached through its ``owner``, whose id is suite-qualified.
     assert columns["param:tb_top.WIDTH"] == "test-config"
-    # An fpv suite's testbench hierarchy lands in the formal column.
     assert columns["module:fifo_fv_top"] == "formal-config"
     assert columns["inst:fifo_fv_top/fifo_fv_top.u_dut"] == "formal-config"
 
 
 def test_unplaceable_nodes_land_in_other_rather_than_vanish(bucket_graph: Path):
     columns = _columns(bucket_graph)
-    # An unknown flow is still a suite: it keeps the default flow column
-    # rather than being exiled, because "sim" is what a suite is.
+    # An unknown flow is still a suite and keeps the default flow column.
     assert columns["suite:verif/odd"] == graph_page.FALLBACK_FLOW_COLUMN
     assert columns["weird:thing"] == "other"
     assert columns["orphan:1"] == "other"
@@ -380,27 +319,17 @@ def test_category_is_served_only_and_never_written_to_disk(bucket_graph: Path):
     assert all("category" not in n for n in json.loads(before)["nodes"])
 
 
-# ---------------------------------------------------------------------------
-# build_graph_payload
-# ---------------------------------------------------------------------------
-
-
 def test_payload_joins_overlay_onto_test_nodes(built_graph: Path):
     payload = graph_page.build_graph_payload(built_graph)
     by_id = {n["id"]: n for n in payload["nodes"]}
     assert by_id["test:verif/fifo#smoke"]["results"]["status"] == "PASS"
     assert by_id["test:verif/fifo#burst"]["results"]["status"] == "FAIL"
-    # Non-test nodes get no entry — the overlay is keyed by test node id.
+    # Non-test nodes get no entry; the overlay is keyed by test node id.
     assert "results" not in by_id["module:fifo"]
 
 
 def test_payload_never_writes_graph_json_back(built_graph: Path):
-    """The join is in-memory; graph.json stays byte-identical.
-
-    This is the #379 invariant restated at the hub: a pane that wrote
-    its annotations back would make graph.json churn on every
-    regression and break the build fingerprint's no-op re-run.
-    """
+    """The join is in-memory; graph.json stays byte-identical on disk."""
 
     graph_file = built_graph / "artefacts" / "graph" / "graph.json"
     before = graph_file.read_bytes()
@@ -414,9 +343,7 @@ def test_payload_hub_block_describes_the_render(built_graph: Path):
     assert hub["schema_version"] == graph_page.PAGE_SCHEMA_VERSION
     assert hub["graph_path"] == "artefacts/graph/graph.json"
     assert hub["overlay_path"] == "artefacts/graph/results-overlay.json"
-    # Counts are of the served body, so a dangling link target
-    # (``module:fifo_wr``, which no tier exported) is a link but not a
-    # node — the page materialises it client-side.
+    # Counts are of the served body: a dangling link target is a link but not a node.
     assert hub["counts"]["nodes"] == len(_GRAPH["nodes"])
     assert hub["counts"]["links"] == len(_GRAPH["links"])
     assert hub["counts"]["with_results"] == 2
@@ -451,11 +378,6 @@ def test_graph_files_present(tmp_path: Path, built_graph: Path):
     assert graph_page.graph_files_present(unbuilt) is False
 
 
-# ---------------------------------------------------------------------------
-# render_graph_html — the offline rule
-# ---------------------------------------------------------------------------
-
-
 def test_page_injects_hub_address():
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:54321").decode("utf-8")
     assert "window.__RTL_BUDDY_HUB__ = '127.0.0.1:54321'" in body
@@ -464,13 +386,8 @@ def test_page_injects_hub_address():
 
 
 def test_page_is_self_contained():
-    """No CDN, no remote font, no import, no off-machine reference.
-
-    Since #398 the pane links the hub's own token sheet, so "no external
-    stylesheet" narrowed to what it always meant: every ``src``/``href``
-    that is not a page anchor must be a **same-origin absolute path**,
-    served by this same hub process. A hub on a machine with no route
-    off localhost still renders the pane completely.
+    """Every non-anchor ``src``/``href`` is a same-origin absolute path; no CDN, remote
+    font or import.
     """
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
@@ -483,8 +400,7 @@ def test_page_is_self_contained():
             quote = chunk[0]
             value = chunk[1:].split(quote)[0] if quote in "\"'" else chunk.split()[0]
             assert value.startswith("/"), f"{attr}{value}"
-    # The only absolute URLs may be the SVG namespace; nothing may point
-    # off the machine.
+    # Only the SVG namespace may be an absolute URL.
     for scheme in ("https://", "http://"):
         for chunk in body.split(scheme)[1:]:
             authority = chunk.split("'")[0].split('"')[0].split(" ")[0]
@@ -500,17 +416,15 @@ def test_page_links_the_shared_token_sheet_with_a_fallback():
     # Inline fallback: the tokens the pane cannot render without.
     for token in ("--bg:", "--panel:", "--fg:", "--accent:", "--col-design:"):
         assert token in body, token
-    # Light default (#398): the first surface value is the light one.
+    # Light default: the first surface value is the light one.
     assert "--bg:          #f8fafc;" in body
-    # ...and the fallback comes BEFORE the link, or it would out-rank the
-    # sheet at equal specificity and kill prefers-color-scheme: dark.
-    # tests/test_hub_theme.py checks this properly, for every hub page.
+    # The fallback comes before the link, or it out-ranks the sheet at equal specificity
+    # and breaks ``prefers-color-scheme: dark``.
     assert body.index("--bg:          #f8fafc;") < body.index('href="/hub/theme.css"')
 
 
 def test_page_carries_the_pieces_the_issue_asks_for():
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    # every column, a colour for each, pass/fail badges, the envelopes
     for column in graph_page.COLUMN_ORDER:
         assert f"'{column}'" in body, column
         assert f"--col-{column}:" in body, column
@@ -522,11 +436,6 @@ def test_page_carries_the_pieces_the_issue_asks_for():
     assert "'graph'" in body  # registers under its own origin
 
 
-# ---------------------------------------------------------------------------
-# module-level schematic sync
-# ---------------------------------------------------------------------------
-
-
 def _page_js() -> str:
     """The page's inline script — the last ``<script>`` in the body."""
 
@@ -535,11 +444,8 @@ def _page_js() -> str:
 
 
 def _marked_js(marker: str) -> str:
-    """One block of pure helpers, sliced out of the page by its markers.
-
-    Same convention as ``cov_page.html``: nothing between the markers
-    may touch the DOM or close over page state, which is exactly what
-    evaluating them in bare ``node`` enforces.
+    """Pure helpers sliced out of the page between markers and run in bare ``node``;
+    nothing between the markers may touch the DOM.
     """
 
     match = re.search(rf"// >>> {marker}\n(.*?)// <<< {marker}", _page_js(), re.S)
@@ -559,16 +465,8 @@ def _node_eval(script: str) -> str:
 
 
 def test_a_model_node_is_named_by_its_maps_to_stitch():
-    """Project-tier graphs — everything you have before a design tier is
-    built — put the design content on ``model:`` nodes, and the module a
-    model roots at is the target of its ``maps_to`` stitch.
-
-    Reading the ``#<name>`` fragment instead was right only while a model
-    was always named after its top module. A models.yaml ``top:``
-    (rtl-buddy/rtl_buddy#479) decouples the two, and a ``graph_focus`` on
-    a module id no graph has is a silent miss — the click just looks
-    broken. The stitch is the same one ``activeModelRoots`` reads and the
-    same one the config tier writes, so there is one answer, not two.
+    """On project-tier graphs the module a ``model:`` node roots at is its ``maps_to``
+    target, not its ``#<name>`` fragment.
     """
 
     out = _node_eval(
@@ -622,16 +520,14 @@ def test_a_model_node_is_named_by_its_maps_to_stitch():
     resolved, degenerate = out.strip().splitlines()
     assert json.loads(resolved) == [
         "ip_async_fifo",
-        # The point of the change: the top, not the model name.
+        # The top, not the model name.
         "axi_xbar",
         "real_top",
         # `module:` with nothing after it is not a module name.
         None,
         # `maps_to` at a non-module target is not a root.
         None,
-        # An opted-out model has no stitch, so it has no coordinate —
-        # inventing `module:apb_intf` would send both panes after a node
-        # the graph does not contain.
+        # An opted-out model has no stitch, so no coordinate.
         None,
     ]
     assert json.loads(degenerate) == [None, None, None]
@@ -640,14 +536,8 @@ def test_a_model_node_is_named_by_its_maps_to_stitch():
 def test_the_served_payload_carries_the_stitch_the_page_resolves_through(
     tmp_path: Path,
 ):
-    """The other half of ``moduleNameFor``'s contract, server-side.
-
-    The page can only resolve a model through ``maps_to`` if the payload
-    it is handed still carries that link, unrewritten: same ``type``,
-    ``model:`` source, ``module:`` target. The bucketing pass rewrites
-    nodes (it stamps ``category``), so this pins that it leaves the
-    links alone — and that an opted-out model reaches the page with no
-    stitch at all, which is what makes the page decline to focus it.
+    """Bucketing leaves ``maps_to`` links unrewritten, and an opted-out model reaches
+    the page with no stitch.
     """
 
     graph = {
@@ -702,8 +592,7 @@ def test_the_served_payload_carries_the_stitch_the_page_resolves_through(
     }
     assert stitches == {("model:design/vendor/models.yaml#pp_axi", "module:axi_xbar")}
     served = {n["id"]: n for n in payload["nodes"]}
-    # The opted-out model is still a node — spec and test cross-references
-    # point at it — it simply has no design coordinate.
+    # The opted-out model is still a node, since cross-references point at it.
     assert served["model:design/vendor/models.yaml#apb_intf"]["graph"] is False
     assert not any(
         link["source"] == "model:design/vendor/models.yaml#apb_intf"
@@ -712,9 +601,9 @@ def test_the_served_payload_carries_the_stitch_the_page_resolves_through(
 
 
 def test_a_module_node_falls_back_to_its_own_id():
-    """``moduleNameFor`` only sees a ``module:`` node when
-    ``instancePathFor`` found no ``instance_of`` link to follow, and
-    then the id minus its prefix is the name."""
+    """A ``module:`` node with no ``instance_of`` link is named by its id minus the
+    prefix.
+    """
 
     out = _node_eval(
         _marked_js("module-name")
@@ -727,10 +616,8 @@ def test_a_module_node_falls_back_to_its_own_id():
     )
     assert json.loads(out) == [
         "fifo",
-        # Verbatim: both ends of this wire speak the SOURCE vocabulary,
-        # so there is no elaboration suffix to strip and stripping one
-        # would corrupt a real name. (cov_page.html's `baseModuleName`
-        # exists because coverage speaks the simulator's names instead.)
+        # Verbatim: both ends speak the source vocabulary, so no elaboration suffix is
+        # stripped.
         "axi__lite__W8",
         None,
         # Not a `module:` id, so not a name we can vouch for.
@@ -739,9 +626,7 @@ def test_a_module_node_falls_back_to_its_own_id():
 
 
 def test_nothing_else_names_a_module():
-    """Tests, suites, coverage items and testbenches are not design
-    coordinates. Naming one would move the schematic on a click that
-    had nothing to do with the design."""
+    """Tests, suites, coverage items and testbenches are not design coordinates."""
 
     out = _node_eval(
         _marked_js("module-name")
@@ -768,16 +653,11 @@ def test_nothing_else_names_a_module():
 
 
 def test_a_node_without_an_instance_still_syncs_the_schematic():
-    """The bug this closes: with only config and binding tiers built,
-    ``instancePathFor`` returns null for every node and the click
-    broadcast nothing at all. The fallback emits the wire type the cov
-    pane already sends, ``graph_focus {node: 'module:<name>'}``.
+    """With only config and binding tiers built, a click falls back to ``graph_focus
+    {node: 'module:<name>'}``.
 
-    The choice lives in ``viewTargetFor`` — the click path and the
-    inspector's explicit ``send → sch`` button must take it
-    identically, and duplicating it is how they stop being identical.
-    Both it and ``activate`` close over the page's DOM (``state.inc``,
-    ``els``), so this is asserted on the source rather than in ``node``.
+    The click and the inspector's ``send → sch`` share ``viewTargetFor``; asserted on
+    the source because it closes over the DOM.
     """
 
     js = _page_js()
@@ -785,9 +665,8 @@ def test_a_node_without_an_instance_still_syncs_the_schematic():
     # The instance path still wins…
     assert "var ip = instancePathFor(n);" in derivation
     assert "type: 'selection_changed', payload: { instance_path: ip }," in derivation
-    # …and the module name is the fallback, not a second send. The
-    # node's outgoing links ride along because a `model:` node's module
-    # comes off its `maps_to` stitch (#479).
+    # The module name is the fallback, not a second send; a ``model:`` node's module
+    # comes off its ``maps_to`` link.
     assert "var mod = moduleNameFor(n, out);" in derivation
     assert "function viewTargetFor(n, out) {" in js
     assert "type: 'graph_focus', payload: { node: 'module:' + mod }," in derivation
@@ -806,18 +685,8 @@ def test_a_node_without_an_instance_still_syncs_the_schematic():
 
 
 def test_a_models_roots_come_off_the_maps_to_stitch():
-    """Which elaborations belong to the schematic's active model is read
-    off the payload, not assumed: a ``model:`` node's ``maps_to`` target
-    IS the module its instances are rooted at.
-
-    The model NAME is only a fallback, for a graph with no stitch to read
-    — a design-tier-only build, where no config tier has run and there
-    are no ``model:`` nodes at all. Seeding it alongside a stitch was
-    right only while a model was always named after its top module: with
-    ``top:`` (rtl-buddy/rtl_buddy#479) an active model ``alias`` topped
-    at ``real_top`` would own both names, and an instance rooted at a
-    *different* selected model that happens to be called ``alias`` would
-    score as the active model's own.
+    """Active-model roots come from the payload: a ``model:`` node's ``maps_to`` target.
+    The model name is a fallback only when the graph has no stitch.
     """
 
     out = _node_eval(
@@ -882,21 +751,15 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
     )
     assert [json.loads(line) for line in out.strip().splitlines()] == [
         ["fifo"],
-        # The module it maps to and NOTHING else: `alias` is another
-        # model's root, so claiming it here would hand this model an
-        # elaboration it does not own.
+        # Only the module it maps to; ``alias`` is another model's root.
         ["real_top"],
         ["twin_a", "twin_b"],
-        # The opted-out model: the payload knows it and it has no stitch,
-        # which is an answer — no roots — not a missing one. Seeding its
-        # name would hand it `module:apb_intf`, which is `wrapper`'s
-        # elaboration, and the schematic would prefer another model's
-        # instances as the active model's own.
+        # The opted-out model has no stitch and so no roots; seeding its name would
+        # claim another model's elaboration.
         [],
-        # A model this payload has no node for: no config tier to read a
-        # stitch off, so the naming convention is all there is.
+        # A model with no node in the payload falls back to the naming convention.
         ["nope"],
-        # No active model -> no roots -> no preference (see below).
+        # No active model, no roots, no preference.
         [],
         [],
         [],
@@ -906,10 +769,9 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
 
 
 def test_the_active_models_instance_wins_over_a_shallower_stranger():
-    """#414: ranking every loaded model's instances together landed the
-    selection in a model that is not on screen, where the schematic
-    highlights nothing. A candidate rooted in the active model beats a
-    shallower one from anywhere else."""
+    """A candidate rooted in the active model beats a shallower one from any other
+    model.
+    """
 
     out = _node_eval(
         _marked_js("active-model")
@@ -935,17 +797,9 @@ def test_the_active_models_instance_wins_over_a_shallower_stranger():
 
 
 def test_a_suite_qualified_root_still_counts_as_the_active_models_own():
-    """The two halves of the same identity must agree about `@`.
-
-    `_qualify_graph` appends `@<suite>` to a whole `inst:` id, so on a
-    root-scope instance (`inst:fifo/fifo` -> `inst:fifo/fifo@verif/x`) the
-    derived path is `fifo@verif/x` and the qualifier sits on the ONLY
-    component there is — while `activeModelRoots` strips `@` from the module
-    name on its side. Two models that each instantiate the module at their
-    own root then tie on depth, and the tie is broken by ownership: without
-    de-qualifying the lookup, neither counts as owned, link order decides,
-    and the click lands in the model that is not on screen — the exact miss
-    #414 is about.
+    """``@<suite>`` qualifiers are stripped from both halves of the identity; otherwise
+    root-scope instances of two models tie on depth and ownership cannot break the
+    tie.
     """
 
     out = _node_eval(
@@ -968,10 +822,9 @@ def test_a_suite_qualified_root_still_counts_as_the_active_models_own():
 
 
 def test_a_module_the_active_model_never_instantiates_still_resolves():
-    """The fallback the issue asks for is kept: a vendor block the
-    current model does not touch is still worth landing on, and an
-    active model the pane has not learned yet (no ``state_snapshot``
-    reply, or a hub with none) must behave exactly as it did before."""
+    """A vendor block outside the active model is still a valid landing, and an unknown
+    active model behaves as no preference.
+    """
 
     out = _node_eval(
         _marked_js("active-model")
@@ -1000,14 +853,8 @@ def test_a_module_the_active_model_never_instantiates_still_resolves():
 
 
 def test_a_root_is_translated_back_to_a_selectable_model():
-    """``modelForRoot`` is ``activeModelRoots`` run backwards.
-
-    A root is a MODULE name; ``GET /view.json?model=`` takes a MODEL name.
-    While a model was always named after its top the cross-model warning
-    could offer the root verbatim, but a models.yaml ``top:`` decoupled
-    them — offering ``bar`` for a model declared as ``foo`` asks the hub
-    to activate something no models.yaml declares. The same stitch names
-    the declaring model.
+    """``modelForRoot`` inverts ``activeModelRoots``: a root is a module name, and the
+    switch request needs the declaring model's name.
     """
 
     out = _node_eval(
@@ -1048,12 +895,12 @@ def test_a_root_is_translated_back_to_a_selectable_model():
     translated, degenerate = out.strip().splitlines()
     assert json.loads(translated) == [
         "fifo",
-        # The point of the change: the declaring model, not the module.
+        # The declaring model, not the module.
         "pp_axi",
         "alias",
         "twin_a",
-        # A `tb:` stitch does not declare a model, and neither does a
-        # `model:` id with no `#<name>` fragment — the module name stands.
+        # A ``tb:`` stitch or a ``model:`` id without ``#<name>`` declares no model; the
+        # module name stands.
         "tb_top",
         "unfragmented",
         "cdc",
@@ -1065,60 +912,42 @@ def test_a_root_is_translated_back_to_a_selectable_model():
 
 
 def test_the_cross_model_warning_compares_roots_not_the_model_name():
-    """``maybeWarnCrossModel`` closes over the pane's state, so its wiring
-    is asserted on the source — the ranking and the translation it calls
-    are pure and are tested in ``node`` above.
-
-    The bug: with an active model ``foo`` topped at ``bar``,
-    ``shallowestInstancePath`` correctly *prefers* the ``bar``-rooted
-    instance and the warning then declared that very selection
-    cross-model, offering ``?model=bar`` — a module name the hub cannot
-    activate.
+    """The cross-model warning compares de-qualified roots with the mapped roots and
+    offers the declaring model; asserted on the source since it closes over pane
+    state.
     """
 
     js = _page_js()
     warn = js.split("function maybeWarnCrossModel(ip) {")[1].split("\n  }")[0]
-    # The root is de-qualified and tested against the mapped roots, never
-    # against the model name.
+    # The root is de-qualified and compared with the mapped roots, never with the model
+    # name.
     assert "var root = rootComponent(ip);" in warn
     assert "root === activeModel" not in warn
-    # Only "the hub has no active model at all" is decided synchronously;
-    # the CACHED roots never suppress on their own, because the cache can
-    # be behind the schematic.
+    # Only "the hub has no active model" is decided synchronously; cached roots never
+    # suppress, since the cache can lag the schematic.
     assert "if (!activeModel) { setCrossModel(null); return; }" in warn
     assert "currentModelRoots()[root]) { setCrossModel(null); return; }" not in warn
-    # The reconfirm always happens, and the test uses the freshly confirmed
-    # model's roots rather than a stale set.
+    # Reconfirm always, and use the freshly confirmed model's roots.
     assert "activeModel = reply.payload.active_model;" in warn
     assert "if (activeModel && !currentModelRoots()[root])" in warn
-    # An unconfirmable reply disarms rather than leaving the previous
-    # selection's target standing under this one.
+    # An unconfirmable reply disarms the warning.
     assert "if (reply.kind !== 'response') { setCrossModel(null); return; }" in warn
-    # A genuinely foreign root is translated back to a selectable model
-    # before the switch target is built — and both the button and the note
-    # name that model, not the module.
+    # A foreign root is translated back to a selectable model before the switch target
+    # is built; the button and note name that model.
     assert "var target = modelForRoot(state.links, root);" in warn
     assert "setCrossModel({ model: target, ip: ip });" in warn
     assert "originLabel('view') + ' → ' + target" in warn
-    # The switch itself is unchanged: it asks the hub for that model.
+    # The switch still asks the hub for that model.
     fix = js.split("els.fixView.addEventListener('click', function () {")[1]
     assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in fix
 
 
 def _cross_model_js() -> str:
-    """``maybeWarnCrossModel`` itself, sliced out for ``node``.
+    """``maybeWarnCrossModel`` is lifted whole and run against stubs for
+    ``activeModel``, ``state``, ``request``, ``note`` and ``setCrossModel``.
 
-    It is not inside a marker block because it is not pure — it closes over
-    ``activeModel``, ``state`` and the pane's ``request`` / ``note`` /
-    ``setCrossModel``. Those are exactly the four seams the staleness
-    question lives in, though, so the function is lifted whole and run
-    against stubs for them, on top of the real pure helpers it calls.
-
-    ``currentModelRoots`` is stood in uncached: the memoisation keys are
-    asserted on the source in
-    ``test_the_module_branch_resolves_through_the_active_model_preference``,
-    and keying on ``activeModel`` is what makes a re-read after the refresh
-    recompute anyway — so the stand-in has the same semantics.
+    ``currentModelRoots`` is stood in uncached; its memoisation keys are asserted
+    elsewhere.
     """
 
     body = _page_js().split("function maybeWarnCrossModel(ip) {")[1].split("\n  }")[0]
@@ -1134,18 +963,11 @@ def _cross_model_js() -> str:
 
 
 def test_a_stale_active_model_cannot_suppress_the_cross_model_warning():
-    """The cached model never decides on its own — not even when it agrees.
+    """The cached model never decides on its own, since the cache can be behind the
+    schematic; every selection reconfirms first.
 
-    The cache exists for the synchronous ranking and can be behind the
-    schematic: the view may have switched while this socket was down, or
-    before its ``view_changed`` was applied. Suppressing on a cached-root
-    match is then a silent failure in that exact window — the schematic
-    shows another model, the click highlights nothing, and the pane says
-    nothing and offers no switch. Every real selection reconfirms first.
-
-    The scenarios below all select ``bar.u_x``. ``bar`` is model ``foo``'s
-    ``top:``, so a cached ``foo`` DOES contain it as a root; ``cdc`` is a
-    second model rooted at itself.
+    The scenarios select ``bar.u_x``: ``bar`` is model ``foo``'s ``top:``, and
+    ``cdc`` is a second model rooted at itself.
     """
 
     out = _node_eval(
@@ -1204,9 +1026,8 @@ def test_a_stale_active_model_cannot_suppress_the_cross_model_warning():
     )
     stale, right, exonerated, foreign, none, unconfirmable, unknown = json.loads(out)
 
-    # 1. Reconfirmed, and the warning fires against the REAL model. The
-    #    switch target is `foo`, the model that declares `bar` as its top —
-    #    `bar` itself is not something the hub can activate.
+    # 1. Reconfirmed: the warning fires against ``foo``, the model declaring ``bar`` as
+    # its top; the hub cannot activate ``bar``.
     assert stale["requests"] == ["state_snapshot"]
     assert stale["active"] == "cdc"
     assert stale["cross"] == {"model": "foo", "ip": "bar.u_x"}
@@ -1241,20 +1062,18 @@ def test_a_stale_active_model_cannot_suppress_the_cross_model_warning():
 
 
 def test_the_module_branch_resolves_through_the_active_model_preference():
-    """``instancePathFor`` closes over the page's DOM state, so the wiring
-    — collect every instance, then rank them against the active model's
-    roots — is asserted on the source. The two halves live apart on
-    purpose: the ranking is pure and gets tested in ``node`` above."""
+    """``instancePathFor`` collects every instance and ranks them against the active
+    model's roots; asserted on the source since it closes over the DOM.
+    """
 
     js = _page_js()
     branch = js.split("if (n.type === 'module') {")[1].split("\n    }")[0]
-    # Still only `instance_of` links, still recursing for the path.
     assert "if (l.type !== 'instance_of') { return; }" in branch
     assert "var p = instancePathFor(state.byId[l.source]);" in branch
-    # …but every candidate is collected and the choice is made once.
+    # Every candidate is collected and the choice is made once.
     assert "if (p) { paths.push(p); }" in branch
     assert "return shallowestInstancePath(paths, currentModelRoots());" in branch
-    # The roots are the ACTIVE model's, over the payload on screen.
+    # The roots are the active model's, over the payload on screen.
     roots = js.split("function currentModelRoots() {")[1].split("\n  }")[0]
     assert "activeModelRoots(state.links, activeModel, state.nodes)" in roots
     assert "modelRootsCache.model !== activeModel" in roots
@@ -1262,18 +1081,15 @@ def test_the_module_branch_resolves_through_the_active_model_preference():
 
 
 def test_the_cached_active_model_follows_the_schematic():
-    """The resolution above is synchronous — it cannot go ask the hub
-    mid-click — so the cached model has to be right when the click
-    arrives. The hub already broadcasts ``view_changed`` on every SPA
-    model switch; the pane keeps its copy off that, on top of the
-    ``state_snapshot`` it asks for at welcome."""
+    """The cached model is kept current from ``view_changed`` broadcasts and the
+    ``state_snapshot`` requested at welcome.
+    """
 
     js = _page_js()
     assert "case 'view_changed':" in js
     changed = js.split("case 'view_changed':")[1].split("break;")[0]
     assert "activeModel = env.payload.model;" in changed
-    # The welcome-time read is still there, and so is the reconfirm the
-    # cross-model warning does before accusing a click.
+    # The welcome-time read and the cross-model reconfirm are both present.
     assert "function refreshActiveModel() {" in js
     assert "activeModel = reply.payload.active_model;" in js
 
@@ -1288,29 +1104,18 @@ def test_the_sync_toggle_advertises_the_module_fallback():
     assert "highlight all instances of their module" in tooltip
 
 
-# ---------------------------------------------------------------------------
-# cross-app send / open
-#
-# Two controls per sibling app: `send → X` puts the selection on the tab
-# already open, `open X ↗` emits the same envelope and then opens the tab,
-# which lands focused because ``HubServer._replay_cached_state`` unicasts
-# the cached focus slots to every peer as it registers.
-# ---------------------------------------------------------------------------
-
-
 def _cov_target_js() -> str:
-    """``covTargetFor`` builds on ``moduleNameFor``, so it is sliced on
-    top of the block that defines it — the same way the cov pane's lens
-    helpers are sliced on top of ``module-names``."""
+    """``covTargetFor`` builds on ``moduleNameFor``, so its block is sliced on top of
+    the one defining it.
+    """
 
     return _marked_js("module-name") + _marked_js("cov-target")
 
 
 def test_a_graph_node_maps_onto_a_coverage_target():
-    """``cov_focus.target`` is prefixed — ``test:``, ``module:`` or
-    ``file:`` — and each branch has to name something the cov pane's
-    ``applyFocus`` can actually resolve, not merely something the schema
-    accepts."""
+    """Each ``cov_focus.target`` branch (``test:``, ``module:``, ``file:``) names
+    something the cov pane's ``applyFocus`` resolves.
+    """
 
     out = _node_eval(
         _cov_target_js()
@@ -1372,17 +1177,14 @@ def test_a_graph_node_maps_onto_a_coverage_target():
     assert json.loads(mapped) == [
         {"target": "test:verif/fifo#smoke"},
         {"target": "module:ip_async_fifo"},
-        # The point of #479: the top the model roots at, not its name.
+        # The top the model roots at, not its name.
         {"target": "module:axi_xbar"},
-        # An opted-out model has no `maps_to` and so no coverage target —
-        # not its models.yaml, which is what the generic file branch
-        # would have handed the cov pane.
+        # An opted-out model has no ``maps_to`` and so no coverage target.
         None,
         {"target": "module:fifo"},
         {"target": "module:fifo", "metric": "cover", "item": "REQ-1"},
         {"target": "file:design/fifo/src/fifo.sv", "line": 9},
-        # No line on the node, no line on the wire — the field is
-        # optional and 0 is not a legal one.
+        # No line on the node means no line on the wire; 0 is not legal.
         {"target": "file:verif/fifo/tb_fifo.sv"},
         None,
         None,
@@ -1393,9 +1195,9 @@ def test_a_graph_node_maps_onto_a_coverage_target():
 
 
 def test_the_inspector_offers_send_and_open_for_every_sibling_app():
-    """Two controls per app, and the row sits above the identity: it is
-    about what you can do with the selection, and a node with fifty edges
-    must not push it out of sight."""
+    """The action row sits above the identity so a node with many edges cannot push it
+    out of sight.
+    """
 
     js = _page_js()
     assert "els.inspector.appendChild(actionsEl);" in js
@@ -1404,16 +1206,15 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
         "row(dl, 'id', n.id);"
     )
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
-    # The vocabulary each app is addressed in, and the route it opens on
-    # — the same routes the header switcher links to.
+    # The vocabulary each app is addressed in, and its route (as in the header
+    # switcher).
     assert "origin: 'view', prose: 'the schematic'," in apps
     assert "origin: 'cov', prose: 'the coverage pane'," in apps
     assert "targetFor: viewTargetFor," in apps
     assert "send: function (t) { return emit(t.type, t.payload); }," in apps
     assert "targetFor: covTargetFor," in apps
     assert "send: function (t) { return emit('cov_focus', t); }," in apps
-    # One send control per app, off the one target derivation. No open-↗
-    # variant: opening an app fresh is the header switcher's job.
+    # One send control per app, from the one target derivation.
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
     assert "var t = app.targetFor(n, state.out[n.id]);" in row
     assert "'send → ' + originLabel(app.origin)," in row
@@ -1426,9 +1227,9 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
 
 
 def test_send_ignores_the_sync_checkbox():
-    """The checkbox governs what a CLICK broadcasts. An explicit
-    ``send → sch`` is the user asking for it in so many words,
-    so it must not be gated on a toggle they never touched."""
+    """The checkbox governs only what a click broadcasts; an explicit ``send → sch`` is
+    not gated on it.
+    """
 
     js = _page_js()
     send = js.split("function sendTo(app, n) {")[1].split("\n  }")[0]
@@ -1438,33 +1239,30 @@ def test_send_ignores_the_sync_checkbox():
         "if (!app.send(t)) { note('hub not connected', 'error'); return false; }"
         in (send)
     )
-    # …and the same "nothing to send" wording the click path uses.
+    # The same "nothing to send" wording as the click path.
     assert "if (!t) { note(app.why, 'warn'); return false; }" in send
 
 
 def test_a_send_is_dark_when_its_app_is_not_connected():
-    """`send` pushes to a tab that is already open; with no such tab the
-    envelope goes nowhere visible. `open` is the answer then, and the
-    tooltip says so rather than leaving a dead button."""
+    """``send`` needs an open tab, so the tooltip points to opening the app when there
+    is none.
+    """
 
     js = _page_js()
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
     assert "var live = hasPeer(app.origin);" in row
     assert "!t || !live," in row
     assert "app.prose + ' is not connected — open it from the header links'" in row
-    # The peer list is kept, not merely printed, and the row repaints
-    # when it moves.
+    # The peer list is kept and the row repaints when it changes.
     assert "function hasPeer(origin) { return peers.indexOf(origin) >= 0; }" in js
     assert "peers = next;" in js
     assert "if (changed) { refreshActions(); }" in js
 
 
 def test_the_action_row_has_no_open_buttons():
-    """``open <app> ↗`` was redundant with the header switcher's links
-    and is gone; the row is sends-only. The header keeps the open links
-    (target=_blank), and the hub's ``_replay_cached_state`` still lands a
-    late-opened tab on the current focus — send first, then open from the
-    header, arrives the same way the old combined button did."""
+    """The row has only send controls; open links live in the header switcher, and
+    ``_replay_cached_state`` lands a late-opened tab on the current focus.
+    """
 
     js = _page_js()
     assert "function openWith(" not in js
@@ -1477,9 +1275,9 @@ def test_the_action_row_has_no_open_buttons():
 
 
 def test_the_tooltips_own_up_to_the_broadcast():
-    """A focus event is a broadcast, not a point-to-point send: an
-    instance path aimed at the schematic also moves the coverage pane,
-    which resolves instance paths onto modules of its own accord."""
+    """A focus event is a broadcast: an instance path aimed at the schematic also moves
+    the coverage pane.
+    """
 
     js = _page_js()
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
@@ -1489,26 +1287,14 @@ def test_the_tooltips_own_up_to_the_broadcast():
     assert row.count("app.overlap") == 1
 
 
-# ---------------------------------------------------------------------------
-# hub registration: the polite hello, one takeover retry, and the way back
-#
-# One client per origin. ``HubServer._run_handshake`` (hub/server.py)
-# refuses a hello for an occupied slot with ``not_connected`` /
-# ``"<client> client already registered"`` unless the hello sets
-# ``takeover``, and sends the tab it evicts ``superseded`` /
-# ``"<client> client replaced by a newer registration"`` before closing
-# its socket. This pane used to send ``takeover: true`` on EVERY hello
-# and reconnect from every close, so two tabs of it evicted each other
-# every ~500 ms. The flow below is the schematic SPA's, mirrored: its
-# ``_pendingTakeover`` / ``superseded`` handling in
-# ``viewer/src/composables/useHub.js`` (rtl-buddy-view).
-# ---------------------------------------------------------------------------
+# Registration: one client per origin, a polite hello first, one takeover retry on
+# refusal, and a way back after being superseded. Mirrors the schematic SPA's flow.
 
 
 def test_the_first_hello_is_polite():
-    """The common case is no other graph tab open, and a polite hello
-    wins that outright. Asking for a takeover unconditionally is what
-    turned a second tab into an eviction war."""
+    """A hello is polite (no ``takeover``) by default, so a second tab does not start an
+    eviction war.
+    """
 
     out = _node_eval(
         _marked_js("hello-payload")
@@ -1523,15 +1309,13 @@ def test_the_first_hello_is_polite():
         "version": "1.0.0",
         "capabilities": ["graph_focus"],
     }
-    # Omitted, not `false`: the hub reads a missing field the same way,
-    # and the wire carries only what the tab is actually asking for.
+    # Omitted, not ``false``: the wire carries only what the tab asks for.
     assert "takeover" not in polite
     assert unset == polite
     assert takeover["takeover"] is True
 
     js = _page_js()
-    # Every hello on the wire comes from that helper, flagged only by the
-    # state a refusal sets — there is no `takeover: true` literal left.
+    # Every hello comes from one helper, flagged by the state a refusal sets.
     assert "payload: helloPayload(pendingTakeover)" in js
     assert "ws.addEventListener('open', sendHello);" in js
     assert "var pendingTakeover = false;" in js
@@ -1539,9 +1323,7 @@ def test_the_first_hello_is_polite():
 
 
 def test_an_occupied_slot_is_retried_once_with_takeover():
-    """A stale tab must not be able to block this one forever, so the
-    refusal is answered with exactly one takeover hello — once, because
-    looping on it would be the old war with an extra round-trip."""
+    """A refusal is answered with exactly one takeover hello."""
 
     js = _page_js()
     handler = js.split("function handleHubError(payload) {")[1].split("\n  }")[0]
@@ -1552,8 +1334,7 @@ def test_an_occupied_slot_is_retried_once_with_takeover():
     # Cleared on welcome, so a later reconnect starts polite again.
     welcome = js.split("case 'welcome':")[1].split("break;")[0]
     assert "pendingTakeover = false;" in welcome
-    # A registration error the handler dealt with stays out of the
-    # message area — one event, one surface.
+    # A registration error the handler dealt with stays out of the message area.
     assert (
         "if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {"
         in js
@@ -1561,9 +1342,9 @@ def test_an_occupied_slot_is_retried_once_with_takeover():
 
 
 def test_superseded_stops_reconnecting_and_offers_the_slot_back():
-    """Losing the slot to a NEWER tab is the one drop worth not retrying:
-    reconnecting would evict the tab the user just opened. The strip says
-    so in its own words and is the way back."""
+    """Being superseded by a newer tab is not retried; the strip says so and offers the
+    way back.
+    """
 
     js = _page_js()
     handler = js.split("function handleHubError(payload) {")[1].split("\n  }")[0]
@@ -1571,8 +1352,8 @@ def test_superseded_stops_reconnecting_and_offers_the_slot_back():
     assert "superseded = true;" in handler
     assert "showSuperseded();" in handler
     assert "var superseded = false;" in js
-    # Disarmed at the timer AND at the close that follows the eviction,
-    # which would otherwise repaint the strip over the affordance.
+    # Disarmed at the timer and at the close that follows the eviction, which would
+    # otherwise repaint the strip.
     sched = js.split("function scheduleReconnect() {")[1].split("\n  }")[0]
     assert "if (superseded) { return; }" in sched
     close = js.split("ws.addEventListener('close', function () {")[1].split(
@@ -1594,9 +1375,7 @@ def test_superseded_stops_reconnecting_and_offers_the_slot_back():
 
 
 def test_taking_the_slot_back_hellos_with_takeover():
-    """The other tab still holds the slot, so the hello that reclaims it
-    is the one hello that MUST ask for a takeover — a polite one would be
-    refused and the tab would go straight back to offline."""
+    """Reclaiming the slot sends a takeover hello; a polite one would be refused."""
 
     js = _page_js()
     back = js.split("function takeBack() {")[1].split("\n  }")[0]
@@ -1606,14 +1385,13 @@ def test_taking_the_slot_back_hellos_with_takeover():
     # Backoff starts over: this is a fresh, deliberate connection.
     assert "retryMs = 500;" in back
     assert "connect();" in back
-    # The status word IS the control while superseded; `takeBack` no-ops
-    # in every other state, so the listener is bound once.
+    # The status word is the control while superseded; ``takeBack`` no-ops otherwise, so
+    # the listener is bound once.
     assert "els.wsStatus.addEventListener('click', takeBack);" in js
 
 
 def test_an_ordinary_drop_still_reconnects():
-    """A hub restart or a flaky network is not a supersede, and nothing
-    about the fix may change what those look like."""
+    """A hub restart or network drop is not treated as a supersede."""
 
     js = _page_js()
     close = js.split("ws.addEventListener('close', function () {")[1].split(
@@ -1629,8 +1407,7 @@ def test_an_ordinary_drop_still_reconnects():
 
 
 def test_page_javascript_parses(tmp_path: Path):
-    """A page that ships a syntax error renders a blank tab and says
-    nothing about why, so the parse is worth a test of its own."""
+    """The inline script parses; a syntax error blanks the tab silently."""
 
     node = shutil.which("node")
     if node is None:  # pragma: no cover - depends on the dev machine
@@ -1643,21 +1420,14 @@ def test_page_javascript_parses(tmp_path: Path):
     assert done.returncode == 0, done.stderr
 
 
-# ---------------------------------------------------------------------------
-# the hub version label
-#
-# The same contract in three places — this pane, cov_page.html, and the
-# view SPA's ``viewer/src/buildInfo.js`` — so the cases below are the
-# cases ``tests/test_hub_cov_page.py`` asserts, deliberately word for
-# word. If one of the three drifts, exactly one of these suites goes red.
-# ---------------------------------------------------------------------------
+# Same cases as tests/test_hub_cov_page.py and the SPA's buildInfo.js, word for word, so
+# one drifting turns one suite red.
 
 
 def test_a_dev_build_is_labelled_with_its_git_sha():
-    """``server_version`` is setuptools-scm's, and on anything built past
-    a tag the ``g``-prefixed run in the local segment IS the git SHA.
-    The ``.dYYYYMMDD`` beside it is a build date the SHA already
-    implies, so it does not reach the label."""
+    """The label is the ``g``-prefixed run of the local segment (the git SHA); the build
+    date does not reach it.
+    """
 
     out = _node_eval(
         _marked_js("version-label")
@@ -1674,16 +1444,13 @@ def test_a_dev_build_is_labelled_with_its_git_sha():
         "6.26.2.dev13 @ 3f5b890e3",
         "6.26.2.dev13 @ 3f5b890e3",
         "6.26.2.dev1 @ 0abcdef12",
-        # Order inside the local segment is not ours to assume: the run
-        # is found wherever it sits, not only at the front.
+        # The run is found wherever it sits in the local segment.
         "6.26.2.dev13 @ 3f5b890e3",
     ]
 
 
 def test_a_release_is_labelled_by_its_version_alone():
-    """A tagged build has no local segment and so no SHA to show —
-    ``6.26.2`` is the whole truth about it, and a bare ``@`` with
-    nothing after it would only look broken."""
+    """A tagged build has no local segment and shows no ``@``."""
 
     out = _node_eval(
         _marked_js("version-label")
@@ -1696,9 +1463,7 @@ def test_a_release_is_labelled_by_its_version_alone():
 
 
 def test_a_local_segment_without_a_sha_still_labels_the_version():
-    """``1.0+local`` is a legal version; it simply names no build. The
-    base is still worth showing, so a missing SHA drops the ``@`` and
-    nothing else."""
+    """A version with no SHA shows the base without ``@``."""
 
     out = _node_eval(
         _marked_js("version-label")
@@ -1718,16 +1483,13 @@ def test_a_local_segment_without_a_sha_still_labels_the_version():
         # `gitlab` starts with a g but `itlab` is not hex — no SHA here.
         "1.0",
         "1.0",
-        # fewer than 4 hex digits is not a SHA — pinned in lockstep with
-        # the SPA copy (rtl-buddy-view viewer/src/buildInfo.js).
+        # Fewer than 4 hex digits is not a SHA; pinned in lockstep with the SPA copy.
         "1.0",
     ]
 
 
 def test_no_version_means_no_label_at_all():
-    """A welcome without ``server_version`` (an older hub, or a payload
-    that lost the field) renders nothing rather than the word
-    ``undefined`` in the status strip."""
+    """A welcome without ``server_version`` renders nothing, not ``undefined``."""
 
     out = _node_eval(
         _marked_js("version-label")
@@ -1738,15 +1500,12 @@ def test_no_version_means_no_label_at_all():
         ]));
         """
     )
-    # A version that is nothing but a local segment names no release,
-    # so there is no label to hang the SHA off.
+    # A local-segment-only version names no release, so there is no label.
     assert json.loads(out) == [None, None, None, None]
 
 
 def test_the_footer_carries_the_version_and_every_welcome_rewrites_it():
-    """The label lives beside the peers it shares a tier with, and is
-    re-read on every welcome: a reconnect can land on a hub restarted
-    on a newer build."""
+    """The label sits after the peers span and is re-read on every welcome."""
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert '<span id="hub-version" class="muted"></span>' in body
@@ -1759,11 +1518,6 @@ def test_the_footer_carries_the_version_and_every_welcome_rewrites_it():
     assert "setHubVersion(env.payload && env.payload.server_version);" in js
     assert "els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';" in js
     assert "els.hubVersion.title = full;" in js
-
-
-# ---------------------------------------------------------------------------
-# HTTP endpoints
-# ---------------------------------------------------------------------------
 
 
 def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
@@ -1857,8 +1611,7 @@ async def test_http_graph_json_404_without_a_built_graph(tmp_path: Path):
         assert excinfo.value.code == 404
         assert "rb graph build" in json.loads(excinfo.value.read())["error"]
 
-        # The page itself is still 200 — its empty state is the better
-        # place to say "run rb graph build" than a blank browser tab.
+        # The page is still 200; its empty state says to run ``rb graph build``.
         page_status, _h, _b = await asyncio.to_thread(
             _http_get, f"http://127.0.0.1:{viewer.http_port}/graph"
         )
@@ -1899,11 +1652,6 @@ async def test_http_graph_json_400_without_project_root():
                 pass
 
 
-# ---------------------------------------------------------------------------
-# graph_focus — the wire type
-# ---------------------------------------------------------------------------
-
-
 def test_graph_focus_envelope_validates():
     env = Envelope(
         origin=Origin.CLI,
@@ -1935,11 +1683,8 @@ def test_graph_focus_rejects_malformed_payloads(payload: dict):
 
 
 def test_graph_origin_is_its_own_peer_slot():
-    """The pane must not share ``view`` with the SPA.
-
-    The hub allows one client per origin, and the acceptance criteria
-    require both open at once ("clicking a module node selects it in the
-    schematic"), so a shared slot would make them evict each other.
+    """The pane registers as ``graph``, not ``view``: the hub allows one client per
+    origin and both apps must be open at once.
     """
 
     assert Origin.GRAPH.value == "graph"
@@ -2073,22 +1818,14 @@ async def test_graph_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
         await driver.close()
 
 
-# ---------------------------------------------------------------------------
-# display names vs wire origins
-#
-# The apps were renamed (`rtl-buddy-sch`, `rtl-buddy-gph`,
-# `rtl-buddy-cov`); the `Origin` enum was not, and will not be until a
-# protocol v2 moves it in lockstep with rtl-buddy-view. The seam is the
-# origin→label map, so it gets a test of its own — and so does the wire
-# it must not have leaked into.
-# ---------------------------------------------------------------------------
+# Display names differ from wire origins; the ``Origin`` enum keeps ``view``, ``graph``
+# and ``cov``.
 
 
 def test_the_origin_label_map_renames_only_the_display():
-    """`view` and `graph` are wire values with different display names;
-    everything else is passed through, including a peer origin this
-    build has never heard of — a blank chip in the strip would be worse
-    than an unfamiliar word."""
+    """``view`` and ``graph`` have distinct display names; other origins, including
+    unknown ones, pass through unchanged.
+    """
 
     out = _node_eval(
         _marked_js("origin-labels")
@@ -2132,10 +1869,9 @@ def test_every_rendered_origin_goes_through_the_map():
 
 
 def test_the_header_switcher_links_every_sibling_pane():
-    """A pane's header is the only way from one app to the next, so a new
-    pane that is not in it is a pane nobody finds. `/phy` shipped with the
-    physical model (rtl-buddy/rtl_buddy#558) and belongs beside the other
-    two, addressed by the wire origin its label is derived from."""
+    """``/phy`` is in the header switcher beside the other panes, addressed by its wire
+    origin.
+    """
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     switcher = body.split('<nav class="switcher"')[1].split("</nav>")[0]
@@ -2147,12 +1883,10 @@ def test_the_header_switcher_links_every_sibling_pane():
 
 
 def test_the_rename_did_not_leak_into_the_wire():
-    """The fence for the display rebrand: the hub still speaks `view`,
-    `graph` and `cov` on the wire, and `/view.json` is still `/view.json`.
-
-    #423 moved the *page* to `/sch` — the browser-facing half — which is
-    exactly what this fence has to let through while still catching a
-    rename that reached the origin or the data route."""
+    """The hub still speaks ``view``, ``graph`` and ``cov`` on the wire and
+    ``/view.json`` is the data route; only page routes such as ``/sch`` carry short
+    names.
+    """
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     js = _page_js()
@@ -2167,15 +1901,6 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in js
 
 
-# ---------------------------------------------------------------------------
-# the hand-duplicated blocks, as *files*
-#
-# The panes are single self-contained HTML files by design, so the
-# shared blocks are copies rather than an import — and a copy that
-# drifts is the failure mode. Two properties of the files themselves,
-# neither visible in a rendered page:
-# ---------------------------------------------------------------------------
-
 _PANE_FILES = ("graph_page.html", "cov_page.html", "landing_page.html")
 
 
@@ -2185,26 +1910,17 @@ def _pane_bytes(name: str) -> bytes:
 
 @pytest.mark.parametrize("name", _PANE_FILES)
 def test_a_pane_is_a_text_file(name: str):
-    """No NUL byte anywhere in a pane.
-
-    One landed in a JS string literal as a "separator nobody types", and
-    the cost was not the page — browsers do not care — it was that `rg`
-    and `grep` classify the file as *binary* and silently refuse to
-    search it. A 1,500-line source file you cannot grep is the tax, and
-    nothing about the page tells you why."""
+    """No NUL byte in a pane: it makes ``rg`` and ``grep`` treat the file as binary and
+    skip it.
+    """
 
     assert b"\x00" not in _pane_bytes(name)
 
 
 def test_the_peer_list_is_diffed_identically_in_both_panes():
-    """``setPeers`` is one of the copies, and the separator its
-    comparison joins on carries no information — origins are short
-    lowercase tokens with no spaces, so any separator, including none,
-    is the same comparison. Which is exactly why the two copies drifted
-    (a space in one, a raw NUL in the other) with nothing noticing.
-
-    The prose comments differ on purpose — each pane names its own
-    surface — so this is asserted on the code."""
+    """The ``setPeers`` comparison in each pane uses the same separator; asserted on the
+    code because the prose comments differ per pane.
+    """
 
     def code(name: str) -> list[str]:
         body = _pane_bytes(name).decode("utf-8")
@@ -2218,40 +1934,16 @@ def test_the_peer_list_is_diffed_identically_in_both_panes():
     assert "    var changed = next.join('') !== peers.join('');" in graph
 
 
-# ---------------------------------------------------------------------------
-# physical heat (rtl-buddy/rtl_buddy#596)
+# Physical heat: ``module:`` nodes are painted from ``GET /phy.json``. The wiring, the
+# pure join rules (run in ``node``) and the token-based ramp are tested; the painting is
+# checked manually.
 #
-# The pane paints its `module:` nodes with the physical model's own
-# numbers, read off `GET /phy.json` — the same body the /phy pane reads,
-# through the same `?dir=` run selection. Three things can go wrong, and
-# only the first is visible in a screenshot:
-#
-#   * the wiring: the data route has to be advertised off the same
-#     manifest probe the landing card uses, and its absence has to mute
-#     the control rather than leave it pointing at a 404;
-#   * the JOIN, which is the part that can be silently, numerically
-#     wrong. Its rules are pure functions between markers, so they are
-#     exercised in bare `node` rather than inferred from a picture;
-#   * the ramp, which must be the sheet's tokens and not a second
-#     palette (tests/test_hub_theme.py pins the fallback values for
-#     every hub page, this one included).
-#
-# What no test here can see is the painting itself, so the manual check
-# is: in a project that has run `rb graph build` and `rb synth` (and
-# `rb power` for the power metrics), `rb hub start --serve-viewer`, open
-# `/gph`, tick `heat` — module nodes take the ramp, the badge beside each
-# one carries the selected metric's value, the hover carries all five,
-# and the inspector's `physical` block carries the row. Switch the
-# metric and the ramp rescales; switch the run and the numbers change;
-# tick `coverage` and the heat overlay releases the fill. Then
-# `rb hub send phys-focus instance:<a leaf path from rb phys summary>`
-# and the module that owns the leaf is selected and centred.
-# ---------------------------------------------------------------------------
+# Manual check: with graph and synth artefacts, run ``rb hub start --serve-viewer``,
+# open ``/gph`` and tick ``heat``.
 
 
 def test_the_page_advertises_the_physical_data_route():
-    """Injected the way the landing page injects its own, so one
-    presence probe serves both surfaces."""
+    """The phys route is injected like the landing page's, from one presence probe."""
 
     body = graph_page.render_graph_html(
         hub_addr="127.0.0.1:1", phys_url=phys_page.PHYS_JSON_ROUTE
@@ -2262,26 +1954,26 @@ def test_the_page_advertises_the_physical_data_route():
 
 
 def test_no_manifest_mutes_the_heat_control_with_the_landing_wording():
-    """No injected route at all — not an empty one — and the control
-    says what the landing card's phys note says."""
+    """With no phys route injected, the control is muted with the landing card's phys
+    note.
+    """
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    # The page still READS the global — it is how an injected route
-    # arrives — so what must be absent is the assignment.
+    # The page still reads the global, so only the assignment must be absent.
     assert "window.__RTL_BUDDY_PHY_URL__ = " not in body
     assert "run `rb synth` or `rb power` first" in body
-    # Muted, not hidden: a control that vanished would leave nothing to
-    # explain why there is no heat.
+    # Muted, not hidden, so something explains the absence of heat.
     assert "if (!PHY_URL) { mutePhysControl(HEAT_ABSENT); }" in body
     assert "els.optHeat.disabled = true;" in body
-    # …and muting is only ever "there is nothing to show": a refused run
-    # switch is handled by `physLoadStep`, which never reaches here.
+    # Muting means only "nothing to show"; a refused run switch is handled by
+    # ``physLoadStep``.
     assert "function physLoadStep(shown, result) {" in body
 
 
 def test_the_metric_switcher_mirrors_the_phys_pane():
-    """Same five metrics, same order, same `phys_focus.metric` enum —
-    and the order is taken off the payload when it carries one."""
+    """The metrics, their order and the ``phys_focus.metric`` enum agree; payload order
+    wins when present.
+    """
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     metrics = ", ".join(f"'{metric}'" for metric in phys_page.METRICS)
@@ -2298,10 +1990,7 @@ def test_the_metric_switcher_mirrors_the_phys_pane():
     ) in body
 
 
-# --- the join, in `node` ---------------------------------------------------
-#
-# `heat-join` carries the rules; `phys-focus` reads a wire coordinate
-# with them, so the second block is evaluated on top of the first.
+# The join rules: ``phys-focus`` is evaluated on top of ``heat-join``.
 
 
 def _heat_js() -> str:
@@ -2312,10 +2001,8 @@ def _heat_focus_js() -> str:
     return _marked_js("heat-join") + _marked_js("phys-focus")
 
 
-#: One design, three levels deep, exported twice — once rooted at the
-#: design top and once through a testbench, which is what `rb graph
-#: build` writes (#377) and what makes "which elaboration" a real
-#: question rather than a defensive one.
+# One design three levels deep, exported twice: rooted at the top and through a
+# testbench.
 _HEAT_LINKS = """
 var links = [
   { type: 'instance_of', source: 'inst:blk/blk', target: 'module:blk' },
@@ -2327,8 +2014,8 @@ var links = [
 ];
 """
 
-#: The `tests/test_hub_phys_page.py` fixture's rows, so the two panes
-#: are asserted over one model.
+# The rows of the tests/test_hub_phys_page.py fixture, so both panes are asserted over
+# one model.
 _HEAT_PAYLOAD = """
 var payload = {
   top: 'blk',
@@ -2350,13 +2037,8 @@ var payload = {
 
 
 def test_power_rolls_up_to_the_enclosing_module():
-    """The join the issue asks for: a leaf's power belongs to the module
-    whose body instantiates it, found by resolving the row's rootless
-    path to the deepest instance node that properly contains it.
-
-    Own-module, not hierarchical: `u_sub/u_leaf/_12_` is `tiny`'s power
-    and not also `sub`'s, the same way `cell_count` counts a module's
-    own cells. A leaf directly in the top's body is the top module's.
+    """A leaf's power belongs to the module whose body instantiates it (own-module, not
+    hierarchical); a leaf in the top's body is the top's.
     """
 
     out = _node_eval(
@@ -2376,9 +2058,8 @@ def test_power_rolls_up_to_the_enclosing_module():
     )
     got = json.loads(out)
     assert got["rooted"] is True
-    # Only the design top's own elaboration answers the rows: the
-    # testbench export's `u_dut.u_sub` is the same instance reached
-    # another way and must not become a second key.
+    # Only the design top's own elaboration answers the rows; the testbench export
+    # reaches the same instance another way.
     assert got["index"] == {"": "blk", "u_sub": "sub", "u_sub.u_leaf": "tiny"}
     assert got["sub"]["total"] == 2.42
     assert (got["sub"]["instances"], got["sub"]["leaves"]) == (1, 1)
@@ -2389,15 +2070,9 @@ def test_power_rolls_up_to_the_enclosing_module():
 
 
 def test_the_power_half_is_never_joined_by_module_name():
-    """The regression this replaces (removed in the #558 review): the
-    power half's ``module`` column is the LIBERTY CELL a leaf is an
-    instance of, so name-joining it onto RTL module names multiplied a
-    module's total once per leaf on any collision.
-
-    Here `DFF_X1` is both a Liberty cell (every leaf's `module`) and an
-    RTL module the graph carries. The RTL module gets its synthesis row
-    and no power at all; the power goes to the modules whose bodies hold
-    the leaves.
+    """The power ``module`` column is a Liberty cell, so it is not name-joined onto RTL
+    modules: ``DFF_X1``, as both a cell and an RTL module, gets its synthesis row and
+    no power.
     """
 
     out = _node_eval(
@@ -2421,9 +2096,8 @@ def test_the_power_half_is_never_joined_by_module_name():
         """
     )
     got = json.loads(out)
-    # The RTL module of that name: its own synthesis row, plus only the
-    # power of the leaves inside the instance that IS it — 1 + 2, never
-    # a per-leaf copy of anything.
+    # The RTL module of that name gets its own synthesis row plus only the power of the
+    # leaves inside it (1 + 2).
     assert got["DFF_X1"]["cells"] == 9
     assert got["DFF_X1"]["area"] == 12.5
     assert got["DFF_X1"]["total"] == 3
@@ -2434,10 +2108,9 @@ def test_the_power_half_is_never_joined_by_module_name():
 
 
 def test_rows_under_a_top_the_graph_does_not_carry_are_not_attributed():
-    """A synthesis run on a wrapper the graph was not built for, or a
-    graph narrowed with ``--model``: nothing is rooted at the model's
-    top, so no leaf power is attributable and the pane says so rather
-    than borrowing a testbench root's paths."""
+    """With nothing rooted at the model's top (a wrapper the graph was not built for, or
+    ``--model``), leaf power is unattributable and the pane says so.
+    """
 
     out = _node_eval(
         _heat_js()
@@ -2467,9 +2140,9 @@ def test_rows_under_a_top_the_graph_does_not_carry_are_not_attributed():
 
 
 def test_an_unmeasured_metric_is_null_and_not_zero():
-    """``null`` is "nobody said", not "this module is free". Yosys
-    writes no ``area_um2`` for an unmapped run, and `dynamic` is null
-    only when NEITHER half of the sum was measured."""
+    """``null`` means "not measured": no ``area_um2`` for an unmapped run, and
+    ``dynamic`` is null only when neither half was measured.
+    """
 
     out = _node_eval(
         _heat_js()
@@ -2515,10 +2188,9 @@ def test_an_unmeasured_metric_is_null_and_not_zero():
 
 
 def test_a_leaf_that_is_also_an_rtl_instance_pays_its_parent():
-    """A proper ancestor, never the row's own path. An explicitly
-    instantiated macro has an instance node of its own, and it is still
-    instantiated in its PARENT's body — attributing it to itself would
-    move its power out of the module that pays for it."""
+    """Attribution is to a proper ancestor, never the row's own path, so a macro's power
+    counts in its parent's body.
+    """
 
     out = _node_eval(
         _heat_js()
@@ -2541,10 +2213,9 @@ def test_a_leaf_that_is_also_an_rtl_instance_pays_its_parent():
 
 
 def test_a_model_row_is_levelled_before_it_is_resolved():
-    """OpenSTA prints `/` and the graph's ids carry `.`, so a row is
-    levelled on the way in — except inside an escaped identifier, where
-    both characters are part of the name and splitting one would
-    attribute a leaf to a module that does not contain it."""
+    """OpenSTA's ``/`` and the graph's ``.`` are normalised to levels, except inside an
+    escaped identifier.
+    """
 
     out = _node_eval(
         _heat_js()
@@ -2585,10 +2256,9 @@ def test_a_model_row_is_levelled_before_it_is_resolved():
 
 
 def test_an_inbound_phys_focus_lands_on_the_node_that_owns_it():
-    """``phys_focus`` targets are the physical model's coordinates: a
-    module by name, an instance by path. A leaf has no node of its own —
-    it is a Liberty cell instance — so the module whose body contains it
-    is the answer, and an instance node wins when the path names one."""
+    """``phys_focus`` targets are modules by name or instances by path; a leaf resolves
+    to its owning module, and an instance node wins when the path names one.
+    """
 
     out = _node_eval(
         _heat_focus_js()
@@ -2632,10 +2302,9 @@ def test_an_inbound_phys_focus_lands_on_the_node_that_owns_it():
 
 
 def test_the_focus_handler_emits_nothing_and_keeps_the_metric_hint():
-    """Selecting a node goes on emitting the graph's own envelopes; an
-    inbound focus adds no wire type and answers with none. The metric
-    hint applies even when the target misses — it is a statement about
-    the view, not about the row."""
+    """Inbound focus adds no wire type; the metric hint applies even when the target
+    misses.
+    """
 
     js = _page_js()
     assert "case 'phys_focus':" in js
@@ -2652,13 +2321,8 @@ def test_the_focus_handler_emits_nothing_and_keeps_the_metric_hint():
 
 
 def test_the_roll_up_counts_instantiations_and_rows_apart():
-    """The labelling the review asked for: cells and area are the module
-    DEFINITION's, counted once however many times it is instantiated,
-    while the power sum runs over every INSTANTIATION of it.
-
-    Both numbers ride on the entry, because the sum is the right figure
-    for a heat map and the wrong one to divide by the area — so the
-    surfaces have to be able to say which is which.
+    """Cells and area are the module definition's, counted once; power sums over every
+    instantiation. Both ride on the entry.
     """
 
     out = _node_eval(
@@ -2693,14 +2357,8 @@ def test_the_roll_up_counts_instantiations_and_rows_apart():
 
 
 def test_a_dotted_suite_qualifier_does_not_become_a_path_level():
-    """``rb graph build`` appends ``@<suite>`` to the WHOLE id and reads
-    it back off the LAST ``@`` (``rpartition`` in
-    ``_collision_label_index``), so a suite path with a dot in it —
-    ``verif/fifo.v2`` — is one qualifier and not a path level.
-
-    Splitting per level kept ``v2`` as a level, keyed the index on
-    ``u_sub.v2``, and the module owning those leaves then painted as
-    unmeasured while its power went nowhere.
+    """The suite qualifier is read from the last ``@`` of the whole id, so a dotted
+    suite path such as ``verif/fifo.v2`` is one qualifier, not a path level.
     """
 
     out = _node_eval(
@@ -2730,12 +2388,8 @@ def test_a_dotted_suite_qualifier_does_not_become_a_path_level():
 
 
 def test_a_suite_qualified_module_is_one_module_everywhere():
-    """A qualifier disambiguates an ID, not a module: two exports of one
-    RTL module are one row in the model, so the join reads them under
-    the bare name and an inbound focus highlights every one of them.
-
-    Picking one by key order would light an arbitrary export and leave
-    its twins looking unrelated to the message.
+    """A qualifier disambiguates an id, not a module: the join reads exports under the
+    bare name and a focus highlights every export.
     """
 
     out = _node_eval(
@@ -2777,24 +2431,13 @@ def test_a_suite_qualified_module_is_one_module_everywhere():
     ]
 
 
-# --- the load state machine ------------------------------------------------
-
-
 def _heat_load_js() -> str:
     return _marked_js("heat-load-step")
 
 
 def test_a_refused_run_switch_keeps_the_model_on_screen():
-    """The review finding: a `?dir=` the server refuses — a directory
-    with no manifest, a run outside the project — was muting the control
-    and throwing the model away, so the one control that could pick a
-    different run was the control that had just switched itself off.
-
-    A refusal of the SWITCH is not a refusal of the model on screen. The
-    selected run is therefore committed only when a body arrives, and a
-    failure with a payload in hand keeps the payload, keeps the run it
-    came from and keeps the overlay painting — the /phy pane's
-    `load` / `loadFailed` rule.
+    """A refused ``?dir=`` switch keeps the payload, its run and the overlay; the run is
+    committed only when a body arrives.
     """
 
     out = _node_eval(
@@ -2850,13 +2493,8 @@ def test_a_refused_run_switch_keeps_the_model_on_screen():
 
 
 def test_a_bad_dir_on_the_first_load_falls_back_to_the_newest_run():
-    """A `/gph?dir=` typo, or a link to a run since pruned: the model the
-    project does have is one fetch away, so the pane asks for the newest
-    and says the requested run was not found. Muting there would leave a
-    reader with no heat at all and no way to ask for any.
-
-    With no run requested there is nothing left to try, and that is the
-    muted control.
+    """A missing ``?dir=`` run falls back to the newest and reports the requested run as
+    not found; with no run requested the control is muted.
     """
 
     out = _node_eval(
@@ -2900,16 +2538,10 @@ def test_a_bad_dir_on_the_first_load_falls_back_to_the_newest_run():
 
 
 def test_a_focus_that_beats_the_model_turns_the_overlay_on():
-    """An inbound ``phys_focus`` is a heat request: it names a
-    coordinate in the physical model and carries the metric to
-    foreground. An instance target cannot be resolved without the model
-    at all, so a pane that has not read it ticks the overlay, fetches,
-    and applies the focus when the body lands.
+    """An inbound ``phys_focus`` ticks the overlay, fetches the model if unread and
+    applies the focus when the body lands.
 
-    The second pass never defers again, so a load that fails cannot
-    loop — and the held focus is still drained there, because a
-    ``module:`` target names a node this graph carries whether or not
-    the model could be read.
+    The second pass never defers again, and a held focus is drained even on failure.
     """
 
     js = _page_js()
@@ -2939,11 +2571,9 @@ def test_a_focus_that_beats_the_model_turns_the_overlay_on():
 
 
 def test_the_run_being_shown_is_offered_even_when_the_listing_headed_it_off():
-    """The listing is headed at ``phys_page.RUNS_LIMIT``, so the run on
-    screen can be off the end of it — a reader picks an older run and a
-    batch of newer ones lands. Its entry is synthesised from the
-    payload's own header and put back at the top, or the selector's
-    value silently disagrees with the tints under it."""
+    """A run beyond ``phys_page.RUNS_LIMIT`` gets a listing entry synthesised from the
+    payload header at the top, so the selector matches the tints.
+    """
 
     out = _node_eval(
         _marked_js("heat-run-url")
@@ -2996,15 +2626,9 @@ def test_the_run_being_shown_is_offered_even_when_the_listing_headed_it_off():
     assert "renderHeatControls();" in reloaded
 
 
-# --- the route, over HTTP --------------------------------------------------
-
-
 def _write_phys_run(root: Path) -> Path:
-    """One run's physical artefacts, written with the phase-1 producers.
-
-    The same rule ``tests/test_hub_phys_page.py`` follows: a fixture
-    that invented its own document shape would keep passing after the
-    producers stopped writing that shape.
+    """One run's physical artefacts written with the real producers, so the fixture
+    cannot drift from their shape.
     """
 
     phys_dir = root / "verif" / "blk" / "artefacts" / "both"
@@ -3043,9 +2667,7 @@ def _write_phys_run(root: Path) -> Path:
 async def test_http_graph_page_advertises_the_model_it_can_paint_with(
     hub_and_viewer, built_graph: Path
 ):
-    """The wiring, end to end: the pane's phys URL is keyed on the same
-    manifest probe the landing page's phys card is keyed on, so the two
-    cannot disagree about whether there is a model."""
+    """The pane's phys URL keys on the same manifest probe as the landing card."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}{graph_page.GRAPH_PAGE_ROUTE}"

@@ -1,32 +1,8 @@
-"""Tests for the hub-served synth+power pane (rtl-buddy/rtl_buddy#558).
+"""Tests for the hub-served synth and power pane: ``/phy.json``, the offline ``/phy``
+page, presence and advertisement, ``phys_focus`` and the origin-to-label map.
 
-Modelled on ``test_hub_cov_page.py``, because the pane is modelled on the
-coverage pane. Five surfaces, in the order a user meets them:
-
-1. ``GET /phy.json`` — the newest run's physical model + manifest,
-   assembled by the *same* builder ``rb phys summary`` uses. The point
-   pinned here is that the numbers agree: a pane that recomputed totals
-   would eventually disagree with the CLI, and the disagreement would be
-   discovered by a person defending an area number in a review.
-2. ``GET /phy`` — one self-contained HTML document. The offline rule is
-   checked structurally (no external ``src``/``href``, no CDN host),
-   because "it worked on my laptop" is exactly the failure mode a hub on
-   an air-gapped build machine hits.
-3. Presence + advertisement — the landing card and the SPA's
-   ``__RTL_BUDDY_PHY_URL__`` global follow discovered artefacts, not a
-   build-time flag.
-4. ``phys_focus`` — the wire type behind ``rb hub send phys-focus``:
-   schema-valid, broadcast to peers, and replayed to a pane that
-   connects after the fact, which is what makes "send it before the tab
-   is open" work.
-5. The origin→label map, the seam between the wire's ``phys`` and the
-   chrome's ``phy``.
-
-The page is static HTML plus one inline script, so what can be asserted
-server-side is its *structure*. Where the behaviour is genuinely a
-function — the null rules, the dynamic-power sum, the ranking — the
-function is sliced out of the page between markers and exercised in
-``node``, which is the only rig the repo has and needs none of a DOM.
+Assertions on the page are structural; pure helpers are sliced out between markers
+and run in ``node``.
 """
 
 from __future__ import annotations
@@ -69,15 +45,6 @@ from rtl_buddy.phys.model import (
 )
 
 
-# ---------------------------------------------------------------------------
-# fixtures — one run's physical artefacts on disk
-#
-# Written with the phase-1 producers rather than by hand, the same rule
-# ``test_phys_query.py`` follows: a fixture that invented its own
-# document shape would keep passing after the producers stopped writing
-# that shape.
-# ---------------------------------------------------------------------------
-
 MODULE_ROWS = [
     {"module": "blk", "cell_count": 120, "area_um2": 480.5},
     {"module": "sub", "cell_count": 40, "area_um2": 96.0},
@@ -104,10 +71,8 @@ INSTANCE_ROWS = [
 ]
 
 
-#: Both halves of a fixture run record the same netlist hash, because
-#: that is what a `rb synth` then `rb power` pair records and what the
-#: merge requires before either half inherits the other (see
-#: :func:`rtl_buddy.phys.model.may_inherit_other_half`).
+# Both halves of a fixture run record the same netlist hash, as a ``rb synth`` then ``rb
+# power`` pair does; the merge requires it.
 _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
@@ -121,14 +86,10 @@ def _write_run(
     publication=None,
     artefacts=None,
 ):
-    """One run's artefact directory, written the way the producers do.
+    """One run's artefact directory, written by the real producers.
 
-    ``publication`` stamps both documents with one token, as a real
-    publish does. Left off, they carry ``None`` — the shape a document
-    written before publications were stamped has.
-
-    ``artefacts`` overrides where the run lands, for the containment
-    tests that need a run in a tree the project's walk will not enter.
+    ``publication`` stamps both documents with one token; left off, they carry
+    ``None``. ``artefacts`` overrides where the run lands, for containment tests.
     """
 
     phys_dir = (artefacts or root / "verif" / "blk" / "artefacts") / run
@@ -218,11 +179,8 @@ def phys_project(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _clear_presence_cache():
-    """Presence is memoised for five seconds, keyed on the root path.
-
-    ``tmp_path`` is unique per test so a stale hit is unlikely, but the
-    cache is module state and a test that asserts on a *miss* must not
-    depend on that.
+    """Presence is memoised for five seconds per root path; tests asserting on a miss
+    clear the cache.
     """
 
     phys_page._presence_cache.clear()  # noqa: SLF001
@@ -230,21 +188,16 @@ def _clear_presence_cache():
     phys_page._presence_cache.clear()  # noqa: SLF001
 
 
-# ---------------------------------------------------------------------------
-# build_phys_payload
-# ---------------------------------------------------------------------------
-
-
 def test_payload_is_the_cli_builder_plus_a_hub_block(phys_project: Path):
-    """The pane and ``rb phys summary`` may differ in presentation, never
-    in numbers — so the payload IS the query builder's output."""
+    """The payload is the query builder's output, so the pane and ``rb phys summary``
+    agree on numbers.
+    """
 
     payload = phys_page.build_phys_payload(phys_project)
     ctx = phys_query.load_context(phys_project)
     expected = phys_query.summary_payload(ctx, limit=0)
     hub = payload.pop("hub")
-    # The run selector's menu, and it is the `rb phys runs` payload
-    # verbatim too — one builder, three surfaces (#568).
+    # The run selector's menu is the ``rb phys runs`` payload verbatim.
     runs = payload.pop("runs")
     assert runs == phys_query.runs_payload(phys_project, limit=phys_page.RUNS_LIMIT)
     assert payload == expected
@@ -252,17 +205,13 @@ def test_payload_is_the_cli_builder_plus_a_hub_block(phys_project: Path):
     assert hub["metrics"] == ["cells", "area", "leakage", "dynamic", "total"]
     assert hub["power_columns"] == list(phys_query.POWER_COLUMNS)
     assert hub["model"].endswith("artefacts/both/phys-model.json")
-    # Stamped by a publish; this fixture writes the documents directly, so
-    # there is no token and the page falls back to manifest path + top.
+    # This fixture writes documents directly, so there is no token and the page falls
+    # back to manifest path plus top.
     assert hub["publication"] is None
 
 
 def test_payload_carries_the_models_publication_token(tmp_path: Path):
-    """The finding (#562 round-11 review, Codex P1). The page compares
-    reloads by the publication token when there is one, and there never was
-    one: nothing put it in the body, so identity always fell back to the
-    manifest path and the top — and a model republished at the same path
-    under the same top kept a lens and a selection aimed at replaced rows."""
+    """The body carries the publication token, which the page uses to compare reloads."""
 
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -280,13 +229,8 @@ def test_payload_carries_the_models_publication_token(tmp_path: Path):
 
 
 def test_payload_truncates_nothing(phys_project: Path):
-    """``limit=0``: a terminal that printed every leaf instance is a
-    terminal nobody reads, which is why the verb truncates; a table that
-    cannot show the row you are looking for is broken, which is why the
-    pane does not.
-
-    The rankings ARE the raw rows at that limit — a permutation, not a
-    head — which is why the payload carries no second copy of them.
+    """With ``limit=0`` the rankings are the raw rows, a permutation rather than a head,
+    so the payload carries no second copy.
     """
 
     payload = phys_page.build_phys_payload(phys_project)
@@ -307,9 +251,9 @@ def test_payload_truncates_nothing(phys_project: Path):
 def test_payload_carries_the_halves_and_the_totals_to_check_them_against(
     phys_project: Path,
 ):
-    """Both halves of the sanity block ride along: the flows' own log
-    scrape (``totals``) and the rows a different scrape produced. The
-    pane compares them; neither is derived from the other."""
+    """The sanity block carries both the flows' own log scrape (``totals``) and the rows
+    from a different scrape; neither is derived from the other.
+    """
 
     payload = phys_page.build_phys_payload(phys_project)
     assert payload["totals"]["cell_count"] == 162
@@ -322,10 +266,9 @@ def test_payload_carries_the_halves_and_the_totals_to_check_them_against(
 
 
 def test_a_half_the_run_did_not_produce_is_named_not_guessed(tmp_path: Path):
-    """An empty ranking is ambiguous on its own — "no synthesis ran" and
-    "a synthesis ran and found no cells" are the same empty list — so
-    the pane reads ``halves``/``missing_halves``, and they have to be
-    there."""
+    """``halves`` and ``missing_halves`` are present, since an empty ranking cannot tell
+    "no synthesis" from "no cells".
+    """
 
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -338,8 +281,8 @@ def test_a_half_the_run_did_not_produce_is_named_not_guessed(tmp_path: Path):
         "rows": None,
         "produced_by": "rb synth",
         "netlist_hash": False,
-        # A synthesis has no power mode and no activity; the keys are
-        # there so the pane can walk both halves alike (#568).
+        # A synthesis has no power mode or activity; the keys exist so the pane can walk
+        # both halves alike.
         "mode": None,
         "activity": None,
     }
@@ -364,8 +307,9 @@ def test_presence_follows_discovered_artefacts(tmp_path: Path, phys_project: Pat
 
 
 def test_presence_is_cached_for_the_ttl(phys_project: Path, monkeypatch):
-    """A walk per landing poll would be a walk per second on a big tree,
-    and this walk cannot even shortcut on a directory name."""
+    """The presence walk is cached, since a walk per landing poll is costly on a big
+    tree.
+    """
 
     calls = []
     real = manifest_mod.discover_manifests
@@ -378,15 +322,9 @@ def test_presence_is_cached_for_the_ttl(phys_project: Path, monkeypatch):
     assert phys_page.phys_data_present(phys_project) is True
     assert phys_page.phys_data_present(phys_project) is True
     assert len(calls) == 1
-    # ttl=0 is the "ask again now" escape hatch the tests (and a future
-    # explicit refresh) need.
+    # ttl=0 forces a fresh walk.
     assert phys_page.phys_data_present(phys_project, ttl=0) is True
     assert len(calls) == 2
-
-
-# ---------------------------------------------------------------------------
-# render_phys_html — the offline rule
-# ---------------------------------------------------------------------------
 
 
 def test_page_injects_hub_address():
@@ -397,11 +335,8 @@ def test_page_injects_hub_address():
 
 
 def test_page_is_self_contained():
-    """No CDN, no remote font, no import, no off-machine reference.
-
-    Every ``src``/``href`` that is not a page anchor must be a
-    same-origin absolute path served by this same hub process, so a hub
-    on a machine with no route off localhost still renders the pane.
+    """Every non-anchor ``src``/``href`` is a same-origin absolute path; no CDN, remote
+    font or import.
     """
 
     body = phys_page.render_phys_html(hub_addr="127.0.0.1:1").decode("utf-8")
@@ -431,19 +366,15 @@ def test_page_links_the_shared_token_sheet_with_a_fallback():
         "--heat-none:",
     ):
         assert token in body, token
-    # Light default (#398), and the fallback BEFORE the link, or it would
-    # out-rank the sheet at equal specificity and kill dark mode.
+    # Light default, and the fallback before the link, or it out-ranks the sheet at
+    # equal specificity.
     assert "--bg:          #f8fafc;" in body
     assert body.index("--bg:          #f8fafc;") < body.index('href="/hub/theme.css"')
 
 
 def test_the_heat_ramp_lives_in_the_sheet_not_in_the_page():
-    """The cov pane carries a comment scar about exactly this: its ramp's
-    saturation used to be page-local, which is one ramp in two places.
-
-    So the phys ramp's endpoints are SHEET tokens — the page repeats them
-    only in its 404 fallback block, and every rule that paints with them
-    reads them through ``var()``.
+    """The phys ramp's endpoints are sheet tokens, repeated only in the 404 fallback
+    block and read through ``var()`` elsewhere.
     """
 
     sheet = theme.THEME_CSS
@@ -469,23 +400,22 @@ def test_page_carries_the_pieces_the_issue_asks_for():
     # The hub chrome vocabulary.
     for word in ("connected", "connecting…", "offline"):
         assert word in body, word
-    # The envelope vocabulary: it registers as its own origin, handles
-    # the focus, and drives the other panes.
+    # The envelope vocabulary: registers as its own origin, handles focus, drives the
+    # other panes.
     assert "'phys'" in body
     # …politely: the first hello asks for the slot, it does not seize it.
     assert "takeover: true" not in body
     assert "phys_focus" in body
     assert "graph_focus" in body
     assert "selection_changed" in body
-    # The missing-half banner and the empty state both name the
-    # producing commands — either one alone fills a half.
+    # The missing-half banner and the empty state both name the producing commands;
+    # either fills a half.
     assert "rb synth" in body and "rb power" in body
     assert theme.MASCOT_240 in body
 
 
 def test_the_page_is_the_phy_route_and_the_phys_origin():
-    """A page rename does not touch the wire: the route and the label are
-    ``phy``, the ``hello`` client is ``phys``."""
+    """The route and label are ``phy``; the ``hello`` client is ``phys``."""
 
     assert phys_page.PHYS_PAGE_ROUTE == "/phy"
     assert phys_page.PHYS_JSON_ROUTE == "/phy.json"
@@ -496,11 +426,6 @@ def test_the_page_is_the_phy_route_and_the_phys_origin():
     assert "<title>rtl-buddy-phy</title>" in body
 
 
-# ---------------------------------------------------------------------------
-# the pure helpers, sliced out and run in node
-# ---------------------------------------------------------------------------
-
-
 def _page_js() -> str:
     """The page's inline script — the last ``<script>`` in the body."""
 
@@ -509,11 +434,8 @@ def _page_js() -> str:
 
 
 def _marked_js(marker: str) -> str:
-    """One block of pure helpers, sliced out of the page by its markers.
-
-    Nothing between the markers may touch the DOM or close over page
-    state, which is exactly what evaluating them in bare ``node``
-    enforces.
+    """Pure helpers sliced out between markers and run in bare ``node``; nothing between
+    the markers may touch the DOM.
     """
 
     match = re.search(rf"// >>> {marker}\n(.*?)// <<< {marker}", _page_js(), re.S)
@@ -533,9 +455,7 @@ def _node(script: str) -> str:
 
 
 def test_page_javascript_parses(tmp_path: Path):
-    """The whole inline script, not just the sliced helpers: a syntax
-    error anywhere in it is a blank pane with a console message nobody
-    is looking at."""
+    """The whole inline script parses; a syntax error blanks the pane silently."""
 
     script = tmp_path / "phys_page.js"
     script.write_text(_page_js(), encoding="utf-8")
@@ -549,9 +469,9 @@ def test_page_javascript_parses(tmp_path: Path):
 
 
 def test_dynamic_power_is_summed_here_because_no_producer_writes_it():
-    """internal + switching. The model has no ``dynamic`` column — the
-    producers report the two halves and the total — and this is the one
-    place the pane invents it."""
+    """``dynamic`` is internal plus switching; the model has no such column, and this is
+    the one place the pane derives it.
+    """
 
     out = _node(
         _marked_js("derived-metrics")
@@ -570,9 +490,7 @@ def test_dynamic_power_is_summed_here_because_no_producer_writes_it():
 
 
 def test_a_null_column_never_sums_to_zero():
-    """A column no row measured stays null. Yosys writes no ``area``
-    without a Liberty, and "this design is free" is the wrong reading of
-    that."""
+    """A column no row measured stays null, not zero."""
 
     out = _node(
         _marked_js("derived-metrics")
@@ -591,10 +509,9 @@ def test_a_null_column_never_sums_to_zero():
 
 
 def test_unmeasured_rows_sink_in_both_directions():
-    """``rb phys``'s own rule (``_sort_key_desc``): a row whose metric was
-    never measured is not a zero, so it sorts below every measured row
-    ascending as well as descending — otherwise "smallest first" would
-    open on the rows nobody measured."""
+    """As in ``rb phys``'s ``_sort_key_desc``, unmeasured rows sort below every measured
+    row in both directions.
+    """
 
     out = _node(
         _marked_js("derived-metrics")
@@ -618,10 +535,9 @@ def test_unmeasured_rows_sink_in_both_directions():
 
 
 def test_equal_cell_counts_break_on_area_as_the_cli_does():
-    """The finding (#562 round-16, Codex P2). ``heaviest_modules()`` keys on
-    (cell_count, area_um2, module); the pane's generic tie-break went straight
-    to the name, so two modules with the same cell count could come out in one
-    order in ``rb phys summary`` and another in the pane, off one model."""
+    """The generic tie-break follows ``heaviest_modules()`` (cell_count, area_um2,
+    module), so the pane and ``rb phys summary`` order ties alike.
+    """
 
     out = _node(
         _marked_js("derived-metrics")
@@ -640,16 +556,15 @@ def test_equal_cell_counts_break_on_area_as_the_cli_does():
         """
     )
     desc, asc = out.strip().splitlines()
-    # Descending is the CLI's own order: the bigger area leads, and the
-    # module nobody measured an area for sinks under both.
+    # Descending is the CLI's order: bigger area first, unmeasured area last.
     assert json.loads(desc) == ["beta", "alpha", "gamma"]
     assert json.loads(asc) == ["alpha", "beta", "gamma"]
 
 
 def test_the_cli_and_the_pane_rank_equal_cell_counts_alike(tmp_path: Path):
-    """The pinning half of the same finding: the two orders are compared
-    against each other rather than each against a literal, so the pane cannot
-    drift from ``heaviest_modules`` without this failing."""
+    """The pane's order is compared with ``heaviest_modules`` directly, so drift fails
+    here.
+    """
     from rtl_buddy.phys.query import heaviest_modules
 
     rows = [
@@ -673,8 +588,7 @@ def test_the_cli_and_the_pane_rank_equal_cell_counts_alike(tmp_path: Path):
 
 
 def test_equal_rows_keep_a_stable_order():
-    """A re-sort of equal rows must not jitter between renders, so ties
-    break on the name and only then on the payload's own order."""
+    """Ties break on the name, then on the payload's order, so re-sorts do not jitter."""
 
     out = _node(
         _marked_js("derived-metrics")
@@ -694,9 +608,9 @@ def test_equal_rows_keep_a_stable_order():
 
 
 def test_the_separator_is_levelled_only_on_the_way_to_the_wire():
-    """OpenSTA prints ``/`` and every RTL-side consumer spells the same
-    path with ``.``; ``rb phys`` admits both. The pane has to pick one
-    on the way OUT, and the wire's vocabulary is dots."""
+    """The pane emits dot-separated paths on the wire, though OpenSTA prints ``/`` and
+    ``rb phys`` accepts both.
+    """
 
     out = _node(
         _marked_js("path-normalise")
@@ -721,13 +635,9 @@ def test_the_separator_is_levelled_only_on_the_way_to_the_wire():
     ]
 
 
-#: The paths both copies of the levelling rule are pinned against
-#: (#561). It is ONE rule -- a backslash opening a segment runs to the
-#: whitespace that ends it, or to the end of the path -- and only the
-#: canonical separator differs: `/` in `rtl_buddy.phys.query.level_path`,
-#: `.` in the pane's `toWirePath`. The two expectation tables below are
-#: therefore the same list twice, and a change to one copy alone fails
-#: the other's test.
+# Paths pinning both copies of the levelling rule (``level_path`` with ``/``,
+# ``toWirePath`` with ``.``): a backslash opening a segment runs to the whitespace that
+# ends it, or to the path end.
 ESCAPED_PATHS = [
     r"u_top/\gen[0].u_x",  # the escape a reader actually stores
     "u_top/\\gen[0].u_x /u_ff",  # terminated, as Verilog spells it
@@ -738,9 +648,9 @@ ESCAPED_PATHS = [
 
 
 def test_the_wire_levelling_keeps_an_escaped_identifier_whole():
-    r"""`\gen[0].u_x` is one leaf's *name*: neither the `.` nor a `/`
-    inside it is a level, so rewriting one would hand the schematic a
-    path no row can answer to."""
+    r"""An escaped name such as `\gen[0].u_x` is one leaf; a `.` or `/` inside it is not
+    a level.
+    """
 
     out = _node(
         _marked_js("path-normalise")
@@ -770,8 +680,7 @@ def test_the_pane_and_the_query_layer_level_the_same_way():
 
 
 def test_an_escaped_row_is_still_reachable_from_the_wire():
-    r"""End to end through the edges: a `\gen[0].u_x` leaf, sent out
-    rooted and matched on the way back, is one row rather than none."""
+    r"""A `\gen[0].u_x` leaf sent out rooted matches on the way back."""
 
     out = _node(
         _marked_js("path-normalise")
@@ -800,10 +709,9 @@ def test_an_escaped_row_is_still_reachable_from_the_wire():
 
 
 def test_the_design_top_is_added_on_the_way_out():
-    """Model rows are uniformly rootless — an OpenSTA full name is
-    relative to the top — and a schematic `instance_path` is rooted. So
-    the top goes on unconditionally: testing what the row starts with is
-    what made a rootless `cpu/alu` under top `cpu` look already-rooted."""
+    """Model rows are rootless and a schematic ``instance_path`` is rooted, so the top
+    is always prepended; a prefix test would misread `cpu/alu` under top `cpu`.
+    """
 
     out = _node(
         _marked_js("path-normalise")
@@ -827,11 +735,10 @@ def test_the_design_top_is_added_on_the_way_out():
 
 
 def test_an_inbound_path_is_resolved_against_the_rows_not_by_its_prefix():
-    """The way back in. A path from elsewhere may or may not carry the
-    top, and no prefix test can tell: under top `cpu`, `cpu.alu` is both
-    a rooted `alu` and a rootless `cpu/alu`, and both can be real rows.
-    So both readings are tried against the ACTUAL rows — the sender's
-    convention only decides which is tried first."""
+    """Inbound paths may or may not carry the top and no prefix test can tell (under top
+    `cpu`, `cpu.alu` is both), so both readings are tried against the rows, the
+    sender's convention first.
+    """
 
     out = _node(
         _marked_js("path-normalise")
@@ -870,9 +777,9 @@ def test_an_inbound_path_is_resolved_against_the_rows_not_by_its_prefix():
 
 
 def test_the_wire_and_a_focus_target_are_read_with_their_own_convention():
-    """`selection_changed` comes from the schematic, which roots its
-    paths; a `phys_focus` target is typically copied out of `rb phys`
-    output, which does not. Provenance picks the first reading."""
+    """A ``selection_changed`` comes rooted from the schematic; a ``phys_focus`` target
+    is typically rootless, from ``rb phys`` output.
+    """
 
     js = _page_js()
     assert "function instanceRow(path, rooted) {" in js
@@ -883,9 +790,7 @@ def test_the_wire_and_a_focus_target_are_read_with_their_own_convention():
 
 
 def test_the_module_column_sorts_by_name_rather_than_by_null():
-    """`module` is a string column of the instance table. Routing it
-    through the numeric reader made every value null, so clicking the
-    header did nothing."""
+    """``module`` is a string column and must not go through the numeric reader."""
 
     out = _node(
         _marked_js("derived-metrics")
@@ -911,9 +816,9 @@ def test_the_module_column_sorts_by_name_rather_than_by_null():
 
 
 def test_the_module_lens_says_when_the_join_cannot_see_the_rows():
-    """An RTL module clicked on a mapped hierarchical design matches no
-    leaf, because the leaves carry Liberty cell names. A bare "no
-    instances match" would read as "this block burns no power"."""
+    """A module on a mapped hierarchical design matches no leaf, since leaves carry
+    Liberty cell names; the empty state says so instead of implying zero power.
+    """
 
     js = _page_js()
     assert "function joinMissNote()" in js
@@ -924,24 +829,19 @@ def test_the_module_lens_says_when_the_join_cannot_see_the_rows():
     assert "Liberty cell names, not RTL module names" in js
     assert "hierarchy join" in js
     assert "if (state.module === null || state.filter) { return null; }" in js
-    # The membership test is `namespacesOf`, shared with the collision
-    # note below rather than spelled a second time here.
+    # Membership uses ``namespacesOf``, shared with the collision note.
     assert "if (spaces.indexOf('liberty') >= 0) { return null; }" in js
 
 
 def test_a_name_in_both_namespaces_is_a_collision_the_pane_says_out_loud():
-    """The finding (#562 review, Codex P2). A word that is an RTL module
-    in the synthesis half AND a Liberty cell in the power half made a
-    lens that looked complete: the cell type's leaves listed under the
-    module's cells and area, every number real, nothing saying they
-    measure two different things. `rb phys module` reports it as
-    `instance_join`; the summary payload the pane reads carries no
-    per-module note, so the pane makes the same test itself."""
+    """A name that is both an RTL module and a Liberty cell gets a collision note, as
+    ``rb phys module`` reports ``instance_join``; the pane makes the same test
+    itself.
+    """
 
     js = _page_js()
     assert "function collisionNote()" in js
-    # Rendered under the lens pill, so it is above the rows it qualifies
-    # and shows whether or not the filter has emptied the table.
+    # Rendered under the lens pill, so it shows even when the filter empties the table.
     assert "var collision = collisionNote();" in js
     assert "if (collision) { els.instances.appendChild(collision); }" in js
     # Only a name in BOTH namespaces, and it says which measurement is
@@ -954,9 +854,9 @@ def test_a_name_in_both_namespaces_is_a_collision_the_pane_says_out_loud():
 
 
 def test_the_pane_splits_the_two_module_namespaces_the_way_the_query_does():
-    """`namespacesOf` is the pane's copy of `phys.query.namespaces_of`,
-    and both notes are decided by it: `['rtl']` alone is the miss,
-    `['rtl', 'liberty']` is the collision."""
+    """``namespacesOf`` mirrors ``phys.query.namespaces_of``: ``['rtl']`` is a miss and
+    ``['rtl', 'liberty']`` a collision.
+    """
 
     out = _node(
         _marked_js("namespace-split")
@@ -988,9 +888,9 @@ def test_the_pane_splits_the_two_module_namespaces_the_way_the_query_does():
 
 
 def test_the_module_instance_counts_are_counted_once_per_payload():
-    """The modules table prints a leaf count next to every module row.
-    Scanning the instance array per row is O(modules x instances) — on a
-    mapped design, thousands times six figures, on every render."""
+    """The per-module leaf count comes from a map built once, not from scanning the
+    instance array per row.
+    """
 
     out = _node(
         _marked_js("instance-counts")
@@ -1022,22 +922,18 @@ def test_the_module_instance_counts_are_counted_once_per_payload():
     assert json.loads(empty) == {}
 
     js = _page_js()
-    # Built once for the payload and read from the cache per row; the
-    # cache dies with the payload that made it.
+    # Built once per payload and read from the cache per row.
     assert "state.instanceCounts = countByModule(rowsOf('instances'));" in js
     assert "state.instanceCounts = null;" in js
-    # And it is a fact about the payload, not about the view: the only
-    # two places that drop it are the two that change which payload
-    # there is — ingesting a new one, and forgetting one on a failed
-    # load. Nothing in the lens/filter/sort path touches it.
+    # The cache is dropped only when the payload changes: on ingest and on forgetting
+    # after a failed load.
     assert js.count("state.instanceCounts = null;") == 2
 
 
 def test_model_identity_is_the_publication_or_the_document_it_came_from():
-    """What a reload is compared by. The publication token when the payload
-    carries one — two reads of one publish share it — and otherwise the
-    manifest path and the top, which is what tells one run's document from
-    another's."""
+    """A reload is compared by the publication token when present, else by manifest path
+    and top.
+    """
 
     out = _node(
         _marked_js("model-identity")
@@ -1062,10 +958,9 @@ def test_model_identity_is_the_publication_or_the_document_it_came_from():
 
 
 def test_a_republished_model_at_the_same_path_is_a_different_model():
-    """The other half of the finding. Once the body carries the token, the
-    preference order in `modelIdentity` engages: a revision switch that
-    republishes the same run under the same top is a new model, which is
-    what makes the ingest drop the lens and the selection."""
+    """With a token in the body, republishing the same run under the same top is a new
+    model, which drops the lens and selection.
+    """
 
     out = _node(
         _marked_js("model-identity")
@@ -1088,20 +983,16 @@ def test_a_republished_model_at_the_same_path_is_a_different_model():
     # with no token falls back to the document it came from.
     assert json.loads(out) == [False, True, False, True]
 
-    # And a different identity is exactly what clears the reader's lens and
-    # selection — the branch `test_a_model_change_drops_the_lens_and_the_
-    # selection` pins.
+    # A different identity clears the reader's lens and selection.
     body = _page_js().split("function ingest(payload) {")[1]
     dropped = body.split("if (replaced) {")[1].split("}")[0]
     assert "state.module = null;" in dropped and "state.instance = null;" in dropped
 
 
 def test_a_model_change_drops_the_lens_and_the_selection():
-    """The finding (#562 review, Codex P2). A reload can land on a
-    different run or a different design, and `blk` or `u_sub/_64_` is
-    exactly the kind of rootless name two unrelated models both carry — so
-    the row-still-here checks pass and the reader's lens silently
-    re-applies to a model they never asked about."""
+    """A reload onto a different run or design drops the lens even when rootless names
+    such as `blk` exist in both.
+    """
 
     js = _page_js()
     body = js.split("function ingest(payload) {")[1].split("renderMetricPicker();")[0]
@@ -1110,25 +1001,20 @@ def test_a_model_change_drops_the_lens_and_the_selection():
     dropped = body.split("if (replaced) {")[1].split("}")[0]
     assert "state.module = null;" in dropped
     assert "state.instance = null;" in dropped
-    # Decided before the payload is installed, or `modelIdentity` would be
-    # comparing the new payload with itself.
+    # Decided before the payload is installed, or ``modelIdentity`` would compare the
+    # new payload with itself.
     assert body.index("var identity") < body.index("state.payload = payload;")
-    # The reader's own controls are not statements about the model's rows,
-    # so they survive it — as they survive a failed load.
+    # The reader's own controls survive, as they do a failed load.
     for kept in ("state.metric", "state.sort", "state.filter"):
         assert kept not in dropped, kept
-    # And a focus that arrived before the fetch landed still applies: it
-    # was addressed at whatever model turns up, and it is replayed at the
-    # end of the ingest, after this.
+    # A focus that arrived before the fetch landed is replayed at the end of the ingest.
     ingest = js.split("function ingest(payload) {")[1]
     assert ingest.index("if (replaced) {") < ingest.index("if (focus) {")
     assert "applyFocus(focus);" in ingest
 
 
 def test_a_forgotten_model_leaves_no_identity_to_compare_against():
-    """Otherwise the load after a failure would read as a model change and
-    clear a lens that `forgetModel` has already cleared — harmless today,
-    and wrong the moment the two stop agreeing."""
+    """The load after a failure must not read as a model change."""
 
     js = _page_js()
     body = js.split("function forgetModel() {")[1].split("\n  }")[0]
@@ -1136,10 +1022,9 @@ def test_a_forgotten_model_leaves_no_identity_to_compare_against():
 
 
 def test_a_failed_load_forgets_the_model_it_was_showing():
-    """The empty panel is a claim that there is nothing to show, and the
-    pane used to make it while still holding the last model: the header
-    kept printing a run that is gone, and an inbound focus was answered
-    out of rows nobody could see."""
+    """The empty panel drops the held model, so the header and inbound focus do not use
+    rows nobody can see.
+    """
 
     js = _page_js()
     body = js.split("function forgetModel() {")[1].split("\n  }")[0]
@@ -1158,9 +1043,8 @@ def test_a_failed_load_forgets_the_model_it_was_showing():
         "clear(els.run);",
     ):
         assert cleared in body, cleared
-    # The hub connection is not payload state, and neither is the
-    # reader's own metric pick — a failed reload must not drop the
-    # socket or undo a choice the next load can render back.
+    # The hub connection and the reader's metric pick are not payload state and survive
+    # a failed reload.
     for kept in ("ws", "peers", "state.metric", "state.sort", "state.filter"):
         assert kept not in body, kept
     # A focus held for the load that has not landed is still held.
@@ -1170,25 +1054,22 @@ def test_a_failed_load_forgets_the_model_it_was_showing():
     empty = js.split("function showEmpty(message) {")[1]
     assert empty.strip().splitlines()[0].strip() == "forgetModel();"
     assert js.count("forgetModel()") == 2
-    # Both failure paths reach it through `loadFailed`: the error status
-    # and the body that would not parse (or an ingest that threw on it).
+    # Both failure paths reach it through ``loadFailed``.
     assert (
         "if (!res.ok) { loadFailed(requested, res.body && res.body.error); return; }"
         in js
     )
     assert "loadFailed(requested, 'could not read ' + url" in js
-    # And with no payload, the replay paths pend instead of acting —
-    # the mechanism that already exists for the fetch they beat.
+    # With no payload, replay paths pend instead of acting.
     assert "state.pending = payload;" in js
     assert "state.pendingSelection = ip;" in js
 
 
 def test_the_banner_offers_the_merge_only_when_the_halves_could_pair():
-    """The finding (#562 round-10 review, Codex P2, the pane half of it).
-    A `netlist-source: pnr` power half records no netlist hash, so the
-    provenance gate makes a later `rb synth` REPLACE the model rather than
-    complete it — and the banner was telling the reader to run exactly
-    that "to fill modules"."""
+    """A power half from ``netlist-source: pnr`` has no netlist hash, so a later ``rb
+    synth`` replaces the model rather than completing it; the banner must not advise
+    it.
+    """
 
     out = _node(
         _marked_js("half-advice")
@@ -1212,16 +1093,14 @@ def test_the_banner_offers_the_merge_only_when_the_halves_could_pair():
     paired, from_pnr, neither, reverse, empty = json.loads(out)
     assert paired == {"other": "instances", "pairable": True}
     assert from_pnr == {"other": "instances", "pairable": False}
-    # Nothing to preserve, so nothing to warn about: the plain advice is
-    # the true one when the other half is absent too.
+    # Nothing to preserve when the other half is absent too, so the plain advice stands.
     assert neither == {"other": "instances", "pairable": True}
-    # Symmetric, because the gate is: a synthesis half with no hash is one
-    # a later `rb power` cannot merge onto either.
+    # Symmetric: a synthesis half with no hash cannot be merged onto by a later ``rb
+    # power``.
     assert reverse == {"other": "modules", "pairable": False}
     assert empty == {"other": "instances", "pairable": True}
 
-    # And the banner spends the answer on two different sentences, the
-    # unpairable one naming what does work.
+    # The unpairable banner names what does work.
     js = _page_js()
     body = js.split("function renderBanner() {")[1].split("\n  }")[0]
     assert "into the same artefact directory to fill" in body
@@ -1231,11 +1110,9 @@ def test_the_banner_offers_the_merge_only_when_the_halves_could_pair():
 
 
 def test_a_superseded_reload_neither_installs_nor_blanks(tmp_path: Path):
-    """The finding (#562 round-10 review, Codex P2). Nothing serialises the
-    fetches, so two `/phy.json` responses can land out of order: the older
-    one wins by landing last, installing a run the reader has replaced —
-    or, when it is the older one that failed, blanking a fresh model and
-    claiming there is nothing to show."""
+    """Out-of-order ``/phy.json`` responses: the older must not install over a newer
+    load, nor blank a fresh model on failure.
+    """
 
     out = _node(
         _marked_js("load-generation")
@@ -1257,56 +1134,46 @@ def test_a_superseded_reload_neither_installs_nor_blanks(tmp_path: Path):
 
     js = _page_js()
     body = js.split("function load(dir) {")[1].split("\n  }")[0]
-    # The token is taken before the request goes out, so the response
-    # carries the load it belongs to.
+    # The token is taken before the request, so the response carries its own load.
     assert "var generation = nextGeneration(state);" in body
     assert body.index("nextGeneration(state)") < body.index("fetch(url")
-    # Both arms guard, and the failure arm above all: a stale failure is
-    # the one that destroys data the reader can see.
+    # Both arms guard; a stale failure would destroy visible data.
     assert body.count("if (!settle(state, generation)) { return; }") == 2
     success = body.split("}).then(function (res) {")[1]
     assert success.index("settle(state, generation)") < success.index("loadFailed(")
     assert success.index("settle(state, generation)") < success.index("ingest(")
     failure = body.split("}).catch(function (e) {")[1]
     assert failure.index("settle(state, generation)") < failure.index("loadFailed(")
-    # The generation is not payload state: a failed load must not reset
-    # the counter a later response is still checked against.
+    # The generation is not payload state; a failed load must not reset it.
     forget = js.split("function forgetModel() {")[1].split("\n  }")[0]
     assert "generation" not in forget
 
 
 def test_the_instances_column_is_a_dash_outside_the_liberty_namespace():
-    """`0` in the instances column is a claim about the design, and on a
-    mapped hierarchical run it was a false one for nearly every row: the
-    leaves carry the Liberty cell they instantiate, so an RTL module name
-    is not in that column at all. Unmeasurable-by-this-join reads as the
-    pane's null dash; a name the leaves DO carry keeps its number."""
+    """A module name absent from the instances column (leaves carry Liberty cells) reads
+    as the null dash, not ``0``; names the leaves carry keep their count.
+    """
 
     js = _page_js()
     counted = js.split("function instanceCount(module) {")[1].split("\n  }")[0]
     # No power half at all is already a dash, and stays one.
     assert "if (!halfPresent('instances')) { return '\u2014'; }" in counted
-    # Membership, not a falsy count: `namespacesOf`'s liberty test asked
-    # of the map whose key set is that namespace.
+    # Membership, not a falsy count.
     assert "Object.prototype.hasOwnProperty.call(counts, key)" in counted
     assert "return '\u2014';" in counted.split("hasOwnProperty")[1]
-    # A name the leaves carry — a Liberty cell, or a collision — is
-    # measured, and prints the count it measured.
+    # A name the leaves carry (Liberty cell or collision) prints its measured count.
     assert "return String(counts[key]);" in counted
     assert "|| 0" not in counted
-    # The header says what the dash means, so the column is readable
-    # without the lens note.
+    # The header explains the dash, so the column reads without the lens note.
     assert "instancesHead.title" in js
     assert "Em dash where the join cannot measure it" in js
 
 
 def test_the_instance_window_is_bounded_and_moves_to_hold_the_selection():
-    """`/phy.json` is limit=0, so the pane holds the whole power half — six
-    figures of leaf instances on a real mapped design. Every one of them
-    rebuilt as a <tr> plus seven <td>s on every sort click and every
-    keystroke is a frozen tab, so the DOM is windowed — and a selection
-    deep in the ranking must not be able to talk the pane out of the
-    bound: the window MOVES to it instead of growing to reach it."""
+    """The DOM is windowed: ``/phy.json`` holds the whole power half, so rendering every
+    row per keystroke would freeze the tab. A selection deep in the ranking moves the
+    window instead of growing it.
+    """
 
     out = _node(
         _marked_js("row-window")
@@ -1343,19 +1210,18 @@ def test_the_instance_window_is_bounded_and_moves_to_hold_the_selection():
 
 
 def test_the_window_resets_when_the_row_set_changes():
-    """A window raised over one filter must not carry into the next: the
-    control says "N of M", and M is what the current sort/filter/lens
-    matches. Selecting a row is not a change of set — collapsing the table
-    under the reader's cursor would be its own bug."""
+    """A raised window resets when the matching set changes (sort, filter, lens), not
+    when a row is selected.
+    """
 
     js = _page_js()
     assert "var INSTANCE_WINDOW = 500;" in js
     assert "function resetInstanceWindow() { state.shown = INSTANCE_WINDOW; }" in js
-    # Every state change that alters WHICH rows are in the table —
-    # including dropping the model altogether on a failed load.
+    # Every change to which rows are in the table, including dropping the model on a
+    # failed load.
     assert js.count("resetInstanceWindow();") == 8
-    # The heat maxima are over every matching row, not over the window, so
-    # a tint does not rescale itself as the reader presses "show more".
+    # Heat maxima are over every matching row, not the window, so tints do not rescale
+    # on "show more".
     assert "maxes[column.key] = maxOf(rows, column.key);" in js
     assert "ranked.slice(win.start, win.start + win.count).forEach" in js
 
@@ -1367,17 +1233,15 @@ def test_the_window_control_offers_more_and_all():
     assert "' rows shown'" in js
     assert "'show ' + step.toLocaleString() + ' more'" in js
     assert "'show all ' + total.toLocaleString()" in js
-    # A window that has moved off the top says what it skipped, in both
-    # directions — otherwise the reader sees rank 7,874 first with no
-    # sign that 7,873 rows outrank it.
+    # A window that moved off the top says what it skipped, in both directions.
     assert "' above, '" in js
     assert "' below the selection)'" in js
 
 
 def test_the_filter_rule_is_one_rule_for_both_of_its_readers():
-    """`filterHides` answers "is this row on screen" for the renderers and
-    for an inbound focus alike, so the pane cannot report a focus onto a row
-    its own table left out."""
+    """``filterHides`` answers "is this row on screen" for the renderers and inbound
+    focus alike.
+    """
 
     out = _node(
         _marked_js("filter-hides")
@@ -1397,10 +1261,7 @@ def test_the_filter_rule_is_one_rule_for_both_of_its_readers():
 
 
 def test_an_inbound_focus_is_not_left_behind_the_search_box():
-    """`focusInstance`/`focusModule` report success by selecting a row, and a
-    row the active filter excludes is never rendered — so the pane would
-    claim a focus onto a table that does not contain it. The search comes
-    off when, and only when, it would hide the target (#562 review)."""
+    """A focus onto a row the active filter hides removes the search, and only then."""
 
     js = _page_js()
     assert "function revealPastFilter(texts) {" in js
@@ -1416,10 +1277,9 @@ def test_an_inbound_focus_is_not_left_behind_the_search_box():
 
 
 def test_a_focus_that_took_the_search_off_says_so():
-    """Both ingresses — an explicit `phys_focus` and a `selection_changed`
-    from the schematic — print the note through `focusNote`, so a reader
-    whose search box has just emptied is told which of their controls the
-    focus moved."""
+    """Both ingresses print through ``focusNote``, which tells the reader which control
+    the focus moved.
+    """
 
     js = _page_js()
     assert "searchCleared: false," in js
@@ -1432,9 +1292,9 @@ def test_a_focus_that_took_the_search_off_says_so():
 
 
 def test_row_clicks_are_delegated_to_the_table_body():
-    """One listener per table, not one per row. A per-row closure is kept
-    alive for as long as the table is and rebuilt on every re-render, which
-    on the instance half is thousands of them per keystroke."""
+    """One listener per table, not per row, to avoid thousands of closures per
+    keystroke.
+    """
 
     js = _page_js()
     assert "function delegate(tbody, attribute, activate) {" in js
@@ -1443,14 +1303,14 @@ def test_row_clicks_are_delegated_to_the_table_body():
     # The row carries its identity in an attribute instead of a closure.
     assert "tr.setAttribute('data-module'" in js
     assert "tr.setAttribute('data-path'" in js
-    # And no row wires up a listener of its own any more.
+    # No row wires up its own listener.
     assert "tr.addEventListener(" not in js
 
 
 def test_an_early_selection_is_held_until_the_model_arrives():
-    """The hub replays the cached selection right after `welcome`, which
-    routinely beats the `/phy.json` fetch. `phys_focus` was already held
-    for that race; a `selection_changed` was dropped."""
+    """A ``selection_changed`` replayed after ``welcome`` is held until the
+    ``/phy.json`` fetch lands, like ``phys_focus``.
+    """
 
     js = _page_js()
     assert "pendingSelection: null" in js
@@ -1462,15 +1322,12 @@ def test_an_early_selection_is_held_until_the_model_arrives():
 
 
 def test_a_focus_arriving_mid_reload_waits_for_the_new_model():
-    """The finding (#562 round-11 review). `state.payload` is only
-    replaced at ingest, so a `phys_focus` or a `selection_changed` that
-    lands while `/phy.json` is out was resolved against the OUTGOING
-    run's rows — it selected a row of the model being replaced, and the
-    render a moment later wiped the selection without a word."""
+    """A focus arriving while ``/phy.json`` is in flight is held and applied to the
+    incoming model, not resolved against the outgoing rows.
+    """
 
-    # The gate: a load is in flight from the moment it takes its token
-    # until its own response settles it, and a superseded response
-    # settles nothing — the pane is still waiting on the newer load.
+    # A load is in flight from taking its token until its own response settles it; a
+    # superseded response settles nothing.
     out = _node(
         _marked_js("load-generation")
         + """
@@ -1489,8 +1346,7 @@ def test_a_focus_arriving_mid_reload_waits_for_the_new_model():
     assert json.loads(out) == [False, True, False, True, True, False]
 
     js = _page_js()
-    # Both inbound paths take the same gate, and the pending slots they
-    # already had for the pre-model race are the slots they use.
+    # Both inbound paths take the same gate and use the existing pending slots.
     assert "if (!state.payload || loadInFlight(state)) {" in js
     assert js.count("if (!state.payload || loadInFlight(state)) {") == 2
     focus = js.split("function applyFocus(payload) {")[1]
@@ -1499,25 +1355,20 @@ def test_a_focus_arriving_mid_reload_waits_for_the_new_model():
     assert wire.index("loadInFlight(state)") < wire.index(
         "state.pendingSelection = ip;"
     )
-    # And ingest installs the new payload BEFORE it drains them, so what
-    # was held is resolved against the new model's rows rather than the
-    # ones it was waiting out.
+    # Ingest installs the new payload before draining held targets.
     ingest = js.split("function ingest(payload) {")[1].split("\n  }")[0]
     assert ingest.index("state.payload = payload;") < ingest.index("drainPending();")
 
 
 def test_a_refused_switch_still_answers_the_focus_it_held():
-    """The other way a load stops being in flight with a model on screen.
-
-    A `dir=` the server would not read leaves the reader on the run they
-    already had (`loadFailed`), so a focus held for the switch that did
-    not happen belongs to that run -- stranded for its lifetime if only
-    ingest drained the slots."""
+    """A ``dir=`` the server refuses keeps the current run (``loadFailed``), so a focus
+    held for that switch is drained.
+    """
 
     js = _page_js()
     failed = js.split("function loadFailed(requested, message) {")[1].split("\n  }")[0]
-    # Only on the arm that keeps the model. The other calls showEmpty,
-    # which drops the payload, and a held target waits for a real one.
+    # Only on the arm that keeps the model; ``showEmpty`` drops the payload and a held
+    # target waits for a real one.
     assert failed.count("drainPending();") == 1
     assert failed.index("drainPending();") < failed.index("showEmpty(message);")
     assert js.count("drainPending();") == 2
@@ -1525,9 +1376,7 @@ def test_a_refused_switch_still_answers_the_focus_it_held():
 
 
 def test_the_first_hello_is_polite():
-    """The common case is no other phys tab open, and a polite hello wins
-    that outright. Asking for a takeover unconditionally is what turned a
-    second cov tab into an eviction war."""
+    """A hello is polite by default, so a second tab does not start an eviction war."""
 
     out = _node(
         _marked_js("hello-payload")
@@ -1546,8 +1395,7 @@ def test_the_first_hello_is_polite():
 
 
 def test_version_label_agrees_with_the_other_panes():
-    """Same lockstep cases the graph, cov and landing copies pin — now
-    five copies of one rule."""
+    """The lockstep cases pinned in the graph, cov and landing tests."""
 
     out = _node(
         _marked_js("version-label")
@@ -1568,11 +1416,6 @@ def test_version_label_agrees_with_the_other_panes():
         None,
         None,
     ]
-
-
-# ---------------------------------------------------------------------------
-# HTTP endpoints
-# ---------------------------------------------------------------------------
 
 
 def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
@@ -1636,9 +1479,9 @@ async def test_http_phys_json_served(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_http_phys_json_selects_a_run_by_dir(hub_and_viewer):
-    """The route the dropdown drives (#568). Bare stays newest; ``?dir=``
-    picks one; outside the project root is refused before anything is
-    read."""
+    """Bare ``/phy.json`` is the newest run, ``?dir=`` picks one, and a path outside the
+    project root is refused before anything is read.
+    """
 
     _hub, viewer = hub_and_viewer
     base = f"http://127.0.0.1:{viewer.http_port}/phy.json"
@@ -1660,8 +1503,7 @@ async def test_http_phys_json_selects_a_run_by_dir(hub_and_viewer):
 
 @pytest.mark.asyncio
 async def test_http_index_advertises_the_phy_url(hub_and_viewer):
-    """The SPA pre-landed its ``/phy`` app-switcher entry gated on this
-    global, so the hub setting it is what makes the entry appear."""
+    """The hub sets the global that gates the SPA's ``/phy`` app-switcher entry."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/view"
@@ -1703,8 +1545,7 @@ async def test_http_phys_json_404s_without_artefacts(tmp_path: Path):
         assert excinfo.value.code == 404
         assert "rb synth" in json.loads(excinfo.value.read())["error"]
 
-        # The page itself is still 200 — its empty state is the better
-        # place to say "run a synthesis" than a blank browser tab.
+        # The page is still 200; its empty state says to run a synthesis.
         page_status, _h, _b = await asyncio.to_thread(
             _http_get, f"http://127.0.0.1:{viewer.http_port}/phy"
         )
@@ -1746,11 +1587,6 @@ async def test_http_phys_json_400_without_project_root():
                 pass
 
 
-# ---------------------------------------------------------------------------
-# phys_focus — the wire type
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "payload",
     [
@@ -1776,9 +1612,8 @@ def test_phys_focus_envelope_validates(payload: dict):
     [
         {},
         {"target": ""},
-        # `switching` is a real column of the model and deliberately NOT
-        # a focus metric: the enum offers `dynamic`, its sum with
-        # `internal`.
+        # ``switching`` is a model column but not a focus metric; the enum offers
+        # ``dynamic``, its sum with ``internal``.
         {"target": "module:sub", "metric": "switching"},
         {"target": "module:sub", "metric": "line"},
         {"target": "module:sub", "line": 4},
@@ -1800,12 +1635,8 @@ def test_phys_focus_rejects_malformed_payloads(payload: dict):
 
 
 def test_phys_origin_is_its_own_peer_slot():
-    """The pane must not share ``view``, ``graph`` or ``cov``.
-
-    One client per origin, and the point of the pane is to drive the
-    others — clicking the module that owns the area selects it in the
-    schematic — so a shared slot would evict whichever tab was looked at
-    second.
+    """The pane registers as ``phys``, not ``view``, ``graph`` or ``cov``; a shared slot
+    would evict the tab it drives.
     """
 
     assert Origin.PHYS.value == "phys"
@@ -1824,8 +1655,9 @@ def test_phys_origin_is_its_own_peer_slot():
 
 
 def test_phys_focus_state_slot_omits_an_unset_metric():
-    """``additionalProperties: false`` with no nullable hint: an unset
-    metric has to be absent on the wire, not null."""
+    """An unset metric is absent on the wire, not null (``additionalProperties:
+    false``).
+    """
 
     assert PhysFocus(target="module:sub", origin=Origin.CLI).payload() == {
         "target": "module:sub"
@@ -1924,9 +1756,7 @@ async def test_phys_focus_broadcasts_to_the_pane(bare_hub: HubServer):
 
 @pytest.mark.asyncio
 async def test_phys_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
-    """``rb hub send phys-focus`` before the tab is open still lands —
-    metric and all, or a replay would silently downgrade "this module, on
-    leakage" to "this module"."""
+    """A ``phys-focus`` sent before the tab opens is replayed with its metric."""
 
     driver = await _Peer.connect(bare_hub.host, bare_hub.port)
     try:
@@ -1962,8 +1792,7 @@ async def test_phys_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
 
 @pytest.mark.asyncio
 async def test_latest_writer_wins_one_slot_no_history(bare_hub: HubServer):
-    """One slot, no backlog: a late-joining pane opens on the most recent
-    target rather than replaying every focus it missed."""
+    """One slot, no backlog: a late pane opens on the most recent target."""
 
     driver = await _Peer.connect(bare_hub.host, bare_hub.port)
     try:
@@ -1986,8 +1815,8 @@ async def test_latest_writer_wins_one_slot_no_history(bare_hub: HubServer):
             await pane.hello(Origin.PHYS)
             replayed = await pane.recv()
             assert replayed.payload == {"target": "module:sub"}
-            # …and nothing else queued behind it. `peer_joined` for the
-            # driver is the only other traffic this pane can see.
+            # Nothing else is queued; ``peer_joined`` for the driver is the only other
+            # traffic.
             with pytest.raises(asyncio.TimeoutError):
                 while True:
                     nxt = await pane.recv(timeout=0.4)
@@ -2003,16 +1832,6 @@ async def test_hub_state_reset_clears_the_phys_slot(bare_hub: HubServer):
     bare_hub.state.phys_focus = PhysFocus(target="module:sub", origin=Origin.CLI)
     bare_hub.state.reset()
     assert bare_hub.state.phys_focus is None
-
-
-# ---------------------------------------------------------------------------
-# display names vs wire origins
-#
-# See the same section in ``tests/test_hub_cov_page.py``: the apps were
-# renamed, the ``Origin`` enum was not, and the origin→label map is the
-# seam between the two vocabularies. Each pane carries its own copy, so
-# each pane is tested for it.
-# ---------------------------------------------------------------------------
 
 
 def test_the_origin_label_map_renames_only_the_display():
@@ -2063,14 +1882,8 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert 'href="/cov"' in body
 
 
-# ---------------------------------------------------------------------------
-# the run selector (#568) — ?dir= on the route, the dropdown in the pane
-# ---------------------------------------------------------------------------
-
-
 def test_bare_phy_json_still_serves_the_newest_run(phys_project: Path):
-    """The default is unchanged: a pane nobody has touched opens on the
-    run that finished last."""
+    """The default is the run that finished last."""
 
     status, body = phys_page.phys_payload_bytes(phys_project)
     payload = json.loads(body)
@@ -2088,8 +1901,7 @@ def test_a_dir_query_selects_that_run(phys_project: Path):
 
     assert status == 200
     assert payload["run"] == "old_synth"
-    # And the menu it came from is still whole, so the reader can switch
-    # back without a second request.
+    # The menu stays whole, so the reader can switch back without a request.
     assert [entry["run"] for entry in payload["runs"]["runs"]] == [
         "both",
         "old_synth",
@@ -2097,8 +1909,7 @@ def test_a_dir_query_selects_that_run(phys_project: Path):
 
 
 def test_a_dir_outside_the_project_is_refused(phys_project: Path, tmp_path: Path):
-    """The argument comes off a query string and a browser tab is
-    reachable by anything that can reach the port."""
+    """``?dir=`` is untrusted input from any client that can reach the port."""
 
     outside = tmp_path / "elsewhere"
     outside.mkdir()
@@ -2123,10 +1934,9 @@ def test_a_dir_with_no_manifest_is_a_404_naming_the_listing(phys_project: Path):
 
 
 def test_containment_admits_the_artefacts_symlink_layout(tmp_path: Path):
-    """A suite whose ``artefacts/`` is a link to scratch storage is a
-    supported layout that discovery walks into and ``rb phys runs`` lists
-    — so resolving before the containment test would 403 exactly the runs
-    the selector had just offered."""
+    """A suite whose ``artefacts/`` links to scratch storage is a supported layout, so
+    the containment test must not resolve links first.
+    """
 
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -2144,17 +1954,10 @@ def test_containment_admits_the_artefacts_symlink_layout(tmp_path: Path):
 def test_containment_refuses_an_in_project_link_that_leaves_the_project(
     tmp_path: Path,
 ):
-    """The logical test lets a path that stays under the root through
-    without resolving it, which is what keeps the scratch layout above
-    selectable. On its own that is broader than discovery's rule: any
-    link inside the project would do, including one to somewhere the
-    project has nothing to do with.
-
-    So where the logical path passes but resolves outside, the route
-    asks discovery's own predicate — an ``artefacts`` component below
-    the root — and admits only what the walk would have entered. The
-    supported layout is unaffected; a `vendor/` or `$HOME` link is not
-    a run and is not readable through this route."""
+    """A logical path under the root is admitted without resolving. Where it resolves
+    outside the root, the route also asks discovery's predicate (an ``artefacts``
+    component below the root), so links such as `vendor/` or `$HOME` are refused.
+    """
 
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -2166,8 +1969,7 @@ def test_containment_refuses_an_in_project_link_that_leaves_the_project(
 
     # Not part of the artefact layout: discovery will not walk it.
     (root / "vendor").symlink_to(elsewhere)
-    # An `artefacts` link inside a suite: the supported one, which
-    # discovery does walk.
+    # An ``artefacts`` link inside a suite: the supported layout.
     (root / "verif" / "blk" / "artefacts" / "runs").symlink_to(scratch)
 
     assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
@@ -2178,9 +1980,9 @@ def test_containment_refuses_an_in_project_link_that_leaves_the_project(
 
 
 def test_the_route_and_discovery_draw_one_boundary(tmp_path: Path):
-    """Not two spellings of it. A directory the walk refuses to enter is
-    one the route must refuse to read, and the predicate is the same
-    function in both places."""
+    """The route and discovery use the same predicate: a directory the walk refuses is
+    unreadable.
+    """
     from rtl_buddy.phys import manifest as manifest_mod
 
     root = tmp_path / "repo"
@@ -2196,22 +1998,16 @@ def test_the_route_and_discovery_draw_one_boundary(tmp_path: Path):
     assert [os.path.relpath(path, root) for path in walked] == [
         os.path.join("verif", "blk", "artefacts", "nightly", "phys-manifest.json")
     ]
-    # The run the walk found is readable; the same bytes under the name
-    # the walk refused are not.
+    # The run the walk found is readable; the same bytes under a refused name are not.
     assert phys_page.contained_phys_dir(root, "verif/blk/artefacts/nightly")
     assert phys_page.contained_phys_dir(root, "vendor/nightly") is None
 
 
 def test_containment_judges_each_crossed_link_not_the_endpoint(tmp_path: Path):
-    """The finding (#570 round-15 review, Codex P1). The predicate was
-    asked once, of the requested path as a whole, and it looks for an
-    `artefacts` component — which a component *below* a rejected link
-    satisfies just as well as the link's own position does. So `vendor ->
-    /srv/other` with `?dir=vendor/artefacts/run` was approved on the
-    strength of an `artefacts` belonging to the tree on the far side of
-    the link, and /phy.json served a manifest and a model from outside the
-    project: a run `rb phys runs` does not list, and will not list,
-    because the walk refuses that link at its first component."""
+    """The predicate is applied per link, not once to the whole path: ``vendor ->
+    /srv/other`` with ``?dir=vendor/artefacts/run`` is refused even though a
+    component below the link is named ``artefacts``.
+    """
     from rtl_buddy.phys import manifest as manifest_mod
 
     root = tmp_path / "repo"
@@ -2221,11 +2017,11 @@ def test_containment_judges_each_crossed_link_not_the_endpoint(tmp_path: Path):
     _write_run(outside, "run", modules=MODULE_ROWS, artefacts=outside / "artefacts")
     (root / "vendor").symlink_to(outside)
 
-    # The walk enters nothing: `vendor` is a link whose own position
-    # below the root has no `artefacts` in it.
+    # The walk enters nothing: ``vendor`` is a link whose own position has no
+    # ``artefacts``.
     assert manifest_mod.discover_manifests(root) == []
     assert phys_page.contained_phys_dir(root, "vendor/artefacts/run") is None
-    # Nor any deeper spelling that buries the magic name further down.
+    # Nor any deeper spelling that buries the name further down.
     assert phys_page.contained_phys_dir(root, "vendor/artefacts/run/.") is None
 
     status, body = phys_page.phys_payload_bytes(
@@ -2236,10 +2032,9 @@ def test_containment_judges_each_crossed_link_not_the_endpoint(tmp_path: Path):
 
 
 def test_containment_still_serves_a_run_behind_the_artefacts_link(tmp_path: Path):
-    """The other half of the same walk: judging each link on its own
-    position must not cost the supported layout, where the link *is* the
-    `artefacts` component and everything below it is an ordinary
-    directory."""
+    """Judging each link on its own position keeps the supported layout, where the link
+    is the ``artefacts`` component.
+    """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     (root / "verif" / "blk").mkdir(parents=True)
@@ -2259,11 +2054,9 @@ def test_containment_still_serves_a_run_behind_the_artefacts_link(tmp_path: Path
 
 
 def test_every_route_the_run_listing_offers_is_one_the_route_serves(tmp_path: Path):
-    """The invariant behind both: `?dir=` is handed back out of the `runs`
-    block, so every spelling that block carries has to survive the
-    containment test. Discovery only reports a route it walked, and the
-    walk asks this same predicate of the same links in the same order, so
-    the agreement holds by construction rather than by inspection."""
+    """Every ``?dir=`` spelling in the ``runs`` block passes the containment test, since
+    discovery and the route use the same predicate.
+    """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     (root / "verif" / "blk").mkdir(parents=True)
@@ -2289,8 +2082,9 @@ def test_every_route_the_run_listing_offers_is_one_the_route_serves(tmp_path: Pa
 
 
 def test_the_runs_block_is_bounded_and_says_it_is(tmp_path: Path):
-    """A dropdown is scrolled, not searched. The block carries the
-    untruncated count, so the pane can say the list is a head."""
+    """The ``runs`` block carries the untruncated count, so the pane can say the list is
+    a head.
+    """
 
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -2305,8 +2099,9 @@ def test_the_runs_block_is_bounded_and_says_it_is(tmp_path: Path):
 
 
 def test_run_entries_read_as_one_line_that_tells_two_runs_apart():
-    """The label the dropdown shows. Two runs of one design share the
-    top, so the parts after it are the ones that do the work."""
+    """The dropdown label shows the parts after the top, since runs of one design share
+    it.
+    """
 
     out = _node(
         _marked_js("run-selector")
@@ -2333,19 +2128,15 @@ def test_run_entries_read_as_one_line_that_tells_two_runs_apart():
     )
     # Nothing recorded is nothing shown — no `none`, no empty separators.
     assert bare == "quick · blk"
-    # An unnamed run falls back to the directory, which is the key the
-    # entry selects with anyway.
+    # An unnamed run falls back to its directory, the key its entry selects with.
     assert power_only == "verif/blk/artefacts/p · blk · openroad · static (defaults)"
 
 
 def test_the_shown_run_and_the_newest_are_marked_separately():
-    """Different facts, and either can be the surprising one: the pane
-    opens on the newest, and a reader who has switched away needs to see
-    both where they are and where the default went.
-
-    The newest mark says what choosing it *does*, not only what the run
-    is: it is the one entry that puts the pane back on follow-newest
-    rather than pinning a directory (see `runValue`)."""
+    """The pane shows both where the reader is and where the newest is. Choosing the
+    newest entry returns the pane to follow-newest instead of pinning a directory
+    (see ``runValue``).
+    """
 
     out = _node(
         _marked_js("run-selector")
@@ -2370,16 +2161,10 @@ def test_the_shown_run_and_the_newest_are_marked_separately():
 
 
 def test_choosing_the_newest_run_keeps_following_discovery():
-    """The bug this pins: selecting the newest entry used to pin its
-    directory, so the pane stopped following the newest the moment a
-    reader chose to be on it — every reload afterwards asked for a
-    directory that a later run had overtaken, and the run they picked
-    *because* it was the latest was the one they stopped seeing new
-    results for.
-
-    The newest entry selects with the empty value, which the load arm
-    reads as "no run named" and fetches bare `/phy.json` for. An
-    explicitly chosen older run still pins."""
+    """Choosing the newest entry selects with the empty value, so the load fetches bare
+    ``/phy.json`` and keeps following the newest. An explicitly chosen older run
+    still pins.
+    """
 
     out = _node(
         _marked_js("run-selector")
@@ -2400,12 +2185,12 @@ def test_choosing_the_newest_run_keeps_following_discovery():
     )
     picked = json.loads(out)
 
-    # The newest run is not selected by its directory — it is selected by
-    # the absence of one, which is what "follow discovery" is on the wire.
+    # The newest run is selected by the absence of a directory, which is "follow
+    # discovery" on the wire.
     assert picked["newest"] == ""
     assert picked["followUrl"] == "/phy.json"
     assert picked["requested"][0] is None
-    # An older run is pinned, exactly as before.
+    # An older run is pinned.
     assert picked["older"] == "verif/blk/artefacts/old"
     assert picked["pinnedUrl"] == "/phy.json?dir=verif%2Fblk%2Fartefacts%2Fold"
     assert picked["requested"][1] == "verif/blk/artefacts/old"
@@ -2430,9 +2215,9 @@ def test_the_run_url_appends_its_query_to_a_base_that_has_one():
 
 
 def test_the_run_on_screen_is_an_entry_even_when_the_listing_headed_it_off():
-    """The listing is bounded, so the run being shown can legitimately
-    not be in it. A selector whose value disagrees with the page under it
-    is worse than a long list."""
+    """The listing is bounded, so the run being shown may not be in it; the selector
+    must agree with the page.
+    """
 
     out = _node(
         _marked_js("run-selector")
@@ -2453,56 +2238,52 @@ def test_the_run_on_screen_is_an_entry_even_when_the_listing_headed_it_off():
     phys_dir, manifest, newest, label, empty = json.loads(out)
     assert phys_dir == "verif/blk/artefacts/old"
     assert manifest == "verif/blk/artefacts/old/m.json"
-    # Never the newest: the payload header cannot know, and claiming it
-    # would put two `newest` marks in one list.
+    # Never marked newest: the payload header cannot know, and it would give the list
+    # two newest marks.
     assert newest is False
     assert label == "old · blk · yosys"
     assert empty is None
 
 
 def test_switching_runs_refetches_rather_than_filtering_client_side():
-    """The pane holds one model at a time and another run's rows are not
-    in this body, so the dropdown re-fetches with ``?dir=`` and flows
-    through the ordinary ingest — where ``modelIdentity`` drops the lens
-    and the selection that were statements about the run being left."""
+    """The dropdown re-fetches with ``?dir=`` through the ordinary ingest, where
+    ``modelIdentity`` drops the lens and selection of the run being left.
+    """
 
     js = _page_js()
     assert '<select id="run-select">' in phys_page.PHYS_PAGE_HTML
     assert "'dir=' + encodeURIComponent(dir)" in js
     listener = js.split("els.runSelect.addEventListener('change', function () {")[1]
     assert "load(els.runSelect.value);" in listener.split("});")[0]
-    # Reload re-reads what is SHOWN, not the newest: a reader who selected
-    # a partition and re-ran it is asking about that one.
+    # Reload re-reads the run shown, not the newest.
     reload_body = js.split("document.getElementById('reload').addEventListener(")[1]
     assert "load(state.dir);" in reload_body.split("});")[0]
 
 
 def test_a_refused_switch_keeps_the_run_that_is_on_screen():
-    """403 and 404 are answers about the run that was ASKED for. Blanking
-    the pane would cost the reader both it and the one they were reading."""
+    """A 403 or 404 concerns the run asked for; the pane keeps the model on screen."""
 
     js = _page_js()
     body = js.split("function loadFailed(requested, message) {")[1].split("\n  }")[0]
     assert "if (state.payload) {" in body
     assert "renderRunPicker();" in body
     assert "showEmpty(message);" in body
-    # The refused directory never becomes the run the pane thinks it is
-    # showing, so the next reload does not ask for it again.
+    # A refused directory never becomes the run the pane thinks it shows, so the next
+    # reload does not ask for it again.
     load_body = js.split("function load(dir) {")[1].split("\n  }")[0]
     success = load_body.split("}).then(function (res) {")[1]
     assert success.index("loadFailed(") < success.index("state.dir = requested;")
 
 
 def test_focus_applies_to_the_run_the_pane_is_showing():
-    """The routing decision (#568): `phys_focus` is unchanged on the wire.
-    A sender addresses the pane, the pane addresses one run, and the
-    reader is the one who chose it."""
+    """``phys_focus`` is unchanged on the wire: the pane addresses one run, chosen by
+    the reader.
+    """
 
     js = _page_js()
     assert "An inbound `phys_focus` applies to the run this pane is SHOWING." in js
-    # Two fields are read off the envelope and no third: a run hint on
-    # the wire would let a sender move a view its user is working in, and
-    # would need the lockstep schema bump the protocol reserves.
+    # Only two fields are read off the envelope; a run hint would let a sender move a
+    # view its user is working in and would need a schema bump.
     focus = js.split("function applyFocus(payload) {")[1].split("\n  }")[0]
     assert "payload.target" in focus and "payload.metric" in focus
     assert "payload.run" not in focus and "payload.phys_dir" not in focus

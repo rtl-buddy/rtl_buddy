@@ -35,7 +35,6 @@ def test_write_and_read_record_round_trip(tmp_path: Path):
     assert loaded.tcp == "127.0.0.1:54321"
     assert loaded.server_version == "0.1.0"
     assert Path(loaded.project_root).resolve() == tmp_path.resolve()
-    # started_at is ISO-8601 with 'T' separator and a timezone designator.
     assert "T" in loaded.started_at
 
 
@@ -68,8 +67,7 @@ def test_second_write_with_live_pid_refused(tmp_path: Path):
 
 
 def test_second_write_with_dead_pid_overwrites(tmp_path: Path):
-    # First write a record with a guaranteed-dead pid (the helper does the
-    # liveness check we want to bypass — patch it for clarity).
+    # Patch the liveness check to bypass it.
     target = discovery_path(tmp_path)
     target.parent.mkdir(parents=True)
     target.write_text(

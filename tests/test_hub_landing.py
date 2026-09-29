@@ -1,14 +1,5 @@
-"""Tests for the hub landing page at ``GET /`` (#398).
-
-The landing exists to answer "what can this hub do for me right now",
-so the things worth pinning are the *advertisement rules* rather than
-the markup: which card is live, which is greyed and why, and which app
-already has a tab attached — the last one because the hub allows one
-client per origin and a second tab supersedes the first, so the warning
-has to arrive before the click.
-
-The page itself is held to the graph pane's offline rule: no build step
-and no reference off localhost.
+"""Tests for the hub landing page at ``GET /``: card advertisement rules, the offline
+page and the routes. The page polls and never holds a hub origin.
 """
 
 from __future__ import annotations
@@ -35,11 +26,6 @@ def _apps(payload: dict) -> dict[str, dict]:
     return {app["id"]: app for app in payload["apps"]}
 
 
-# ---------------------------------------------------------------------------
-# advertisement rules
-# ---------------------------------------------------------------------------
-
-
 def test_graph_card_follows_data_presence():
     """Same rule ``_has_graph_json`` applies to the SPA's graph global."""
 
@@ -61,8 +47,7 @@ def test_graph_card_follows_data_presence():
 
 
 def test_graph_freshness_is_reported():
-    """ "Built 3 days ago" is the difference between a graph worth
-    opening and one that predates the branch."""
+    """The graph card reports how long ago the graph was built."""
 
     now = 1_000_000.0
     payload = landing_page.build_state_payload(
@@ -81,13 +66,8 @@ def test_graph_freshness_is_reported():
 
 
 def test_cov_card_advertises_on_data_presence():
-    """The pane ships (rtl-buddy/rtl_buddy#400), so the card is live and
-    availability follows the artefacts — same rule as the graph's.
-
-    A hub with no coverage run keeps the card, muted, carrying the
-    command that would produce some: "the pane exists and you have not
-    collected coverage" is the useful message, and a hidden card cannot
-    deliver it.
+    """The coverage card is live; with no coverage run it stays, muted, carrying the
+    command that produces one.
     """
 
     cov = _apps(landing_page.build_state_payload(hub_addr="h:1"))["cov"]
@@ -102,12 +82,8 @@ def test_cov_card_advertises_on_data_presence():
 
 
 def test_phys_card_advertises_on_data_presence():
-    """The pane ships (rtl-buddy/rtl_buddy#558), so the card is live and
-    availability follows the artefacts — same rule as the graph's and
-    the coverage pane's.
-
-    The note names BOTH producing commands: either one alone fills a
-    half of the physical model and gives the pane something to render.
+    """The physical card is live; its note names both producing commands, either of
+    which fills part of the model.
     """
 
     phys = _apps(landing_page.build_state_payload(hub_addr="h:1"))["phys"]
@@ -121,10 +97,9 @@ def test_phys_card_advertises_on_data_presence():
 
 
 def test_phys_presence_is_reported_beside_the_graphs():
-    """The page's empty-state test reads data presence, not the card list, so
-    physical artefacts have to appear as a block of their own — otherwise a
-    project whose only build is an `rb synth` shows a live phys card above
-    "Nothing built for this project yet" (rtl-buddy/rtl_buddy#558)."""
+    """Physical artefacts count as data presence, so a project whose only build is an
+    ``rb synth`` does not show "Nothing built for this project yet".
+    """
 
     assert landing_page.build_state_payload(hub_addr="h:1")["phys"] == {
         "present": False
@@ -134,8 +109,7 @@ def test_phys_presence_is_reported_beside_the_graphs():
 
 
 def test_the_empty_state_counts_every_kind_of_build():
-    """One predicate in the page, and every data-presence half the state
-    carries has to be in it."""
+    """Every data-presence half of the state feeds the one empty-state predicate."""
 
     body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
     match = re.search(r"var nothingBuilt = ([^;]+);", body)
@@ -154,13 +128,11 @@ def test_already_open_comes_from_the_peer_registry():
     apps = _apps(payload)
     assert apps["graph"]["open"] is True
     assert apps["view"]["open"] is False
-    # ``cli`` is the hub's own one-shot peer, never an app someone opened.
     assert payload["peers"] == ["graph", "wave"]
 
 
 def test_view_card_notes_a_missing_bundle_but_stays_live():
-    """``/view`` always answers — without a bundle it serves the
-    placeholder, which explains itself better than a greyed card."""
+    """``/view`` always answers; without a bundle it serves the placeholder."""
 
     apps = _apps(
         landing_page.build_state_payload(
@@ -179,8 +151,6 @@ def test_every_card_names_a_real_origin_and_route():
     for app in payload["apps"]:
         assert app["route"].startswith("/")
         assert app["task"] and app["why"]
-        # Every shipped app is a real hub origin — that is what makes
-        # the "already open" badge possible at all.
         if app["status"] == "live":
             assert app["origin"] in known, app["origin"]
 
@@ -218,9 +188,9 @@ def test_graph_state_reads_mtime(tmp_path: Path):
 
 
 def test_graph_state_agrees_with_the_graph_route(tmp_path: Path):
-    """One predicate, two consumers: the landing's ``graph_state`` and the
-    ``/graph.json`` route's ``graph_files_present`` must derive from the
-    same path, or the landing could advertise a graph the route 404s on."""
+    """The landing's ``graph_state`` and the ``/graph.json`` route's
+    ``graph_files_present`` derive from the same path.
+    """
 
     from rtl_buddy.hub import graph_page
 
@@ -235,11 +205,6 @@ def test_graph_state_agrees_with_the_graph_route(tmp_path: Path):
     assert graph_page.graph_files_present(tmp_path) is True
 
 
-# ---------------------------------------------------------------------------
-# the page
-# ---------------------------------------------------------------------------
-
-
 def test_landing_injects_the_hub_address():
     body = landing_page.render_landing_html(hub_addr="127.0.0.1:54321").decode("utf-8")
     assert "window.__RTL_BUDDY_HUB__ = '127.0.0.1:54321'" in body
@@ -247,8 +212,7 @@ def test_landing_injects_the_hub_address():
 
 
 def test_landing_is_self_contained():
-    """Same offline rule as the graph pane: every reference is a
-    same-origin absolute path, nothing points off the machine."""
+    """Every reference is a same-origin absolute path."""
 
     body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert "<script src=" not in body
@@ -264,25 +228,16 @@ def test_landing_is_self_contained():
 
 def test_landing_carries_the_chrome_the_contract_asks_for():
     body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    # identity left: ~40px chip logo beside the wordmark
     assert theme.LOGO_80 in body
     assert 'width="40" height="40"' in body
     assert "rtl-buddy hub" in body
-    # app switcher right, with the ⌂ hub marker
     assert "⌂ hub" in body
-    # bottom strip: one connection vocabulary
     for word in ("connected", "connecting…", "offline"):
         assert word in body, word
-    # empty state may carry one small mascot
     assert theme.MASCOT_240 in body
-    # it polls instead of holding an origin — see the module docstring
+    # The landing polls instead of holding a hub origin.
     assert landing_page.STATE_JSON_ROUTE in body
     assert "new WebSocket" not in body
-
-
-# ---------------------------------------------------------------------------
-# routes
-# ---------------------------------------------------------------------------
 
 
 def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
@@ -325,7 +280,6 @@ async def test_root_serves_the_landing(hub_and_viewer: ViewerServer):
     assert status == 200
     assert "text/html" in headers.get("Content-Type", "")
     assert b"rtl-buddy hub" in body
-    # ...and it is NOT the SPA any more.
     assert b"schematic placeholder" not in body
 
 
@@ -348,7 +302,9 @@ async def test_state_json_reflects_the_live_hub(hub_and_viewer: ViewerServer):
 async def test_state_json_sees_a_graph_built_after_startup(
     hub_and_viewer: ViewerServer, tmp_path: Path
 ):
-    """Per-request, like ``/models``: no hub restart to advertise a graph."""
+    """Availability is computed per request, so no hub restart is needed to advertise a
+    graph.
+    """
 
     url = f"http://127.0.0.1:{hub_and_viewer.http_port}{landing_page.STATE_JSON_ROUTE}"
     graph_dir = tmp_path / "artefacts" / "graph"
@@ -358,17 +314,6 @@ async def test_state_json_sees_a_graph_built_after_startup(
     graph = _apps(json.loads(body))["graph"]
     assert graph["available"] is True
     assert json.loads(body)["graph"]["path"] == "artefacts/graph/graph.json"
-
-
-# ---------------------------------------------------------------------------
-# display names vs wire origins
-#
-# The landing is where an app's LONG name is introduced (the cards); the
-# short name it is then navigated by rides in the same payload and fills
-# the switcher. Neither is the wire value: the schematic still registers
-# as ``view``, so the peer list goes through the same origin→label map
-# the panes carry.
-# ---------------------------------------------------------------------------
 
 
 def _page_js() -> str:
@@ -423,15 +368,15 @@ def test_the_origin_label_map_renames_only_the_display():
 
 def test_both_peer_lists_go_through_the_map():
     js = _page_js()
-    # Word for word the panes' map — see their copies of this test.
     assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };" in js
     assert "peers.map(originLabel).join(', ')" in js  # the "this hub" table
     assert "peers.map(originLabel).join(' ')" in js  # the bottom strip
 
 
 def test_each_card_carries_a_long_name_and_a_short_one():
-    """Long name introduces the app, short name is what every other
-    surface then calls it. The wire origin is neither."""
+    """The long name introduces the app, the short name is used elsewhere, and the wire
+    origin is neither.
+    """
 
     apps = _apps(landing_page.build_state_payload(hub_addr="h:1"))
     assert (apps["view"]["name"], apps["view"]["short"]) == (
@@ -441,7 +386,7 @@ def test_each_card_carries_a_long_name_and_a_short_one():
     assert (apps["graph"]["name"], apps["graph"]["short"]) == ("rtl-buddy-graph", "gph")
     assert (apps["cov"]["name"], apps["cov"]["short"]) == ("rtl-buddy-coverage", "cov")
     assert (apps["phys"]["name"], apps["phys"]["short"]) == ("rtl-buddy-phys", "phy")
-    # The rename did not reach the wire, or the "already open" join breaks.
+    # The wire origin must stay unchanged or the "already open" join breaks.
     assert [
         app["origin"]
         for app in (apps["view"], apps["graph"], apps["cov"], apps["phys"])
@@ -451,11 +396,8 @@ def test_each_card_carries_a_long_name_and_a_short_one():
         "cov",
         "phys",
     ]
-    # The page route is the SHORT name, so `phys` is the only one of the
-    # two spellings that ever reaches the wire.
     assert apps["phys"]["route"] == "/phy"
-    # The PAGE route is the app's short name since #423; the ORIGIN
-    # asserted above is what did not move, and that is the real fence.
+    # The page route is the short name; the origin asserted above is unchanged.
     assert apps["view"]["route"] == "/sch"
 
 
@@ -470,9 +412,9 @@ def test_the_card_shows_the_long_name_and_the_switcher_the_short_one():
 
 
 def test_the_footer_carries_the_family_version_label():
-    """The three apps show `rtl-buddy <base> @ <sha>` in their strips;
-    the landing joins them, fed from /hub/state.json's
-    ``hub.server_version`` rather than a welcome (it is not a peer)."""
+    """The landing shows ``rtl-buddy <base> @ <sha>`` from ``hub.server_version`` in
+    ``/hub/state.json``.
+    """
 
     body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert '<span id="hub-version" class="muted"></span>' in body
@@ -483,8 +425,7 @@ def test_the_footer_carries_the_family_version_label():
 
 
 def test_version_label_agrees_with_the_pane_copies():
-    """Same lockstep cases as tests/test_hub_graph_page.py /
-    test_hub_cov_page.py pin — four copies of one rule."""
+    """The lockstep cases pinned in the graph and coverage page tests."""
 
     out = _node(
         _marked_js("version-label")
