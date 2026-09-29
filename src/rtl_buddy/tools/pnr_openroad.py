@@ -37,17 +37,9 @@ from . import pnr_abstract, pnr_checkpoints
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
-# Pure-Tcl macro packer, substituted into the flow ahead of the macro
-# placement stage. It lives in its own file so it can be unit tested under a
-# bare Tcl interpreter without an OpenROAD database (#626).
 _MACRO_PACK_FILE = "macro_pack.tcl"
 
-# Every non-log file `flow.tcl.template` writes under `$OUT_DIR`, as
-# `{design}`-templated basenames. Kept here rather than spelled out at the
-# call site so the clear list cannot drift away from the template — the
-# `.log` targets are deliberately absent (a log is the one artefact worth
-# keeping when the tool dies early), and `test_pnr.py` asserts this tuple
-# still covers every non-log write target the template contains.
+# Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
     "route.drc.rpt",
     "timing.rpt",
@@ -55,26 +47,14 @@ _FLOW_OUTPUT_NAMES = (
     "{design}.routed.v",
     "{design}.routed.sdc",
     "{design}.routed.odb",
-    # Only when the PDK declares `rcx-rules`, and emitted by `_write_script`
-    # rather than spelled out in the template — but cleared on every run all
-    # the same: a SPEF left beside a fresh ODB by an earlier run with rules
-    # would be read by `rb power` as this run's parasitics (#101).
+    # Written only when the PDK declares `rcx-rules`, but cleared on every run so `rb power` never reads a stale SPEF.
     "{design}.routed.spef",
 )
 
-# KLayout's streamout / render outputs. Written after the OpenROAD run, but
-# cleared with it: a rerun that dies inside OpenROAD — or one on a host with
-# no KLayout — never reaches the helpers below, so an old layout would
-# otherwise survive a run that produced no layout at all.
+# Cleared with the OpenROAD outputs so a rerun that never reaches KLayout leaves no old layout.
 _KLAYOUT_OUTPUT_NAMES = ("{design}.gds", "{design}.png")
 
-# The same outputs as a suffix set. The design-named ones are cleared by
-# suffix rather than by name so the clear does not depend on resolving the
-# synth back-reference that supplies `{design}` — and so that editing a run's
-# design leaves nothing of the previous one behind. Safe because an artefact
-# directory belongs to exactly one pnr run; the KLayout helper scripts it also
-# holds are `.py` and their input manifest `.json`, and the logs are
-# deliberately absent from this set.
+# Cleared by suffix so no `{design}` is needed and no previous design's files survive. Logs, `.py` and `.json` files must stay unmatched.
 _MANAGED_OUTPUT_SUFFIXES = (
     ".def",
     ".routed.v",
@@ -85,78 +65,47 @@ _MANAGED_OUTPUT_SUFFIXES = (
     ".png",
 )
 
-# The OpenRCX output `_write_script` adds when the PDK declares `rcx-rules`
-# (#101), and the suffix `rb power` resolves it by.
+# Suffix of the OpenRCX SPEF written when the PDK declares `rcx-rules`; `rb power` resolves it by this.
 ROUTED_SPEF_SUFFIX = ".routed.spef"
 
-# Outputs whose names carry no design, cleared by exact name.
 _FIXED_OUTPUT_NAMES = tuple(
     name for name in _FLOW_OUTPUT_NAMES if "{design}" not in name
 )
 
-# The generated OpenROAD flow script. Not an output — it is the *input*
-# `_write_script` builds — but it is written into the artefact dir and is
-# read by a user debugging a run, so a rerun that fails before
-# `_write_script` must not leave the previous run's script describing it
-# (#527). Cleared up front only; see `_clear_stale_outputs`.
+# An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
-# Public for `rb power`, which reads it to tell whether a routed SPEF was
-# written by the run that wrote the ODB beside it (#101).
+# Public: `rb power` uses it to check the SPEF and ODB came from the same run.
 PNR_SCRIPT_NAME = _SCRIPT_NAME
 
-# The stream-out result the bundled KLayout helper writes and
-# `_run_def2stream` reads back: which cells came out empty, and whether
-# anything else went wrong. An *output*, and one judged by presence, so it
-# is cleared with the GDS and the PNG — a previous run's report read as
-# this run's is exactly the stale-artefact failure of #469, and would
-# report a complete export for a stream-out that never ran.
+# Judged by presence, so it is cleared with the GDS and PNG.
 _DEF2STREAM_REPORT_NAME = "def2stream.report.json"
 
-# What `rb pnr-export` records about an export it performed over a saved
-# result: the tool, the inputs and the outcome (#618). Written by the
-# export-only path alone — a P&R run writes no such record — but cleared
-# by both, because a fresh run replaces the very DEF the record describes.
+# Only `rb pnr-export` writes it; a P&R run clears it because it replaces the DEF it describes.
 _EXPORT_PROVENANCE_NAME = "export.provenance.json"
 
-#: Bumped when :func:`OpenRoadPnr._write_export_provenance`'s document
-#: changes shape incompatibly.
+#: Bumped on an incompatible change to the export provenance document.
 EXPORT_PROVENANCE_SCHEMA = 1
 
-#: Default render size, shared by the backend and the `--png-width` /
-#: `--png-height` options that override it for one invocation (#618).
+#: Default render size; `--png-width` and `--png-height` override it.
 DEFAULT_PNG_WIDTH = 2048
 DEFAULT_PNG_HEIGHT = 2048
 
 
-# Marker the post-route don't-use check prints for each offending instance,
-# and the one `run` looks for in the log to name them (#656).
 _DONT_USE_VIOLATION_TAG = "RB-DONT-USE-VIOLATION:"
 
-# `get_lib_cells` / `set_dont_use` warning for a pattern that matched no
-# Liberty cell: `[WARNING STA-0122] cell '<pattern>' not found.`
 _STA_CELL_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
 )
-# ...and the library half of a `lib/cell` pattern that names no library:
-# `[WARNING STA-0121] library '<lib>' not found.` — the cell half is never
-# looked up then, so no STA-0122 follows.
+# Warning for a `lib/cell` pattern whose library does not exist; no STA-0122 follows.
 _STA_LIBRARY_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0121\] library '(.+)' not found\.$", re.M
 )
 
 
 def _dont_use_check_tcl(cells: list[str]) -> str:
-    """The post-route check that no don't-use cell made it into the design.
+    """Return Tcl that fails the run if a don't-use cell is in the placed design, naming each offender.
 
-    `set_dont_use` only stops the resizer and CTS from *choosing* a cell;
-    it does nothing about one already in the synthesis netlist, and a
-    pattern that matches nothing is only an STA warning. A probe cell in a
-    routed SKY130 block fails the power grid much later (#656), so the flow
-    checks the placed instances itself, with the same `get_lib_cells`
-    matching `set_dont_use` used, and fails the run naming each offender.
-    It runs before fill insertion — fill cells are named explicitly by the
-    PDK and are not a repair pass's choice — and before any output is
-    written. Empty, like the `set_dont_use` block, when no cell is excluded.
+    `set_dont_use` only stops the resizer and CTS from choosing a cell, so cells already in the netlist need this check. It runs before fill insertion and before any output is written. The result is empty when no cell is excluded.
     """
     if not cells:
         return ""
@@ -185,25 +134,18 @@ def _dont_use_check_tcl(cells: list[str]) -> str:
 
 
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
-    """Absolute paths of every non-log artefact one pnr run produces."""
+    """Return the absolute paths of every non-log artefact one pnr run produces."""
     return [
         os.path.join(artefact_dir, name.format(design=design))
         for name in _FLOW_OUTPUT_NAMES + _KLAYOUT_OUTPUT_NAMES
     ] + [
         os.path.join(artefact_dir, _DEF2STREAM_REPORT_NAME),
-        # Not written by a run, but cleared by one: a rerun replaces the
-        # DEF a previous `rb pnr-export` record describes, so leaving the
-        # record would have it vouch for bytes that are gone (#618).
         os.path.join(artefact_dir, _EXPORT_PROVENANCE_NAME),
     ]
 
 
 _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 
-# The stream-out input manifest `_run_def2stream` hands the bundled KLayout
-# helper. An input, not an output — it is written beside the generated
-# `pnr.tcl` for the same reason, so a run's layout inputs can be read back
-# off disk — and so it is absent from the managed-output suffixes.
 _DEF2STREAM_INPUTS_NAME = "def2stream.inputs.json"
 
 
@@ -211,9 +153,7 @@ _DEF2STREAM_INPUTS_NAME = "def2stream.inputs.json"
 class Def2StreamInputs:
     """Every file KLayout stream-out reads, resolved and in reader order.
 
-    Gathered apart from the run so an export-only command (#618) and the
-    completeness gate (#619) can ask for the same set without launching
-    anything. `missing` is the subset that is configured but not on disk.
+    `missing` is the subset that is configured but not on disk.
     """
 
     tech: str
@@ -222,32 +162,19 @@ class Def2StreamInputs:
     missing: list[str] = dc_field(default_factory=list)
 
 
-# What a requested export came to. `complete` is a stream-out whose every
-# cell has layout (allow-listed empties included — those are layout the
-# design says it does not have); `incomplete` streamed a GDS with cells
-# that have none; `failed` produced no usable layout at all.
+# `complete`: every cell has layout, allow-listed empties included. `incomplete`: a GDS with layout-less cells. `failed`: no usable layout.
 GDS_COMPLETE = "complete"
 GDS_INCOMPLETE = "incomplete"
 GDS_FAILED = "failed"
 
-# How many missing cell names a one-line description spells out before it
-# starts counting. The full list is always in the machine output and in the
-# structured log event; a summary table row is not the place for 200 names.
 _DESC_CELL_LIMIT = 3
 
 
 @dataclass(frozen=True)
 class GdsExport:
-    """What a requested KLayout export delivered, and how complete it is.
+    """What a requested KLayout export delivered, returned by `OpenRoadPnr.export_layout`.
 
-    Produced by :meth:`OpenRoadPnr.export_layout`, which is the whole of
-    gather → validate → stream out → read the report → render, so the
-    export-only command (#618) can hand back the same record without
-    running OpenROAD at all.
-
-    `desc` is the one-line qualifier a summary row and a results `desc`
-    carry; it is empty exactly when the export delivered everything that
-    was asked for, complete.
+    `desc` is the one-line qualifier for summary rows; it is empty when the export delivered everything asked for.
     """
 
     mode: str
@@ -261,22 +188,16 @@ class GdsExport:
 
     @property
     def delivered(self) -> bool:
-        """Whether the export produced everything asked for, complete.
+        """Return whether the export produced everything asked for, complete.
 
-        A `strict` run that answers False publishes nothing and fails; a
-        `preview` one keeps what it has and says what is wrong with it.
+        A `strict` run that answers False publishes nothing and fails; a `preview` run keeps what it has.
         """
         return self.status == GDS_COMPLETE and (
             self.png_path is not None or not self.png_requested
         )
 
     def result_fields(self) -> dict:
-        """The export as result-dict keys, for the machine output.
-
-        Empty lists and `None`s are dropped by the results classes, so a
-        run whose export was complete carries only its paths, its mode and
-        its status.
-        """
+        """Return the export as result-dict keys for the machine output."""
         return {
             "gds_path": self.gds_path,
             "png_path": self.png_path,
@@ -289,34 +210,22 @@ class GdsExport:
 
 
 def describe_missing_cells(cells: list[str]) -> str:
-    """`'2 cells (a, b)'` — the missing-cell count with names attached."""
+    """Return the missing-cell count with names, such as `2 cells (a, b)`."""
     shown = ", ".join(cells[:_DESC_CELL_LIMIT])
     if len(cells) > _DESC_CELL_LIMIT:
         shown += f", +{len(cells) - _DESC_CELL_LIMIT} more"
     return f"{len(cells)} cell{'s' if len(cells) != 1 else ''} ({shown})"
 
 
-#: A DEF's own statement of which design it holds, as its header spells it.
 _DEF_DESIGN_RE = re.compile(r"^\s*DESIGN\s+(\S+)\s*;", re.MULTILINE)
 
-#: How much of a DEF is read looking for that statement. The header is the
-#: first handful of lines and the body is megabytes of components, so the
-#: read is bounded rather than streaming the whole file.
 _DEF_HEADER_BYTES = 64 * 1024
 
 
 def read_def_design_name(path: str) -> str | None:
-    """The design a DEF declares, or ``None`` if its header does not say.
+    """Return the design named by the DEF's `DESIGN <name> ;` header, or None.
 
-    The one staleness check an export over a saved result can make cheaply
-    and without guessing (#618). `DESIGN <name> ;` is the cell KLayout is
-    told to stream out, so a DEF belonging to some other design — a run
-    whose `synth:` back-reference has since been re-pointed, or a `--def`
-    from another tree — produces a GDS named after a design it does not
-    contain, and the caller is none the wiser. Deliberately *not* an mtime
-    comparison against the netlist or the ODB: a checkout, a copy or an
-    archive restore rewrites those timestamps in any order, so a
-    freshness verdict drawn from them is wrong as often as it is right.
+    This is the staleness check for an export over a saved result. It deliberately does not compare mtimes, which a checkout or copy rewrites.
     """
     try:
         with open(path, "rb") as f:
@@ -328,12 +237,7 @@ def read_def_design_name(path: str) -> str | None:
 
 
 def _file_fingerprint(path: str | None) -> dict | None:
-    """``{path, size, sha256}`` for an input whose exact bytes matter.
-
-    What lets a reader of an export record decide, later, whether the
-    layout on disk still belongs to the DEF beside it — the question a
-    size or an mtime can only approximate.
-    """
+    """Return `{path, size, sha256}` for a file, or None without a path; an unreadable file gets a null size and digest."""
     if not path:
         return None
     digest = hashlib.sha256()
@@ -348,11 +252,9 @@ def _file_fingerprint(path: str | None) -> dict | None:
 
 
 def _dedup_paths(paths) -> list[str]:
-    """The paths in order, one entry per file, empties dropped.
+    """Return the paths in order with empties dropped and duplicates removed by resolved path.
 
-    De-duplication is on the resolved path: a PDK macro LEF a run repeats in
-    its own `lef-paths` is one LEF to the reader, and handing it twice makes
-    KLayout re-register every master in it.
+    KLayout re-registers every master in a LEF passed twice.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -367,17 +269,11 @@ def _dedup_paths(paths) -> list[str]:
     return out
 
 
-# Minimum OpenROAD release we test against. Older builds may still work for
-# the basic flow but are not validated — we warn rather than refuse.
 MIN_OPENROAD_VERSION = "25Q1"
 
 
 def _parse_version_token(version: str) -> tuple:
-    """Extract a comparable tuple from an OpenROAD version string.
-
-    Handles `26Q2-911-g...`, `v2.0-1234-g...`, plain `v2.0`. Falls back to
-    the raw string so unknown formats just sort consistently.
-    """
+    """Return a comparable tuple from an OpenROAD version such as `26Q2-911-g...` or `v2.0`; unknown formats fall back to the raw string."""
     m = re.match(r"^v?(\d+)(?:[.Qq](\d+))?", version.strip())
     if not m:
         return (version,)
@@ -391,27 +287,14 @@ def _resolve_klayout_exe() -> str | None:
 
 
 def _tcl_microns(value: float) -> str:
-    """A micron coordinate as a Tcl number, to the nanometre and no further
-    (every PDK's database unit is at least that fine)."""
+    """Format a micron coordinate as a Tcl number, to the nanometre."""
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
 def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
-    """The Tcl for `floorplan.blockages` and `floorplan.macro-anchor` (#105).
+    """Return `(blockages_block, macro_pack_directives)` for `floorplan.blockages` and `floorplan.macro-anchor`.
 
-    Returns ``(blockages_block, macro_pack_directives)``. Both are empty for
-    a floorplan that sets neither key, so its pnr.tcl renders as before.
-
-    The blockages block carries its own leading newline and runs right after
-    the floorplan, ahead of macro placement and global placement. A hard
-    blockage's rectangle, read back from the database in DBU, also goes onto
-    `MACRO_KEEPOUTS`, which the packer keeps every macro out of: a hard
-    blockage over a macro would be a floorplan contradiction. Soft and
-    partial blockages only thin out standard cells, so macros may sit on
-    them. `create_blockage` takes its density as a percentage.
-
-    The directives are the packer's optional trailing arguments, appended to
-    the `rb::macro_pack::solve` call: the anchor, then the keep-outs.
+    Both are empty when the floorplan sets neither key. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of; soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
     """
     lines = []
     has_keepouts = False
@@ -445,8 +328,6 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     return blockages_block, directives
 
 
-# The size-aware shelf packer (#610, #632): the macro placement a run gets
-# unless it asks for `rtl-mp`, and the text the flow has always rendered.
 _PACK_PLACEMENT = """\
   set core [$block getCoreArea]
   set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
@@ -466,11 +347,7 @@ _PACK_PLACEMENT = """\
   }}
 """
 
-# OpenROAD's RTL-MP (#95 step 5). It reads the placement blockages already
-# in the database, clusters the IO pins it finds unplaced, and leaves every
-# macro LOCKED, snapped and possibly rotated. The halo moved from its own
-# options to `set_macro_base_halo` in 2026; both spellings are kept so an
-# older OpenROAD still runs this.
+# OpenROAD RTL-MP. The halo option spelling depends on the OpenROAD version, so both are emitted.
 _RTL_MP_PLACEMENT = """\
   file mkdir $OUT_DIR/rtlmp
   if {[llength [info commands set_macro_base_halo]]} {
@@ -488,19 +365,16 @@ _RTL_MP_PLACEMENT = """\
 
 
 def _macro_place_block(fp: PnrFloorplan, directives: str) -> str:
-    """The macro-placement Tcl inside the flow's `if` over the macros."""
+    """Return the macro-placement Tcl for the flow's macro branch."""
     if fp.macro_placement is MacroPlacement.RTL_MP:
         return _RTL_MP_PLACEMENT
     return _PACK_PLACEMENT.format(directives=directives)
 
 
 class OpenRoadPnr:
-    """OpenROAD-driven P&R backend.
+    """OpenROAD P&R backend.
 
-    Reads the upstream `rb synth` artefact (tech-mapped netlist), runs a
-    floorplan → place → CTS → route → fill pipeline against a Nangate45-
-    style PDK via a templated Tcl flow, and reports area, WNS
-    setup/hold, TNS, and DRC count.
+    Reads the upstream `rb synth` netlist, runs floorplan, place, CTS, route and fill through a templated Tcl flow, and reports area, WNS setup/hold, TNS and DRC count.
     """
 
     def __init__(
@@ -520,12 +394,8 @@ class OpenRoadPnr:
         accept_stale: bool = False,
     ):
         self.name = name
-        # `--accept-stale`: consume `blocks:` abstracts whose recorded
-        # inputs have changed, qualifying the result instead of failing (#95).
         self.accept_stale = accept_stale
         self.pnr_cfg = pnr_cfg
-        # The run as configured, before anything the run itself adds to it;
-        # what an abstract's config record describes (#95).
         self._configured_cfg = pnr_cfg
         self.root_cfg = root_cfg
         self.openroad_executable = openroad_executable
@@ -534,35 +404,20 @@ class OpenRoadPnr:
         self.klayout_executable = klayout_executable
         self.png_width = png_width
         self.png_height = png_height
-        # `--gds-mode` overrides the run's own `gds-mode` for this
-        # invocation; `None` means the run's, which defaults to preview.
         self.gds_mode = gds_mode or pnr_cfg.get_gds_mode()
         if pnr_cfg.get_harden():
-            # A hardened block is about to be streamed into a parent, so its
-            # layout must be complete: the export is implied and strict,
-            # whatever this invocation or the run's `gds-mode` asked (#95).
+            # A hardened block is streamed into a parent, so its layout must be complete.
             self.emit_gds = True
             self.gds_mode = GdsMode.STRICT
-        # `--lyp` overrides the PDK's `klayout-props` for this render, so a
-        # saved layout can be re-rendered with another palette without
-        # editing the PDK every project shares (#618). `None` is the PDK's.
         self.klayout_props = klayout_props
-        # Resolved once per run by `_threads()` (#654).
         self._thread_plan: ThreadPlan | None = None
-        # The `blocks:` abstracts this run consumes, once resolved (#95).
         self._blocks: list[pnr_abstract.ResolvedBlock] = []
 
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
-        # This run's checkpoint directory, once `run` has allocated one; the
-        # flow script and the manifest both name it (#653).
         self._ckpt_run_dir: str | None = None
         self._openroad_returncode: int | None = None
-
-    # ------------------------------------------------------------------
-    # Artefact paths
-    # ------------------------------------------------------------------
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, _SCRIPT_NAME)
@@ -570,29 +425,16 @@ class OpenRoadPnr:
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "pnr.log")
 
-    # ------------------------------------------------------------------
-    # Inputs resolution
-    # ------------------------------------------------------------------
-
     def _resolve_netlist_path(self) -> str:
-        """Locate the upstream synth run's tech-mapped netlist."""
+        """Return the path of the upstream synth run's tech-mapped netlist."""
         synth_cfg = self.pnr_cfg.resolve_synth_cfg()
         suite_dir = os.path.dirname(self.pnr_cfg.get_synth_suite_path())
         return os.path.join(
             suite_dir, "artefacts", synth_cfg.get_name(), "synth_netlist.v"
         )
 
-    # ------------------------------------------------------------------
-    # Tcl templating
-    # ------------------------------------------------------------------
-
     def _threads(self) -> ThreadPlan:
-        """This run's OpenROAD thread plan, resolved once (#654).
-
-        Resolved against the allocation the process is in *now*, so a
-        clamp is reported before OpenROAD starts, and the script and the
-        recorded provenance cannot disagree.
-        """
+        """Return this run's OpenROAD thread plan, resolved once against the current allocation."""
         if self._thread_plan is None:
             self._thread_plan = plan_threads(
                 self.pnr_cfg.get_threads(), flow="pnr", run=self.pnr_cfg.get_name()
@@ -600,10 +442,9 @@ class OpenRoadPnr:
         return self._thread_plan
 
     def _threads_fields(self) -> dict:
-        """The `openroad_threads` result field, with OpenROAD's own count.
+        """Return the `openroad_threads` result field with OpenROAD's reported count.
 
-        Empty before a plan exists — a run that failed before it resolved
-        one never launched OpenROAD, so it has no thread count to report.
+        Empty if no plan was resolved, meaning OpenROAD never launched.
         """
         if self._thread_plan is None:
             return {}
@@ -631,9 +472,6 @@ class OpenRoadPnr:
 
         fill_cells = " ".join(pdk.get_fill_cells())
 
-        # Multi-corner signoff (#104, #105): every corner in one session.
-        # A single-corner platform keeps the one `read_liberty` and no
-        # per-corner block, so its script is byte-identical to before.
         multi_corner = platform.is_multi_corner()
         if multi_corner:
             corner_libs = platform.get_sta_corner_lib_paths()
@@ -644,9 +482,6 @@ class OpenRoadPnr:
             read_liberty = "read_liberty $LIBERTY"
             corner_reports = ""
 
-        # Design-specific macro libraries and LEFs (e.g. SRAM macros). A
-        # macro's Liberty is read into every corner under multi-corner;
-        # see `openroad_corners.liberty_tcl`.
         extra_lines = []
         for lib in self.pnr_cfg.get_lib_paths():
             if multi_corner:
@@ -659,10 +494,6 @@ class OpenRoadPnr:
             extra_lines.append(f"read_lef     {lef}")
         extra_libs_lefs = "\n".join(extra_lines)
 
-        # `cts-buffer` is one name or a list. A single name keeps the Tcl
-        # the flow has always emitted — `$CTS_BUF` for both flags — so a
-        # config that never touched the key renders byte-identically. A
-        # list becomes a Tcl list, with its first entry as the root buffer.
         cts_buffers = platform.get_cts_buffers()
         if len(cts_buffers) > 1:
             cts_buf = "{" + " ".join(cts_buffers) + "}"
@@ -671,9 +502,6 @@ class OpenRoadPnr:
             cts_buf = cts_buffers[0] if cts_buffers else ""
             cts_root_buf = "$CTS_BUF"
 
-        # Both blocks carry their own leading newline and are empty when
-        # unconfigured, so the surrounding blank lines stay as they are.
-        # The platform's list is the PDK's plus its own (#656).
         dont_use_cells = platform.get_dont_use_cells()
         dont_use_block = (
             '\nputs ">>> Don\'t-use cells"\n'
@@ -683,8 +511,6 @@ class OpenRoadPnr:
         )
         dont_use_check_block = _dont_use_check_tcl(dont_use_cells)
 
-        # ORFS convention: the snippet declares the grid, the flow runs
-        # `pdngen` after sourcing it.
         pdn_config = pdk.get_pdn_config()
         pdn_block = (
             f'\nputs ">>> Power distribution network"\nsource {pdn_config}\npdngen\n'
@@ -692,21 +518,12 @@ class OpenRoadPnr:
             else ""
         )
 
-        # Ahead of the first `read_liberty`, and empty when `threads:` is
-        # unset so the script is the one this flow has always emitted —
-        # OpenROAD's own default is one thread (#654). The `puts` gives
-        # the log a stage marker; OpenROAD itself then logs the count it
-        # actually took (ORD-0030), which can be lower than asked on a host
-        # with fewer cores.
+        # Must precede the first `read_liberty`.
         threads_tcl = self._threads().tcl()
         threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
 
         blockages_block, macro_pack_directives = _floorplan_directives(fp)
-        # OpenRCX, as OpenROAD's own test flow and ORFS' final report run
-        # it (#101): extract after fill, write the SPEF, and read it back
-        # so the final reports are timed on extracted parasitics rather
-        # than the global-route estimate. Without rules the reports keep
-        # the estimate and the Tcl is what the flow has always emitted.
+        # With `rcx-rules`, extract after fill and time the final reports on the SPEF; otherwise they use the global-route estimate.
         rcx_rules = pdk.get_rcx_rules()
         if rcx_rules:
             rcx_block = (
@@ -725,7 +542,6 @@ class OpenRoadPnr:
         if pin_script is not None:
             if not os.path.isfile(pin_script):
                 raise RuntimeError(f"pin-constraints file does not exist: {pin_script}")
-            # Tcl double-quoted word: suppress substitutions in config paths.
             escaped = pin_script.replace("\\", "\\\\")
             for char in ("$", "[", "]", '"'):
                 escaped = escaped.replace(char, "\\" + char)
@@ -737,8 +553,6 @@ class OpenRoadPnr:
             "sdc": sdc,
             "liberty": platform.get_sta_lib_path(),
             "read_liberty": read_liberty,
-            # Appended to the `report_tns` line, so an empty block leaves the
-            # template's own line exactly as it was.
             "corner_reports": corner_reports,
             "tech_lef": pdk.get_tech_lef(),
             "macro_lef": pdk.get_macro_lef(),
@@ -763,8 +577,6 @@ class OpenRoadPnr:
             "threads_block": threads_block,
             "rcx_block": rcx_block,
             "final_parasitics": final_parasitics,
-            # Substituted on the blank line after `write_db`, so a run that does not harden
-            # renders the flow it always has (#95).
             "harden_block": (
                 pnr_abstract.harden_tcl() if self.pnr_cfg.get_harden() else ""
             ),
@@ -778,8 +590,6 @@ class OpenRoadPnr:
             "fill_cells": fill_cells,
             "out_dir": self.artefact_dir,
             "extra_libs_lefs": extra_libs_lefs,
-            # Empty unless `checkpoints:` is set, and substituted on what
-            # was a blank line, so an unset key renders the flow unchanged.
             "checkpoint_block": (
                 pnr_checkpoints.render_tcl_block(
                     self._ckpt_run_dir, self.pnr_cfg.get_checkpoints() or ()
@@ -794,7 +604,6 @@ class OpenRoadPnr:
         for key, value in substitutions.items():
             script = script.replace("{{ " + key + " }}", str(value))
 
-        # Surface any unsubstituted placeholders early.
         leftover = re.findall(r"\{\{\s*[\w]+\s*\}\}", script)
         if leftover:
             raise RuntimeError(
@@ -805,10 +614,6 @@ class OpenRoadPnr:
         with open(script_path, "w") as f:
             f.write(script)
         return script_path
-
-    # ------------------------------------------------------------------
-    # Log parsing
-    # ------------------------------------------------------------------
 
     def _parse_area_um2(self, log_text: str) -> float | None:
         m = re.search(r"^Design area\s+([\d.]+)\s+um\^2", log_text, re.MULTILINE)
@@ -827,12 +632,9 @@ class OpenRoadPnr:
         return float(m.group(1)) if m else None
 
     def _corner_fields(self, platform, log_text: str) -> dict:
-        """Per-corner timing result fields for a multi-corner run (#104, #105).
+        """Return per-corner timing result fields for a multi-corner run.
 
-        `corners` maps each corner, in config order, to its own
-        `wns_setup_ps` / `wns_hold_ps` / `tns_ps`; `worst_setup_corner` and
-        `worst_hold_corner` name the corner behind the scalar WNS fields.
-        Empty for a single-corner platform, so its result is unchanged.
+        `corners` maps each corner, in config order, to its `wns_setup_ps`, `wns_hold_ps` and `tns_ps`; `worst_setup_corner` and `worst_hold_corner` name the corner behind the scalar WNS fields. Empty for a single-corner platform.
         """
         if not platform.is_multi_corner():
             return {}
@@ -848,10 +650,6 @@ class OpenRoadPnr:
                 per_corner, "wns_hold_ps"
             ),
         }
-
-    # ------------------------------------------------------------------
-    # Version + feature probes
-    # ------------------------------------------------------------------
 
     def _probe_openroad_version(self) -> str | None:
         try:
@@ -873,11 +671,7 @@ class OpenRoadPnr:
         )
 
     def _has_tcl_command(self, command: str) -> bool:
-        """Probe whether the OpenROAD build exposes a Tcl command.
-
-        Used as a feature-detect for things like `write_gds`. Returns False
-        if we cannot determine availability (treated as missing).
-        """
+        """Return whether the OpenROAD build has a Tcl command, such as `write_gds`; False if it cannot be determined."""
         probe = (
             f'if {{[info commands {command}] eq ""}} '
             f'{{ puts "RB_HAS_CMD:{command}:no" }} '
@@ -909,35 +703,19 @@ class OpenRoadPnr:
         except OSError:
             return 0
 
-    # ------------------------------------------------------------------
-    # KLayout streamout / render
-    # ------------------------------------------------------------------
-
     def _klayout_script_path(self, name: str) -> str:
-        """Materialize a bundled KLayout helper to the artefact dir.
+        """Copy a bundled KLayout helper into the artefact directory and return its path.
 
-        KLayout's `-r` flag wants a real path on disk; reading from
-        importlib.resources isn't enough since some packagers expose the
-        module via a zipfile loader. Always copy to the artefact dir.
+        KLayout's `-r` needs a real file; the package may be loaded from a zip.
         """
         target = Path(self.artefact_dir) / name
         target.write_text(files(_KLAYOUT_PACKAGE).joinpath(name).read_text())
         return str(target)
 
     def gather_def2stream_inputs(self, platform) -> Def2StreamInputs:
-        """Resolve every file KLayout stream-out reads, and check it exists.
+        """Resolve every file KLayout stream-out reads and record which are missing on disk.
 
-        The GDS side is the PDK's `cell-gds` — one path or a list of them —
-        followed by the run's own `gds-paths`, which is where the layout of
-        a hard macro lives (an OpenRAM SRAM, say). The LEF side is what the
-        DEF reader needs to resolve the masters the DEF instantiates, in the
-        order OpenROAD itself read them: technology LEF, the PDK's macro
-        LEF, then the run's `lef-paths`. Both lists are de-duplicated; a
-        macro named in both the PDK and the run is one input.
-
-        Public, and separate from the run, so the export-only command (#618)
-        and the completeness gate (#619) can gather and validate the same
-        set without launching KLayout.
+        GDS inputs are the PDK's `cell-gds` followed by the run's `gds-paths`. LEF inputs are the technology LEF, the PDK macro LEF, then the run's `lef-paths`, in the order OpenROAD read them. Both lists are de-duplicated.
         """
         pdk = platform.get_pdk()
         tech = pdk.get_klayout_tech()
@@ -949,8 +727,6 @@ class OpenRoadPnr:
                 *self.pnr_cfg.get_lef_paths(),
             ]
         )
-        # Only what the config named: the DEF and the helper script are this
-        # run's own outputs and are judged where they are produced.
         missing = [
             path
             for path in ([tech] if tech else []) + gds + lef
@@ -959,17 +735,9 @@ class OpenRoadPnr:
         return Def2StreamInputs(tech=tech, gds=gds, lef=lef, missing=missing)
 
     def _write_def2stream_inputs(self, inputs: Def2StreamInputs) -> str:
-        """Write the manifest the bundled helper reads.
+        """Write the JSON manifest of GDS and LEF lists, allow-empty cells and report path that the helper reads.
 
-        A file rather than `-rd` strings: KLayout's `-rd` carries one scalar
-        per flag with no list contract, so a multi-path value could only
-        travel joined on some separator and would break on the first path
-        containing it (#617). The allow-empty list and the report path ride
-        along for the same reason — and because the run's contract for
-        which cells may be empty belongs in `pnr.yaml`, not in an
-        environment variable the helper reads behind the caller's back
-        (#619). The manifest is also what a user debugging a stream-out
-        wants to see, beside the `pnr.tcl` of the same run.
+        KLayout's `-rd` carries only scalars, so lists travel in a file.
         """
         path = os.path.join(self.artefact_dir, _DEF2STREAM_INPUTS_NAME)
         Path(path).write_text(
@@ -993,12 +761,7 @@ class OpenRoadPnr:
         return self.gds_mode == GdsMode.STRICT
 
     def _gds_log_level(self) -> int:
-        """ERROR when the export was required, WARNING when it was a bonus.
-
-        `strict` was asked for by someone who needs the layout, and its
-        failure fails the run; `preview` keeps going, so its own report of
-        the same condition is a warning.
-        """
+        """Return ERROR in `strict` mode, where a failed export fails the run, else WARNING."""
         return logging.ERROR if self._strict() else logging.WARNING
 
     def _export_failed(self, desc: str) -> GdsExport:
@@ -1010,13 +773,9 @@ class OpenRoadPnr:
         )
 
     def _read_def2stream_report(self) -> dict | None:
-        """The helper's own account of the stream-out, or `None`.
+        """Return the helper's stream-out report, or None if it is missing, truncated or of an unknown schema.
 
-        `None` covers every way the report can fail to say anything: the
-        helper died before writing it, the file is truncated, or it carries
-        a schema this rtl_buddy does not know. All of them mean the same
-        thing to the caller — nobody vouched for this layout — and all of
-        them are a failed export rather than a complete one (#619).
+        None means nothing vouches for the layout, so callers treat it as a failed export.
         """
         try:
             data = json.loads(Path(self._def2stream_report_path()).read_text())
@@ -1029,38 +788,18 @@ class OpenRoadPnr:
     def export_layout(
         self, platform, design: str, *, in_def: str | None = None
     ) -> GdsExport:
-        """Stream the routed DEF out to GDS and, when asked, render it.
+        """Stream the routed DEF out to GDS and, if requested, render a PNG.
 
-        The whole export in one place — gather, validate, stream out, read
-        the helper's report, render — so the export-only command (#618) can
-        run it over a saved result without OpenROAD, and so the two agree
-        on what counts as a complete export.
-
-        ``in_def`` streams a DEF other than the run's own
-        ``<design>.def``, which is what `rb pnr-export --def` hands in; the
-        design name, and every other input, still come from the run's
-        configuration. ``None`` is the run's own routed DEF.
+        Covers gather, validate, stream out, read the report and render, and needs no OpenROAD. `in_def` streams another DEF than `<design>.def`; every other input still comes from the run's configuration.
         """
         return self._render_and_gate(
             platform, self._run_def2stream(platform, design, in_def=in_def), design
         )
 
     def rerender_layout(self, platform, design: str) -> GdsExport:
-        """Render the PNG again from the GDS already in the artefact dir.
+        """Render the PNG again from the GDS already in the artefact directory.
 
-        The re-render half of `rb pnr-export` (#618): new layer properties
-        or a new resolution over a layout that is already correct is a
-        KLayout `save_image`, not another DEF read, so the stream-out is
-        skipped entirely and the GDS is an *input* here — never cleared,
-        never rewritten.
-
-        The qualifier travels with it. A layout streamed with cells that
-        had no GDS is still incomplete however it is rendered, so the
-        `def2stream.report.json` beside it is read back and its missing
-        cells are carried onto this result. A GDS with no readable report
-        is not thereby complete — nothing vouched for it (#619) — so it is
-        reported as incomplete-without-a-list, which `preview` renders and
-        `strict` refuses.
+        The stream-out is skipped and the GDS is never cleared or rewritten. Missing cells are carried over from `def2stream.report.json`; a GDS with no readable report is reported incomplete, which `preview` renders and `strict` refuses.
         """
         gds_path = os.path.join(self.artefact_dir, f"{design}.gds")
         if not os.path.isfile(gds_path) or os.path.getsize(gds_path) == 0:
@@ -1114,26 +853,13 @@ class OpenRoadPnr:
     def _render_and_gate(
         self, platform, export: GdsExport, design: str, *, own_gds: bool = True
     ) -> GdsExport:
-        """Render the requested PNG, then apply the mode to the result.
+        """Render the requested PNG, then apply the GDS mode to the result.
 
-        The tail both exports share. In `strict` mode an export that did
-        not deliver everything asked for publishes nothing: the layout is
-        removed rather than left for the next reader to take as this run's
-        (#469). `preview` keeps what it produced and carries the qualifier
-        that says what is wrong with it.
-
-        ``own_gds`` is whether this invocation is the one that published
-        the layout. A stream-out withdraws the GDS and the report it just
-        wrote; a re-render was handed a layout someone else published and
-        withdraws only the image it made itself (#618).
+        In `strict` mode an export that did not deliver everything is removed. `preview` keeps what it produced with a qualifier. `own_gds` is true when this invocation wrote the GDS: a rejected stream-out then removes the GDS and report, a rejected re-render only its own image.
         """
         if export.gds_path is not None and self.emit_png:
             png_path = self._run_gds2png(platform, export.gds_path, design)
             if png_path is None:
-                # The GDS may well be complete — the render is a separate
-                # step over a finished layout — but the export as a whole
-                # did not produce what `--png` asked for, so it is still a
-                # qualified result and, under `strict`, a failed one.
                 note = "PNG render failed"
                 export = replace(
                     export, desc=f"{export.desc}; {note}" if export.desc else note
@@ -1192,12 +918,7 @@ class OpenRoadPnr:
             )
             return self._export_failed("KLayout not found on PATH")
         if inputs.missing:
-            # Every one of them, at ERROR, before KLayout is launched. A
-            # stream-out missing one of its inputs does not fail: it writes
-            # a GDS with whatever the DEF reader could not resolve left
-            # empty, which is a layout that looks produced. An input the
-            # config names and the disk does not have is a configuration
-            # error, so the export stops here rather than publishing that.
+            # Stop before KLayout: with a missing input it still writes a GDS that looks complete.
             log_event(
                 logger,
                 logging.ERROR,
@@ -1237,10 +958,7 @@ class OpenRoadPnr:
             script,
         ]
         log_path = os.path.join(self.artefact_dir, "klayout.def2stream.log")
-        # Both outputs are judged by presence, so a previous run's would
-        # mask a failure here and then be rendered and reported as this
-        # run's layout — the report the more quietly of the two, since it
-        # is what says the layout is complete (#469).
+        # Both outputs are judged by presence, so old ones must not survive.
         clear_stale_artefacts([out_gds, report_path], owner=self.pnr_cfg.get_name())
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout gds]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -1254,9 +972,7 @@ class OpenRoadPnr:
                 returncode=r.returncode,
                 log=log_path,
             )
-            # A zero-length GDS is what the size check above rejects, and it
-            # is still a file: leaving it means the next run's `isfile` sees
-            # a layout where none was produced (#469).
+            # Also removes a zero-length GDS, which `isfile` would take as a layout.
             clear_stale_artefacts([out_gds, report_path], owner=self.pnr_cfg.get_name())
             return self._export_failed(f"KLayout wrote no GDS (exit {r.returncode})")
 
@@ -1276,12 +992,7 @@ class OpenRoadPnr:
         missing = [str(c) for c in report.get("missing_cells", [])]
         allowed_empty = [str(c) for c in report.get("allowed_empty_cells", [])]
         other_errors = int(report.get("other_errors") or 0)
-        # A non-zero exit is the helper's error count, and the errors it
-        # accounts for are the cells with no layout — that is the case a
-        # preview export exists for. Anything else behind that exit code
-        # (an orphan cell, a KLayout that died after writing) is a failed
-        # export in *either* mode: it is not the condition preview covers.
-        # `% 256` because an exit code is a byte.
+        # Exit code is the helper's error count, mod 256. Missing-cell errors are what `preview` tolerates; any other error fails both modes.
         if other_errors or r.returncode % 256 != report.get("errors", 0) % 256:
             log_event(
                 logger,
@@ -1310,9 +1021,6 @@ class OpenRoadPnr:
                 cells=allowed_empty,
             )
         if missing:
-            # Named, not counted: which SRAM has no layout is the whole
-            # content of this report, and a log line is where a user who
-            # did not ask for machine output meets it (#619).
             log_event(
                 logger,
                 self._gds_log_level(),
@@ -1341,7 +1049,6 @@ class OpenRoadPnr:
         klayout = _resolve_klayout_exe()
         if not klayout:
             return None
-        # `--lyp` for this invocation, the PDK's `klayout-props` otherwise.
         lyp = self.klayout_props or platform.get_pdk().get_klayout_props()
         out_png = os.path.join(self.artefact_dir, f"{design}.png")
         script = self._klayout_script_path("gds2png.py")
@@ -1376,38 +1083,17 @@ class OpenRoadPnr:
                 returncode=r.returncode,
                 log=log_path,
             )
-            # KLayout can render part of the image and then fail; a partial
-            # PNG left here is reported as this run's layout by the next one.
             clear_stale_artefacts([out_png], owner=self.pnr_cfg.get_name())
             return None
         return out_png
-
-    # ------------------------------------------------------------------
-    # Export-only entry point (#618)
-    # ------------------------------------------------------------------
 
     def _export_provenance_path(self) -> str:
         return os.path.join(self.artefact_dir, _EXPORT_PROVENANCE_NAME)
 
     def _clear_export_outputs(self, design: str, *, keep_gds: bool = False) -> None:
-        """Clear what an export publishes — and nothing else (#618).
+        """Clear the export's own outputs: GDS, PNG, stream-out report, input manifest and provenance.
 
-        `run` begins by clearing the *P&R* outputs as well, which is right
-        for a run about to rewrite them and ruinous for an export over a
-        saved result: the routed DEF this reads, and the ODB, netlist and
-        SDC a later `rb power` reads, are exactly the files that clear
-        removes. So the list here is the export's own — the GDS, the PNG,
-        the stream-out report, the input manifest and this record — and
-        nothing OpenROAD wrote is named in it.
-
-        Up front, and not merely at each step, for the reason #469 gives:
-        an export that fails *before* KLayout is launched (no DEF, no
-        technology, an input off disk, no KLayout at all) would otherwise
-        leave the previous export's layout sitting at the very path the
-        result reports.
-
-        ``keep_gds`` is the PNG-only re-render, where the GDS and its
-        report are inputs rather than outputs.
+        It must not touch anything OpenROAD wrote, since the export reads the routed DEF and `rb power` reads the ODB. It runs before validation so an export that fails early leaves no previous layout behind. `keep_gds` keeps the GDS and its report, which a PNG-only re-render takes as inputs.
         """
         cleared = clear_stale_artefacts(
             [
@@ -1431,13 +1117,9 @@ class OpenRoadPnr:
             )
 
     def _check_routed_def(self, in_def: str, design: str) -> str | None:
-        """Why this DEF cannot be exported, or ``None`` when it can.
+        """Return why this DEF cannot be exported (absent, empty, not a DEF, or another design's), or None.
 
-        Up front and before KLayout, for the reason #617 gives about a
-        missing input: a stream-out handed a DEF that is absent, empty or
-        another design's does not fail loudly — it writes a layout that
-        looks produced. "Fail clearly rather than silently rerouting"
-        means saying which of the three it is (#618).
+        It runs before KLayout, which would otherwise write a layout that looks produced.
         """
         if not os.path.isfile(in_def):
             log_event(
@@ -1487,13 +1169,9 @@ class OpenRoadPnr:
         return None
 
     def _probe_klayout_version(self, klayout: str) -> str | None:
-        """KLayout's own version banner, or ``None``.
+        """Return KLayout's version banner, or None if the probe fails.
 
-        The readiness check an export makes up front, and the one thing in
-        the export record that cannot be read off the configuration. A
-        probe that fails says nothing about the export — `_run_def2stream`
-        is what refuses a KLayout that is not there — so it is recorded as
-        an unknown version rather than raised.
+        A failed probe is recorded as an unknown version, not raised; `_run_def2stream` rejects a missing KLayout.
         """
         try:
             r = subprocess.run(
@@ -1520,23 +1198,9 @@ class OpenRoadPnr:
         klayout_version: str | None,
         checkpoint: "pnr_checkpoints.CheckpointRef | None" = None,
     ) -> str:
-        """Record what this export read and what it produced (#618).
+        """Write `export.provenance.json` recording what this export read and produced, and return its path.
 
-        Its own document, written by `rb pnr-export` alone: a P&R run's
-        record is its `pnr.log`, its results and its `def2stream.inputs
-        .json`, and an export performed days later must not be able to
-        edit any of them. Written whatever the outcome, because the
-        questions it answers — which KLayout, which technology, which GDS,
-        which DEF bytes — are asked most often about an export that came
-        out wrong.
-
-        The shape follows `phys-manifest.json` (#558): a schema version,
-        the generator and the timestamp, then project-relative POSIX
-        paths, so the document still reads after the tree has been moved,
-        archived or attached to a CI job. The DEF (or, for a re-render,
-        the GDS) additionally carries its size and a SHA-256 of its bytes
-        — the thing a later reader compares to decide whether the layout
-        still belongs to the result beside it.
+        Only `rb pnr-export` writes it, whatever the outcome. It holds a schema version, generator, timestamp and project-relative POSIX paths. The source DEF (or, for a re-render, GDS) also carries its size and SHA-256.
         """
         root = project_root_or_none(self.artefact_dir)
 
@@ -1560,14 +1224,9 @@ class OpenRoadPnr:
             "top": design,
             "gds_mode": str(self.gds_mode),
             "png_only": png_only,
-            # Which stage checkpoint the layout came from, and that it is
-            # not the run's final, routed result (#653). `None` for an
-            # export of the run's own routed DEF or of a `--def`.
             "checkpoint": checkpoint.provenance(root) if checkpoint else None,
             "tool": {"name": "klayout", "path": klayout, "version": klayout_version},
             "inputs": {
-                # Exactly one of these two is the layout's source: the DEF
-                # a stream-out read, or the GDS a re-render rendered.
                 "def": _fingerprint(in_def),
                 "gds": _fingerprint(source_gds),
                 "tech": _rel(inputs.tech) or None,
@@ -1608,36 +1267,13 @@ class OpenRoadPnr:
         png_only: bool = False,
         checkpoint: str | None = None,
     ) -> PnrResults:
-        """Export a saved P&R result's layout, running no P&R at all.
+        """Export a saved P&R result's layout (DEF to GDS to PNG) without running OpenROAD or synthesis.
 
-        DEF → GDS → PNG over what is already in the artefact directory
-        (#618). Structurally incapable of launching OpenROAD or synthesis:
-        it never calls :meth:`run`, :meth:`_write_script` or
-        :meth:`_resolve_netlist_path`, and it never resolves the OpenROAD
-        executable. The design's name comes from the upstream synth
-        *entry* — the same `synth:` back-reference `rb pnr` substitutes
-        into its flow script, read out of `synth.yaml` — so a box that has
-        the configuration but none of the synthesis artefacts can still
-        export.
+        The design name comes from the synth entry in `synth.yaml`, so no synthesis artefacts are needed. Unlike `rb pnr`, the export is the job: anything short of the requested artefacts is a FAIL in both modes, except that `preview` passes a layout with cells that have no GDS, qualified.
 
-        The verdict is not `rb pnr`'s. There the export is a bonus over a
-        P&R verdict, so a `preview` export that fails leaves the run
-        passing; here the export *is* the job, so anything short of the
-        artefacts that were asked for is a FAIL in both modes. What
-        `preview` still forgives is the case it exists for: a layout that
-        was published with cells that have no GDS is a qualified pass, not
-        a failure.
-
-        ``checkpoint`` exports a stage checkpoint instead (#653): its DEF is
-        the input, and everything the export writes — layout, render,
-        report, provenance — goes to the checkpoint's own ``export/<stage>``
-        directory, never to the paths the run's routed layout is read from.
-        The provenance and the result name the stage and say it is not
-        final.
+        `checkpoint` exports a stage checkpoint instead. Its DEF is the input and all outputs go to the checkpoint's `export/<stage>` directory; the provenance and result name the stage and mark it not final.
         """
         if png_only:
-            # A re-render is a PNG whether or not `--png` was also typed;
-            # there is nothing else for it to produce.
             self.emit_png = True
         log_event(
             logger,
@@ -1672,7 +1308,6 @@ class OpenRoadPnr:
                 desc=f"cannot resolve the design name from the synth entry: {e}",
                 fail_stage="setup",
             )
-        # A block's layout is part of the stream-out, as it is of the run's.
         blocks_failure = self._resolve_blocks(platform)
         if blocks_failure is not None:
             return blocks_failure
@@ -1693,16 +1328,10 @@ class OpenRoadPnr:
                     desc=f"checkpoint unusable: {ckpt}",
                     fail_stage="setup",
                 )
-            # From here on "the artefact directory" is the checkpoint's
-            # export directory, so every path the export clears, writes and
-            # reports is below the checkpoint and none is a routed output.
             self.artefact_dir = ckpt.export_dir()
             os.makedirs(self.artefact_dir, exist_ok=True)
             def_path = ckpt.def_path
-        # Before the validation, not after it: an export that fails on its
-        # inputs must not leave the *previous* export's layout at the paths
-        # a reader takes for this one's (#469). Everything above this line
-        # is a failure that could not name those paths anyway.
+        # Before validation, so a failing export leaves no previous layout behind.
         self._clear_export_outputs(design, keep_gds=png_only)
         if self.klayout_props and not os.path.isfile(self.klayout_props):
             log_event(
@@ -1717,10 +1346,7 @@ class OpenRoadPnr:
                 desc=f"layer properties file not found: {self.klayout_props}",
                 fail_stage="setup",
             )
-        # KLayout readiness, up front and once: the version is the one
-        # thing the record cannot read off the configuration, and it is
-        # wanted most when the export goes on to fail. Whether a missing
-        # KLayout fails the export is `_run_def2stream`'s call, not this.
+        # Probed up front so the version is recorded even when the export fails.
         klayout = _resolve_klayout_exe()
         klayout_version = self._probe_klayout_version(klayout) if klayout else None
 
@@ -1754,12 +1380,7 @@ class OpenRoadPnr:
                 checkpoint_run_id=ckpt.run_id,
                 checkpoint_final=False,
             )
-            # Said in the one field every summary row shows: this layout is
-            # a stage of the run, not its result.
             qualifier = f"checkpoint {ckpt.name} of run {ckpt.run_id} (not final)"
-        # Everything that was asked for, on disk. `strict` has already
-        # withdrawn what it would not publish, so a rejected export
-        # arrives here with nothing to report either way.
         produced = export.gds_path is not None and (
             export.png_path is not None or not export.png_requested
         )
@@ -1792,8 +1413,6 @@ class OpenRoadPnr:
         )
         return PnrPassResults(
             name=self.name + "/results",
-            # An export that delivered but is qualified says so in the one
-            # field every summary row shows first.
             desc="; ".join(
                 part
                 for part in (
@@ -1805,46 +1424,12 @@ class OpenRoadPnr:
             fields=fields,
         )
 
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
-
     def _clear_stale_outputs(self, *, include_script: bool = False) -> None:
-        """Drop the previous run's outputs. The FIRST thing `run` does.
+        """Remove the previous run's outputs; the first thing `run` does.
 
-        `_count_drcs` reads the routing DRC report off a fixed path and scores
-        a *missing* file as zero violations, the DEF and ODB are handed on to
-        KLayout streamout and to `rb power`, and the GDS / PNG are judged
-        purely by "did a file appear". Every one of those is consumed after
-        the fact, several of them by a *later command*, so every exit from
-        `run` has to leave them absent — including the "openroad not found"
-        and platform/template failures, which return before the tool is
-        reached (#469). The logs are left to OpenROAD's own `-log`, which
-        truncates them.
+        Every exit from `run` must leave them absent: the DRC count, `rb power` and the GDS/PNG checks all trust presence. Design-named outputs are matched by suffix so this needs no synth back-reference and strands nothing from a previous design. The stream-out report and any `rb pnr-export` record go too. Logs are left to OpenROAD's `-log`, which truncates them.
 
-        The design-named outputs go by *suffix*. Naming them needs the synth
-        back-reference, and resolving that here either preempts the error
-        messages the run would otherwise give (when it is broken) or leaves
-        `<top>.routed.odb` behind for `rb power` to accept by existence.
-        Matching on the suffix also means editing a run's design does not
-        strand the previous design's ODB in the same directory.
-
-        The stream-out report goes with them: it is what says a layout is
-        complete, so a previous run's would answer for a stream-out this
-        run never performed (#619). So does any `rb pnr-export` record,
-        which describes a DEF this run is about to overwrite (#618) — a
-        run replaces an export, it never edits one.
-
-        `include_script` additionally clears the generated `pnr.tcl` and the
-        stream-out input manifest, and is set only by `run`. A rerun that
-        dies before `_write_script` — no OpenROAD on the box, an
-        unresolvable platform — would otherwise leave the *previous* run's
-        flow script sitting beside this run's absent outputs, where it reads
-        as the script this run used (#527); the manifest says which GDS and
-        LEF were streamed and reads the same way. Neither is cleared by
-        `_fail_after_openroad`: past that point what is on disk is what the
-        tools really read, which is exactly what someone reading `pnr.log`
-        or `klayout.def2stream.log` needs.
+        `include_script` also clears `pnr.tcl` and the stream-out input manifest so a rerun that dies before `_write_script` leaves no stale script. Only `run` sets it; `_fail_after_openroad` keeps them because they are what the tools read.
         """
         stale = clear_stale_artefacts(
             [
@@ -1860,12 +1445,6 @@ class OpenRoadPnr:
                     ),
                 )
             ]
-            # The `checkpoints/latest` pointer, and only the pointer: the
-            # run directories behind it are what a failed run leaves on
-            # purpose and are never cleared (#653). Retiring the pointer
-            # up front is what stops an older run's checkpoints reading as
-            # this run's — `run` re-points it once it launches OpenROAD
-            # with checkpoints on.
             + (
                 [pnr_checkpoints.latest_pointer(self.artefact_dir)]
                 if include_script
@@ -1873,11 +1452,7 @@ class OpenRoadPnr:
             ),
             owner=self.pnr_cfg.get_name(),
         )
-        # This run's own design-named outputs, cleared whatever they are
-        # called — a design that collides with a sibling's protected name
-        # must not be able to stop the flow clearing its own files (#469).
-        # The design may be unresolvable here; `own` is simply empty then,
-        # and the suffix match still covers the ordinary case.
+        # `own` lets a design colliding with a sibling's protected name still clear its own files.
         own: list[str] = []
         try:
             design = self.pnr_cfg.resolve_synth_cfg().get_top()
@@ -1892,8 +1467,7 @@ class OpenRoadPnr:
             own=own,
             own_flow="pnr-openroad",
         )
-        # The abstract is cut from the result this run replaces, so it goes
-        # too — whether or not the run still hardens (#95).
+        # The abstract is cut from the result being replaced, whether or not this run hardens.
         stale += pnr_abstract.clear_abstract(self.artefact_dir)
         if stale:
             log_event(
@@ -1905,30 +1479,20 @@ class OpenRoadPnr:
             )
 
     def _dont_use_violations(self, log_text: str) -> list[tuple[str, str, str]]:
-        """`(instance, master, pattern)` for each don't-use cell the flow's
-        post-route check found placed, in log order (#656).
-
-        Split from the right: the master is a Liberty cell name and the
-        pattern was rejected at config load if it had whitespace, so only
-        the instance name could ever carry any.
-        """
+        """Return `(instance, master, pattern)` for each placed don't-use cell, in log order."""
         hits = []
         for line in log_text.splitlines():
             if line.startswith(_DONT_USE_VIOLATION_TAG):
+                # rsplit: only the instance name can contain whitespace.
                 fields = line[len(_DONT_USE_VIOLATION_TAG) :].strip().rsplit(None, 2)
                 if len(fields) == 3:
                     hits.append(tuple(fields))
         return hits
 
     def _warn_unmatched_dont_use(self, log_text: str, cells: list[str]) -> None:
-        """Name every `dont-use-cells` pattern that matched no Liberty cell.
+        """Log a warning naming every `dont-use-cells` pattern that matched no Liberty cell.
 
-        OpenROAD reports one as `[WARNING STA-0122]` (or, for a `lib/cell`
-        pattern whose library does not exist, `STA-0121`) and carries on, so a
-        misspelt pattern silently excludes nothing — and the post-route
-        check, which matches the same way, cannot catch what it misses
-        either (#656). STA prints the cell part of a `lib/cell` pattern,
-        so both spellings are compared.
+        OpenROAD only warns (`STA-0122`, or `STA-0121` for a missing library), so a misspelt pattern would otherwise exclude nothing silently. STA prints only the cell part of a `lib/cell` pattern, so both spellings are compared.
         """
         if not cells:
             return
@@ -1952,16 +1516,9 @@ class OpenRoadPnr:
             )
 
     def _fail_after_openroad(self, desc: str) -> PnrFailResults:
-        """Fail a run that has already invoked OpenROAD, publishing nothing.
+        """Return a FAIL for a run that already invoked OpenROAD, after removing its outputs.
 
-        The flow's `write_def` / `write_verilog` / `write_sdc` / `write_db`
-        all run before the script ends, so OpenROAD can be killed — or exit
-        non-zero, or log an `[ERROR ...]` line — with a complete or partial
-        `<top>.routed.odb` on disk. `rb power` resolves that ODB by path and
-        accepts it by existence, so returning a FAIL and leaving it there
-        hands the next command a database this run never stood behind
-        (#469). Every post-OpenROAD failure return goes through here, so a
-        new failure gate added to `run` inherits the cleanup by using it.
+        OpenROAD may leave a partial `<top>.routed.odb`, which `rb power` would accept by existence. Every post-OpenROAD failure return must go through here.
         """
         self._clear_stale_outputs()
         return PnrFailResults(
@@ -1975,13 +1532,7 @@ class OpenRoadPnr:
         )
 
     def _checkpoint_inputs(self, platform, script_path: str) -> dict:
-        """Fingerprints of everything the flow reads, for the manifest.
-
-        Hashed once in Python rather than in Tcl, and of the exact files
-        the generated script names, so a later reader — or a resume — can
-        refuse a checkpoint whose netlist, constraints, libraries or flow
-        no longer match (#653).
-        """
+        """Return fingerprints of the files the generated script reads, for the checkpoint manifest."""
         pdk = platform.get_pdk()
         return {
             "netlist": _file_fingerprint(self._resolve_netlist_path()),
@@ -2008,14 +1559,9 @@ class OpenRoadPnr:
     def _close_checkpoints(
         self, result: str, desc: str | None, *, announce: bool = False
     ) -> dict | None:
-        """Complete this run's checkpoint manifest; the result fields for it.
+        """Complete this run's checkpoint manifest and return its result fields, or None without checkpoints.
 
-        ``None`` for a run without checkpoints. ``announce`` is set for a
-        failure inside OpenROAD, where the checkpoints are the point: the
-        step the run stopped in and the last stage it saved are logged where
-        a user reading the failure will see them. A `strict` export failure
-        after a clean P&R records its verdict without that line — the flow
-        did not stop anywhere.
+        `announce` logs the step the run stopped in and the last stage saved; it is set for failures inside OpenROAD.
         """
         if self._ckpt_run_dir is None:
             return None
@@ -2051,15 +1597,9 @@ class OpenRoadPnr:
         return summary
 
     def _resolve_blocks(self, platform) -> PnrFailResults | None:
-        """Resolve `blocks:` to published abstracts and add their views (#95).
+        """Resolve `blocks:` to published abstracts and append their views to the run's path lists.
 
-        Each block's LEF, Liberty and GDS join the run's own `lef-paths`,
-        `lib-paths` and `gds-paths`, after them, so every consumer of those
-        lists — the flow script, the stream-out manifest, the checkpoint
-        and abstract fingerprints — takes a block exactly as it takes a
-        hand-wired macro. Fails fast, before OpenROAD, when an abstract is
-        missing or was built for another technology or corner; a block is
-        never re-run from here.
+        Each block's LEF, Liberty and GDS are appended to `lef-paths`, `lib-paths` and `gds-paths`, so blocks are treated like hand-wired macros. Returns a FAIL before OpenROAD when an abstract is missing, stale or built for another technology or corner; blocks are never re-run.
         """
         refs = self.pnr_cfg.get_blocks()
         if not refs:
@@ -2121,17 +1661,15 @@ class OpenRoadPnr:
         return None
 
     def _blocks_fields(self) -> dict:
-        """The `blocks` result field: the abstracts this run consumed (#95)."""
+        """Return the `blocks` result field listing the abstracts this run consumed."""
         if not self._blocks:
             return {}
         return {"blocks": [b.result_row() for b in self._blocks]}
 
     def abstract_inputs(self, platform) -> dict:
-        """Every input file a hardened result was made from, by role (#95).
+        """Return every input file a hardened result was made from, by role.
 
-        `rtl` is the source list of the upstream synthesis filelist, so an
-        RTL edit shows up even before the block is re-synthesized — the
-        netlist alone would not change until then.
+        `rtl` lists the synthesis filelist's sources so an RTL edit is detected before re-synthesis.
         """
         pdk = platform.get_pdk()
         synth_cfg = self.pnr_cfg.resolve_synth_cfg()
@@ -2155,13 +1693,9 @@ class OpenRoadPnr:
     def _publish_abstract(
         self, platform, openroad_version: str | None, export: GdsExport | None
     ) -> dict | str:
-        """Complete and publish a hardening run's abstract (#95).
+        """Copy the GDS into staging, write the manifest and publish the abstract.
 
-        OpenROAD has staged the LEF and the Liberty model; the strict
-        stream-out has produced the GDS. Copy the GDS in, write the
-        manifest, and move the directory into place. Returns the result
-        fields, or — having removed every trace of the attempt — the reason
-        the abstract could not be produced.
+        Returns the result fields, or the reason the abstract could not be produced after removing every trace of the attempt.
         """
         design = self.pnr_cfg.resolve_synth_cfg().get_top()
         staging = pnr_abstract.staging_dir(self.artefact_dir)
@@ -2277,10 +1811,7 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        # A PDN snippet the config names and the disk does not have would
-        # otherwise surface as a Tcl `source` error minutes into the run,
-        # with a floorplan already written. Same reasoning as the
-        # stream-out input check (#617): name it before the tool starts.
+        # Check before OpenROAD starts; a missing snippet would otherwise fail minutes in.
         pdn_config = platform.get_pdk().get_pdn_config()
         if pdn_config and not os.path.isfile(pdn_config):
             log_event(
@@ -2296,9 +1827,7 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        # Same for the extraction rules, which are read only after detailed
-        # route — the most expensive way to find a typo (#101). Ahead of the
-        # checkpoint directory, so a typo leaves no empty run behind.
+        # Read only after detailed route, so check now, before the checkpoint directory is allocated.
         rcx_rules = platform.get_pdk().get_rcx_rules()
         if rcx_rules and not os.path.isfile(rcx_rules):
             log_event(
@@ -2314,9 +1843,7 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        # `create_blockage` first shipped in OpenROAD 26Q1, above the
-        # minimum this flow otherwise supports; an older build would die on
-        # `invalid command name` after the floorplan is written (#105).
+        # `create_blockage` needs OpenROAD 26Q1, above the general minimum.
         if self.pnr_cfg.get_floorplan().blockages and not self._has_tcl_command(
             "create_blockage"
         ):
@@ -2336,9 +1863,7 @@ class OpenRoadPnr:
                 fail_stage="setup",
             )
 
-        # One corner per abstract until the multi-corner design reaches
-        # abstracts (#95 out of scope, #104): a Liberty model characterised at
-        # one of several corners would be read by a parent as the block.
+        # An abstract carries one corner's Liberty model, which a parent would read as the whole block.
         if self.pnr_cfg.get_harden() and platform.is_multi_corner():
             log_event(
                 logger,
@@ -2360,12 +1885,9 @@ class OpenRoadPnr:
         if blocks_failure is not None:
             return blocks_failure
 
-        # Before the script: a thread count above the allocation is
-        # reported (and clamped) ahead of the tool, not after it (#654).
+        # Before the script, so a clamped thread count is reported before OpenROAD starts.
         self._threads()
         if self.pnr_cfg.get_checkpoints() is not None:
-            # A fresh directory per run, never an existing one: the previous
-            # run's checkpoints stay exactly as it left them (#653).
             try:
                 self._ckpt_run_dir = pnr_checkpoints.allocate_run_dir(self.artefact_dir)
             except (OSError, RuntimeError) as e:
@@ -2385,7 +1907,6 @@ class OpenRoadPnr:
             script_path = self._write_script(platform, self.pnr_cfg.get_floorplan())
         except Exception as e:
             if self._ckpt_run_dir is not None:
-                # Nothing was launched, so the run left nothing to keep.
                 shutil.rmtree(self._ckpt_run_dir, ignore_errors=True)
                 self._ckpt_run_dir = None
             log_event(
@@ -2416,9 +1937,7 @@ class OpenRoadPnr:
                     inputs=self._checkpoint_inputs(platform, script_path),
                 )
             except Exception as e:
-                # A run asked for checkpoints and cannot record them: running
-                # on would produce databases nothing identifies, so stop
-                # before OpenROAD rather than after hours of routing.
+                # Stop before OpenROAD: unrecorded checkpoints would be unidentifiable.
                 shutil.rmtree(self._ckpt_run_dir, ignore_errors=True)
                 self._ckpt_run_dir = None
                 log_event(
@@ -2444,11 +1963,7 @@ class OpenRoadPnr:
             )
 
         log_path = self._log_path()
-        # OpenROAD's `-log` truncates the log only once it is running. One
-        # that dies before that — a broken dylib, a killed launch — would
-        # otherwise leave the previous run's log in place, with this run's
-        # stderr appended, and its RB-DONT-USE-VIOLATION lines would be read
-        # as this run's (#656).
+        # OpenROAD truncates the log only once running; remove it so a failed launch leaves no old violation lines.
         try:
             os.unlink(log_path)
         except FileNotFoundError:
@@ -2483,11 +1998,7 @@ class OpenRoadPnr:
             )
         self._openroad_returncode = result.returncode
 
-        # OpenROAD's `-log` records what it writes to stdout. A Tcl error
-        # — the macro packer refusing a floorplan, say — goes to stderr
-        # instead, and used to be discarded with stdout, leaving a failed
-        # run whose only explanation was an exit code. Append it to the
-        # log so the diagnostic survives the run (#626).
+        # Tcl errors go to stderr, not `-log`; append them so the diagnostic survives.
         stderr_text = (result.stderr or "").strip()
         if stderr_text:
             try:
@@ -2501,9 +2012,7 @@ class OpenRoadPnr:
         except OSError:
             log_text = ""
 
-        # Checked ahead of the exit code: the flow's own don't-use check
-        # fails the script with a Tcl `error`, and the instances it names
-        # are the diagnostic, not the exit code (#656).
+        # Before the exit-code check: the violating instances are the diagnostic.
         self._warn_unmatched_dont_use(log_text, platform.get_dont_use_cells())
         dont_use_hits = self._dont_use_violations(log_text)
         if dont_use_hits:
@@ -2534,8 +2043,6 @@ class OpenRoadPnr:
                 returncode=result.returncode,
                 log=log_path,
             )
-            # The first stderr line is the one that names what went wrong;
-            # the rest of a multi-line diagnostic stays in the log.
             first_line = next((ln for ln in stderr_text.splitlines() if ln.strip()), "")
             desc = f"OpenROAD exited with code {result.returncode}"
             if first_line:
@@ -2563,10 +2070,6 @@ class OpenRoadPnr:
             "tns_ps": tns * 1000.0 if tns is not None else None,
             "drc_count": drcs,
         }
-        # Multi-corner (#104, #105): the scalars above are OpenSTA's worst
-        # across every corner, so summaries, gates and xfail markers read
-        # them unchanged. Each corner's own numbers and the corner that set
-        # each worst are added beside them; a single-corner run adds none.
         corner_fields = self._corner_fields(platform, log_text)
 
         export: GdsExport | None = None
@@ -2575,17 +2078,7 @@ class OpenRoadPnr:
             export = self.export_layout(platform, design)
 
         if export is not None and self._strict() and not export.delivered:
-            # P&R itself is done and its verdict is a pass, but the export
-            # the user explicitly asked for could not be delivered complete
-            # — reporting that as an unqualified exit-0 PASS is the defect
-            # #619 is about, so the run fails and says which cells. The
-            # stage is named so an `xfail:` marker aimed at the design's
-            # timing cannot excuse a collateral problem (#553, #594), and
-            # the routed DEF / ODB stay: OpenROAD finished cleanly, and
-            # `rb power` has every right to the database it wrote.
-            # `export_layout` has already reported the export at ERROR,
-            # naming the cells; this is the verdict, not a second report.
-            # A hardening run's staged views go with it: no GDS, no abstract.
+            # `fail_stage="export"` keeps a timing `xfail:` from excusing this. The routed DEF and ODB stay; staged abstract views go.
             pnr_abstract.clear_abstract(self.artefact_dir)
             return PnrFailResults(
                 name=self.name + "/results",
@@ -2631,9 +2124,6 @@ class OpenRoadPnr:
             gds_status=export.status if export is not None else None,
             log=log_path,
         )
-        # An export that did not deliver, or a stale block abstract the run
-        # was told to accept, qualifies the pass in the one field every
-        # summary row shows.
         qualifiers = [
             q
             for q in (
