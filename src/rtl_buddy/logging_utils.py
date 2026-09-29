@@ -757,6 +757,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('utilization')}) → {fields.get('direction')} "
                 f"to {fields.get('suggested')}"
             )
+        case "dispatch.job_tag_invalid":
+            return (
+                f"{fields.get('env')}={fields.get('value')!r} cannot prefix a "
+                "Slurm job name: use 1-64 characters from A-Z a-z 0-9 . _ -, "
+                "or unset it for untagged names."
+            )
         case "dispatch.accounting_frequency_unusable":
             return (
                 f"cfg-dispatch.sbatch-args sets `{fields.get('sbatch_arg')}`, "

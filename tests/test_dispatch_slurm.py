@@ -4595,3 +4595,130 @@ def test_the_verilate_job_gets_its_own_submission_event(monkeypatch, caplog):
     events = [r.__dict__.get("rtl_event") for r in caplog.records]
     assert "dispatch.build_submitted" in events
     assert "dispatch.verilate_submitted" not in events
+
+
+# ------------------------------------------------------------ job tag (#693)
+
+_TAG = "gha-18234567890-1"
+
+
+def _tagged_backend(monkeypatch, tag=_TAG, **cfg):
+    monkeypatch.setenv(slurm_module.JOB_TAG_ENV, tag)
+    return SlurmDispatchBackend(DispatchConfigFile(**cfg).initialise())
+
+
+def _job_names(calls):
+    return [
+        a.split("=", 1)[1]
+        for argv in calls
+        for a in argv
+        if a.startswith("--job-name=")
+    ]
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["unset", "empty"])
+def test_no_job_tag_leaves_every_name_unchanged(monkeypatch, tmp_path, value):
+    if value is not None:
+        monkeypatch.setenv(slurm_module.JOB_TAG_ENV, value)
+    calls = []
+    results = [SimpleNamespace(returncode=0, stdout="1\n", stderr="")] + _dedup_results(
+        ""
+    )
+    results += _dedup_results("", job_id="3")
+    results += [SimpleNamespace(returncode=0, stdout="4\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+    assert backend.job_tag is None
+
+    backend.submit(_spec())
+    backend.submit_build(_build_spec())
+    backend.submit_build(_build_spec(phase=base_module.BUILD_PHASE_VERILATE))
+    backend.submit_array(
+        [_spec(), _spec(test_name="other")], array_dir=tmp_path / "array"
+    )
+
+    digest = slurm_module.build_job_name(_build_spec()).rsplit("-", 1)[1]
+    assert _job_names(calls) == [
+        "rb:basic",
+        f"rb-build-{digest}",
+        f"rb-verilate-{digest}",
+        "rb:basic+1",
+    ]
+
+
+def test_the_job_tag_prefixes_a_simulation_job(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+
+    _tagged_backend(monkeypatch).submit(_spec(run_id=3))
+
+    assert _job_names(calls) == [f"{_TAG}:rb:basic:3"]
+
+
+@pytest.mark.parametrize(
+    "phase, prefix",
+    [(None, "rb-build"), ("verilate", "rb-verilate")],
+    ids=["build", "verilate"],
+)
+def test_the_job_tag_is_part_of_the_build_identity(monkeypatch, phase, prefix):
+    calls, results = [], _dedup_results("41\n")
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    spec = _build_spec(**({} if phase is None else {"phase": phase}))
+
+    _tagged_backend(monkeypatch).submit_build(spec)
+
+    probe, argv = calls
+    name = slurm_module.build_job_name(spec, tag=_TAG)
+    untagged = slurm_module.build_job_name(spec)
+    assert name == f"{_TAG}:{untagged}" and untagged.startswith(f"{prefix}-")
+    # The singleton rendezvous and the probe name the same tagged job.
+    assert argv[-4:-2] == [f"--job-name={name}", "--dependency=singleton"]
+    assert f"--name={name}" in probe
+
+
+def test_the_job_tag_prefixes_every_array_slice(monkeypatch, tmp_path):
+    calls = []
+    results = [
+        SimpleNamespace(returncode=0, stdout=f"{base}\n", stderr="")
+        for base in (100, 101)
+    ]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = _tagged_backend(monkeypatch, max_array_size=3)
+
+    backend.submit_array(
+        [_spec(run_id=i) for i in range(1, 4)], array_dir=tmp_path / "array"
+    )
+
+    assert _job_names(calls) == [f"{_TAG}:rb:basic+1/1", f"{_TAG}:rb:basic+0/2"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["ci run", "ci,run", "ci|run", "ci:run", "ci\trun", " ", "x" * 65, "é"],
+    ids=["space", "comma", "pipe", "colon", "tab", "blank", "too-long", "non-ascii"],
+)
+def test_an_invalid_job_tag_is_a_fatal_error(monkeypatch, caplog, value):
+    import logging
+
+    from rtl_buddy.logging_utils import _human_message
+
+    monkeypatch.setenv(slurm_module.JOB_TAG_ENV, value)
+    with caplog.at_level(logging.ERROR), pytest.raises(FatalRtlBuddyError) as err:
+        SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert slurm_module.JOB_TAG_ENV in str(err.value)
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.job_tag_invalid"
+    ]
+    assert record.levelno == logging.ERROR
+    assert "A-Z a-z 0-9 . _ -" in _human_message(
+        "dispatch.job_tag_invalid", record.__dict__["rtl_fields"]
+    )
+
+
+def test_the_longest_valid_job_tag_is_accepted(monkeypatch):
+    assert _tagged_backend(monkeypatch, tag="A.z_0-" + "9" * 58).job_tag == (
+        "A.z_0-" + "9" * 58
+    )

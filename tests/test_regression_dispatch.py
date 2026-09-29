@@ -8080,3 +8080,32 @@ def test_the_dispatched_plan_reserves_the_modes_figures(
     assert (sim.resources.mem, sim.resources.time) == (sim_mem, sim_time)
     # ...and the suite's one build job, which compiles in that mode too.
     assert fake_backend.build_submitted[0].resources.mem == build_mem
+
+
+def test_an_invalid_job_tag_fails_the_run_before_anything_is_submitted(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`RTL_BUDDY_JOB_TAG` is validated when the Slurm backend is built (#693)."""
+    import subprocess
+
+    from rtl_buddy.dispatch import slurm as slurm_module
+
+    calls = []
+    real_run = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        if argv[0] in ("sbatch", "squeue", "scontrol"):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "not a real cluster")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setenv("RTL_BUDDY_JOB_TAG", "ci,run")
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "RTL_BUDDY_JOB_TAG='ci,run'" in str(result.exception)
+    assert calls == []
