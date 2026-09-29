@@ -1374,8 +1374,8 @@ class SlurmDispatchBackend(DispatchBackend):
             record = _parse_squeue_line(line)
             if record is None:
                 continue
-                # Substring match on the reason column alone, so a job named after the
-                # reason is not reaped.
+            # Substring match on the reason column alone, so a job named after the
+            # reason is not reaped.
             if _NEVER_SATISFIED in record["reason"]:
                 doomed.append(record["id"])
             else:
@@ -1639,8 +1639,8 @@ class SlurmDispatchBackend(DispatchBackend):
         for cluster, base_ids in self._base_ids_by_cluster(handles).items():
             if not base_ids:
                 continue
-                # Expands a squeue row naming a whole array back into the manifest's
-                # elements.
+            # Expands a squeue row naming a whole array back into the manifest's
+            # elements.
             ids_here = [
                 h.job_id
                 for h in handles
