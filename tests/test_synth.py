@@ -2270,7 +2270,8 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
 
 def test_openroad_stages_both_honour_pdk_dont_use_cells(tmp_path):
     """Stage 1 maps with the exclusions; stage 2 may resynthesize, so it
-    needs `set_dont_use` before it reads the netlist."""
+    needs `set_dont_use` before any resynthesis — and after `link_design`,
+    since OpenROAD 26Q2 refuses it with no linked network."""
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -2297,7 +2298,32 @@ def test_openroad_stages_both_honour_pdk_dont_use_cells(tmp_path):
 
     or_script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
     assert "set_dont_use [list AND2_X1 *_X32]" in or_script
-    assert or_script.index("set_dont_use") < or_script.index("read_verilog")
+    assert or_script.index("link_design") < or_script.index("set_dont_use")
+    assert or_script.index("set_dont_use") < or_script.index("report_design_area")
+
+
+def test_openroad_dont_use_comes_before_the_resynthesis(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "tech.lef"
+    lef.write_text("")
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)},
+        lef_map={"mylib": [str(lef)]},
+        dont_use_cells=["AND2_X1"],
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    or_synth._resynth_cmd = lambda: "resynth_annealing"
+
+    or_script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+
+    assert or_script.index("set_dont_use") < or_script.index("resynth_annealing")
 
 
 def test_openroad_script_has_no_dont_use_when_the_pdk_names_none(tmp_path):
