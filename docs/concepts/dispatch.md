@@ -40,7 +40,7 @@ rb randtest my_test 20 --dispatch local-parallel -j 4
 - Build jobs run first. A simulation starts only after its build exits 0; a failed build makes its dependent simulations dispatch failures.
 - CPU, memory, and time reservations are not enforced and produce no advice. A non-default reservation logs `dispatch.reservations_ignored`. Choose `--jobs` for the memory demand of the heaviest concurrent tests.
 - `Ctrl-C` stops the head and its process groups. `SIGKILL` skips cleanup and may leave child processes running.
-- `local-parallel` never splits verilation or releases simulations early; a simulation waits for its build job to exit 0.
+- `local-parallel` never splits verilation or releases simulations early.
 
 ## Meet the Slurm requirements
 
@@ -121,7 +121,7 @@ A stamp validates by content: every tracked input under the project root is comp
 
 - **Reuse is reported.** `compile.build_reused` names the reused directory and the age of its stamp. It prints once per build directory per process on the console, and every reuse lands in the log file. The test's `compile.log` carries the same breadcrumb with the command a rebuild would run. Under dispatch, a gated job that reuses writes it at the top of the build job's `compile.log`.
 - **`--rebuild` compiles even where the stamp validates.** It forces at most one rebuild per build directory per invocation, and `compile.rebuild_forced` reports it once. Prefer it to deleting `artefacts/.shared-builds/`.
-- **Under dispatch, `--rebuild` rides the build job**, the single writer of the shared directory. Gated simulation jobs never carry it. A suite with no build job passes it to the simulation jobs. It neither implies nor suppresses `--share-build`.
+- **Under dispatch, `--rebuild` rides the build job**, the single writer of the shared directory. Gated simulation jobs never carry it. A suite with no build job passes it to the simulation jobs. A retried job carries whatever its first attempt carried. `--rebuild` neither implies nor suppresses `--share-build`.
 - **A build lock wait is not a hang.** `compile.build_lock_wait` means another process is compiling into the same directory.
 - **The head audits builds at collect.** If runs of one build directory did not all launch the same executable, it warns `dispatch.binary_mismatch` with the number of distinct input digests. One run rebuilt the shared directory instead of reusing it, so its neighbours may have simulated a binary that was replaced under them. The runs are still scored as they ran.
 
@@ -488,7 +488,7 @@ Logs are separated by process:
 
 `<tag>` is the run ID or `single`; `<pid>` is the head process ID, followed by the run token in the `.dispatch` files. Failure descriptions point to the relevant worker and scheduler logs.
 
-- **Co-located configs.** When a dispatched regression lists several test configs from one directory, each gets a namespace below `.dispatch`, such as `artefacts/.dispatch/tests-7a91c2d4e6f8/` (a config stem plus a hash of its resolved path). Its plan, build files, array manifests, scripts, and scheduler logs live there. Configs in separate directories keep the flat layout. Per-test outputs stay in `artefacts/<test>/`. If two co-located configs expand tests onto the same per-test directory, the regression exits before submitting.
+- **Co-located configs.** When a dispatched regression lists several test configs from one directory, each gets a namespace below `.dispatch`, such as `artefacts/.dispatch/tests-7a91c2d4e6f8/` (a config stem plus a hash of its resolved path). Its plan, build files, array manifests, scripts, and scheduler logs live there. Configs in separate directories keep the flat layout. Per-test outputs stay in `artefacts/<test>/`. If two co-located configs expand tests onto the same per-test directory, the regression exits before submitting. Rename one test or put the configs in separate directories.
 - **`--run-tag <name>`** moves every path in the table into `artefacts/.runs/<name>/`, including the head log. The shared build directory is not namespaced, so tagged runs that compile the same thing reuse one build. See [Namespace concurrent runs](execution-context.md#namespace-concurrent-runs).
 - **`build-result-<pid>.json`** lists the `built` and `failed` test names and a `builds` record per planned config: `test`, `builder`, `duration_sec`, `reused`, and `group`. Equal `group` values (the output path the compile writes) identify one single-writer output.
   - Successful records add `fingerprint_sha`, and `stamp_written: false` when the stamp write failed.
