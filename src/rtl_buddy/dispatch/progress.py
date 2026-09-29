@@ -2,38 +2,14 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Backend-independent liveness reporting for a draining fleet (#435).
+"""Liveness reporting for a draining fleet, shared by both backends' ``wait_all``.
 
-A dispatched regression used to print nothing between "submitted" and
-"drained": on a CI console a healthy 30-minute run, a hung one and one
-whose head had been killed were indistinguishable, and the numbers that
-answer the question were already computed — only logged at DEBUG, which
-no default-verbosity console shows.
-
-:class:`DispatchProgress` is what both backends' ``wait_all`` feed once
-per poll. It owns three decisions so neither backend has to:
-
-* **When to speak.** On the first observation (the moment the head enters
-  the wait), on every change in the outstanding count, and as a heartbeat
-  every ``progress-interval`` seconds while any job is still outstanding
-  (queued *or* running — a fleet that is all running still needs to prove
-  the head is alive) — at
-  most one console line per interval, so a 10 s poll cadence does not
-  produce 180 lines an hour. ``progress-interval: 0`` silences the
-  console entirely while every change still reaches ``rtl_buddy.log``.
-* **What "a suite finished" means.** Suite membership comes off the
-  handles' ``spec.suite_dir``, so a partially-drained fleet reports which
-  suite left the queue as it happens rather than only at the end. The
-  wording is "finished", never "passed": results are collected later, and
-  this reporter has seen none of them.
-* **When to stop waiting.** ``max-wait`` turns an unbounded ``while
-  True`` into a diagnosable failure that names the outstanding ids in a
-  form ``squeue``/``sacct`` accept.
-
-Counts are in **jobs**, not in scheduler queue lines: one pending Slurm
-array line stands for as many jobs as it has elements, and a progress
-line that said "1 remaining" for a 40-element array would be the same
-kind of misinformation as saying nothing.
+:class:`DispatchProgress` decides when to print a console line (first
+observation, every change in the outstanding count, and a heartbeat every
+``progress-interval`` seconds; ``0`` silences the console but not
+``rtl_buddy.log``), when a suite has finished, and when ``max-wait`` has
+expired. Counts are in jobs, not scheduler queue lines, so a pending array
+counts once per element. "Finished" means left the queue, not passed.
 """
 
 import logging
@@ -66,13 +42,10 @@ def _ranges(values: Sequence[int]) -> list[str]:
 
 
 def group_job_ids(ids: Iterable[str]) -> list[str]:
-    """Collapse handle ids into the greppable form a scheduler speaks.
+    """Collapse handle ids into the compact form a scheduler accepts.
 
-    ``1235_1 1235_2 1235_3 1236`` becomes ``["1235_[1-3]", "1236"]`` — one
-    entry per submitted job rather than one per array element, which is
-    both what ``squeue -j`` takes back and short enough to survive in a
-    console line. Non-numeric elements are kept verbatim so a backend with
-    another id shape (the local pool's ``lp-7``) still round-trips.
+    ``1235_1 1235_2 1235_3 1236`` becomes ``["1235_[1-3]", "1236"]``.
+    Non-numeric elements (the local pool's ``lp-7``) are kept verbatim.
     """
     bases: dict[str, list[str]] = {}
     for job_id in ids:
@@ -93,12 +66,10 @@ def group_job_ids(ids: Iterable[str]) -> list[str]:
 
 
 def suite_labels(suite_dirs: Iterable[str]) -> dict[str, str]:
-    """Display label per suite directory: short, but never ambiguous.
+    """Display label per suite directory.
 
-    One suite is named by its basename (there is nothing to disambiguate
-    against); several are named relative to their common ancestor, so
-    ``verif/tb_a`` and ``verif/tb_b`` stay distinguishable where two
-    basenames could collide.
+    One suite is named by its basename; several by their path relative to the
+    common ancestor, so similar basenames stay distinct.
     """
     dirs = sorted({d for d in suite_dirs if d})
     if not dirs:
@@ -109,7 +80,7 @@ def suite_labels(suite_dirs: Iterable[str]) -> dict[str, str]:
     try:
         common = os.path.commonpath(dirs)
     except ValueError:
-        # Different drives on Windows: no common ancestor to relativize to.
+        # Different Windows drives have no common ancestor.
         return {d: d for d in dirs}
     return {d: os.path.relpath(d, common) for d in dirs}
 
@@ -127,9 +98,7 @@ class DispatchProgress:
         clock=time.monotonic,
         logger: logging.Logger = logger,
     ):
-        # Tolerate None entries for the reason cancel_all does: a caller
-        # that let one through (a zero-test suite's absent build handle,
-        # #361) must not turn liveness reporting into a crash.
+        # Tolerate None handles, such as a zero-test suite's absent build handle.
         handles = [h for h in handles if h is not None]
         self._backend = backend
         self._interval = max(0.0, float(interval or 0.0))
@@ -139,10 +108,7 @@ class DispatchProgress:
         self._start = clock()
         self._last_console: float | None = None
         self._last_remaining: int | None = None
-        # A change the throttle kept off the console. The next line that
-        # does print must not be stamped `heartbeat` — its count moved since
-        # the last console line, and `heartbeat` is the field a reader
-        # filters on to tell "still alive" from "something happened".
+        # A change the throttle kept off the console; the next line is not a `heartbeat`.
         self._pending_change = False
         self._first = True
         self._total = len(handles)
@@ -156,11 +122,7 @@ class DispatchProgress:
             label = labels.get(suite_dir)
             if label is None:
                 continue
-            # Keyed the way the backend reports outstanding jobs: a job id
-            # alone is unique only within its cluster, and a fleet spread
-            # over two of them can hold the same number twice — one entry
-            # for both would report a suite finished while its twin is
-            # still queued (#509 review).
+            # Keyed as the backend reports outstanding jobs; bare ids can repeat across clusters.
             self._suite_jobs.setdefault(label, set()).add(telemetry_key(handle))
         self._drained: set[str] = set()
 
@@ -173,11 +135,9 @@ class DispatchProgress:
         states: Mapping[str, str] | None = None,
         longest: tuple[str, float] | None = None,
     ) -> None:
-        """Record one poll: ``remaining`` is the outstanding job ids.
+        """Record one poll; ``remaining`` is the outstanding job ids.
 
-        Raises :class:`FatalRtlBuddyError` when ``max-wait`` has elapsed;
-        the caller's existing ``except BaseException: cancel_all(...)``
-        takes the fleet down.
+        Raises :class:`FatalRtlBuddyError` when ``max-wait`` has elapsed.
         """
         now = self._clock()
         elapsed = now - self._start
@@ -211,9 +171,8 @@ class DispatchProgress:
     def finish(self) -> None:
         """Close out the wait: the queue is empty.
 
-        ``wait_all`` returns as soon as it sees an empty queue, so the
-        observation that emptied it is never passed to :meth:`observe` —
-        without this the last suite would never be reported as finished.
+        Reports the last suite, since the emptying observation never reaches
+        :meth:`observe`.
         """
         self._report_drained_suites(set(), self._clock() - self._start)
 
@@ -236,16 +195,13 @@ class DispatchProgress:
             longest_s=round(longest[1], 1) if longest else None,
         )
         if self._interval <= 0:
-            # The developer's quiet terminal: no console line, but the run's
-            # log still carries the whole trail at INFO.
             log_event(self._logger, logging.INFO, "dispatch.progress", **fields)
             return
         if (
             self._last_console is not None
             and (now - self._last_console) < self._interval
         ):
-            # Throttled: a change worth recording, too soon to print. The
-            # next console line owes the reader the news that the count moved.
+            # Throttled: log it, print later.
             self._pending_change = True
             log_event(self._logger, logging.INFO, "dispatch.progress", **fields)
             return
@@ -271,12 +227,7 @@ class DispatchProgress:
             )
 
     def _fail_on_deadline(self, outstanding: Sequence[str], elapsed: float) -> None:
-        # The outstanding set is keyed by handle, which for a job accepted on
-        # another cluster reads `alpha:77_1` — an identity this process
-        # invented. THIS message hands the reader a post-mortem command, so
-        # the two halves come apart again here: Slurm wants the bare id with
-        # `-M alpha` beside it, and `-j alpha:77_1` is not a job id (#509
-        # review).
+        # Split cluster-qualified keys: Slurm wants the bare id plus `-M <cluster>`.
         by_cluster: dict[str | None, list[str]] = {}
         for key in outstanding:
             cluster, job_id = split_handle_key(key)
@@ -286,8 +237,7 @@ class DispatchProgress:
         for cluster, job_ids in by_cluster.items():
             ids = group_job_ids(job_ids)
             grouped += ids
-            # Quoted: the grouped form carries brackets, which a shell would
-            # otherwise try to glob.
+            # Quoted so the shell does not glob the brackets.
             selector = f"'{','.join(ids)}'"
             where = f" -M {cluster}" if cluster else ""
             queries.append(f"squeue{where} -j {selector}")
@@ -302,8 +252,6 @@ class DispatchProgress:
             remaining=len(outstanding),
             total=self._total,
             elapsed_s=round(elapsed, 1),
-            # Bare scheduler ids, as before — the cluster travels beside
-            # them rather than glued to them.
             jobs=grouped,
             clusters=clusters or None,
             queries=queries,
