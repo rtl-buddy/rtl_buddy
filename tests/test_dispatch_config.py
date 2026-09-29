@@ -244,7 +244,7 @@ def test_mem_to_bytes(text, expected):
 @pytest.mark.parametrize(
     "text,expected",
     [
-        ("30", 1800),
+        ("30", 1800),  # A bare number is minutes.
         ("05:30", 330),
         ("02:00:00", 7200),
         ("1-00", 86400),
