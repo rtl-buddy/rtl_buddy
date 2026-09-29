@@ -46,7 +46,7 @@ class DummyPassingSim:
 
 
 class DummyFilelistFailSim:
-    """Simulates a VlogSim whose compile() raises FilelistError due to a bad path."""
+    """A VlogSim whose compile() raises FilelistError for a bad path."""
 
     def pre(self, **_kwargs):
         return None
@@ -88,9 +88,7 @@ class DummySweepTest:
         return False
 
     def with_plusarg_overrides(self, overrides):
-        # `_iter_suite_runnables` merges a `--plusarg` override into every
-        # config it yields (#552); this double carries no plusargs, and the
-        # tests using it pass no override, so it is its own merged view.
+        # No plusargs, so it is its own merged view.
         assert not overrides
         return self
 
@@ -159,9 +157,7 @@ def test_test_runner_returns_setup_fail_for_all_runs_on_preproc_error(
 
     assert len(results) == 3
     assert all(isinstance(result, SetupFailResults) for result in results)
-    # Every run this invocation reports on sheds its stale retry
-    # transcript, even when PRE failed — the sim's own cleanup reaches
-    # only run_ids[0] (#498 review).
+    # Every reported run sheds its stale retry transcript, even when PRE failed.
     assert sim.cleared_retry_runs == [1, 2, 3]
 
 
@@ -284,7 +280,7 @@ class DummyRootCfg:
         return DummyBuilderCfg()
 
     def resolve_extra_sim_timeout(self, _rtl_builder_cfg):
-        return 0  # this test asserts on the hier-seed warning, not the timeout
+        return 0
 
 
 class DummyTestbench:
@@ -460,8 +456,7 @@ def test_suite_dir_for_test_runner_comes_from_suite_cfg_path(tmp_path, monkeypat
     captured = {}
 
     class CapturingRunner:
-        # A runner whose PRE never reached a sim has no compile to report
-        # (#495); None is the shape TestRunner.last_compile returns there.
+        # PRE never reached a sim, so there is no compile to report.
         last_compile = None
 
         def __init__(self, **kwargs):
