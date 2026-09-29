@@ -1763,7 +1763,7 @@ def test_a_transient_log_temp_file_disappearing_does_not_invalidate(
 
 
 def test_a_settled_managed_output_temp_name_is_excluded_for_every_output():
-    """Every managed output pattern is excluded, not only the two that were reported."""
+    """Every managed output pattern is excluded from the listing."""
     for pattern in vlog_sim_module._MANAGED_OUTPUT_FILE_PATTERNS:
         name = pattern.replace("*", "job1")
         assert vlog_sim_module._is_non_input_file(name), name
