@@ -3401,10 +3401,12 @@ def _publish_block_abstract(tmp_path, *, module="blk_top"):
     return out
 
 
-def test_a_pnr_power_run_reads_the_pnr_runs_block_abstracts(tmp_path):
-    """`blocks:` adds each abstract's Liberty to the P&R run after its own
-    `lib-paths`; the power run over that ODB reads the same set, in the
-    same order, before its own `lib-paths` (#679)."""
+def test_a_pnr_power_run_resolves_blocks_but_reads_no_block_liberty(tmp_path):
+    """The block is resolved (#679), but its `write_timing_model` Liberty
+    is not read: no output has a `function`, so OpenSTA would propagate
+    zero activity out of every block output and the parent logic it drives
+    would read as static (#684). The macro set is the P&R run's own
+    `lib-paths`, then the power run's."""
     sram = _write_macro_liberty(tmp_path / "sram.lib")
     own = _write_macro_liberty(tmp_path / "pll.lib", cell="pll")
     out = _publish_block_abstract(tmp_path)
@@ -3415,20 +3417,22 @@ def test_a_pnr_power_run_reads_the_pnr_runs_block_abstracts(tmp_path):
 
     inputs = backend._resolve_inputs()
 
-    assert inputs["macro_libs"] == [sram, str(out / "blk_top.lib"), own]
+    assert inputs["macro_libs"] == [sram, own]
+    assert str(out / "blk_top.lib") not in inputs["macro_libs"]
     assert inputs["macro_lefs"] == []
+    assert [b.ref.name for b in backend._blocks] == ["blk_top"]
 
 
-def test_a_synth_power_run_reads_the_synth_runs_block_abstracts(tmp_path):
+def test_a_synth_power_run_reads_the_block_lef_and_not_its_liberty(tmp_path):
     """`link_design` builds the database out of LEF masters, so the block's
-    LEF is read as well as its Liberty — without it the blackbox the
-    netlist instances has no master at all."""
+    LEF is read — without it the blackbox the netlist instances has no
+    master at all. Its Liberty is not, for the reason above (#684)."""
     out = _publish_block_abstract(tmp_path)
     backend = _inputs_with_upstream(tmp_path, source="synth", blocks_yaml=_BLOCKS_YAML)
 
     inputs = backend._resolve_inputs()
 
-    assert inputs["macro_libs"] == [str(out / "blk_top.lib")]
+    assert inputs["macro_libs"] == []
     assert inputs["macro_lefs"] == [str(out / "blk_top.lef")]
 
 
@@ -3490,9 +3494,10 @@ def _run_with_a_block(tmp_path, monkeypatch):
 def test_a_block_at_zero_watts_is_named_although_its_abstract_was_read(
     tmp_path, monkeypatch
 ):
-    """The abstract declares the block as a cell, but a timing model carries
-    no power tables, so reading it vouches for nothing: the partition is
-    still an instance the analysis could say nothing about."""
+    """A `power.yaml` can still name the abstract in its own `lib-paths`.
+    It declares the block as a cell, but a timing model carries no power
+    tables, so reading it vouches for nothing: the partition is still an
+    instance the analysis could say nothing about."""
     _out, res = _run_with_a_block(tmp_path, monkeypatch)
 
     assert res.is_pass()

@@ -675,15 +675,26 @@ class OpenRoadPower(BasePower):
         again before a `read_db` would not even survive it — the database
         read replaces the technology the LEF built.
 
-        **A `blocks:` entry on the upstream run counts as one of its
-        macros** (#679). That run appended each hardened block's abstract
-        Liberty (and, for synthesis, its LEF) after its own `lib-paths`,
-        so this does the same, in the same order: two consumers of one run
-        see one macro set. Resolved without the staleness gate `rb pnr`
-        and `rb synth` apply — the analysis reads what was routed, and the
-        abstract on disk is the one that run consumed unless it has been
-        re-hardened since, which is that run's staleness to report, not
-        this one's.
+        **A `blocks:` entry on the upstream run is resolved** (#679), for
+        its LEF on the `synth` path, where `link_design` needs the master,
+        and for the result's `blocks` rows. Resolved without the staleness
+        gate `rb pnr` and `rb synth` apply — the analysis reads what was
+        routed, and the abstract on disk is the one that run consumed
+        unless it has been re-hardened since, which is that run's
+        staleness to report, not this one's.
+
+        **The block's abstract Liberty is not read** (#684). It is
+        `write_timing_model` output: timing arcs, no power tables, and no
+        `function` on any output. OpenSTA propagates activity forward from
+        the timing graph's roots and never seeds a clock pin, so with that
+        Liberty loaded every block output hangs off a clock-to-out arc no
+        propagation reaches: it reads zero activity, a SAIF/VCD or
+        `set_power_activity` annotation on it is never applied, and all
+        the parent logic the block drives reads as static. Without it the
+        block is a Liberty-less master, its outputs are roots, and they
+        take the trace's activity or the default input activity — which is
+        what the parent's switching power needs. Reading it would add only
+        the block's input pin capacitance.
         """
         # Appended after whatever the upstream run declares, so the
         # inherited list stays the base and a `power.yaml` adds to it.
@@ -710,7 +721,6 @@ class OpenRoadPower(BasePower):
                 "macro_libs": _dedup_paths(
                     [
                         *pnr_cfg.get_lib_paths(),
-                        *(b.lib for b in self._blocks),
                         *own_libs,
                     ]
                 ),
@@ -736,7 +746,6 @@ class OpenRoadPower(BasePower):
             "macro_libs": _dedup_paths(
                 [
                     *synth_cfg.get_lib_paths(),
-                    *(b.lib for b in self._blocks),
                     *own_libs,
                 ]
             ),
@@ -1346,12 +1355,14 @@ class OpenRoadPower(BasePower):
             # zero-power instance means no Liberty needs scanning.
             return empty
         technology = self._script_technology or {}
-        # A hardened block's abstract Liberty declares the block as a cell,
-        # but `write_timing_model` writes timing arcs and no power tables,
-        # so it cannot vouch for a zero-watt instance of it: left out, the
-        # block is named like any macro with no Liberty power data (#679).
-        # An abstract that did carry power would report watts, and a row
-        # with watts is never flagged.
+        # A hardened block's abstract Liberty is not read (#684), but a
+        # `power.yaml` can still name one in its own `lib-paths`. It
+        # declares the block as a cell, and `write_timing_model` writes
+        # timing arcs and no power tables, so it cannot vouch for a
+        # zero-watt instance of it: left out, the block is named like any
+        # macro with no Liberty power data (#679). An abstract that did
+        # carry power would report watts, and a row with watts is never
+        # flagged.
         block_libs = {os.path.abspath(b.lib) for b in self._blocks}
         known = _liberty_cell_names(
             [
