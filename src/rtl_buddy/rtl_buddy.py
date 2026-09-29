@@ -8539,9 +8539,6 @@ class RtlBuddy:
             )
 
         if view == "tb":
-            # The test pins both a model and a TB top — resolve via
-            # the existing SuiteConfig loader so the same parse path
-            # the simulator uses runs here too.
             from .config.suite import SuiteConfig
 
             ctx = self._enter_command_context(primary_config=test_config)
@@ -8577,7 +8574,6 @@ class RtlBuddy:
             )
             raise typer.Exit(runner.run())
 
-        # --view dut (default): anchor on models.yaml.
         ctx = self._enter_command_context(primary_config=model_config)
         model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
         log_event(
@@ -8663,10 +8659,10 @@ class RtlBuddy:
         ] = "rtl-buddy-view",
     ):
         """
-        query the module hierarchy via rtl-buddy-view (rb hier's
-        machine-readable sibling): JSON answers on stdout for shell
-        pipelines and agent tool use; source-snippet emits
-        line-number-prefixed citation text
+        query the module hierarchy via rtl-buddy-view
+
+        Machine-readable sibling of `rb hier`: prints JSON for shell pipelines and
+        agent tools; source-snippet prints line-numbered source text.
         """
         ctx = self._enter_command_context(primary_config=model_config)
         model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
@@ -8701,11 +8697,10 @@ class RtlBuddy:
         regression: str | None,
         design_dir: str,
     ) -> list[ModelConfig] | None:
-        """Resolve ``rb graph build``'s model selection.
+        """Resolve the model selection for `rb graph build`.
 
-        ``None`` means "whatever is under ``design_dir``" and is left for
-        :func:`~rtl_buddy.graph.build.build_graph` to expand, so the
-        default path has exactly one implementation.
+        `None` is passed through for `build_graph` to expand to every model under
+        `design_dir`.
         """
         if model and regression:
             raise FatalRtlBuddyError(
@@ -8728,13 +8723,7 @@ class RtlBuddy:
                 f"graph build: unknown model(s): {', '.join(missing)}; "
                 f"models found under {design_dir}: {known}"
             )
-        # Preserve the user's order but drop repeats. Every entry
-        # claiming a requested name is returned, not the first: two
-        # models.yaml files may declare one name, and keeping whichever
-        # was discovered first would silently pick for the user — an
-        # opted-out entry shadowing the graphable one, invisibly, because
-        # the survivor then looks like the only one. `build_graph`
-        # refuses the collision, where the message can name both files.
+        # Keep every entry that claims a requested name; `build_graph` reports collisions.
         selected: list[ModelConfig] = []
         for name in model:
             for cfg in by_name[name]:
@@ -8878,14 +8867,9 @@ class RtlBuddy:
             ctx, model=model, regression=regression, design_dir=search_design
         )
 
-        # Version-gate the viewer the way `rb hier-query` gates on
-        # rtl-buddy-view >= 0.3.0: probe once here, hand the answer to
-        # build_graph so the same string lands in the fingerprint (a
-        # viewer upgrade must invalidate the cached design tier).
+        # Probe once so the same version string reaches the cache fingerprint.
         view_version = probe_view_version(tool) if design else None
-        # A found-but-unprobeable extractor still runs — its "unknown"
-        # version stays in the fingerprint so a later probe-able upgrade
-        # invalidates the cache instead of silently reusing it.
+        # An unprobeable extractor still runs; its "unknown" version is fingerprinted.
         extractor = extract_mod.resolve_extractor(self.root_cfg) if extract else None
 
         log_event(
@@ -9019,15 +9003,7 @@ class RtlBuddy:
             str,
             typer.Option(
                 "--coverage",
-                # This NAMES A SOURCE and so takes a value, where in
-                # v6.30.x it was the boolean `--coverage/--no-coverage`.
-                # A bare `--coverage` therefore no longer parses. Click's
-                # optional-value form (`is_flag=False, flag_value=...`)
-                # is the obvious rescue, but Typer does not forward
-                # either kwarg and deprecates both, so the compatibility
-                # kept here is `--no-coverage` (unchanged) plus the
-                # `none` keyword; the break is loud, and it is recorded
-                # in docs/known-issues.md.
+                # Takes a value: Typer does not forward click's optional-value form.
                 help=(
                     "coverage source to join onto the graph's ids: 'auto' "
                     "(cov_dir/manifest.json, then the per-test coverage.dat "
@@ -9066,9 +9042,8 @@ class RtlBuddy:
             typer.Option(
                 "--run-tag",
                 help="convert one --run-tag run's results: scan "
-                "artefacts/.runs/<tag>/ in every suite and write that "
-                "run's overlay under artefacts/.runs/<tag>/graph/ "
-                "(graph.json is still read from artefacts/graph/)",
+                "artefacts/.runs/<tag>/ in every suite and write the overlay under "
+                "artefacts/.runs/<tag>/graph/ (graph.json is read from artefacts/graph/)",
             ),
         ] = None,
     ):
@@ -9076,20 +9051,12 @@ class RtlBuddy:
         refresh the results overlay beside graph.json: last status, run token,
         seed, artefact paths and coverage per test node
         """
-        # Before the context is entered: a tagged refresh reads and writes
-        # inside that run's tree, so it must lock that tree and not the
-        # project-wide one two concurrent regressions would contend for
-        # (#541).
+        # Before the context is entered, so a tagged run locks its own tree.
         self._run_tag = validate_run_tag(run_tag)
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root)
 
-        # `--coverage` names a source (#390): the two keywords pass
-        # through, 'none' (and `--no-coverage`) disables the join, and
-        # anything else is a merged LCOV .info path, resolved against the
-        # invoking directory like every other path option. The accepted
-        # keywords are exactly the three the help and docs list — an
-        # undocumented synonym is a contract nobody knows they own.
+        # 'auto' and 'model' pass through, 'none' disables, anything else is an LCOV path.
         cov_source: bool | str = coverage.strip()
         if no_coverage or cov_source == "none":
             cov_source = False
@@ -9179,8 +9146,6 @@ class RtlBuddy:
         )
         cov_summary = overlay.coverage_summary()
         if cov_summary is not None:
-            # Only a non-manifest source is worth a word: `model` is the
-            # ordinary case and the line is budgeted for one console row.
             source = cov_summary.get("source")
             note = f" (from {source})" if source and source != "model" else ""
             emit_console_text(
@@ -9208,10 +9173,6 @@ class RtlBuddy:
             )
         raise typer.Exit(exit_code)
 
-    # ------------------------------------------------------------------
-    # graph query verbs (#380)
-    # ------------------------------------------------------------------
-
     def _graph_query_context(
         self,
         ctx: ExecutionContext,
@@ -9229,11 +9190,7 @@ class RtlBuddy:
         )
 
     def _graph_query_candidates(self, exc: graph_query_mod.GraphQueryError) -> None:
-        """Print a failed node reference's near misses before exiting.
-
-        A miss with no candidates is a dead end; a miss with candidates
-        is one retry away, which is worth two lines of console output.
-        """
+        """Print a failed node reference's near misses before exiting."""
         if not exc.candidates:
             return
         emit_console_text(
@@ -9324,12 +9281,7 @@ class RtlBuddy:
         neighbourhood around every match, with the results overlay joined in
         """
         root = str(discover_project_root(fallback_cwd=True))
-        # `list_only=True` keeps the read verbs **lock-free**. The
-        # artefact lock is exclusive and held to process exit, so taking
-        # it here would make `rb graph query` fail while a regression is
-        # running in the same tree — which is precisely when an agent
-        # asks the graph what it is looking at. Nothing under it is
-        # written, and no RootConfig is needed to read a JSON file.
+        # list_only keeps read verbs lock-free, so they work while a regression holds the lock.
         ctx = self._enter_command_context(command_root=root, list_only=True)
         log_event(
             logger,
@@ -9352,9 +9304,7 @@ class RtlBuddy:
             results=results,
             expand=expand,
         )
-        # A question nobody can answer is not a crash: exit 1 (the
-        # "graceful no" code) so a shell loop can branch on it, and 0
-        # whenever at least one node matched.
+        # Exit 1 (not a crash) when nothing matched, so shell loops can branch.
         exit_code = 0 if payload["matches"] else 1
 
         if self.machine:
@@ -9462,7 +9412,6 @@ class RtlBuddy:
         report the shortest chain of edges connecting two graph nodes
         """
         root = str(discover_project_root(fallback_cwd=True))
-        # Lock-free, as `graph query` is — see there.
         ctx = self._enter_command_context(command_root=root, list_only=True)
         log_event(
             logger,
@@ -9559,7 +9508,6 @@ class RtlBuddy:
         and its coverage
         """
         root = str(discover_project_root(fallback_cwd=True))
-        # Lock-free, as `graph query` is — see there.
         ctx = self._enter_command_context(command_root=root, list_only=True)
         log_event(
             logger,
@@ -9611,9 +9559,7 @@ class RtlBuddy:
         for line in _explain_coverage_lines(
             payload.get("coverage"), payload.get("coverage_run")
         ):
-            # The match rung is printed as `[affix]`, and an SVA label can
-            # itself carry brackets (`gen[0].cov_x`) — Rich would eat both
-            # as style tags, so this line is never markup.
+            # markup=False: `[affix]` and bracketed SVA labels would parse as Rich tags.
             emit_console_text(line, stream="stdout", markup=False)
         rows = [
             {
@@ -9646,9 +9592,6 @@ class RtlBuddy:
             emit_console_text("  (no edges)", stream="stdout")
         truncated = payload.get("truncated")
         if truncated:
-            # A cut answer that does not say what it lost is how you get a
-            # confident wrong answer cheaply — so the human surface says it
-            # too, not just the machine payload.
             kinds = ", ".join(
                 f"{count} {kind}" for kind, count in truncated["kinds"].items()
             )
@@ -9666,17 +9609,10 @@ class RtlBuddy:
             )
         raise typer.Exit(0)
 
-    # ------------------------------------------------------------------
-    # rb cov — read verbs over coverage artefacts already on disk (#399)
-    # ------------------------------------------------------------------
-
     def _cov_context(self, verb, *, cov_dir=None, manifest=None):
         """Load the coverage manifest and model for a `rb cov` verb.
 
-        Lock-free like the `rb graph` read verbs: nothing is written, and
-        taking the exclusive artefact lock would make `rb cov summary`
-        fail while a regression is running in the same tree — which is
-        exactly when someone asks what the coverage looks like.
+        Lock-free, so it works while a regression holds the artefact lock.
         """
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root, list_only=True)
@@ -9698,9 +9634,7 @@ class RtlBuddy:
     def _read_query_failed(self, command: str, exc):
         """Report a read verb's unanswerable question, then exit 2.
 
-        Shared by `rb cov` and `rb phys`: both raise an error carrying
-        ``candidates``, and a near-miss list rendered two different ways
-        would be two different contracts for the same failure.
+        Shared by `rb cov` and `rb phys` so both list near-miss candidates alike.
         """
         if self.machine:
             self._emit_machine_result(
@@ -9782,18 +9716,12 @@ class RtlBuddy:
             stream="stdout",
             markup=False,
         )
-        # Two run rows, not two tables: the reader's question is the
-        # difference between the figures, and the `run` row keeps its
-        # name and its meaning (#637). The source row is absent for a
-        # model written before the figure existed.
         run_rows = [self._cov_totals_row("run", payload["totals"])]
         if payload.get("source_totals"):
             run_rows.append(
                 self._cov_totals_row("run (source)", payload["source_totals"])
             )
         elif by_source:
-            # Asked for a figure this model does not carry. Said once,
-            # rather than leaving a table of dashes to explain itself.
             emit_console_text(
                 "cov: this run's model carries no source-point figures; "
                 "re-run the coverage command to write them",
@@ -9920,22 +9848,11 @@ class RtlBuddy:
                     )
         raise typer.Exit(0)
 
-    # ------------------------------------------------------------------
-    # rb phys — read verbs over physical artefacts already on disk (#558)
-    # ------------------------------------------------------------------
-
     def _phys_root(self, verb):
         """The project root a `rb phys` verb reads under, event logged.
 
-        Lock-free like the `rb cov` and `rb graph` read verbs: nothing is
-        written, and taking the exclusive artefact lock would make `rb
-        phys summary` fail while a synthesis is running in the same tree
-        — which is exactly when someone asks what the last one measured.
-
-        Split out from `_phys_context` for `rb phys runs`, whose subject
-        is the set of runs rather than one of them: it resolves no
-        manifest and loads no model, so it needs the root and the
-        command event and nothing else.
+        Lock-free, like the other read verbs. Separate from `_phys_context` because
+        `rb phys runs` needs no manifest or model.
         """
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root, list_only=True)
@@ -9961,11 +9878,9 @@ class RtlBuddy:
 
     @staticmethod
     def _phys_rank_limit(flag: str, value: str | None):
-        """A `--modules-limit`/`--instances-limit` value, or a usage error.
+        """A `--modules-limit`/`--instances-limit` value, or a usage error naming the flag.
 
-        `--limit 0` has always meant *all*, so "none" needs a spelling
-        of its own; `phys.query.parse_rank_limit` owns it and this only
-        names the flag that carried the bad one.
+        `phys.query.parse_rank_limit` owns the parsing.
         """
         try:
             return phys_query_mod.parse_rank_limit(value)
@@ -9974,12 +9889,9 @@ class RtlBuddy:
 
     @staticmethod
     def _phys_num(value, digits: int = 3):
-        """Format one model number, or `-` for a value nobody measured.
+        """Format one model number, or `-` when it was not measured.
 
-        `null` prints as `-` rather than `0`, because every column here
-        has a run that legitimately leaves it unmeasured — area without a
-        Liberty, power without a `rb power` — and a zero would read as a
-        measurement.
+        `null` prints as `-`, never `0`, which would read as a measurement.
         """
         if value is None:
             return "-"
@@ -9992,18 +9904,12 @@ class RtlBuddy:
 
     @staticmethod
     def _phys_missing_half_notes(payload) -> None:
-        """Say which half is absent and what would actually produce it.
+        """Say which half of the model is absent and what would produce it.
 
-        The obvious advice — run the other command into this directory —
-        is only true when the two halves can pair. The merge is gated on
-        the netlist hash both producers record, so a half whose producer
-        recorded none (a `netlist-source: pnr` power run reads a routed
-        database and has no netlist to hash) cannot be merged onto: the
-        run that would complete the model *replaces* it instead, and the
-        note would be sending the user to destroy the very rows they
-        still have. The payload's `halves` block echoes that per half
-        (`netlist_hash`), so the note names what does work — synthesise,
-        then measure the netlist it wrote, so the pair shares one.
+        The merge is gated on the netlist hash both halves record. A half whose
+        producer recorded none (a `netlist-source: pnr` power run) cannot be merged
+        onto, and running the other command would replace it. The note then advises
+        synthesising and measuring that netlist.
         """
         halves = payload.get("halves") or {}
         for half in payload.get("missing_halves") or []:
@@ -10037,12 +9943,9 @@ class RtlBuddy:
     def _phys_instance_join_note(payload) -> None:
         """Say when an empty instance list is a namespace miss, not a fact.
 
-        The model's two halves spell `module` differently — RTL module
-        names on the synthesis rows, Liberty cell names on the leaves —
-        so an RTL module on a mapped hierarchical design matches nothing,
-        and a bare empty table would read as "this block burns no power".
-        The payload carries the sentence; printing it here keeps every
-        surface saying the same thing.
+        Synthesis rows name RTL modules and leaves name Liberty cells, so an RTL module
+        on a mapped hierarchical design matches nothing. The sentence comes from the
+        payload so every surface says the same thing.
         """
         note = payload.get("instance_join")
         if note:
@@ -10067,7 +9970,6 @@ class RtlBuddy:
             for row in rows
         ]
 
-    #: Columns of every per-instance table the phys verbs render.
     _PHYS_INSTANCE_COLUMNS = [
         ("instance", "Instance"),
         ("module", "Module"),
@@ -10094,10 +9996,7 @@ class RtlBuddy:
     def _phys_backends(backends) -> str:
         """The two backend names as one cell: `yosys+openroad`.
 
-        A half that did not run here is left out rather than written as
-        `none`: the column is about what produced this run's numbers, and
-        two words of padding per row on a table that is already wide buys
-        nothing a reader could not see from the absence.
+        A half that did not run is left out.
         """
         names = [
             backends.get(half) for half in ("synth", "power") if backends.get(half)
@@ -10108,11 +10007,8 @@ class RtlBuddy:
     def _phys_power_cell(entry) -> str:
         """The mode and what drove it: `dynamic (saif csr_smoke)`.
 
-        The label is the payload's, not this table's, so the CLI, the MCP
-        payload and the pane's dropdown all say the same words about the
-        same run. A run with no power half prints `-`, and one from
-        before the mode was recorded prints what it does know rather than
-        inventing a mode it never wrote down.
+        The label comes from the payload so every surface agrees. A run with no power
+        half prints `-`.
         """
         mode = entry.get("mode")
         label = (entry.get("activity") or {}).get("label")
@@ -10147,8 +10043,6 @@ class RtlBuddy:
 
         runs = payload["runs"]
         if not runs:
-            # Not an error, unlike the other three verbs: they were asked
-            # about a run, and this one is asking what runs there are.
             emit_console_text(
                 f"no {phys_manifest_mod.MANIFEST_FILENAME} under {root} - "
                 "run `rb synth` or `rb power` first",
@@ -10191,11 +10085,7 @@ class RtlBuddy:
             metadata=metadata,
             logger=logger,
         )
-        # The directories go under the table rather than in it. They are
-        # the one cell a reader COPIES -- into `--phys-dir`, or into the
-        # pane's run selector -- and a table column wraps a long path
-        # across two lines, which turns the one column that has to
-        # survive a copy-paste into the one that does not.
+        # Directories go below the table: a wrapped path cannot be copied.
         emit_console_text("\nphys dirs:", stream="stdout", markup=False)
         width = max(len(entry["run"] or "-") for entry in runs)
         for entry in runs:
@@ -10205,9 +10095,6 @@ class RtlBuddy:
                 stream="stdout",
                 markup=False,
             )
-            # A row whose document could not be read still names a
-            # directory worth reporting; the reason would not fit in a
-            # cell, and dropping the row would under-report the project.
             if entry["error"]:
                 emit_console_text(
                     f"    {entry['error']}",
@@ -10276,9 +10163,7 @@ class RtlBuddy:
         report a run's physical metrics from its artefacts: the design totals,
         the heaviest modules, the hottest instances, and where everything landed
         """
-        # Parsed before the model is read: a misspelled flag is a usage
-        # error, and a usage error that first walks the project for a
-        # manifest is a usage error the reader waits for.
+        # Validate flags before walking the project for a manifest.
         modules_rows = self._phys_rank_limit("--modules-limit", modules_limit)
         instances_rows = self._phys_rank_limit("--instances-limit", instances_limit)
         ctx = self._phys_context("phys summary", phys_dir=phys_dir, manifest=manifest)
@@ -10407,10 +10292,7 @@ class RtlBuddy:
         )
         self._phys_missing_half_notes(payload)
         self._phys_instance_join_note(payload)
-        # The payload is already headed to `--limit`, so the table renders
-        # what it holds rather than truncating a second time: one flag,
-        # one truncation, and the console and the machine payload cannot
-        # disagree about how many rows the user asked for.
+        # The payload is already limited; do not truncate again.
         shown = payload["instances"] or []
         if shown:
             emit_console_text(
@@ -10494,7 +10376,6 @@ class RtlBuddy:
         rows = []
         if payload["instance"] is not None:
             rows += self._phys_instance_rows([payload["instance"]])
-        # Headed by the builder, as `phys module`'s list is.
         children = payload["children"]
         if children:
             rows += self._phys_instance_rows(children)
@@ -10522,10 +10403,7 @@ class RtlBuddy:
                 markup=False,
             )
         if payload["match"] == "exact" and payload["child_count"]:
-            # The path is both a leaf and a prefix. The rollup answers the
-            # question `match` names — the named row — so the rows below it
-            # are on the table without being in the total, and that has to
-            # be said or the two readings of the same table disagree.
+            # The rollup is the named row alone; say so or the table reads as its total.
             emit_console_text(
                 f"{payload['child_count']} row(s) below this path are listed "
                 "for navigation; the rollup is the named row alone",
@@ -10553,10 +10431,7 @@ class RtlBuddy:
             str | None,
             typer.Option(
                 "--root",
-                help=(
-                    "project root to serve; default is discovered from cwd, "
-                    "which is what an agent host's spawn gives you"
-                ),
+                help=("project root to serve (default: discovered from cwd)"),
             ),
         ] = None,
         design_dir: Annotated[
@@ -10631,8 +10506,7 @@ class RtlBuddy:
             )
             raise typer.Exit(0)
 
-        # Everything below writes to stderr or to the log: stdout belongs
-        # to the JSON-RPC stream for as long as the server runs.
+        # stdout carries the JSON-RPC stream; write to stderr or the log only.
         log_event(
             logger,
             logging.INFO,
@@ -10759,20 +10633,14 @@ class RtlBuddy:
         """
         ingest a test's FST and emit per-test axi-perf.json
 
-        Looks up `<test>` in tests.yaml, resolves the model, the
-        checked-in axi-bundles.yaml manifest (model.axi_bundles in
-        models.yaml), and the FST at artefacts/<test>/dump.fst, then
-        invokes axi-profiler run. Pass --emit-txns-parquet to also
-        produce the per-transaction parquet artefact that
-        `rb axi-profile notebook` consumes.
+        Reads the manifest from `model.axi_bundles` in models.yaml and the FST from
+        artefacts/<test>/dump.fst, then runs axi-profiler. Add --emit-txns-parquet to
+        also write the parquet that `rb axi-profile notebook` reads.
         """
         ctx = self._enter_command_context(primary_config=test_config)
         suite_cfg = SuiteConfig(str(ctx.primary_config))
         test_cfg = suite_cfg.get_tests(test_name)[0]
-        # Resolve parquet emit:
-        #   explicit path → use it
-        #   bare --emit-txns-parquet → empty-string sentinel → wrapper picks default
-        #   neither → None → no emit (legacy behaviour)
+        # Empty string (bare flag) lets the wrapper pick the default path; None means no emit.
         parquet_arg: str | None
         if emit_txns_parquet_path is not None:
             parquet_arg = str(ctx.resolve_input(emit_txns_parquet_path))
@@ -10846,12 +10714,10 @@ class RtlBuddy:
         """
         emit the SV bind-style AXI monitor for the model's testbench
 
-        Reads the manifest path from `model.axi_bundles` and the
-        output path from `model.axi_monitor_out` (both in
-        models.yaml). The generated SV must be added to the
-        testbench's filelist; pointing `axi_monitor_out:` at the
-        verif tree (e.g. `../verif/<tb>/gen/axi_perf_mon.sv`) makes
-        that a one-time step.
+        Reads the manifest from `model.axi_bundles` and writes to
+        `model.axi_monitor_out` (both in models.yaml). Add the generated SV to the
+        testbench filelist; pointing `axi_monitor_out` into the verif tree makes that
+        a one-time step.
         """
         ctx = self._enter_command_context(primary_config=model_config)
         model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
@@ -10919,12 +10785,9 @@ class RtlBuddy:
         """
         launch the packaged marimo notebook against a test's per-txn parquet
 
-        Resolves the per-test parquet at
-        artefacts/axi/<test>/axi-txns.parquet (produced by
-        `rb axi-profile run <test> --emit-txns-parquet`), locates the
-        notebook template shipped with the axi-profiler wheel, and
-        spawns `marimo edit <template>` with $AXI_TXNS_PARQUET set so
-        the template's first cell loads the parquet automatically.
+        Reads artefacts/axi/<test>/axi-txns.parquet (written by `rb axi-profile run
+        <test> --emit-txns-parquet`) and opens the notebook shipped with the
+        axi-profiler wheel in `marimo edit`, with $AXI_TXNS_PARQUET set.
         """
         ctx = self._enter_command_context(primary_config=test_config)
         suite_cfg = SuiteConfig(str(ctx.primary_config))
@@ -11212,9 +11075,7 @@ class RtlBuddy:
             suite_tests, suite_load_failures = discover_suite_tests(search_verif)
         else:
             suite_tests, suite_load_failures = [], []
-        # Formal runs may declare `covers:` too (rtl-buddy/rtl_buddy#385);
-        # they live under fpv/, which the verif walk never reaches, so they
-        # are discovered through the root-level fpv_regression.yaml.
+        # fpv/ is not reached by the verif walk; discover it via fpv_regression.yaml.
         fpv_entries, fpv_load_failures = discover_fpv_verifications(root)
         suite_tests = suite_tests + fpv_entries
         suite_load_failures = suite_load_failures + fpv_load_failures
@@ -11315,14 +11176,8 @@ class RtlBuddy:
             "tns_ps",
             "static_function_findings",
             "unresolved_interfaces",
-            # Where the per-module breakdown behind these scalars was
-            # published (#560). Omitted, like every other optional field
-            # here, when the run published no model.
             "phys_model",
-            # OpenROAD thread provenance of the timing stage, as for a pnr
-            # row (#654). Absent when no OpenROAD stage ran.
             "openroad_threads",
-            # The hardened blocks' abstracts the run read (#95).
             "blocks",
         ):
             if k in res and res[k] is not None:
@@ -11340,16 +11195,9 @@ class RtlBuddy:
             "wns_setup_ps",
             "wns_hold_ps",
             "drc_count",
-            # Multi-corner signoff (#104, #105): the WNS fields above are
-            # the worst across corners; these say which corner set each and
-            # carry every corner's own numbers. Absent on a one-corner run.
             "worst_setup_corner",
             "worst_hold_corner",
             "corners",
-            # The optional KLayout export: where it landed, and how
-            # complete it is. Present only when one was requested, so a
-            # consumer reading `gds_status` reads the mode that produced
-            # it and, when cells had no layout, exactly which (#619).
             "gds_path",
             "png_path",
             "gds_mode",
@@ -11357,35 +11205,19 @@ class RtlBuddy:
             "gds_missing_cells",
             "gds_missing_cell_count",
             "gds_allowed_empty_cells",
-            # Where `rb pnr-export` recorded what it read and produced
-            # (#618). Absent from an `rb pnr` row: a run writes no such
-            # record.
             "export_provenance",
-            # The OpenROAD thread count asked for, run with, and the
-            # allocation that bounded it (#654). Absent from an export row.
             "openroad_threads",
-            # Stage checkpoints (#653): where a checkpointed `rb pnr` run
-            # left its databases, which stages it wrote and the step it was
-            # in when it stopped; on an export, which checkpoint it read —
-            # and that it was not the final result.
             "checkpoint_dir",
             "checkpoint_stages",
             "last_step",
             "checkpoint_stage",
             "checkpoint_run_id",
             "checkpoint_final",
-            # A hardening run's published abstract and its manifest (#95).
             "abstract_dir",
             "abstract_manifest",
-            # The hardened blocks' abstracts the run consumed (#95).
             "blocks",
-            # The stage that failed instead of a verdict (an abstract that
-            # could not be published, a block that failed first), and for
-            # a run a whole-suite `rb pnr` did not attempt, which blocks
-            # stopped it (#95).
             "fail_stage",
             "blocked_by",
-            # The upstream synthesis `rb pnr --synth` ran first (#95).
             "synth",
         ):
             if k in res and res[k] is not None:
@@ -11403,29 +11235,14 @@ class RtlBuddy:
             "internal_w",
             "switching_w",
             "leakage_w",
-            # Multi-corner signoff (#104, #105): the watts above are the
-            # worst (highest-total) corner's, which this names; `corners`
-            # carries every corner's own. Absent on a one-corner run.
             "worst_corner",
             "corners",
-            # Where the per-instance breakdown behind these scalars was
-            # published (#560). Omitted, like every other optional field
-            # here, when the run published no model.
             "phys_model",
-            # The cells the analysis had no Liberty for, and the instances
-            # of them that therefore report 0 W (#627). Present only on a
-            # run that found some, so a consumer reading `unpowered_cells`
-            # reads a total that does not cover the whole design.
             "unpowered_cells",
             "unpowered_cell_count",
             "unpowered_instance_count",
-            # OpenROAD thread provenance, as for a pnr row (#654).
             "openroad_threads",
-            # What a post-P&R run timed the routing on: `spef` (the P&R
-            # run's OpenRCX extraction) or `estimated` (#101).
             "parasitics",
-            # The hardened blocks' abstracts the upstream run consumed,
-            # which this run read too (#679).
             "blocks",
         ):
             if k in res and res[k] is not None:
@@ -11458,8 +11275,7 @@ class RtlBuddy:
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
-        # bitstream rides through even when None: machine consumers can
-        # tell "bitgen not requested" apart from a pre-fpga payload.
+        # Kept even when None, so consumers can tell "not requested" from an older payload.
         if "bitstream" in res:
             row["bitstream"] = res["bitstream"]
         return row
@@ -11482,9 +11298,6 @@ class RtlBuddy:
         for k in ("mode", "depth", "engines", "runtime_s"):
             if k in res and res[k] is not None:
                 row[k] = res[k]
-        # Guardrail results the run already computed: vacuity witnesses, COI
-        # coverage, and dead-assume counts (COI carries an `assumes` block).
-        # A machine consumer gates on these (a vacuous PASS is a false green).
         for k in ("vacuity", "coi"):
             if res.get(k):
                 row[k] = res[k]
@@ -11753,9 +11566,8 @@ class RtlBuddy:
                 min=1,
                 help=(
                     "P&R runs at once: independent blocks harden side by side, "
-                    "and a top waits for all of its own. Each is a full "
-                    "OpenROAD session with its own threads: setting, so size "
-                    "the two together"
+                    "and a top waits for all of its own. Each run is a full OpenROAD "
+                    "session sized by its `threads:` setting, so size the two together"
                 ),
             ),
         ] = 1,
@@ -11840,8 +11652,6 @@ class RtlBuddy:
             return reg_level is None or level <= reg_level
 
         if pnr_name is None:
-            # The whole suite, blocks before the runs that consume them, and
-            # the blocks it names in other pnr.yaml files pulled in (#95).
             plan = plan_pnr_runs(
                 suite_cfg, synth_blocks=_selected if run_synth else None
             )
@@ -11856,30 +11666,24 @@ class RtlBuddy:
                 jobs=jobs,
             )
         else:
-            # A named run consumes whatever abstract is published, and fails
-            # fast when there is none: never re-run a block behind its back.
+            # A named run never re-runs its blocks; it fails fast when an abstract is missing.
             plan = [
                 PlannedRun(suite_path=suite_path, cfg=run)
                 for run in suite_cfg.get_runs(pnr_name)
             ]
 
-        # Every artefact tree the plan will write, locked before anything
-        # runs, on this thread: a contended one stops the command up front
-        # rather than halfway through a hierarchy, and the lock table is
-        # not shared with the workers.
+        # Lock every tree here, on this thread, before any worker starts.
         for planned in plan:
             run = planned.cfg
             if not _selected(run):
                 continue
             if planned.pulled_in:
-                # Its own artefact tree, locked like any `rb pnr -c` of it.
                 self._artifact_locks.acquire(
                     Path(planned.suite_path).resolve().parent / "artefacts",
                     command="pnr",
                 )
             if run_synth:
-                # Resolved now too: a typo in a top's `synth:` stops the
-                # command here, not after its blocks have spent hours in P&R.
+                # Resolve now so a bad `synth:` fails before any block runs.
                 run.resolve_synth_cfg()
                 self._artifact_locks.acquire(
                     Path(run.get_synth_suite_path()).resolve().parent / "artefacts",
@@ -11901,9 +11705,7 @@ class RtlBuddy:
             )
 
         def _error(planned, exc):
-            # One run's crash is that run's FAIL: the rows of the runs that
-            # finished, or that are still in OpenROAD beside it under `-j`,
-            # are kept and reported, and its consumers are blocked by it.
+            # A crash is that run's FAIL; other rows are kept and its consumers are blocked.
             log_event(
                 logger,
                 logging.ERROR,
@@ -11940,11 +11742,9 @@ class RtlBuddy:
     ) -> dict:
         """One planned run of `_do_pnr_suite`: blocked, skipped, or run.
 
-        ``outcomes`` holds the results of the runs already finished, which
-        includes every block of this one that is in the plan. ``synths`` is
-        the `--synth` run-once map, or ``None`` without it. Safe on a
-        worker thread (`rb pnr -j`): it reads ``outcomes`` and returns its
-        row, and the artefact locks are already held.
+        `outcomes` holds the finished runs, including this run's blocks. `synths` is
+        the `--synth` run-once map, or `None`. Safe on a worker thread (`rb pnr -j`):
+        artefact locks are already held.
         """
         run = planned.cfg
         suite_dir = str(Path(planned.suite_path).resolve().parent)
@@ -11967,9 +11767,7 @@ class RtlBuddy:
                 desc=(f"reglvl {pnr_level} above {reg_level}"),
             )
             return {**row, "results": res}
-        # A block's run delivered its abstract when it passed (an XPASS did
-        # pass), or was skipped and left the published one alone. An XFAIL
-        # is a pass for the suite and still no abstract.
+        # An XFAIL passes the suite but delivers no abstract.
         blocked_by = [
             dep
             for dep in planned.deps
@@ -11977,10 +11775,7 @@ class RtlBuddy:
             and outcomes[dep.key].results.get("result") not in ("PASS", "XPASS", "SKIP")
         ]
         if blocked_by:
-            # Not attempted: its abstract would be missing, or worse, a stale
-            # one left by an earlier run. FAIL rather than SKIP so the suite
-            # does not pass, with a fail_stage an xfail marker never excuses
-            # (#553).
+            # FAIL, not SKIP, so the suite cannot pass; no xfail marker excuses this fail_stage.
             names = ", ".join(
                 f"'{dep.block}' (pnr run '{dep.key[1]}')" for dep in blocked_by
             )
@@ -12003,9 +11798,7 @@ class RtlBuddy:
         if synths is not None:
             synth_row = self._pnr_upstream_synth(run, synths, accept_stale=accept_stale)
             if synth_row["result"] not in ("PASS", "XPASS"):
-                # No netlist of this run's own to place: FAIL with a stage an
-                # xfail marker never excuses, which blocks whatever consumes
-                # it as a failed P&R would.
+                # FAIL with a fail_stage that xfail never excuses; consumers are blocked.
                 res = PnrFailResults(
                     name=f"{run.get_name()}/results",
                     desc=(
@@ -12035,13 +11828,10 @@ class RtlBuddy:
         return {**row, "results": res}
 
     def _pnr_upstream_synth(self, run, synths, *, accept_stale=False):
-        """Run ``run``'s upstream synthesis for `rb pnr --synth` (#95), once.
+        """Run `run`'s upstream synthesis for `rb pnr --synth`, once per synthesis.
 
-        Keyed by the synthesis, not the P&R run: two P&R runs of one
-        netlist (a flat run and its multi-corner twin, say) synthesize it
-        once, and under `-j` the second waits for the first. Run whatever
-        its `reglvl` — the P&R run was selected, and this is the netlist it
-        places. Its artefact tree is already locked. Returns the row the
+        Runs regardless of `reglvl`. Under `-j`, a second P&R run of the same netlist
+        waits for the first. Its artefact tree is already locked. Returns the row the
         P&R result carries as `synth`.
         """
         synth_path = run.get_synth_suite_path()
@@ -12303,7 +12093,6 @@ class RtlBuddy:
     ):
         runs = suite_cfg.get_runs(pnr_name)
         if checkpoint is not None and len(runs) != 1:
-            # A checkpoint belongs to one run's artefact directory (#653).
             raise FatalRtlBuddyError(
                 "--checkpoint needs exactly one pnr run: name the run whose "
                 f"checkpoint to export (this selection has {len(runs)})"
@@ -12314,9 +12103,6 @@ class RtlBuddy:
             )
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         if def_path is not None and len(runs) != 1:
-            # One DEF cannot be the saved result of several runs, and
-            # guessing which one it belongs to is the staleness the
-            # command exists to refuse (#618).
             raise FatalRtlBuddyError(
                 "--def needs exactly one pnr run: name the run to export "
                 f"(this selection has {len(runs)})"
@@ -12365,9 +12151,7 @@ class RtlBuddy:
                 png_height=png_height,
             )
             res = runner.run()
-            # Deliberately no `xfail` handling: the marker is the design's
-            # expectation of its P&R run, and an export over a saved result
-            # is not that run (#553, #594).
+            # No xfail handling: the marker excuses a P&R run, not an export.
             results.append({"pnr_name": run.get_name(), "results": res})
         return results
 
@@ -12508,8 +12292,6 @@ class RtlBuddy:
             "parasitics" in r["results"].results for r in power_results
         )
         has_total = any("total_w" in r["results"].results for r in power_results)
-        # Multi-corner runs (#104, #105) report the worst corner's watts;
-        # the column says which corner that was.
         has_corner = any("worst_corner" in r["results"].results for r in power_results)
         has_breakdown = any(
             "internal_w" in r["results"].results
@@ -12789,13 +12571,8 @@ class RtlBuddy:
     ) -> str:
         """Resolve a flow's regression manifest path.
 
-        Precedence, mirroring what ``rb regression`` applies to
-        ``regression.yaml``: an explicit ``-c`` wins; then
-        ``./<flow>_regression.yaml`` in the invocation cwd; then the
-        flow's ``cfg-rtl-reg`` path from ``root_config.yaml`` (#389).
-        The graph's config tier discovers manifests through the same
-        cfg-rtl-reg machinery, so a manifest this finds is one
-        ``rb graph build`` flow-stamps too.
+        Precedence: explicit `-c`; `./<flow>_regression.yaml` in the invocation cwd;
+        the flow's `cfg-rtl-reg` path from root_config.yaml.
         """
         if reg_config is not None:
             return (
@@ -12806,9 +12583,7 @@ class RtlBuddy:
         local = str(self.invocation_cwd / default_filename)
         if os.path.isfile(local):
             return local
-        # RootConfig is not built yet at this point (the command context —
-        # and with it root_cfg — anchors on the manifest we are still
-        # looking for), so read just the cfg-rtl-reg block leniently.
+        # RootConfig does not exist yet; read only the cfg-rtl-reg block, leniently.
         root_cfg_path = _discover_root_cfg(start_dir=self.invocation_cwd)
         key, _ = REG_CFG_PATH_KEYS[flow]
         if root_cfg_path is not None:
@@ -12816,11 +12591,7 @@ class RtlBuddy:
                 load_reg_cfg_paths(root_cfg_path), root_cfg_path, flow
             )
             if configured is not None:
-                # Existence-check before returning, so a configured path that
-                # is wrong is reported as such rather than handed to the
-                # RegConfig loader as a load failure for a path the user never
-                # typed. `graph/config_tier.py` applies the same isfile guard,
-                # so the two surfaces agree on when a configured path counts.
+                # Check existence so a wrong configured path is reported as such, not as a load failure.
                 if os.path.isfile(configured):
                     log_event(
                         logger,
@@ -13088,8 +12859,6 @@ class RtlBuddy:
             )
         raise typer.Exit(exit_code)
 
-    # --- CDC subcommands ----------------------------------------------------
-
     def _render_cdc_summary(self, title, cdc_results, *, metadata=None):
         rows = []
         for r in cdc_results:
@@ -13162,8 +12931,6 @@ class RtlBuddy:
                 self._apply_xfail_logged(res, a, "cdc_suite.xfail")
             results.append({"cdc_name": a.get_name(), "results": res})
         return results
-
-    # --- model elaboration --------------------------------------------------
 
     def _resolve_elab_resources(
         self, cfg: ElabConfig, *, cpus: int | None = None
@@ -13578,8 +13345,6 @@ class RtlBuddy:
             self._render_elab_summary("Elaboration Job Result", [result])
         raise typer.Exit(exit_code)
 
-    # --- style-lint subcommands ---------------------------------------------
-
     def _render_lint_summary(self, title, lint_results, *, metadata=None):
         rows = []
         for r in lint_results:
@@ -13932,11 +13697,10 @@ class RtlBuddy:
         raise typer.Exit(exit_code)
 
     def _run_single_cdc_with_maps(self, ctx, cdc_config, cdc_name, mode):
-        """Resolve a single rtl-buddy-cdc analysis, run it requesting the
-        structured maps, and return ``(analysis, backend, res)``.
+        """Resolve a single rtl-buddy-cdc analysis, run it with the structured maps, and return `(analysis, backend, res)`.
 
-        Shared by ``--emit-constraints`` (#291) and ``--check-xdc`` (#290);
-        ``mode`` names the flag for error messages.
+        Shared by `--emit-constraints` and `--check-xdc`; `mode` names the flag in
+        error messages.
         """
         from .tools.cdc_rtl_buddy import RtlBuddyCdc
 
@@ -13955,8 +13719,6 @@ class RtlBuddy:
         analysis = analyses[0]
         tool_name = analysis.get_tool_name()
         if tool_name != "rtl-buddy-cdc":
-            # Both modes use the open engine's structured crossing map; the
-            # vendor backend has no such map.
             raise FatalRtlBuddyError(
                 f"{mode} requires the open rtl-buddy-cdc engine; "
                 f"analysis '{analysis.get_name()}' uses tool '{tool_name}'"
@@ -13973,8 +13735,9 @@ class RtlBuddy:
         return analysis, backend, backend.run()
 
     def _do_emit_constraints(self, ctx, cdc_config, cdc_name, fmt, scoped, output):
-        """`rb cdc --emit-constraints`: generate scoped CDC timing exceptions
-        (#291) from rtl-buddy-cdc's verified crossing + reset-sync maps."""
+        """`rb cdc --emit-constraints`: generate scoped CDC timing exceptions from
+        rtl-buddy-cdc's crossing and reset-sync maps.
+        """
         from .tools.cdc_constraints import generate_constraints
 
         analysis, backend, res = self._run_single_cdc_with_maps(
@@ -13983,10 +13746,7 @@ class RtlBuddy:
         domain_map, reset_map = backend.read_emitted_maps()
 
         if domain_map is None:
-            # No map can mean two very different things; don't collapse them
-            # into a single exit-0 SKIP.
-            #   (a) the analysis itself failed -> surface it as a failure;
-            #   (b) it ran but the (optional/old) tool emitted no map -> SKIP.
+            # A failed analysis is a failure; a tool that emitted no map is a SKIP.
             verdict = res.results.get("result")
             failed = verdict not in ("PASS", "SKIP", "XFAIL")
             log_event(
@@ -14024,10 +13784,7 @@ class RtlBuddy:
         emit = generate_constraints(domain_map, reset_map, fmt=fmt, scoped=scoped)
 
         if scoped and emit.unscoped:
-            # A flattening frontend collapsed every capture instance to the
-            # design top, so there is no IP-relative cell to scope to. Refuse
-            # rather than emit `<top>/*` wildcards that over-constrain the IP
-            # (and that --check-xdc would then rubber-stamp).
+            # Refuse rather than emit `<top>/*` wildcards that over-constrain the IP.
             raise FatalRtlBuddyError(
                 f"--emit-constraints --scoped for {analysis.get_name()}: "
                 f"{len(emit.unscoped)} crossing(s) flattened to the design top "
@@ -14080,7 +13837,8 @@ class RtlBuddy:
 
     def _do_check_xdc(self, ctx, cdc_config, cdc_name, xdc, recognize_sync=None):
         """`rb cdc --check-xdc <file>`: audit an XDC's CDC exceptions against
-        rtl-buddy-cdc's verified crossing set (#290)."""
+        rtl-buddy-cdc's crossing set.
+        """
         from .tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
 
         xdc_path = xdc if os.path.isabs(xdc) else os.path.join(self.invocation_cwd, xdc)
@@ -14127,13 +13885,10 @@ class RtlBuddy:
 
         report = backend.read_report()
         xc = extract_cdc_constraints(Path(xdc_path).read_text(), source=str(xdc_path))
-        # Recognized-synchronizer patterns: cdc.yaml's `recognized-syncs` plus
-        # any --recognize-sync overrides given on the command line.
         recognized = analysis.get_recognized_syncs() + list(recognize_sync or [])
         audit = audit_xdc(domain_map, report, xc, recognized_syncs=recognized)
         blockers = audit.blockers
-        # A completeness gap or a dangerous over-waive fails the audit; the
-        # softer findings (bus-skew / clock-graph) are warnings.
+        # Only blockers fail the audit; other findings are warnings.
         exit_code = 2 if blockers else 0
 
         log_event(
@@ -14245,8 +14000,6 @@ class RtlBuddy:
             )
         raise typer.Exit(exit_code)
 
-    # --- FPV subcommands ----------------------------------------------------
-
     def _render_fpv_summary(self, title, fpv_results, *, metadata=None):
         from .tools.fpv_log_parse import summarize_engines
 
@@ -14308,11 +14061,7 @@ class RtlBuddy:
 
     @staticmethod
     def _format_vacuity_cell(vacuity):
-        """Return a short Vacuity cell, or None if the run didn't do a vacuity pass.
-
-        Shape: `"<vacuous>/<total> vacuous"` so the column is silent when
-        every antecedent is reachable, loud when it isn't.
-        """
+        """Return a Vacuity cell (`<vacuous>/<total> vacuous`), or None if no vacuity pass ran."""
         if not vacuity:
             return None
         total = vacuity.get("candidates", 0)
@@ -14333,13 +14082,7 @@ class RtlBuddy:
 
     @staticmethod
     def _format_coi_cell(coi):
-        """Return a short COI cell, or None when no COI data was produced.
-
-        Shape: `"<percent>% (<coi>/<total>)"` so the column carries both
-        the rolled-up ratio and the raw counts behind it. A coverage of
-        100% is still surfaced so the user sees the pass came with full
-        structural reach.
-        """
+        """Return a COI cell (`<percent>% (<coi>/<total>)`), or None when no COI data was produced."""
         if not coi:
             return None
         total = coi.get("total_cells", 0)
@@ -14351,11 +14094,9 @@ class RtlBuddy:
 
     @staticmethod
     def _format_assumes_cell(coi):
-        """Return a short Assumes cell ('N used, M dead'), or None if N/A.
+        """Return an Assumes cell (`N used, M dead`), or None if not applicable.
 
-        Built from the COI pass's $assume cell counts. Silent when the
-        design has no $assume cells at all (`0 used, 0 dead` is just
-        clutter). Loud when any are dead so the user knows to look.
+        Silent when the design has no $assume cells.
         """
         if not coi:
             return None
@@ -14409,9 +14150,6 @@ class RtlBuddy:
             )
             res = runner.run()
             if v.is_xfail():
-                # FAIL->XFAIL (pass) / PASS->XPASS (a failure only when
-                # strict) so an expected-fail verification can live in a
-                # regression.
                 self._apply_xfail_logged(res, v, "fpv_suite.xfail")
             results.append({"fpv_name": v.get_name(), "results": res})
         return results
@@ -14466,8 +14204,7 @@ class RtlBuddy:
 
         fpv_results = self._do_fpv_suite(suite_cfg, fpv_name=fpv_name)
         exit_code = self._exit_code_from_fpv_results(fpv_results)
-        # Render in both modes: in machine mode this emits the "summary" log
-        # event (and plain text to stderr), leaving stdout for the envelope.
+        # Render in machine mode too: the summary goes to the log, stdout stays the envelope.
         self._render_fpv_summary("FPV Results Summary", fpv_results)
         if self.machine:
             self._emit_machine_result(
@@ -14538,8 +14275,7 @@ class RtlBuddy:
         self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_fpv_results(all_results)
-        # Render in both modes: in machine mode this emits the "summary" log
-        # event (and plain text to stderr), leaving stdout for the envelope.
+        # Render in machine mode too: the summary goes to the log, stdout stays the envelope.
         self._render_fpv_summary(
             "FPV Regression Summary",
             all_results,
@@ -14548,8 +14284,6 @@ class RtlBuddy:
         if self.machine:
             self._emit_machine_result("fpv-regression", exit_code, results=machine_rows)
         raise typer.Exit(exit_code)
-
-    # --- mutation testing (rb mut) -----------------------------------------
 
     def _mut_work_dir(self, suite_cfg: MutSuiteConfig) -> str:
         campaign = suite_cfg.get_config().get_name()
@@ -14720,10 +14454,6 @@ class RtlBuddy:
             self._render_mut_summary("Mutation Score", results)
         raise typer.Exit(0)
 
-    # ------------------------------------------------------------------
-    # rb xplr — design-space exploration experiment ledger
-    # ------------------------------------------------------------------
-
     def _xplr_group_options(
         self,
         ctx: typer.Context,
@@ -14732,21 +14462,12 @@ class RtlBuddy:
             typer.Option(
                 "--root",
                 help="anchor project-root discovery at this path instead of "
-                "the current directory (root_config.yaml/.git are resolved "
-                "from here). Group-level: place it between 'xplr' and the "
-                "subcommand, e.g. `rb xplr --root <project> list`. For "
-                "driving a ledger from outside its project checkout",
+                "the current directory. Group-level: place it between 'xplr' and the "
+                "subcommand, e.g. `rb xplr --root <project> list`",
             ),
         ] = None,
     ):
-        """Group callback: ``--root`` + the full ``xplr <sub>`` command name.
-
-        ``root_options`` only sees the group (``xplr``), so the exit-2
-        machine envelope emitted by :meth:`run` would attribute errors
-        to the bare group name while the success path reports the full
-        subcommand (e.g. ``xplr frontier``). Refining it here keeps the
-        error surface consistent with the success surface.
-        """
+        """Group callback: `--root` plus the full `xplr <sub>` command name, so error envelopes name the subcommand."""
         if ctx.invoked_subcommand:
             self._pending_invoked_subcommand = f"xplr {ctx.invoked_subcommand}"
         if ctx.resilient_parsing:
@@ -14764,14 +14485,9 @@ class RtlBuddy:
     def _enter_xplr_context(self) -> tuple[Path, Path]:
         """Anchor an xplr command and return (project_root, ledger_root).
 
-        The ledger lives at the project root (``artefacts/xplr``), not a
-        suite directory, so every experiment ends up in one ledger no
-        matter where the agent invoked ``rb`` from. ``rb xplr --root
-        <path>`` anchors the discovery at that path instead of the
-        invocation cwd. ``list_only=True``: xplr needs no
-        RootConfig/builder, and read commands stay lock-free; write
-        commands take a lock on the ledger root only, so a running
-        flow's suite artefact lock is never contended.
+        The ledger lives at `artefacts/xplr` under the project root; `rb xplr --root
+        <path>` anchors discovery there instead of the cwd. Read commands are
+        lock-free; write commands lock only the ledger root.
         """
         start = self._xplr_root_override or self.invocation_cwd
         try:
@@ -14950,10 +14666,6 @@ class RtlBuddy:
         else:
             print(dumps_record(record), end="")
         raise typer.Exit(0)
-
-    # ------------------------------------------------------------------
-    # rb xplr analysis — frontier / diff / knob-effect (curation only)
-    # ------------------------------------------------------------------
 
     def do_xplr_frontier(
         self,
@@ -15179,10 +14891,6 @@ class RtlBuddy:
                     )
         raise typer.Exit(0)
 
-    # ------------------------------------------------------------------
-    # rb xplr provenance — worktree isolation + frontier-aware gc (#298)
-    # ------------------------------------------------------------------
-
     def do_xplr_materialize(
         self,
         exp_id: Annotated[
@@ -15236,7 +14944,7 @@ class RtlBuddy:
         """
         project_root, root = self._enter_xplr_context()
         self._artifact_locks.acquire(root, command="xplr release")
-        xplr_commands.get_experiment(root, exp_id)  # fail loudly on unknown id
+        xplr_commands.get_experiment(root, exp_id)
         info = xplr_gitprov.release(project_root, root, exp_id)
         if self.machine:
             self._emit_machine_result("xplr release", 0, **info)
@@ -15317,10 +15025,6 @@ class RtlBuddy:
             for note in payload["notes"]:
                 emit_console_text(f"note: {note}", style="yellow", markup=False)
         raise typer.Exit(0)
-
-    # ------------------------------------------------------------------
-    # rb xplr mock — synthetic DSE backend with known optima (#304)
-    # ------------------------------------------------------------------
 
     def _xplr_mock_group_options(self, ctx: typer.Context):
         """Refine the command name to ``xplr mock <sub>`` (see xplr group)."""
@@ -15453,8 +15157,6 @@ class RtlBuddy:
             )
         result = xplr_mockflow.evaluate(scenario, values, seed=seed, noise=noise)
         payload = dict(result)
-        # `outcome` is shaped exactly as an attach-outcome --json input so
-        # a stateless `mock run` can be piped straight into attach-outcome.
         payload["outcome"] = xplr_mockflow.outcome_doc(result)
         if register:
             project_root, root = self._enter_xplr_context()
@@ -15619,9 +15321,7 @@ class RtlBuddy:
         trace_dir = os.path.join(suite_dir, "artefacts", test_name)
         surfer_file = os.path.join(suite_dir, f"{test_name}.surfer")
 
-        # Discover the newest existing dump (FST from Verilator, VCD from
-        # Icarus, VPD from VCS) rather than hardcoding dump.fst, so the
-        # default Icarus path opens without conversion (#321).
+        # Newest dump of any format (FST, VCD, VPD), not a fixed dump.fst.
         trace_path = newest_trace(trace_dir)
 
         log_event(
@@ -15702,11 +15402,9 @@ class RtlBuddy:
         """
         open SymbiYosys counterexample VCD for a failed FPV verification
 
-        Resolves the CEX VCD by convention at
-        ``fpv/<suite>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd`` and
-        opens it in the configured surfer. Raises if the verification has
-        not been run, the proof passed (no CEX produced), or no engine
-        emitted a trace.
+        Opens `fpv/<suite>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd` in the
+        configured surfer. Fails if the verification has not run, the proof passed, or
+        no engine emitted a trace.
         """
         from .tools.fpv_cex_finder import find_cex_vcd
 
@@ -15729,7 +15427,7 @@ class RtlBuddy:
 
         suite_cfg = FpvSuiteConfig(path=str(ctx.primary_config))
         suite_dir = str(ctx.command_root)
-        # Validate the verification name resolves; raises FatalRtlBuddyError otherwise.
+        # Validates the name; raises FatalRtlBuddyError if unknown.
         suite_cfg.get_verifications(verif_name)
 
         cex_path = find_cex_vcd(suite_dir, verif_name)
@@ -15804,12 +15502,11 @@ class RtlBuddy:
         ] = False,
     ):
         """
-        install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)
+        install/update the rtl-buddy-nvim editor plugin (hub + wave annotation)
 
-        Clones the pinned, hub-compatible rtl-buddy-nvim revision into the nvim
-        pack dir and writes a managed setup file that auto-connects to the hub and
-        renders rb wave signal-value annotations — no manual git clone or init.lua
-        edits. (rb wave-install-nvim is a back-compat alias for this command.)
+        Clones the pinned, hub-compatible rtl-buddy-nvim revision into the nvim pack
+        dir and writes a managed setup file that connects to the hub and shows `rb
+        wave` signal values. `rb wave-install-nvim` is an alias.
         """
         from .tools.nvim_install import install
 
@@ -15824,14 +15521,10 @@ class RtlBuddy:
     def _select_model_configs(
         self, models: list[str], project_root: str, command: str = "filelist"
     ):
-        """Resolve ``--model`` names against every models.yaml under the root.
+        """Resolve `--model` names against every models.yaml under the root.
 
-        An empty ``models`` selects every discovered model (the
-        ``rb verible filelist`` default). Unknown names are fatal.
-        ``command`` stamps the error events with the verible subcommand
-        that asked, so a lint/format failure is distinguishable from a
-        filelist one without renaming the events existing machine-mode
-        consumers may already filter on.
+        Empty `models` selects every model. Unknown names are fatal. `command` names
+        the verible subcommand in error events.
         """
         all_entries = discover_model_configs(project_root)
         if not all_entries:
@@ -15846,8 +15539,7 @@ class RtlBuddy:
 
         by_name: dict[str, ModelConfig] = {}
         for _, model in all_entries:
-            # First-found wins on duplicate names across files. Within a
-            # single models.yaml, ModelConfigLoader already rejects dupes.
+            # First found wins across files; ModelConfigLoader rejects duplicates within one.
             by_name.setdefault(model.name, model)
         missing = [name for name in models if name not in by_name]
         if missing:
@@ -15871,15 +15563,12 @@ class RtlBuddy:
         project_root: str,
         command: str,
     ) -> list[str]:
-        """Expand ``--model`` names into the source files verible should visit.
+        """Expand `--model` names into the source files verible should visit.
 
-        Bare source entries only (``VlogFilelist.extract_source_files``):
-        ``-v``/``-y`` library files and ``+incdir+``/``+define+``/
-        ``+libext+`` directives are dropped, then ``excludes`` (fnmatch
-        globs against the project-root-relative path with ``/``
-        separators; ``*`` crosses directory boundaries) filter what is
-        left. Returned relative to the process cwd, so verible's
-        diagnostics stay short and clickable from where the user ran rb.
+        Keeps bare source entries only (no `-v`/`-y` files or `+incdir+`, `+define+`,
+        `+libext+` directives), then drops `excludes` (fnmatch globs against the
+        root-relative path; `*` crosses directories). Paths are relative to the
+        process cwd.
         """
         selected = self._select_model_configs(
             model_names, project_root, command=command
@@ -15930,11 +15619,9 @@ class RtlBuddy:
     ):
         """Shared dispatch for the verible passthrough subcommands.
 
-        Resolves the configured verible executable via root_config and
-        invokes it with the trailing ``verible_args``. ``models`` appends
-        the ``--model`` expansion (filtered by the cfg-verible ``exclude``
-        globs plus ``excludes``) after the user's own arguments. Always
-        exits via ``typer.Exit`` so the binary's return code propagates.
+        Runs the configured verible executable with `verible_args`. `models` appends
+        the `--model` expansion, filtered by the cfg-verible `exclude` globs plus
+        `excludes`. Always exits through `typer.Exit` with the binary's return code.
         """
         self._enter_command_context(command_root=self.invocation_cwd)
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
@@ -16131,8 +15818,7 @@ class RtlBuddy:
 
         setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
 
-        # Opportunistic root_config discovery. tool-check must work outside a
-        # project, so we suppress the "not found" error log entirely.
+        # tool-check works outside a project: suppress the "not found" log.
         root_cfg = None
         root_logger = logging.getLogger("rtl_buddy.config.root")
         prev_level = root_logger.level
@@ -16151,19 +15837,11 @@ class RtlBuddy:
         )
 
         if explain_tool is not None:
-            # Alias-aware: the viewer's dist renamed to `rtl-buddy-sch`,
-            # so that is the name a user is most likely to type for a
-            # spec still canonically called `rtl-buddy-view`
-            # (rtl_buddy#445). Output below stays on the canonical name.
+            # Accept aliases such as `rtl-buddy-sch`; output uses the canonical name.
             spec = tm.resolve_spec(specs, explain_tool)
             if spec is None:
                 if self.machine:
-                    # `known` stays bare canonical names — consumers are
-                    # keyed on it. `aliases` is an additive sibling so an
-                    # agent that guessed `rtl-buddy-sch` can discover the
-                    # mapping from the error it hit, the same
-                    # discoverability the console hint below gives
-                    # (rtl_buddy#445 review).
+                    # `known` holds canonical names only; `aliases` is a separate key.
                     self._emit_machine_result(
                         "tool-check",
                         1,
@@ -16193,7 +15871,7 @@ class RtlBuddy:
                     instructions=tm.explain(spec, status),
                 )
                 raise typer.Exit(0)
-            # Plain stdout — Rich's word-wrap would mangle paths.
+            # Plain print: Rich word-wrap would mangle paths.
             print(tm.explain(spec, status))
             raise typer.Exit(0)
 
@@ -16234,17 +15912,12 @@ class RtlBuddy:
             subcommands=tm.subcommand_readiness(statuses, specs),
         )
 
-        # --required-for always enforces (exit 2 on miss); --strict enforces
-        # the global "any required tool missing" check (exit 1). Without
-        # either flag the command is purely informational.
+        # --required-for enforces (exit 2), --strict enforces the global check (exit 1); otherwise informational.
         envelope_exit = (
             reported_exit_code if (required_for is not None or strict) else 0
         )
 
-        # The global --machine flag wins: emit a single JSON envelope on
-        # stdout like every other command (SKILL.md's top rule). The
-        # command-specific --format json is kept for back-compat / non-machine
-        # callers who want the bare manifest dict.
+        # --machine wins over --format json.
         if self.machine:
             self._emit_machine_result(
                 "tool-check",
@@ -16254,8 +15927,7 @@ class RtlBuddy:
             )
             raise typer.Exit(envelope_exit)
 
-        # Use raw stdout — Rich's word-wrap would mangle JSON and break the
-        # alignment of the tool table.
+        # Plain print: Rich word-wrap would mangle JSON and the tool table.
         if fmt.lower() == "json":
             print(tm.render_json(statuses, subcommands, exit_code=reported_exit_code))
         else:
@@ -16270,9 +15942,7 @@ class RtlBuddy:
     def _project_root_for_git(self) -> str | None:
         """Where git metadata queries run, resolved once; None = inherited cwd.
 
-        The command root stands in for list-only invocations, which skip
-        root_cfg but still anchor on the command's own config. With
-        neither, git walks up from the cwd as it would anyway.
+        List-only invocations use the command root, since they skip root_cfg.
         """
         if not self._git_root_resolved:
             self._git_root_resolved = True
@@ -16288,16 +15958,9 @@ class RtlBuddy:
         return self._git_root
 
     def _collect_git_status(self) -> dict | None:
-        # Optional metadata: every caller already treats None as "no git info".
-        # `check=False` covers a git that runs and refuses (no repo, no commits);
-        # it does not cover a git that is not there at all, because subprocess
-        # raises before there is a returncode to inspect. That case is real on a
-        # dispatch cluster -- jobs inherit the submitter's PATH and can land on a
-        # node without the binary -- so catch OSError (FileNotFoundError is a
-        # subclass) and degrade to None rather than taking the caller down.
+        # check=False does not cover a missing git binary (OSError); degrade to None.
         cwd = self._project_root_for_git()
-        # --no-optional-locks: an orphaned .git/index.lock breaks the
-        # checkout, and status does not need one to be read (#581).
+        # --no-optional-locks: reading status must not depend on a stale .git/index.lock.
         try:
             status_result = subprocess.run(
                 ["git", "--no-optional-locks", "status", "-sb"],
@@ -16343,11 +16006,7 @@ class RtlBuddy:
                         "argv": sys.argv[:],
                         "cwd": os.getcwd(),
                         "git": git,
-                        # Which artefact tree this run wrote into (#541).
-                        # Always present, unlike the result envelope's key:
-                        # `meta` is a fixed block a consumer reads whole,
-                        # and `null` there says "the flat tree" rather than
-                        # leaving the question unanswerable.
+                        # Always present, so null means the flat tree.
                         "run_tag": self._run_tag,
                     },
                     "payload": payload,
@@ -16371,9 +16030,7 @@ class RtlBuddy:
             git_str = f"git: {branch} | commit {commit} | mod {mod} | staged {staged}"
         else:
             git_str = f"git: {branch} | commit {commit} | clean"
-        # The git status already rides inside every machine-mode JSON
-        # envelope via _emit_machine_result.meta.git — skip the human
-        # banner so machine consumers don't see redundant stderr noise.
+        # Machine mode: git status is already in the envelope meta; skip the banner.
         if is_machine_mode():
             log_event(
                 logger,
