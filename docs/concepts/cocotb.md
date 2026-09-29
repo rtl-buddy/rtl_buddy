@@ -14,11 +14,11 @@ Install cocotb in the same environment as RTL Buddy:
 uv add cocotb
 ```
 
-RTL Buddy calls `cocotb-config` during compilation and reports an installation error if it is unavailable.
+RTL Buddy calls `cocotb-config` at compile time and reports an installation error if it is missing.
 
 ## Configure the testbench
 
-Add a required `toplevel:` and a `cocotb.module` string or list to the testbench entry:
+Give the testbench entry a required `toplevel:` and a `cocotb.module` string or list:
 
 ```yaml
 testbenches:
@@ -39,14 +39,17 @@ tests:
     reglvl: 0
 ```
 
-Select the simulator as for any other test:
+Choose the simulator as for any test:
 
 ```bash
 rb --builder icarus test cocotb_smoke
 ```
 
-Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. `toplevel:` becomes `COCOTB_TOPLEVEL` and also roots the compile — Verilator `--top-module`, VCS `-top`, Icarus `-s` — unless the builder's `compile-time` opts already pin a top. See [Tests YAML](../reference/yaml.md#testsyaml) for the complete schema and [Simulation Backends](simulators.md) for backend differences.
+- An unsupported simulator family or a missing `toplevel:` is a fatal configuration error.
+- `toplevel:` becomes `COCOTB_TOPLEVEL` and also sets the compile top (Verilator `--top-module`, VCS `-top`, Icarus `-s`), unless the builder's `compile-time` options already set one.
+
+See [Tests YAML](../reference/yaml.md#testsyaml) for the schema and [Simulation Backends](simulators.md) for backend differences.
 
 ## Interpret results
 
-cocotb writes `cocotb_results.xml`. RTL Buddy parses that file automatically and reports up to the first three failure messages, plus a remaining-count suffix. Do not add transcript `PASS` or `FAIL` markers for cocotb tests.
+cocotb writes `cocotb_results.xml`, which RTL Buddy parses. The result reports up to the first three failure messages plus a count of the rest. Do not add transcript `PASS` or `FAIL` markers to cocotb tests.
