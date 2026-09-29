@@ -1,12 +1,8 @@
-"""LocalProcessBackend pool tests (#360).
+"""Tests for LocalProcessBackend against real subprocesses.
 
-These drive the *real* backend against *real* subprocesses — the pool has
-no scheduler to mock, and its whole job is process lifecycle, so a mocked
-``Popen`` would test nothing. What is stubbed is only the argv the pool
-launches: instead of ``rb _test-job`` (which would need a project, a
-builder and a simulator) each job is a short ``python -c`` that records
-what it saw. Build gating, the concurrency cap, dependency-failure
-skipping and cancellation are then observable in plain files.
+Only the argv the pool launches is stubbed: each job is a short ``python -c``
+that records what it saw, so gating, the concurrency cap, dependency-failure
+skipping and cancellation are observable in plain files.
 """
 
 from __future__ import annotations
@@ -65,8 +61,8 @@ def _python(body: str) -> list[str]:
 def _stub_argv(monkeypatch, *, sim, build=_python("pass")):
     """Replace the rb re-entry argvs with test programs.
 
-    ``sim``/``build`` may be a list (one program for every job) or a
-    callable taking the spec, for per-job programs.
+    ``sim`` and ``build`` are a list (one program for every job) or a callable
+    taking the spec.
     """
 
     def _resolve(program, spec):
@@ -88,15 +84,11 @@ def _states(backend: LocalProcessBackend) -> dict[str, int]:
     return counts
 
 
-# ---- registry and pool sizing -------------------------------------------
-
-
 def test_registry_exposes_local_parallel():
     backend = create_dispatch_backend(
         "local-parallel", DispatchConfigFile().initialise()
     )
     assert isinstance(backend, LocalProcessBackend)
-    # `local` still means "no backend": the sequential in-process path.
     assert create_dispatch_backend("local", DispatchConfigFile().initialise()) is None
 
 
@@ -126,11 +118,7 @@ def _events(caplog) -> list[str]:
 
 
 def test_reservations_are_warned_about_at_warning_level(monkeypatch, tmp_path, caplog):
-    """A reservation nothing enforces must reach the terminal, not just the log.
-
-    The console handler shows INFO only under ``-v``, so an INFO notice would
-    be invisible on the very run it exists to explain.
-    """
+    """A reservation the pool cannot enforce warns at WARNING, visible without -v."""
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=1, resources=DispatchResourcesFile(cpus=8, mem="16G"))
     spec = _sim_spec(tmp_path, "t0")
@@ -153,13 +141,12 @@ def test_reservations_are_warned_about_at_warning_level(monkeypatch, tmp_path, c
 
 
 def test_per_test_reservations_are_warned_about_too(monkeypatch, tmp_path, caplog):
-    """The notice keys off the RESOLVED reservation, not ``cfg-dispatch``.
+    """The notice keys off the resolved reservation, not just cfg-dispatch.
 
-    A project that reserves only per test or per testbench in tests.yaml —
-    where the heavy tests are — would otherwise never be told.
+    Per-test and per-testbench reservations also trigger it.
     """
     _stub_argv(monkeypatch, sim=_python("pass"))
-    backend = _backend(jobs=1)  # nothing configured under cfg-dispatch
+    backend = _backend(jobs=1)
     spec = _sim_spec(tmp_path, "t0")
     spec.resources = JobResources(cpus=16, mem="64G", time="08:00:00")
     with caplog.at_level(logging.WARNING):
@@ -190,16 +177,13 @@ def test_no_reservation_no_ignored_notice(monkeypatch, tmp_path, caplog):
         backend.wait_all([handle])
     events = _events(caplog)
     assert "dispatch.reservations_ignored" not in events
-    # The pool size is always recorded — it explains the run's wall-clock.
     assert "dispatch.pool_configured" in events
 
 
 def _parallel_build_spec(tmp_path: Path, parallel: int, cpus: int) -> BuildJobSpec:
-    """A build spec shaped the way the head submits one (#495).
+    """A build spec shaped the way the head submits one.
 
-    The head multiplies the resolved compile cpus by ``parallel`` before it
-    builds the spec, so a spec with ``parallel: N`` never carries the
-    per-build number.
+    The head multiplies the resolved compile cpus by ``parallel``.
     """
     spec = _build_spec(tmp_path)
     spec.parallel = parallel
@@ -210,12 +194,9 @@ def _parallel_build_spec(tmp_path: Path, parallel: int, cpus: int) -> BuildJobSp
 def test_compile_parallel_alone_is_not_a_reservation_to_ignore(
     monkeypatch, tmp_path, caplog
 ):
-    """`compile: {parallel: 2}` and nothing else must stay quiet (#495).
+    """`compile: {parallel: 2}` alone stays quiet.
 
-    The scaled cpus on a build spec are not a reservation the project
-    wrote — they are the head paying for concurrency this backend's build
-    job does honour. Warning would tell a project its `resources:` is being
-    ignored when it never wrote one.
+    The scaled cpus are not a reservation the project wrote.
     """
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend()
@@ -229,12 +210,7 @@ def test_compile_parallel_alone_is_not_a_reservation_to_ignore(
 def test_a_real_compile_reservation_still_warns_under_parallel(
     monkeypatch, tmp_path, caplog
 ):
-    """Undoing the scaling must not disarm the notice itself.
-
-    A project that reserved 4 cpus per build is reserving, and the pool
-    still cannot honour it — and the warning quotes the per-build number it
-    wrote, not the head's product.
-    """
+    """A project that reserved 4 cpus per build still gets the notice, quoting 4."""
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend()
     spec = _parallel_build_spec(tmp_path, parallel=2, cpus=4)
@@ -250,9 +226,6 @@ def test_a_real_compile_reservation_still_warns_under_parallel(
     assert warnings[0].__dict__["rtl_fields"]["cpus"] == 4
 
 
-# ---- the concurrency cap -------------------------------------------------
-
-
 def test_cap_bounds_running_jobs_and_queues_the_rest(monkeypatch, tmp_path):
     """Five submits against a two-slot pool: two run, three wait."""
     _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
@@ -266,7 +239,7 @@ def test_cap_bounds_running_jobs_and_queues_the_rest(monkeypatch, tmp_path):
 
 
 def test_pool_refills_slots_until_every_job_ran(monkeypatch, tmp_path):
-    """A capped pool still runs every job — the cap paces, it never drops."""
+    """A capped pool still runs every job."""
     _stub_argv(
         monkeypatch,
         sim=lambda spec: _python(
@@ -286,12 +259,9 @@ def test_pool_refills_slots_until_every_job_ran(monkeypatch, tmp_path):
 
 
 def test_jobs_really_run_concurrently_within_the_cap(monkeypatch, tmp_path):
-    """Overlap is real (>= 2 at once) and never exceeds the cap.
+    """Overlap across the four jobs is at least 2 and never exceeds the cap.
 
-    Each job records its own start/end wall-clock, so the maximum overlap
-    across the four intervals is computable after the fact. The upper bound
-    is the property under test; the lower bound proves the pool is actually
-    parallel rather than an elaborate sequential loop.
+    Each job records its own start and end time; the overlap is computed afterwards.
     """
     _stub_argv(
         monkeypatch,
@@ -321,9 +291,6 @@ def test_jobs_really_run_concurrently_within_the_cap(monkeypatch, tmp_path):
     assert peak >= 2, f"pool never overlapped two jobs: {spans}"
 
 
-# ---- build gating -------------------------------------------------------
-
-
 def test_sims_wait_for_the_build_to_succeed(monkeypatch, tmp_path):
     stamp = tmp_path / "build.stamp"
     _stub_argv(
@@ -332,8 +299,7 @@ def test_sims_wait_for_the_build_to_succeed(monkeypatch, tmp_path):
             "import time;from pathlib import Path;time.sleep(0.2);"
             f"Path({str(stamp)!r}).write_text('built')"
         ),
-        # Each sim records whether the shared build had landed by the time it
-        # started — the local equivalent of the afterok guarantee.
+        # Each sim records whether the shared build had landed when it started.
         sim=lambda spec: _python(
             "from pathlib import Path;"
             f"Path({str(tmp_path)!r}).joinpath({spec.test_name + '.saw'!r})"
@@ -347,7 +313,7 @@ def test_sims_wait_for_the_build_to_succeed(monkeypatch, tmp_path):
         backend.submit(_sim_spec(tmp_path, f"t{i}"), dependency=build.job_id)
         for i in range(3)
     ]
-    # Slots are free, but the gate is shut: nothing but the build may run.
+    # Slots are free but the gate is shut: only the build runs.
     assert _states(backend)["running"] == 1
 
     backend.wait_all([build, *sims])
@@ -358,8 +324,7 @@ def test_sims_wait_for_the_build_to_succeed(monkeypatch, tmp_path):
 def test_failed_build_skips_its_sims(monkeypatch, tmp_path, caplog):
     """A build that exits nonzero cancels its dependents, as afterok does.
 
-    The sims never launch, so they leave no result envelope and the head's
-    collector reports them as producing no result — which is what happened.
+    The sims leave no result envelope, so the collector reports no result.
     """
     _stub_argv(
         monkeypatch,
@@ -389,7 +354,7 @@ def test_failed_build_skips_its_sims(monkeypatch, tmp_path, caplog):
 
 
 def test_ungated_sims_run_even_when_another_suites_build_fails(monkeypatch, tmp_path):
-    """Only a job's own dependency gates it (mixed-builder suites, #358)."""
+    """Only a job's own dependency gates it."""
     _stub_argv(
         monkeypatch,
         build=_python("raise SystemExit(1)"),
@@ -409,10 +374,9 @@ def test_ungated_sims_run_even_when_another_suites_build_fails(monkeypatch, tmp_
 
 
 def test_build_jobs_start_before_queued_sims(monkeypatch, tmp_path):
-    """A second suite's build must not queue behind the first suite's sims.
+    """A second suite's build does not queue behind the first suite's sims.
 
-    A sim unblocks nothing; a build unblocks a whole fan-out. With one slot
-    free, the build goes first even though it was submitted last.
+    With one slot free, the build goes first even though it was submitted last.
     """
     _stub_argv(
         monkeypatch,
@@ -423,7 +387,7 @@ def test_build_jobs_start_before_queued_sims(monkeypatch, tmp_path):
 
     sims = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(3)]
     build = backend.submit_build(_build_spec(tmp_path))
-    # t0 took the only slot at submit time; free it and pump.
+    # t0 took the only slot; free it and pump.
     backend.cancel_all([sims[0]])
     backend._pump()
 
@@ -439,14 +403,11 @@ def test_dependency_on_an_unknown_job_is_fatal(tmp_path):
     assert "unknown dependency job id" in str(excinfo.value)
 
 
-# ---- logs, teardown, telemetry -----------------------------------------
-
-
 def test_job_output_goes_to_its_log_not_the_heads_stdout(monkeypatch, tmp_path, capfd):
-    """A job's stdout is a log file, never the head's stream.
+    """A job's stdout goes to a log file, never the head's stream.
 
-    Every job runs ``rb --machine``, so inherited stdout would interleave
-    its result envelope into the head's own machine-mode output.
+    Every job runs rb --machine; inherited stdout would interleave its
+    envelope into the head's output.
     """
     _stub_argv(
         monkeypatch,
@@ -460,7 +421,7 @@ def test_job_output_goes_to_its_log_not_the_heads_stdout(monkeypatch, tmp_path, 
 
     log = (tmp_path / "t0.log").read_text()
     assert "to-stdout" in log
-    assert "to-stderr" in log  # stderr merges into the log, as sbatch does
+    assert "to-stderr" in log  # stderr merges into the log, as sbatch does.
     captured = capfd.readouterr()
     assert "to-stdout" not in captured.out
     assert "to-stdout" not in captured.err
@@ -488,20 +449,16 @@ def test_cancel_all_kills_running_and_disarms_queued(monkeypatch, tmp_path):
     backend.cancel_all(handles)
 
     assert all(proc.poll() is not None for proc in running)
-    # Cancelled jobs are terminal, so a later wait returns instead of
-    # restarting the fleet the head has given up on.
+    # Cancelled jobs are terminal, so a later wait returns.
     backend.wait_all(handles)
     assert _states(backend)["queued"] == 0
     assert list(tmp_path.glob("*.ran")) == []
 
 
 def test_cancel_all_signals_every_job_before_waiting_on_any(monkeypatch, tmp_path):
-    """Teardown is bounded by ONE grace period, not one per job.
+    """Teardown is bounded by one grace period, not one per job.
 
-    Three jobs that ignore SIGTERM must all be signalled first and then
-    escalated against a shared deadline; signalling and waiting in the same
-    loop would cost `jobs × kill_timeout` and would leave the jobs past an
-    interrupted wait unsignalled.
+    All jobs are signalled first, then escalated against a shared deadline.
     """
     _stub_argv(
         monkeypatch,
@@ -521,11 +478,9 @@ def test_cancel_all_signals_every_job_before_waiting_on_any(monkeypatch, tmp_pat
     backend.cancel_all(handles)
     elapsed = time.monotonic() - started
 
-    # One shared 0.3s grace, not 3 x 0.3s — allow generous slack for process
-    # teardown while still failing a per-job serial wait.
+    # One shared 0.3s grace, not 3 x 0.3s; the slack allows for process teardown.
     assert elapsed < 0.9, elapsed
     assert all(p.poll() is not None for p in procs)
-    # Every job ends terminal, so a later wait_all cannot spin on one.
     assert all(backend._jobs[h.job_id].finished for h in handles)
     backend.wait_all(handles)
 
@@ -533,9 +488,7 @@ def test_cancel_all_signals_every_job_before_waiting_on_any(monkeypatch, tmp_pat
 def test_cancel_all_marks_an_already_exited_job_terminal(monkeypatch, tmp_path):
     """`returncode` is read back, not assumed from the signal.
 
-    A job that exited on its own between the last sweep and cancellation is
-    never signalled successfully; if its returncode stayed None it would look
-    forever-running and `wait_all` would spin.
+    A job that exited on its own before cancellation must not look still running.
     """
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=1)
@@ -550,10 +503,9 @@ def test_cancel_all_marks_an_already_exited_job_terminal(monkeypatch, tmp_path):
 
 
 def test_advance_refills_the_pool_without_waiting(monkeypatch, tmp_path):
-    """The head pokes the pool while it plans the next suite.
+    """The head pumps the pool while it plans the next suite.
 
-    Nothing else pumps between submissions, so a slot freed while the head is
-    expanding another suite's sweep would sit idle to the end of planning.
+    Nothing else pumps between submissions, so a freed slot would sit idle.
     """
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=1)
@@ -569,7 +521,7 @@ def test_advance_refills_the_pool_without_waiting(monkeypatch, tmp_path):
 
 
 def test_finished_jobs_leave_the_sweep_sets(monkeypatch, tmp_path):
-    """A sweep is O(outstanding), not O(every job ever submitted)."""
+    """A sweep visits only outstanding jobs, not every job ever submitted."""
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=2)
     handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(5)]
@@ -580,7 +532,7 @@ def test_finished_jobs_leave_the_sweep_sets(monkeypatch, tmp_path):
 
 
 def test_cancel_all_tolerates_none_handles(monkeypatch, tmp_path):
-    """A None must not disarm the last defence against an orphaned fleet (#361)."""
+    """A None handle does not disarm cancel_all."""
     _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
     backend = _backend(jobs=1)
     handle = backend.submit(_sim_spec(tmp_path, "t0"))
@@ -599,7 +551,7 @@ def test_wait_all_on_empty_fleet_is_a_noop():
 
 
 def test_submit_array_falls_back_to_one_process_per_spec(monkeypatch, tmp_path):
-    """There are no arrays without a scheduler: the ABC's loop is the impl."""
+    """Without a scheduler, arrays fall back to the ABC's per-element loop."""
     _stub_argv(
         monkeypatch,
         sim=lambda spec: _python(
@@ -635,11 +587,9 @@ def test_failed_launch_is_fatal(monkeypatch, tmp_path):
 
 
 def test_cancel_all_survives_a_repeated_handle(monkeypatch, tmp_path):
-    """Teardown must not abort partway through on a duplicated handle.
+    """cancel_all does not abort on a duplicated handle.
 
-    `cancel_all` is the last line of defence against an orphaned fleet, so a
-    caller that lists one job twice (the shape that produced #361) must not
-    make it raise and leave the rest of the fleet running.
+    A duplicate must not leave the rest of the fleet running.
     """
     _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
     backend = _backend(jobs=1)
@@ -655,15 +605,8 @@ def test_cancel_all_survives_a_repeated_handle(monkeypatch, tmp_path):
     backend.wait_all([running, queued])
 
 
-# ---- progress reporting (#435) -------------------------------------------
-
-
 def test_wait_all_drives_the_progress_reporter(monkeypatch, tmp_path, caplog):
-    """The pool's liveness signal is the reporter, not the old DEBUG line.
-
-    `dispatch.waiting` was DEBUG-only, so a laptop regression that takes an
-    hour said nothing between submit and drain either.
-    """
+    """The pool reports progress through the reporter, not a DEBUG-only line."""
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=2)
     handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(3)]
@@ -677,9 +620,8 @@ def test_wait_all_drives_the_progress_reporter(monkeypatch, tmp_path, caplog):
     assert progress, "expected the pool's wait to report progress"
     assert progress[0].levelno == logging.INFO
     assert progress[0].__dict__["rtl_fields"]["total"] == 3
-    # The DEBUG placeholder it replaces is gone.
     assert "dispatch.waiting" not in _events(caplog)
-    # ...and the suite is reported as finished, not as passed.
+    # The suite is reported as finished, not as passed.
     drained = [
         r
         for r in caplog.records
@@ -702,15 +644,10 @@ def test_cancelled_warning_names_the_jobs(monkeypatch, tmp_path, caplog):
     assert record.__dict__["rtl_fields"]["job_ids"] == ["lp-1", "lp-2"]
 
 
-# ---- #405: the retry backoff, held by the pool --------------------------
-
-
 def test_a_delayed_job_waits_without_taking_a_slot(monkeypatch, tmp_path):
-    """The local stand-in for Slurm holding a job PENDING on ``--begin``.
+    """The pool holds a retry PENDING for its backoff, as Slurm does with ``--begin``.
 
-    There is no scheduler here to hold the job, so the pool holds it — but
-    holding it must not mean holding a slot, or one backed-off retry would
-    stall every job behind it in a small pool.
+    The hold does not occupy a slot.
     """
     _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
     backend = _backend(jobs=1)
@@ -745,7 +682,7 @@ def test_a_delayed_job_runs_once_its_backoff_elapses(monkeypatch, tmp_path):
 
 
 def test_a_delayed_job_stays_outstanding_for_the_wait(monkeypatch, tmp_path):
-    """wait_all must not declare the fleet drained while a retry is pending."""
+    """wait_all does not declare the fleet drained while a retry is pending."""
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=2)
     handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=0.2)
@@ -766,22 +703,19 @@ def test_undelayed_submit_is_unchanged(monkeypatch, tmp_path):
 
 
 def test_a_held_job_does_not_spin_the_sweep_loop(monkeypatch, tmp_path):
-    """A 600 s backoff must not cost 12,000 full sweeps of the pool.
+    """While every outstanding job is held, the sweep sleeps until the earliest is due.
 
-    While every outstanding job is inside its ``not_before``, there is
-    nothing to reap and nothing launchable, so the sweep sleeps until the
-    earliest one is due instead of polling 20 times a second.
+    The alternative is polling 20 times a second through the whole backoff.
     """
     _stub_argv(monkeypatch, sim=_python("pass"))
     backend = _backend(jobs=2)
     handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=30)
 
     held = [backend._jobs[handle.job_id]]
-    # Capped at a second, so cancellation and progress heartbeats stay
-    # responsive even under a long hold.
+    # Capped at a second so cancellation and heartbeats stay responsive.
     assert backend._sweep_interval(held) == pytest.approx(1.0)
 
-    # A job that is actually running is polled at the normal cadence...
+    # A running job is polled at the normal cadence.
     running = backend.submit(_sim_spec(tmp_path, "fresh"))
     backend.advance()
     outstanding = [backend._jobs[h.job_id] for h in (handle, running)]
@@ -793,38 +727,31 @@ def test_a_held_job_does_not_spin_the_sweep_loop(monkeypatch, tmp_path):
 def test_the_wait_deadline_allows_for_a_backoff_it_was_told_about(
     monkeypatch, tmp_path
 ):
-    """max-wait must not be spent on the hold the head asked the pool for.
+    """max-wait is not spent on a hold the head announced.
 
-    A held job is outstanding for its whole backoff, so a max-wait shorter
-    than the delay would trip the deadline every retry round before the
-    job had been allowed to start (#405 review).
+    A held job is outstanding for its whole backoff.
     """
     _stub_argv(monkeypatch, sim=_python("pass"))
 
-    # Unannounced, the hold is indistinguishable from a stuck fleet.
+    # Unannounced, the hold trips max-wait.
     strict = _backend(jobs=1, max_wait=0.1)
     held = strict.submit(_sim_spec(tmp_path, "unannounced"), delay_sec=0.5)
     with pytest.raises(FatalRtlBuddyError, match="max-wait"):
         strict.wait_all([held])
     strict.cancel_all([held])
 
-    # Announced, the same delay is simply not charged against the budget.
+    # Announced, the same delay is not charged against the budget.
     forgiving = _backend(jobs=1, max_wait=0.1)
     retried = forgiving.submit(_sim_spec(tmp_path, "announced"), delay_sec=0.5)
     forgiving.wait_all([retried], extra_wait=0.5)
     assert forgiving._jobs[retried.job_id].returncode == 0
 
 
-# ------------------------------------------- build outcome seam (#548)
-
-
 def test_build_outcome_reports_the_build_process_exit_status(monkeypatch, tmp_path):
-    """The pool launched it and reaped it, so it knows how it ended.
+    """A pool-run build reports how it ended.
 
-    There is no accounting here and `collect_telemetry` returns nothing by
-    design, so this is the head's only way to tell a build job that DIED
-    from one that finished and lost the write completing its result — the
-    two readings of a partial build-result envelope (#548).
+    `collect_telemetry` returns nothing here, so this distinguishes a build job
+    that died from one that finished but lost the write of its result.
     """
     _stub_argv(monkeypatch, sim=_python("pass"), build=_python("pass"))
     backend = _backend(jobs=2)
@@ -832,7 +759,7 @@ def test_build_outcome_reports_the_build_process_exit_status(monkeypatch, tmp_pa
     build = backend.submit_build(_build_spec(tmp_path))
     backend.wait_all([build])
     assert backend.build_outcome(build) == "COMPLETED"
-    # And its gate opens on exactly that, which is why the two agree.
+    # The build's gate opens on the same outcome.
     assert backend.collect_telemetry([build]) == {}
 
 
