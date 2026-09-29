@@ -2,43 +2,12 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Design knowledge graph extractors (#375).
+"""Design knowledge graph: build, merge, results overlay, coverage join, query.
 
-Each tier of the graph is produced by a separate extractor and the tiers
-are merged by node-id union. This package owns the **config tier**: the
-tests / testbenches / models / specs / coverage relationships that the
-YAML configs already encode explicitly. The design tier (modules,
-instances, ports) is produced by ``rtl-buddy-view``; the binding tier
-(Python-level call graph) by the rb-graph-extract tool, topped up by
-:mod:`rtl_buddy.graph.binding` — the post-merge stage that ties cocotb
-tests to their Python modules, those modules to the DUT, and their
-``dut.<name>`` accesses to design-tier ports.
-
-:mod:`rtl_buddy.graph.build` is the orchestrator behind ``rb graph
-build``: it runs each tier, unions them with
-:func:`rtl_buddy.graph.merge.merge_graphs`, and writes
-``artefacts/graph/graph.json`` plus its ``graph-meta.json`` sidecar.
-
-:mod:`rtl_buddy.graph.results` owns the volatile half that deliberately
-never enters ``graph.json``: ``rb graph results`` reads the per-run
-result envelopes and the artefact layout into
-``artefacts/graph/results-overlay.json``, keyed by the same test node
-ids, and :func:`~rtl_buddy.graph.results.load_overlay` /
-:func:`~rtl_buddy.graph.results.overlay_for_node` join the two back up.
-
-:mod:`rtl_buddy.graph.coverage` rides in that same overlay: it joins the
-coverage model (#399) onto graph ids — per-module ratios on design
-nodes, per-test scalars on test nodes, and a declared-vs-observed
-verdict on every ``covitem:`` node — without ever re-running a
-coverage tool.
-
-:mod:`rtl_buddy.graph.query` is the read side: the ``query`` / ``path`` /
-``explain`` verbs behind ``rb graph query`` and the ``rb mcp`` graph
-tools, with the overlay joined onto every node they return. Matching is
-deterministic keyword scoring — the graph exists to cost fewer tokens
-than reading the tree, so searching it must not spend a model call.
-
-The shared JSON envelope is documented in ``docs/concepts/graph.md``.
+The config, design and binding tiers are unioned by node id (`merge`), written by
+`build` to `artefacts/graph/graph.json`, and read by `query`. The volatile `results` and
+`coverage` data live in a separate overlay file. The JSON envelope is documented in
+docs/concepts/graph.md.
 """
 
 from .binding import (
