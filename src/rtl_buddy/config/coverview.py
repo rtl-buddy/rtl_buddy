@@ -7,13 +7,9 @@ from serde import serde, field
 
 @dataclass
 class CoverviewConfig:
-    """
-    Coverview packaging configuration for a simulator family.
+    """Coverview packaging settings for one simulator family.
 
-    Attributes:
-      name (str): Simulator family name, e.g. "verilator" or "vcs".
-      config (dict): Inline Coverview JSON-compatible configuration values.
-      generate_tables (str | None): Optional coverage type to use for Coverview tables.
+    ``config`` holds inline Coverview JSON values; ``generate_tables`` names the coverage type used for tables.
     """
 
     name: str
@@ -35,9 +31,7 @@ class CoverviewConfig:
 
 @serde
 class CoverviewConfigFile:
-    """
-    YAML-backed Coverview packaging configuration entry.
-    """
+    """YAML entry for `CoverviewConfig`."""
 
     name: str
     config: dict = field(default_factory=dict)

@@ -1,10 +1,6 @@
-"""`blocks:` — the hardened blocks a synthesis or P&R run instances (#95).
+"""`blocks:` entries: hardened blocks that a synthesis or P&R run instances.
 
-Each entry names a module as it is instanced in the run's netlist and the
-`harden: true` P&R run whose abstract stands in for it. The same shape is
-accepted on a `synth.yaml` entry (which needs the block's Liberty model) and
-on a `pnr.yaml` run (which needs its LEF, Liberty and GDS); resolution to the
-abstract's files is `rtl_buddy.tools.pnr_abstract.resolve_blocks`.
+Each entry pairs an instanced module name with the `harden: true` P&R run whose abstract stands in for it.
 """
 
 import os
@@ -40,9 +36,7 @@ def load_block_refs(
 ) -> list[BlockRef]:
     """Validate a run's `blocks:` list and resolve each `pnr-path`.
 
-    ``default_pnr_path`` is the file a `pnr-path`-less entry refers to: the
-    run's own `pnr.yaml` for a P&R run, and ``None`` — `pnr-path` required —
-    for a synthesis entry, which lives in a different file by definition.
+    ``default_pnr_path`` is the `pnr.yaml` used when an entry has no `pnr-path`; ``None`` makes `pnr-path` required.
     """
     refs: list[BlockRef] = []
     seen: set[str] = set()

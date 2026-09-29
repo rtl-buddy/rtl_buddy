@@ -9,12 +9,9 @@ logger = logging.getLogger(__name__)
 
 
 def _as_path_list(value: str | list[str]) -> list[str]:
-    """A path-valued key as a list, whether it was written as one or many.
+    """A path-valued key as a list, given a string or a list.
 
-    `cell-gds` took a single string before #617 and still does; a YAML list
-    is taken entry by entry, so a path is never split on whitespace and a
-    path containing spaces survives. Empty entries are dropped — the key's
-    own default is `""`, which means "not configured", not "one empty path".
+    Paths are never split on whitespace. Empty entries are dropped, since the default `""` means not configured.
     """
     if isinstance(value, str):
         return [value] if value else []
@@ -27,43 +24,24 @@ class PdkPinLayersFile:
     vertical: str = "metal2"
 
 
-#: What the flow asks for when neither the PDK nor the P&R platform says.
-#: Both are FreePDK45-derived: 0.7 utilisation targets and one site of cell
-#: padding on each side are what `flow.tcl.template` used to spell out.
+#: Placement defaults used when neither the PDK nor the P&R platform sets a value.
 DEFAULT_PLACEMENT_DENSITY = 0.7
 DEFAULT_PLACEMENT_PADDING = 1
 
-#: Minimum channel, in microns, the macro packer keeps between two macros and
-#: between a macro and each core edge (#626). It has to be wide enough for
-#: `pdngen` to repair the channel, or the run dies at PDN-0179 with a
-#: placement that was otherwise legal. What a repair needs is two straps and
-#: the spacing between them, inside whatever halo the PDN's own macro grid
-#: reserves: on sky130hd (the ORFS values the project template uses) that is
-#: met4/met5 straps 1.6 um wide whose default spacing is half the 27.14 um
-#: pitch less the width, ~11.97 um, plus 2 um of macro-grid halo on each side
-#: — about 19.2 um. 20 um clears that, and a 12 um channel measurably does
-#: not. Nangate45 ships no `pdn-config`, so there the halo is placement cost
-#: only: ~14 standard-cell rows at its 1.4 um site height.
+#: Minimum channel in microns between two macros and between a macro and each core edge.
+#: It must be wide enough for `pdngen` to repair the channel, or the run fails at PDN-0179; sky130hd needs about 19.2 um.
 DEFAULT_PLACEMENT_MACRO_HALO = 20.0
 
-#: Standard-cell keep-out, in microns, around each placed macro (#673). After
-#: macro placement the flow puts a hard placement blockage over every macro
-#: grown by this much on each side, so no standard cell sits flush against a
-#: macro edge. Without it the detailed placer abuts cells to the macro, and an
-#: abstract LEF written with `-bloat_occupied_layers` obstructs met1 over the
-#: whole footprint: a cell pin at the shared edge is then reachable only by
-#: met1 inside the obstruction's spacing, which the detailed router reports as
-#: a Metal Spacing violation. 1 um is two sky130hd sites or five Nangate45
-#: sites. 0 places no blockage.
+#: Standard-cell keep-out in microns around each placed macro; 0 places no blockage.
+#: Without it, cells abut the macro and the detailed router reports Metal Spacing violations at the shared edge.
 DEFAULT_PLACEMENT_MACRO_CELL_HALO = 1.0
 
 
 @serde
 class PlacementFile:
-    """Global-placement and macro-placement tuning, as written in YAML.
+    """Global-placement and macro-placement tuning as written in YAML.
 
-    Every field is `None` when unset, which is what lets a P&R platform
-    override one of them and inherit the others from the PDK.
+    Unset fields are `None`, so a P&R platform can override one and inherit the rest from the PDK.
     """
 
     density: float | None = None
@@ -73,11 +51,9 @@ class PlacementFile:
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
-    """Range-check a `placement:` block, naming the block that carries it.
+    """Range-check a `placement:` block; ``where`` names it in errors.
 
-    The types are pyserde's to enforce; the ranges are not, and a density
-    of 0 or 7 reaches OpenROAD as a placement that cannot converge. The
-    `bool` guard is here because pyserde's `int` accepts `padding: true`.
+    The `bool` guard exists because pyserde's `int` accepts `padding: true`.
     """
     density = placement.density
     if density is not None:
@@ -124,11 +100,9 @@ _TCL_METACHARACTERS = frozenset('[]{}$"\\;')
 
 
 def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
-    """Check a `dont-use-cells:` list, naming the block that carries it.
+    """Check a `dont-use-cells:` list; ``where`` names it in errors.
 
-    Each entry becomes one element of a Tcl list and one `-dont_use`
-    argument to Yosys, so an entry carrying whitespace would silently
-    become two patterns. Reject it here rather than in a tool log.
+    Each entry becomes one Tcl list element and one Yosys `-dont_use` argument, so whitespace would split it into two patterns.
     """
     validated = []
     for cell in cells:
@@ -142,10 +116,7 @@ def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
                 f"{where}: dont-use-cells entry {cell!r} contains whitespace; "
                 "write one pattern per list entry"
             )
-        # The entry is spliced into a Tcl `[list ...]` unquoted, so a Tcl
-        # metacharacter would be run, not matched — `probe[c]*` dies as
-        # `invalid command name "c"` minutes into the flow. OpenSTA's
-        # matcher only knows `*` and `?` anyway (#656).
+        # Spliced unquoted into a Tcl `[list ...]`: a metacharacter would be executed, not matched.
         bad = sorted(set(cell) & _TCL_METACHARACTERS)
         if bad:
             raise FatalRtlBuddyError(
@@ -158,13 +129,9 @@ def _validate_dont_use_cells(cells: list[str], where: str) -> list[str]:
 
 
 def merge_dont_use_cells(pdk_cells: list[str], platform_cells: list[str]) -> list[str]:
-    """A platform's `dont-use-cells` added to its PDK's, in a stable order.
+    """A platform's `dont-use-cells` appended to its PDK's, duplicates removed.
 
-    Additive, never a replacement (#656): a platform can only exclude more,
-    so a PDK-level exclusion — a cell the process cannot legalise — cannot
-    be dropped by a platform that forgets to repeat it. The PDK's entries
-    come first and a pattern named by both is kept once, so a platform that
-    adds nothing renders exactly the list the PDK alone did.
+    A platform can only add exclusions. The PDK's entries come first.
     """
     return list(dict.fromkeys([*pdk_cells, *platform_cells]))
 
@@ -176,8 +143,7 @@ class PdkConfigFile:
     corners: dict[str, str] = field(default_factory=dict)
     tech_lef: str = field(rename="tech-lef", default="")
     macro_lef: str = field(rename="macro-lef", default="")
-    # One path or a list of them: standard cells plus whatever else the
-    # stream-out has to read from the PDK (#617).
+    # One path or a list of paths.
     cell_gds: str | list[str] = field(rename="cell-gds", default="")
     klayout_tech: str = field(rename="klayout-tech", default="")
     klayout_props: str = field(rename="klayout-props", default="")
@@ -188,16 +154,11 @@ class PdkConfigFile:
         rename="pin-layers", default_factory=PdkPinLayersFile
     )
     placement: PlacementFile = field(default_factory=PlacementFile)
-    # Cell names or patterns the flow must not map to or repair with. One
-    # list, read by both `rb synth` and `rb pnr`.
+    # Cell patterns that `rb synth` and `rb pnr` must not map to or repair with.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
-    # Path to a Tcl snippet that defines the power grid. The flow sources it
-    # and calls `pdngen` itself, as ORFS does with `PDN_TCL`.
+    # Tcl snippet defining the power grid; the flow sources it and calls `pdngen`.
     pdn_config: str = field(rename="pdn-config", default="")
-    # Path to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). When set,
-    # `rb pnr` extracts the routed design and writes `<top>.routed.spef`,
-    # and `rb power` with `netlist-source: pnr` reads that SPEF instead of
-    # re-estimating parasitics from the global routes (#101, #104).
+    # OpenRCX rules file. When set, `rb pnr` writes `<top>.routed.spef`, which `rb power` with `netlist-source: pnr` reads.
     rcx_rules: str = field(rename="rcx-rules", default="")
 
 
@@ -258,11 +219,7 @@ class PdkConfig:
         return self._macro_lef
 
     def get_cell_gds(self) -> str:
-        """The first configured cell GDS, or `""` when none is.
-
-        Kept for callers written against the single-valued key; anything
-        that streams layout wants :meth:`get_cell_gds_paths` (#617).
-        """
+        """The first configured cell GDS, or `""`; use :meth:`get_cell_gds_paths` to stream layout."""
         return self._cell_gds[0] if self._cell_gds else ""
 
     def get_cell_gds_paths(self) -> list[str]:

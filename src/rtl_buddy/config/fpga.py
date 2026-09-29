@@ -24,20 +24,14 @@ class FpgaToolConfigFile:
 class FpgaToolConfig:
     def __init__(self, cfg: FpgaToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
-        # Directory relative `tool:` candidates are existence-tested
-        # against: the one holding root_config.yaml, never the process
-        # cwd (rb is routinely invoked from a suite directory).
+        # Never the process cwd: rb is often run from a suite directory.
         self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
-
-        ``tool:`` may be a single value or a list of candidates in
-        preference order; see :mod:`rtl_buddy.config.toolpath`.
-        """
+        """Tool executable with ``~`` and ``$VAR`` expanded; see :mod:`rtl_buddy.config.toolpath`."""
         return resolve_tool_path(
             self._cfg.tool,
             base_dir=self._base_dir,
@@ -59,25 +53,14 @@ class FpgaConfigFile:
     xdc: list[str] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
-    # Gate the run on timing closure. By default a routed run with
-    # negative slack still PASSes (metrics carry the truth so a
-    # timing-closure loop can iterate, matching `rb pnr`); set this true
-    # to make an unmet-timing run FAIL — useful for regression gating.
-    # No effect when the backend cannot report timing (timing_met None).
-    # See docs/known-issues.md.
+    # When true, a routed run with negative slack FAILs instead of PASSing.
+    # No effect when the backend reports no timing (timing_met None).
     require_timing_met: bool = field(rename="require-timing-met", default=False)
-    # Expected-fail markers (pytest-style). Either marks this run
-    # expected-to-fail; `xfail` is non-strict (an unexpected pass still
-    # passes), `xfail_strict` is strict (an unexpected pass is a failure).
-    # See docs/concepts/expected-failures.md.
+    # Either flag marks the run expected to fail; an unexpected pass fails only for `xfail_strict`.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
     def initialise(self, config_dir: str) -> "FpgaConfig":
-        # `part:` (inline device, P1) and `platform:` (cfg-fpga-platforms
-        # ref, #286) are mutually exclusive — a run naming both is
-        # ambiguous, so it is a config error rather than a precedence
-        # rule.
         if self.part and self.platform:
             raise FatalRtlBuddyError(
                 f"fpga run '{self.name}': 'part' and 'platform' are "
@@ -146,12 +129,7 @@ class FpgaConfig:
         return self.model
 
     def get_top(self) -> str:
-        """The module this run elaborates — the model's root module.
-
-        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
-        ``top:`` override (#479) reaches this flow too; without the
-        override it is still the model name.
-        """
+        """The module this run elaborates (see :meth:`ModelConfig.get_top`)."""
         return self.model.get_top()
 
     def get_tool_name(self) -> str:

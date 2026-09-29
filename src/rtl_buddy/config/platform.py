@@ -11,32 +11,12 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 
-#: Tool blocks a ``cfg-platforms`` entry may route, keyed by the YAML key
-#: on the platform entry. The value is ``(RootConfig attribute holding
-#: that block's entries, YAML block name)``.
+#: Optional tool blocks a ``cfg-platforms`` entry may route, keyed by the platform's YAML key.
+#: Each value is ``(RootConfig attribute holding the block's entries, YAML block name)``.
 #:
-#: ``builder`` and ``verible`` are *not* here: they are resolved eagerly
-#: into :class:`PlatformConfig` objects (a platform without either cannot
-#: run), while ``surfer`` is optional and resolved on demand by
-#: :meth:`RootConfig.get_surfer_cfg`. Everything else about it is the same
-#: indirection — the platform entry names an entry in the block, and an
-#: unrouted block keeps its pre-#439 global behaviour.
-#:
-#: The ``cfg-*-tools`` blocks are deliberately **not** routable (#439).
-#: Routing only means something for a block whose active entry is chosen
-#: by rtl-buddy: ``builder``, ``verible`` and ``surfer`` all are. A
-#: ``cfg-*-tools`` entry is chosen per run by the flow YAML's ``tool:``,
-#: and that name is simultaneously the *backend selector* — ``openroad``
-#: picks the OpenROAD P&R backend, ``yosys`` the Yosys synthesis backend,
-#: and ``rb power`` looks the name up in a backend registry. A platform
-#: cannot therefore redirect one of those entries without either being
-#: ignored (the flow named an entry, so routing never applies) or
-#: breaking backend dispatch (the routed name is not a backend). Pinning a
-#: ``cfg-*-tools`` binary per platform is done in the entry itself, with
-#: the candidate list ``tool:`` accepts — the first candidate that exists
-#: wins, so a Linux tool-tree path and a Homebrew path can sit in the same
-#: committed entry and each platform takes the one it has. See
-#: :mod:`rtl_buddy.config.toolpath`.
+#: ``builder`` and ``verible`` are resolved eagerly into :class:`PlatformConfig`, not routed here.
+#: ``cfg-*-tools`` blocks are not routable because the flow's ``tool:`` name also selects the backend.
+#: Pin a per-platform binary with the candidate list ``tool:`` accepts; see :mod:`rtl_buddy.config.toolpath`.
 PLATFORM_TOOL_BLOCKS: dict[str, tuple[str, str]] = {
     "surfer": ("surfer_cfgs", "cfg-surfer"),
 }
@@ -44,18 +24,9 @@ PLATFORM_TOOL_BLOCKS: dict[str, tuple[str, str]] = {
 
 @dataclass
 class PlatformConfig:
-    """
-    Configuration entry defining a single test platoform.
+    """A resolved platform entry: target OS, supported unames, builder and verible configs.
 
-    Attributes:
-      os (str): Target OS of platform.
-      unames (list[str]): List of supported unames for the platform.
-      builder (str | None): Name of builder configuration associated with the platform.
-      verible (str): Name of verible configuration associated with the platform.
-      routed (dict[str, str]): Entry name this platform selects in each
-        optional tool block, keyed by :data:`PLATFORM_TOOL_BLOCKS` key.
-        Blocks the platform does not mention are absent, and their
-        accessors keep their global default.
+    ``routed`` maps a :data:`PLATFORM_TOOL_BLOCKS` key to the entry this platform selects; unmentioned blocks are absent and keep their global default.
     """
 
     os: str
@@ -65,42 +36,19 @@ class PlatformConfig:
     routed: dict[str, str] = dc_field(default_factory=dict)
 
     def get_os(self) -> str:
-        """
-        Retrieve the value of os.
-
-        Returns:
-          os (str): The value of os
-        """
+        """Target OS of the platform."""
         return self.os
 
     def get_builder(self) -> RtlBuilderConfig:
-        """
-        Get the value of builder
-
-        Returns:
-          builder (RtlBuilderConfig): The value of builder.
-        """
+        """Builder config for the platform."""
         return self.builder
 
     def get_verible(self) -> VeribleConfig:
-        """
-        Get the value of verible.
-
-        Returns:
-          verible_name (str): The value of verible.
-        """
+        """Verible config for the platform."""
         return self.verible
 
     def get_routed_tool(self, block: str) -> str | None:
-        """
-        Entry name this platform routes for ``block``.
-
-        Args:
-          block (str): A :data:`PLATFORM_TOOL_BLOCKS` key, e.g. ``"surfer"``.
-        Returns:
-          name (str | None): The routed entry name, or None when this
-            platform does not route the block (the block stays global).
-        """
+        """Entry name this platform routes for ``block`` (a :data:`PLATFORM_TOOL_BLOCKS` key), or None."""
         return self.routed.get(block)
 
     def get_routed_tools(self) -> dict[str, str]:
@@ -120,29 +68,18 @@ class PlatformConfigFile:
     surfer: str | None = None
 
     def get_routed_names(self) -> dict[str, str]:
-        """Configured ``block -> entry name`` routing, skipping unset blocks.
-
-        Read off :data:`PLATFORM_TOOL_BLOCKS` rather than a hand-written
-        list, so adding a routable block is one edit: declare the field
-        here and the entry there, and routing, validation and the
-        accessors all follow.
-        """
+        """Configured ``block -> entry name`` routing, skipping unset blocks."""
         return {
             block: name
             for block in PLATFORM_TOOL_BLOCKS
-            # YAML keys are hyphenated, the pyserde attribute is not.
+            # YAML keys are hyphenated; the pyserde attributes are not.
             if (name := getattr(self, block.replace("-", "_"), None))
         }
 
     def validate_routing(self, tool_blocks: dict[str, dict]) -> None:
         """Fail if this entry routes a block to an entry that is not configured.
 
-        Called by :class:`~rtl_buddy.config.root.RootConfig` for *every*
-        ``cfg-platforms`` entry at load, not just the one whose ``unames``
-        matched: a typo in the Linux entry is otherwise invisible to a
-        macOS developer and only becomes fatal on the CI host, which is
-        the worst place to find it (#439). That sweep covers the matched
-        entry too, so :meth:`initialise` does not re-check.
+        :class:`~rtl_buddy.config.root.RootConfig` calls it for every ``cfg-platforms`` entry at load, not only the matching one.
         """
         for block, entry_name in self.get_routed_names().items():
             available = tool_blocks.get(block) or {}
@@ -171,14 +108,8 @@ class PlatformConfigFile:
     ) -> PlatformConfig:
         """Resolve this platform entry against the root config's blocks.
 
-        Routing is *not* validated here: :meth:`validate_routing` has
-        already run over every entry at load, and repeating it for the
-        matched one only duplicates the work and the error.
-
-        Args:
-          builders: ``cfg-rtl-builder`` entries by name.
-          veribles: ``cfg-verible`` entries by name.
-          builder_override: ``--builder`` CLI override, or None.
+        ``builders`` and ``veribles`` are the ``cfg-rtl-builder`` and ``cfg-verible`` entries by name; ``builder_override`` is the ``--builder`` CLI value or None.
+        Routing is validated separately by :meth:`validate_routing`.
         """
         builder = None
         if self.builder is not None:
@@ -248,19 +179,9 @@ class PlatformConfigFile:
         )
 
     def get_os(self) -> str:
-        """
-        Retrieve the value of os.
-
-        Returns:
-          os (str): The value of os
-        """
+        """Target OS of the platform."""
         return self.os
 
     def get_unames(self) -> list[str]:
-        """
-        Retrieve the value of unames, the list of unames supported by the platform.
-
-        Returns:
-          unames (list[str]): The value of unames.
-        """
+        """The unames the platform supports."""
         return self.unames

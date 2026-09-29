@@ -1,30 +1,11 @@
-"""OpenROAD worker-thread count for the flows that launch OpenROAD (#654).
+"""OpenROAD worker-thread count (`threads:`) for the pnr, power and synth flows.
 
-OpenROAD starts single-threaded and stays that way until a script calls
-`set_thread_count`, so a run inside an eight-CPU Slurm allocation used one
-of them: detailed routing, the dominant stage of a real block, ran on one
-thread. The count is a resource of the run, like the CPUs reserved for it,
-so it is a per-run `threads:` key in `pnr.yaml`, `power.yaml` and
-`synth.yaml` rather than a platform or tool property.
+- Unset: OpenROAD's default of one thread; nothing is emitted.
+- A positive integer: emitted as `set_thread_count N` ahead of the first tool command. Anything else except ``auto`` fails config loading.
+- ``auto``: the CPU count of the current allocation, or one when there is none. Never the host core count.
+- A count above the detected allocation is clamped to it with a WARNING.
 
-The contract, shared by every OpenROAD-driven flow:
-
-- unset keeps OpenROAD's own default of one thread and emits nothing, so
-  the generated script of a configuration that never names the key is
-  byte-for-byte what it has always been;
-- a positive integer is emitted as `set_thread_count N` ahead of the first
-  tool command; zero, negatives, booleans, floats and strings other than
-  ``auto`` fail configuration loading — `set_thread_count 0` means *all
-  host cores* to OpenROAD, which is exactly what this must never ask for;
-- ``auto`` is the CPU count of the allocation the process runs in, and one
-  when there is none: never the host's core count;
-- a count above a detected allocation is clamped to it with a WARNING
-  naming both numbers, rather than oversubscribing the reservation.
-
-What counts as an allocation is deliberately narrow (see
-:func:`detect_allocation`): a Slurm job's CPU count, or a CPU affinity mask
-smaller than the machine. A container CPU *quota* (`docker --cpus`) is not
-visible here and is not detected.
+An allocation is a Slurm job's CPU count or a CPU affinity mask smaller than the machine (see :func:`detect_allocation`). Container CPU quotas are not detected.
 """
 
 import logging
@@ -39,10 +20,7 @@ logger = logging.getLogger(__name__)
 
 AUTO = "auto"
 
-#: Slurm variables consulted, most specific first, and only inside a job
-#: (`SLURM_JOB_ID` set). `SLURM_CPUS_PER_TASK` is what `srun -c` / `sbatch
-#: -c` reserved for this task; `SLURM_CPUS_ON_NODE` is the job's CPUs on
-#: this node, the answer when no per-task count was requested.
+#: Slurm variables consulted inside a job (`SLURM_JOB_ID` set), most specific first.
 _SLURM_CPU_VARS = ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE")
 
 #: Source label recorded when the process's CPU affinity is the bound.
@@ -52,9 +30,7 @@ AFFINITY_SOURCE = "sched_getaffinity"
 def validate_threads(value, *, where: str) -> int | str | None:
     """Return a validated `threads:` value, or raise FatalRtlBuddyError.
 
-    ``where`` names the entry for the message (``pnr run 'x'``). ``bool``
-    is refused explicitly: YAML `threads: true` would otherwise pass as
-    the integer one.
+    ``where`` names the entry in the error message. ``bool`` is refused because it is an ``int`` subclass.
     """
     if value is None:
         return None
@@ -95,20 +71,14 @@ def _affinity_count() -> int | None:
 def detect_allocation(
     env=None, *, affinity: int | None = None, cpu_count: int | None = None
 ) -> tuple[int | None, str | None]:
-    """The CPUs this process was granted, and where that number came from.
+    """The CPUs this process was granted, and the source of that number.
 
-    Two sources, the smaller winning when both apply:
+    Two sources; the smaller wins when both apply:
 
-    - inside a Slurm job (`SLURM_JOB_ID` set), the first positive integer
-      among `SLURM_CPUS_PER_TASK` and `SLURM_CPUS_ON_NODE`. A malformed
-      value is skipped rather than trusted;
-    - a CPU affinity mask (`os.sched_getaffinity`, Linux) *smaller than the
-      machine* — `taskset`, a cpuset cgroup, a Slurm step bound with task
-      affinity. A mask covering every core is no allocation at all, and
-      treating it as one would make ``auto`` mean "all host cores".
+    - Inside a Slurm job, the first positive integer among `SLURM_CPUS_PER_TASK` and `SLURM_CPUS_ON_NODE`.
+    - A CPU affinity mask (`os.sched_getaffinity`) smaller than the machine. A mask covering every core is not an allocation.
 
-    ``(None, None)`` when neither applies. The keyword arguments exist for
-    tests; production calls pass nothing and read the live process.
+    Returns ``(None, None)`` when neither applies. The keyword arguments override live detection for tests.
     """
     if env is None:
         env = os.environ
@@ -131,10 +101,9 @@ def detect_allocation(
 
 @dataclass(frozen=True)
 class ThreadPlan:
-    """How many threads one OpenROAD invocation is given, and why.
+    """The thread count for one OpenROAD invocation.
 
-    ``count`` is what the script sets — or OpenROAD's default of one when
-    ``emit`` is false because nothing was requested.
+    ``count`` is what the script sets, or OpenROAD's default of one when ``emit`` is false.
     """
 
     requested: int | str | None
@@ -149,14 +118,10 @@ class ThreadPlan:
         return f"set_thread_count {self.count}" if self.emit else ""
 
     def fields(self, reported: int | None = None) -> dict:
-        """The provenance recorded in the run's results.
+        """The thread provenance recorded in the run's results.
 
-        ``reported`` is what OpenROAD itself logged (`[INFO ORD-0030] Using
-        N thread(s).`), which can be lower than ``count``: OpenROAD clamps
-        to the host's hardware concurrency on its own. It wins when
-        present, since it is what the tool actually ran with. It is ignored
-        when nothing was emitted: OpenROAD then logs no count, so one found
-        in the log can only be a previous run's.
+        ``reported`` is the count OpenROAD logged; it can be lower than ``count`` and wins when present.
+        It is ignored when nothing was emitted, because a count in the log then belongs to a previous run.
         """
         if not self.emit:
             reported = None
@@ -177,10 +142,7 @@ def plan_threads(
 ) -> ThreadPlan:
     """Resolve a validated `threads:` value against the live allocation.
 
-    ``flow`` (``pnr`` / ``power`` / ``synth``) and ``run`` name the entry
-    in the events. A clamp is logged at WARNING as
-    ``openroad.threads_capped``; the resolved plan at INFO as
-    ``openroad.threads``. ``allocation`` overrides detection for tests.
+    ``flow`` and ``run`` name the entry in log events. ``allocation`` overrides detection for tests.
     """
     alloc, source = allocation if allocation is not None else detect_allocation()
     if requested is None:

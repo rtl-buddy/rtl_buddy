@@ -1,10 +1,6 @@
 """Configuration schema for CDC (clock-domain-crossing) lint runs.
 
-Mirrors the synthesis schema (``config/synth.py``) at a smaller surface:
-each ``cdc.yaml`` lists one or more analyses; each analysis names a
-model + an SDC + optionally a waiver file; the project's
-``root_config.yaml`` declares the available CDC tools under
-``cfg-cdc-tools``.
+Each ``cdc.yaml`` lists analyses (model, constraints, optional waivers); ``root_config.yaml`` declares the tools under ``cfg-cdc-tools``.
 """
 
 import logging
@@ -31,8 +27,7 @@ logger = logging.getLogger(__name__)
 class CdcToolOpts:
     sync_depth: int | None = None
     extra_args: str = ""
-    # Vivado-backend only: the device part used for ``synth_design``
-    # elaboration before ``report_cdc``. Ignored by rtl-buddy-cdc.
+    # Vivado backend only; ignored by rtl-buddy-cdc.
     part: str | None = None
 
 
@@ -55,20 +50,14 @@ class CdcToolConfig:
 
     def __init__(self, cfg: CdcToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
-        # Directory relative `tool:` candidates are existence-tested
-        # against: the one holding root_config.yaml, never the process
-        # cwd (rb is routinely invoked from a suite directory).
+        # Never the process cwd: rb is often run from a suite directory.
         self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
-
-        ``tool:`` may be a single value or a list of candidates in
-        preference order; see :mod:`rtl_buddy.config.toolpath`.
-        """
+        """Tool executable with ``~`` and ``$VAR`` expanded; see :mod:`rtl_buddy.config.toolpath`."""
         return resolve_tool_path(
             self._cfg.tool,
             base_dir=self._base_dir,
@@ -102,35 +91,15 @@ class CdcConfigFile:
     waivers: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
-    # Forwarded as-is via ``--frontend <value>`` to the analyzer
-    # subprocess. Intentionally not validated here — keeps rtl_buddy
-    # decoupled from the analyzer's accepted-value set so the analyzer
-    # can add frontends without an rtl_buddy release. Unknown values
-    # are rejected by the analyzer's own arg parser.
+    # Passed through as --frontend; the analyzer validates the value.
     frontend: str | None = None
-    # Parse all model sources as one compilation unit. This supports filelists
-    # that deliberately share preprocessor macros across source files.
-    # Forwarded via ``--single-unit`` (rtl-buddy-cdc#277).
+    # Passed as --single-unit: parse all sources as one compilation unit.
     single_unit: bool = False
-    # Modules to treat as black boxes: each is forwarded as-is via a
-    # repeated ``--blackbox <module>`` to the analyzer (rtl-buddy-cdc#259),
-    # stubbing out that module's internals during elaboration. Like
-    # ``frontend`` above, values are intentionally not validated here so the
-    # analyzer owns the accepted-name set. Empty by default (no blackboxing).
+    # Each module is passed as --blackbox <module>; the analyzer validates names.
     blackbox: list[str] = field(default_factory=list)
-    # Recognized-synchronizer instance patterns (regexes) for `--check-xdc`.
-    # A crossing the analyzer flags as a violation but whose instance matches
-    # one of these is treated as a real synchronizer the engine did not
-    # recognize structurally (e.g. a blackboxed `xpm_cdc_*` macro): the audit
-    # then requires it to be constrained (completeness) but does NOT report a
-    # correct XDC waiver of it as a dangerous over-waive.
+    # Instance regexes for `--check-xdc` treated as real synchronizers the analyzer did not recognize.
     recognized_syncs: list[str] = field(rename="recognized-syncs", default_factory=list)
-    # Expected-fail markers (pytest-style). Either flag marks the analysis
-    # expected-to-fail (a FAIL becomes XFAIL, a pass); they differ only in
-    # how an unexpected pass (XPASS) is counted: `xfail` non-strict (XPASS
-    # still passes), `xfail_strict` strict (XPASS is a failure). Strict
-    # wins if both set. Use for a design with known/intentional CDC
-    # violations tracked in a suite rather than excluded.
+    # Either flag turns a FAIL into XFAIL. An unexpected pass (XPASS) passes for `xfail` and fails for `xfail_strict`.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
@@ -178,8 +147,7 @@ class CdcConfig:
     xfail_strict: bool = False
 
     def get_recognized_syncs(self) -> list[str]:
-        """Instance-path regexes treated as recognized synchronizers in
-        `--check-xdc` (suppress false over-waives; still require coverage)."""
+        """Instance-path regexes treated as recognized synchronizers by `--check-xdc`."""
         return list(self.recognized_syncs)
 
     def is_xfail(self) -> bool:
@@ -199,12 +167,7 @@ class CdcConfig:
         return self.model
 
     def get_top(self) -> str:
-        """The module this run elaborates — the model's root module.
-
-        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
-        ``top:`` override (#479) reaches this flow too; without the
-        override it is still the model name.
-        """
+        """The module this run elaborates (see :meth:`ModelConfig.get_top`)."""
         return self.model.get_top()
 
     def get_constraints(self) -> str:
@@ -273,10 +236,7 @@ class CdcSuiteConfig:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
-        # Fail loud on duplicate ``name:`` — the dict-comprehension
-        # below would silently overwrite the first analysis with the
-        # second, hiding the user's typo until they hit "analysis X
-        # not found" at lookup time.
+        # The dict comprehension below would silently drop the first of two same-named analyses.
         seen: dict[str, int] = {}
         for idx, analysis in enumerate(data.analyses):
             if analysis.name in seen:

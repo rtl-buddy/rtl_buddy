@@ -13,35 +13,16 @@ from .dispatch import DispatchResourcesFile, validate_resources_block
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
-#: A model ``name:`` has to be safe as a **single path segment**, because
-#: that is what it becomes: ``artefacts/hier/<name>/``,
-#: ``artefacts/graph/design/<name>/``, and the per-model directories every
-#: flow writes. Nothing downstream re-checks it, and ``rb graph build``
-#: *deletes* ``design/<name>/`` when a model opts out — so a name like
-#: ``..`` or ``/tmp`` would escape the artefact tree with the caller's
-#: permissions. It is also the model's default top module, so an
-#: identifier-shaped name is what every project already writes.
-#:
-#: Deliberately a little wider than a SystemVerilog identifier: ``-`` and
-#: ``.`` inside the name are harmless as a path segment and plausible in
-#: an existing project. The leading character may not be ``.``, which is
-#: what rules out ``.`` and ``..``; ``/`` and ``\\`` are absent from the
-#: class entirely, which rules out every separator and absolute path.
-#: Anchored with ``\\Z``, not ``$``: Python's ``$`` also matches before a
-#: trailing newline, so ``"blk_a\\n"`` would otherwise pass a rule whose
-#: whole purpose is that the value carries no newline.
+#: A model ``name:`` must be safe as a single path segment: it names artefact directories, and ``rb graph build`` deletes ``design/<name>/``.
+#: Slightly wider than a SystemVerilog identifier (allows ``-`` and ``.``) but never starts with ``.`` and never contains a separator.
+#: Anchored with ``\\Z`` because ``$`` also matches before a trailing newline.
 MODEL_NAME_RE = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 
 
 def validate_model_name(name: str, path: str) -> None:
-    """Raise unless ``name`` is safe as an artefact directory name.
+    """Raise ``FatalRtlBuddyError`` unless ``name`` is safe as an artefact directory name.
 
-    Args:
-      name: the ``name:`` field as written.
-      path: the models.yaml it came from, for the message.
-
-    Raises:
-      FatalRtlBuddyError: naming the file, the value and the rule.
+    ``path`` is the models.yaml the name came from, used in the message.
     """
     if isinstance(name, str) and MODEL_NAME_RE.match(name):
         return
@@ -61,40 +42,10 @@ def validate_model_name(name: str, path: str) -> None:
     )
 
 
-#: A model ``top:`` must be a **simple** SystemVerilog identifier. It is
-#: the module name every backend elaborates from, and it does not stay in
-#: HDL: the FPGA flows join it into artefact paths (``<top>.bit``), and
-#: the Yosys, Vivado and OpenROAD generators interpolate it into Tcl
-#: (``set top <top>``, ``synth_design -top <top>``). None of those quote
-#: it, so a value carrying a path separator, a newline or a shell/Tcl
-#: metacharacter would write outside the artefact directory or append
-#: commands to a generated script. This rule is what makes the
-#: downstream interpolation safe, and it is enforced once, here, rather
-#: than escaped differently in each flow.
-#:
-#: ``$`` is legal in a SystemVerilog identifier and is **excluded here
-#: anyway**, because it is a substitution character in exactly the Tcl
-#: this value is interpolated into unquoted: ``synth_design -top foo$bar``
-#: makes Vivado substitute an empty (or wrong) ``$bar`` and elaborate a
-#: different module than the YAML names, or fail outright. Having chosen
-#: to make the value safe at the boundary rather than escape it in six
-#: generators, the rule has to be the intersection of "legal SV" and
-#: "inert in Tcl and in a filename" — not the union. A design whose top
-#: really is named with a ``$`` has to be renamed or wrapped.
-#:
-#: SystemVerilog also has *escaped* identifiers — a backslash, then
-#: printable characters, then whitespace — which legally admit ``/`` and
-#: ``;``. Those are refused outright for the same reason: no flow can
-#: name a file or a Tcl token after one safely, and a design that needs
-#: one cannot be driven through these flows anyway.
-#:
-#: ``get_top()`` falls back to the model ``name`` when ``top:`` is unset,
-#: so :data:`MODEL_NAME_RE` reaches the same Tcl. It is wider — it allows
-#: ``-`` and ``.`` — but neither is a Tcl metacharacter, and its first
-#: character may not be ``-``, so a name can never be read as an option
-#: flag either. The safety invariant holds on both paths.
-#:
-#: Anchored with ``\\Z`` for the reason :data:`MODEL_NAME_RE` states.
+#: A model ``top:`` must be a simple SystemVerilog identifier.
+#: It is interpolated unquoted into artefact paths and generated Tcl, so it must be inert in both.
+#: ``$`` is legal SystemVerilog but excluded because Tcl substitutes it; escaped identifiers are refused.
+#: ``get_top()`` falls back to the model name, and :data:`MODEL_NAME_RE` is safe in the same places.
 MODEL_TOP_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 ELAB_TIMESCALE_RE = re.compile(r"\A\d+(?:s|ms|us|ns|ps|fs)/\d+(?:s|ms|us|ns|ps|fs)\Z")
 ELAB_WARNING_RE = re.compile(
@@ -105,18 +56,8 @@ ELAB_WARNING_RE = re.compile(
 )
 ELAB_BASE_ARTIFACT_NAME = "base"
 
-#: Upper bound accepted for an elaboration profile's ``max_parse_depth``.
-#:
-#: slang's own default is 1024 nesting levels, and that limit exists to turn
-#: runaway recursive descent into a diagnostic instead of a stack overflow.
-#: Raising it hands the guard back, and the passes after the parser recurse
-#: over the same expression on a C stack nobody can grow from here: measured
-#: against pyslang 10, a nested expression exhausts it after a few hundred
-#: levels on macOS (512 KiB analysis threads) and a few thousand on Linux
-#: (8 MiB), killing the worker with no diagnostic at all. A value far above
-#: that cannot make a deeper source elaborate — it only trades a clean error
-#: for a crash — so the field is bounded at 64x slang's default: ample headroom
-#: for generated RTL, while an absurd or mistyped value stays a load-time error.
+#: Upper bound for an elaboration profile's ``max_parse_depth``, 64x slang's default of 1024.
+#: Deeper nesting can exhaust the C stack and kill the worker with no diagnostic, so an absurd value is a load-time error.
 ELAB_MAX_PARSE_DEPTH_LIMIT = 65536
 
 
@@ -128,21 +69,10 @@ def validate_top(
     subject: str = "model",
     event: str = "model_config.invalid_model_top",
 ) -> None:
-    """Raise unless ``top`` is a simple SystemVerilog identifier.
+    """Raise ``FatalRtlBuddyError`` unless ``top`` is a simple SystemVerilog identifier.
 
-    ``fpv.yaml`` and ``mut.yaml`` carry their own ``top:`` which wins over
-    the model's and reaches the same generators, so they validate against
-    this rule too — under their own event name and wording.
-
-    Args:
-      top: the ``top:`` field as written.
-      name: the model / verification / campaign declaring it, for the message.
-      path: the YAML it came from, for the message.
-      subject: what ``name`` names, for the message.
-      event: the machine event to log.
-
-    Raises:
-      FatalRtlBuddyError: naming the file, the declarer, the value and the rule.
+    ``fpv.yaml`` and ``mut.yaml`` validate their own ``top:`` with this rule too.
+    ``name``, ``path`` and ``subject`` identify the declarer in the message; ``event`` is the log event name.
     """
     if isinstance(top, str) and MODEL_TOP_RE.match(top):
         return
@@ -183,19 +113,14 @@ def validate_top(
 
 
 def validate_model_top(top: str, name: str, path: str) -> None:
-    """Raise unless a models.yaml ``top:`` is a simple SV identifier."""
+    """Validate a models.yaml ``top:`` with :func:`validate_top`."""
     validate_top(top, name, path)
 
 
 def split_back_pointer(value: str) -> tuple[str, str | None]:
-    """Split a ``cdc:``/``synth:``/``tests:`` back-pointer into
-    ``(path, entry_name | None)``.
+    """Split a ``cdc:``/``synth:``/``tests:`` back-pointer into ``(path, entry_name | None)``.
 
-    The path side is the relative location of the downstream YAML
-    (resolved by the caller against the parent ``models.yaml``).
-    The optional ``#entry_name`` fragment names a single analysis /
-    synthesis / test inside that file — useful when one file holds
-    multiple and the model wants to pin one as canonical.
+    The optional ``#entry_name`` fragment picks one entry from a multi-entry file.
     """
     if "#" in value:
         path, _, entry = value.partition("#")
@@ -207,15 +132,9 @@ def split_back_pointer(value: str) -> tuple[str, str | None]:
 def resolve_back_pointer(
     model: "ModelConfig", field_name: str
 ) -> tuple[str, str | None] | None:
-    """Resolve ``model.<field_name>`` (one of ``cdc``/``synth``/``tests``)
-    into an absolute ``(path, entry_name | None)`` tuple.
+    """Resolve ``model.<field_name>`` (``cdc``, ``synth`` or ``tests``) into an absolute ``(path, entry_name | None)``.
 
-    Returns ``None`` when the field is unset on the model. Raises
-    ``FatalRtlBuddyError`` when the field is set but ``model.path``
-    is missing (loader didn't tag the model — programming error).
-    Delegates path resolution to ``ModelConfig._resolve_relative`` so
-    the cdc/synth/tests fields share semantics with the existing
-    ``axi_bundles`` / ``axi_monitor_out`` resolution.
+    Returns ``None`` when the field is unset. Raises ``FatalRtlBuddyError`` when it is set but ``model.path`` is missing.
     """
     raw = getattr(model, field_name, None)
     if not raw:
@@ -360,10 +279,7 @@ def _validate_elaboration_profile(
                 f"{prefix} warning control {warning!r} is invalid; write the part "
                 "after '-W', for example 'all', 'no-unused' or 'error=unused'"
             )
-    # `allow_modes` stays at its default: an elaboration reservation is
-    # resolved without a builder mode, so a `modes:` block here is refused
-    # rather than silently ignored (#634). Named by profile, like every
-    # other error this validator raises.
+    # An elaboration reservation has no builder mode, so a `modes:` block is refused.
     profile.resources = validate_resources_block(profile.resources, where=f"{prefix} ")
     if profile.resources is not None and profile.resources.cpus is not None:
         cpus = profile.resources.cpus
@@ -375,48 +291,21 @@ def _validate_elaboration_profile(
 
 @serde
 class ModelConfig:
-    """
-    Representation of a single model entry in a 'model_config' file
+    """One model entry in a ``models.yaml`` file.
 
-    Attributes
-      name (str): Unique model identifier.
-      desc (str|None): Human-readable model description.
-      filelist (list[str]): List of paths to files associated with the model.
-      spec (str|None): Relative path from models.yaml to the block's specs.yaml.
-      axi_bundles (str|None): Relative path from models.yaml to the
-        block's ``axi-bundles.yaml`` manifest, when AXI profiling is
-        configured for this model. Consumed by ``rb axi-profile``.
-      axi_monitor_out (str|None): Relative path from models.yaml to
-        where ``rb axi-profile gen-monitor`` should write the generated
-        SystemVerilog monitor file. Typically points into the verif
-        testbench source tree so the file is picked up by the tb's
-        filelist (e.g. ``../verif/soc_top/gen/axi_perf_mon.sv``).
-      cdc (str|None): Relative path from models.yaml to the cdc.yaml that owns
-        this model's CDC analysis. Optional ``#analysis_name`` fragment picks one
-        entry from a multi-analysis file (e.g. ``cdc.yaml#full_design``). Read by
-        ``rb hub`` to wire up the clock-domain overlay; absent → overlay
-        unavailable.
-      synth (str|None): Relative path from models.yaml to the synth.yaml that
-        owns this model's synthesis flow. Same ``#synth_name`` fragment semantics.
-        Not consumed by any tool yet — declared now so the schema doesn't churn
-        when future hub overlays (e.g. synthesis QoR) want to look it up.
-      tests (str|None): Relative path from models.yaml to the tests.yaml that
-        owns this model's testbench/test suite. Same ``#test_name`` fragment
-        semantics. Not consumed by any tool yet.
-      graph (bool): Whether this model takes part in ``rb graph build``'s
-        design tier. ``false`` opts it out for the models that have no
-        elaborable root at all — an SV ``interface`` published as a library
-        entry, or a filelist of vendored IP with no module named after the
-        model. The config tier still emits the model node (so spec and
-        test cross-references resolve); the design tier records the model
-        as *skipped* rather than attempting an export that can only fail.
-      top (str|None): Root module of this model's filelist, when it is not
-        named after the model. Defaults to ``name``, which is the project
-        convention every flow assumed before this field existed. Feeds
-        ``get_top()``, so it is also the default top of a ``cdc.yaml`` /
-        ``synth.yaml`` / ``lint.yaml`` / ``fpga.yaml`` run against this
-        model — the same escape hatch ``fpv.yaml`` already spells per-run.
-      path (str|None): Path to the model config file. Will usually be set by the loader.
+    Attributes:
+      name: Unique model identifier.
+      desc: Human-readable description.
+      filelist: Paths to the model's files.
+      spec: Path to the block's specs.yaml, relative to models.yaml.
+      axi_bundles: Path to the ``axi-bundles.yaml`` manifest, relative to models.yaml; used by ``rb axi-profile``.
+      axi_monitor_out: Path where ``rb axi-profile gen-monitor`` writes the SystemVerilog monitor, relative to models.yaml.
+      cdc: Path to the cdc.yaml for this model, relative to models.yaml. An optional ``#analysis_name`` fragment picks one entry. Read by ``rb hub``.
+      synth: Path to the synth.yaml for this model, with the same fragment syntax. No tool reads it yet.
+      tests: Path to the tests.yaml for this model, with the same fragment syntax. No tool reads it yet.
+      graph: ``False`` opts a model with no elaborable root out of the ``rb graph build`` design tier; the config tier still emits its node.
+      top: Root module of the filelist when it is not named after the model. Defaults to ``name`` and is the default top for cdc, synth, lint and fpga runs.
+      path: Path to the models.yaml file, set by the loader.
     """
 
     name: str
@@ -434,11 +323,9 @@ class ModelConfig:
     elaborations: list[ElaborationProfile] = field(default_factory=list)
 
     def _resolve_relative(self, rel: str) -> str:
-        """Resolve ``rel`` against the directory containing models.yaml.
+        """Resolve ``rel`` against the models.yaml directory; absolute paths pass through.
 
-        Absolute paths pass through unchanged. The loader always sets
-        ``self.path``; an unset path falls back to cwd (only reachable
-        from tests that construct ``ModelConfig`` directly).
+        Without ``self.path`` (models built directly in tests) it falls back to the cwd.
         """
         if os.path.isabs(rel):
             return rel
@@ -446,33 +333,19 @@ class ModelConfig:
         return os.path.normpath(os.path.join(base, rel))
 
     def get_axi_bundles_path(self) -> str | None:
-        """Absolute path to the model's ``axi-bundles.yaml`` (or None).
-
-        Does not check that the file exists — callers should error
-        with a hint to run ``rb axi-profile discover`` when missing.
-        """
+        """Absolute path to the model's ``axi-bundles.yaml``, or None. Does not check that the file exists."""
         if self.axi_bundles is None:
             return None
         return self._resolve_relative(self.axi_bundles)
 
     def get_axi_monitor_out_path(self) -> str | None:
-        """Absolute path where ``gen-monitor`` should write the SV file (or None).
-
-        Parent directory may not exist yet at load time.
-        """
+        """Absolute path where ``gen-monitor`` writes the SV file, or None. The parent directory may not exist."""
         if self.axi_monitor_out is None:
             return None
         return self._resolve_relative(self.axi_monitor_out)
 
     def get_top(self) -> str:
-        """The module this model's filelist is rooted at.
-
-        ``top:`` when declared, else the model name — the convention
-        ``rb hier``, ``rb graph build`` and the non-simulation flows all
-        relied on implicitly before the override existed. Returned even
-        for a ``graph: false`` model: the opt-out says the model is not
-        worth elaborating, not that this fallback changed.
-        """
+        """The module this model's filelist is rooted at: ``top:`` if declared, else the model name."""
         return self.top or self.name
 
     def get_elaboration(self, profile_name: str) -> ElaborationProfile:
@@ -484,30 +357,15 @@ class ModelConfig:
         )
 
     def get_model_name(self):
-        """
-        Retrieve the value of model_name.
-
-        Returns:
-        model_name (str): The value of model_name in the model.
-        """
+        """The model name."""
         return self.model_name
 
     def get_model_path(self):
-        """
-        Retrieve the value of path.
-
-        Returns:
-        path (str): The value of path in the model. The path to the model config file.
-        """
+        """The path to the models.yaml file."""
         return self.path
 
     def get_filelist(self):
-        """
-        Retrieve the value of filelist.
-
-        Returns:
-        filelist (list[str]): The value of filelist in the model.
-        """
+        """The model's filelist paths."""
         return self.filelist
 
     def __str__(self):
@@ -516,13 +374,7 @@ class ModelConfig:
 
 @serde
 class ModelConfigFile:
-    """
-    Representation of a 'model_config' file.
-
-    Attributes
-      rtl_buddy_filetype (Literal['model_config']): Config file type. Must be 'model_config'.
-      models (list[RawModelConfig]): List of model configurations.
-    """
+    """A ``models.yaml`` file: its ``rtl-buddy-filetype`` (``model_config``) and model list."""
 
     rtl_buddy_filetype: Literal["model_config"] = field(rename="rtl-buddy-filetype")
     models: list[ModelConfig] = field(default_factory=list)
@@ -530,12 +382,7 @@ class ModelConfigFile:
 
 # TODO: Raise errors instead of killing things here
 class ModelConfigLoader:
-    """
-    Helper class to load model configurations from a file. Reads the file once.
-
-    Attributes:
-      models(list[RawModelConfig]): List of raw model configs.
-    """
+    """Loads and validates the models in one ``models.yaml``, reading the file once."""
 
     def __init__(self, path: str) -> None:
         self.path = path
@@ -551,16 +398,10 @@ class ModelConfigLoader:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
-        # Fail loud on duplicate ``name:`` — silently letting the
-        # first or last win makes "model X not found" errors at
-        # lookup time and hides the user's typo. Caught here so
-        # every downstream consumer (rb cdc, rb synth, rb hier,
-        # rb hub) sees a single source of truth.
         seen: dict[str, int] = {}
         for idx, model in enumerate(self.models):
             model.path = self.path
-            # Before anything else: the name is a path segment everywhere
-            # downstream, and one consumer deletes the directory it names.
+            # Validate the name first: downstream code treats it as a path segment.
             validate_model_name(model.name, path)
             if model.top is not None:
                 validate_model_top(model.top, model.name, path)
@@ -588,17 +429,7 @@ class ModelConfigLoader:
                 seen_profiles[profile_key] = profile_idx
 
     def get_model(self, model_name: str) -> ModelConfig:
-        """
-        Get a ModelConfig according to model_name.
-
-        Args:
-          name (str): Unique system identifier for the model.
-          model_name (str): Unique identifier for the model in file.
-        Returns:
-          model (ModelConfig): The model configuration.
-        Raises:
-          Panics if no model corresponding to model_name can be found.
-        """
+        """The :class:`ModelConfig` named ``model_name``; raises ``FatalRtlBuddyError`` if absent."""
         for model in self.models:
             if model.name == model_name:
                 return model
