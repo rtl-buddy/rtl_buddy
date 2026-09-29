@@ -1,10 +1,6 @@
-"""Tests for ``rb hub`` view.json builder.
+"""Tests for the ``rb hub`` view.json builder.
 
-The real generation invokes ``rtl-buddy-view`` (the external viewer
-binary) which we don't want to require in CI. We mock the
-``RtlBuddyView`` subprocess wrapper, so these tests only pin the
-plumbing: cache layout, executable-missing error path, and exit-code
-handling.
+``RtlBuddyView`` is mocked so CI does not need the ``rtl-buddy-view`` binary; the tests pin cache layout, the missing-executable error and exit-code handling.
 """
 
 from __future__ import annotations
@@ -34,16 +30,14 @@ def test_view_json_path_stable_per_model(tmp_path):
 
 
 def test_build_view_json_missing_viewer_binary_raises(tmp_path, monkeypatch):
-    """``rtl-buddy-view`` not on PATH → fatal error at hub start, not
-    at first HTTP request."""
+    """A missing ``rtl-buddy-view`` is a fatal error at hub start, not at the first HTTP request."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: None)
     with pytest.raises(FatalRtlBuddyError, match="not found on PATH"):
         view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
 
 
 def test_build_view_json_success_writes_to_stable_path(tmp_path, monkeypatch):
-    """When the subprocess wrapper exits 0 and writes the JSON, the
-    builder returns the stable cache path."""
+    """When the wrapper exits 0 and writes the JSON, the builder returns the stable cache path."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
 
     captured = {}
@@ -68,16 +62,14 @@ def test_build_view_json_success_writes_to_stable_path(tmp_path, monkeypatch):
     )
     assert result == view_builder.view_json_path(tmp_path, "demo")
     assert result.is_file()
-    # Verify the wrapper got configured for JSON output at the cache
-    # path — covers the contract the builder makes with RtlBuddyView.
+    # The wrapper is configured for JSON output at the cache path.
     assert captured["kwargs"]["format"] == "json"
     assert captured["kwargs"]["output"] == str(result)
     assert captured["kwargs"]["executable"] == "/fake/rtl-buddy-view"
 
 
 def test_build_view_json_subprocess_failure_raises(tmp_path, monkeypatch):
-    """Non-zero exit from rtl-buddy-view → fatal error referencing the
-    log file (rtl-buddy-view's hier.log under artefacts/)."""
+    """A non-zero exit from rtl-buddy-view is a fatal error that references its log file."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
 
     class FailingRunner:
@@ -96,8 +88,7 @@ def test_build_view_json_subprocess_failure_raises(tmp_path, monkeypatch):
 
 
 def test_build_view_json_creates_cache_dir(tmp_path, monkeypatch):
-    """The .rtl-buddy/cache directory may not exist yet on a fresh
-    project — the builder should create it."""
+    """The builder creates the .rtl-buddy/cache directory on a fresh project."""
     assert not view_builder.cache_dir(tmp_path).exists()
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
 
@@ -119,10 +110,7 @@ def test_build_view_json_creates_cache_dir(tmp_path, monkeypatch):
 def test_build_view_json_passes_cdc_annotations_when_back_pointer_set(
     tmp_path, monkeypatch
 ):
-    """When ``model.cdc`` is set, the view builder routes through
-    cdc_builder to produce a domain map and feeds the path to
-    rtl-buddy-view as ``--cdc-annotations``. Tested at the
-    integration boundary by stubbing cdc_builder."""
+    """With ``model.cdc`` set, the builder gets a domain map from cdc_builder (stubbed here) and passes its path as ``--cdc-annotations``."""
     from rtl_buddy.hub import cdc_builder
 
     fake_domain = tmp_path / ".rtl-buddy" / "cache" / "domain-demo.json"
@@ -162,8 +150,7 @@ def test_build_view_json_passes_cdc_annotations_when_back_pointer_set(
 def test_build_view_json_no_cdc_annotations_when_back_pointer_absent(
     tmp_path, monkeypatch
 ):
-    """Without ``model.cdc`` the cdc_builder returns ``None`` and
-    rtl-buddy-view runs without ``--cdc-annotations``."""
+    """Without ``model.cdc``, cdc_builder returns ``None`` and rtl-buddy-view runs without ``--cdc-annotations``."""
     from rtl_buddy.hub import cdc_builder
 
     monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
@@ -188,11 +175,8 @@ def test_build_view_json_no_cdc_annotations_when_back_pointer_absent(
     assert captured["kwargs"]["cdc_annotations"] is None
 
 
-# --- TB view (rtl-buddy-view #99 / 6b) -----------------------------------
-
-
 def _test_cfg(model: ModelConfig, tb_name: str = "tb_basic"):
-    """Minimal TestConfig with a TestbenchConfig that has a toplevel."""
+    """Return a minimal TestConfig whose TestbenchConfig has a toplevel."""
     from rtl_buddy.config.test import TestbenchConfig, TestConfig
 
     tb = TestbenchConfig(name=tb_name, filelist=[], toplevel="tb_top")
@@ -213,8 +197,7 @@ def _test_cfg(model: ModelConfig, tb_name: str = "tb_basic"):
 
 
 def test_view_json_path_for_tb_keys_on_model_and_tb(tmp_path):
-    """Cache key is (model, tb) — two tests sharing the same TB
-    share the artefact."""
+    """The cache key is (model, tb); tests sharing a TB share the artefact."""
     assert (
         view_builder.view_json_path_for_tb(tmp_path, "demo", "tb_basic")
         == tmp_path / ".rtl-buddy" / "cache" / "view-demo-tb-tb_basic.json"
@@ -229,9 +212,7 @@ def test_view_json_path_for_tb_keys_on_model_and_tb(tmp_path):
 def test_build_view_json_tb_mode_uses_tb_cache_path_and_forwards_test_cfg(
     tmp_path, monkeypatch
 ):
-    """When ``test_cfg`` is supplied, the builder writes to the
-    (model, tb)-keyed cache file and passes the test_cfg through to
-    RtlBuddyView so the wrapper can emit --tb-top + merge filelists."""
+    """With ``test_cfg``, the builder writes to the (model, tb)-keyed cache file and passes ``test_cfg`` to RtlBuddyView."""
     from rtl_buddy.hub import cdc_builder
 
     monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
@@ -262,15 +243,14 @@ def test_build_view_json_tb_mode_uses_tb_cache_path_and_forwards_test_cfg(
     )
     assert result == view_builder.view_json_path_for_tb(tmp_path, "demo", "tb_basic")
     assert result.is_file()
-    # The wrapper received the test_cfg, so it'll emit --tb-top.
+    # The wrapper received test_cfg, so it emits --tb-top.
     assert captured["kwargs"]["test_cfg"] is test_cfg
 
 
 def test_build_view_json_tb_mode_error_message_mentions_test_name(
     tmp_path, monkeypatch
 ):
-    """Failure path surfaces the test name in the error so the user
-    can spot which TB-mode click broke."""
+    """A TB-mode failure names the test in the error."""
     from rtl_buddy.hub import cdc_builder
 
     monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
@@ -297,16 +277,11 @@ def test_build_view_json_tb_mode_error_message_mentions_test_name(
         )
 
 
-# --- contract floor (view.json schema_version major) ---------------------
-#
-# rtl_buddy pins no rtl-buddy-view version, so the on-disk view.json shape
-# is floored independently by its top-level schema_version major. 1.x is
-# forward-compatible (minor bumps add fields only); a breaking major or an
-# unparseable value must fail loudly before the SPA loads it.
+# view.json is checked against a floor on its top-level schema_version major. 1.x is accepted; a higher major or an unparseable value must fail before the SPA loads it.
 
 
 def _runner_emitting(tmp_path: Path, payload: str):
-    """Build a FakeRunner class that writes ``payload`` and exits 0."""
+    """Return a FakeRunner class that writes ``payload`` and exits 0."""
 
     class FakeRunner:
         def __init__(self, **kwargs):
@@ -324,7 +299,7 @@ def _runner_emitting(tmp_path: Path, payload: str):
 
 @pytest.mark.parametrize("schema", ["1.0", "1.1", "1.5", "1"])
 def test_build_view_json_accepts_supported_schema_major(tmp_path, monkeypatch, schema):
-    """Any 1.x view.json passes — minor bumps only add fields."""
+    """Any 1.x view.json passes."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     monkeypatch.setattr(
         view_builder,
@@ -338,8 +313,7 @@ def test_build_view_json_accepts_supported_schema_major(tmp_path, monkeypatch, s
 
 
 def test_build_view_json_rejects_future_schema_major(tmp_path, monkeypatch):
-    """A breaking major (2.x) is rejected with an upgrade hint, even though
-    rtl-buddy-view exited 0 — the contract floor is package-independent."""
+    """A 2.x view.json is rejected with an upgrade hint even though rtl-buddy-view exited 0."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     monkeypatch.setattr(
         view_builder,
@@ -351,8 +325,7 @@ def test_build_view_json_rejects_future_schema_major(tmp_path, monkeypatch):
 
 
 def test_build_view_json_rejects_unparseable_schema(tmp_path, monkeypatch):
-    """A missing / non-numeric schema_version is a clear error, not a
-    confusing KeyError or silent serve of a malformed payload."""
+    """A missing or non-numeric schema_version is a clear error."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     monkeypatch.setattr(
         view_builder,
@@ -366,10 +339,7 @@ def test_build_view_json_rejects_unparseable_schema(tmp_path, monkeypatch):
 def test_build_view_json_clears_the_cache_before_domain_map_generation(
     tmp_path, monkeypatch
 ):
-    """`view.json` lives in the persistent cache and `viewer_http` serves
-    whatever is at that path with a 200. A rebuild that dies in
-    `build_domain_map` must therefore not leave the previous build's view for
-    the SPA to keep serving (#469)."""
+    """A rebuild that fails in `build_domain_map` must not leave the previous view.json in the cache for `viewer_http` to serve."""
     from rtl_buddy.hub import cdc_builder
 
     model = _model(tmp_path)
@@ -392,8 +362,7 @@ def test_build_view_json_clears_the_cache_before_domain_map_generation(
 def test_build_view_json_clears_the_cache_before_resolving_the_viewer(
     tmp_path, monkeypatch
 ):
-    """Same for the other pre-run raise: no viewer on PATH must not leave the
-    previous build's view.json being served (#469)."""
+    """A missing viewer on PATH must not leave the previous view.json in the cache."""
     from rtl_buddy.hub import cdc_builder
 
     model = _model(tmp_path)
@@ -413,10 +382,7 @@ def test_build_view_json_clears_the_cache_before_resolving_the_viewer(
 def test_build_view_json_removes_a_view_the_renderer_wrote_then_failed(
     tmp_path, monkeypatch
 ):
-    """rtl-buddy-view can write `out_path` and *then* exit non-zero. The hub
-    remembers the failure, but `_serve_active_view_json` tests the file before
-    it consults that memory — so a half-built view left on disk is served with
-    a 200. It has to go (#469)."""
+    """A view.json written by a renderer that then exits non-zero is removed."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     out_path = view_builder.view_json_path(tmp_path, "demo")
 
@@ -441,8 +407,7 @@ def test_build_view_json_removes_a_view_the_renderer_wrote_then_failed(
 def test_build_view_json_removes_a_view_that_fails_schema_validation(
     tmp_path, monkeypatch
 ):
-    """A view.json rejected for its schema major must not stay on disk to be
-    served anyway (#469)."""
+    """A view.json rejected for its schema major is removed."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     out_path = view_builder.view_json_path(tmp_path, "demo")
 
@@ -464,7 +429,7 @@ def test_build_view_json_removes_a_view_that_fails_schema_validation(
 
 
 def test_build_view_json_removes_an_unreadable_view(tmp_path, monkeypatch):
-    """Same for a view.json that is not parseable JSON at all (#469)."""
+    """A view.json that is not parseable JSON is removed."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     out_path = view_builder.view_json_path(tmp_path, "demo")
 
@@ -488,10 +453,7 @@ def test_build_view_json_removes_an_unreadable_view(tmp_path, monkeypatch):
 def test_build_view_json_removes_a_view_whose_top_level_is_not_an_object(
     tmp_path, monkeypatch
 ):
-    """An exit-0 renderer can write valid JSON whose top level is a list. The
-    validator dereferenced it with `.get`, raising `AttributeError` rather
-    than `FatalRtlBuddyError`, so the old handler did not clear it and
-    `_serve_active_view_json` served the rejected file with a 200 (#469)."""
+    """A view.json whose top level is not an object is removed."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     out_path = view_builder.view_json_path(tmp_path, "demo")
 
@@ -515,9 +477,7 @@ def test_build_view_json_removes_a_view_whose_top_level_is_not_an_object(
 def test_build_view_json_removes_the_view_on_any_validator_exception(
     tmp_path, monkeypatch
 ):
-    """The cleanup catches every exception, not just `FatalRtlBuddyError`: the
-    validator dereferences the parsed JSON, so a shape it does not anticipate
-    must not leave the file at the active cache path (#469)."""
+    """Any validator exception, not just `FatalRtlBuddyError`, removes the view from the active cache path."""
     monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
     out_path = view_builder.view_json_path(tmp_path, "demo")
 

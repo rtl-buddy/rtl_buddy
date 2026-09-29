@@ -1,9 +1,4 @@
-"""Machine-mode result payloads must carry the guardrail data the run computes.
-
-Covers the regression/test coverage summary (#347) and the FPV vacuity / COI /
-dead-assume results (#348), both of which were dropped on the ``--machine``
-surfaces while the human summary rendered them.
-"""
+"""Machine-mode result payloads carry the guardrail data the run computes: the coverage summary and the FPV vacuity, COI and dead-assume results."""
 
 import json
 import logging
@@ -40,7 +35,7 @@ class _DummyRootCfg:
         return None
 
 
-# --- #348: FPV guardrails on the machine row --------------------------------
+# FPV guardrails on the machine row.
 
 
 def test_fpv_result_row_includes_vacuity_and_coi():
@@ -90,11 +85,11 @@ def test_fpv_result_row_omits_empty_guardrails():
     assert "coi" not in row
 
 
-# --- #560: the published phys model on the synth / power machine rows -------
+# The published phys model on the synth and power machine rows.
 
 
 def test_synth_result_row_names_the_published_phys_model():
-    """A machine consumer of `rb --machine synth` can find the model."""
+    """`rb --machine synth` names the phys model."""
     from rtl_buddy.runner.synth_results import SynthPassResults
 
     results = SynthPassResults(
@@ -119,7 +114,7 @@ def test_synth_result_row_omits_the_model_when_none_was_published():
 
 
 def test_power_result_row_names_the_published_phys_model():
-    """The same for `rb --machine power`."""
+    """`rb --machine power` names the phys model."""
     from rtl_buddy.runner.power_results import PowerPassResults
 
     results = PowerPassResults(
@@ -145,7 +140,7 @@ def test_power_result_row_omits_the_model_when_none_was_published():
     assert "phys_model" not in row
 
 
-# --- #347: structured coverage on the machine row and payload ---------------
+# Structured coverage on the machine row and payload.
 
 
 def test_machine_coverage_extracts_metric_percentages():
@@ -208,7 +203,7 @@ def test_machine_coverage_payload_gates_on_data():
 
 
 def test_machine_coverage_payload_survives_on_cover_points_alone():
-    """Cover points are recorded without any --coverage-merge* flag (#367)."""
+    """Cover points are recorded without any --coverage-merge* flag."""
     covers = {
         "merged": None,
         "dir_summary": [],
@@ -258,7 +253,7 @@ def test_machine_test_row_omits_covers_when_absent():
 
 
 def test_build_metadata_aggregates_cover_points_across_tests(tmp_path):
-    """Per-test lists fold into one run-level list, no merge flag needed."""
+    """Per-test cover-point lists fold into one run-level list, no merge flag needed."""
     reporter = CoverageReporter(_DummyRootCfg())
     suite_results = [
         {
@@ -354,8 +349,7 @@ def test_build_metadata_returns_structured_merged_coverage(tmp_path, monkeypatch
         "line": 0.92,
         "branch": 0.88,
         "toggle": 0.75,
-        # No expression points in the fake merge, so the scalar is null
-        # rather than 0.0 — "unsupported" stays distinct from "0% covered".
+        # No expression points in the fake merge, so the scalar is null rather than 0.0; "unsupported" stays distinct from "0% covered".
         "expression": None,
         "functional": 1.0,
     }
@@ -367,11 +361,7 @@ def test_build_metadata_without_coverage_returns_empty_payload(tmp_path):
     metadata, coverage = reporter.build_metadata(
         [], outdir=str(tmp_path), suite_name="suite"
     )
-    # `covers` is omitted, not null, when no user points were recorded — so
-    # "absent means not collected" holds on the run level as well as the rows.
-    # `merge_failed`/`failed_metrics` behave the opposite way on purpose
-    # (#638): a merge verdict is always stated, so a consumer never reads a
-    # missing key as "the merge was fine".
+    # `covers` is omitted, not null, when no user points were recorded. `merge_failed` and `failed_metrics` are always present so a missing key is never read as a good merge.
     assert coverage == {
         "merged": None,
         "dir_summary": [],
@@ -407,7 +397,7 @@ def test_dir_summary_records_are_structured_and_format_back(tmp_path, monkeypatc
     ]
 
 
-# --- the shared surface: render_summary emits the "summary" event in --machine
+# The shared surface: render_summary emits the "summary" event in --machine.
 
 
 def test_render_summary_emits_summary_event_in_machine_mode(tmp_path):
@@ -526,7 +516,7 @@ def test_machine_summary_without_verdict_column_has_no_counts(tmp_path, capsys):
 
 
 def test_power_result_row_says_which_parasitics_were_used():
-    """`spef` or `estimated`, so an agent can tell the two apart (#101)."""
+    """`spef` or `estimated`, so an agent can tell the two apart."""
     from rtl_buddy.runner.power_results import PowerPassResults
 
     results = PowerPassResults(

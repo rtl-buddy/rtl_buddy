@@ -1,29 +1,6 @@
-"""Tests for #380 — ``rb mcp``, the stdio Model Context Protocol server.
+"""Tests for ``rb mcp``, the stdio Model Context Protocol server.
 
-MCP is a *second* LLM-facing surface next to ``--machine``, and the way
-two such surfaces fail is by drifting: one grows a field, the other
-doesn't, and an agent's answer depends on which door it came through.
-The design that prevents it is what these tests pin.
-
-What these tests pin:
-
-* the tool set is SDK-free — it builds, lists and answers on a machine
-  that has never installed ``mcp``, which is also what makes the schemas
-  checkable here;
-* the stateless tools are always served — including the coverage and
-  physical-metrics reads, whose artefacts are on disk — and the hub tools
-  appear only when a live hub was discovered, so an agent on a CI node is
-  never offered a tool that can only fail;
-* every result is the ``rb --machine`` payload verbatim, wrapped in an
-  envelope reporting ``rtl_buddy_version``;
-* a bad question (unknown tool, missing graph, unknown model) comes back
-  as ``ok: false`` with a message, never as an exception — an agent that
-  gets a transport error learns to stop asking;
-* the SDK boundary itself: schemas validate against ``mcp.types.Tool``,
-  and a real client can list and call tools over stdio.
-
-The SDK-dependent tests skip when ``mcp`` is not installed. The extra is
-in the ``test`` dependency group so CI runs them for real.
+The tests pin that the tool set is SDK-free, that stateless tools are always served while hub tools appear only when a live hub is discovered, that every result is the ``rb --machine`` payload in an envelope with ``rtl_buddy_version``, and that a bad question returns ``ok: false`` instead of raising. SDK-dependent tests skip when ``mcp`` is not installed.
 """
 
 from __future__ import annotations
@@ -92,12 +69,7 @@ def _cov_totals(**metrics: tuple[int, int]) -> dict:
 
 @pytest.fixture
 def cov_project(mcp_project: Path) -> Path:
-    """The graph project, plus one run's coverage artefacts on disk.
-
-    Hand-authored rather than simulated: what these tests pin is that
-    the MCP tools hand back what the ``rb cov`` builders produce, and a
-    real ``coverage.dat`` would only add a Verilator parse to the path.
-    """
+    """The graph project plus one run's hand-authored coverage artefacts."""
     from rtl_buddy.cov import manifest as manifest_mod
     from rtl_buddy.cov import model as model_mod
 
@@ -121,7 +93,7 @@ def cov_project(mcp_project: Path) -> Path:
             }
         ],
         "files": [
-            # Warm first, so a coldest-first answer had to reorder.
+            # Warm first, so a coldest-first answer must reorder.
             {
                 "path": "design/blk_b/blk_b.sv",
                 "modules": ["blk_b"],
@@ -209,13 +181,7 @@ _PHYS_INSTANCES = [
 
 @pytest.fixture
 def phys_project(mcp_project: Path) -> Path:
-    """The graph project, plus one run's physical artefacts on disk.
-
-    Written by the phase-1 producers rather than by a real synthesis:
-    what these tests pin is that the MCP tools hand back what the ``rb
-    phys`` builders produce, and running yosys here would only add an
-    EDA tool to the path.
-    """
+    """The graph project plus one run's physical artefacts written by the phase-1 producers."""
     from rtl_buddy.phys.manifest import build_manifest, write_manifest
     from rtl_buddy.phys.model import (
         build_power_model,
@@ -226,9 +192,7 @@ def phys_project(mcp_project: Path) -> Path:
 
     phys_dir = mcp_project / "verif" / "blk_a" / "artefacts" / "nightly"
     phys_dir.mkdir(parents=True)
-    # Both halves record the same netlist hash, as a `rb synth` then
-    # `rb power` pair does: neither inherits the other's rows without it
-    # (`rtl_buddy.phys.model.may_inherit_other_half`).
+    # Both halves record the same netlist hash, as an `rb synth` then `rb power` pair does; without it neither inherits the other's rows (`rtl_buddy.phys.model.may_inherit_other_half`).
     netlist_sha256 = "0" * 64
     model = merge_model(
         build_synth_model(
@@ -286,13 +250,8 @@ def _toolset(project: Path, **kwargs):
     return build_toolset(project, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# Tool registry
-# ---------------------------------------------------------------------------
-
-
 def test_stateless_tools_are_served_without_a_hub(mcp_project: Path):
-    """Headless is the primary case: no daemon, full stateless answers."""
+    """With no daemon, stateless tools give full answers."""
     ts = _toolset(mcp_project)
 
     assert ts.names() == list(STATELESS_TOOL_NAMES)
@@ -306,7 +265,7 @@ def test_hub_tools_dial_in_when_a_hub_is_live(mcp_project: Path):
 
 
 def test_a_stale_hub_record_does_not_advertise_hub_tools(mcp_project: Path):
-    """A dead PID must not light up tools that can only fail to connect."""
+    """A dead PID does not advertise hub tools."""
     hub_dir = mcp_project / ".rtl-buddy"
     hub_dir.mkdir(exist_ok=True)
     (hub_dir / "hub.json").write_text(
@@ -332,11 +291,7 @@ def test_a_stale_hub_record_does_not_advertise_hub_tools(mcp_project: Path):
 def test_coverage_reads_are_stateless_and_only_the_focus_needs_a_hub(
     mcp_project: Path,
 ):
-    """Artefacts are on disk: a CI node answers coverage with no hub.
-
-    Only ``cov_focus`` needs one, because pointing a pane at something
-    is the one coverage question a headless process cannot answer.
-    """
+    """A CI node answers coverage reads with no hub; only ``cov_focus`` needs one."""
     headless = _toolset(mcp_project)
     live = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
 
@@ -359,13 +314,8 @@ def test_every_schema_is_a_closed_object_with_resolvable_requireds(mcp_project: 
         assert spec.description and spec.title, spec.name
 
 
-# ---------------------------------------------------------------------------
-# Result envelope
-# ---------------------------------------------------------------------------
-
-
 def test_a_result_is_the_machine_payload_plus_the_version(mcp_project: Path):
-    """Neither surface may grow a shape the other does not have."""
+    """A result is the machine payload plus the version; neither surface has a shape the other lacks."""
     from rtl_buddy.graph.query import load_context, query as run_query
 
     ts = _toolset(mcp_project)
@@ -414,9 +364,7 @@ def test_path_and_explain_mirror_their_cli_verbs(mcp_project: Path):
 
 
 def test_graph_tools_are_lean_by_default_and_expand_on_request(mcp_project: Path):
-    """The MCP surface mirrors the CLI's #388 diet: lean edges/neighbours,
-    full peer summaries only when 'expand' asks for them — the two
-    surfaces must not drift apart on payload shape."""
+    """Graph tools return lean edges and neighbours by default and full peer summaries only when 'expand' asks, as the CLI does."""
     ts = _toolset(mcp_project)
 
     lean = ts.call("graph_explain", {"node": "test:verif/blk_a#t_basic"})
@@ -436,13 +384,8 @@ def test_graph_tools_are_lean_by_default_and_expand_on_request(mcp_project: Path
     assert all(n.get("tier") for n in expanded_neighbors)
 
 
-# ---------------------------------------------------------------------------
-# Coverage
-# ---------------------------------------------------------------------------
-
-
 def test_cov_summary_is_the_rb_cov_payload_verbatim(cov_project: Path):
-    """Same builder as ``rb --machine cov summary``, not a second shape."""
+    """``cov_summary`` returns the ``rb --machine cov summary`` payload."""
     from rtl_buddy.cov.query import load_context, summary_payload
 
     ts = _toolset(cov_project)
@@ -459,7 +402,7 @@ def test_cov_summary_is_the_rb_cov_payload_verbatim(cov_project: Path):
 
 
 def test_cov_summary_truncates_coldest_first(cov_project: Path):
-    """The one file a limited summary keeps is the one to go look at."""
+    """A limited summary keeps the coldest file."""
     ts = _toolset(cov_project)
 
     everything = ts.call("cov_summary", {"limit": 0})["payload"]["files"]
@@ -488,7 +431,7 @@ def test_cov_module_returns_the_points_and_the_tests_behind_them(cov_project: Pa
 
 
 def test_an_unknown_cov_module_returns_its_candidates(cov_project: Path):
-    """A typo is likelier than a coverage hole; hand back the near miss."""
+    """An unknown cov module returns its near-miss candidates."""
     ts = _toolset(cov_project)
 
     envelope = ts.call("cov_module", {"module": "blk_z"})
@@ -513,12 +456,9 @@ def test_cov_reads_a_named_cov_dir_instead_of_the_newest(cov_project: Path):
 def test_cov_reads_a_relative_cov_dir_against_the_project_root(
     cov_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """An MCP client has no invocation cwd; the payload speaks repo paths.
+    """A relative ``cov_dir`` resolves against the project root, not the server's cwd.
 
-    The host spawns ``rb mcp`` in a directory the agent never sees, so the
-    natural argument is the repo-relative one the payload itself hands
-    back (``artefacts.manifest``). Resolving it against the server's cwd
-    would answer a path nobody named — hence the chdir here.
+    The host spawns ``rb mcp`` in a directory the agent never sees, so the repo-relative path from the payload (``artefacts.manifest``) is the natural argument.
     """
     ts = _toolset(cov_project)
     elsewhere = tmp_path / "somewhere_else"
@@ -540,7 +480,7 @@ def test_cov_reads_a_relative_cov_dir_against_the_project_root(
 def test_cov_reads_a_relative_manifest_against_the_project_root(
     cov_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``manifest`` is the path the summary reports back, verbatim."""
+    """A relative ``manifest`` resolves against the project root; it is the path the summary reports."""
     ts = _toolset(cov_project)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -555,9 +495,7 @@ def test_cov_reads_a_relative_manifest_against_the_project_root(
     assert envelope["payload"]["tests"] == ["t_basic"]
 
 
-# Every coverage tool that takes the discovery overrides, with the rest of
-# its arguments — the guarantees below belong to the shared helper, not to
-# one handler, so each of them is asserted for all of these.
+# Coverage tools that take the discovery overrides, with their other arguments; the guarantees below belong to the shared helper and are asserted for each.
 _COV_TOOL_CALLS = (
     ("cov_summary", {}),
     ("cov_module", {"module": "blk_a"}),
@@ -568,14 +506,10 @@ _COV_TOOL_CALLS = (
 def test_a_cov_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
     cov_project: Path, tool: str, args: dict
 ):
-    """rtl-buddy/rtl_buddy#572: the hole the physical tools closed, still
-    open on the coverage ones. A host's arguments reach the handler as they
-    arrived — the adapter does not check them against ``inputSchema`` — so
-    ``cov_dir`` can be a number and ``manifest`` a list; ``Path()`` answers
-    those with a ``TypeError`` that ``Toolset.call`` does not catch, so a
-    bad argument surfaced as a protocol-level failure rather than the
-    ``ok: false`` envelope, and the agent got a traceback instead of the
-    constraint it broke."""
+    """A cov path override that is not a string is refused with an ``ok: false`` tool error.
+
+    A host's arguments are not checked against ``inputSchema``, so ``cov_dir`` can be a number; ``Path()`` would raise a ``TypeError`` that ``Toolset.call`` does not catch.
+    """
     ts = _toolset(cov_project)
 
     for key, bad, shown in (
@@ -588,14 +522,12 @@ def test_a_cov_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
         refused = ts.call(tool, dict(args, **{key: bad}))
 
         assert refused["ok"] is False, (tool, key, bad)
-        # The value it could not read is quoted back, as the physical
-        # refusal quotes its own.
+        # The unreadable value is quoted back.
         assert f"{key} must be a path string, not {shown}" in refused["error"]
         assert "omit it to read the newest run" in refused["error"]
         assert "payload" not in refused
 
-    # And a path that *is* a string still answers, so the check refuses
-    # only the mistake it was added for.
+    # A string path still answers.
     answered = ts.call(tool, dict(args, cov_dir="verif/blk_a/cov_dir"))
     assert answered["ok"] is True, answered.get("error")
 
@@ -604,9 +536,7 @@ def test_a_cov_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
 def test_an_absent_cov_path_override_still_means_discover_the_newest_run(
     cov_project: Path, tool: str, args: dict
 ):
-    """Both overrides are optional, so ``None`` has to keep meaning "no
-    override" — an explicit ``null`` from a host included — or the check
-    would refuse the ordinary call it was added to protect."""
+    """``None`` for an override, including an explicit ``null``, means discover the newest run."""
     ts = _toolset(cov_project)
 
     assert ts.call(tool, dict(args))["ok"] is True
@@ -628,21 +558,16 @@ def test_an_absent_cov_path_override_still_means_discover_the_newest_run(
 def test_a_cov_summary_limit_that_is_not_a_whole_count_is_refused(
     cov_project: Path, bad, shown: str
 ):
-    """rtl-buddy/rtl_buddy#572 review: the same finding as #563 round-16, on
-    the coverage summary. ``int()`` is a coercion, not a validator, and it
-    never saw a value it could not answer with a number the caller did not
-    ask for: ``false`` is an ``int`` subclass and comes back as ``0``, this
-    input's spelling of *every file in the run*; ``2.7`` truncates; and
-    ``null``/``"ten"``/``[]`` raise past ``Toolset.call``, which catches
-    neither ``TypeError`` nor ``ValueError`` — a protocol-level failure for
-    a bad argument, where every other bad question gets ``ok: false``."""
+    """A cov summary ``limit`` that is not a whole count is refused.
+
+    ``int()`` would turn ``false`` into 0 (every file), truncate ``2.7``, and raise on ``null``, ``"ten"`` or ``[]`` past ``Toolset.call``.
+    """
     ts = _toolset(cov_project)
 
     refused = ts.call("cov_summary", {"limit": bad})
 
     assert refused["ok"] is False
-    # The value it could not read is quoted back, so the caller can see
-    # what it actually sent.
+    # The unreadable value is quoted back.
     assert f"limit must be an integer, not {shown}" in refused["error"]
     assert "0 lists every row" in refused["error"]
     assert "payload" not in refused
@@ -651,10 +576,10 @@ def test_a_cov_summary_limit_that_is_not_a_whole_count_is_refused(
 def test_a_negative_cov_summary_limit_is_refused_rather_than_read_as_all(
     cov_project: Path,
 ):
-    """``minimum: 0`` in a schema is documentation until a handler checks
-    it, and below the floor the cap does not clamp: ``coldest_first`` reads
-    anything ``<= 0`` as "no cap at all", so ``limit: -1`` used to ask for
-    one file fewer than none and be answered with all of them."""
+    """A negative cov summary ``limit`` is refused, not read as all files.
+
+    ``coldest_first`` treats anything ``<= 0`` as no cap.
+    """
     ts = _toolset(cov_project)
 
     refused = ts.call("cov_summary", {"limit": -1})
@@ -664,17 +589,14 @@ def test_a_negative_cov_summary_limit_is_refused_rather_than_read_as_all(
     assert "0 lists every row" in refused["error"]
     assert "payload" not in refused
 
-    # 0 is untouched -- it is the documented way to ask for all of them.
+    # 0 is untouched; it asks for all files.
     everything = ts.call("cov_summary", {"limit": 0})
     assert everything["ok"] is True
     assert len(everything["payload"]["files"]) == 2
 
 
 def test_a_whole_cov_summary_limit_still_heads_the_file_list(cov_project: Path):
-    """The refusals above may not cost the ordinary call anything. A count
-    still heads the list, and JSON has one number type — ``1.0`` is how
-    some hosts spell ``1``, and a decimal string converts as it always
-    has — while an absent ``limit`` is the CLI's default, not no cap."""
+    """A whole-number ``limit`` still heads the file list. ``1.0`` and a decimal string are accepted, and an absent ``limit`` uses the CLI default."""
     from rtl_buddy.cov.query import DEFAULT_FILE_LIMIT
 
     ts = _toolset(cov_project)
@@ -707,7 +629,7 @@ def test_a_project_with_no_coverage_run_names_the_command_that_makes_one(
 def test_cov_focus_omits_the_hints_it_was_not_given(
     mcp_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``additionalProperties: false`` and no nullable hints on the wire."""
+    """``cov_focus`` omits hints it was not given (``additionalProperties: false``, no nullable hints)."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
     sent: dict = {}
     monkeypatch.setattr(
@@ -725,12 +647,9 @@ def test_cov_focus_omits_the_hints_it_was_not_given(
 def test_cov_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
     mcp_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Padded input, one payload: the MCP tool and ``rb hub send``.
+    """Padded input gives one payload from the MCP tool and ``rb hub send``.
 
-    The pane matches ``target``/``item`` as strings, so a trailing space
-    is a miss rather than a near miss, and a rule spelled one way on one
-    surface and another way on the other is observable on the wire.
-    Both validate *and* emit the stripped value.
+    The pane matches ``target`` and ``item`` as strings, so both surfaces validate and emit the stripped value.
     """
     from rtl_buddy.hub import send as hub_send
 
@@ -772,7 +691,7 @@ def test_cov_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
 
 
 def test_cov_focus_validates_before_dialling(mcp_project: Path):
-    """Port 1 refuses connections: reaching it would mean no validation."""
+    """Port 1 refuses connections; reaching it would mean no validation."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
 
     envelope = ts.call("cov_focus", {"target": "design/blk_a.sv", "metric": "lines"})
@@ -781,14 +700,8 @@ def test_cov_focus_validates_before_dialling(mcp_project: Path):
     assert "metric" in envelope["error"]
 
 
-# ---------------------------------------------------------------------------
-# Physical metrics
-# ---------------------------------------------------------------------------
-
-
 def test_physical_reads_are_stateless_and_mirror_their_cli_verbs(mcp_project: Path):
-    """Artefacts are on disk: a CI node answers phys with no hub, and no
-    EDA tool is run to answer any of the three."""
+    """A CI node answers phys reads with no hub, and no EDA tool is run."""
     headless = _toolset(mcp_project)
 
     assert {"phys_summary", "phys_module", "phys_instance"} <= set(headless.names())
@@ -800,10 +713,7 @@ def test_physical_reads_are_stateless_and_mirror_their_cli_verbs(mcp_project: Pa
 def test_phys_module_does_not_claim_it_answers_a_flat_netlists_top(
     mcp_project: Path,
 ):
-    """The claim came off the concepts page and the query docstring in
-    round 6 and survived here, which is the copy an agent actually reads.
-    The join matches the power half's `module` field as it stands, so no
-    leaf row carries an RTL module's name — the top's included."""
+    """``phys_module`` does not claim to answer a flat netlist's top: no leaf row carries an RTL module's name."""
     description = _toolset(mcp_project).spec("phys_module").description
 
     assert "flat netlist's top" not in description
@@ -814,29 +724,20 @@ def test_phys_module_does_not_claim_it_answers_a_flat_netlists_top(
 def test_phys_module_scopes_the_liberty_only_claim_to_the_power(
     mcp_project: Path,
 ):
-    """ "Liberty-cell questions and nothing else" overshot: an RTL module
-    name is measured by the synthesis half — its cells and its area are
-    its own — and it is the power attribution, which is made by the join,
-    that the Liberty namespace bounds. An agent that read the old
-    sentence had no reason to call the tool for an RTL block at all."""
+    """``phys_module`` limits the Liberty-only claim to the power attribution; the synthesis half measures RTL modules."""
     description = _toolset(mcp_project).spec("phys_module").description
 
     assert "and nothing else" not in description
     assert "still gets its synthesis row" in description
     assert "the POWER is attributed by that join" in description
-    # And the empty instance list is not evidence against the row above
-    # it.
+    # The empty instance list is not evidence against the row above it.
     assert "do not read it back onto the cells and area, which stand" in description
 
 
 def test_the_phys_tools_say_which_instance_targets_are_focusable(
     mcp_project: Path,
 ):
-    """The finding (#563 round-10 review, Codex P2). The pair of
-    descriptions read as "feed phys_instance's echoed path to phys_focus",
-    and for a subtree that path names no row at all: the pane resolves
-    exact leaf rows, so the focus soft-misses and the agent is left
-    wondering what it did wrong."""
+    """The phys tool descriptions say which instance targets are focusable; the pane resolves exact leaf rows, so a subtree path soft-misses."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
     instance = ts.spec("phys_instance").description
     focus = ts.spec("phys_focus").description
@@ -851,12 +752,10 @@ def test_the_phys_tools_say_which_instance_targets_are_focusable(
 
 
 def test_the_phys_detail_tools_head_their_lists_by_default(phys_project: Path):
-    """A complete list by default is a context window spent on the tail of
-    a ranking nobody asked for: every instance of a Liberty cell on a
-    mapped run is six figures of rows. The payloads are self-describing —
-    the applied limit rides on them next to the untruncated count and the
-    sums cover every row — so the default heads them and an agent that
-    wants all of them says so."""
+    """The phys detail tools head their lists by default.
+
+    The payload carries the applied limit, the untruncated count and sums over every row; an agent wanting all rows says so.
+    """
     from rtl_buddy.phys.query import DEFAULT_RANK_LIMIT
 
     ts = _toolset(phys_project)
@@ -872,13 +771,11 @@ def test_the_phys_detail_tools_head_their_lists_by_default(phys_project: Path):
         assert default["limit"] == DEFAULT_RANK_LIMIT
         assert default[listed] == every[listed]  # 2 rows, well under the cap
         assert len(headed[listed]) == 1
-        # Self-describing: the count is of every matching row, not of the
-        # rows that fitted, and the sum is too.
+        # Self-describing: the count and the sum cover every matching row.
         assert headed[counted] == 2
         assert headed["limit"] == 1
 
-    # The sums do not shrink with the list — a subtree total that counted
-    # only the listed rows would be a different number per limit.
+    # The sums do not shrink with the list.
     hot = ts.call("phys_instance", {"path": "u_sub", "limit": 1})["payload"]
     assert hot["rollup"]["instances"] == 2
     assert hot["rollup"]["total_uw"] == pytest.approx(3.171)
@@ -890,12 +787,10 @@ def test_the_phys_detail_tools_head_their_lists_by_default(phys_project: Path):
 def test_a_negative_phys_limit_is_refused_rather_than_read_as_all(
     phys_project: Path,
 ):
-    """``minimum: 0`` in a schema is documentation until a handler checks
-    it: this server forwards a host's arguments to the handler as they
-    arrived. And below the floor the cap does not clamp -- the shared
-    ``truncate`` reads anything ``<= 0`` as "no head at all" -- so
-    ``limit: -1`` used to ask for one row fewer than none and be
-    answered with every row in the design."""
+    """A negative phys ``limit`` is refused, not read as all rows.
+
+    The server forwards arguments unchecked, and the shared ``truncate`` treats anything ``<= 0`` as no head.
+    """
     ts = _toolset(phys_project)
 
     for tool, args in (
@@ -906,25 +801,23 @@ def test_a_negative_phys_limit_is_refused_rather_than_read_as_all(
         refused = ts.call(tool, dict(args, limit=-1))
 
         assert refused["ok"] is False, tool
-        # The message names the constraint rather than restating that
-        # something went wrong: an agent that reads it can fix the call.
+        # The message names the constraint so an agent can fix the call.
         assert "limit must be 0 or greater, not -1" in refused["error"]
         assert "0 lists every row" in refused["error"]
-        # And nothing was answered from: a refusal is not a payload.
+        # A refusal is not a payload.
         assert "payload" not in refused
 
-    # 0 is untouched -- it is the documented way to ask for all of them.
+    # 0 is untouched; it asks for all rows.
     assert ts.call("phys_module", {"module": "sub", "limit": 0})["ok"] is True
 
 
 def test_a_phys_limit_that_is_not_an_integer_is_refused_before_it_is_coerced(
     phys_project: Path,
 ):
-    """The finding (#563 round-16, Codex P2). ``int()`` is a coercion, not a
-    validator. ``false`` is an ``int`` subclass and converts to ``0`` — this
-    input's spelling of *every row in the design*, the one answer the default
-    exists to prevent — and a fraction converts by truncating toward zero, so
-    ``-0.5`` reached the same place from a value that asked for a head."""
+    """A phys ``limit`` that is not an integer is refused before coercion.
+
+    ``int()`` turns ``false`` into 0 (every row) and truncates ``-0.5`` to 0.
+    """
     ts = _toolset(phys_project)
 
     for bad, shown in (
@@ -940,16 +833,13 @@ def test_a_phys_limit_that_is_not_an_integer_is_refused_before_it_is_coerced(
         assert "0 lists every row" in refused["error"]
         assert "payload" not in refused
 
-    # Integral floats still answer: JSON has one number type, so `2.0` is
-    # how some hosts spell `2`, and a decimal string converts as it always
-    # has.
+    # Integral floats still answer: `2.0` is how some hosts spell `2`, and a decimal string converts.
     for good, expected in ((2.0, 2), (0.0, 0), ("1", 1)):
         answered = ts.call("phys_module", {"module": "sub", "limit": good})
         assert answered["ok"] is True, good
         assert answered["payload"]["limit"] == expected
 
-    # And the guarantee is the shared helper's, so it holds for every
-    # physical tool that takes a limit.
+    # The shared helper enforces this for every physical tool that takes a limit.
     for tool, args in (
         ("phys_summary", {}),
         ("phys_module", {"module": "sub"}),
@@ -961,26 +851,19 @@ def test_a_phys_limit_that_is_not_an_integer_is_refused_before_it_is_coerced(
 def test_a_phys_limit_that_is_not_a_number_is_refused_as_a_tool_error(
     phys_project: Path,
 ):
-    """A host's arguments reach the handler as they arrived, so ``limit``
-    can be ``null``, a word, or a list. ``int()`` answers those with
-    ``TypeError``/``ValueError``, which ``Toolset.call`` does not catch:
-    a bad argument would surface as a protocol-level failure instead of
-    the ``ok: false`` envelope every other bad question gets, and a
-    traceback does not tell an agent which constraint it broke."""
+    """A phys ``limit`` that is ``null``, a word or a list is refused with an ``ok: false`` tool error, not a protocol-level failure."""
     ts = _toolset(phys_project)
 
     for bad, shown in ((None, "None"), ("ten", "'ten'"), ([], "[]")):
         refused = ts.call("phys_module", {"module": "sub", "limit": bad})
 
         assert refused["ok"] is False, bad
-        # The value it could not read is quoted back, so the caller can
-        # see what it actually sent.
+        # The unreadable value is quoted back.
         assert f"limit must be an integer, not {shown}" in refused["error"]
         assert "0 lists every row" in refused["error"]
         assert "payload" not in refused
 
-    # The guarantee belongs to the shared helper, not to one handler, so
-    # it holds for every physical tool that takes a limit.
+    # The shared helper enforces this for every physical tool that takes a limit.
     for tool, args in (
         ("phys_summary", {}),
         ("phys_module", {"module": "sub"}),
@@ -995,12 +878,10 @@ def test_a_phys_limit_that_is_not_a_number_is_refused_as_a_tool_error(
 def test_a_phys_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
     phys_project: Path,
 ):
-    """The same hole `limit` had, on the other two overrides. A host's
-    arguments reach the handler as they arrived, so `phys_dir` can be a
-    number and `manifest` a list; `Path()` answers those with a `TypeError`
-    that `Toolset.call` does not catch, so a bad argument surfaced as a
-    protocol-level failure rather than the `ok: false` envelope, and the
-    agent got a traceback instead of the constraint it broke."""
+    """A phys path override that is not a string is refused with an ``ok: false`` tool error.
+
+    `phys_dir` can arrive as a number and `manifest` as a list; `Path()` would raise a `TypeError` that `Toolset.call` does not catch.
+    """
     ts = _toolset(phys_project)
 
     for key, bad, shown in (
@@ -1013,14 +894,12 @@ def test_a_phys_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
         refused = ts.call("phys_module", {"module": "sub", key: bad})
 
         assert refused["ok"] is False, (key, bad)
-        # The value it could not read is quoted back, as the limit
-        # refusal quotes its own.
+        # The unreadable value is quoted back.
         assert f"{key} must be a path string, not {shown}" in refused["error"]
         assert "omit it to read the newest run" in refused["error"]
         assert "payload" not in refused
 
-    # The guarantee belongs to the shared helper, so it holds for every
-    # physical tool that takes the overrides.
+    # The shared helper enforces this for every physical tool that takes the overrides.
     for tool, args in (
         ("phys_summary", {}),
         ("phys_module", {"module": "sub"}),
@@ -1033,9 +912,7 @@ def test_a_phys_path_override_that_is_not_a_string_is_refused_as_a_tool_error(
 def test_an_absent_phys_path_override_still_means_discover_the_newest_run(
     phys_project: Path,
 ):
-    """Both overrides are optional, so `None` has to keep meaning "no
-    override" — an explicit `null` from a host included — or the check
-    would refuse the ordinary call it was added to protect."""
+    """``None`` for an override, including an explicit `null`, means discover the newest run."""
     ts = _toolset(phys_project)
 
     assert ts.call("phys_summary", {})["ok"] is True
@@ -1043,8 +920,7 @@ def test_an_absent_phys_path_override_still_means_discover_the_newest_run(
 
 
 def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Path):
-    """The input is only useful if the schema says the default is a head
-    and that 0 is the way out of it."""
+    """The phys detail tools declare in the schema that the default is a head and 0 means all."""
     from rtl_buddy.phys.query import DEFAULT_RANK_LIMIT
 
     ts = _toolset(mcp_project)
@@ -1065,11 +941,10 @@ def test_the_phys_detail_tools_declare_their_limit_like_the_cli(mcp_project: Pat
 
 
 def test_phys_summary_takes_a_limit_per_ranking(phys_project: Path):
-    """#606 on the tool surface: an agent that wants the whole module
-    table should not be handed every leaf instance row to get it.
-    ``limit`` still heads both, each override wins for its own ranking,
-    and ``"none"`` is the spelling of an empty one because ``0`` is
-    taken and means all."""
+    """``phys_summary`` takes a limit per ranking.
+
+    ``limit`` heads both rankings, each override wins for its own ranking, and ``"none"`` suppresses one because ``0`` means all.
+    """
     from rtl_buddy.phys.query import DEFAULT_RANK_LIMIT
 
     ts = _toolset(phys_project)
@@ -1080,8 +955,7 @@ def test_phys_summary_takes_a_limit_per_ranking(phys_project: Path):
     assert len(modules_only["modules"]) == 2
     assert modules_only["instances"] == []
     assert modules_only["limits"] == {"modules": 0, "instances": "none"}
-    # Truthful: the counts are the model's rows, not the listed ones, so
-    # a suppressed ranking is not an empty half.
+    # The counts are the model's rows, not the listed ones, so a suppressed ranking is not an empty half.
     assert modules_only["counts"] == {"modules": 2, "instances": 2}
 
     headed = ts.call("phys_summary", {"limit": 0, "modules_limit": 1})["payload"]
@@ -1101,11 +975,7 @@ def test_phys_summary_takes_a_limit_per_ranking(phys_project: Path):
 def test_a_per_ranking_phys_summary_limit_is_validated_like_the_shared_one(
     phys_project: Path,
 ):
-    """The overrides go through the same helper ``limit`` does, so the
-    holes it was hardened against are not reopened one input over: a
-    negative value is refused rather than read as "all", a bool is not
-    coerced to ``0``, and a word that is not ``"none"`` is refused
-    naming the input that carried it."""
+    """The per-ranking overrides use the same validation as ``limit``: negatives and bools are refused, and a word other than ``"none"`` is refused naming its input."""
     ts = _toolset(phys_project)
 
     for key in ("modules_limit", "instances_limit"):
@@ -1119,9 +989,9 @@ def test_a_per_ranking_phys_summary_limit_is_validated_like_the_shared_one(
             assert refused["ok"] is False, (key, bad)
             assert f"{key} must be an integer, not {shown}" in refused["error"]
 
-        # The word, in any case a host spells it, is the one non-number.
+        # The word, in any case, is the one non-number accepted.
         assert ts.call("phys_summary", {key: "NONE"})["ok"] is True
-        # And a number that arrived as a string is still a number.
+        # A number that arrived as a string is still a number.
         assert (
             ts.call("phys_summary", {key: "1"})["payload"]["limits"][
                 key.removesuffix("_limit")
@@ -1131,9 +1001,7 @@ def test_a_per_ranking_phys_summary_limit_is_validated_like_the_shared_one(
 
 
 def test_phys_summary_declares_its_per_ranking_limits(mcp_project: Path):
-    """An input an agent cannot see is an input it will not use: the
-    schema has to say that ``"none"`` is legal and that omitting the
-    override follows ``limit``."""
+    """The ``phys_summary`` schema says ``"none"`` is legal and that omitting an override follows ``limit``."""
     ts = _toolset(mcp_project)
 
     schema = ts.spec("phys_summary").input_schema
@@ -1157,8 +1025,7 @@ def test_phys_summary_declares_its_per_ranking_limits(mcp_project: Path):
 
 
 def test_phys_runs_is_the_rb_phys_runs_payload_verbatim(phys_project: Path):
-    """The menu the other physical tools take their ``phys_dir`` from, and
-    the same builder ``rb --machine phys runs`` prints."""
+    """``phys_runs`` returns the ``rb --machine phys runs`` payload, the menu that supplies ``phys_dir`` to the other tools."""
     from rtl_buddy.phys.query import DEFAULT_RUNS_LIMIT, runs_payload
 
     ts = _toolset(phys_project)
@@ -1172,14 +1039,13 @@ def test_phys_runs_is_the_rb_phys_runs_payload_verbatim(phys_project: Path):
     entry = envelope["payload"]["runs"][0]
     assert entry["phys_dir"] == "verif/blk_a/artefacts/nightly"
     assert entry["newest"] is True
-    # And the directory it names is one `phys_summary` accepts back.
+    # The directory it names is one `phys_summary` accepts.
     answered = ts.call("phys_summary", {"phys_dir": entry["phys_dir"]})
     assert answered["payload"]["run"] == entry["run"]
 
 
 def test_phys_runs_needs_no_hub_and_no_arguments(phys_project: Path):
-    """Stateless, like the other three: a CI node with no hub answers it,
-    and an agent that knows nothing about the project can call it first."""
+    """``phys_runs`` needs no hub and no arguments, so an agent can call it first."""
     from rtl_buddy.mcp.toolset import STATELESS_TOOL_NAMES
 
     assert "phys_runs" in STATELESS_TOOL_NAMES
@@ -1191,11 +1057,7 @@ def test_phys_runs_needs_no_hub_and_no_arguments(phys_project: Path):
 def test_phys_runs_validates_its_limit_like_every_other_physical_tool(
     phys_project: Path,
 ):
-    """The listing handler used to call ``int()`` itself and skip the shared
-    guard, so the one tool whose whole job is to be a menu answered
-    ``limit: -1`` with every run in the project -- ``truncate`` reads
-    anything ``<= 0`` as "no head at all". It is also the tool an agent
-    calls first, before it knows the project at all."""
+    """``phys_runs`` validates its ``limit`` through the shared helper; ``-1`` must not return every run."""
     from rtl_buddy.phys.query import DEFAULT_RUNS_LIMIT, runs_payload
 
     ts = _toolset(phys_project)
@@ -1205,20 +1067,19 @@ def test_phys_runs_validates_its_limit_like_every_other_physical_tool(
     assert "limit must be 0 or greater, not -1" in refused["error"]
     assert "payload" not in refused
 
-    # The same helper, so the same answer for a limit that is not a number.
+    # A non-numeric limit gets the same refusal.
     assert ts.call("phys_runs", {"limit": "ten"})["ok"] is False
 
-    # And the tool keeps its own default rather than the ranking tools':
-    # a run listing heads at DEFAULT_RUNS_LIMIT.
+    # The run listing keeps its own default, DEFAULT_RUNS_LIMIT.
     assert ts.call("phys_runs", {})["payload"] == runs_payload(
         ts.project_root, limit=DEFAULT_RUNS_LIMIT
     )
-    # 0 still means all of them.
+    # 0 still means all.
     assert ts.call("phys_runs", {"limit": 0})["payload"]["limit"] == 0
 
 
 def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
-    """Same builder as ``rb --machine phys summary``, not a second shape."""
+    """``phys_summary`` returns the ``rb --machine phys summary`` payload."""
     from rtl_buddy.phys.query import load_context, summary_payload
 
     ts = _toolset(phys_project)
@@ -1236,7 +1097,7 @@ def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
         "run",
         "top",
         "backends",
-        # The run's identity, beside where it is (#568).
+        # The run's identity, beside where it is.
         "power_mode",
         "power_activity",
         "config",
@@ -1247,7 +1108,7 @@ def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
         "halves",
         "missing_halves",
         "limit",
-        # What each ranking was actually headed at (#606).
+        # What each ranking was actually headed at.
         "limits",
         "modules",
         "instances",
@@ -1261,7 +1122,7 @@ def test_phys_summary_is_the_rb_phys_payload_verbatim(phys_project: Path):
 
 
 def test_phys_summary_truncates_the_rankings_heaviest_first(phys_project: Path):
-    """The one row a limited summary keeps is the one to go look at."""
+    """A limited summary keeps the heaviest row."""
     ts = _toolset(phys_project)
 
     everything = ts.call("phys_summary", {"limit": 0})["payload"]
@@ -1286,9 +1147,7 @@ def test_phys_module_joins_the_synthesis_row_to_the_instances_of_it(
     )
     assert envelope["payload"]["row"]["cell_count"] == 40
     assert envelope["payload"]["instance_count"] == 2
-    # `limit: 0` is the complete list, the same word the CLI verb takes —
-    # and the same builder, so what the tool wraps is the CLI's payload
-    # and not a second shape (#561 review, Codex P2).
+    # `limit: 0` is the complete list, as in the CLI verb, from the same builder.
     assert envelope["payload"]["limit"] == 0
     assert len(envelope["payload"]["instances"]) == 2
     assert envelope["payload"]["power"]["total_uw"] == pytest.approx(3.171)
@@ -1307,13 +1166,13 @@ def test_phys_instance_rolls_up_the_subtree_under_a_path(phys_project: Path):
     assert envelope["payload"]["match"] == "prefix"
     assert envelope["payload"]["rollup"]["instances"] == 2
     assert envelope["payload"]["rollup"]["total_uw"] == pytest.approx(3.171)
-    # Complete, for the reason `phys_module`'s passthrough is.
+    # Complete, as `phys_module`'s passthrough is.
     assert envelope["payload"]["limit"] == 0
     assert len(envelope["payload"]["children"]) == envelope["payload"]["child_count"]
 
 
 def test_an_unknown_phys_module_returns_its_candidates(phys_project: Path):
-    """A typo is likelier than a missing block; hand back the near miss."""
+    """An unknown phys module returns its near-miss candidates."""
     ts = _toolset(phys_project)
 
     envelope = ts.call("phys_module", {"module": "blk_z"})
@@ -1346,12 +1205,9 @@ def test_phys_reads_a_named_phys_dir_instead_of_the_newest(phys_project: Path):
 def test_phys_reads_a_relative_phys_dir_against_the_project_root(
     phys_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """An MCP client has no invocation cwd; the payload speaks repo paths.
+    """A relative ``phys_dir`` resolves against the project root, not the server's cwd.
 
-    The host spawns ``rb mcp`` in a directory the agent never sees, so
-    the natural argument is the repo-relative one the payload itself
-    hands back (``artefacts.manifest``). Resolving it against the
-    server's cwd would answer a path nobody named — hence the chdir.
+    The host spawns ``rb mcp`` in a directory the agent never sees, so the repo-relative path from the payload (``artefacts.manifest``) is the natural argument.
     """
     ts = _toolset(phys_project)
     elsewhere = tmp_path / "somewhere_else"
@@ -1374,7 +1230,7 @@ def test_phys_reads_a_relative_phys_dir_against_the_project_root(
 def test_phys_reads_a_relative_manifest_against_the_project_root(
     phys_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``manifest`` is the path the summary reports back, verbatim."""
+    """A relative ``manifest`` resolves against the project root; it is the path the summary reports."""
     ts = _toolset(phys_project)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -1405,8 +1261,7 @@ def test_a_project_with_no_physical_run_names_the_commands_that_make_one(
 
 
 def test_phys_focus_needs_a_hub_and_the_reads_do_not(mcp_project: Path):
-    """Pointing a pane is the one physical question a headless process
-    cannot answer; the three reads answer from disk."""
+    """``phys_focus`` needs a hub; the three reads answer from disk."""
     headless = _toolset(mcp_project)
     live = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
 
@@ -1418,7 +1273,7 @@ def test_phys_focus_needs_a_hub_and_the_reads_do_not(mcp_project: Path):
 def test_phys_focus_omits_the_metric_it_was_not_given(
     mcp_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``additionalProperties: false`` and no nullable hints on the wire."""
+    """``phys_focus`` omits the metric it was not given (``additionalProperties: false``, no nullable hints)."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
     sent: dict = {}
     monkeypatch.setattr(
@@ -1436,12 +1291,9 @@ def test_phys_focus_omits_the_metric_it_was_not_given(
 def test_phys_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
     mcp_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Padded input, one payload: the MCP tool and ``rb hub send``.
+    """Padded input gives one payload from the MCP tool and ``rb hub send``.
 
-    The pane matches ``target`` as a string, so a trailing space is a
-    miss rather than a near miss, and a rule spelled one way on one
-    surface and another way on the other is observable on the wire.
-    Both validate *and* emit the stripped value.
+    The pane matches ``target`` as a string, so both surfaces validate and emit the stripped value.
     """
     from rtl_buddy.hub import send as hub_send
 
@@ -1481,10 +1333,9 @@ def test_phys_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
 
 
 def test_phys_focus_validates_before_dialling(mcp_project: Path):
-    """Port 1 refuses connections: reaching it would mean no validation.
+    """``phys_focus`` validates before dialling.
 
-    ``switching`` is a real model column and still not a pane metric —
-    the enum is the hub's wire schema, not this process's vocabulary.
+    Port 1 refuses connections, so reaching it would mean no validation. ``switching`` is a model column but not a pane metric; the enum is the hub's wire schema.
     """
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
 
@@ -1498,15 +1349,10 @@ def test_phys_focus_validates_before_dialling(mcp_project: Path):
 def test_a_focus_target_that_is_not_a_string_is_refused_before_the_hub(
     mcp_project: Path,
 ):
-    """The finding (#563 round-17, Codex P2). ``str()`` is a renderer, not a
-    validator: ``false`` came out as ``"False"`` and ``[]`` as ``"[]"``, each
-    reached the hub as a target, was cached there as the latest focus, and
-    came back ``ok: true``. The hub replays the latest focus to every pane
-    that registers, so one malformed call went on being delivered to tabs
-    opened long after it — and a pane cannot report it, because a target
-    matching no row is what a miss looks like.
+    """A focus target that is not a string is refused before the hub.
 
-    Port 1 refuses connections, so reaching it would mean no validation."""
+    ``str()`` would render ``false`` as ``"False"`` and ``[]`` as ``"[]"``, and the hub would cache and replay it to every pane that registers. Port 1 refuses connections, so reaching it would mean no validation.
+    """
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
 
     for bad, shown in (
@@ -1519,18 +1365,15 @@ def test_a_focus_target_that_is_not_a_string_is_refused_before_the_hub(
         refused = ts.call("phys_focus", {"target": bad})
 
         assert refused["ok"] is False, bad
-        # The value it could not read is quoted back, as the limit and
-        # path refusals quote their own.
+        # The unreadable value is quoted back.
         assert "'target' must be a string" in refused["error"], bad
         assert f"not {shown}" in refused["error"], bad
         assert "instance path" in refused["error"]
 
-    # The guarantee belongs to the shared helper, so the coverage pane's
-    # focus verb keeps it too.
+    # The shared helper enforces this for the coverage pane's focus verb too.
     assert ts.call("cov_focus", {"target": []})["ok"] is False
 
-    # An absent or blank target is still the missing argument it looks
-    # like, refused in the words it always was.
+    # An absent or blank target is still the missing-argument error.
     for blank in (None, "", "   "):
         refused = ts.call("phys_focus", {"target": blank})
         assert refused["ok"] is False, blank
@@ -1538,10 +1381,7 @@ def test_a_focus_target_that_is_not_a_string_is_refused_before_the_hub(
 
 
 def test_a_phys_focus_metric_that_is_not_a_pane_metric_is_refused(mcp_project: Path):
-    """The other argument, checked for the same hole and not having it: the
-    enum is a tuple, so membership answers every type rather than raising on
-    an unhashable one, and a value that is not one of the five is refused
-    whatever it is."""
+    """A phys focus metric outside the five pane metrics is refused, whatever its type."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
 
     for bad in (False, [], {}, 0, "switching"):
@@ -1553,7 +1393,7 @@ def test_a_phys_focus_metric_that_is_not_a_pane_metric_is_refused(mcp_project: P
 
 
 def test_phys_focus_reports_a_dead_hub_rather_than_crashing(mcp_project: Path):
-    """The handle said yes at start; the socket may still say no."""
+    """The handle said yes at start; the socket may still refuse."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
 
     envelope = ts.call("phys_focus", {"target": "module:sub"})
@@ -1561,11 +1401,6 @@ def test_phys_focus_reports_a_dead_hub_rather_than_crashing(mcp_project: Path):
     assert envelope["ok"] is False
     assert "hub" in envelope["error"].lower()
     assert envelope["meta"]["command"] == "rb hub send phys-focus"
-
-
-# ---------------------------------------------------------------------------
-# Failure is an answer, not an exception
-# ---------------------------------------------------------------------------
 
 
 def test_an_unknown_tool_is_an_answer(mcp_project: Path):
@@ -1606,7 +1441,7 @@ def test_an_ambiguous_node_returns_its_candidates(mcp_project: Path):
 
 
 def test_an_unknown_model_lists_the_models_that_exist(mcp_project: Path):
-    """No viewer needed: the model name is checked before spawning it."""
+    """The model name is checked before spawning a viewer."""
     ts = _toolset(mcp_project)
 
     envelope = ts.call("find_module", {"model": "nope", "module": "fifo"})
@@ -1617,7 +1452,7 @@ def test_an_unknown_model_lists_the_models_that_exist(mcp_project: Path):
 
 
 def test_hub_tools_report_a_dead_hub_rather_than_crashing(mcp_project: Path):
-    """The handle said yes at start; the socket may still say no."""
+    """The handle said yes at start; the socket may still refuse."""
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
 
     envelope = ts.call("hub_state", {})
@@ -1633,11 +1468,6 @@ def test_hub_diagnose_validates_before_dialling(mcp_project: Path):
 
     assert envelope["ok"] is False
     assert "clear" in envelope["error"]
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def test_cli_list_tools_machine_envelope(mcp_project: Path):
@@ -1666,11 +1496,6 @@ def test_a_missing_sdk_is_a_configuration_error_with_an_install_hint(
 
     assert "rtl_buddy[mcp]" in str(excinfo.value)
     assert "--machine" in str(excinfo.value)
-
-
-# ---------------------------------------------------------------------------
-# SDK boundary
-# ---------------------------------------------------------------------------
 
 
 @requires_sdk
@@ -1712,7 +1537,7 @@ def test_build_server_wires_the_toolset_to_an_sdk_server(mcp_project: Path):
     reason="needs the `mcp` SDK and an installed `rb` entry point",
 )
 def test_stdio_server_lists_and_calls_tools_over_the_wire(mcp_project: Path):
-    """The acceptance criterion: a fresh checkout, no hub, tools answer."""
+    """A fresh checkout with no hub answers tool calls."""
     proc = subprocess.Popen(
         [shutil.which("rb"), "mcp"],
         stdin=subprocess.PIPE,

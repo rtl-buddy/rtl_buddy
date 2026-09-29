@@ -1,21 +1,6 @@
 """End-to-end tests for ``rtl_buddy.hub.server.HubServer``.
 
-Spins the asyncio server on an ephemeral port, connects mock clients
-over real TCP, and exercises:
-
-* hello / welcome handshake (success + protocol-mismatch + duplicate
-  origin paths),
-* origin-suppressed broadcast (the loop-prevention guarantee),
-* request routing to the correct origin (with the ``not_connected``
-  fallback when no client is registered),
-* hub-handled ``resolve_*`` requests returning the PR-2 stub error,
-* response routing back to the original requester by ``id``,
-* request-ID dedupe (duplicates dropped silently),
-* clean disconnect (``bye`` broadcast on connection close).
-
-Every test acquires the server, runs a quick exchange, and shuts down
-in the same task so leaks are visible as hangs in the suite rather
-than as ghost sockets.
+Mock clients connect over real TCP to an ephemeral port. Each test shuts the server down in its own task so leaks show up as hangs.
 """
 
 from __future__ import annotations
@@ -35,19 +20,8 @@ from rtl_buddy.hub.server import HubServer
 pytestmark = pytest.mark.asyncio
 
 
-# ---------------------------------------------------------------------------
-# fixtures
-# ---------------------------------------------------------------------------
-
-
 class MockClient:
-    """Thin TCP client used by the tests.
-
-    Owns the asyncio reader/writer pair, exposes ``send`` / ``recv``
-    helpers, and tracks the last seen welcome so tests can assert on
-    the registered-clients list. Does not implement the dispatch loop
-    — each test reads explicitly to keep ordering obvious.
-    """
+    """Thin TCP client for the tests; ``send`` and ``recv`` are explicit and there is no dispatch loop."""
 
     def __init__(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -75,14 +49,7 @@ class MockClient:
         return decode(line)
 
     async def recv_until(self, type_: str, *, timeout: float = 1.0) -> Envelope:
-        """Read envelopes until one with ``type == type_`` arrives.
-
-        Used by multi-peer tests to skip past the ``peer_joined``
-        broadcasts each later-arriving peer triggers — the hub fires
-        one peer_joined per existing peer when a new peer hellos, so a
-        test that connects three peers and then expects a single
-        ``selection_changed`` has to filter past the peer_joined noise.
-        """
+        """Read envelopes until one with ``type == type_`` arrives, skipping the ``peer_joined`` broadcasts that later-connecting peers trigger."""
         while True:
             env = await self.recv(timeout=timeout)
             if env.type == type_:
@@ -145,11 +112,6 @@ async def server() -> AsyncIterator[HubServer]:
             pass
 
 
-# ---------------------------------------------------------------------------
-# handshake
-# ---------------------------------------------------------------------------
-
-
 async def test_hello_welcome_round_trip(server: HubServer):
     client = await MockClient.connect(server.host, server.port)
     try:
@@ -195,21 +157,18 @@ async def test_duplicate_origin_refused(server: HubServer):
 
 
 async def test_takeover_kicks_existing_registration(server: HubServer):
-    """A second client may take over an in-use origin slot by
-    setting ``payload.takeover=true`` on its hello. The old
-    registration is replaced: its socket gets an ``error`` envelope
-    with code ``superseded`` and is closed; remaining peers receive
-    a ``bye`` for the displaced origin; the new client gets the
-    usual welcome.
+    """A hello with ``payload.takeover=true`` replaces an in-use origin slot.
+
+    The old socket gets a ``superseded`` error and is closed, remaining peers get ``bye`` for the displaced origin, and the new client gets a welcome.
     """
     src = await MockClient.connect(server.host, server.port)
     old_view = await MockClient.connect(server.host, server.port)
     new_view = await MockClient.connect(server.host, server.port)
     try:
-        # Register a sibling so we can observe the bye broadcast.
+        # Register a sibling to observe the bye broadcast.
         await src.hello(Origin.SRC)
         await old_view.hello(Origin.VIEW)
-        # Drain the peer_joined event src received when view joined.
+        # Drain the peer_joined that src received when view joined.
         await src.recv_until("peer_joined")
 
         welcome = await new_view.hello(Origin.VIEW, takeover=True)
@@ -221,13 +180,11 @@ async def test_takeover_kicks_existing_registration(server: HubServer):
         kick = await old_view.recv()
         assert kick.type == "error"
         assert kick.payload["code"] == "superseded"
-        # And its socket closes shortly after — readline returns
-        # ``b""`` once the peer FIN'd.
+        # Its socket closes shortly after; readline returns ``b""`` on FIN.
         trailing = await asyncio.wait_for(old_view.reader.readline(), timeout=1.0)
         assert trailing == b"", f"expected EOF, got {trailing!r}"
 
-        # Sibling sees bye(view) and then peer_joined(view) for the
-        # new registration.
+        # Sibling sees bye(view) and then peer_joined(view) for the new registration.
         bye = await src.recv_until("bye")
         assert bye.origin is Origin.VIEW
     finally:
@@ -239,17 +196,9 @@ async def test_takeover_kicks_existing_registration(server: HubServer):
 async def test_takeover_winner_survives_the_evicted_sockets_cleanup(
     server: HubServer,
 ):
-    """The evicted socket's close lands AFTER the winner registers, so
-    its ``_cleanup_connection`` runs while the origin slot belongs to
-    the newer connection. The winner's registration must survive that
-    cleanup: it keeps receiving broadcasts, and a later takeover still
-    finds it in the slot and supersedes it properly.
+    """The evicted socket's cleanup must not deregister the winner that now owns the origin slot.
 
-    Regression: the cleanup used to pop the slot by ORIGIN before
-    identity-checking, deregistering the winner as collateral — the
-    surviving tab became a silent zombie (no broadcasts, no replays,
-    and a third tab's takeover hello saw an empty slot, so the zombie
-    never even learned it had been replaced).
+    The winner keeps receiving broadcasts, and a later takeover still finds it in the slot.
     """
     src = await MockClient.connect(server.host, server.port)
     old_view = await MockClient.connect(server.host, server.port)
@@ -263,9 +212,7 @@ async def test_takeover_winner_survives_the_evicted_sockets_cleanup(
         welcome = await new_view.hello(Origin.VIEW, takeover=True)
         assert welcome.type == "welcome"
 
-        # Let the evicted socket fully die — EOF means the server-side
-        # handler (and its cleanup) has run, which is the moment the
-        # old bug destroyed the winner's registration.
+        # EOF means the server-side handler and its cleanup have run.
         kick = await old_view.recv()
         assert kick.payload["code"] == "superseded"
         trailing = await asyncio.wait_for(old_view.reader.readline(), timeout=1.0)
@@ -284,8 +231,7 @@ async def test_takeover_winner_survives_the_evicted_sockets_cleanup(
         seen = await new_view.recv_until("selection_changed")
         assert seen.payload["instance_path"] == "top.u_alive"
 
-        # (b) A later takeover still finds the winner in the slot: it
-        # is superseded — not silently orphaned.
+        # (b) A later takeover finds the winner in the slot and supersedes it.
         welcome3 = await third_view.hello(Origin.VIEW, takeover=True)
         assert welcome3.type == "welcome"
         kicked = await new_view.recv_until("error")
@@ -300,9 +246,7 @@ async def test_takeover_winner_survives_the_evicted_sockets_cleanup(
 async def test_takeover_without_existing_registration_is_a_normal_hello(
     server: HubServer,
 ):
-    """``takeover=true`` is harmless when the slot is empty —
-    behaves like a regular hello, no spurious bye broadcast.
-    """
+    """``takeover=true`` with an empty slot acts as a regular hello, with no bye broadcast."""
     client = await MockClient.connect(server.host, server.port)
     try:
         welcome = await client.hello(Origin.VIEW, takeover=True)
@@ -320,11 +264,6 @@ async def test_bad_request_on_malformed_handshake(server: HubServer):
         assert err.payload["code"] == "bad_request"
     finally:
         await client.close()
-
-
-# ---------------------------------------------------------------------------
-# broadcast / origin suppression
-# ---------------------------------------------------------------------------
 
 
 async def test_state_event_broadcast_skips_origin(server: HubServer):
@@ -345,18 +284,14 @@ async def test_state_event_broadcast_skips_origin(server: HubServer):
         )
         await view.send(evt)
 
-        # wave + src must receive it; view must not echo back. Use
-        # recv_until to skip past the peer_joined broadcasts each later
-        # peer triggered (view saw peer_joined(wave), peer_joined(src);
-        # wave saw peer_joined(src)) and assert on selection_changed.
+        # wave and src must receive it; view must not get an echo. Use recv_until to skip the peer_joined broadcasts from setup.
         got_wave = await wave.recv_until("selection_changed")
         got_src = await src.recv_until("selection_changed")
         assert got_wave.id == evt.id
         assert got_src.id == evt.id
         assert got_wave.payload == {"instance_path": "top.u_fifo"}
 
-        # Drain the two peer_joined events view received during setup
-        # before asserting it didn't get an echoed selection_changed.
+        # Drain the two peer_joined events view received during setup.
         for _ in range(2):
             joined = await view.recv()
             assert joined.type == "peer_joined"
@@ -370,13 +305,7 @@ async def test_state_event_broadcast_skips_origin(server: HubServer):
 async def test_source_focused_derives_selection_changed_via_resolver(
     tmp_path,
 ):
-    """When a `src` peer sends source_focused and the resolver has a
-    view.json that contains an instance whose source range covers the
-    point, the hub augments by broadcasting a derived selection_changed
-    with origin=cli. The SPA already handles selection_changed — this
-    bridge is what makes `:RtlBuddyShow` light up the schematic without
-    a SPA-side protocol change.
-    """
+    """A source_focused from a `src` peer whose position lies in an instance's source range in view.json makes the hub broadcast a derived selection_changed with origin=cli."""
 
     import json
     from rtl_buddy.hub.config import HubMappingConfig
@@ -437,10 +366,7 @@ async def test_source_focused_derives_selection_changed_via_resolver(
             )
             await src.send(evt)
 
-            # View receives both the raw source_focused and the
-            # derived selection_changed. Order: source_focused first
-            # (broadcast in the STATE_EVENT_TYPES path), then the
-            # augmentation. Use recv_until to skip past peer_joined.
+            # View receives source_focused first, then the derived selection_changed. Use recv_until to skip peer_joined.
             raw = await view.recv_until("source_focused")
             assert raw.payload == {
                 "file": "/abs/rtl/counter.sv",
@@ -450,9 +376,7 @@ async def test_source_focused_derives_selection_changed_via_resolver(
 
             derived = await view.recv_until("selection_changed")
             assert derived.origin is Origin.CLI
-            # u_ff's [20, 25] range encloses line 22 and is smaller
-            # than counter's [5, 50]; smallest-range-first ordering
-            # means the resolver returns u_ff first.
+            # u_ff's [20, 25] range encloses line 22 and is smaller than counter's [5, 50], so the resolver returns u_ff first.
             assert derived.payload == {"instance_path": ["counter.u_ff", "counter"]}
         finally:
             await view.close()
@@ -469,10 +393,7 @@ async def test_source_focused_derives_selection_changed_via_resolver(
 async def test_source_focused_with_no_match_does_not_broadcast_selection(
     tmp_path,
 ):
-    """If the resolver returns no matches, the augmentation is silent —
-    the raw source_focused is still broadcast (downstream may have its
-    own use for it), but no spurious selection_changed is emitted.
-    """
+    """With no resolver match, the raw source_focused is still broadcast but no selection_changed is emitted."""
 
     import json
     from rtl_buddy.hub.config import HubMappingConfig
@@ -525,7 +446,7 @@ async def test_source_focused_with_no_match_does_not_broadcast_selection(
 
             raw = await view.recv_until("source_focused")
             assert raw.id == evt.id
-            # No derived selection_changed should follow.
+            # No derived selection_changed follows.
             await view.expect_no_message()
         finally:
             await view.close()
@@ -540,22 +461,14 @@ async def test_source_focused_with_no_match_does_not_broadcast_selection(
 
 
 async def test_peer_joined_broadcast_to_existing_peers(server: HubServer):
-    """When a new peer hellos, every already-registered peer receives a
-    ``peer_joined`` event carrying the joining peer's origin. The
-    joining peer itself does not (suppress_origin=client in the hub's
-    hello handler).
-
-    Symmetric to ``bye`` so consumers can maintain a live peer list
-    without re-fetching ``registered_clients`` every time.
-    """
+    """A new peer's hello sends ``peer_joined`` with its origin to every already-registered peer, not to itself."""
     view = await MockClient.connect(server.host, server.port)
     wave = await MockClient.connect(server.host, server.port)
     try:
-        # view hellos first: registry is empty, no one to notify.
+        # view hellos first: the registry is empty, so no one is notified.
         await view.hello(Origin.VIEW)
 
-        # wave hellos second: view must get peer_joined(wave); wave
-        # itself must not get a peer_joined about itself.
+        # wave hellos second: view gets peer_joined(wave); wave gets none about itself.
         await wave.hello(Origin.WAVE)
 
         joined = await view.recv()
@@ -610,11 +523,6 @@ async def test_unknown_event_type_silently_dropped(server: HubServer):
         await b.close()
 
 
-# ---------------------------------------------------------------------------
-# diagnostics_set
-# ---------------------------------------------------------------------------
-
-
 def _diag_evt(origin: Origin, source: str, items: list[dict]) -> Envelope:
     return Envelope(
         origin=origin,
@@ -646,17 +554,14 @@ async def test_diagnostics_set_broadcasts_and_caches(server: HubServer):
         evt = _diag_evt(Origin.CLI, "rtl-buddy-cdc", items)
         await publisher.send(evt)
 
-        # Skip the peer_joined(subscriber) the publisher already
-        # received when subscriber connected; assert the actual
-        # broadcast we care about lands at the subscriber.
+        # Skip the peer_joined(subscriber) the publisher received at setup, then assert on the broadcast at the subscriber.
         got = await subscriber.recv_until("diagnostics_set")
         assert got.payload["source"] == "rtl-buddy-cdc"
         assert got.payload["items"] == items
-        # Publisher received peer_joined(subscriber) at setup time —
-        # drain it before asserting it got no echoed diagnostics_set.
+        # Drain the peer_joined(subscriber) the publisher received at setup.
         joined = await publisher.recv()
         assert joined.type == "peer_joined"
-        await publisher.expect_no_message()  # origin gets suppressed
+        await publisher.expect_no_message()  # origin is suppressed
 
         await asyncio.sleep(0.05)
         bundle = server.state.diagnostics["rtl-buddy-cdc"]
@@ -721,7 +626,7 @@ async def test_diagnostics_set_empty_items_is_cache_clear(server: HubServer):
         first = await subscriber.recv()
         assert len(first.payload["items"]) == 1
 
-        # Empty items is the legal "clear all" — must still broadcast.
+        # Empty items means "clear all" and still broadcasts.
         await publisher.send(_diag_evt(Origin.CLI, "rtl-buddy-cdc", []))
         second = await subscriber.recv()
         assert second.payload["items"] == []
@@ -731,11 +636,6 @@ async def test_diagnostics_set_empty_items_is_cache_clear(server: HubServer):
     finally:
         await publisher.close()
         await subscriber.close()
-
-
-# ---------------------------------------------------------------------------
-# requests
-# ---------------------------------------------------------------------------
 
 
 async def test_request_routed_to_wave_origin(server: HubServer):
@@ -783,7 +683,7 @@ async def test_request_to_missing_origin_returns_not_connected(server: HubServer
 
 
 async def test_resolve_request_without_resolver_returns_unresolvable(server: HubServer):
-    """Server with no resolver attached → resolve_* surfaces unresolvable."""
+    """With no resolver attached, resolve_* returns unresolvable."""
 
     view = await MockClient.connect(server.host, server.port)
     try:
@@ -819,13 +719,7 @@ async def test_response_routed_back_to_requester(server: HubServer):
             payload={"variables": ["tb.dut.x"]},
         )
         await view.send(req)
-        # wave received peer_joined(wave) for itself? no — suppress_origin
-        # skips that. But wave still has the peer_joined(view) it got at
-        # its own welcome time? Actually view registered first so when
-        # wave connected, view got peer_joined(wave) but wave got no
-        # peer_joined (no earlier peers). So wave.recv() here would be
-        # the forwarded request directly. Use recv_until anyway for
-        # robustness against future broadcasts that might interleave.
+        # wave has no queued peer_joined, so recv would return the forwarded request. Use recv_until anyway in case other broadcasts interleave.
         forwarded = await wave.recv_until("wave_add_variables")
         assert forwarded.id == req.id
 
@@ -838,8 +732,7 @@ async def test_response_routed_back_to_requester(server: HubServer):
         )
         await wave.send(resp)
 
-        # view's queue has peer_joined(wave) from when wave connected.
-        # Skip it and assert on the response.
+        # view's queue holds peer_joined(wave); skip it and assert on the response.
         got = await view.recv_until("wave_add_variables")
         assert got.id == req.id
         assert got.kind is Kind.RESPONSE
@@ -868,17 +761,12 @@ async def test_duplicate_request_dropped(server: HubServer):
         first = await wave.recv()
         assert first.id == rid
 
-        # Same id again: should be dropped silently.
+        # Same id again: dropped silently.
         await view.send(req)
         await wave.expect_no_message()
     finally:
         await view.close()
         await wave.close()
-
-
-# ---------------------------------------------------------------------------
-# disconnect
-# ---------------------------------------------------------------------------
 
 
 async def test_disconnect_broadcasts_bye(server: HubServer):
@@ -917,17 +805,12 @@ async def test_explicit_bye_unregisters(server: HubServer):
         assert got.type == "bye"
         assert got.origin is Origin.VIEW
 
-        # And the registry should reflect the unregister.
+        # The registry reflects the unregister.
         await asyncio.sleep(0.05)
         assert Origin.VIEW not in server.registered_origins
     finally:
         await view.close()
         await wave.close()
-
-
-# ---------------------------------------------------------------------------
-# misc smoke
-# ---------------------------------------------------------------------------
 
 
 async def test_unknown_request_type_returns_bad_request(server: HubServer):
@@ -953,8 +836,7 @@ async def test_second_hello_on_same_connection_rejected(server: HubServer):
     view = await MockClient.connect(server.host, server.port)
     try:
         await view.hello(Origin.VIEW)
-        # Sending another hello on the same socket is a misuse — should
-        # come back as protocol_mismatch since hello may only be sent once.
+        # A second hello on the same socket returns protocol_mismatch.
         again = Envelope(
             origin=Origin.VIEW,
             kind=Kind.REQUEST,
@@ -970,13 +852,8 @@ async def test_second_hello_on_same_connection_rejected(server: HubServer):
         await view.close()
 
 
-# ---------------------------------------------------------------------------
-# raw wire shape sanity
-# ---------------------------------------------------------------------------
-
-
 async def test_messages_are_line_delimited(server: HubServer):
-    """Two envelopes back-to-back should still parse separately."""
+    """Two back-to-back envelopes parse separately."""
 
     view = await MockClient.connect(server.host, server.port)
     wave = await MockClient.connect(server.host, server.port)
@@ -998,7 +875,7 @@ async def test_messages_are_line_delimited(server: HubServer):
             id=new_id(),
             payload={"instance_path": "top.b"},
         )
-        # Send both in one write — server must still demultiplex.
+        # Send both in one write; the server must demultiplex.
         await view.send_raw(
             encode(e1).encode("utf-8") + b"\n" + encode(e2).encode("utf-8") + b"\n"
         )
@@ -1023,7 +900,7 @@ def _is_uuid(value: Any) -> bool:
 
 
 async def test_welcome_id_matches_hello(server: HubServer):
-    """welcome.id must echo hello.id so the client can correlate."""
+    """welcome.id echoes hello.id."""
 
     client = await MockClient.connect(server.host, server.port)
     try:

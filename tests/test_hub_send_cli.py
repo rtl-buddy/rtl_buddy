@@ -1,10 +1,4 @@
-"""Tests for the ``rb hub send`` CLI surface.
-
-Stand up a real ``HubServer`` in a background asyncio loop on a
-worker thread, write a per-test ``.rtl-buddy/hub.json`` discovery
-record, then invoke the typer app via ``CliRunner`` so each
-subcommand exercises the full client → server → reply path.
-"""
+"""Tests for the ``rb hub send`` CLI, run against a real ``HubServer`` on a worker-thread asyncio loop with a per-test ``.rtl-buddy/hub.json`` discovery record."""
 
 from __future__ import annotations
 
@@ -61,8 +55,7 @@ _VIEW_JSON = {
 
 
 class _ThreadedHub:
-    """Spin a HubServer on a dedicated asyncio loop in a background
-    thread, suitable for sync ``CliRunner`` clients."""
+    """Run a HubServer on a dedicated asyncio loop in a background thread for sync ``CliRunner`` clients."""
 
     def __init__(self, resolver: Resolver | None = None) -> None:
         self._resolver = resolver
@@ -101,12 +94,7 @@ class _ThreadedHub:
                 self._started.set()
                 raise
             finally:
-                # Drain pending tasks + run pending callbacks before
-                # closing. Python 3.12's asyncio raises "Event loop
-                # is closed" from transport finalizers that fire
-                # against an already-closed loop; without this drain,
-                # the runner's loop.close() can leave the next test
-                # file's fixture setup tripping over those callbacks.
+                # Drain pending tasks and callbacks before closing; otherwise transport finalizers can hit the closed loop (Python 3.12 "Event loop is closed") in the next test file.
                 try:
                     pending = asyncio.all_tasks(loop)
                     for t in pending:
@@ -134,13 +122,7 @@ class _ThreadedHub:
             fut.result(timeout=5.0)
         except Exception:
             pass
-        # Race: when shutdown() completes, ``_async_start`` returns and the
-        # runner thread's ``finally`` may run loop.close() before we get
-        # here — most reliably for tests that exit via typer.BadParameter
-        # without ever connecting, so the loop has nothing to keep it
-        # busy. ``call_soon_threadsafe`` on a closed loop raises
-        # RuntimeError; treat that as "already stopped" since that is
-        # exactly what we wanted.
+        # shutdown() can finish and the runner thread can close the loop before this point. call_soon_threadsafe then raises RuntimeError, which means already stopped.
         try:
             self._loop.call_soon_threadsafe(self._loop.stop)
         except RuntimeError:
@@ -165,8 +147,7 @@ def threaded_hub(tmp_path: Path) -> Iterator[_ThreadedHub]:
 
 @pytest.fixture
 def discovery_root(tmp_path_factory, threaded_hub: _ThreadedHub, monkeypatch) -> Path:
-    """Write ``.rtl-buddy/hub.json`` pointing at the running hub and
-    chdir into it so discovery picks it up."""
+    """Write ``.rtl-buddy/hub.json`` for the running hub and chdir into it."""
 
     root = tmp_path_factory.mktemp("project")
     (root / ".rtl-buddy").mkdir()
@@ -184,15 +165,9 @@ def discovery_root(tmp_path_factory, threaded_hub: _ThreadedHub, monkeypatch) ->
 
 
 def _drain_briefly(seconds: float = 0.1) -> None:
-    """Give the background hub loop a beat to process whatever just
-    came in over the wire."""
+    """Give the hub loop time to process what just arrived."""
 
     time.sleep(seconds)
-
-
-# ---------------------------------------------------------------------------
-# state-event subcommands
-# ---------------------------------------------------------------------------
 
 
 def test_send_select_emits_selection_changed(
@@ -202,7 +177,7 @@ def test_send_select_emits_selection_changed(
     result = runner.invoke(send_app, ["select", "counter.u_ff"])
     assert result.exit_code == 0, result.output
     _drain_briefly()
-    # state_snapshot should now reflect the broadcast.
+    # state_snapshot reflects the broadcast.
     result = runner.invoke(send_app, ["state"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
@@ -239,11 +214,8 @@ def test_send_open_parses_file_line_col(
     runner = CliRunner()
     result = runner.invoke(send_app, ["open", "design/dma/dma.sv:42:7"])
     assert result.exit_code == 0, result.output
-    # source_focused isn't a snapshot field, but it must broadcast cleanly —
-    # if the parse failed CLI would have exited nonzero.
-    # Drain so the hub-loop transport-close callback fires before the next
-    # test invokes the CLI; without it, CI on Python 3.12 occasionally
-    # surfaces a "RuntimeError: Event loop is closed" teardown error.
+    # source_focused is not a snapshot field; a parse failure would exit nonzero.
+    # Drain so the transport-close callback fires before the next test (avoids a Python 3.12 "Event loop is closed" teardown error).
     _drain_briefly()
 
 
@@ -257,12 +229,7 @@ def test_send_open_rejects_bad_spec(threaded_hub: _ThreadedHub, discovery_root: 
 def test_send_graph_focus_caches_the_node(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """``rb hub send graph-focus`` (#382) drives the hub's graph pane.
-
-    Asserted against the hub's cache rather than a connected pane
-    because the cache is what makes the verb useful before the browser
-    tab exists — the focus is replayed to the pane on registration.
-    """
+    """``rb hub send graph-focus`` caches the node on the hub, which replays it to the pane on registration."""
 
     runner = CliRunner()
     result = runner.invoke(send_app, ["graph-focus", "test:verif/fifo#smoke"])
@@ -285,9 +252,7 @@ def test_send_graph_focus_rejects_blank_node(
 def test_send_cov_focus_caches_the_focus(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """``rb hub send cov-focus`` (rtl-buddy/rtl_buddy#400) drives the
-    coverage pane, and the cache is what makes it useful before the tab
-    exists — the focus is replayed to the pane on registration."""
+    """``rb hub send cov-focus`` caches the focus on the hub, which replays it to the pane on registration."""
 
     runner = CliRunner()
     result = runner.invoke(
@@ -307,9 +272,7 @@ def test_send_cov_focus_caches_the_focus(
 def test_send_cov_focus_defaults_omit_the_hints(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """The wire schema is ``additionalProperties: false`` with no
-    nullable hints, so an unset option must be absent rather than null —
-    a null would be rejected by the encoder, not by the hub."""
+    """The wire schema has no nullable hints, so an unset option is absent, not null."""
 
     runner = CliRunner()
     result = runner.invoke(send_app, ["cov-focus", "module:blk"])
@@ -331,8 +294,7 @@ def test_send_cov_focus_defaults_omit_the_hints(
 def test_send_cov_focus_rejects_bad_arguments(
     threaded_hub: _ThreadedHub, discovery_root: Path, argv: list[str]
 ):
-    """Rejected in the CLI, where the message can name the flag, rather
-    than at the encoder, where it names a JSON pointer."""
+    """Bad arguments are rejected in the CLI so the message can name the flag."""
 
     result = CliRunner().invoke(send_app, argv)
     assert result.exit_code != 0
@@ -341,9 +303,7 @@ def test_send_cov_focus_rejects_bad_arguments(
 def test_send_phys_focus_caches_the_focus(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """``rb hub send phys-focus`` (rtl-buddy/rtl_buddy#558) drives the
-    synth+power pane, and the cache is what makes it useful before the
-    tab exists — the focus is replayed to the pane on registration."""
+    """``rb hub send phys-focus`` caches the focus on the hub, which replays it to the pane on registration."""
 
     runner = CliRunner()
     result = runner.invoke(
@@ -361,8 +321,7 @@ def test_send_phys_focus_caches_the_focus(
 def test_send_phys_focus_defaults_omit_the_hint(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """Same additionalProperties:false rule as ``cov-focus``: an unset
-    ``--metric`` is absent on the wire, not null."""
+    """An unset ``--metric`` is absent on the wire, not null."""
 
     runner = CliRunner()
     result = runner.invoke(send_app, ["phys-focus", "instance:u_cpu/u_alu"])
@@ -383,12 +342,9 @@ def test_send_phys_focus_defaults_omit_the_hint(
 def test_send_phys_focus_rejects_bad_arguments(
     threaded_hub: _ThreadedHub, discovery_root: Path, argv: list[str]
 ):
-    """Rejected in the CLI, where the message can name the flag.
+    """Bad arguments are rejected in the CLI so the message can name the flag.
 
-    ``switching`` is the trap worth pinning: it is a real column of the
-    model and of this pane's instance table, and it is deliberately NOT
-    a focus metric — the wire enum offers ``dynamic`` (internal +
-    switching) instead.
+    ``switching`` is a model column but not a focus metric; the wire enum offers ``dynamic`` (internal + switching) instead.
     """
 
     result = CliRunner().invoke(send_app, argv)
@@ -430,8 +386,7 @@ def test_send_diagnose_clear_zeros_the_source(
     _drain_briefly()
     result = runner.invoke(send_app, ["state"])
     payload = json.loads(result.stdout)
-    # source is still listed (empty-items cache is a "cleared" record),
-    # but the bundle is now empty.
+    # The source is still listed (an empty-items cache is a "cleared" record), but the bundle is empty.
     assert "claude-analysis" in payload["diagnostics_sources"]
 
 
@@ -455,8 +410,7 @@ def test_send_diagnose_rejects_bad_severity(
 def test_send_diagnose_instance_flag_attaches_to_every_item(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """--instance writes ``instance_path`` onto each item so consumers
-    can fast-path past the file+line resolver."""
+    """--instance writes ``instance_path`` onto each item."""
 
     runner = CliRunner()
     result = runner.invoke(
@@ -471,10 +425,7 @@ def test_send_diagnose_instance_flag_attaches_to_every_item(
         ],
     )
     assert result.exit_code == 0, result.output
-    # No public peek API for the hub's item cache; round-trip via a
-    # mock-wave peer would be heavyweight here. Instead exercise
-    # _parse_diag indirectly via the next test plus a unit-level
-    # parser check.
+    # The hub's item cache has no public peek API; exercise _parse_diag through the next test and a parser unit check.
 
 
 def test_send_diagnose_instance_with_clear_is_rejected(
@@ -487,11 +438,6 @@ def test_send_diagnose_instance_with_clear_is_rejected(
     )
     assert result.exit_code != 0
     assert "--instance" in result.output.lower() or "clear" in result.output.lower()
-
-
-# ---------------------------------------------------------------------------
-# request subcommands
-# ---------------------------------------------------------------------------
 
 
 def test_send_state_returns_snapshot(threaded_hub: _ThreadedHub, discovery_root: Path):
@@ -536,9 +482,7 @@ def test_send_resolve_unresolvable_returns_nonzero(
 def test_send_wave_add_reports_no_wave_peer(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
-    """No wave peer is registered, so the request must surface
-    not_connected — and exit nonzero. The CLI doesn't pretend it
-    succeeded just because the hub took the envelope."""
+    """With no wave peer registered the request returns not_connected and the CLI exits nonzero."""
 
     runner = CliRunner()
     result = runner.invoke(send_app, ["wave-add", "tb.dut.u_ff.q"])
@@ -549,8 +493,7 @@ def test_send_wave_add_reports_no_wave_peer(
 def test_send_capture_reports_no_view_peer(
     threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
 ):
-    """No view peer is registered → request is ``not_connected``. The
-    CLI exits nonzero and does not write the output file."""
+    """With no view peer registered the request returns ``not_connected``; the CLI exits nonzero and writes no output file."""
 
     runner = CliRunner()
     out_path = tmp_path / "snap.png"
@@ -563,8 +506,7 @@ def test_send_capture_reports_no_view_peer(
 def test_send_capture_rejects_bad_format(
     threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
 ):
-    """``--format`` only accepts png or svg; suffix-inferred is the
-    same check. Bad format fails before the hub round-trip."""
+    """``--format`` accepts png or svg (also inferred from the suffix); a bad format fails before the hub round-trip."""
 
     runner = CliRunner()
     out_path = tmp_path / "snap.gif"
@@ -575,8 +517,7 @@ def test_send_capture_rejects_bad_format(
 
 
 def test_send_no_hub_exits_two(monkeypatch, tmp_path):
-    """When no hub is reachable, exit code is 2 (distinguishable from
-    a hub-returned error which exits 1)."""
+    """With no reachable hub the exit code is 2; a hub-returned error exits 1."""
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_BUDDY_HUB", raising=False)
@@ -586,14 +527,8 @@ def test_send_no_hub_exits_two(monkeypatch, tmp_path):
     assert "no live hub" in result.output.lower()
 
 
-# ---------------------------------------------------------------------------
-# wave-view item management — client-side argument validation
-# ---------------------------------------------------------------------------
-
-
 def test_wave_move_requires_exactly_one_target() -> None:
-    """`wave-move` needs exactly one of --to / --before. These fail before
-    any hub connection, so no fixture is needed."""
+    """`wave-move` needs exactly one of --to / --before, checked before any hub connection."""
     runner = CliRunner()
     # neither
     result = runner.invoke(send_app, ["wave-move", "5", "6"])

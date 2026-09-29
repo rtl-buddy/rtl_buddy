@@ -1,17 +1,6 @@
-"""Tests for the style-lint flow: ``lint.yaml`` / ``lint_regression.yaml``,
-``rb lint`` / ``rb lint-regression``, and the graph flow stamp.
+"""Tests for the style-lint flow: ``lint.yaml`` / ``lint_regression.yaml``, ``rb lint`` / ``rb lint-regression``, and the ``flow: lint`` stamp from the graph config tier.
 
-Covers:
-- Suite/regression config loading, duplicate names, unknown check names.
-- The runner: model expansion (library entries dropped), cfg-verible +
-  per-check exclude globs, violation counting from **stderr** (where
-  verible-verilog-lint writes findings), the tool-error branch, and the
-  ``lint.f`` / ``lint.log`` artefacts.
-- xfail / xfail_strict remapping and the reglvl skip.
-- ``rb lint`` (all / named / --list) and ``rb lint-regression``
-  (./lint_regression.yaml filename convention), exit codes.
-- ``cfg-rtl-reg: lint-reg-cfg-path`` resolution.
-- The graph config tier stamps lint suites/runs with ``flow: lint``.
+They cover config loading, the runner (model expansion, verible config and exclude globs, violation counting from stderr, tool errors, artefacts), xfail remapping, the reglvl skip and exit codes.
 """
 
 from __future__ import annotations
@@ -37,9 +26,7 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
     return CliRunner(), RtlBuddy(name="test_lint_flow")
 
 
-#: Fake verible-verilog-lint: greps each file argument for the marker
-#: ``VIOLATION`` and reports one finding line per hit **to stderr**, with
-#: exit code 1 when anything was found — the real tool's convention.
+# Fake verible-verilog-lint: prints one finding per file line containing ``VIOLATION`` to stderr and exits 1 if any were found, like the real tool.
 _FAKE_LINT = """#!/bin/sh
 found=0
 for f in "$@"; do
@@ -92,9 +79,6 @@ _BASIC_CHECK = """  - name: example_style
 """
 
 
-# --- config loading -------------------------------------------------------
-
-
 def test_suite_config_loads_and_lists_checks(minimal_project: Path):
     cfg = _write_suite(minimal_project, check_yaml=_BASIC_CHECK)
     suite = LintSuiteConfig(str(cfg))
@@ -138,9 +122,6 @@ def test_lint_reg_cfg_path_key_resolves(tmp_path: Path):
     )
     resolved = resolve_reg_cfg_path(load_reg_cfg_paths(rc), rc, "lint")
     assert resolved == str(tmp_path / "ci" / "lint_regression.yaml")
-
-
-# --- rb lint --------------------------------------------------------------
 
 
 def test_rb_lint_clean_passes(minimal_project: Path):
@@ -267,9 +248,6 @@ def test_rb_lint_list(minimal_project: Path):
     assert "example_style" in result.output
 
 
-# --- rb lint-regression ---------------------------------------------------
-
-
 def _write_regression(minimal_project: Path, extra_check: str = "") -> None:
     _write_suite(minimal_project, check_yaml=_BASIC_CHECK + extra_check)
     (minimal_project / "lint_regression.yaml").write_text(
@@ -305,9 +283,6 @@ def test_rb_lint_regression_reglvl_skips(minimal_project: Path):
     result = runner.invoke(rb.app, ["lint-regression", "-l", "2"])
     assert result.exit_code == 0, result.output
     assert "SKIP" not in result.output
-
-
-# --- graph flow stamp -----------------------------------------------------
 
 
 def test_graph_config_tier_stamps_lint_flow(minimal_project: Path):
