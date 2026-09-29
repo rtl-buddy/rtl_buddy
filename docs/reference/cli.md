@@ -62,10 +62,9 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
 │                    subtree, instances-of, port-connections, source-snippet); JSON on │
 │                    stdout                                                            │
-│ mcp                serve the design knowledge graph, test status, coverage, physical │
-│                    metrics, hierarchy queries and — with a hub running — the live    │
-│                    session over the Model Context Protocol (stdio); needs the 'mcp'  │
-│                    extra                                                             │
+│ mcp                serve the knowledge graph, test status, coverage, physical        │
+│                    metrics and hierarchy queries (plus the live session when a hub   │
+│                    runs) over MCP (stdio); needs the 'mcp' extra                     │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
@@ -196,20 +195,18 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...
 │                                                          [default: (cfg-dispatch     │
 │                                                          orphans, else warn)]        │
 │ --plusarg                            TEXT                add or override one runtime │
-│                                                          plusarg for this run        │
-│                                                          (KEY=VALUE, or bare KEY for │
-│                                                          a valueless +KEY);          │
-│                                                          repeatable, wins over the   │
-│                                                          test's plusargs: and, among │
-│                                                          repeats, the last one wins  │
+│                                                          plusarg (KEY=VALUE, or bare │
+│                                                          KEY for +KEY); repeatable,  │
+│                                                          the last repeat wins, and   │
+│                                                          it beats the test's         │
+│                                                          plusargs:                   │
 │ --run-tag                            TEXT                namespace this run's        │
 │                                                          artefact tree under         │
-│                                                          artefacts/.runs/<tag>/ so a │
-│                                                          concurrent run of the same  │
-│                                                          suite gets its own tree,    │
-│                                                          its own tree lock and its   │
-│                                                          own log; shared builds stay │
-│                                                          shared                      │
+│                                                          artefacts/.runs/<tag>/ with │
+│                                                          its own tree lock and log,  │
+│                                                          so concurrent runs of a     │
+│                                                          suite do not collide;       │
+│                                                          shared builds stay shared   │
 │ --help                                                   Show this message and exit. │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -246,10 +243,9 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │                                       cancel, adopt)                                 │
 │                                       [default: (cfg-dispatch orphans, else warn)]   │
 │ --run-tag                    TEXT     namespace this run's artefact tree under       │
-│                                       artefacts/.runs/<tag>/ so a concurrent run of  │
-│                                       the same suite gets its own tree, its own tree │
-│                                       lock and its own log; shared builds stay       │
-│                                       shared                                         │
+│                                       artefacts/.runs/<tag>/ with its own tree lock  │
+│                                       and log, so concurrent runs of a suite do not  │
+│                                       collide; shared builds stay shared             │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -345,13 +341,12 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                          [default: (cfg-dispatch     │
 │                                                          orphans, else warn)]        │
 │ --run-tag                            TEXT                namespace this run's        │
-│                                                          artefact tree under         │
-│                                                          artefacts/.runs/<tag>/ so a │
-│                                                          concurrent run of the same  │
-│                                                          suites gets its own trees,  │
-│                                                          its own tree locks and its  │
-│                                                          own logs; shared builds     │
-│                                                          stay shared                 │
+│                                                          artefact trees under        │
+│                                                          artefacts/.runs/<tag>/ with │
+│                                                          their own tree locks and    │
+│                                                          logs, so concurrent runs of │
+│                                                          the suites do not collide;  │
+│                                                          shared builds stay shared   │
 │ --help                                                   Show this message and exit. │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -497,16 +492,15 @@ Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG
 ```text
 Usage: rtl-buddy mcp [OPTIONS]
 
- serve the design knowledge graph, test status, coverage, physical metrics, hierarchy
- queries and — with a hub running — the live session over the Model Context Protocol
- (stdio); needs the 'mcp' extra
+ serve the knowledge graph, test status, coverage, physical metrics and hierarchy
+ queries (plus the live session when a hub runs) over MCP (stdio); needs the 'mcp'
+ extra
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --graph             TEXT  graph.json to serve (default <project                      │
 │                           root>/artefacts/graph)                                     │
 │ --overlay           TEXT  results-overlay.json to join                               │
-│ --root              TEXT  project root to serve; default is discovered from cwd,     │
-│                           which is what an agent host's spawn gives you              │
+│ --root              TEXT  project root to serve (default: discovered from cwd)       │
 │ --design-dir        TEXT  directory searched for models.yaml                         │
 │ --frontend          TEXT  viewer parser frontend (verible|slang)                     │
 │ --tool              TEXT  path to the rtl-buddy-view binary                          │
@@ -651,9 +645,10 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               instead of failing                     │
 │ --jobs          -j      INTEGER RANGE [x>=1]  P&R runs at once: independent blocks   │
 │                                               harden side by side, and a top waits   │
-│                                               for all of its own. Each is a full     │
-│                                               OpenROAD session with its own threads: │
-│                                               setting, so size the two together      │
+│                                               for all of its own. Each run is a full │
+│                                               OpenROAD session sized by its          │
+│                                               `threads:` setting, so size the two    │
+│                                               together                               │
 │                                               [default: 1]                           │
 │ --synth                                       run each P&R run's upstream synthesis  │
 │                                               just before it, once per synthesis —   │
@@ -1022,9 +1017,9 @@ Usage: rtl-buddy graph results [OPTIONS]
 │ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
 │                               discovery                                              │
 │ --run-tag               TEXT  convert one --run-tag run's results: scan              │
-│                               artefacts/.runs/<tag>/ in every suite and write that   │
-│                               run's overlay under artefacts/.runs/<tag>/graph/       │
-│                               (graph.json is still read from artefacts/graph/)       │
+│                               artefacts/.runs/<tag>/ in every suite and write the    │
+│                               overlay under artefacts/.runs/<tag>/graph/ (graph.json │
+│                               is read from artefacts/graph/)                         │
 │ --help                        Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1613,106 +1608,71 @@ Usage: rtl-buddy hub start [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --foreground       --daemon                                    Run in the foreground │
 │                                                                (default). --daemon   │
-│                                                                detaches the hub into │
-│                                                                its own session,      │
-│                                                                redirects its output  │
-│                                                                to hub.log, and       │
-│                                                                returns as soon as    │
+│                                                                detaches the hub,     │
+│                                                                logs to hub.log, and  │
+│                                                                returns once          │
 │                                                                .rtl-buddy/hub.json   │
 │                                                                is published.         │
 │                                                                [default: foreground] │
 │ --serve-viewer     --no-serve-viewer                           Also serve the viewer │
-│                                                                HTTP+WebSocket layer  │
-│                                                                at the http_port.     │
-│                                                                When no               │
-│                                                                --viewer-bundle is    │
-│                                                                given, the hub        │
-│                                                                auto-discovers the    │
-│                                                                SPA shipped by        │
-│                                                                rtl-buddy-view (if    │
-│                                                                installed) and falls  │
-│                                                                back to a placeholder │
-│                                                                page if neither is    │
-│                                                                available.            │
+│                                                                over HTTP and         │
+│                                                                WebSocket. Without    │
+│                                                                --viewer-bundle, uses │
+│                                                                the SPA from an       │
+│                                                                installed             │
+│                                                                rtl-buddy-view, else  │
+│                                                                a placeholder page.   │
 │                                                                [default:             │
 │                                                                no-serve-viewer]      │
-│ --viewer-bundle                         PATH                   Override the          │
-│                                                                auto-discovered SPA   │
-│                                                                with this path        │
-│                                                                (directory containing │
-│                                                                index.html, or a path │
-│                                                                to a single           │
-│                                                                index.html). Use this │
-│                                                                when iterating on the │
-│                                                                SPA from a checkout — │
-│                                                                the auto-discovered   │
-│                                                                bundle ships with the │
-│                                                                installed wheel and   │
-│                                                                won't reflect         │
-│                                                                uncommitted viewer/   │
-│                                                                changes. Only used    │
-│                                                                with --serve-viewer.  │
+│ --viewer-bundle                         PATH                   SPA to serve instead  │
+│                                                                of the installed one: │
+│                                                                a directory           │
+│                                                                containing            │
+│                                                                index.html, or an     │
+│                                                                index.html path. Only │
+│                                                                used with             │
+│                                                                --serve-viewer.       │
 │ --listen-port                           INTEGER RANGE          TCP port for adapter  │
 │                                         [0<=x<=65535]          peers (nvim, rb       │
 │                                                                wave). Overrides      │
-│                                                                .listen_port from     │
+│                                                                .listen_port in       │
 │                                                                hub.toml. 0 =         │
-│                                                                OS-assigned. Pin to a │
-│                                                                specific number so    │
-│                                                                peers' discovery      │
-│                                                                records stay stable   │
-│                                                                across restarts.      │
-│ --http-port                             INTEGER RANGE          HTTP/WS port for the  │
-│                                         [0<=x<=65535]          browser-side SPA.     │
+│                                                                OS-assigned.          │
+│ --http-port                             INTEGER RANGE          HTTP/WebSocket port   │
+│                                         [0<=x<=65535]          for the browser SPA.  │
 │                                                                Overrides .http_port  │
-│                                                                from hub.toml. 0 =    │
-│                                                                OS-assigned. Pin to a │
-│                                                                specific number so    │
-│                                                                the SPA URL stays the │
-│                                                                same across restarts. │
-│                                                                Only used with        │
+│                                                                in hub.toml. 0 =      │
+│                                                                OS-assigned. Only     │
+│                                                                used with             │
 │                                                                --serve-viewer.       │
-│ --model                                 TEXT                   Generate view.json on │
-│                                                                hub start for this    │
-│                                                                model name (looked up │
-│                                                                in models.yaml),      │
-│                                                                avoiding a separate   │
-│                                                                `rb hier` invocation. │
-│                                                                When unset the hub    │
-│                                                                falls back to         │
-│                                                                .view_json from       │
+│ --model                                 TEXT                   Model name (from      │
+│                                                                models.yaml) to       │
+│                                                                generate view.json    │
+│                                                                for at start, instead │
+│                                                                of running `rb hier`. │
+│                                                                Without it the hub    │
+│                                                                uses .view_json from  │
 │                                                                hub.toml. Requires    │
 │                                                                --serve-viewer.       │
-│ --models-file                           PATH                   Explicit models.yaml  │
-│                                                                that owns the --model │
-│                                                                entry. Skips the      │
-│                                                                project-tree          │
-│                                                                discovery walk. Use   │
-│                                                                this to disambiguate  │
-│                                                                when the same model   │
-│                                                                name exists in more   │
-│                                                                than one models.yaml. │
-│ --axi-perf-from                         PATH                   Path to an            │
-│                                                                axi-perf.json (output │
-│                                                                of `rb axi-profile    │
-│                                                                run`). The hub bakes  │
-│                                                                its                   │
-│                                                                per-bundle/interconn… │
-│                                                                throughput overlay    │
-│                                                                into every generated  │
-│                                                                view.json AND records │
-│                                                                the source's          │
-│                                                                test/suite_dir so the │
-│                                                                SPA's 'Open in        │
-│                                                                marimo' button skips  │
-│                                                                its prompt. Use the   │
-│                                                                canonical             │
+│ --models-file                           PATH                   models.yaml that      │
+│                                                                holds the --model     │
+│                                                                entry, skipping       │
+│                                                                discovery. Use it     │
+│                                                                when several          │
+│                                                                models.yaml files     │
+│                                                                define the same name. │
+│ --axi-perf-from                         PATH                   axi-perf.json from    │
+│                                                                `rb axi-profile run`, │
+│                                                                whose throughput      │
+│                                                                overlay is added to   │
+│                                                                every generated       │
+│                                                                view.json. The layout │
 │                                                                <suite>/artefacts/ax… │
-│                                                                layout so the         │
-│                                                                test/suite_dir        │
-│                                                                derivation lands.     │
-│                                                                Only used with        │
-│                                                                --serve-viewer.       │
+│                                                                also lets the SPA     │
+│                                                                'Open in marimo'      │
+│                                                                button skip its       │
+│                                                                prompt. Only used     │
+│                                                                with --serve-viewer.  │
 │ --help                                                         Show this message and │
 │                                                                exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1825,38 +1785,29 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ cursor         Broadcast cursor_time_changed{t_fs}.                                  │
 │ scope          Broadcast scope_changed{wave_scope}.                                  │
 │ open           Broadcast source_focused{file, line, col}.                            │
-│ graph-focus    Broadcast graph_focus{node} — point the hub's design knowledge graph  │
-│                pane (http://127.0.0.1:<http_port>/gph) at one node of                │
-│                artefacts/graph/graph.json. NODE is a graph node id: 'module:fifo',   │
-│                'inst:top/top.u_fifo', 'test:verif/dma#smoke',                        │
-│                'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and │
-│                docs/concepts/graph.md lists. The hub caches the focus and replays it │
-│                to the pane on connect, so sending this before the browser tab is     │
-│                open works.                                                           │
-│ cov-focus      Broadcast cov_focus{target} — point the hub's coverage pane           │
-│                (http://127.0.0.1:<http_port>/cov) at one target of the run's         │
-│                coverage model. TARGET is prefixed: 'file:design/blk.sv',             │
-│                'module:blk', or 'test:verif/blk#basic'; an unprefixed string is read │
-│                as a file path. --metric foregrounds one coverage kind, --line        │
-│                scrolls a file target to a line, and --item names a                   │
-│                branch/toggle/expression bin or an SVA cover point. The hub caches    │
-│                the focus and replays it to the pane on connect, so sending this      │
-│                before the browser tab is open works.                                 │
-│ phys-focus     Broadcast phys_focus{target} — point the hub's synth+power pane       │
-│                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
-│                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
-│                'module:alu'; an unprefixed string is read as an instance path.       │
-│                --metric foregrounds one physical metric. The graph pane (/gph)       │
-│                follows the same message: it turns its heat overlay on and highlights │
-│                the module the target belongs to. The hub caches the focus and        │
-│                replays it to both on connect, so sending this before the browser     │
-│                tabs are open works.                                                  │
+│ graph-focus    Broadcast graph_focus{node}: point the graph pane (/gph) at one node. │
+│                NODE is a graph node id as returned by `rb graph query`, such as      │
+│                'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke' or       │
+│                'covitem:dma#DMA-COV-1'. The hub replays the focus when the pane      │
+│                connects, so it can be sent before the tab is open.                   │
+│ cov-focus      Broadcast cov_focus{target}: point the coverage pane (/cov) at one    │
+│                target. TARGET is 'file:design/blk.sv', 'module:blk' or               │
+│                'test:verif/blk#basic'; an unprefixed string is a file path. --metric │
+│                foregrounds one coverage kind, --line scrolls a file target to a      │
+│                line, and --item names a bin or SVA cover point. The hub replays the  │
+│                focus when the pane connects, so it can be sent before the tab is     │
+│                open.                                                                 │
+│ phys-focus     Broadcast phys_focus{target}: point the synth and power pane (/phy)   │
+│                at one target. TARGET is 'instance:u_cpu/u_alu' or 'module:alu'; an   │
+│                unprefixed string is an instance path. --metric foregrounds one       │
+│                physical metric. The graph pane (/gph) also follows: it turns on its  │
+│                heat overlay and highlights the target's module. The hub replays the  │
+│                focus when either pane connects, so it can be sent before the tabs    │
+│                are open.                                                             │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
-│                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
-│                (clears any cached diagnostics from SOURCE). Use --instance to attach │
-│                a view.json instance_path hint that consumers (the SPA's on-canvas    │
-│                badge layer in particular) use as a fast path instead of the          │
-│                file+line resolver.                                                   │
+│                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty     │
+│                set, clearing SOURCE's diagnostics. --instance attaches a view.json   │
+│                instance_path so consumers skip file-and-line resolution.             │
 │ state          Snapshot the hub's cached state (active model, selection, cursor,     │
 │                scope, peers).                                                        │
 │ wave-add       Ask the wave peer (surfer) to add one or more signals to the view.    │
@@ -1878,15 +1829,11 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ wave-comment   Add comment rows (named dividers) to surfer's view. Returns the new   │
 │                item ids. Maps to WCP add_dividers.                                   │
 │ view-pan       Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.     │
-│ overlay        Flip an overlay's enabled state on the SPA. Built-in NAMES are        │
-│                'clock', 'reset', 'axi-perf', 'wave'; an unknown name is a no-op. Use │
-│                --on / --off (default --on). Useful for agents or scripted demos that │
-│                want to direct the user's attention to a specific overlay layer       │
-│                without a UI click.                                                   │
+│ overlay        Enable or disable an overlay on the schematic. NAME is 'clock',       │
+│                'reset', 'axi-perf' or 'wave'; an unknown name does nothing.          │
 │ capture        Ask the schematic (rtl-buddy-sch) to snapshot the current graph and   │
-│                write it to --out. Graph-only — surrounding panels are not captured.  │
-│                Useful for agents that want to look at what the user is seeing        │
-│                without a browser screenshot tool.                                    │
+│                write it to --out. Only the graph is captured, not the surrounding    │
+│                panels.                                                               │
 │ open-source    Ask the src peer (nvim) to open FILE at line+col.                     │
 │ resolve        resolve coordinates via the hub's view.json + tb_prefix mapping       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1975,12 +1922,10 @@ Usage: rtl-buddy hub send open [OPTIONS] SPEC
 ```text
 Usage: rtl-buddy hub send graph-focus [OPTIONS] NODE
 
- Broadcast graph_focus{node} — point the hub's design knowledge graph pane
- (http://127.0.0.1:<http_port>/gph) at one node of artefacts/graph/graph.json. NODE is
- a graph node id: 'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke',
- 'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and
- docs/concepts/graph.md lists. The hub caches the focus and replays it to the pane on
- connect, so sending this before the browser tab is open works.
+ Broadcast graph_focus{node}: point the graph pane (/gph) at one node. NODE is a graph
+ node id as returned by `rb graph query`, such as 'module:fifo', 'inst:top/top.u_fifo',
+ 'test:verif/dma#smoke' or 'covitem:dma#DMA-COV-1'. The hub replays the focus when the
+ pane connects, so it can be sent before the tab is open.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    node      TEXT  graph node id, e.g. test:verif/dma#smoke [required]             │
@@ -1995,13 +1940,11 @@ Usage: rtl-buddy hub send graph-focus [OPTIONS] NODE
 ```text
 Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
 
- Broadcast cov_focus{target} — point the hub's coverage pane
- (http://127.0.0.1:<http_port>/cov) at one target of the run's coverage model. TARGET
- is prefixed: 'file:design/blk.sv', 'module:blk', or 'test:verif/blk#basic'; an
- unprefixed string is read as a file path. --metric foregrounds one coverage kind,
- --line scrolls a file target to a line, and --item names a branch/toggle/expression
- bin or an SVA cover point. The hub caches the focus and replays it to the pane on
- connect, so sending this before the browser tab is open works.
+ Broadcast cov_focus{target}: point the coverage pane (/cov) at one target. TARGET is
+ 'file:design/blk.sv', 'module:blk' or 'test:verif/blk#basic'; an unprefixed string is
+ a file path. --metric foregrounds one coverage kind, --line scrolls a file target to a
+ line, and --item names a bin or SVA cover point. The hub replays the focus when the
+ pane connects, so it can be sent before the tab is open.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    target      TEXT  coverage target, e.g. module:blk or design/blk.sv [required]  │
@@ -2022,13 +1965,11 @@ Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
 ```text
 Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
 
- Broadcast phys_focus{target} — point the hub's synth+power pane
- (http://127.0.0.1:<http_port>/phy) at one target of the run's physical model. TARGET
- is prefixed: 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is read as
- an instance path. --metric foregrounds one physical metric. The graph pane (/gph)
- follows the same message: it turns its heat overlay on and highlights the module the
- target belongs to. The hub caches the focus and replays it to both on connect, so
- sending this before the browser tabs are open works.
+ Broadcast phys_focus{target}: point the synth and power pane (/phy) at one target.
+ TARGET is 'instance:u_cpu/u_alu' or 'module:alu'; an unprefixed string is an instance
+ path. --metric foregrounds one physical metric. The graph pane (/gph) also follows: it
+ turns on its heat overlay and highlights the target's module. The hub replays the
+ focus when either pane connects, so it can be sent before the tabs are open.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    target      TEXT  physical target, e.g. module:alu or u_cpu/u_alu [required]    │
@@ -2045,24 +1986,20 @@ Usage: rtl-buddy hub send phys-focus [OPTIONS] TARGET
 Usage: rtl-buddy hub send diagnose [OPTIONS] SOURCE [ITEMS]...
 
  Push a diagnostics_set bundle for SOURCE. Each ITEM is
- <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set (clears any
- cached diagnostics from SOURCE). Use --instance to attach a view.json instance_path
- hint that consumers (the SPA's on-canvas badge layer in particular) use as a fast path
- instead of the file+line resolver.
+ <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set, clearing
+ SOURCE's diagnostics. --instance attaches a view.json instance_path so consumers skip
+ file-and-line resolution.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│ *    source      TEXT        producer key (e.g. 'analysis-tool', 'claude-analysis'); │
-│                              latest-writer-wins per source on the hub's cache        │
+│ *    source      TEXT        producer key, e.g. 'analysis-tool'; a new push replaces │
+│                              the previous one for the same key                       │
 │                              [required]                                              │
 │      items       [ITEMS]...  <file>:<line>:<sev>:<code>:<msg> ...                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --clear                 Send an empty items list (clears SOURCE).                    │
-│ --instance        TEXT  Optional view.json instance_path to attach to every ITEM in  │
-│                         this push. Use when the producer knows which instance a      │
-│                         finding pertains to (most one-shot agent calls do); skip for │
-│                         batch lint output where each item lives at a different       │
-│                         file:line.                                                   │
+│ --instance        TEXT  view.json instance_path to attach to every ITEM in this      │
+│                         push.                                                        │
 │ --help                  Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2257,10 +2194,8 @@ Usage: rtl-buddy hub send view-pan [OPTIONS] INSTANCE_PATH
 ```text
 Usage: rtl-buddy hub send overlay [OPTIONS] NAME
 
- Flip an overlay's enabled state on the SPA. Built-in NAMES are 'clock', 'reset',
- 'axi-perf', 'wave'; an unknown name is a no-op. Use --on / --off (default --on).
- Useful for agents or scripted demos that want to direct the user's attention to a
- specific overlay layer without a UI click.
+ Enable or disable an overlay on the schematic. NAME is 'clock', 'reset', 'axi-perf' or
+ 'wave'; an unknown name does nothing.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  overlay name [required]                                         │
@@ -2277,8 +2212,7 @@ Usage: rtl-buddy hub send overlay [OPTIONS] NAME
 Usage: rtl-buddy hub send capture [OPTIONS]
 
  Ask the schematic (rtl-buddy-sch) to snapshot the current graph and write it to --out.
- Graph-only — surrounding panels are not captured. Useful for agents that want to look
- at what the user is seeing without a browser screenshot tool.
+ Only the graph is captured, not the surrounding panels.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ *  --out      -o      PATH                         Destination file. Extension       │
@@ -2601,10 +2535,8 @@ Usage: rtl-buddy xplr [OPTIONS] COMMAND [ARGS]...
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --root        TEXT  anchor project-root discovery at this path instead of the        │
-│                     current directory (root_config.yaml/.git are resolved from       │
-│                     here). Group-level: place it between 'xplr' and the subcommand,  │
-│                     e.g. `rb xplr --root <project> list`. For driving a ledger from  │
-│                     outside its project checkout                                     │
+│                     current directory. Group-level: place it between 'xplr' and the  │
+│                     subcommand, e.g. `rb xplr --root <project> list`                 │
 │ --help              Show this message and exit.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
@@ -2626,11 +2558,10 @@ Usage: rtl-buddy xplr [OPTIONS] COMMAND [ARGS]...
 │                 artifact). Idempotent                                                │
 │ release         remove the experiment's worktree (worktree remove + prune); the exp  │
 │                 branch and the ledger record are kept                                │
-│ gc              reclaim experiment disk space, non-interactively: evict heavy        │
-│                 artifacts + worktrees per policy (default keep-frontier never        │
-│                 touches Pareto-frontier members or their lineage); record.json and   │
-│                 the pinned sha always survive, so evicted experiments can be         │
-│                 re-materialized                                                      │
+│ gc              reclaim experiment disk space non-interactively: evict heavy         │
+│                 artifacts and worktrees per policy (default keep-frontier spares     │
+│                 Pareto-frontier members and their lineage); record.json and the      │
+│                 pinned sha survive, so evicted experiments can be re-materialized    │
 │ mock            synthetic DSE backend with known optima (dev/CI harness)             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2801,10 +2732,9 @@ Usage: rtl-buddy xplr release [OPTIONS] EXP
 ```text
 Usage: rtl-buddy xplr gc [OPTIONS]
 
- reclaim experiment disk space, non-interactively: evict heavy artifacts + worktrees
- per policy (default keep-frontier never touches Pareto-frontier members or their
- lineage); record.json and the pinned sha always survive, so evicted experiments can be
- re-materialized
+ reclaim experiment disk space non-interactively: evict heavy artifacts and worktrees
+ per policy (default keep-frontier spares Pareto-frontier members and their lineage);
+ record.json and the pinned sha survive, so evicted experiments can be re-materialized
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --dry-run                 report what would be evicted without touching anything     │
