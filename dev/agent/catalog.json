@@ -317,6 +317,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/monitor-and-stop-a-run.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#tag-job-names-for-one-caller",
+          "slug": "tag-job-names-for-one-caller",
+          "title": "Tag job names for one caller",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/tag-job-names-for-one-caller.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#apply-reservation-advice",
           "slug": "apply-reservation-advice",
           "title": "Apply reservation advice",
