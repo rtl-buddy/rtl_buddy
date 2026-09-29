@@ -4,7 +4,7 @@ description: Check external-tool availability and versions, diagnose blocked sub
 
 # Tool dependency check
 
-`rb tool-check` reports detected external tools and the `rb` subcommands blocked by missing or outdated dependencies. It works without a project, and applies project-specific paths and version pins when it discovers `root_config.yaml`.
+`rb tool-check` reports which external tools are detected and which `rb` subcommands are blocked by a missing or outdated dependency. It works without a project; inside one, it applies the paths and version pins from `root_config.yaml`.
 
 ## Check the environment
 
@@ -17,20 +17,28 @@ rb tool-check --format json           # bare JSON for scripts
 rb --machine tool-check               # standard machine envelope
 ```
 
-Optional tools appear by default. Use `--no-include-optional` to hide them. A tool may be optional globally but required by a command that is itself optional: pyslang does not block the core install, but it does block `elab` and `elab-regression`. The report contains:
+The report has two parts:
 
-- **Tools:** canonical name, `ok` / `missing` / `outdated` / `unsupported`, detected version, resolved path, minimum version, and optional status. `unsupported` marks a tool newer than the version range rtl-buddy is built against (pyslang 12 and later, for example); it blocks commands like `outdated` does.
-- **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
+- **Tools:** canonical name, status (`ok`, `missing`, `outdated` or `unsupported`), detected version, resolved path, minimum version and whether the tool is optional. `unsupported` marks a tool newer than the range rtl-buddy is built against (pyslang 12 and later, for example) and blocks commands like `outdated` does.
+- **Subcommand readiness:** each `rb` command and the dependencies blocking it. An optional feature does not make unrelated commands unready.
 
-Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, any optional binaries, and platform-specific install hints.
+A tool can be optional globally yet required by an optional command: pyslang does not block the core install, but blocks `elab` and `elab-regression`. Optional tools are shown by default; `--no-include-optional` hides them.
 
-A tool that declares optional binaries lists them under `Optional binaries (not required; not detected as this tool)`, each with what it buys. They enrich the tool without being part of it: they never satisfy detection, never supply the probed version, and never change a `ok` / `missing` / `outdated` status. Slurm's `scontrol` is the example — `scontrol show config` supplies the cluster's `MaxArraySize` and `SchedulerParameters=max_array_tasks`, so dispatch can split a resource group too large for one job array, and a submit host without it dispatches normally once `cfg-dispatch.max-array-size` — plus `cfg-dispatch.max-array-tasks`, where the cluster caps tasks per array below it — is set. Its second role is `scontrol update JobId=<id> Dependency=`, which starts a compile key's simulation jobs as soon as that key is built; that call is made from the **compute node** running the build job, so this check on the submit host does not prove it is available where it is used, and without it those jobs wait for the whole build job. Reading the absence of an optional binary as a missing tool, or its presence as a present one, is exactly the confusion the separate section exists to prevent: a host with `scontrol` but no `sbatch` reports slurm `missing`.
+- `--required-for <subcommand>` is a focused preflight for one command.
+- `--explain <tool>` prints the detected state, the commands using the tool, its optional binaries and platform install hints. Use it after a wrapper reports a missing dependency. It also accepts aliases (`rtl-buddy-sch` resolves to `rtl-buddy-view`); output always uses the canonical name.
 
-Aliases are accepted by `--explain` and runtime dependency checks. Output always uses the canonical tool name. For example, `rtl-buddy-sch` resolves to `rtl-buddy-view`; an unknown-name machine response includes the known names and alias mapping.
+## Read optional binaries
+
+A tool may list `Optional binaries (not required; not detected as this tool)`, each with what it buys. They never satisfy detection, supply the probed version or change a status: a host with `scontrol` but no `sbatch` reports slurm `missing`.
+
+Slurm's `scontrol` is the main example:
+
+- `scontrol show config` gives dispatch the cluster's `MaxArraySize` and `max_array_tasks`, so it can split a group too large for one job array. Without it, set `cfg-dispatch.max-array-size` and, if the cluster caps tasks per array lower, `cfg-dispatch.max-array-tasks`.
+- `scontrol update JobId=<id> Dependency=` starts a compile key's simulation jobs as soon as that key is built. The call runs on the compute node executing the build job, so a passing check on the submit host does not prove it works there. Without it, simulation jobs wait for the whole build job.
 
 ## Check in-process readers
 
-Not every behavior that can change under the same `rb` install comes from an external binary. `rb tool-check` therefore ends with an `In-process readers` section:
+The report ends with an `In-process readers` section for behavior that changes without an external binary:
 
 ```text
 In-process readers
@@ -38,27 +46,24 @@ In-process readers
   constraint reader: tcl (Tcl 9.0.3)
 ```
 
-`constraint reader` is the backend SDC/XDC files are read with: `tcl` (a safe Tcl interpreter, run in a short-lived worker process so `rb` itself never loads `tkinter` — see [How the SDC is read](synthesis.md#how-the-sdc-is-read) for why — reported with the Tcl version that worker found) or `tokenizer` (the stdlib-only word splitter used when no worker can start an interpreter, typically a Python without `_tkinter`). The difference is visible in results — the tokenizer does not evaluate `$variables` or `[expr ...]` — so a run that reads constraints reports which one answered. `RTL_BUDDY_CONSTRAINT_READER=tokenizer|tcl` pins it. See [How the SDC is read](synthesis.md#how-the-sdc-is-read).
+`constraint reader` is the backend used to read SDC/XDC files:
 
-The JSON payload carries the same value as `readers.constraints`, without the Tcl version.
+- `tcl`: a safe Tcl interpreter in a short-lived worker process, reported with the Tcl version it found.
+- `tokenizer`: a stdlib-only word splitter used when no worker can start an interpreter, typically a Python without `_tkinter`. It does not evaluate `$variables` or `[expr ...]`.
+
+`RTL_BUDDY_CONSTRAINT_READER=tokenizer|tcl` pins the choice. The JSON payload carries it as `readers.constraints`, without the version. See [How the SDC is read](synthesis.md#how-the-sdc-is-read).
 
 ## Gate scripts and CI
-
-Exit behavior depends on the invocation:
 
 | Invocation | Exit | Meaning |
 |---|---:|---|
 | `rb tool-check` | 0 | Informational, regardless of tool state |
 | `rb tool-check --strict` | 0 | All required tools are ready |
-| `rb tool-check --strict` | 1 | A required tool is missing, outdated, or unsupported |
+| `rb tool-check --strict` | 1 | A required tool is missing, outdated or unsupported |
 | `rb tool-check --required-for <subcommand>` | 0 | That command's required tools are ready |
 | `rb tool-check --required-for <subcommand>` | 2 | That command is blocked |
 
-`--required-for` implies enforcement. Optional dependencies do not fail the global `--strict` check, but they do fail a focused check for a command that declares them required.
-
-The JSON payload contains `tools`, `subcommands`, and `exit_code`. Each `tools` entry carries `status`, `version`, `path`, `optional`, and `minimum_version` when one is declared. A tool whose subcommands need different versions also carries `subcommand_minimum_versions`, and the matching `subcommands` entry reports `outdated` with a `minimum_versions` map naming the floor that was missed. The tool itself stays `ok`, because its other subcommands still work. `rtl-buddy-view` is the built-in case: 0.3.0 is enough for `rb hier`, `rb hier-query` and `rb hub`, while `rb graph` needs 0.4.0. Optional binaries are deliberately absent from it: they are documentation of what a tool can additionally use, not a state anything can gate on, so machine consumers see no field for them. `rb --machine tool-check --explain <tool>` mirrors the human explanation verbatim in the payload's `instructions` field, which is where they do appear. `exit_code` reports the would-be enforced result even when the informational command itself exits 0. `rb --machine tool-check` wraps the same payload in the standard machine envelope; prefer that form for agents.
-
-Example focused CI gate:
+`--required-for` implies enforcement. Optional dependencies do not fail the global `--strict` check, but do fail a focused check for a command that requires them.
 
 ```bash
 rb tool-check --required-for fpv --strict || {
@@ -67,31 +72,37 @@ rb tool-check --required-for fpv --strict || {
 }
 ```
 
+## Read the JSON payload
+
+Prefer `rb --machine tool-check` for agents; `--format json` prints the same payload bare.
+
+- The payload has `tools`, `subcommands` and `exit_code`. `exit_code` is the would-be enforced result even when the informational command exits 0.
+- Each `tools` entry carries `status`, `version`, `path`, `optional` and, when declared, `minimum_version`.
+- A tool whose subcommands need different versions also carries `subcommand_minimum_versions`. The matching `subcommands` entry reports `outdated` with a `minimum_versions` map naming the missed floor, while the tool stays `ok`. `rtl-buddy-view` is the built-in case: 0.3.0 is enough for `rb hier`, `rb hier-query` and `rb hub`, but `rb graph` needs 0.4.0.
+- Optional binaries have no field. `rb --machine tool-check --explain <tool>` puts the human explanation, optional binaries included, in `instructions`.
+
 ## Apply project configuration
 
-When a project is discoverable, tool-check reconciles the built-in manifest with `root_config.yaml`:
+When a project is discoverable, tool-check merges the built-in manifest with `root_config.yaml`:
 
-- `cfg-verible` and the active `cfg-surfer` entry add preferred detectors while retaining `PATH` fallback. Absolute paths are supported.
-- `cfg-tools` overrides minimum versions. Platform-qualified entries apply only to the matching configured OS and take precedence over unqualified entries.
-- `cfg-fpv-tools[*].opts.solver-versions` supplies solver version expectations. Runtime FPV checks exact equality; tool-check presents a mismatch as outdated.
-- Other `cfg-*-tools` blocks do not select a detector because each flow chooses its entry at run time. A flow's pinned `tool:` path is honored when that flow runs.
+- `cfg-verible` and the active `cfg-surfer` entry add preferred detectors; `PATH` remains a fallback. Absolute paths work.
+- `cfg-tools` overrides minimum versions. A platform-qualified entry applies only to the matching configured OS and beats an unqualified one.
+- `cfg-fpv-tools[*].opts.solver-versions` sets solver version expectations. FPV runs check exact equality; tool-check shows a mismatch as `outdated`.
+- Other `cfg-*-tools` blocks do not select a detector, because each flow picks its entry at run time. A flow's pinned `tool:` path is used when that flow runs.
 
-Without `root_config.yaml`, built-in detectors and version floors apply.
-
-Detected versions are cached at `${XDG_CACHE_HOME:-~/.cache}/rtl_buddy/tool_versions.json`, keyed by binary path and modification time. Use `--no-probe-versions` for a faster presence-only check; versions then display as unknown.
+Without `root_config.yaml`, built-in detectors and version floors apply. Detected versions are cached in `${XDG_CACHE_HOME:-~/.cache}/rtl_buddy/tool_versions.json`, keyed by binary path and modification time. `--no-probe-versions` skips probing for a faster presence-only check; versions show as unknown.
 
 ## Understand the manifest
 
-`src/rtl_buddy/tool_manifest.py` is the source of truth for both reports and runtime dependency errors. Each tool declares its canonical name and aliases, its required binaries, ordered detection methods, version probe and minimum, install hints, dependent subcommands, whether it is optional, and any optional binaries.
+`src/rtl_buddy/tool_manifest.py` is the source for both reports and runtime dependency errors. Each tool declares its canonical name and aliases, required binaries, ordered detection methods, version probe and minimum, install hints, dependent subcommands, whether it is optional, and its optional binaries.
 
-`binaries` is the tool's required core, and it is an any-of list: the first name found on `PATH` (or in a configured vendor directory) makes the tool detected, and that resolved path is substituted into the version probe. A binary that does not by itself make the tool usable therefore does not belong there — listing one would let a host missing every real command report `ok`, version-probed through the wrong executable. Such helpers go in `optional_binaries`, a mapping of binary name to what it buys, which only `--explain` reads.
+- `binaries` is an any-of list: the first name found on `PATH` or in a configured vendor directory makes the tool detected, and that path is used for the version probe. A helper that is not enough by itself goes in `optional_binaries` (binary name to what it buys), which only `--explain` reads.
+- The first successful detector wins. Detectors cover `PATH`, configured absolute or vendor paths, Python packages and sibling Python distributions. Name or alias collisions are rejected.
 
-The first successful detector wins. Detectors cover `PATH`, configured absolute or vendor paths, Python packages, and sibling Python distributions. Manifest construction rejects name or alias collisions.
-
-Runtime wrappers call the same manifest and produce a consistent recovery hint:
+Runtime wrappers use the same manifest and print the same recovery hint:
 
 ```text
 <tool> not found — run `rb tool-check --explain <tool>` for install instructions
 ```
 
-`rb tool-check` diagnoses and explains dependencies; it does not install tools or accept project-defined tool specifications. Projects may override known tool paths and versions through `root_config.yaml`. See [YAML formats](../reference/yaml.md#root_configyaml) and the [CLI reference](../reference/cli.md).
+`rb tool-check` diagnoses and explains; it does not install tools. See [YAML formats](../reference/yaml.md#root_configyaml) and the [CLI reference](../reference/cli.md).
