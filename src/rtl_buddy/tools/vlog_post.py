@@ -3,9 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-vlog_post module handles post-processing of output from verilog simulations for rtl-buddy
-"""
+"""Grades Verilog simulation output from its PASS/FAIL markers, UVM summary and assertion failures."""
 
 import logging
 import os
@@ -17,24 +15,16 @@ from ..runner.xfail import FAIL_STAGE_KEY
 from ..logging_utils import log_event
 
 
-# Verilator emits SVA failures as a `%Error` line; the same shape covers
-# immediate and concurrent assertions. Cover hits are not surfaced as errors.
-# Example: `%Error: dut.sv:42: Assertion failed in top.dut: 'signal == expected'`
-# Under `--timing`, Verilator prefixes the line with the sim time, e.g.
-# `[500] %Error: tb_top.sv:32: Assertion failed in top.dut: 'assert' failed.`,
-# so the leading `[<time>] ` prefix is optional.
+# Matches immediate and concurrent SVA failures, e.g.
+# `%Error: dut.sv:42: Assertion failed in top.dut: 'signal == expected'`.
+# `--timing` adds a leading `[<time>] `, so it is optional.
 _ASSERTION_FAILED_RE = re.compile(
     r"^(?:\[\d+\]\s+)?%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed",
 )
 
 
 def count_assertion_failures(*paths) -> int:
-    """Count Verilator-style `%Error: <file>:<line>: Assertion failed` lines.
-
-    Reads the listed log/err files; missing files are skipped. Used by
-    `VlogPost` to surface assertion firings in the `rb test` results table
-    when `tests.yaml` enables `assertions: true`.
-    """
+    """Count Verilator `%Error: <file>:<line>: Assertion failed` lines in the given files, skipping missing ones."""
     total = 0
     for path in paths:
         if not path or not os.path.exists(path):
@@ -50,40 +40,19 @@ def count_assertion_failures(*paths) -> int:
 
 
 def describe_sim_exit(sim_returncode) -> str:
-    """How a simulator ended, for a one-line desc or console message.
-
-    ``exited 1`` / ``killed by signal 6``. A process killed by a signal
-    comes back as a negative code (SIGABRT is -6, which is what an abort
-    looks like), and "exited -6" would misreport it. One spelling, because
-    every message about a failed simulation shows the same fact.
-    """
+    """Describe how a simulator ended: ``exited 1`` or, for a negative return code, ``killed by signal 6``."""
     if sim_returncode is not None and sim_returncode < 0:
         return f"killed by signal {-sim_returncode}"
     return f"exited {sim_returncode}"
 
 
 def grade_unknown_sim_exit(results: dict, sim_returncode, *, test, run_id=None):
-    """Re-grade an unknown ``NA`` whose simulator exited nonzero (#546).
+    """Re-grade a ``NA`` result to ``FAIL`` when the simulator exited nonzero.
 
-    Marker parsing grades a transcript with no PASS/FAIL banner as ``NA``
-    -- "unknown", which is not a pass. A simulator that died (Verilator's
-    ``Aborting...`` after a null dereference, a segfault, a wrapper
-    swallowing ``$fatal``) leaves exactly that transcript *and* a nonzero
-    exit status, and the pair is a failure rather than an outcome to
-    hand-check. Mutates ``results`` in place and returns whether it did.
-
-    Only the unknown case is re-graded: a simulator exit code is not a
-    verdict on its own, so a transcript that did state one keeps it -- a
-    PASS banner with a nonzero exit stays PASS, a FAIL keeps its own
-    reason -- and so does a UVM or cocotb verdict, neither of which is
-    ever ``NA``. ``sim_returncode`` of ``None`` means "no simulation ran
-    here" and grades nothing.
-
-    Applied where the verdict is decided, before ``postproc.completed``
-    announces it: ``docs/agents.md`` documents that event's ``result`` and
-    ``desc`` as authoritative, so a later re-grade would leave JSONL
-    consumers recording an unknown outcome while the envelope and the exit
-    code say failure (#574 review).
+    Mutates ``results`` in place and returns whether it changed. Results that
+    state a verdict keep it, and a ``sim_returncode`` of ``None`` (no
+    simulation ran) grades nothing. Call before ``postproc.completed`` is
+    logged, since that event reports the final result.
     """
     if not sim_returncode or results.get("result") != "NA":
         return False
@@ -100,16 +69,13 @@ def grade_unknown_sim_exit(results: dict, sim_returncode, *, test, run_id=None):
         f"Sim {describe_sim_exit(sim_returncode)} with no PASS/FAIL "
         "verdict in the transcript"
     )
-    # The simulator died instead of reporting, so an xfail marker on this
-    # test has no verdict to excuse (#594).
+    # The simulator died without a verdict, so an xfail marker has nothing to excuse.
     results[FAIL_STAGE_KEY] = "sim"
     return True
 
 
 class VlogPost:
-    """
-    Verilog test output post-processing
-    """
+    """Grades a test from PASS/FAIL markers in the sim log."""
 
     def __init__(self, name, path, *, err_path=None, assertions_enabled=False):
         self.name = name
@@ -118,9 +84,7 @@ class VlogPost:
         self.assertions_enabled = assertions_enabled
 
     def get_results(self):
-        """
-        return default TestResults
-        """
+        """Return TestResults graded from the log's PASS, FAIL and ERR/FAT lines."""
         match_pass = None
         match_fail = None
         match_err = None
@@ -136,27 +100,13 @@ class VlogPost:
         results = {"result": "NA", "desc": "test result unknown"}
         if match_pass is not None:
             results = {"result": "PASS", "desc": match_pass.group(1)}
-        # FAIL is applied last so it wins: a failure signal must not be
-        # erasable by a PASS line elsewhere in the log. A transcript can carry
-        # both -- a per-phase PASS ahead of a final FAIL, a wrapper printing
-        # its own PASS after a failing sub-check, or output from two phases
-        # concatenated -- and scoring that PASS is a silent false green.
-        # Mirrors count_assertion_failures, which already overrides a PASS
-        # when an assertion fired.
+        # FAIL is applied last so a PASS line elsewhere in the log cannot mask it.
         if match_fail is not None:
-            # An ERR:/FAT: line is conventional alongside FAIL but not
-            # guaranteed: a testbench may print its verdict and nothing else.
-            # Reading match_err unconditionally turned that into an
-            # AttributeError that took the whole run down instead of reporting
-            # the failure, losing the results table for every other test too.
+            # An ERR:/FAT: line may be absent, so match_err can be None.
             detail = match_err.group(2).strip() if match_err is not None else ""
             desc = f"{match_fail.group(1)} {detail}".strip()
             results = {"result": "FAIL", "desc": desc}
             if match_pass is not None:
-                # The log contradicts itself. FAIL is the safe reading, but
-                # the testbench is not obeying "emit exactly one terminal
-                # marker" and that is worth saying rather than silently
-                # picking a winner.
                 log_event(
                     logger,
                     logging.WARNING,
@@ -178,13 +128,7 @@ class VlogPost:
         return TestResults(name=self.name, results=results)
 
     def _merge_assertions(self, results: dict) -> None:
-        """Annotate `results` with the SVA assertion count if enabled.
-
-        An assertion failure is itself a test failure: Verilator aborts on
-        `%Error: Assertion failed`, but if the testbench wrapper swallowed the
-        abort (or printed PASS earlier in the same log) we still want to flag
-        the firing here so the results table tells the truth.
-        """
+        """When assertions are enabled, record the failure count and turn a non-FAIL result into FAIL if any fired."""
         if not self.assertions_enabled:
             return
         fired = count_assertion_failures(self.path, self.err_path)
@@ -199,9 +143,7 @@ class VlogPost:
 
 
 class UvmVlogPost(VlogPost):
-    """
-    UVM report post-processing
-    """
+    """Grades a test from the UVM report summary counts."""
 
     def __init__(
         self,
@@ -223,9 +165,7 @@ class UvmVlogPost(VlogPost):
         self.max_errors = max_errors
 
     def get_results(self):
-        """
-        return UVM TestResults
-        """
+        """Return TestResults graded against max_warns, max_errors and zero fatals."""
 
         results = {}
         with open(self.path, "r") as f:
