@@ -214,6 +214,8 @@ Binding edges are `binds_to`, `imports`, `drives`, `checks_against` and `impleme
 
 Config-only graphs have dangling endpoints on purpose: config-to-design edges name modules that the design tier supplies when it is included.
 
+## Flow provenance
+
 The config tier reads the same loaders as the test, spec and regression commands. Flow ownership comes from each flow's regression manifest, first at the project root and then at the path in [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml). A missing manifest means the project does not use that flow; an invalid one is reported. Unclaimed `tests.yaml` suites default to `sim`.
 
 ## Output paths
