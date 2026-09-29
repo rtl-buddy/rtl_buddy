@@ -69,7 +69,7 @@ class CompileVerilateFile:
 class DispatchCompileFile:
     """``cfg-dispatch.compile``: the compile's reservation and its concurrency.
 
-    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation.
+    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. Unknown keys such as ``parallel`` in a per-test ``resources:`` block are silently dropped by serde, not rejected.
     """
 
     cpus: int | None = None

@@ -142,7 +142,7 @@ def plan_threads(
 ) -> ThreadPlan:
     """Resolve a validated `threads:` value against the live allocation.
 
-    ``flow`` and ``run`` name the entry in log events. ``allocation`` overrides detection for tests.
+    ``flow`` and ``run`` name the entry in log events. A clamp logs WARNING ``openroad.threads_capped``; the resolved plan logs INFO ``openroad.threads``. ``allocation`` overrides detection for tests.
     """
     alloc, source = allocation if allocation is not None else detect_allocation()
     if requested is None:

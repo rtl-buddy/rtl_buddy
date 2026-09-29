@@ -1,6 +1,6 @@
 """Configuration schema for style-lint (verible) runs.
 
-Each ``lint.yaml`` lists checks: a model whose filelist supplies the files to lint, plus optional exclude globs and extra lint arguments.
+Each ``lint.yaml`` lists checks: a model whose filelist supplies the files to lint (bare source entries only, the same expansion as ``rb verible lint --model``), plus optional exclude globs and extra lint arguments.
 The linter is always the project's ``cfg-verible`` entry.
 """
 

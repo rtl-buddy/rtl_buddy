@@ -29,7 +29,7 @@ class FpvToolOpts:
     timeout: int | None = None
     extra_args: str = ""
     solver_versions: dict[str, str] = dc_field(default_factory=dict)
-    # yosys-slang shared library; required when any verification uses `frontend: slang`.
+    # Absolute or project-relative path to the yosys-slang shared library; required when any verification uses `frontend: slang`.
     plugin_path: str | None = None
 
 

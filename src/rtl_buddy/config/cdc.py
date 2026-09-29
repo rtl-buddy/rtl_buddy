@@ -97,9 +97,9 @@ class CdcConfigFile:
     single_unit: bool = False
     # Each module is passed as --blackbox <module>; the analyzer validates names.
     blackbox: list[str] = field(default_factory=list)
-    # Instance regexes for `--check-xdc` treated as real synchronizers the analyzer did not recognize.
+    # Instance regexes for `--check-xdc` treated as real synchronizers the analyzer did not recognize. A matching crossing must still be constrained, but a correct XDC waiver of it is not reported as an over-waive.
     recognized_syncs: list[str] = field(rename="recognized-syncs", default_factory=list)
-    # Either flag turns a FAIL into XFAIL. An unexpected pass (XPASS) passes for `xfail` and fails for `xfail_strict`.
+    # Either flag turns a FAIL into XFAIL. An unexpected pass (XPASS) passes for `xfail` and fails for `xfail_strict`. `xfail_strict` wins if both are set.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
