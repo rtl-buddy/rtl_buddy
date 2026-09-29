@@ -38,7 +38,7 @@ submit host cannot run it, set `cfg-dispatch.max-array-size` (and
 refuses the array (`Invalid job array specification`).
 `max-jobs-per-array` throttles each slice, so peak concurrency is that cap x
 the slice count.
-Dispatched `test`, `randtest`, and `regression` keep their aggregate exit
+Dispatched `test`, `randtest` and `regression` keep aggregate exit
 codes: 0 with no real failure, 1 when a job fails or its result envelope is
 missing, stale, or invalid, 2 for a fatal orchestration/configuration error.
 
@@ -124,8 +124,8 @@ header); a consumed input that differs is `build_job.group_input_drift`.
 - `compile.build_lock_wait` is another process compiling into the same
   dir, not a hang.
 - `dispatch.build_job_deduped`: an earlier run's build job for this suite
-  (`rb-build-<hash>`, one per suite dir) is still queued or running, so this
-  one waits on it (`--dependency=singleton`), then revalidates the shared
+  (`rb-build-<hash>`, one per suite dir and job tag) is queued or running, so
+  this one waits on it (`--dependency=singleton`), then revalidates the shared
   build: unchanged inputs reuse it, an edit or `--rebuild` recompiles. Expected
   after an interrupt. If it stays PENDING, inspect the job ahead
   (`squeue -j <ids> -O JobID,State,Reason`); `scancel`

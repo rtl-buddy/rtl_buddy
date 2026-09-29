@@ -523,8 +523,48 @@ def _is_dependency_opt(arg: str) -> bool:
     return arg.startswith(_DEPENDENCY_MIN_ABBREV) and _DEPENDENCY_OPT.startswith(arg)
 
 
-def build_job_name(spec: BuildJobSpec) -> str:
+#: Environment variable whose value prefixes every job name (#693).
+JOB_TAG_ENV = "RTL_BUDDY_JOB_TAG"
+# The separator is outside the tag alphabet, so the first `:` always ends
+# the tag. The alphabet excludes `,` (squeue/sacct/scancel `--name` lists)
+# and `|` (the drain poll's `--format` delimiter).
+_JOB_TAG_SEPARATOR = ":"
+_JOB_TAG_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def resolve_job_tag(raw: str | None) -> str | None:
+    """The job tag ``raw`` names, or ``None`` when unset or empty.
+
+    Raises :class:`FatalRtlBuddyError` for a value outside
+    ``[A-Za-z0-9._-]{1,64}``.
+    """
+    if not raw:
+        return None
+    if _JOB_TAG_RE.fullmatch(raw) is None:
+        log_event(
+            logger,
+            logging.ERROR,
+            "dispatch.job_tag_invalid",
+            env=JOB_TAG_ENV,
+            value=raw,
+        )
+        raise FatalRtlBuddyError(
+            f"{JOB_TAG_ENV}={raw!r} is not a valid job tag: use 1-64 of "
+            "A-Z a-z 0-9 . _ -"
+        )
+    return raw
+
+
+def tagged_job_name(name: str, tag: str | None) -> str:
+    """``name`` behind ``tag`` and the separator, or ``name`` untagged."""
+    return name if tag is None else f"{tag}{_JOB_TAG_SEPARATOR}{name}"
+
+
+def build_job_name(spec: BuildJobSpec, *, tag: str | None = None) -> str:
     """The Slurm job name for ``spec``: one name per build identity (#507).
+
+    ``tag`` (#693) is part of the identity, so ``singleton`` dedup is
+    scoped per (user, tag, suite).
 
     Deterministic across runs and across a user's processes, because the
     name is the rendezvous point: ``--dependency=singleton`` serialises
@@ -576,7 +616,7 @@ def build_job_name(spec: BuildJobSpec) -> str:
         if getattr(spec, "phase", None) == BUILD_PHASE_VERILATE
         else _BUILD_JOB_NAME_PREFIX
     )
-    return f"{prefix}-{digest}"
+    return tagged_job_name(f"{prefix}-{digest}", tag)
 
 
 def _parse_mem_to_bytes(text: str) -> int | None:
@@ -810,6 +850,7 @@ class SlurmDispatchBackend(DispatchBackend):
         # squeue would print one line per poll for the whole wait (#527
         # review).
         self._wait_poll_failed: set = set()
+        self.job_tag = resolve_job_tag(os.environ.get(JOB_TAG_ENV))
 
     def _resolve_accounting_frequency(self) -> float | None:
         """Request per-second task sampling, unless the user asked for a rate.
@@ -1201,7 +1242,7 @@ class SlurmDispatchBackend(DispatchBackend):
         the build job rather than leave it ``PENDING`` with reason
         ``DependencyNeverSatisfied`` for a head that may already be gone.
         """
-        job_name = build_job_name(spec)
+        job_name = build_job_name(spec, tag=self.job_tag)
         cmd = self._reservation_argv(
             spec.resources,
             job_name=None,
@@ -1349,7 +1390,7 @@ class SlurmDispatchBackend(DispatchBackend):
     ) -> list[str]:
         cmd = self._reservation_argv(
             spec.resources,
-            job_name=f"rb:{spec.display_name()}",
+            job_name=tagged_job_name(f"rb:{spec.display_name()}", self.job_tag),
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
@@ -1762,6 +1803,7 @@ class SlurmDispatchBackend(DispatchBackend):
         job_name = f"rb:{first_name}+{len(specs) - 1}"
         if slice_count > 1:
             job_name += f"/{slice_index}"
+        job_name = tagged_job_name(job_name, self.job_tag)
         resources = specs[0].resources
         cmd = [
             "sbatch",
