@@ -106,19 +106,15 @@ Runs of different commands with the same name share one artifact directory. Give
 
 ## local-parallel enforces only the job count
 
-The `local-parallel` backend ignores CPU, memory, time, array and right-sizing settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory. The build job uses one slot but runs `compile.parallel` compiles. `SIGKILL` of the head process can orphan `rb _test-job` children; find and stop them.
+The `local-parallel` backend ignores CPU, memory, time and array settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size it for the heaviest test's memory. `SIGKILL` of the head can orphan `rb _test-job` children; find and stop them. See [Run on one host](concepts/dispatch.md#run-on-one-host).
 
 ## Oversized resource groups are split into several arrays
 
-Slurm refuses an array larger than `MaxArraySize` or `SchedulerParameters=max_array_tasks`. rtl_buddy reads both from `scontrol show config` and splits a larger group into arrays of at most `min(max_array_tasks, MaxArraySize - 1)` elements, with logs under `slice-N/`.
-
-- `max-jobs-per-array` throttles each slice, so peak concurrency is the throttle times the number of slices.
-- `cfg-dispatch.max-array-size` and `cfg-dispatch.max-array-tasks` override the probed values.
-- With several clusters selected (`--clusters=a,b` or `all`), or when the submit host cannot run `scontrol`, the limit is unknown and sbatch refuses an oversized group with `Invalid job array specification`. Set `cfg-dispatch.max-array-size`.
+A resource group larger than the cluster's array limit is submitted as several arrays, and `max-jobs-per-array` throttles each one, so peak concurrency is the throttle times the number of slices. With several clusters selected, or no `scontrol` on the submit host, the limit is unknown and sbatch refuses an oversized group; set `cfg-dispatch.max-array-size`. See [Split large groups into several arrays](concepts/dispatch.md#split-large-groups-into-several-arrays).
 
 ## Quote dispatch time values
 
-YAML 1.1 reads an unquoted `time: 4:00:00` as an integer. rtl_buddy rejects it rather than submit a 10-day Slurm reservation. Write `time: "4:00:00"` or a quoted minute count wherever `resources:` appears, `modes:` blocks included.
+YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
 
 ## An unknown key in a `resources:` block is dropped silently
 
@@ -126,10 +122,7 @@ A `resources:` block discards any key it does not define, with no warning. A typ
 
 ## Dispatch build jobs cover the whole suite
 
-One suite build job compiles every unique compile key, and under `--dispatch slurm` each simulation job starts as soon as its own key is built. `compile.parallel` compiles that many builds at once inside the job, so `compile.time` must cover the longest batch, not the serial total, and `compile.mem` the concurrent builds. Only `cpus` is scaled for you.
-
-- Under `--dispatch slurm`, a Verilator suite splits into a verilate job and a C++ build job. `compile.verilate.time` and `compile.verilate.mem` cover the verilations, `compile.time` and `compile.mem` the builds. Raise `compile.verilate.mem` on `OUT_OF_MEMORY` during elaboration. `compile.split-verilate: false` returns to one job.
-- Each build job reserves `cpus` times `min(parallel, planned tests)`, so twenty tests over three compile keys with `parallel: 8` reserves eight builds' worth of CPUs for three. Set `parallel` to the expected count of distinct builds and check the `(build job)` and `(verilate job)` rows of the reservation advice.
+One build job compiles every build of a suite. `compile.parallel` runs that many builds at once, but only `cpus` is scaled for you: size `compile.mem` for the concurrent builds and `compile.time` for the longest batch. Each build job reserves `cpus` times `min(parallel, planned tests)`, so set `parallel` to the expected number of distinct builds. See [Compile several builds at once](concepts/dispatch.md#compile-several-builds-at-once) and [Split verilation from the C++ build](concepts/dispatch.md#split-verilation-from-the-c-build).
 
 ## Preprocessors run in every dispatched job
 
@@ -139,18 +132,11 @@ With `compile.parallel` above 1, no config's `preproc` may modify an input that 
 
 ## Simulation jobs reuse the build stamp
 
-Simulation jobs skip recompilation when the build stamp validates. The stamp holds a content hash of every tracked input under the project root, so regenerating a file byte-for-byte invalidates nothing and a real change to a compile input invalidates every stamp.
-
-A simulation job whose stamp fails against a build the build job recorded as built does not recompile. It fails with `compile.build_stamp_rejected` and the stamp check's reason.
-
-- If the build job cannot write a stamp it logs the error `compile.stamp_write_failed`. Give the shared build directory's filesystem room and permissions, then rerun.
-- `build_job.group_leader_unstamped` warns that the first config of a compile key wrote no stamp, so the other configs of that key compiled again. Fix the directory as for `compile.stamp_write_failed`.
-- `compile.prebuilt_stamp_invalid` warns that a job recompiled and names what drifted. The usual cause is a `preproc` that writes different bytes on the simulation node than on the build node.
-- There is no per-test opt-out of the shared directory under `--dispatch`. A suite that cannot share compiles locally.
+A simulation job whose build stamp does not validate, against a build the build job recorded as built, fails with `compile.build_stamp_rejected` instead of recompiling. The usual cause is a `preproc` that writes different bytes on the simulation node. `build_job.group_leader_unstamped` means the first config of a build wrote no stamp, so the others compiled again; fix the directory as for `compile.stamp_write_failed`. There is no per-test opt-out of the shared directory under `--dispatch`. See [Recover when a gated job cannot use the build](concepts/dispatch.md#recover-when-a-gated-job-cannot-use-the-build).
 
 ## Design compile errors under dispatch are CompileFail
 
-A design compile error is reported as `CompileFail`; infrastructure failures stay `DispatchFail`. When the build job recorded a config as failed with a builder exit code, simulation jobs do not recompile it, and the summary row carries the build job's error and logs. Fix the design or the build reservation, not the simulation one. If the build job never reached the config, the simulation job compiles it at simulation size, with its log in `compile.retry.log`.
+A design compile error is `CompileFail`; infrastructure failures stay `DispatchFail`. Simulation jobs do not recompile a config the build job recorded as failed, and the row carries the build job's error and logs. Fix the design or the build reservation, not the simulation one.
 
 ## Slurm retry reuses artifact paths
 
@@ -196,13 +182,7 @@ Unshared builds have no lock, so do not run such a suite twice at once.
 
 ## Slurm serialises build jobs of the same suite
 
-Under `--dispatch slurm`, the build job is named after the suite and submitted with `--dependency=singleton`. A second run of the same suite waits for earlier jobs of that name and owner, then reuses the shared build if unchanged. The warning `dispatch.build_job_deduped` names the job being waited on.
-
-- The name covers the suite directory only, so an unrelated run of the same suite also waits.
-- `singleton` is per user; two users sharing a tree rely on the [flock](#shared-build-locking).
-- With `DependencyParameters=disable_remote_singleton`, runs routed to different clusters are not serialised. Pin a cluster with `-M`.
-
-A build job that stays `PENDING` after that warning is usually waiting as intended. Check the job it waits on with `squeue -j <ids> -O JobID,State,Reason`. Leave it if it is `RUNNING` or `PENDING` for `Resources` or `Priority`: cancelling discards the build this run would reuse. `scancel` only a predecessor that is held, unschedulable (`PartitionConfig`, `BadConstraints`) or abandoned.
+Build jobs of one suite run one at a time per user and cluster, so an unrelated run of the same suite waits for an earlier one (`dispatch.build_job_deduped`). Two users sharing a tree rely on the [flock](#shared-build-locking). A federation with `DependencyParameters=disable_remote_singleton` does not serialise across clusters; pin one with `-M`. See [Troubleshoot builds](concepts/dispatch.md#troubleshoot-builds) for a build job that stays `PENDING`.
 
 ## A different rtl_buddy version does not reuse shared builds
 

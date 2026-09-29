@@ -364,7 +364,7 @@ See [Size a reservation per builder mode](../concepts/dispatch.md#size-a-reserva
 - CPU right-sizing then uses the scheduler's `ReqCPUS` for that run, and its `cpus` advice names `sbatch-args` instead of `resources.cpus` or `compile.cpus`. A direct `--cpus-per-task` also disables the compile `cpus` floor.
 - Not overrides: `--threads-per-core`, `-B`, `--ntasks-per-core`, `--ntasks-per-socket`, a lone `--ntasks-per-gpu`, `--exclusive`, `--cpus-per-gpu`, and `SBATCH_CPUS_PER_TASK`.
 
-See [Requested cpus versus allocated cpus](../concepts/dispatch.md#requested-cpus-versus-allocated-cpus) for the advice text.
+See [Judge cpu advice against requested cpus](../concepts/dispatch.md#judge-cpu-advice-against-requested-cpus) for the advice text.
 
 ### Array limits
 
