@@ -3,9 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-vlog_cov module handles coverage post-processing for rtl-buddy
-"""
+"""Collects, merges and reports Verilator coverage."""
 
 import logging
 
@@ -28,15 +26,10 @@ from ..logging_utils import log_event
 from .artifact_paths import sanitize_artifact_component
 
 
-#: Display token for a metric this flow never measured — not instrumented,
-#: or not representable in the artefact the number came from.
+#: Display token for a metric that was never measured or cannot be represented.
 COV_UNSUPPORTED_TOKEN = "UNSP"
 
-#: Display token for a metric whose measurement was *attempted and lost*:
-#: the tool run that was its only source failed (#638). Same four
-#: characters as `UNSP` so the `L/B/T/F` cells keep their width, and a
-#: different word because the two mean opposite things — one says "there
-#: was nothing to measure", the other "there was, and the number is gone".
+#: Display token for a metric whose measurement was attempted and lost. Same width as `UNSP`.
 COV_FAILED_TOKEN = "FAIL"
 
 #: Scalar metrics `CoverageMetrics` carries, in report order.
@@ -44,40 +37,22 @@ METRIC_NAMES = ("line", "branch", "toggle", "expression", "functional")
 
 
 def _fmt_cov(value, failed=False):
-    """
-    Format a normalized coverage value for summary output.
-
-    ``failed`` marks a metric whose measurement failed rather than one that
-    was never supported, so a reader of the one-line summary can tell a lost
-    number from an absent one.
-    """
+    """Format a coverage ratio as ``0.00``-``1.00``, or ``FAIL`` (when ``failed``) or ``UNSP`` for None."""
     if value is None:
         return COV_FAILED_TOKEN if failed else COV_UNSUPPORTED_TOKEN
     return f"{max(0.0, min(1.0, value)):.2f}"
 
 
-# Distinguishes "caller omitted the argument" from "caller passed None".
+# Distinguishes an omitted argument from an explicit None.
 _UNSET = object()
 
 
 def aggregate_cover_records(records):
-    """
-    Fold user-coverage records into one entry per cover point per module.
+    """Sum ``hits`` of user-coverage records per ``(file, line, name, module)``.
 
-    Records are keyed by ``(file, line, name, module)`` and their ``hits``
-    summed. The key keeps `module` so a cover property compiled into more than
-    one module — one written in an ``include``d file, say — stays one entry per
-    module rather than collapsing into a combined count. Collapsing loses
-    information a consumer cannot recover: "hit in modA, never in modB" would
-    read as covered. A consumer that wants union-by-label can fold these by
-    ``name`` itself; the reverse is not possible.
-
-    What this does combine is the same point seen in several per-test databases,
-    which is the run-level rollup the machine payload reports.
-
-    Returns a list sorted by ``(file, line, name, module)``, or None when there
-    is nothing to aggregate (so "no user points" stays distinguishable from
-    "user points, none hit").
+    Module stays in the key so a cover property compiled into several modules
+    is not collapsed into a combined count. Returns a list sorted by that key,
+    or None when there are no records.
     """
     if not records:
         return None
@@ -125,31 +100,17 @@ class CoverageMetrics:
     merged_path: str | None = None
     lcov_path: str | None = None
     html_dir: str | None = None
-    #: True when a merge was attempted and the tool that would have
-    #: produced the merged database failed (#638). The metrics that had no
-    #: other source are then *lost*, not unsupported.
+    #: True when the merge tool failed; metrics with no other source are then lost.
     merge_failed: bool = False
-    #: Names of the metrics that failure cost, from :data:`METRIC_NAMES`.
-    #: Empty/None means every reported metric stands on its own source.
+    #: Names from :data:`METRIC_NAMES` that the failed merge lost.
     failed_metrics: list[str] | None = None
 
     def is_failed(self, metric):
-        """Whether ``metric`` has no value *because* its measurement failed."""
+        """Return whether ``metric`` is missing because its measurement failed."""
         return self.failed_metrics is not None and metric in self.failed_metrics
 
     def summary_str(self):
-        """
-        Return the one-line `L/B/T/F` coverage summary string.
-
-        Expression coverage is deliberately absent: this string is the
-        summary-table cell and a display contract, and expression detail
-        belongs in the structured payload (`to_dict`) and the coverage
-        model, where a consumer can act on it.
-
-        A metric named in `failed_metrics` prints `FAIL` instead of `UNSP`:
-        both are four characters, so the cells keep their width, and the
-        two cases stop sharing one token (#638).
-        """
+        """Return the one-line `L/B/T/F` summary; expression is omitted, and failed metrics print `FAIL`."""
         return (
             f"L:{_fmt_cov(self.line, self.is_failed('line'))} "
             f"B:{_fmt_cov(self.branch, self.is_failed('branch'))} "
@@ -158,14 +119,10 @@ class CoverageMetrics:
         )
 
     def to_dict(self):
-        """
-        Serialize the metrics into the result-dict shape used by rtl-buddy.
+        """Return the metrics as a result dict.
 
-        ``merge_failed`` and ``failed_metrics`` are always present so a
-        consumer never has to read the absence of a key as a verdict: a
-        null metric with its name in ``failed_metrics`` is a measurement
-        that died, and a null metric outside that list was never
-        instrumented.
+        ``merge_failed`` and ``failed_metrics`` are always present: a null
+        metric listed in ``failed_metrics`` failed, any other was not instrumented.
         """
         return {
             "line": self.line,
@@ -187,9 +144,7 @@ class CoverageMetrics:
 
 
 class VlogCov:
-    """
-    Coverage collection and merge helper.
-    """
+    """Collects and merges Verilator coverage and exports LCOV and HTML."""
 
     _VERILATOR_TYPES = {
         "line": "line",
@@ -199,25 +154,18 @@ class VlogCov:
     }
 
     def __init__(self, simulator_name, use_lcov=False, root_cfg=None):
-        """
-        Build a coverage helper for a simulator family.
-        """
         self.simulator_name = simulator_name
         self.use_lcov = use_lcov
         self.root_cfg = root_cfg
 
     def _get_repo_root(self):
-        """
-        Return the absolute project root directory for path normalization.
-        """
+        """Return the absolute project root directory for path normalization."""
         if self.root_cfg is None:
             self.root_cfg = RootConfig(name="coverage")
         return Path(self.root_cfg.get_project_rootdir()).resolve()
 
     def _sanitize_artifact_name(self, name):
-        """
-        Return a filesystem-safe coverage artifact name.
-        """
+        """Return a filesystem-safe coverage artifact name."""
         return sanitize_artifact_component(name)
 
     def _require_lcov(self):
@@ -225,9 +173,7 @@ class VlogCov:
         tm.require("lcov", self.root_cfg)
 
     def _extract_raw_source_paths(self, raw_path):
-        """
-        Extract candidate source-file paths embedded in a raw coverage database.
-        """
+        """Extract candidate source-file paths embedded in a raw coverage database."""
         decoded = []
         seen = set()
 
@@ -267,12 +213,7 @@ class VlogCov:
         return decoded
 
     def _source_resolver(self, base_dir, source_roots=None):
-        """
-        Build the shared source-path resolver for this project (#399).
-
-        One resolver, one contract: ``source_roots`` are the
-        ``[run dir, suite root]`` hints, most specific first.
-        """
+        """Build the source-path resolver; ``source_roots`` are ``[run dir, suite root]`` hints, most specific first."""
         return SourcePathResolver(
             self._get_repo_root(),
             base_dir=base_dir,
@@ -280,16 +221,11 @@ class VlogCov:
         )
 
     def _resolve_source_path(self, sf_path, base_dir, source_roots=None):
-        """
-        Resolve a source-file path from LCOV/raw coverage to a real file in the repo.
-        """
+        """Resolve a source-file path from LCOV/raw coverage to a real file in the repo."""
         return self._source_resolver(base_dir, source_roots).resolve_path(sf_path)
 
     def _build_annotate_cwd(self, raw_path, temp_root, source_roots=None):
-        """
-        Build a synthetic working directory so `verilator_coverage --annotate` can
-        resolve relative source paths stored in the raw coverage database.
-        """
+        """Build a temp working directory so `verilator_coverage --annotate` resolves the raw database's relative source paths."""
         repo_root = self._get_repo_root()
         raw_dir = Path(os.path.dirname(raw_path)).resolve()
         source_roots = (
@@ -323,8 +259,7 @@ class VlogCov:
         deep_cwd = level_dirs[-1]
         for rel_path in relative_paths:
             extra_roots = []
-            # Keep basename-only files anchored to the suite roots. Broad repo-parent
-            # scans make names like `tb_top.sv` ambiguous across sibling worktrees.
+            # Only paths with a directory get extra roots: a bare `tb_top.sv` is ambiguous across worktrees.
             if "/" in rel_path.replace("\\", "/"):
                 for root in [raw_dir.parent, raw_dir]:
                     if root != repo_root:
@@ -346,17 +281,13 @@ class VlogCov:
         return str(deep_cwd)
 
     def _normalize_lcov_paths(self, lcov_path, source_roots=None):
-        """
-        Rewrite LCOV `SF:` entries to normalized repo-resolved paths.
-        """
+        """Rewrite LCOV `SF:` entries to normalized repo-resolved paths."""
         self._source_resolver(Path(lcov_path).parent, source_roots).rewrite_info(
             lcov_path, relative=False
         )
 
     def _line_has_branch_syntax(self, src_line):
-        """
-        Heuristically detect whether a source line should carry LCOV branch records.
-        """
+        """Heuristically detect whether a source line should carry LCOV branch records."""
         line = src_line.strip()
         if not line:
             return False
@@ -367,10 +298,7 @@ class VlogCov:
         return branch_re.search(line) is not None
 
     def _sanitize_lcov_branch_records(self, lcov_path):
-        """
-        Drop noisy LCOV branch records on non-branch source lines and recompute
-        `BRF/BRH` totals.
-        """
+        """Drop LCOV branch records on lines with no branch syntax and recompute `BRF/BRH`."""
         current_sf = None
         current_lines = []
         records = []
@@ -432,15 +360,11 @@ class VlogCov:
                 f.write(line + "\n")
 
     def is_supported(self):
-        """
-        Report whether this helper supports the selected simulator backend.
-        """
+        """Report whether this helper supports the selected simulator backend."""
         return self.simulator_name == "verilator"
 
     def collect(self, raw_path, source_roots=None):
-        """
-        Collect per-test coverage metrics from a raw coverage database.
-        """
+        """Collect per-test coverage metrics from a raw coverage database."""
         if not self.is_supported():
             return None
         if raw_path is None or not os.path.exists(raw_path):
@@ -461,14 +385,8 @@ class VlogCov:
         metrics.toggle = self._parse_verilator_metric(
             raw_path, "toggle", source_roots=source_roots
         )
-        # Expression coverage is read straight out of the raw database
-        # rather than through `--annotate`: `verilator_coverage --write-info`
-        # folds expression points into anonymous `DA:` records, so the .info
-        # cannot carry it, and the annotate route costs a subprocess for a
-        # ratio the database already states exactly (#399).
+        # Read from the raw database: LCOV export folds expression points into `DA:` records.
         metrics.expression = self._ratio_from_raw_metric(raw_path, EXPRESSION)
-        # Parse the raw user records once and derive both the scalar ratio and
-        # the per-point list from them.
         user_records = self.parse_user_cover_records(raw_path)
         metrics.functional = self._parse_verilator_metric(
             raw_path,
@@ -480,9 +398,7 @@ class VlogCov:
         return metrics
 
     def _write_lcov(self, raw_path, lcov_path, source_roots=None):
-        """
-        Export raw coverage to LCOV, then normalize and sanitize the result.
-        """
+        """Export raw coverage to LCOV, then normalize and sanitize the result."""
         lcov_cmd = ["verilator_coverage", "--write-info", lcov_path, raw_path]
         log_event(
             logger,
@@ -520,9 +436,7 @@ class VlogCov:
         return True
 
     def _parse_lcov_summary(self, lcov_path):
-        """
-        Parse normalized line and branch coverage fractions from an LCOV file.
-        """
+        """Parse normalized line and branch coverage fractions from an LCOV file."""
         line_found = 0
         line_hit = 0
         branch_found = 0
@@ -560,20 +474,11 @@ class VlogCov:
         return line_cov, branch_cov
 
     def parse_lcov_summary(self, lcov_path):
-        """
-        Public reading of one LCOV `.info`: `(line_ratio, branch_ratio)`.
-
-        The whole-file counterpart of `parse_lcov_summary_for_prefix`, for
-        callers outside this class (`CoverageReporter` scoring the datasets
-        it merged) that would otherwise reach into the private parser.
-        """
+        """Return `(line_ratio, branch_ratio)` for a whole LCOV `.info` file."""
         return self._parse_lcov_summary(lcov_path)
 
     def parse_lcov_summary_for_prefix(self, lcov_path, prefix):
-        """
-        Parse normalized line and branch coverage fractions for files rooted under a
-        repo-relative path prefix such as `design/example_block`.
-        """
+        """Return `(line_ratio, branch_ratio)` for files under a repo-relative prefix such as `design/example_block`."""
         if lcov_path is None or not os.path.exists(lcov_path):
             return None, None
 
@@ -645,9 +550,7 @@ class VlogCov:
         artifact_name=None,
         html_outdir=None,
     ):
-        """
-        Generate per-test LCOV and optional HTML artifacts from a raw coverage file.
-        """
+        """Generate per-test LCOV and optional HTML artifacts from a raw coverage file."""
         metrics = self.collect(raw_path, source_roots=source_roots)
         if metrics is None:
             return None
@@ -726,9 +629,7 @@ class VlogCov:
     def generate_html(
         self, lcov_path, outdir, html_dirname="coverage_merge.html", html_outdir=None
     ):
-        """
-        Generate LCOV HTML for an existing `.info` file.
-        """
+        """Generate LCOV HTML for an existing `.info` file."""
         if lcov_path is None or not os.path.exists(lcov_path):
             return None
 
@@ -790,27 +691,15 @@ class VlogCov:
         source_roots=None,
         html_outdir=None,
     ):
-        """
-        Merge multiple raw coverage databases and return aggregate coverage metrics.
+        """Merge raw coverage databases and return the aggregate metrics.
 
-        Two different things can go wrong here and they must not report the
-        same way (#638):
+        If ``verilator_coverage --write`` fails, toggle, expression and
+        functional are lost: ``merge_failed`` and ``failed_metrics`` say so and
+        they print ``FAIL``. Line and branch survive only when ``use-lcov`` or
+        HTML output is on, since they then come from the per-test LCOV exports.
+        Metrics that are simply absent stay ``UNSP``.
 
-        * ``verilator_coverage --write`` fails — the merged database is the
-          only source for toggle, expression and functional, so those
-          numbers are *lost*. The returned metrics say so through
-          ``merge_failed`` / ``failed_metrics``, and print ``FAIL`` rather
-          than ``UNSP``. Line and branch survive this only when ``use-lcov``
-          or HTML output is on, because they are then read from the per-test
-          LCOV exports the merge did not touch. Otherwise those exports are
-          skipped (#661) and line and branch come from the merged database.
-        * the merge succeeds and a metric is simply absent — never
-          instrumented, or not representable in the artefact it was read
-          from. That stays ``UNSP``.
-
-        Returns None when nothing was measured **and** nothing failed: a
-        failed merge always returns metrics, because "the merge died" is the
-        one fact a caller must not have to infer from an absence.
+        Returns None only when nothing was measured and nothing failed.
         """
         if not self.is_supported():
             return None
@@ -856,9 +745,7 @@ class VlogCov:
 
         metrics = CoverageMetrics(raw_paths=list(raw_paths), merged_path=merged_path)
 
-        # The per-test exports feed only the merged `.info`, which is wanted
-        # for `use-lcov` or HTML. Otherwise skip them (#661): line and branch
-        # come from one export of the merged database below.
+        # Per-test exports are needed only for the merged `.info` (`use-lcov` or HTML).
         if self.use_lcov or html_output:
             lcov_inputs = []
             with tempfile.TemporaryDirectory(prefix="rtl_buddy_merge_lcov_") as tmpdir:
@@ -943,13 +830,9 @@ class VlogCov:
                 merged_path, "functional", source_roots=source_roots
             )
         else:
-            # Which metrics did losing the merged database actually cost?
-            # Toggle, expression and functional always: an LCOV `.info`
-            # cannot represent them, so the merged `.dat` was their only
-            # source. Line and branch only when the LCOV route produced no
-            # merged `.info` either — a merged `.info` that parses to None
-            # genuinely records no point of that kind, which is `UNSP` and
-            # must not be dressed up as a failure.
+            # Toggle, expression and functional exist only in the merged `.dat`.
+            # Line and branch are lost only if no merged `.info` exists either;
+            # a merged `.info` that parses to None means "no such points", not failure.
             metrics.merge_failed = True
             merge_only = {"toggle", "expression", "functional"}
             if metrics.lcov_path is None:
@@ -972,9 +855,7 @@ class VlogCov:
         return metrics
 
     def _merge_lcov_files(self, input_paths, output_path):
-        """
-        Merge multiple LCOV files by summing line and branch hit counts per source file.
-        """
+        """Merge multiple LCOV files by summing line and branch hit counts per source file."""
         line_counts = defaultdict(dict)
         branch_counts = defaultdict(dict)
 
@@ -1040,15 +921,10 @@ class VlogCov:
     def _parse_verilator_metric(
         self, raw_path, metric_name, source_roots=None, user_records=_UNSET
     ):
-        """
-        Parse a non-LCOV Verilator metric such as toggle or user coverage from a raw
-        coverage database.
+        """Return the hit ratio of a non-LCOV metric (toggle, functional) from a raw database, or None.
 
-        `user_records` lets a caller that has already parsed the `t=user` records
-        (see `parse_user_cover_records`) hand them in, so the database is not read
-        and scanned a second time to derive the functional ratio. Passing None
-        means "already parsed, no user points found" — distinct from omitting the
-        argument, which means "parse it yourself".
+        ``user_records`` are pre-parsed ``t=user`` records. Passing None means
+        "parsed, none found"; omitting it means "parse now".
         """
         filter_type = self._VERILATOR_TYPES[metric_name]
         if metric_name == "functional":
@@ -1118,8 +994,8 @@ class VlogCov:
                 )
                 return None
 
-            # Verilator ≤5.042: "Total coverage (hit/total) X.XX%"
-            # Verilator ≥5.048: per-metric table "  toggle    : 63.1% ( 82/130)"
+            # Summary formats: "Total coverage (hit/total) X.XX%" up to Verilator 5.042,
+            # "  toggle    : 63.1% ( 82/130)" from 5.048.
             hit, total = None, None
             legacy = re.search(r"Total coverage \((\d+)/(\d+)\)\s+([0-9.]+)%", output)
             if legacy is not None:
@@ -1190,32 +1066,12 @@ class VlogCov:
             return value
 
     def parse_user_cover_records(self, raw_path):
-        r"""
-        Parse `t=user` counter records out of a raw Verilator coverage database.
+        """Return `t=user` cover-point records from a raw database, or None if unreadable or empty.
 
-        Returns one record per counter as ``{name, file, line, module, hier,
-        hits}``, or None when the database is unreadable or holds no user
-        points. The database reader itself lives in
-        :mod:`rtl_buddy.cov.raw`, which parses every record type; this method
-        is the user-coverage projection of it that the run-level `covers`
-        payload has always reported.
-
-        Verilator writes **one record per source cover point per containing
-        module**, not one per instance: a point instantiated many times arrives
-        already merged, with the counts summed and the differing hierarchy
-        component replaced by `*` (e.g. `tb_top.u*.SUB_COVER`). It does keep the
-        same source line apart when it is compiled into more than one module —
-        an `include`d cover property, say — which is why `module` is carried
-        here. Verified against Verilator 5.049 output.
-
-        A labeled SVA `cover property` lands in `coverage.dat` as a `t=user`
-        point whose comment key carries the label verbatim, e.g.::
-
-            C '\x01f\x02tb_top.sv\x01l\x0214\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top\x01o\x02APB_IF_WRITE\x01h\x02tb_top.APB_IF_WRITE' 3
-
-        This data survives only in the raw database —
-        `verilator_coverage --write-info` folds user points into anonymous
-        `DA:` records and drops the labels entirely.
+        Each record is ``{name, file, line, module, hier, hits}``. Verilator
+        writes one record per cover point per containing module, with
+        instances already merged (differing hierarchy components become `*`).
+        Labels exist only in the raw database, not in LCOV export.
         """
         parsed = parse_raw_records(raw_path, metrics=[COVER])
         if not parsed:
@@ -1224,9 +1080,7 @@ class VlogCov:
         records = []
         for record in parsed:
             if not record["name"]:
-                # Should not happen for a labeled `cover property`; the record is
-                # still reported (it counts toward the functional ratio) but a
-                # consumer cannot map it to a plan item, so make it diagnosable.
+                # Still reported and counted, but cannot be mapped to a plan item.
                 log_event(
                     logger,
                     logging.DEBUG,
@@ -1249,22 +1103,15 @@ class VlogCov:
         return records
 
     def _parse_raw_user_metric(self, raw_path):
-        """
-        Derive functional/user coverage directly from raw Verilator coverage entries.
+        """Compute functional coverage from raw `t=user` records.
 
-        Some Verilator versions can report an incorrect 0/N summary for
-        `--filter-type user` despite non-zero user counters in the raw database.
-        Parse `t=user` counter records from `coverage.dat` to compute hit/total.
+        Some Verilator versions report a wrong 0/N summary for `--filter-type user`.
         """
         return self._ratio_from_user_records(self.parse_user_cover_records(raw_path))
 
     @staticmethod
     def _ratio_from_raw_metric(raw_path, metric):
-        """Hit/total for one canonical metric, straight from the raw database.
-
-        Returns None when the database is unreadable or records no point of
-        that kind, so "unsupported" stays distinguishable from "0% covered".
-        """
+        """Return the hit ratio of one metric from the raw database, or None if it has no such points."""
         records = parse_raw_records(raw_path, metrics=[metric])
         if not records:
             return None
@@ -1272,20 +1119,15 @@ class VlogCov:
 
     @staticmethod
     def _ratio_from_user_records(records):
-        """
-        Hit/total over already-parsed `t=user` records, or None if there are none.
-        """
+        """Hit/total over already-parsed `t=user` records, or None if there are none."""
         if not records:
             return None
         return sum(1 for r in records if r["hits"] > 0) / len(records)
 
     def _parse_user_annotated_summary(self, annotate_dir):
-        """
-        Derive functional/user coverage directly from Verilator annotate output.
+        """Compute functional coverage by counting `%NNNNNN` hit markers in annotate output.
 
-        Verilator 5.042 can emit correct per-line `%000001` style hit markers for
-        `--filter-type user` while still printing `Total coverage (0/N) 0.00%`.
-        Count those annotated markers instead of trusting the broken summary line.
+        Verilator 5.042 prints correct markers but a wrong `Total coverage (0/N)` line.
         """
         annotate_root = Path(annotate_dir)
         if not annotate_root.exists():

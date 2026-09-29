@@ -2,9 +2,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-verible module handles interfacing with the verible tool for rtl-buddy
-"""
+"""Runs Verible executables."""
 
 import logging
 
@@ -28,9 +26,7 @@ class Verible:
         return self.cfg.get_exe_path(exe_name)
 
     def do_exe(self, exe_name, verible_args):
-        """
-        run verible executable
-        """
+        """Run a Verible executable, echo its output, and return its exit code."""
         cmd = [self.get_exe_path(exe_name)]
         cmd += verible_args
         log_event(
@@ -61,7 +57,7 @@ class Verible:
 
     def do_obfuscate(self, verible_args):
         assert False, "not supported yet"
-        # obfuscate needs to use input output pipe, need to use different do_exe()
+        # obfuscate needs stdin/stdout pipes, which do_exe() does not provide.
         return self.do_exe("verible-verilog-obfuscate", verible_args)
 
     def do_preprocessor(self, verible_args):
@@ -74,11 +70,7 @@ class Verible:
         return self.do_exe("verible-verilog-format", verible_args)
 
     def do_cmd(self, cmd, verible_args):
-        # Configured per-command extra_args always lead, so CLI arguments
-        # can override them (later gflags occurrences win). Applied here,
-        # uniformly, for every dispatched command -- historically only
-        # `lint` honoured its extra_args and a configured
-        # `extra_args: {format: [...]}` block was silently ignored.
+        # Configured extra_args go first so CLI arguments override them (later gflags win).
         verible_args = self.cfg.get_extra_args(cmd) + verible_args
         if cmd == "lint":
             return self.do_lint(verible_args)
