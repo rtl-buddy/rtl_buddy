@@ -665,17 +665,20 @@ class OpenRoadSynth:
             lines.append(f"read_lef {lef}")
         for lib in lib_paths:
             lines.append(f"read_liberty {lib}")
-        # The resynthesis strategies below pick library cells of their own,
-        # so the PDK's exclusions have to hold here too.
-        or_dont_use = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
-        if or_dont_use:
-            lines.append(f"set_dont_use [list {' '.join(or_dont_use)}]")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
         # Read cleaned blackbox stubs so OpenROAD link_design can resolve them
         known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
         for bb_stub in self._write_or_blackbox_stubs(known_masters):
             lines.append(f"read_verilog {bb_stub}")
         lines.append(f"link_design {top}")
+        # The resynthesis strategies below pick library cells of their own,
+        # so the PDK's exclusions have to hold here too. After `link_design`,
+        # as the P&R flow does it: OpenROAD 26Q2's `set_dont_use` stops at
+        # "no network has been linked" before one, and every command after
+        # it then fails the same way.
+        or_dont_use = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
+        if or_dont_use:
+            lines.append(f"set_dont_use [list {' '.join(or_dont_use)}]")
 
         if constraints:
             lines.append(f"read_sdc {constraints}")
