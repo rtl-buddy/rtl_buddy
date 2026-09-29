@@ -96,7 +96,7 @@ def _write_run(
     synth_config=None,
     power_config=None,
 ):
-    """One run's artefacts, written by the phase-1 producers."""
+    """One run's artefacts, written by the real producers."""
     phys_dir = root / "verif" / "blk" / "artefacts" / run
     phys_dir.mkdir(parents=True, exist_ok=True)
 
