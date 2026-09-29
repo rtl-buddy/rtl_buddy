@@ -25,7 +25,8 @@ The report has two parts:
 A tool can be optional globally yet required by an optional command: pyslang does not block the core install, but blocks `elab` and `elab-regression`. Optional tools are shown by default; `--no-include-optional` hides them.
 
 - `--required-for <subcommand>` is a focused preflight for one command.
-- `--explain <tool>` prints the detected state, the commands using the tool, its optional binaries and platform install hints. Use it after a wrapper reports a missing dependency. It also accepts aliases (`rtl-buddy-sch` resolves to `rtl-buddy-view`); output always uses the canonical name.
+- `--explain <tool>` prints the detected state, the commands using the tool, its optional binaries and platform install hints. Use it after a wrapper reports a missing dependency. Output always uses the canonical name.
+- Tool names accept aliases in `--explain` and in runtime dependency checks: `rtl-buddy-sch` resolves to `rtl-buddy-view`. An unknown name with `--explain` exits 1. Under `--machine` the response lists the known tool names and the alias mapping.
 
 ## Read optional binaries
 

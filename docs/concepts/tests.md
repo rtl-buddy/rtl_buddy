@@ -34,7 +34,7 @@ tests:
 
 - `plusargs` are runtime arguments; `plusdefines` are compile-time defines.
 - `model_path`, testbench filelists and hook paths resolve from the directory containing `tests.yaml`. A model's filelist entries resolve from the directory containing that filelist, so a `+incdir+` inside a filelist pulled in with `-F` names a directory beside that filelist.
-- `toplevel` names the module the compile elaborates from. It becomes Verilator `--top-module`, VCS `-top` or Icarus `-s`. Declare it on every testbench; for a SystemVerilog bench it names the bench, not the DUT.
+- `toplevel` names the module the compile elaborates from. It becomes Verilator `--top-module`, VCS `-top` or Icarus `-s`. Declare it on every testbench; it is not inferred from the testbench `name`. For a SystemVerilog bench it names the bench, not the DUT.
 - Without `toplevel` the simulator picks a top from filelist order. Recomposing a model filelist then renames the Verilator model, and an uninstantiated module in a non-`-v` input becomes a `MULTITOP` error. A top pinned in the builder's `compile-time` opts still wins. See [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
 
 See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
@@ -282,7 +282,7 @@ rb regression --master-seed 20260914 --dispatch slurm
 
 - Each runtime seed is derived from the master seed, the project-root-relative `tests.yaml` path, the sweep-expanded test name and the run ID when present.
 - Test selection, ordering, checkout location and dispatch timing do not change it, so the same command replays the same seeds.
-- A master seed is a nonnegative integer and may exceed the simulator's range. Derived simulator seeds are 1 through 2147483647.
+- A master seed is a nonnegative integer and may exceed the simulator's range. Master-derived seeds are 1 through 2147483647, and so is the allowed range for a fixed `sim-rand-seed`.
 
 ## Seed a preprocessor
 
@@ -296,7 +296,7 @@ tests:
 
 - Before `preproc` runs, `test_cfg.get_resolved_seed()` and `test_cfg.get_plusarg("stimulus_seed")` return the resolved seed. The simulator receives that value even if the hook changed the plusarg.
 - The seed is written to `test.randseed`, `result.json`, structured logs and machine results. Seeds and plusargs do not change the compile key.
-- Without a master or fixed seed, the plusarg gets the builder's default integer unchanged, including `0`.
+- Without a master or fixed seed, the plusarg gets the builder's default integer unchanged, including `0`. That default is exempt from the 1 to 2147483647 range.
 - `--rnd-new` and `--rnd-last` are rejected for such a test, because they choose their value too late for preprocessing. `randtest` needs a fixed `sim-rand-seed`; its single preprocessor run and every iteration use that value.
 
 Set `sim-rand-seed` to keep timing or command-cycle stimulus fixed:
