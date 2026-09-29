@@ -2,18 +2,9 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Read verbs over coverage artefacts already on disk (#399).
+"""Payload builders for ``rb cov summary`` and ``rb cov module <name>``.
 
-``rb cov summary`` and ``rb cov module <name>`` answer the two questions
-that previously required re-running a regression: *how covered is this
-run*, and *what is cold inside this block*. Neither runs a simulator;
-both read ``cov_dir/manifest.json`` and the model it points at.
-
-Every payload builder here is a **plain function taking a context and
-returning a dict**. The CLI hands the dict straight to
-``_emit_machine_result``, and the MCP tools (phase 3) wrap the same dict
-verbatim — the payload *is* the contract, so it may not be assembled
-inside a command body where only one of the two surfaces would see it.
+They read ``cov_dir/manifest.json`` and its model without running a simulator. Each builder takes a context and returns a dict, which both the CLI and the MCP tools emit verbatim.
 """
 
 from __future__ import annotations
@@ -28,23 +19,15 @@ from . import manifest as manifest_mod
 from .model import cover_records, load_model, source_totals
 from .raw import METRICS
 
-#: Bumped when a payload's shape changes incompatibly. Rides on every
-#: payload so an agent surface can tell.
+#: Bumped when a payload's shape changes incompatibly; carried on every payload.
 COV_QUERY_SCHEMA_VERSION = 1
 
-#: Files reported by ``rb cov summary`` before truncation. Coldest
-#: first — a summary that leads with the fully covered files is a
-#: summary nobody reads to the end.
+#: Files reported by ``rb cov summary`` before truncation, coldest first.
 DEFAULT_FILE_LIMIT = 20
 
 
 class CovQueryError(FatalRtlBuddyError):
-    """A coverage question that cannot be answered as asked.
-
-    Carries ``candidates`` when the failure was an unknown module name,
-    so the CLI and the MCP server can show near misses instead of only
-    the miss.
-    """
+    """A coverage question that cannot be answered as asked; `candidates` lists near-miss module names for an unknown module."""
 
     def __init__(self, message: str, *, candidates: list[str] | None = None) -> None:
         super().__init__(message)
@@ -94,12 +77,7 @@ def resolve_manifest_path(project_root, *, cov_dir=None, manifest=None) -> str:
 def load_context(project_root, *, cov_dir=None, manifest=None) -> CovContext:
     """Load the manifest and its model.
 
-    A manifest with no model is an error rather than an empty answer:
-    the model is written by the same code path that writes the manifest,
-    so its absence means the artefacts were truncated, not that nothing
-    was covered — unless the run was asked to skip it with
-    ``--coverage-model none`` (#660), which the manifest records and the
-    error names.
+    Raises :class:`CovQueryError` when the model is missing or the run used ``--coverage-model none``.
     """
     manifest_path = resolve_manifest_path(
         project_root, cov_dir=cov_dir, manifest=manifest
@@ -136,17 +114,8 @@ def load_context(project_root, *, cov_dir=None, manifest=None) -> CovContext:
     )
 
 
-# ---------------------------------------------------------------------------
-# shared payload pieces
-# ---------------------------------------------------------------------------
-
-
 def artefacts_block(ctx: CovContext) -> dict:
-    """Every artefact path this run produced, project-relative.
-
-    The block machine consumers gate on: paths, not the display lines
-    (``Merged LCOV: <path>``) the summary table prints.
-    """
+    """Every artefact path this run produced, project-relative."""
     document = ctx.manifest
     merged = document.get("merged") or {}
     coverview = document.get("coverview") or {}
@@ -171,17 +140,12 @@ def _run_block(ctx: CovContext) -> dict:
         "schema_version": COV_QUERY_SCHEMA_VERSION,
         "manifest": manifest_mod.project_relative(ctx.manifest_path, ctx.project_root),
         "generated_at": document.get("generated_at"),
-        # Not `command`: the machine envelope already spends that key on the
-        # verb being run, and `**payload` would collide with it.
+        # Not `command`: the machine envelope uses that key.
         "run_command": document.get("command"),
         "suite": document.get("suite"),
         "builder": document.get("builder"),
         "simulator": document.get("simulator_family") or ctx.model.get("simulator"),
         "merge_mode": document.get("merge_mode"),
-        # Forwarded so the first-party manifest reader answers the question
-        # the manifest now states outright: did the merge this run asked for
-        # survive (#638)? `totals` below is per-test and stays honest either
-        # way, which is exactly why it cannot be the place a reader looks.
         "merge_failed": bool(document.get("merge_failed")),
         "failed_metrics": list(document.get("failed_metrics") or []),
     }
@@ -193,9 +157,7 @@ def _file_summary(file_row: dict) -> dict:
         "modules": file_row.get("modules", []),
         "totals": file_row.get("totals", {}),
     }
-    # Points collapsed *within* the file are exactly this file's source
-    # figure, so the cheap key is the right one (#637). Omitted for a
-    # model written before it existed.
+    # Omitted when the model has no source totals.
     collapsed = source_totals(file_row)
     if collapsed is not None:
         summary["source_totals"] = collapsed
@@ -203,25 +165,9 @@ def _file_summary(file_row: dict) -> dict:
 
 
 def coldest_first(file_rows, limit=None):
-    """Files ordered coldest first: lowest line ratio, then most misses.
+    """Order files coldest first: lowest line ratio, then most misses, then path.
 
-    Files with no line points at all go last. They are not cold, they
-    are silent — a header, a package, a file whose lines the database
-    never recorded — and reading their ``null`` ratio as 1.0 filed them
-    among the fully covered ones, where a reader scanning up from the
-    bottom for "what is left" met them first.
-
-    Public because the ``/cov`` pane orders its file list the same way
-    the summary does — two orderings for "which file should I look at
-    first" would be one too many. The pane applies this same rule to
-    whichever metric its picker has selected; on ``line`` the two agree
-    exactly.
-
-    The ranking is the per-elaboration line figure, and that is also the
-    source-point one: a file's line points are keyed on the line alone,
-    so collapsing the elaborations cannot change a line count (#637).
-    ``rb cov summary --by-source`` therefore reports the same files in
-    the same order, with the collapsed numbers in the cells.
+    Files with no line points go last. `limit` (when positive) truncates. The ``/cov`` pane uses the same ordering. The order is identical under ``--by-source``, since line counts do not change when elaborations collapse.
     """
 
     def sort_key(row):
@@ -240,18 +186,8 @@ def coldest_first(file_rows, limit=None):
     return ordered if limit is None or limit <= 0 else ordered[:limit]
 
 
-# ---------------------------------------------------------------------------
-# payload builders
-# ---------------------------------------------------------------------------
-
-
 def _payload_around_files(ctx: CovContext, files: list) -> dict:
-    """Everything both payloads share, wrapped around a ``files`` list.
-
-    The summary and the detail differ only in the depth of ``files``, so
-    the caller builds that list and this builds the rest — the detail
-    used to call the summary and throw its file rows away.
-    """
+    """Build the payload shared by summary and detail around a caller-built ``files`` list."""
     model = ctx.model
     payload = _run_block(ctx)
     payload.update(
@@ -264,9 +200,7 @@ def _payload_around_files(ctx: CovContext, files: list) -> dict:
             "artefacts": artefacts_block(ctx),
         }
     )
-    # Next to `totals`, never instead of it: the two answer different
-    # questions ("covered in every build" vs "covered by the suite") and
-    # both are reported (#637). Absent on a pre-#637 model.
+    # Reported beside `totals`, never instead of it.
     collapsed = source_totals(model)
     if collapsed is not None:
         payload["source_totals"] = collapsed
@@ -289,13 +223,9 @@ def _test_summary(test_row: dict) -> dict:
 
 
 def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict:
-    """Run-level scalars, per-test scalars and the coldest files.
+    """Run-level totals, per-test totals and the coldest `limit` files.
 
-    Every scope carries both figures — ``totals`` per elaboration and
-    ``source_totals`` collapsed on the source point — so a consumer
-    choosing between them needs no second request and no flag.
-    ``rb cov summary --by-source`` is a rendering choice over this one
-    payload.
+    Every scope carries ``totals`` (per elaboration) and ``source_totals`` (collapsed on the source point); ``--by-source`` only changes rendering.
     """
     return _payload_around_files(
         ctx,
@@ -307,18 +237,7 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
 
 
 def detail_payload(ctx: CovContext, *, limit: int | None = None) -> dict:
-    """:func:`summary_payload`, but with every file's points included.
-
-    The summary truncates its file list and reports only each file's
-    totals, because a terminal reading 40 000 points is a terminal
-    nobody reads. A pane is the other case: it renders the points, so
-    dropping them would force a second request per file and put the
-    "which tests hit this line" join on the client.
-
-    Same run block, same ``artefacts`` block, same coldest-first
-    ordering — the only difference is the depth of ``files``.
-    """
-
+    """:func:`summary_payload` with every file's points included and no truncation unless `limit` is given."""
     return _payload_around_files(ctx, coldest_first(ctx.model.get("files", []), limit))
 
 
@@ -328,11 +247,9 @@ def module_names(ctx: CovContext) -> list[str]:
 
 
 def resolve_module_name(model: dict, module: str, *, where=None) -> str:
-    """A user's module name -> the name the model spells it with.
+    """Map a user's module name (case-insensitive) to the model's spelling.
 
-    Raises :class:`CovQueryError` with near misses when there is no such
-    module — an unknown name is a typo far more often than it is a
-    coverage hole, and the near-miss list is the cheaper fix.
+    Raises :class:`CovQueryError` with near misses if there is no such module.
     """
     modules = model.get("modules") or {}
     if module in modules:
@@ -350,14 +267,7 @@ def resolve_module_name(model: dict, module: str, *, where=None) -> str:
 def module_coverage(model: dict, module: str) -> dict:
     """One module's files, points, totals and per-test hit counts.
 
-    The join every module-scoped consumer needs: ``rb cov module``
-    prints it, and the graph's coverage overlay (#402) keys it to
-    ``module:<name>`` nodes. One implementation, so a module's ratio on
-    the graph pane cannot disagree with the same module's ratio in the
-    coverage verbs.
-
-    ``module`` must already be spelled the model's way — see
-    :func:`resolve_module_name`.
+    Shared by ``rb cov module`` and the graph coverage overlay. `module` must be spelled as the model spells it (see :func:`resolve_module_name`).
     """
     joined = modules_coverage(model, [module])
     joined.pop("modules", None)
@@ -365,22 +275,9 @@ def module_coverage(model: dict, module: str) -> dict:
 
 
 def modules_coverage(model: dict, modules) -> dict:
-    """:func:`module_coverage` over a *set* of elaborated module names.
+    """:func:`module_coverage` over a set of elaborated module names (e.g. one source module built with two parameterisations).
 
-    The simulator keys its records on the module it **elaborated**, so
-    one source module compiled with two parameterisations is two model
-    modules (``ip_cdc_handshake__W13`` and ``__Wc``) over one file. The
-    design graph has one node for them, so
-    :func:`~rtl_buddy.graph.coverage._design_entries` has to fold them
-    back together — and folding by adding up two
-    :func:`module_coverage` results would count the file's LINE points
-    twice, because line points carry no module at all and so belong to
-    every elaboration of the file. Selecting the points once, for the
-    whole set, is the same arithmetic in the only order that cannot
-    double-count.
-
-    Returns the same shape as :func:`module_coverage` with ``module``
-    replaced by a sorted ``modules`` list.
+    Do not sum separate :func:`module_coverage` results: line points carry no module and would be counted once per name. Returns the same shape with ``module`` replaced by a sorted ``modules`` list.
     """
     names = frozenset(str(name) for name in modules)
     known = model.get("modules") or {}
@@ -427,16 +324,7 @@ def module_payload(ctx: CovContext, module: str) -> dict:
 
 
 def _module_file(file_row: dict, modules: frozenset[str], tests: dict) -> dict:
-    """One file's points, keeping only the points that belong to ``modules``.
-
-    A header included into several modules records its points once per
-    containing module; reporting the whole file would attribute another
-    block's misses to this one. Points with no module recorded (a line
-    point, or an ``.info``-only fallback) are kept, since dropping them
-    would report a file with no lines at all — and kept **once**, which
-    is why the whole set of elaborations is selected in one pass rather
-    than one pass each.
-    """
+    """One file's points restricted to ``modules``; points with no module (line points, ``.info`` fallback) are kept once."""
     entry = {
         "path": file_row["path"],
         "modules": file_row.get("modules", []),

@@ -19,31 +19,12 @@ class SuiteConfigFile:
     testbenches: list[TestbenchConfig]
     tests: list[TestConfigFile]
     builder: str | None = None
-    # Optional suite-level compile reservation (#497). The dispatched build
-    # job is per suite, so the one reservation `cfg-dispatch.compile` hands
-    # every suite fences off the largest verilation in the repo for the
-    # smallest leaf-cell bench too. This layers over it field by field.
-    #
-    # Its own serde class, not `DispatchResourcesFile` (which is also every
-    # per-test `resources:` block) and not `DispatchCompileFile` (whose
-    # `parallel` defaults to 1 rather than to None): `parallel` layers here
-    # too, and "the suite said 1" has to stay distinguishable from "the
-    # suite said nothing" or a block overriding only `mem` would pin the
-    # build job to one build at a time (#547).
+    # Layers over cfg-dispatch.compile field by field. A dedicated class keeps an unset `parallel` (None) distinct from `parallel: 1`.
     compile: SuiteCompileFile | None = None
 
 
 class SuiteConfig:
-    """
-    Config for a suite of tests.
-
-    Attributes:
-      path (str): Path to the suite configuration file.
-      tests (dict[str, TestConfig]): Test configs in suite, grouped by test name.
-      compile (SuiteCompileFile|None): Suite-level dispatch compile
-        reservation and concurrency, or ``None`` when the suite declared
-        none (#497, #547).
-    """
+    """A loaded suite file: `tests` maps test name to TestConfig; `compile` is the suite-level dispatch compile block or None."""
 
     def __init__(self, path):
         data = None
@@ -62,13 +43,7 @@ class SuiteConfig:
         self.compile = None
 
         if data is not None:
-            # Validated at load, like cfg-dispatch's own blocks: an unquoted
-            # `time: 4:00:00` is an integer by the time serde sees it, and a
-            # reservation that silently means 10 days is worse than a load
-            # error. FatalRtlBuddyError, not a wrapped one — the message
-            # already names the trap and how to spell it (#497). Same for a
-            # `parallel` below 1, held to the rule cfg-dispatch's own key is
-            # held to so the two layers cannot disagree (#547).
+            # Validated at load: an unquoted `time: 4:00:00` parses as an integer.
             try:
                 self.compile = validate_compile_block(data.compile)
             except FatalRtlBuddyError as e:
@@ -81,9 +56,7 @@ class SuiteConfig:
                 )
                 raise FatalRtlBuddyError(f"{path}: {e}") from e
 
-            # Fail loud on duplicate testbench / test names — the
-            # dict-comprehensions below would silently overwrite the
-            # first entry with the last, hiding the user's typo.
+            # The dict comprehensions below would silently keep the last duplicate.
             seen_tbs: dict[str, int] = {}
             for idx, tb in enumerate(data.testbenches):
                 tb_name = tb.get_name()
@@ -154,13 +127,9 @@ class SuiteConfig:
                 raise FatalRtlBuddyError(f"{path}: Tests section malformed") from e
 
     def get_tests(self, test_name=None):
-        """
-        Retrieves tests, optionally based on one or more names.
+        """Return the tests, or only those named by `test_name` (a name or an iterable of names), in the order given.
 
-        Args:
-          test_name (str|iterable[str]|None): (optional) Test name(s) to retrieve.
-        Returns:
-          tests (list[TestConfig]): List of tests.
+        Raises FatalRtlBuddyError for an unknown or repeated name.
         """
         if test_name is not None:
             test_names = [test_name] if isinstance(test_name, str) else list(test_name)
@@ -193,31 +162,14 @@ class SuiteConfig:
             return self.tests.values()
 
     def get_test_names(self):
-        """
-        Retrieve all configured test names in declaration order.
-
-        Returns:
-          list[str]: Test names from the loaded suite config.
-        """
+        """Return all test names in declaration order."""
         return list(self.tests.keys())
 
     def get_compile(self):
-        """
-        Retrieve the suite-level dispatch compile reservation (#497).
-
-        Returns:
-          SuiteCompileFile|None: The validated ``compile:`` block, or
-          ``None`` when the suite declared none (cfg-dispatch governs alone).
-        """
+        """Return the validated ``compile:`` block, or None."""
         return self.compile
 
     def get_path(self):
-        """
-        Retrieve config path.
-
-        Returns:
-          path (str): Path of suite config.
-        """
         return self.path
 
     def __str__(self):

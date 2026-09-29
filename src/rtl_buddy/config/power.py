@@ -26,20 +26,14 @@ class PowerToolConfigFile:
 class PowerToolConfig:
     def __init__(self, cfg: PowerToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
-        # Directory relative `tool:` candidates are existence-tested
-        # against: the one holding root_config.yaml, never the process
-        # cwd (rb is routinely invoked from a suite directory).
+        # Anchor for relative `tool:` candidates: the root_config.yaml directory, not the cwd.
         self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
-
-        ``tool:`` may be a single value or a list of candidates in
-        preference order; see :mod:`rtl_buddy.config.toolpath`.
-        """
+        """Return the effective tool executable (see :mod:`rtl_buddy.config.toolpath`)."""
         return resolve_tool_path(
             self._cfg.tool,
             base_dir=self._base_dir,
@@ -85,33 +79,18 @@ class PowerConfigFile:
     synth_path: str = field(rename="synth-path", default="")
     pnr: str = ""
     pnr_path: str = field(rename="pnr-path", default="")
-    # The synthesis run this analysis publishes its half of the physical
-    # model beside, named in the `synth-path` suite (#589). Empty means
-    # the run publishes into its own artefact directory, which is the
-    # convention that came first: a merged model then happens only where
-    # the power run is named after the synthesis and configured in the
-    # same directory. See `PowerConfig.get_phys_run`.
+    # Synthesis run in the `synth-path` suite whose artefact directory receives this run's half of the physical model. Empty publishes into the run's own directory. See `PowerConfig.get_phys_run`.
     phys_run: str = field(rename="phys-run", default="")
     constraints: str | None = None
     platform: str = ""
-    # Liberty for hard macros, on top of whatever the referenced synth or
-    # pnr run already declares (#627). The platform corner characterises
-    # the standard cells and nothing else, so a macro reaching P&R through
-    # that run's `lib-paths` has no library here and reports exactly zero.
-    # Inheritance covers the ordinary case; this key is for a macro whose
-    # Liberty only the power analysis needs — a corner the upstream run
-    # was not routed against, say. Appended after the inherited list.
+    # Macro Liberty appended after the synth or pnr run's own list. A macro with no Liberty here reports zero power.
     lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
-    # OpenROAD worker threads: a positive integer or `auto`; unset keeps
-    # OpenROAD's single-thread default (#654). See config/openroad_threads.
+    # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
     threads: int | str | None = None
-    # Expected-fail markers (pytest-style). Either marks this run
-    # expected-to-fail; `xfail` is non-strict (an unexpected pass still
-    # passes), `xfail_strict` is strict (an unexpected pass is a failure).
-    # See docs/concepts/expected-failures.md.
+    # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
@@ -233,18 +212,15 @@ class PowerConfig:
     activity: PowerActivity
     _reglvl: int | dict | None
     tool_overrides: dict | None
-    # Macro Liberty this run adds on top of what the referenced synth or
-    # pnr run declares, resolved against the `power.yaml` directory (#627).
+    # Macro Liberty added to the referenced run's list, resolved against the `power.yaml` directory.
     lib_paths: list[str] = dc_field(default_factory=list)
-    # Optional, so it sits with the defaults rather than beside the
-    # `synth`/`synth-path` pair it is resolved against (#589).
     phys_run: str | None = None
     threads: int | str | None = None
     xfail: bool = False
     xfail_strict: bool = False
 
     def is_xfail(self) -> bool:
-        """Whether this run is expected to fail (either flag set)."""
+        """Whether this run is expected to fail."""
         return self.xfail or self.xfail_strict
 
     def get_xfail_strict(self) -> bool:
@@ -263,7 +239,7 @@ class PowerConfig:
         return self.mode
 
     def get_threads(self) -> int | str | None:
-        """Validated `threads:` — a positive int, `auto`, or None (#654)."""
+        """Validated `threads:`: a positive int, `auto`, or None."""
         return self.threads
 
     def get_netlist_source(self) -> NetlistSource:
@@ -282,20 +258,9 @@ class PowerConfig:
         return self.pnr_suite_path
 
     def get_phys_run(self) -> str | None:
-        """The synthesis run this analysis publishes its model half beside.
+        """Return the synthesis run whose artefact directory receives this run's model half.
 
-        ``None`` for a run that says nothing, and that is the convention
-        the flow had before the field existed: the power half is
-        published into the run's own ``artefacts/<name>/``, so the two
-        halves of a model meet only where a power run is named after the
-        synthesis it reads *and* configured in the same directory. Rename
-        either side and the halves land in two directories, each
-        half-filled, with nothing said about it (#589).
-
-        Naming a run says the pairing out loud. It does not weaken the
-        merge: the netlist sha256 both producers record is still what
-        decides whether the two halves describe one design, and this only
-        decides which directory they are asked to meet in.
+        ``None`` publishes into the run's own ``artefacts/<name>/``. The netlist sha256 still decides whether the two halves merge.
         """
         return self.phys_run
 
@@ -306,23 +271,18 @@ class PowerConfig:
         return self.platform
 
     def get_lib_paths(self) -> list[str]:
-        """This run's own macro Liberty, over the inherited list (#627)."""
+        """This run's own macro Liberty, added to the inherited list."""
         return list(self.lib_paths)
 
     def get_activity(self) -> PowerActivity:
         return self.activity
 
     def get_activity_source(self) -> str:
-        """Resolve the activity strategy for backends to dispatch on.
+        """Return the activity strategy, also reported as ``PowerPassResults.activity_source``.
 
-        Returns one of:
-          - "default":   static mode; no activity commands emitted
-          - "saif":      dynamic mode, SAIF trace supplied
-          - "vcd":       dynamic mode, VCD trace supplied
-          - "synthetic": dynamic mode, no trace — use default toggle/duty
-
-        The string also flows into PowerPassResults.activity_source so
-        the results table shows what drove the numbers.
+        - "default": static mode; no activity commands emitted
+        - "saif" or "vcd": dynamic mode with that trace
+        - "synthetic": dynamic mode without a trace; default toggle rate and static probability
         """
         if self.mode == "static":
             return "default"
@@ -359,11 +319,7 @@ class PowerConfig:
         return self.tool_overrides
 
     def resolve_synth_cfg(self):
-        """Load the upstream synth.yaml and return the referenced entry.
-
-        Only valid when `netlist_source == "synth"`. For the `pnr` path,
-        use `resolve_pnr_cfg()` and chain to its synth.
-        """
+        """Load the upstream synth.yaml and return the referenced entry; needs `netlist_source == "synth"`."""
         if not self.synth_suite_path or not self.synth_name:
             raise FatalRtlBuddyError(
                 f"power run '{self.name}': resolve_synth_cfg() called but "
@@ -373,20 +329,7 @@ class PowerConfig:
         return suite.get_syntheses(self.synth_name)[0]
 
     def resolve_phys_run_cfg(self):
-        """The synthesis entry ``phys-run`` names, or a fatal config error.
-
-        Read out of the same ``synth-path`` suite :meth:`resolve_synth_cfg`
-        reads, because ``phys-run`` names a *sibling* of the synthesis
-        this analysis measures: the directory it publishes into is that
-        suite's ``artefacts/<run>/``, which is where a synthesis entry of
-        that name writes its own half. A name no entry carries is a typo
-        or a rename, and publishing into the empty directory it points at
-        would be the half-filled model the field exists to prevent —
-        harder to find, because the directory would not even be a run's.
-
-        Called for its check rather than its value; the entry is returned
-        because the loader has it and a caller may want the top.
-        """
+        """Return the ``synth-path`` suite entry ``phys-run`` names; raises FatalRtlBuddyError if none matches."""
         if not self.synth_suite_path or not self.phys_run:
             raise FatalRtlBuddyError(
                 f"power run '{self.name}': resolve_phys_run_cfg() called but "
@@ -396,12 +339,7 @@ class PowerConfig:
         return suite.get_syntheses(self.phys_run)[0]
 
     def resolve_pnr_cfg(self):
-        """Load the upstream pnr.yaml and return the referenced entry.
-
-        Only valid when `netlist_source == "pnr"`. The pnr entry itself
-        chains to a synth via its own `resolve_synth_cfg()`, which is
-        how the top module name is recovered.
-        """
+        """Load the upstream pnr.yaml and return the referenced entry; needs `netlist_source == "pnr"`."""
         if not self.pnr_suite_path or not self.pnr_name:
             raise FatalRtlBuddyError(
                 f"power run '{self.name}': resolve_pnr_cfg() called but "

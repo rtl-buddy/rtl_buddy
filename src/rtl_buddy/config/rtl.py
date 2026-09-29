@@ -16,9 +16,7 @@ def process_opts(opts):
     return re.sub(r"\s+", " ", opts).split(" ")
 
 
-#: Set by rtl_buddy, never read from the caller's environment, when
-#: ``compile-time`` tokens are expanded: the one spelling of a project file
-#: that means the same thing from every compile working directory (#659).
+#: Set by rtl_buddy, not read from the caller's environment, when ``compile-time`` tokens are expanded.
 PROJECT_ROOT_VAR = "RTL_BUDDY_PROJECT_ROOT"
 
 _PROJECT_ROOT_VAR_RE = re.compile(
@@ -29,12 +27,7 @@ _PROJECT_ROOT_VAR_RE = re.compile(
 def expand_compile_opts(opts: list[str], project_root: str | None) -> list[str]:
     """Expand ``${RTL_BUDDY_PROJECT_ROOT}``, ``$VAR`` and ``~`` in ``opts``.
 
-    The compile runs from the test's artefact directory, whose depth moves
-    under ``--run-tag``, so a relative path in ``compile-time`` names a
-    different file per layout (#659). Expanding here gives those tokens the
-    treatment filelist entries already get. An unset variable is left as
-    written (POSIX ``expandvars``), so a compiler that expands it itself
-    still can.
+    An unset variable is left as written.
     """
     expanded = []
     for opt in opts:
@@ -46,13 +39,7 @@ def expand_compile_opts(opts: list[str], project_root: str | None) -> list[str]:
 
 @serde
 class RtlBuilderConfigOpts:
-    """
-    Lists of command-line options for a single builder.
-
-    Attributes:
-      compile_time (list[str] | None): Compile-time options
-      run_time (list[str] | None): Run-time options
-    """
+    """Compile-time and run-time command-line options for one builder mode."""
 
     compile_time: list[str] | None = field(
         rename="compile-time", deserializer=process_opts
@@ -62,24 +49,9 @@ class RtlBuilderConfigOpts:
 
 @serde
 class RtlBuilderConfig:
-    """
-    Configuration for a RTL Builder.
+    """A `cfg-rtl-builder` entry.
 
-    Attributes:
-      name (str): Unique builder identifier.
-      simulator_family (str | None): Simulator family identifier used for
-        backend-specific behavior such as coverage processing.
-      exe (str | list[str]): Name of the compiler executable, a path to
-        it, or a list of candidates in preference order (see
-        :mod:`rtl_buddy.config.toolpath`). ``~`` and ``$VAR`` are expanded.
-      simv (str): Name of the executable file for simulation (on disc).
-      sim_rand_seed (int): Random seed for the simulation.
-      sim_rand_prefix (str): Simulator-specific prefix for the random seed.
-      opts (dict[str, RtlBuilderConfigOpts]): Command-line options for the builder, keyed by mode.
-      wave_format (str | None): Optional post-sim waveform handling for `rb
-        wave`. ``fst-postproc`` converts a VCD dump to FST via ``vcd2fst``.
-      extra_sim_timeout (int | None): Seconds added to every test's
-        ``sim_timeout`` under this builder.
+    `exe` is an executable name, path or candidate list (see :mod:`rtl_buddy.config.toolpath`). `simv` is the simulation executable's file name. `opts` maps a mode to its options. `simulator_family` selects backend-specific behaviour such as coverage processing. `wave_format` ``fst-postproc`` converts a VCD dump to FST via ``vcd2fst`` for `rb wave`. `extra_sim_timeout` is seconds added to every test's ``sim_timeout``.
     """
 
     name: str
@@ -91,42 +63,18 @@ class RtlBuilderConfig:
     simulator_family: str | None = field(rename="simulator-family", default=None)
     wave_format: str | None = field(rename="wave-format", default=None)
     extra_sim_timeout: int | None = field(rename="extra-sim-timeout", default=None)
-    #: Directory relative ``builder:`` candidates are anchored at, set by
-    #: :meth:`set_base_dir`. Declared (``skip=True``: it is not a YAML key
-    #: and must never be serialised) rather than attached post hoc, so an
-    #: unanchored config reads its real default instead of a ``getattr``
-    #: fallback — a construction path that forgot the anchor would
-    #: otherwise existence-test relative candidates against the process
-    #: cwd and look exactly like "the tool is not installed" (#439 review).
+    #: Anchor for relative ``builder:`` candidates, set by :meth:`set_base_dir`; not a YAML key.
     _base_dir: str | None = field(default=None, skip=True)
 
     def get_name(self) -> str:
-        """
-        Retrieves the value of name.
-
-        Returns:
-          name (str): The value of name.
-        """
         return self.name
 
     def set_base_dir(self, base_dir: str | None) -> None:
-        """Anchor relative ``builder:`` candidates at ``base_dir``.
-
-        Set by :class:`~rtl_buddy.config.root.RootConfig` to the directory
-        holding ``root_config.yaml``, so a relative candidate is
-        existence-tested there rather than against the process cwd — `rb`
-        is routinely invoked from a suite directory (#439). A config built
-        outside RootConfig (tests) simply has no anchor.
-        """
+        """Anchor relative ``builder:`` candidates at ``base_dir``, normally the ``root_config.yaml`` directory."""
         self._base_dir = base_dir
 
     def get_simulator_family(self) -> str:
-        """
-        Retrieve the simulator family for backend-specific handling.
-
-        Returns:
-          family (str): Canonical simulator family, e.g. "verilator" or "vcs".
-        """
+        """Return the simulator family, e.g. "verilator" or "vcs"; inferred from the executable name when unset."""
         if self.simulator_family is not None:
             return self.simulator_family
 
@@ -140,35 +88,17 @@ class RtlBuilderConfig:
         return exe_base
 
     def get_wave_format(self) -> str | None:
-        """
-        Retrieve the optional post-sim waveform format for `rb wave`.
-
-        Returns:
-          wave_format (str | None): e.g. ``"fst-postproc"``, or None.
-        """
+        """Return the post-sim waveform format for `rb wave` (e.g. ``"fst-postproc"``), or None."""
         return self.wave_format
 
     def get_extra_sim_timeout(self) -> int:
-        """
-        Seconds this builder adds to every test's simulation timeout.
+        """Return the seconds this builder adds to every test's simulation timeout; 0 when unset.
 
-        For builders that queue for a license seat, or are otherwise slower
-        than the per-test ``sim_timeout`` assumes, without making that
-        allowance apply to builders that do not need it: a tight timeout is
-        worth keeping wherever nothing legitimately blocks, so a hung test
-        still fails fast there.
-
-        Returns:
-          seconds (int): Extra seconds, 0 when unset.
-        Raises:
-          FatalRtlBuddyError: The configured value is negative.
+        Raises FatalRtlBuddyError if the value is negative.
         """
         if self.extra_sim_timeout is None:
             return 0
-        # Rejected rather than clamped: a negative value would *shrink* every
-        # test's timeout, and one below -sim_timeout reaches the process wait
-        # as a negative timeout, i.e. an instant timeout verdict on a sim that
-        # never ran. Silently clamping that to 0 would hide a config typo.
+        # Rejected, not clamped: a negative value shrinks the timeout and can yield an instant timeout verdict.
         if self.extra_sim_timeout < 0:
             log_event(
                 logger,
@@ -184,17 +114,7 @@ class RtlBuilderConfig:
         return self.extra_sim_timeout
 
     def get_exe(self) -> str:
-        """
-        Retrieves the value of exe, with ``~`` / ``$VAR`` expanded.
-
-        ``builder:`` may be a single value or a list of candidates in
-        preference order; the first that expands cleanly and exists wins,
-        with a trailing bare name left for ``PATH``. See
-        :mod:`rtl_buddy.config.toolpath`.
-
-        Returns:
-          exe (str): The effective compiler executable.
-        """
+        """Return the effective compiler executable (see :mod:`rtl_buddy.config.toolpath`)."""
         return resolve_tool_path(
             self.exe,
             base_dir=self._base_dir,
@@ -204,41 +124,16 @@ class RtlBuilderConfig:
         )
 
     def get_simv(self) -> str:
-        """
-        Retrieves the value of simv.
-
-        Returns:
-          simv (str): The value of simv.
-        """
         return self.simv
 
     def get_seed(self) -> int:
-        """
-        Retrieves the value of sim_rand_seed.
-
-        Returns:
-          seed (int): The value of sim_rand_seed.
-        """
         return self.sim_rand_seed
 
     def get_modes(self) -> list[str]:
-        """
-        Retrieves a list of available builder modes.
-
-        Returns:
-          modes (list[str]): The list of available modes.
-        """
         return self.opts.keys()
 
     def get_compile_time_opts(self, mode: str) -> list[str]:
-        """
-        Retrieves the compile time options for a given mode.
-
-        Args:
-          mode (str): The requested mode.
-        Returns:
-          opts (list[str]): The list of options.
-        """
+        """Return the compile-time options for `mode`; raises FatalRtlBuddyError if the mode or stage is missing."""
         if mode not in self.opts:
             log_event(
                 logger,
@@ -266,14 +161,9 @@ class RtlBuilderConfig:
         return list(self.opts[mode].compile_time)
 
     def get_run_time_opts(self, mode: str, seed: int | None = None) -> list[str]:
-        """
-        Retrieves the run time options for a given mode.
+        """Return the run-time options for `mode`, with the seed option appended when `seed` is given.
 
-        Args:
-          mode (str): The requested mode.
-          seed (int|None) [None]: An optional seed to append to the list of options.
-        Returns:
-          opts (list[str]): The list of options.
+        Raises FatalRtlBuddyError if the mode or stage is missing.
         """
         if mode not in self.opts:
             log_event(

@@ -19,28 +19,18 @@ logger = logging.getLogger(__name__)
 
 
 def _as_cell_list(value: str | list[str]) -> list[str]:
-    """A cell-name key as a list, whether it was written as one or many.
-
-    `cts-buffer` took a single name before the buffer-list support and
-    still does; a YAML list is taken entry by entry. Empty entries are
-    dropped — the key's own default is `""`, which means "not
-    configured", not "one nameless buffer".
-    """
+    """Return a cell-name key as a list; empty entries are dropped (the default `""` means not configured)."""
     if isinstance(value, str):
         return [value] if value else []
     return [c for c in value if c]
 
 
-#: What a corner name has to look like once it is one of several (#104,
-#: #105). Each name becomes an OpenSTA scene name, a word in a Tcl list and
-#: part of a report file name (`power.<corner>.rpt`), so it is held to the
-#: characters all three take unquoted. A single `corner:` is only ever a key
-#: into `cfg-pdks.corners` and keeps accepting whatever the PDK spells.
+#: Valid name for a corner in `corners:`: it becomes an OpenSTA scene name, a Tcl list word and part of a report file name. A single `corner:` is not held to this.
 _CORNER_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
 def _first_set(*values):
-    """The first value that is not `None` — platform, then PDK, then default."""
+    """Return the first value that is not `None`."""
     return next(v for v in values if v is not None)
 
 
@@ -55,37 +45,22 @@ class PnrPlatformConfigFile:
     name: str
     pdk: str
     sta_corner: str = field(rename="corner", default="")
-    # Multi-corner signoff (#104, #105): several names from the PDK's
-    # `corners:`, analysed together in one OpenROAD session. Mutually
-    # exclusive with `corner:`; the first entry is the primary corner.
-    # `None` (the key absent) is kept apart from `[]` so an empty list is
-    # an error rather than a silent single-corner run.
-    # `str` ahead of the list so a scalar `corners: ss` arrives as the
-    # string it is, to be refused, rather than as pyserde's ['s', 's'].
+    # Exclusive with `corner:`; the first entry is primary. `None` (absent) differs from `[]` (an error). `str` is listed first so a scalar `corners: ss` is refused instead of becoming pyserde's ['s', 's'].
     sta_corners: str | list[str] | None = field(rename="corners", default=None)
-    # One buffer name or a list of them. With a list, CTS is given every
-    # entry as its buffer list and the first as the root buffer.
+    # With a list, CTS gets every entry as its buffer list and the first as the root buffer.
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
     routing_layers: PnrRoutingLayersFile = field(
         rename="routing-layers", default_factory=PnrRoutingLayersFile
     )
-    # Per-platform override of the PDK's `placement:` block, field by
-    # field: the platform wins where it says something, the PDK where it
-    # does not.
+    # Overrides the PDK's `placement:` block field by field.
     placement: PlacementFile = field(default_factory=PlacementFile)
-    # Cells this platform excludes on top of the PDK's `dont-use-cells`
-    # (#656). Added to the PDK list, never replacing it.
+    # Added to the PDK's `dont-use-cells`, not replacing them.
     dont_use_cells: list[str] = field(rename="dont-use-cells", default_factory=list)
 
 
 class PnrPlatformConfig:
-    """A P&R-side view of a PDK + STA corner selection.
-
-    Wraps a PdkConfig with P&R-specific knobs (CTS buffer, routing
-    layer ranges). Floorplan-level details like die size / utilization
-    live on the per-run pnr.yaml, not here.
-    """
+    """A PDK plus STA corner selection and P&R knobs (CTS buffer, routing layers, placement)."""
 
     def __init__(self, cfg: PnrPlatformConfigFile, pdk_lookup):
         self._name = cfg.name
@@ -127,13 +102,9 @@ class PnrPlatformConfig:
         )
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
-        """The analysis corners, primary first, validated against the PDK.
+        """Return the analysis corners, primary first, validated against the PDK.
 
-        `corner:` and `corners:` are two spellings of one choice, so a
-        platform that writes both is refused rather than having one of them
-        silently win. A one-entry `corners:` is the same run as `corner:`
-        with that name — it renders the same Tcl and reports the same
-        fields — so a list is only "multi-corner" from two entries up.
+        Setting both `corner:` and `corners:` is an error. A one-entry `corners:` behaves like `corner:`.
         """
         where = f"pnr platform '{self._name}'"
         available = self._pdk.get_corners()
@@ -202,12 +173,11 @@ class PnrPlatformConfig:
         return self._pdk.get_corner_path(self._sta_corner)
 
     def get_sta_corners(self) -> list[str]:
-        """Every analysis corner, primary first. One entry for a single-corner
-        platform."""
+        """Every analysis corner, primary first."""
         return list(self._sta_corners)
 
     def is_multi_corner(self) -> bool:
-        """Whether the flows analyse more than one corner (#104, #105)."""
+        """Whether the flows analyse more than one corner."""
         return len(self._sta_corners) > 1
 
     def get_sta_corner_lib_paths(self) -> dict[str, str]:
@@ -235,11 +205,11 @@ class PnrPlatformConfig:
         return self._placement_macro_halo
 
     def get_placement_macro_cell_halo(self) -> float:
-        """Macro-to-row keep-out in microns, after platform/PDK/default (#673)."""
+        """Macro-to-row keep-out in microns, after platform/PDK/default."""
         return self._placement_macro_cell_halo
 
     def get_dont_use_cells(self) -> list[str]:
-        """The PDK's excluded cells plus this platform's, PDK first (#656)."""
+        """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
 
     def get_cts_sink_clustering(self) -> bool:

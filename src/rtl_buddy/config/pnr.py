@@ -20,15 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 class GdsMode(StrEnum):
-    """How complete a requested KLayout stream-out has to be (#619).
+    """How complete a KLayout stream-out must be.
 
-    ``PREVIEW`` keeps a layout whose cells could not all be resolved, and
-    reports which ones; ``STRICT`` refuses to publish it. Preview is the
-    default: a platform with LEF-only macros (ORFS `fakeram45`) streams a
-    usable picture with those macros as empty placeholders, and the defect
-    the mode exists to fix is claiming that picture is a *complete*
-    stream-out, not producing it. A flow that signs off on the GDS asks
-    for ``strict`` in `pnr.yaml`, or on the command line for one run.
+    ``PREVIEW`` (default) keeps a layout with unresolved cells and reports them; ``STRICT`` refuses to publish it.
     """
 
     STRICT = "strict"
@@ -44,20 +38,14 @@ class PnrToolConfigFile:
 class PnrToolConfig:
     def __init__(self, cfg: PnrToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
-        # Directory relative `tool:` candidates are existence-tested
-        # against: the one holding root_config.yaml, never the process
-        # cwd (rb is routinely invoked from a suite directory).
+        # Anchor for relative `tool:` candidates: the root_config.yaml directory, not the cwd.
         self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
-
-        ``tool:`` may be a single value or a list of candidates in
-        preference order; see :mod:`rtl_buddy.config.toolpath`.
-        """
+        """Return the effective tool executable (see :mod:`rtl_buddy.config.toolpath`)."""
         return resolve_tool_path(
             self._cfg.tool,
             base_dir=self._base_dir,
@@ -68,13 +56,7 @@ class PnrToolConfig:
 
 
 class MacroAnchor(StrEnum):
-    """The core corner the macro packer starts from (#105).
-
-    The packer fills rows away from this corner, so the edges opposite it
-    stay clear of macros — where a design's IO pins, or its abutting
-    neighbour, want the boundary free. ``LOWER_LEFT`` is the packing the
-    flow has always done.
-    """
+    """The core corner the macro packer starts from; the opposite edges stay clear of macros."""
 
     LOWER_LEFT = "lower-left"
     LOWER_RIGHT = "lower-right"
@@ -83,12 +65,9 @@ class MacroAnchor(StrEnum):
 
 
 class MacroPlacement(StrEnum):
-    """Who places the hard macros (#95 step 5).
+    """Who places the hard macros.
 
-    ``PACK`` is rtl_buddy's size-aware shelf packer (#610, #632), steered by
-    `macro-anchor` and the hard blockages. ``RTL_MP`` hands them to
-    OpenROAD's `rtl_macro_placer`, which clusters the netlist and places
-    macros by connectivity, wirelength and orientation.
+    ``PACK`` is rtl_buddy's shelf packer, steered by `macro-anchor` and hard blockages. ``RTL_MP`` uses OpenROAD's `rtl_macro_placer`.
     """
 
     PACK = "pack"
@@ -96,12 +75,9 @@ class MacroPlacement(StrEnum):
 
 
 class BlockageType(StrEnum):
-    """Standard-cell placement blockage kinds, as OpenROAD has them (#105).
+    """Placement blockage kinds.
 
-    ``HARD`` keeps every standard cell out, and the macro packer treats it
-    as a keep-out too; ``SOFT`` keeps cells out of initial (global)
-    placement only, so repair and legalization may still use it;
-    ``PARTIAL`` caps the placement density inside it at ``max-density``.
+    ``HARD`` keeps every standard cell out and is also a macro-packer keep-out. ``SOFT`` excludes cells from global placement only. ``PARTIAL`` caps density at ``max-density``.
     """
 
     HARD = "hard"
@@ -153,8 +129,7 @@ _MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
 
 
 def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
-    """Validate one `floorplan.blockages` entry; the geometry is checked here
-    so a typo fails at load time rather than an hour into the flow."""
+    """Validate one `floorplan.blockages` entry at load time."""
     where = f"pnr run '{run}': floorplan.blockages[{index}]"
     if len(entry.rect) != 4:
         raise FatalRtlBuddyError(
@@ -165,8 +140,7 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
         raise FatalRtlBuddyError(
             f"{where}: rect coordinates must be finite numbers, got {entry.rect!r}"
         )
-    # The flow writes coordinates to the nanometre (`_tcl_microns`), so a
-    # rectangle narrower than that would reach OpenROAD with no area at all.
+    # Coordinates are written to the nanometre; a narrower rect would have no area.
     if round(x1, 3) - round(x0, 3) < _MIN_BLOCKAGE_SPAN or (
         round(y1, 3) - round(y0, 3) < _MIN_BLOCKAGE_SPAN
     ):
@@ -178,8 +152,6 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
         raise FatalRtlBuddyError(
             f"{where}: rect must have x0 < x1 and y0 < y1, got {entry.rect!r}"
         )
-    # Die coordinates start at the origin: `initialize_floorplan` puts the
-    # die's lower-left corner there.
     if x0 < 0.0 or y0 < 0.0:
         raise FatalRtlBuddyError(
             f"{where}: rect is in die coordinates, which start at 0, got {entry.rect!r}"
@@ -210,22 +182,14 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
     return PnrBlockage(rect=(x0, y0, x1, y1), type=kind, max_density=max_density)
 
 
-#: The stage checkpoints `checkpoints:` can ask for, in flow order (#653).
-#: Each is written on the way *out* of the stage it names: `floorplan` holds
-#: the floorplan, pins, tie cells, placed macros and PDN; `place` the
-#: legalized global placement; `cts` the clock tree with hold repair
-#: legalized; `global_route` a successful global route, with its guides and
-#: segments. None of them is detail-routed, and none is a final output.
+#: Stages `checkpoints:` can name, in flow order. Each is written when its stage finishes; none is detail-routed.
 CHECKPOINT_STAGES = ("floorplan", "place", "cts", "global_route")
 
 
 def _normalise_checkpoints(run: str, value) -> tuple[str, ...] | None:
-    """`checkpoints:` as the stages to write, in flow order; ``None`` = off.
+    """Return the `checkpoints:` stages in flow order; ``None`` when off.
 
-    ``true`` is every stage and ``false`` (the default) is none — and no
-    progress file either, so a run that never sets the key renders the flow
-    it always has. A name or a list of names picks stages; an empty list
-    keeps the progress file and the manifest but writes no database.
+    ``true`` is every stage; ``false`` is off (no progress file). A name or list picks stages; an empty list keeps the progress file and manifest but writes no database.
     """
     if value is False or value is None:
         return None
@@ -255,34 +219,22 @@ class PnrConfigFile:
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
     lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
-    # Layout for the macros `lef-paths` describes (e.g. an OpenRAM SRAM).
-    # P&R never reads it; KLayout stream-out cannot do without it (#617).
+    # Layout for the `lef-paths` macros; used by KLayout stream-out only.
     gds_paths: list[str] = field(rename="gds-paths", default_factory=list)
-    # How complete the stream-out has to be, and which cells are allowed to
-    # have no layout at all — a preview macro the design carries on purpose
-    # (#619). Names or fnmatch globs; matched case-sensitively.
+    # `gds-allow-empty`: cells allowed to have no layout; names or case-sensitive fnmatch globs.
     gds_mode: str = field(rename="gds-mode", default=GdsMode.PREVIEW.value)
     gds_allow_empty: list[str] = field(rename="gds-allow-empty", default_factory=list)
-    # Stage checkpoints + a progress file for long or failed runs (#653).
-    # `str` sits before the list so a single stage name is not read as a
-    # list of characters.
+    # `str` precedes the list so a single stage name is not read as characters.
     checkpoints: bool | str | list[str] = False
-    # Publish the routed result as a hard-macro abstract — LEF, Liberty
-    # timing model, GDS and a fingerprint manifest under `abstract/` — for
-    # a parent run to instance (#95). Forces a strict GDS export.
+    # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
-    # Hardened blocks this run instances as hard macros, each resolved to
-    # a `harden: true` run's abstract (#95).
+    # Hardened blocks instanced as hard macros, each a `harden: true` run's abstract.
     blocks: list[BlockRefFile] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
-    # OpenROAD worker threads: a positive integer or `auto`; unset keeps
-    # OpenROAD's single-thread default (#654). See config/openroad_threads.
+    # OpenROAD threads: a positive integer or `auto`; unset means single-threaded.
     threads: int | str | None = None
-    # Expected-fail markers (pytest-style). Either marks this run
-    # expected-to-fail; `xfail` is non-strict (an unexpected pass still
-    # passes), `xfail_strict` is strict (an unexpected pass is a failure).
-    # See docs/concepts/expected-failures.md.
+    # Either flag marks the run expected-to-fail; `xfail_strict` fails on an unexpected pass. See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
@@ -330,7 +282,6 @@ class PnrConfigFile:
             macro_placement is MacroPlacement.RTL_MP
             and macro_anchor is not MacroAnchor.LOWER_LEFT
         ):
-            # The anchor steers the packer; `rtl_macro_placer` would ignore it.
             raise FatalRtlBuddyError(
                 f"pnr run '{self.name}': 'floorplan.macro-anchor' steers the "
                 "packer and has no effect with 'macro-placement: rtl-mp' — "
@@ -437,7 +388,7 @@ class PnrConfig:
     xfail_strict: bool = False
 
     def is_xfail(self) -> bool:
-        """Whether this run is expected to fail (either flag set)."""
+        """Whether this run is expected to fail."""
         return self.xfail or self.xfail_strict
 
     def get_xfail_strict(self) -> bool:
@@ -483,19 +434,19 @@ class PnrConfig:
         return list(self.gds_allow_empty)
 
     def get_threads(self) -> int | str | None:
-        """Validated `threads:` — a positive int, `auto`, or None (#654)."""
+        """Validated `threads:`: a positive int, `auto`, or None."""
         return self.threads
 
     def get_checkpoints(self) -> tuple[str, ...] | None:
-        """The stages to checkpoint, in flow order; ``None`` when off (#653)."""
+        """The stages to checkpoint, in flow order; ``None`` when off."""
         return self.checkpoints
 
     def get_harden(self) -> bool:
-        """Whether the run publishes a hard-macro abstract (#95)."""
+        """Whether the run publishes a hard-macro abstract."""
         return self.harden
 
     def get_blocks(self) -> list[BlockRef]:
-        """The hardened blocks this run instances (#95)."""
+        """The hardened blocks this run instances."""
         return list(self.blocks)
 
     def get_reglvl(self, tool_name: str) -> int:

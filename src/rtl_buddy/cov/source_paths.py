@@ -2,40 +2,15 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The one resolver for simulator-recorded source paths (#399).
+"""Resolve simulator-recorded source paths to project files.
 
-A coverage database records source files the way the simulator saw them:
-often relative to the run directory (``../../tb_top.sv``), sometimes a
-bare basename, occasionally absolute. Every consumer — the LCOV ``SF:``
-rewriter, the ``--annotate`` scaffolding, the Coverview packer — has to
-turn that back into a real file in the project, and each grew its own
-copy of the search.
+A coverage database records paths as the simulator saw them: relative to the run directory (``../../tb_top.sv``), a bare basename, or absolute. Hints are ``[run dir, suite root]``, most specific first; the project root is the last resort. Resolution order:
 
-The three copies disagreed, so this module replaces them. Its contract
-is the one the call sites already used: **hints are ``[run dir, suite
-root]``**, most specific first, and the project root is always the last
-resort. Resolution order:
+1. Direct candidates: ``<base dir>/<path>``, ``<hint>/<path>`` per hint, ``<project root>/<path>``. Skipped for a path with no ``/``.
+2. Project-root-anchored suffixes, trimming leading segments (``../../design/blk.sv`` becomes ``design/blk.sv``).
+3. A basename search under the hints, then the project root. A match counts only if unambiguous; a unique hit under a hint beats a unique path-suffix match, which beats a unique basename.
 
-1. direct candidates: ``<base dir>/<path>``, ``<hint>/<path>`` for each
-   hint, ``<project root>/<path>`` — **skipped entirely for a path with
-   no ``/``**, since a bare basename says nothing about where the file
-   lives and this stage runs before the generated-tree filter;
-2. project-root-anchored suffixes of the path, trimming leading
-   segments (``../../design/blk.sv`` -> ``design/blk.sv``);
-3. a basename search under the hints and then the project root, taking
-   the match only when it is *unambiguous* — a unique hit under a hint
-   beats a unique path-suffix match, which beats a unique basename.
-
-Generated trees (``artefacts/``, ``logs/``, annotate output, Verilator
-``obj_dir*``) are skipped during the search, judged relative to the
-search root: a copy of ``tb_top.sv`` inside an annotate scratch
-directory must never win over the real source. When the search root
-*is* inside such a directory (a per-run artefact dir passed as a hint)
-nothing is skipped, because there the generated tree is the thing being
-searched.
-
-Nothing here writes files; callers rewrite their own ``.info``/``.desc``
-records.
+Generated trees (``artefacts/``, ``logs/``, annotate output, ``obj_dir*``) are skipped during the search, judged relative to the search root, so a search root inside one still searches normally. Nothing here writes files except the ``rewrite_*`` methods.
 """
 
 from __future__ import annotations
@@ -67,11 +42,7 @@ GENERATED_DIR_PREFIXES = ("obj_dir",)
 class Resolution:
     """One resolved source path.
 
-    ``path`` is always usable (the best-effort candidate when nothing
-    exists on disk); ``found`` says whether it is real, and
-    ``project_relative`` is the POSIX path under the project root, or
-    None when the file belongs to another tree and a consumer should
-    leave the record alone.
+    `path` is the best-effort candidate when nothing exists; `found` says whether it exists; `project_relative` is the POSIX path under the project root, or None when the file is outside the project.
     """
 
     path: Path
@@ -95,14 +66,10 @@ class SourcePathResolver:
         skip_generated: bool = True,
     ):
         """
-        :param project_root: the project root; the last-resort search root.
-        :param base_dir: directory the recorded paths are relative to
-            (the run directory for a raw database, the ``.info`` file's
-            own directory for an LCOV export).
-        :param source_roots: the ``[run dir, suite root]`` hints, most
-            specific first.
-        :param skip_generated: skip :data:`GENERATED_DIRS` during the
-            basename search.
+        :param project_root: the last-resort search root.
+        :param base_dir: directory recorded paths are relative to (the run directory for a raw database, the ``.info`` file's directory for LCOV).
+        :param source_roots: the ``[run dir, suite root]`` hints, most specific first.
+        :param skip_generated: skip :data:`GENERATED_DIRS` during the basename search.
         """
         self.project_root = _resolved(project_root)
         self.base_dir = None if base_dir is None else _resolved(base_dir)
@@ -110,10 +77,6 @@ class SourcePathResolver:
             _resolved(root) for root in (source_roots or ()) if root is not None
         )
         self.skip_generated = skip_generated
-
-    # ------------------------------------------------------------------
-    # public API
-    # ------------------------------------------------------------------
 
     def resolve(self, sf_path: str) -> Resolution:
         """Resolve one recorded path into a :class:`Resolution`."""
@@ -127,14 +90,7 @@ class SourcePathResolver:
         stripped = [part for part in parts if part != ".."]
 
         candidates = self._direct_candidates(normalized, parts)
-        # A bare basename records no location, so `<base dir>/<name>`
-        # existing is not evidence that it is the file meant — and for a
-        # raw database `base_dir` is the per-run artefact directory, where
-        # a stale copy of `tb_top.sv` beside `coverage.dat` would win here
-        # before `_is_generated` ever saw it. Skip the direct stage for one
-        # and go straight to the filtered basename search, as
-        # `_resolve_source_path`'s `basename_only` did. The candidates stay
-        # as the not-found fallback, which is still `base_dir/<name>`.
+        # A bare basename must skip the direct stage: a stale copy beside coverage.dat would win before the generated-tree filter. The candidates remain the not-found fallback.
         basename_only = "/" not in normalized
         if not basename_only:
             for candidate in candidates:
@@ -149,7 +105,7 @@ class SourcePathResolver:
         return self._resolution(fallback.resolve(), False, stripped=stripped)
 
     def resolve_path(self, sf_path: str) -> Path:
-        """Best-effort absolute path — the ``_resolve_source_path`` contract."""
+        """Best-effort absolute path."""
         return self.resolve(sf_path).path
 
     def rewrite_info(self, info_path, *, relative: bool) -> None:
@@ -164,10 +120,6 @@ class SourcePathResolver:
     def rewrite_desc(self, desc_path, *, relative: bool = True) -> None:
         """Rewrite a Coverview ``.desc`` file's ``SN:`` records in place."""
         self._rewrite_records(desc_path, "SN:", relative=relative)
-
-    # ------------------------------------------------------------------
-    # internals
-    # ------------------------------------------------------------------
 
     def _rewrite_records(self, path, prefix: str, *, relative: bool) -> None:
         path = Path(path)
@@ -211,8 +163,6 @@ class SourcePathResolver:
         for anchor in anchors:
             add(anchor / normalized)
 
-        # Trim leading segments and re-anchor the remaining suffix on the
-        # project root: `../../design/blk.sv` -> `design/blk.sv`.
         for idx in range(1, len(parts)):
             suffix = parts[idx:]
             if suffix:
@@ -271,10 +221,7 @@ class SourcePathResolver:
         try:
             relative = path.relative_to(self.project_root).as_posix()
         except ValueError:
-            # A file that does not exist and does not sit under the
-            # project root is almost always a record whose leading `../`
-            # segments the simulator wrote from a run directory: keep the
-            # repo-anchored reading rather than dropping the record.
+            # A missing file outside the project is usually a run-directory `../` path; keep the repo-anchored reading.
             if not found and stripped:
                 relative = Path(*stripped).as_posix()
             else:

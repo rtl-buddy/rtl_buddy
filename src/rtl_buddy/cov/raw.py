@@ -2,7 +2,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-r"""Reader for Verilator's raw coverage database (#399).
+r"""Reader for Verilator's raw coverage database.
 
 ``coverage.dat`` is a text file: a one-line header followed by one
 record per counter::
@@ -15,20 +15,9 @@ comment (an SVA label for a user point, the signal for a toggle point,
 the keyword for a branch point), ``h`` the hierarchy path. Unknown keys
 are ignored.
 
-The raw database is the **only** place the detail survives.
-``verilator_coverage --write-info`` folds toggle, expression and user
-points into anonymous ``DA:`` records, erasing the signal names, the
-expression terms and the SVA labels alike — which is why per-signal
-toggle detail could not previously be reported even though it was
-generated on every run.
+Only the raw database keeps toggle, expression and user detail; ``verilator_coverage --write-info`` folds them into anonymous ``DA:`` records.
 
-Verilator writes one record per source point per containing *module*,
-not per instance: a point instantiated many times arrives already
-merged, with counts summed and the differing hierarchy component
-replaced by ``*``. It keeps the same source line apart when it is
-compiled into more than one module (an ``include``d cover property,
-say), which is why ``module`` is part of every point's identity here.
-Verified against Verilator 5.049 output.
+Verilator writes one record per source point per containing module, not per instance: instances arrive merged, counts summed and the differing hierarchy component replaced by ``*``. The same source line in two modules stays two records, so ``module`` is part of a point's identity.
 """
 
 from __future__ import annotations
@@ -36,10 +25,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-#: Canonical metric names. Verilator's own spellings are mapped onto
-#: these so a consumer never has to know that user coverage is called
-#: ``user`` in the database and ``functional`` in the summary, or that
-#: expression coverage is written ``expr`` by some versions.
+#: Canonical metric names; Verilator's spellings (``user``, ``expr``) map onto these.
 LINE = "line"
 BRANCH = "branch"
 TOGGLE = "toggle"
@@ -68,11 +54,7 @@ def canonical_metric(record_type: str | None) -> str | None:
 
 
 def module_from_page(page: str | None) -> str | None:
-    """Extract the containing module from a record's ``page`` key.
-
-    Pages are written ``v_<type>/<module>``; anything else is passed
-    through as-is rather than guessed at.
-    """
+    """Extract the module from a ``page`` key written ``v_<type>/<module>``; other values pass through."""
     if not page:
         return None
     return _PAGE_PREFIX_RE.sub("", page, count=1) or None
@@ -96,14 +78,9 @@ def parse_record_keys(key_blob: bytes) -> dict:
 def parse_raw_records(raw_path, *, metrics=None) -> list[dict] | None:
     """Parse every counter record out of a raw coverage database.
 
-    Returns one dict per record —
-    ``{metric, type, name, file, line, column, module, hier, hits}`` —
-    or None when the file cannot be read. ``metrics`` restricts the
-    result to the given canonical metric names.
+    Returns one dict per record, ``{metric, type, name, file, line, column, module, hier, hits}``, or None when the file cannot be read. `metrics` restricts the result to those canonical names.
 
-    Records are split on line boundaries and on the *last* ``' `` before
-    the count, so a comment containing a quote (a labelled expression
-    term, for instance) does not truncate the record.
+    A record ends at the last ``' `` before the count, so a quote inside a comment does not truncate it.
     """
     try:
         raw_bytes = Path(raw_path).read_bytes()
@@ -157,18 +134,9 @@ def _int_or_none(value):
 
 
 def point_key(record: dict) -> tuple:
-    """Identity of a coverage point within one file.
+    """Per-elaboration identity of a point within one file.
 
-    Line coverage is keyed on the line alone — a source line is hit or
-    it is not. Everything else keys on ``(line, column, name, module)``:
-    several toggle points share a line (one per bit), several branch
-    arms share a line, and one cover property compiled into two modules
-    is two points, not one.
-
-    This is the **per-elaboration** identity: ``module`` is in it, so a
-    point elaborated under two parameterisations is two points and a
-    copy no key exercised stays dark.
-    :func:`source_point_key` is the other reading.
+    ``(line,)`` for line coverage, else ``(line, column, name, module)``. A point elaborated in two modules is two points. See :func:`source_point_key`.
     """
     if record["metric"] == LINE:
         return (record["line"],)
@@ -181,21 +149,9 @@ def point_key(record: dict) -> tuple:
 
 
 def source_point_key(record: dict) -> tuple:
-    """Identity of a coverage point **in the source** (#637).
+    """Source identity of a point: :func:`point_key` without ``module``.
 
-    :func:`point_key` without ``module``: ``(line,)`` for line
-    coverage, ``(line, column, name)`` for everything else. Two
-    elaborations of one source point therefore collapse into one point
-    whose hits are summed, which is what "covered by the suite" means —
-    a point is covered when *any* elaboration hit it. The hierarchy
-    (``h``) is not in either identity; Verilator has already folded
-    instances together before writing the record.
-
-    ``column`` stays in: ``n`` is the column in the *source text*, so it
-    is the same number in every elaboration of that text, and dropping
-    it would fold one line's toggle bits (or an expression's terms)
-    into a single point. What separates the two readings is exactly the
-    elaborated module name and nothing else.
+    Elaborations of one source point collapse into one point with summed hits, so it is covered when any elaboration hit it. ``column`` stays in the key, or one line's toggle bits would merge.
     """
     if record["metric"] == LINE:
         return (record["line"],)

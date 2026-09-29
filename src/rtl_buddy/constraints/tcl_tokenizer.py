@@ -1,24 +1,9 @@
-"""Tcl-aware SDC/XDC word tokenizer — VENDORED COPY, DO NOT EDIT HERE.
+"""Tcl-aware SDC/XDC word tokenizer. VENDORED COPY, DO NOT EDIT THE FUNCTIONS HERE.
 
-Source repo:   rtl-buddy/rtl-buddy-cdc
-Source file:   src/rtl_buddy_cdc/tcl_tokenizer.py
-Pinned commit: df996d55af0e8b824183d03d531426b8601af429  (main, 2026-09-28)
+Source:        rtl-buddy/rtl-buddy-cdc, ``src/rtl_buddy_cdc/tcl_tokenizer.py``
+Pinned commit: df996d55af0e8b824183d03d531426b8601af429
 
-``_tokenize`` and ``_extract_names`` below are a **verbatim copy** of the
-functions of the same name in that file at that commit. Do not edit them
-here: fix the upstream file, re-copy, and bump the hash in this header
-and in ``scripts/check-vendored-tokenizer.sh`` (a non-blocking CI job
-diffs the two function bodies against upstream and fails on drift).
-
-Stdlib-only on purpose — the copy must stay droppable into either repo.
-
-Why a copy and not a dependency: ``rtl_buddy`` does not depend on
-``rtl_buddy_cdc`` (the CDC engine is an optional external tool, invoked
-as a subprocess), and the tokenizer is ~120 lines of pure text handling.
-rtl-buddy/rtl-buddy-cdc#298 split it out upstream into its own
-``tcl_tokenizer.py``; this copy now tracks that file. (Before the split it
-was pinned to ``sdc.py`` at 53b5f34; the two function bodies are
-byte-identical across the move.)
+``_tokenize`` and ``_extract_names`` are verbatim copies, docstrings and comments included. To change them, edit upstream, re-copy, and update the hash here and in ``scripts/check-vendored-tokenizer.sh``, which diffs the two functions against upstream. The module is stdlib-only.
 """
 
 from __future__ import annotations
