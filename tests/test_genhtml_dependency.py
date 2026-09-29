@@ -1,9 +1,5 @@
-"""Tests for #335 — structured dependency error when genhtml is unavailable.
-
-``VlogCov._require_lcov()`` calls ``tool_manifest.require("lcov", root_cfg)``
-before every genhtml/HTML coverage path. ``require()`` raises
-``FatalRtlBuddyError`` pointing at ``rb tool-check --explain lcov`` when the
-``genhtml`` binary (manifest tool name ``lcov``) cannot be found.
+"""Tests for the structured dependency error when ``genhtml`` (manifest tool ``lcov``)
+is unavailable.
 """
 
 from __future__ import annotations

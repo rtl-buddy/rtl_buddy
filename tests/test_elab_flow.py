@@ -334,11 +334,9 @@ models:
 def _write_deeply_nested_expression(project: Path, levels: int) -> None:
     """Write generated RTL whose single expression nests ``levels`` deep.
 
-    Parentheses rather than the issue's conditional chain: both trip the
-    parser's nesting limit identically, and a parenthesized expression binds
-    to its operand, so the deep source still reaches ``rb elab``'s analysis
-    pass on every platform. See the elaboration section of
-    ``docs/known-issues.md``.
+    Parentheses are used because a parenthesized expression binds to its operand,
+    so the deep source reaches ``rb elab``'s analysis pass on every platform. See
+    the elaboration section of ``docs/known-issues.md``.
     """
     (project / "src" / "nested.sv").write_text(
         "module nested(input logic [15:0] x, output logic y);\n"
@@ -397,7 +395,7 @@ def test_max_parse_depth_elaborates_the_same_deep_expression(minimal_project: Pa
 
 
 def test_max_parse_depth_does_not_excuse_a_malformed_source(minimal_project: Path):
-    # Deep enough to need the raised limit, and one closing parenthesis short.
+    # One closing parenthesis short of the depth that needs the raised limit.
     (minimal_project / "src" / "nested.sv").write_text(
         "module nested(input logic [15:0] x, output logic y);\n"
         f"assign y = {'(' * 1024}x[0]{')' * 1023};\n"

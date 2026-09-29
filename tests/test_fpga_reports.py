@@ -1,11 +1,9 @@
-"""Tests for the Vivado batch-Tcl template and report parsers (#284).
+"""Tests for the Vivado batch-Tcl template and report parsers.
 
-The fixture ``.rpt`` files under ``tests/fixtures/fpga/`` are real,
-sanitized Vivado 2022.1.2 reports from a routed run of a small
-counter/multiplier/BRAM design on part ``xczu7ev-ffvc1156-2-e`` (10 ns
-clock for the passing set, an over-constrained 0.05 ns clock for the
-failing timing summary). They are the parser contract — no Vivado
-install is needed to run these tests.
+The ``.rpt`` fixtures under ``tests/fixtures/fpga/`` are sanitized Vivado 2022.1.2
+reports from a routed run on part ``xczu7ev-ffvc1156-2-e`` (10 ns clock for the
+passing set, 0.05 ns for the failing timing summary). They are the parser contract,
+and no Vivado install is needed.
 """
 
 from pathlib import Path
@@ -28,11 +26,6 @@ def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text()
 
 
-# ---------------------------------------------------------------------------
-# parse_utilization
-# ---------------------------------------------------------------------------
-
-
 def test_parse_utilization_canonical_resources():
     util = parse_utilization(_fixture("util.rpt"))
 
@@ -49,7 +42,7 @@ def test_parse_utilization_canonical_resources():
         "available": 460800,
         "util_pct": 0.01,
     }
-    # Half a Block RAM tile (one RAMB18) — fractional "Used" is preserved.
+    # Half a Block RAM tile (one RAMB18): a fractional "Used" is preserved.
     assert util["bram"] == {
         "used": 0.5,
         "fixed": 0,
@@ -68,7 +61,6 @@ def test_parse_utilization_carries_all_site_type_rows():
     util = parse_utilization(_fixture("util.rpt"))
     resources = util["resources"]
 
-    # Rows beyond the canonical four are captured too.
     assert resources["Bonded IOB"] == {
         "used": 109,
         "fixed": 0,
@@ -80,20 +72,14 @@ def test_parse_utilization_carries_all_site_type_rows():
     # Nested breakdown rows with blank Available cells parse as None.
     assert resources["RAMB18E2 only"]["used"] == 1
     assert resources["RAMB18E2 only"]["available"] is None
-    # First occurrence wins for repeated site types: "LUT as Logic"
-    # appears in both the CLB Logic and CLB Logic Distribution tables
-    # with identical headline numbers.
+    # First occurrence wins for repeated site types: "LUT as Logic" appears in two
+    # tables with identical headline numbers.
     assert resources["LUT as Logic"]["available"] == 230400
 
 
 def test_parse_utilization_rejects_garbage():
     with pytest.raises(ValueError, match="not a Vivado utilization report"):
         parse_utilization("ERROR: nothing to see here\n")
-
-
-# ---------------------------------------------------------------------------
-# parse_timing_summary
-# ---------------------------------------------------------------------------
 
 
 def test_parse_timing_summary_pass():
@@ -131,13 +117,13 @@ def test_parse_timing_summary_per_clock_rows():
 def test_parse_timing_summary_failing():
     timing = parse_timing_summary(_fixture("timing_summary_fail.rpt"))
 
-    # Over-constrained 0.05 ns (20 GHz) clock: negative setup slack.
+    # Over-constrained 0.05 ns clock: negative setup slack.
     assert timing["wns_ns"] == -0.882
     assert timing["wns_ns"] < 0
     assert timing["tns_ns"] == -81.047
     assert timing["tns_failing_endpoints"] == 101
     assert timing["tns_total_endpoints"] == 101
-    # Hold is still met; pulse width is not.
+    # Hold is met; pulse width is not.
     assert timing["whs_ns"] == 0.055
     assert timing["wpws_ns"] == -1.519
     assert timing["tpws_failing_endpoints"] == 18
@@ -149,10 +135,10 @@ def test_parse_timing_summary_failing():
 
 
 def test_parse_timing_summary_failing_carries_loop_fields():
-    """The timing-closure loop fields (#288): endpoint count + worst paths."""
+    """The timing-closure loop fields: endpoint counts and worst paths."""
     timing = parse_timing_summary(_fixture("timing_summary_fail.rpt"))
 
-    # Setup (101) + hold (0) endpoints with negative slack.
+    # Setup (101) and hold (0) endpoints with negative slack.
     assert timing["failing_endpoints"] == 101
 
     # Only the VIOLATED block surfaces; the MET hold path does not.
@@ -170,7 +156,7 @@ def test_parse_timing_summary_failing_carries_loop_fields():
 
 
 def test_parse_timing_summary_fallback_verdict_without_vivado_line():
-    # No explicit verdict line: derived from WNS/WHS signs.
+    # With no explicit verdict line, the verdict is derived from the WNS/WHS signs.
     text = (
         "| Design Timing Summary\n"
         "    WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints"
@@ -185,8 +171,8 @@ def test_parse_timing_summary_fallback_verdict_without_vivado_line():
     assert timing["whs_ns"] == 0.1
     assert timing["timing_met"] is False
     assert timing["clocks"] == []
-    # Loop fields degrade gracefully: setup endpoints only (no hold
-    # column in the truncated row), no Timing Details section at all.
+    # Loop fields degrade gracefully: setup endpoints only (no hold column in the
+    # truncated row) and no Timing Details section.
     assert timing["failing_endpoints"] == 2
     assert timing["failing_paths"] == []
 
@@ -194,11 +180,6 @@ def test_parse_timing_summary_fallback_verdict_without_vivado_line():
 def test_parse_timing_summary_rejects_garbage():
     with pytest.raises(ValueError, match="not a Vivado timing summary report"):
         parse_timing_summary("once upon a midnight dreary\n")
-
-
-# ---------------------------------------------------------------------------
-# parse_power
-# ---------------------------------------------------------------------------
 
 
 def test_parse_power_summary_values():
@@ -215,11 +196,6 @@ def test_parse_power_summary_values():
 def test_parse_power_rejects_garbage():
     with pytest.raises(ValueError, match="not a Vivado power report"):
         parse_power("watts? what watts?\n")
-
-
-# ---------------------------------------------------------------------------
-# parse_drc
-# ---------------------------------------------------------------------------
 
 
 def test_parse_drc_counts_and_violations():
@@ -255,16 +231,11 @@ def test_parse_drc_rejects_garbage():
         parse_drc("no rules were harmed\n")
 
 
-# ---------------------------------------------------------------------------
-# parse_methodology
-# ---------------------------------------------------------------------------
-
-
 def test_parse_methodology_counts_and_warnings():
     meth = parse_methodology(_fixture("methodology.rpt"))
 
-    # The fixture design constrains the clock but no I/O delays, so every
-    # port flags TIMING-18.
+    # The fixture design constrains the clock but no I/O delays, so every port flags
+    # TIMING-18.
     assert meth["total_warnings"] == 49
     assert meth["by_severity"] == {"Warning": 49}
     assert len(meth["warnings"]) == 49
@@ -295,19 +266,14 @@ def test_parse_methodology_clean_report():
 def test_parse_methodology_rejects_garbage():
     with pytest.raises(ValueError, match="not a Vivado methodology report"):
         parse_methodology("all according to plan\n")
-    # A DRC report is not a methodology report (and vice versa).
+    # A DRC report is not a methodology report, and vice versa.
     with pytest.raises(ValueError, match="not a Vivado methodology report"):
         parse_methodology(_fixture("drc.rpt"))
 
 
-# ---------------------------------------------------------------------------
-# Flow Tcl template
-# ---------------------------------------------------------------------------
-
-
 def test_flow_template_stage_and_report_contract():
-    # The data tables P1 builds on: stage order and the report set keyed
-    # the same way as the parser names / fixture files.
+    # Stage order and the report set are keyed like the parser names and fixture
+    # files.
     assert [stage for stage, _ in flow.FLOW_STAGES] == [
         "synth",
         "opt",
@@ -341,11 +307,9 @@ def test_render_flow_tcl_full_script():
     assert "report_drc -file drc.rpt" in script
     assert "report_methodology -file methodology.rpt" in script
     assert "write_bitstream -force fpga_counter.bit" in script
-    # No leftover placeholders.
     assert "{{" not in script
 
-    # Stage order is preserved: synth -> opt -> place -> route ->
-    # reports -> bitstream.
+    # Stage order is synth, opt, place, route, reports, bitstream.
     positions = [
         script.index("synth_design"),
         script.index("opt_design"),

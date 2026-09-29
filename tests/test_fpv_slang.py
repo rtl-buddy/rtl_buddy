@@ -1,11 +1,9 @@
-"""Tests for `frontend: slang` + `plugin-path` plumbing in `rb fpv`.
+"""Tests for `frontend: slang` and `plugin-path` plumbing in `rb fpv`.
 
-Covers both the per-verification schema field, the tool-config
-plugin-path field, the `_render_sby` slang script, and the
-`fpv_coi.build_yosys_script` slang script. End-to-end execution is
-exercised against the template demo in
-rtl-buddy-project-template — these tests only verify the generated
-script content.
+Covers the per-verification schema field, the tool-config plugin-path field, the
+`_render_sby` slang script and the `fpv_coi.build_yosys_script` slang script. Only
+generated script content is checked; end-to-end execution runs in the project
+template demo.
 """
 
 from __future__ import annotations
@@ -24,11 +22,6 @@ from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools.fpv_coi import build_yosys_script
 from rtl_buddy.tools.sby_fpv import SbyFpv
-
-
-# ---------------------------------------------------------------------------
-# Schema — FpvConfig.frontend + FpvToolOpts.plugin_path
-# ---------------------------------------------------------------------------
 
 
 _STUB_MODELS_YAML = """\
@@ -112,11 +105,6 @@ def test_tool_config_plugin_path_override_wins():
     assert opts.plugin_path == "/etc/slang_custom.so"
 
 
-# ---------------------------------------------------------------------------
-# SbyFpv._render_sby — slang vs verilog
-# ---------------------------------------------------------------------------
-
-
 def _sby_with_frontend(
     tmp_path,
     *,
@@ -184,28 +172,24 @@ def test_render_sby_slang_emits_plugin_and_read_slang(tmp_path):
     )
     text = open(out_path).read()
     assert "plugin -i /path/to/slang.so" in text
-    # Single `read_slang --top <top> <files...>` so `bind` directives
-    # at compilation-unit scope see every declared module. `--top` is
-    # required for slang to pull in bound submodules.
-    # `--no-synthesis-define -DFORMAL=1` mirrors `read -formal`
-    # semantics (FORMAL=1 replaces the implicit SYNTHESIS=1) so in-RTL
-    # `ifdef FORMAL asserts survive preprocessing (#246).
+    # Single `read_slang --top <top> <files...>` so `bind` directives at
+    # compilation-unit scope see every declared module; `--top` is required to pull in
+    # bound submodules. `--no-synthesis-define -DFORMAL=1` mirrors `read -formal` so
+    # in-RTL `ifdef FORMAL asserts survive preprocessing.
     assert (
         "read_slang --top dut --single-unit --no-synthesis-define -DFORMAL=1 dut.sv"
         in text
     )
-    # The verilog-frontend command must NOT appear when slang is on —
-    # otherwise yosys re-parses the same file through two frontends
-    # and produces duplicated $check cells.
+    # The verilog-frontend command must not appear with slang, or yosys parses the
+    # file through two frontends and duplicates $check cells.
     assert "read -sv -formal" not in text
 
 
 def test_render_sby_slang_passes_single_unit(tmp_path):
-    """The slang read must use --single-unit so the filelist compiles as one
-    compilation unit: `define macros carry across files and a
-    compilation-unit-scope `bind` sees modules from other files, matching how
-    simulators / yosys's verilog frontend treat a filelist. Without it
-    yosys-slang treats each file as its own unit."""
+    """The slang read uses --single-unit so the filelist is one compilation unit:
+    macros carry across files and a compilation-unit-scope `bind` sees modules from
+    other files.
+    """
     sby = _sby_with_frontend(
         tmp_path,
         frontend="slang",
@@ -222,7 +206,7 @@ def test_render_sby_slang_passes_single_unit(tmp_path):
     text = open(out_path).read()
     read_line = next(ln for ln in text.splitlines() if ln.startswith("read_slang"))
     assert "--single-unit" in read_line
-    # one read_slang invocation for the whole filelist
+    # One read_slang invocation for the whole filelist.
     assert text.count("read_slang") == 1
 
 
@@ -232,7 +216,7 @@ def test_render_sby_slang_without_plugin_path_errors(tmp_path, monkeypatch):
     monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
     sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path=None)
     out_path = str(tmp_path / "fpv.sby")
-    # The error must name both configuration channels.
+    # The error names both configuration channels.
     with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
         sby._render_sby(
             output_path=out_path,
@@ -288,11 +272,6 @@ def test_render_sby_slang_config_wins_over_env(tmp_path, monkeypatch):
     assert "/env/slang.so" not in text
 
 
-# ---------------------------------------------------------------------------
-# fpv_coi.build_yosys_script — slang vs verilog
-# ---------------------------------------------------------------------------
-
-
 def test_build_yosys_script_verilog_default():
     script = build_yosys_script(
         sources=["dut.sv"],
@@ -317,9 +296,9 @@ def test_build_yosys_script_slang():
         plugin_path="/p/slang.so",
     )
     assert "plugin -i /p/slang.so" in script
-    # Single `read_slang --top <top> ... dut.sv props.sv` with the same
-    # `read -formal`-parity defines as the sby renderer — without them
-    # in-RTL `ifdef FORMAL asserts vanish and COI reports 0% (#246).
+    # Single `read_slang --top <top> ... dut.sv props.sv` with the same `read -formal`
+    # defines as the sby renderer; without them in-RTL `ifdef FORMAL asserts vanish
+    # and COI reports 0%.
     assert (
         "read_slang --top dut --single-unit --no-synthesis-define -DFORMAL=1 dut.sv props.sv"
         in script
@@ -328,10 +307,9 @@ def test_build_yosys_script_slang():
 
 
 def test_build_yosys_script_slang_passes_incdirs_on_read_slang():
-    """For slang, include dirs must be appended to the read_slang command as
-    `-I <dir>`. read_slang ignores `verilog_defaults -add -I` (that only
-    configures yosys's built-in verilog frontend), so emitting incdirs that way
-    leaves `include directives unresolved."""
+    """For slang, include dirs are appended to the read_slang command as `-I <dir>`,
+    because read_slang ignores `verilog_defaults -add -I`.
+    """
     script = build_yosys_script(
         sources=["dut.sv"],
         incdirs=["/inc/foo", "/inc/bar"],
@@ -344,13 +322,14 @@ def test_build_yosys_script_slang_passes_incdirs_on_read_slang():
     read_line = next(ln for ln in script.splitlines() if ln.startswith("read_slang"))
     assert "-I /inc/foo" in read_line
     assert "-I /inc/bar" in read_line
-    # not emitted as a (no-op for slang) verilog_defaults directive
+    # Not emitted as a (no-op for slang) verilog_defaults directive.
     assert "verilog_defaults" not in script
 
 
 def test_render_sby_slang_passes_incdirs_on_read_slang(tmp_path):
-    """SbyFpv slang renderer: same contract as the COI builder — incdirs go on
-    the read_slang command line, never via verilog_defaults."""
+    """The SbyFpv slang renderer puts incdirs on the read_slang command line, never in
+    verilog_defaults.
+    """
     sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path="/p/slang.so")
     out_path = str(tmp_path / "fpv.sby")
     sby._render_sby(
@@ -367,10 +346,9 @@ def test_render_sby_slang_passes_incdirs_on_read_slang(tmp_path):
 
 
 def test_render_slang_read_shell_quotes_paths_with_spaces():
-    """yosys tokenises each script line shell-style, so paths with spaces on the
-    single read_slang line must be shell-quoted or elaboration breaks. Simple
-    names stay bare (shlex.quote is a no-op there), keeping the common case
-    readable."""
+    """Paths with spaces on the read_slang line are shell-quoted because yosys
+    tokenises script lines shell-style; simple names stay bare.
+    """
     from rtl_buddy.tools.fpv_coi import render_slang_read
 
     line = render_slang_read("dut", ["/a b/inc"], ["/x y/dut.sv"])
@@ -394,11 +372,6 @@ def test_build_yosys_script_slang_requires_plugin_path():
             frontend="slang",
             plugin_path=None,
         )
-
-
-# ---------------------------------------------------------------------------
-# YAML loader — `frontend:` + `plugin-path:` end-to-end
-# ---------------------------------------------------------------------------
 
 
 _FPV_YAML_SLANG = """\
@@ -435,16 +408,11 @@ def test_yaml_round_trip_with_slang_frontend(tmp_path):
     assert v.get_frontend() == "slang"
 
 
-# ---------------------------------------------------------------------------
-# Filelist defines (#305) — both frontends
-# ---------------------------------------------------------------------------
-
-
 def test_render_sby_slang_emits_filelist_defines(tmp_path):
-    """`+define+` entries reach the read_slang line as `-D` flags, and the
-    rtl-buddy-owned `-DFORMAL=1` still leads: yosys-slang keeps the FIRST
-    definition of a macro, so emitting ours first is what stops a user
-    define from displacing it."""
+    """`+define+` entries reach the read_slang line as `-D` flags after the
+    rtl-buddy-owned `-DFORMAL=1`, because yosys-slang keeps the first definition of
+    a macro.
+    """
     sby = _sby_with_frontend(
         tmp_path,
         frontend="slang",
@@ -469,8 +437,9 @@ def test_render_sby_slang_emits_filelist_defines(tmp_path):
 
 
 def test_render_sby_verilog_emits_filelist_defines(tmp_path):
-    """The verilog frontend takes defines through `verilog_defaults`, the
-    same channel its include dirs use; `read -formal` supplies FORMAL."""
+    """The verilog frontend takes defines through `verilog_defaults`, like its include
+    dirs; `read -formal` supplies FORMAL.
+    """
     sby = _sby_with_frontend(tmp_path, frontend="verilog")
     out_path = str(tmp_path / "fpv.sby")
     sby._render_sby(
@@ -484,7 +453,7 @@ def test_render_sby_verilog_emits_filelist_defines(tmp_path):
     text = open(out_path).read()
     assert "verilog_defaults -add -DVERILATOR" in text
     assert "verilog_defaults -add -DWIDTH=8" in text
-    # the define directives must precede the reads they configure
+    # The define directives precede the reads they configure.
     assert text.index("verilog_defaults -add -DVERILATOR") < text.index(
         "read -sv -formal dut.sv"
     )
@@ -492,7 +461,7 @@ def test_render_sby_verilog_emits_filelist_defines(tmp_path):
 
 
 def test_coi_script_carries_filelist_defines_slang(tmp_path):
-    """The COI walk must parse the design the proof parsed — same defines."""
+    """The COI walk parses the design with the same defines as the proof."""
     script = build_yosys_script(
         sources=["/abs/dut.sv"],
         incdirs=[],
@@ -519,17 +488,12 @@ def test_coi_script_carries_filelist_defines_verilog(tmp_path):
     assert "verilog_defaults -add -DVERILATOR" in script
 
 
-# ---------------------------------------------------------------------------
-# `params:` — reduced-configuration proofs (#359)
+# `params:` reduced-configuration proofs.
 #
-# The two frontends need different mechanisms, and this is not a style
-# choice: yosys-slang elaborates during `read_slang`, so by the time a
-# script could run `chparam` the module is no longer parametric and the
-# following `prep` aborts with "Module `X' is used with parameters but is
-# not parametric!" (checked against yosys 0.64 + yosys-slang). slang's own
-# `-G` top-level override is the only route there; `chparam` before `prep`
-# is the route on the native verilog frontend.
-# ---------------------------------------------------------------------------
+# yosys-slang elaborates during `read_slang`, so `chparam` afterwards fails in `prep`
+# with "Module `X' is used with parameters but is not parametric!" (yosys 0.64 +
+# yosys-slang). slang frontends therefore use slang's `-G` override, and the native
+# verilog frontend uses `chparam` before `prep`.
 
 
 def _sby_with_params(tmp_path, *, frontend, params, plugin_path=None) -> SbyFpv:
@@ -555,7 +519,7 @@ def test_render_sby_slang_emits_param_overrides_as_dash_g(tmp_path):
     )
     text = open(out_path).read()
     assert "-G K=8 -G WIDTH=8'h20" in text
-    # chparam would abort the run on this frontend
+    # chparam would abort the run on this frontend.
     assert "chparam" not in text
 
 
@@ -594,8 +558,7 @@ def test_render_sby_without_params_emits_no_override(tmp_path):
 
 
 def test_coi_script_carries_params_slang(tmp_path):
-    """The COI walk reports coverage as a fraction of design cells — it has
-    to measure the same (reduced) elaboration the proof ran."""
+    """The COI walk measures the same reduced elaboration the proof ran."""
     script = build_yosys_script(
         sources=["/abs/dut.sv"],
         incdirs=[],
@@ -626,8 +589,7 @@ def test_coi_script_carries_params_verilog(tmp_path):
 
 
 def test_vacuity_pass_carries_params(tmp_path, monkeypatch):
-    """The vacuity cover pass re-renders the design; a differently sized
-    elaboration there would chase covers the proof never had."""
+    """The vacuity cover pass re-renders the design with the same params as the proof."""
     props = tmp_path / "props.sv"
     props.write_text("assert property (@(posedge clk) a |-> b);\n")
     sby = _sby_with_params(

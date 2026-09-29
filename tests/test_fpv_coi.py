@@ -1,4 +1,4 @@
-"""Tests for cone-of-influence coverage (#136)."""
+"""Tests for cone-of-influence coverage."""
 
 from textwrap import dedent
 
@@ -12,11 +12,6 @@ from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 
-# ---------------------------------------------------------------------------
-# Yosys script generation
-# ---------------------------------------------------------------------------
-
-
 def test_build_yosys_script_emits_total_and_selected_markers():
     script = build_yosys_script(
         sources=["dut.sv"],
@@ -27,11 +22,9 @@ def test_build_yosys_script_emits_total_and_selected_markers():
     )
     assert "=== RTL_BUDDY_COI_TOTAL ===" in script
     assert "=== RTL_BUDDY_COI_SELECTED ===" in script
-    # `prep -flatten -top` collapses the hierarchy so $assert cells
-    # from bound property submodules show up under the top module's
-    # default stat output.
+    # `prep -flatten -top` collapses the hierarchy so $assert cells from bound
+    # property submodules appear under the top module's stat output.
     assert "prep -flatten -top dut" in script
-    # COI selection lives in the standard yosys selection language.
     assert "select -set property_cells t:$assert" in script
     assert "@property_cells %ci*" in script
 
@@ -44,9 +37,8 @@ def test_build_yosys_script_inlines_constraints_between_design_and_props():
         constraints="env_assumes.sv",
         top="dut",
     )
-    # Order must be: incdirs → sources → constraints → properties so the
-    # constraints' assume property statements are in scope when the
-    # property file's assertions elaborate.
+    # Order is incdirs, sources, constraints, properties, so assume statements are in
+    # scope when the property file's assertions elaborate.
     lines = script.splitlines()
     inc_i = next(
         i for i, ln in enumerate(lines) if ln == "verilog_defaults -add -I /inc/foo"
@@ -57,11 +49,6 @@ def test_build_yosys_script_inlines_constraints_between_design_and_props():
     )
     prop_i = next(i for i, ln in enumerate(lines) if ln == "read -sv -formal props.sv")
     assert inc_i < src_i < cons_i < prop_i
-
-
-# ---------------------------------------------------------------------------
-# Yosys stat parsing
-# ---------------------------------------------------------------------------
 
 
 _FAKE_YOSYS_LOG = dedent("""\
@@ -145,8 +132,8 @@ def test_parse_stat_blocks_extracts_total_and_selected_blocks():
     assert total["counter"]["cells"] == 12
     assert total["clk_gate"]["cells"] == 2
     assert selected["counter"]["cells"] == 6
-    # `clk_gate` had no asserts in its COI, so it's absent from the
-    # selected block — caller treats that as 0/total_clk_gate.
+    # `clk_gate` had no asserts in its COI, so it is absent from the selected block
+    # and counts as 0.
     assert "clk_gate" not in selected
 
 
@@ -159,7 +146,6 @@ def test_compute_coverage_aggregates_modules():
     assert summary["percent"] == 6 / 14 * 100
     assert summary["per_module"]["counter"]["cells"] == 12
     assert summary["per_module"]["counter"]["coi_cells"] == 6
-    # No assert touched clk_gate.
     assert summary["per_module"]["clk_gate"]["coi_cells"] == 0
 
 
@@ -167,7 +153,7 @@ def test_compute_coverage_rolls_up_dead_assumes():
     blocks = parse_stat_blocks(_FAKE_YOSYS_LOG)
     summary = compute_coverage(blocks)
     assumes = summary["assumes"]
-    # 5 total `$assume` cells, 3 inside the assertion COI → 2 dead.
+    # 5 total `$assume` cells, 3 inside the assertion COI, so 2 are dead.
     assert assumes["total"] == 5
     assert assumes["in_assert_coi"] == 3
     assert assumes["dead"] == 2
@@ -180,11 +166,6 @@ def test_compute_coverage_handles_empty_design():
     assert summary["total_cells"] == 0
     assert summary["coi_cells"] == 0
     assert summary["percent"] == 0.0
-
-
-# ---------------------------------------------------------------------------
-# FpvConfig.coi_enabled — default policy
-# ---------------------------------------------------------------------------
 
 
 def _make_cfg(*, mode="bmc", coi=None):
@@ -219,11 +200,6 @@ def test_coi_explicit_on_for_cover_mode():
     assert _make_cfg(mode="cover", coi=True).coi_enabled() is True
 
 
-# ---------------------------------------------------------------------------
-# COI summary cell formatting
-# ---------------------------------------------------------------------------
-
-
 def test_format_coi_cell_renders_percent_and_counts():
     cell = RtlBuddy._format_coi_cell(
         {"total_cells": 100, "coi_cells": 73, "percent": 73.0}
@@ -240,13 +216,7 @@ def test_format_coi_cell_none_when_no_data():
     assert RtlBuddy._format_coi_cell(None) is None
 
 
-# ---------------------------------------------------------------------------
-# Dead-assume cell formatting (#135)
-# ---------------------------------------------------------------------------
-
-
 def test_format_assumes_cell_silent_when_no_design_assumes():
-    # No `$assume` cells in the design — nothing to flag, column hidden.
     assert (
         RtlBuddy._format_assumes_cell(
             {"assumes": {"total": 0, "in_assert_coi": 0, "dead": 0}}
@@ -284,17 +254,14 @@ def test_build_yosys_script_emits_assume_markers():
     )
     assert "=== RTL_BUDDY_ASSUMES_TOTAL ===" in script
     assert "=== RTL_BUDDY_ASSUMES_IN_COI ===" in script
-    # Used-assume selection walks *forward* from the assertion COI and
-    # intersects with the assume cells — assume cells are sinks, so
-    # intersecting them with the (input-cone) COI directly is empty by
-    # construction and misreported every assume as dead (#250).
+    # Used assumes are found by walking forward from the assertion COI: assume cells
+    # are sinks, so intersecting them with the input-cone COI is empty.
     used_line = next(
         ln for ln in script.splitlines() if ln.startswith("select @property_coi %co*")
     )
     assert used_line.endswith(" @all_assumes %i")
-    # Clock/trigger and reset network edges must be excluded from the
-    # forward walk, or the shared clk/rst would mark every assume in
-    # the design as used.
+    # Clock/trigger and reset network edges are excluded from the forward walk, or the
+    # shared clk/rst would mark every assume as used.
     assert ":-$check[TRG]" in used_line
     assert "[CLK]" in used_line
     assert "[ARST]" in used_line
