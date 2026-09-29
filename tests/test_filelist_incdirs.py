@@ -1,10 +1,7 @@
-"""Filelist ``+incdir+`` entries reach the non-simulation flows (#519).
+"""Filelist ``+incdir+`` entries reach the non-simulation flows.
 
-The generated filelist each flow reads back carries the model's
-``+incdir+`` directories; before #519 every flow but simulation dropped
-them and handed the tool sources only. These tests cover the shared
-extraction helper and the Vivado Tcl rendering; the per-flow script tests
-live beside each flow's other tests.
+Covers the shared extraction helper and the Vivado Tcl rendering. Per-flow script
+tests live beside each flow's other tests.
 """
 
 from rtl_buddy.tools.cdc_vivado import render_cdc_tcl
@@ -49,8 +46,8 @@ def test_tcl_string_neutralises_substitution_and_command_metacharacters():
     assert tcl_string(hostile) == (
         '"/p/}; exec rm -rf ~ ;#{\\$x \\[cmd\\] \\"q\\" \\\\e"'
     )
-    # Braces are inert inside a double-quoted Tcl word, so the path with
-    # an unbalanced brace is still one element evaluating to itself.
+    # Braces are inert inside a double-quoted Tcl word, so an unbalanced brace is
+    # still one element.
     assert include_dirs_arg([hostile]) == f" -include_dirs [list {tcl_string(hostile)}]"
 
 

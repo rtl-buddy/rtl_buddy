@@ -1,22 +1,14 @@
-"""Correctness smoke for the token benchmark (#381).
+"""Correctness smoke for the token benchmark. Token numbers are not asserted.
 
-The benchmark's *numbers* are not a test — they depend on which project
-you point it at, and a threshold on them would fail for every reason
-except the one worth failing for. What is worth guarding is the part
-that makes the numbers mean anything:
+Guarded here:
 
-* the token proxy is the documented one (`len(text) // 4`, on the
-  command as well as the output),
-* the hand-checked key is well-formed and every task carries one,
-* the raw route's small parsers — the only place the benchmark could
-  quietly hand one route a wrong answer — still read SystemVerilog
-  headers, instance bindings, `tests.yaml` and `specs.yaml` correctly.
+- the token proxy is `len(text) // 4`, applied to the command as well as the output
+- the hand-checked key is well-formed and every task carries one
+- the raw route's parsers read SystemVerilog headers, instance bindings,
+  `tests.yaml` and `specs.yaml` correctly
 
-The end-to-end run over a real project is the last test here and skips
-unless `RTL_BUDDY_TEMPLATE_ROOT` points at a checkout that has been
-through `rb graph build`. That is deliberate: CI has no
-rtl-buddy-project-template checkout and no `rtl-buddy-view`, so the
-alternative to a skip is a red suite that means nothing.
+The end-to-end test skips unless `RTL_BUDDY_TEMPLATE_ROOT` points at a checkout
+that has been through `rb graph build`, because CI has no such checkout.
 """
 
 from __future__ import annotations
@@ -32,12 +24,10 @@ _SCRIPT = Path(__file__).parent.parent / "scripts" / "graph_token_benchmark.py"
 
 
 def _load_benchmark():
-    """Import scripts/graph_token_benchmark.py — it is a script, not a package.
+    """Import scripts/graph_token_benchmark.py, which is a script, not a package.
 
-    It has to land in ``sys.modules`` *before* it executes: its
-    dataclasses resolve their own annotations through the module entry,
-    and a module that is not registered yet has no entry to resolve
-    against.
+    The module must be in ``sys.modules`` before it executes, because its
+    dataclasses resolve annotations through that entry.
     """
     spec = importlib.util.spec_from_file_location("graph_token_benchmark", _SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -50,11 +40,6 @@ def _load_benchmark():
 bench = _load_benchmark()
 
 
-# ---------------------------------------------------------------------------
-# the proxy and the task set
-# ---------------------------------------------------------------------------
-
-
 def test_token_proxy_is_chars_over_four():
     assert bench.CHARS_PER_TOKEN == 4
     assert bench.approx_tokens("") == 0
@@ -63,11 +48,8 @@ def test_token_proxy_is_chars_over_four():
 
 
 def test_repeating_a_query_is_free_the_way_re_reading_a_file_is(tmp_path):
-    """The change-impact walk revisits its own starting node.
-
-    Charging the same `explain` twice would tax the graph route for a
-    line an agent already has in its transcript — the mirror of the rule
-    `read()` has always followed.
+    """The change-impact walk revisits its starting node, and a repeated `explain` is
+    not charged twice.
     """
     stub = "import json; print(json.dumps({'payload': {'node': {}}}))"
     route = bench.Route(
@@ -98,15 +80,10 @@ def test_every_task_has_a_key_a_question_and_an_expected_answer():
 
 
 def test_the_answer_floor_is_smaller_than_any_route_could_be():
-    # A sanity rail on the third column: the answer serialized as JSON
-    # has to be small, or it is not a floor, it is a route.
+    # The answer serialized as JSON must be small, or it is not a floor.
     for task in bench.TASKS:
         assert bench.answer_floor(task) < 200
 
-
-# ---------------------------------------------------------------------------
-# the raw route's parsers
-# ---------------------------------------------------------------------------
 
 _SV = """\
 // a comment mentioning input fake_port
@@ -210,10 +187,6 @@ def test_test_records_carry_the_testbench_the_deep_chain_hops_through():
     assert records["nightly"]["model"] == "widget_subsys"
 
 
-# ---------------------------------------------------------------------------
-# the parsers the two structural tasks added
-# ---------------------------------------------------------------------------
-
 _SV_TREE = """\
 // widget_top wraps widget. The comment below is the false positive the
 // change-impact raw route pays to read: ip_cdc_sync is named, not used.
@@ -236,8 +209,8 @@ def test_module_instantiations_maps_each_module_to_its_children():
 
 
 def test_module_instantiations_ignores_a_name_that_only_appears_in_a_comment():
-    # The whole point of the fixpoint being over parsed instances rather
-    # than over grep hits: a mention is not a consumer.
+    # The fixpoint runs over parsed instances rather than grep hits: a mention is not
+    # a consumer.
     for children in bench._module_instantiations(_SV_TREE).values():
         assert "ip_cdc_sync" not in children
 
@@ -318,10 +291,6 @@ def test_elaboration_root_survives_the_suite_qualification():
     )
 
 
-# ---------------------------------------------------------------------------
-# end to end, when a real project is available
-# ---------------------------------------------------------------------------
-
 _TEMPLATE = os.environ.get("RTL_BUDDY_TEMPLATE_ROOT")
 _HAS_GRAPH = bool(_TEMPLATE) and (Path(_TEMPLATE) / bench.GRAPH_JSON).exists()
 
@@ -333,7 +302,7 @@ pytestmark_reason = (
 @pytest.mark.skipif(not _HAS_GRAPH, reason=pytestmark_reason)
 @pytest.mark.parametrize("task", bench.TASKS, ids=lambda t: t.key)
 def test_both_routes_answer_correctly(task):
-    """Correctness only — no token count is asserted, by design."""
+    """Asserts correctness only, not token counts."""
     runner = bench.Runner(
         project=Path(_TEMPLATE).resolve(), rb=[sys.executable, "-m", "rtl_buddy"]
     )
