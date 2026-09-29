@@ -7,7 +7,8 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │   pnr_name      [PNR_NAME]  name of pnr run                                          │
-│                             [default: (run all entries in the suite)]                │
+│                             [default: (run all entries in the suite, each block      │
+│                             before the runs that consume it)]                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --pnr-config    -c      TEXT              pnr.yaml to use [default: pnr.yaml]        │
