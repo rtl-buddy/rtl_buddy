@@ -1,27 +1,6 @@
-"""Contract tests for rb xplr P2: git-pinned provenance, worktrees, gc.
+"""Tests for `rb xplr` git-pinned provenance, worktrees and gc.
 
-Everything runs in throwaway git repos (the minimal_project fixture
-turned into one) through ``RtlBuddy.run()`` — the same entry point the
-agent hits — so the FatalRtlBuddyError -> exit-2 -> machine-envelope
-contract is exercised, not bypassed.
-
-Covered here:
-
-* auto commit-mode: a dirty source scope is snapshotted to an
-  ``exp/<id>`` branch containing ONLY the scoped paths, with the
-  user's branch/index/working tree untouched (``git status`` before
-  == after); a clean tree converges (records HEAD, no branch).
-* self-managed commit-mode: a dirty scope is a hard error (exit 2).
-* bookkeeping exclusion: the xplr ledger dir and rtl_buddy.log never
-  count as source (no snapshot, no dirt, no new sha), identical dirty
-  RTL reuses the prior snapshot sha, and register warns when the
-  ledger/log are inside the repo but not gitignored.
-* ``--baseline`` / parent-derived ``diff_from``.
-* materialize/release worktree round trip (idempotent both ways).
-* gc: keep-frontier protects frontier members + their direct lineage,
-  evicts dominated/failed oldest-first, never touches record.json;
-  dry-run evicts nothing; manual policy only lists candidates; the
-  register-time hard-cap backstop blocks new runs.
+They run in throwaway git repos through `RtlBuddy.run()`, so the exit-2 and machine-envelope handling in `run()` is exercised. Covered: the auto and self-managed commit modes, exclusion of rb bookkeeping from snapshots, `--baseline` and parent-derived `diff_from`, the materialize/release round trip, and gc policies including the hard-cap backstop.
 """
 
 from __future__ import annotations
@@ -38,7 +17,7 @@ from rtl_buddy.rtl_buddy import RtlBuddy
 
 
 # ---------------------------------------------------------------------------
-# helpers (same conventions as test_xplr_cli.py)
+# helpers
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +59,7 @@ def _git(root: Path, *args: str) -> str:
 
 @pytest.fixture
 def git_project(minimal_project: Path) -> Path:
-    """minimal_project as a clean git repo (artefacts/ gitignored)."""
+    """Return minimal_project as a clean git repo with artefacts/ ignored."""
     (minimal_project / ".gitignore").write_text("artefacts/\nrtl_buddy.log\n")
     _git(minimal_project, "init", "-q", "-b", "main", ".")
     _git(minimal_project, "add", "-A")
@@ -135,7 +114,7 @@ def _attach(
 
 
 def test_gitprov_git_injects_no_optional_locks(tmp_path, monkeypatch):
-    """#581: reads must not orphan .git/index.lock."""
+    """Every git call passes --no-optional-locks."""
     from rtl_buddy.xplr import gitprov
 
     seen = []
@@ -151,7 +130,7 @@ def test_gitprov_git_injects_no_optional_locks(tmp_path, monkeypatch):
 
 
 def test_gitprov_failure_message_omits_the_injected_flag(tmp_path, monkeypatch):
-    """The injected flag must not leak into the user-facing error."""
+    """The error message omits the injected --no-optional-locks flag."""
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.xplr import gitprov
 
@@ -274,7 +253,7 @@ def test_self_managed_clean_tree_records_head(git_project: Path, monkeypatch, ca
 
 @pytest.fixture
 def unignored_git_project(minimal_project: Path) -> Path:
-    """minimal_project as a git repo with NO .gitignore at all (worst case)."""
+    """Return minimal_project as a git repo with no .gitignore."""
     _git(minimal_project, "init", "-q", "-b", "main", ".")
     _git(minimal_project, "add", "-A")
     _git(minimal_project, "commit", "-q", "-m", "init")
@@ -288,8 +267,7 @@ def test_ledger_and_log_dirt_records_head_and_diffs_as_same_source(
     head = _git(project, "rev-parse", "HEAD")
     code, p1 = _register(project, monkeypatch, capsys)
     assert code == 0
-    # exp-0001's record + lock now sit unignored under artefacts/xplr; the
-    # rb log file is bookkeeping too — none of it is source
+    # The unignored record, lock and rb log are bookkeeping, not source.
     (project / "rtl_buddy.log").write_text("rb log line\n")
     code, p2 = _register(project, monkeypatch, capsys)
     assert code == 0
@@ -517,7 +495,7 @@ def _experiment_with_outcome(
     parent: str | None = None,
     heavy_kb: int = 4,
 ) -> str:
-    """Register + attach an outcome + drop a heavy artifact file."""
+    """Register an experiment, attach an outcome and create a heavy artifact file."""
     doc: dict = {"knobs": []}
     if parent is not None:
         doc["parent"] = parent
@@ -535,8 +513,7 @@ def _experiment_with_outcome(
 
 
 def _gc_ledger(project: Path, monkeypatch, capsys) -> dict[str, Path]:
-    """Four experiments: frontier (exp-0002) + lineage (exp-0001) protected,
-    a dominated one (exp-0003) and a failed one (exp-0004) evictable."""
+    """Create four experiments: exp-0002 (frontier) and exp-0001 (its parent) are protected; exp-0003 (dominated) and exp-0004 (failed) are evictable."""
     ids = {}
     ids["lineage"] = _experiment_with_outcome(
         project, monkeypatch, capsys, metrics={"lut_pct": 60, "delay_ns": 6.0}

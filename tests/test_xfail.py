@@ -1,6 +1,4 @@
-"""Unit tests for the shared xfail helper (runner/xfail.py), the single
-source of truth for expected-fail re-interpretation used by every
-command's result classes — plus the suite-level grading that applies it."""
+"""Tests for the shared xfail helper (runner/xfail.py) and the suite grading that applies it."""
 
 import json
 
@@ -26,7 +24,7 @@ from rtl_buddy.runner.xfail import (
 
 
 class _Result:
-    """Minimal stand-in for a *Results object: just a mutable dict."""
+    """Stand-in for a results object."""
 
     def __init__(self, status, desc="d", **extra):
         self.results = {"result": status, "desc": desc, **extra}
@@ -49,7 +47,7 @@ def test_is_pass_false_statuses(status):
 
 def test_is_pass_xpass_nonstrict_passes():
     assert is_pass_with_xfail({"result": "XPASS", "xfail_strict": False}) is True
-    # absent flag behaves as non-strict
+    # An absent flag means non-strict.
     assert is_pass_with_xfail({"result": "XPASS"}) is True
 
 
@@ -102,18 +100,15 @@ def test_apply_xfail_skip_and_na_pass_through(status):
 
 def test_apply_xfail_default_strict_is_false():
     res = _Result("PASS")
-    apply_xfail(res)  # strict defaults to False
+    apply_xfail(res)
     assert is_pass_with_xfail(res.results) is True
 
 
 # ---------------------------------------------------------------------------
-# xfail_refusal / the stage rule (#553, #594)
+# xfail_refusal / the stage rule
 #
-# The marker excuses only a verdict the flow's own tool reported. A failure
-# that happened *instead of* a verdict carries FAIL_STAGE_KEY and keeps its
-# FAIL, so a negative control that stopped compiling — or that was killed at
-# the sim timeout before reaching the mismatch it exists to catch — cannot
-# read green.
+# The marker excuses only a verdict the flow's tool reported. A failure that
+# carries FAIL_STAGE_KEY happened instead of a verdict and stays FAIL.
 # ---------------------------------------------------------------------------
 
 
@@ -128,26 +123,23 @@ def test_apply_xfail_refuses_every_known_stage(stage, reason, strict):
     assert res.results["result"] == "FAIL"
     assert is_pass_with_xfail(res.results) is False
     assert res.results["desc"] == f"xfail not applied ({reason}): boom"
-    # The refusal never records strictness: a strict marker is about an
-    # unexpected *pass*, and this is not a pass either way.
+    # Strictness concerns an unexpected pass, so a refusal does not record it.
     assert "xfail_strict" not in res.results
 
 
 def test_xfail_refusal_is_none_for_a_tool_verdict():
     assert xfail_refusal({"result": "FAIL", "desc": "mismatch at 120ns"}) is None
-    # A falsy stage (an older envelope's explicit null) excuses as before.
+    # A falsy stage (an explicit null) does not refuse the marker.
     assert xfail_refusal({"result": "FAIL", FAIL_STAGE_KEY: None}) is None
 
 
 def test_xfail_refusal_reports_an_unknown_stage_verbatim():
-    # Fail loud rather than excuse silently: a stage this rtl_buddy does not
-    # know (a newer job's envelope) still refuses the marker.
+    # An unknown stage still refuses the marker.
     assert xfail_refusal({"result": "FAIL", FAIL_STAGE_KEY: "future"}) == "future"
 
 
 def test_apply_xfail_still_excuses_a_pass_under_a_stage_key():
-    # A stage marker only ever speaks about a failure; an unexpected PASS is
-    # still an XPASS, strict or not.
+    # A stage key applies only to failures; a PASS is still an XPASS.
     res = _Result("PASS", **{FAIL_STAGE_KEY: "compile"})
     apply_xfail(res, strict=True)
     assert res.results["result"] == "XPASS"
@@ -155,7 +147,7 @@ def test_apply_xfail_still_excuses_a_pass_under_a_stage_key():
 
 
 # ---------------------------------------------------------------------------
-# Suite grading: the rule as a `rb test` run sees it (#553, #594)
+# Suite grading as `rb test` sees it
 # ---------------------------------------------------------------------------
 
 
@@ -165,7 +157,7 @@ class _StubBuilderCfg:
 
 
 class _StubRootCfg:
-    """Duck-typed root_cfg: `_do_test_suite` only resolves a builder."""
+    """Duck-typed root_cfg; `_do_test_suite` only resolves a builder."""
 
     def resolve_rtl_builder_cfg(self, _test_builder_name=None):
         return _StubBuilderCfg()
@@ -193,8 +185,7 @@ def _suite_with_marker(tmp_path, marker: str):
 
 
 def _run_suite(tmp_path, monkeypatch, marker: str, result_factory):
-    # Machine mode so the assertions can read the event's structured
-    # fields, which is what a CI consumer reads too.
+    # Machine mode exposes the event's structured fields.
     setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
     suite_cfg = _suite_with_marker(tmp_path, marker)
 
@@ -216,7 +207,7 @@ def _run_suite(tmp_path, monkeypatch, marker: str, result_factory):
 
 
 def _read_event(tmp_path, name: str) -> dict:
-    """The last ``name`` event out of the machine-mode JSONL log."""
+    """Return the last ``name`` event in the machine-mode JSONL log."""
     records = [
         json.loads(line)
         for line in (tmp_path / "rtl_buddy.log").read_text().splitlines()
@@ -231,7 +222,7 @@ def _read_event(tmp_path, name: str) -> dict:
 def test_suite_grades_a_sim_timeout_as_fail_under_a_marker(
     tmp_path, monkeypatch, marker
 ):
-    """#594: a marked test killed at the sim timeout must not read green."""
+    """A marked test killed at the sim timeout stays FAIL."""
     rb, suite_results = _run_suite(
         tmp_path,
         monkeypatch,
@@ -244,7 +235,7 @@ def test_suite_grades_a_sim_timeout_as_fail_under_a_marker(
     assert res.results["result"] == "FAIL"
     assert res.results["desc"] == "xfail not applied (sim timeout): Sim hit timeout"
     assert rb._exit_code_from_results(suite_results) != 0
-    # The event a CI reader greps, not just the table cell.
+    # Check the event as well as the table cell.
     event = _read_event(tmp_path, "suite.xfail")
     assert event["excused"] is False
     assert event["reason"] == "sim timeout"
@@ -252,7 +243,7 @@ def test_suite_grades_a_sim_timeout_as_fail_under_a_marker(
 
 
 def test_suite_grades_a_compile_failure_as_fail_under_a_marker(tmp_path, monkeypatch):
-    """#553: same for a negative control that stopped compiling."""
+    """A marked test that stopped compiling stays FAIL."""
     rb, suite_results = _run_suite(
         tmp_path,
         monkeypatch,
@@ -267,7 +258,7 @@ def test_suite_grades_a_compile_failure_as_fail_under_a_marker(tmp_path, monkeyp
 
 
 def test_suite_still_excuses_a_sim_verdict_under_a_marker(tmp_path, monkeypatch):
-    """The marker's whole point still works: a sim that ran and failed."""
+    """A marked sim that ran and failed is excused."""
     rb, suite_results = _run_suite(
         tmp_path,
         monkeypatch,
@@ -287,7 +278,7 @@ def test_suite_still_excuses_a_sim_verdict_under_a_marker(tmp_path, monkeypatch)
 
 
 def test_suite_still_fails_a_strict_xpass(tmp_path, monkeypatch):
-    """Unchanged: a strict marker over a passing test is still a failure."""
+    """A strict marker over a passing test is a failure."""
     rb, suite_results = _run_suite(
         tmp_path,
         monkeypatch,

@@ -1,65 +1,8 @@
-"""Synthetic DSE backend with known optima — the ``rb xplr mock`` harness.
+"""Synthetic DSE backend for the ``rb xplr mock`` harness.
 
-mockflow looks like an EDA flow (EDA-flavored knobs in, EDA-flavored
-metrics out, P0-schema records throughout) but returns instantly and is
-backed by standard multi-modal benchmark functions whose optimum / Pareto
-front is known analytically. It exists so the rb xplr analysis surface
-and any agent/optimizer loop can be developed and CI-tested without
-multi-hour EDA turnaround — and *scored*: because the ground truth is
-exact, "did the agent optimize?" becomes a pass/fail number (regret for
-single-objective, hypervolume + distance-to-front for multi-objective).
+It presents EDA-style knobs and metrics but evaluates instantly from benchmark functions (``rastrigin``, ``zdt1``) whose optimum or Pareto front is known analytically, so analysis code and agent loops can be tested and scored without EDA runs.
 
-Scenarios (declarative knob specs, dispatch by name):
-
-* ``rastrigin`` — single-objective. The four numeric knobs each map
-  linearly from their declared range onto ``[-5.12, 5.12]`` (range
-  midpoint -> 0) and feed the n=4 Rastrigin function
-  ``f(x) = 10n + sum(x_i^2 - 10*cos(2*pi*x_i))``; the reported metric is
-  ``wns_ns = -f(x) / 10`` (maximize). The global optimum is therefore
-  ``wns_ns = 0.0`` exactly at the numeric-knob midpoints, surrounded by
-  a lattice of local optima. Categorical knobs never affect the
-  objective — any feasible categorical combination attains the optimum.
-* ``zdt1`` — multi-objective. The numeric knobs map linearly onto
-  ``[0, 1]``; the first (``partition.cut``) is ZDT1's ``x1`` and the
-  rest feed ``g = 1 + 9 * mean(x_2..x_n)``. Metrics are
-  ``lut_pct = 100 * f1`` (minimize) and ``delay_ns = 10 * f2``
-  (minimize) with ``f1 = x1`` and ``f2 = g * (1 - sqrt(f1 / g))``. The
-  analytic Pareto front is ``delay_ns = 10 * (1 - sqrt(lut_pct / 100))``
-  for ``lut_pct`` in ``[0, 100]``, attained when every non-``x1``
-  numeric knob sits at its range minimum (``g = 1``).
-
-Conventions baked in (and relied on by the tests):
-
-* **Feasibility cliff**: one categorical combination per scenario
-  reports ``routed = false`` with the objective metrics *omitted*, but
-  ``outcome.status`` stays ``"success"``. Rationale: the flow itself ran
-  to completion — failing to route is a property of the design point,
-  not a flow crash — and the P3 analysis layer already treats a
-  ``routed=false`` metric on a *successful* outcome as the infeasibility
-  marker (``status="failed"`` would instead mean mockflow itself broke).
-* **Cost / layer model**: every knob carries a ``layer``; a run "costs"
-  ``wall_clock_s = 60 + sum(layer cost of every knob whose value
-  differs from its default)`` with source=600s, flow=240s, impl=60s —
-  so touching a source knob is 10x the cost of an impl knob. The cost
-  is pure bookkeeping: ``wall_clock_s`` is reported with a unit but no
-  direction, so it never silently joins Pareto dominance (opt in with
-  ``--metrics wall_clock_s:min``).
-* **Determinism**: metrics are a pure function of
-  ``(scenario, knob values, seed)``. With ``noise == 0`` (default) the
-  seed is irrelevant; with ``noise > 0`` a Gaussian term with that
-  sigma is added to each *objective* metric (never to ``wall_clock_s``
-  or ``routed``), drawn from an RNG seeded by the canonical string
-  ``"{scenario}|seed={seed}|{knobs json}"`` — same inputs, same noise,
-  no wall-clock randomness anywhere.
-* **Scoring math**: regret is ``|best_found - global_opt|`` in
-  objective space. Hypervolume is the 2D staircase area dominated by
-  the non-dominated points up to the documented reference point
-  (110, 110) — 2D only, which covers both shipped multi-objective
-  metrics; >2 objectives would need a real HV algorithm.
-  ``front_hypervolume`` and ``distance_to_front`` are computed against
-  the analytic front sampled at 1001 points (a documented
-  approximation; the sampling error is far below any decision
-  threshold).
+Metrics are a pure function of scenario, knobs and seed. A run that does not route reports ``routed = false`` with ``outcome.status`` still ``success``.
 """
 
 from __future__ import annotations
@@ -91,11 +34,11 @@ _FRONT_SAMPLES = 1001
 
 @dataclass(frozen=True)
 class KnobSpec:
-    """One mockflow knob: EDA-flavored name, typed domain, cost layer."""
+    """One mockflow knob: name, typed domain, default and cost layer."""
 
     name: str
     type: str  # "float" | "int" | "choice"
-    layer: str  # "source" | "flow" | "impl" (schema knob layer enum)
+    layer: str  # "source" | "flow" | "impl"
     default: Any
     lo: float | None = None  # numeric types
     hi: float | None = None
@@ -117,13 +60,9 @@ class KnobSpec:
 
 @dataclass(frozen=True)
 class Scenario:
-    """A named synthetic landscape: knobs, metrics, cliffs — all declarative.
+    """A named synthetic landscape.
 
-    ``infeasible_when`` is a tuple of categorical combinations (knob
-    name -> required choice); a run matching *all* entries of any one
-    combination reports ``routed = false`` with objectives omitted.
-    The first numeric knob of a multi-objective scenario is the
-    benchmark's ``x1`` (position is meaningful — see ``_zdt1``).
+    A run matching every entry of any ``infeasible_when`` combination (knob name to choice) reports ``routed = false`` and no objective metrics. In a multi-objective scenario the first numeric knob is the benchmark's ``x1``.
     """
 
     name: str
@@ -205,7 +144,7 @@ SCENARIOS: dict[str, Scenario] = {
 
 
 def get_scenario(name: str) -> Scenario:
-    """Look up a scenario; unknown names fail with the known list."""
+    """Look up a scenario; an unknown name raises with the list of scenarios."""
 
     scenario = SCENARIOS.get(name)
     if scenario is None:
@@ -222,11 +161,9 @@ def get_scenario(name: str) -> Scenario:
 
 
 def resolve_knobs(scenario: Scenario, values: dict[str, Any]) -> dict[str, Any]:
-    """Validate agent-provided knob values and fill defaults.
+    """Validate knob values and fill defaults.
 
-    Unknown knob names, type mismatches, out-of-range numerics, and
-    unknown choices all fail loudly with the allowed domain. Float
-    knobs accept ints and are canonicalized to float.
+    Raises on unknown knobs, type mismatches, out-of-range numbers and unknown choices. Float knobs accept ints and are converted to float.
     """
 
     specs = {spec.name: spec for spec in scenario.knobs}
@@ -284,13 +221,18 @@ def _canonical_default(spec: KnobSpec) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# landscapes (benchmark functions dressed as EDA metrics)
+# landscapes
 # ---------------------------------------------------------------------------
 
 
 def _rastrigin_objectives(
     scenario: Scenario, knobs: dict[str, Any]
 ) -> dict[str, float]:
+    """Return ``wns_ns = -f(x) / 10`` (maximize), where ``f`` is Rastrigin.
+
+    Each numeric knob maps linearly onto ``[-5.12, 5.12]``. The optimum ``wns_ns = 0.0`` is at the numeric-knob midpoints, and categorical knobs do not affect it.
+    """
+
     xs = [
         (2.0 * _unit(spec, knobs[spec.name]) - 1.0) * _RASTRIGIN_BOUND
         for spec in _numeric_specs(scenario)
@@ -300,6 +242,11 @@ def _rastrigin_objectives(
 
 
 def _zdt1_objectives(scenario: Scenario, knobs: dict[str, Any]) -> dict[str, float]:
+    """Return ``lut_pct = 100 * f1`` and ``delay_ns = 10 * f2`` (both minimized) from ZDT1.
+
+    Numeric knobs map onto ``[0, 1]``; the first is ``x1 = f1``, the rest set ``g = 1 + 9 * mean(x_2..x_n)`` and ``f2 = g * (1 - sqrt(f1 / g))``. The front is ``delay_ns = 10 * (1 - sqrt(lut_pct / 100))``, reached when every other numeric knob is at its minimum.
+    """
+
     numeric = _numeric_specs(scenario)
     x = [_unit(spec, knobs[spec.name]) for spec in numeric]
     f1 = x[0]
@@ -319,6 +266,11 @@ def _infeasible(scenario: Scenario, knobs: dict[str, Any]) -> bool:
 
 
 def _wall_clock_s(scenario: Scenario, knobs: dict[str, Any]) -> float:
+    """Return 60 s plus 600, 240 or 60 s for each source, flow or impl knob that differs from its default.
+
+    The metric has a unit but no direction, so it joins Pareto dominance only through ``--metrics``.
+    """
+
     cost = WALL_CLOCK_BASE_S
     for spec in scenario.knobs:
         if knobs[spec.name] != _canonical_default(spec):
@@ -333,13 +285,9 @@ def evaluate(
     seed: int = 0,
     noise: float = 0.0,
 ) -> dict[str, Any]:
-    """Evaluate one knob vector; instant, deterministic, EDA-dressed.
+    """Evaluate one knob vector and return ``{scenario, knobs, routed, metrics, metric_meta}``.
 
-    Returns ``{scenario, knobs, routed, metrics, metric_meta}`` where
-    ``knobs`` is the fully resolved absolute knob state (defaults
-    filled). Infeasible categorical combinations report
-    ``routed = false`` and omit the objective metrics; ``wall_clock_s``
-    is always present (you paid for the run either way).
+    ``knobs`` has defaults filled. An infeasible combination omits the objective metrics; ``wall_clock_s`` is always present. With ``noise > 0``, Gaussian noise of that sigma is added to each objective, seeded from the scenario, seed and knobs.
     """
 
     scenario = get_scenario(scenario_name)
@@ -387,11 +335,7 @@ def _midpoint(spec: KnobSpec) -> float | int:
 
 
 def optimum_knobs(scenario_name: str) -> dict[str, Any]:
-    """The documented global-optimum knob vector (single-objective only).
-
-    Numeric knobs at their range midpoint (the Rastrigin x=0 mapping),
-    categorical knobs at their (feasible) defaults.
-    """
+    """Return the global-optimum knob vector: numeric knobs at their midpoints, categorical knobs at their defaults."""
 
     scenario = get_scenario(scenario_name)
     return {
@@ -411,7 +355,7 @@ def zdt1_front(n: int = _FRONT_SAMPLES) -> list[tuple[float, float]]:
 
 
 def ground_truth(scenario_name: str) -> dict[str, Any]:
-    """The analytic optimum (single-obj) / Pareto front (multi-obj)."""
+    """Return the analytic optimum (single-objective) or Pareto front (multi-objective)."""
 
     scenario = get_scenario(scenario_name)
     if scenario.name == "rastrigin":
@@ -453,7 +397,7 @@ def ground_truth(scenario_name: str) -> dict[str, Any]:
 
 
 def scenario_info(scenario_name: str) -> dict[str, Any]:
-    """The ``rb xplr mock info`` payload for one scenario."""
+    """Return the ``rb xplr mock info`` payload."""
 
     scenario = get_scenario(scenario_name)
     return {
@@ -476,20 +420,16 @@ def scenario_info(scenario_name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# experiment-record integration (reuses the P1 register/attach paths)
+# experiment-record integration
 # ---------------------------------------------------------------------------
 
 
 def register_doc(
     scenario_name: str, provided: dict[str, Any], resolved: dict[str, Any]
 ) -> dict[str, Any]:
-    """Build the ``rb xplr register`` manifest for one mockflow run.
+    """Build the ``rb xplr register`` manifest for one run.
 
-    Only knobs the agent explicitly provided enter the knob manifest,
-    each recorded as ``from = <scenario default>`` (mockflow keeps no
-    per-agent history); ``config_snapshot`` carries the scenario name
-    plus the full resolved absolute knob state, which is also what
-    ``mock score`` keys on.
+    Only explicitly provided knobs enter the manifest, each with ``from`` set to the scenario default. ``config_snapshot`` holds the scenario name and the resolved knobs, which ``mock score`` uses.
     """
 
     scenario = get_scenario(scenario_name)
@@ -511,15 +451,9 @@ def register_doc(
 
 
 def outcome_doc(result: dict[str, Any]) -> dict[str, Any]:
-    """Build the ``rb xplr attach-outcome`` document for one evaluation.
+    """Build a valid ``attach-outcome --json`` document for one evaluation.
 
-    Shaped exactly as a valid ``attach-outcome --json`` input, and
-    exposed verbatim as the ``outcome`` member of the ``mock run``
-    machine payload so a stateless evaluation can be piped straight
-    into ``attach-outcome``. ``status`` is always ``"success"`` — the
-    synthetic flow ran to completion; an infeasible point is
-    ``routed: false``, not a failure (the agent may override ``status``
-    with its own judgment before attaching).
+    It is also the ``outcome`` member of the ``mock run`` payload. ``status`` is always ``success``; an infeasible point is ``routed: false``.
     """
 
     return {
@@ -532,7 +466,7 @@ def outcome_doc(result: dict[str, Any]) -> dict[str, Any]:
 def is_mockflow_record(
     record: ExperimentRecord, scenario_name: str | None = None
 ) -> bool:
-    """True if the record was produced by ``rb xplr mock run --register``."""
+    """Return True if the record was produced by ``rb xplr mock run --register``."""
 
     tools = record.provenance.tools
     if tools is ABSENT or not any(t.name == TOOL_NAME for t in tools):
@@ -546,7 +480,7 @@ def is_mockflow_record(
 
 
 def mockflow_scenarios(records: list[ExperimentRecord]) -> list[str]:
-    """The scenarios with at least one mockflow experiment in the ledger."""
+    """Return the scenarios that have a mockflow experiment in the ledger."""
 
     return sorted(
         {r.config_snapshot["scenario"] for r in records if is_mockflow_record(r)}
@@ -554,18 +488,18 @@ def mockflow_scenarios(records: list[ExperimentRecord]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# scoring (pure math; 2D-only hypervolume — documented limitation)
+# scoring (hypervolume is 2D only)
 # ---------------------------------------------------------------------------
 
 
 def _dominates_2d(a: tuple[float, float], b: tuple[float, float]) -> bool:
-    """a dominates b under minimization of both coordinates."""
+    """Return True if ``a`` dominates ``b`` when minimizing both coordinates."""
 
     return a[0] <= b[0] and a[1] <= b[1] and (a[0] < b[0] or a[1] < b[1])
 
 
 def nondominated_2d(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Non-dominated subset (min/min), deduplicated, sorted by f1."""
+    """Return the deduplicated non-dominated subset (min/min), sorted by f1."""
 
     unique = sorted(set(points))
     return [p for p in unique if not any(_dominates_2d(q, p) for q in unique if q != p)]
@@ -574,12 +508,9 @@ def nondominated_2d(points: list[tuple[float, float]]) -> list[tuple[float, floa
 def hypervolume_2d(
     points: list[tuple[float, float]], ref: tuple[float, float]
 ) -> float:
-    """Staircase area dominated by ``points`` up to ``ref`` (min/min).
+    """Return the area dominated by ``points`` up to ``ref`` (min/min).
 
-    Points not strictly better than the reference point in both
-    coordinates contribute nothing. 2D only — enough for every shipped
-    multi-objective scenario; more objectives would need a real
-    hypervolume algorithm.
+    Points not strictly better than ``ref`` in both coordinates contribute nothing.
     """
 
     eligible = [p for p in points if p[0] < ref[0] and p[1] < ref[1]]
@@ -596,7 +527,7 @@ def hypervolume_2d(
 def distance_to_front(
     points: list[tuple[float, float]], front: list[tuple[float, float]]
 ) -> float:
-    """Mean min Euclidean distance of ``points`` to the sampled front."""
+    """Return the mean Euclidean distance from each point to its nearest sampled front point."""
 
     return sum(min(math.dist(p, q) for q in front) for p in points) / len(points)
 
@@ -606,11 +537,7 @@ def score_records(
 ) -> dict[str, Any]:
     """Score the ledger's mockflow experiments against the ground truth.
 
-    Single-objective: regret of the best found point. Multi-objective:
-    hypervolume of the found non-dominated set vs the documented
-    reference point, normalized by the analytic front's hypervolume,
-    plus mean distance-to-front. Raises when the ledger holds no
-    mockflow experiment for the scenario.
+    Single-objective: regret of the best point. Multi-objective: hypervolume against reference point (110, 110), normalized by the analytic front's, and mean distance to the front (sampled at 1001 points). Raises when the ledger has no experiment for the scenario.
     """
 
     scenario = get_scenario(scenario_name)

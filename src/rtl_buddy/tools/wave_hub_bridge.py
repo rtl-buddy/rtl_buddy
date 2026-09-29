@@ -1,26 +1,6 @@
-"""Bridges the ``rb wave`` WCP listener to the rtl-buddy-hub.
+"""Bridges the `rb wave` WCP listener to the rtl-buddy hub.
 
-When ``rb wave`` runs inside a project that has a live hub, this
-adapter registers as the ``wave``-origin client and shuttles
-information in both directions:
-
-  surfer  ── WCP event ─►  bridge  ── hub event ─►  viewer + nvim
-  viewer  ── hub req  ─►  bridge  ── WCP cmd  ─►  surfer
-
-The bridge opens its own TCP connection to the hub (separate from the
-WCP listener's connection to surfer) and runs in a dedicated thread.
-The existing ``rb wave`` codebase is threaded, so a sync TCP + reader
-thread matches the existing style; no asyncio runs inside the wave
-adapter.
-
-Discovery is per-project per §4.2 of the protocol spec:
-
-* honour ``$RTL_BUDDY_HUB`` (``host:port``) when present,
-* otherwise walk up from CWD looking for ``.rtl-buddy/hub.json``.
-
-When no hub is reachable, :func:`maybe_connect_bridge` returns
-``None`` and ``rb wave`` continues standalone — the spec's "graceful
-degradation" requirement.
+Registers as the ``wave`` client of the project's hub, translates WCP events from Surfer into hub events, and hub requests into WCP commands. It uses its own TCP connection and reader thread. When no hub is reachable, :func:`maybe_connect_bridge` returns None and `rb wave` runs standalone.
 """
 
 from __future__ import annotations
@@ -75,20 +55,16 @@ WAVE_CAPABILITIES: tuple[str, ...] = (
     "wave_values_changed",
 )
 
-# Maximum wall-time the bridge will wait on a query_variable_values
-# response before giving up on a cursor-driven sample. Short by design
-# — surfer's WCP is in-process and a query against a handful of
-# variables typically returns in <10 ms; anything longer than this and
-# the user has scrubbed past the sample point anyway.
+# Wait for a cursor-driven query_variable_values reply; a slower one is stale.
 QUERY_TIMEOUT_SECONDS = 1.0
 
 
 class WaveHubBridgeError(Exception):
-    """Raised on unrecoverable bridge setup errors (kept narrow on purpose)."""
+    """Raised on bridge connect or handshake failure."""
 
 
 def _parse_hub_addr(spec: str) -> tuple[str, int]:
-    """Parse ``host:port`` (the ``$RTL_BUDDY_HUB`` form, also ``hub.json.tcp``)."""
+    """Parse ``host:port`` as in ``$RTL_BUDDY_HUB`` or ``hub.json``."""
 
     host, _, port_s = spec.rpartition(":")
     if not host or not port_s:
@@ -100,11 +76,9 @@ def _parse_hub_addr(spec: str) -> tuple[str, int]:
 
 
 def _discover_hub_addr(*, project_root: Path | None) -> tuple[str, int] | None:
-    """Resolve the hub address per §4.2 lookup order.
+    """Return the hub address from ``$RTL_BUDDY_HUB``, else from ``.rtl-buddy/hub.json`` found by walking up from ``project_root`` or CWD.
 
-    Order:
-    1. ``$RTL_BUDDY_HUB`` env var.
-    2. Walk up from ``project_root`` (or CWD) for ``.rtl-buddy/hub.json``.
+    Returns None when there is no live hub.
     """
 
     env = env_override()
@@ -139,19 +113,9 @@ def _discover_hub_addr(*, project_root: Path | None) -> tuple[str, int] | None:
 
 
 class WaveHubBridge:
-    """Owns the bridge connection between ``rb wave`` and the hub.
+    """The connection between `rb wave` and the hub.
 
-    Constructed by :func:`maybe_connect_bridge`; the constructor is for
-    tests that want to inject a pre-connected socket.
-
-    Thread model:
-    * The constructor connects + runs the hello/welcome handshake on
-      the calling thread.
-    * :meth:`start` launches the bridge reader thread.
-    * :meth:`on_wcp_event` is called from the WCP listener thread to
-      translate outbound WCP events into hub events.
-    * :meth:`stop` signals exit, attempts a polite ``bye``, closes the
-      socket, and joins the reader thread.
+    Build it with :func:`maybe_connect_bridge`; the constructor takes an already-connected socket. :meth:`start` launches the reader thread, :meth:`on_wcp_event` is called from the WCP listener thread, and :meth:`stop` sends ``bye``, closes the socket and joins the reader.
     """
 
     def __init__(
@@ -167,16 +131,9 @@ class WaveHubBridge:
         self._stop = threading.Event()
         self._send_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
-        # Hierarchy strings the user has asked surfer to track via
-        # ``wave_add_variables``. ``query_variable_values`` only returns
-        # data for variables whose signal payload has been loaded — which
-        # the add_variables flow guarantees. The set is the
-        # working-cache for cursor-driven re-sampling.
+        # Variables added via wave_add_variables, re-sampled on cursor moves.
         self._tracked_variables: list[str] = []
-        # Single-in-flight gate for cursor-driven queries. Cursor
-        # scrubbing fires at ~60 Hz; one outstanding round-trip is enough
-        # to keep the viewer painted, and dropping the rest avoids
-        # piling up queries surfer can't process faster than they arrive.
+        # At most one cursor-driven query in flight; scrubbing fires faster than surfer answers.
         self._query_in_flight = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -191,9 +148,9 @@ class WaveHubBridge:
         listener: SurferWcpListener,
         client_version: str = "0.1.0",
     ) -> "WaveHubBridge":
-        """Open a TCP connection, run hello/welcome, return the bridge.
+        """Connect to the hub, run the hello/welcome handshake and return the bridge.
 
-        Raises :class:`WaveHubBridgeError` on connect / handshake failure.
+        Raises :class:`WaveHubBridgeError` on connect or handshake failure.
         """
 
         try:
@@ -249,8 +206,7 @@ class WaveHubBridge:
     def start(self) -> None:
         if self._reader_thread is not None:
             return
-        # Wire the listener observer first so we never miss an event
-        # between thread start and the listener loop entering ``run()``.
+        # Set the observer before the thread starts so no event is missed.
         self._listener.event_observer = self.on_wcp_event
         thread = threading.Thread(
             target=self._read_loop, daemon=True, name="hub-bridge-reader"
@@ -265,7 +221,6 @@ class WaveHubBridge:
             return
         self._stop.set()
 
-        # Best-effort polite bye, then close.
         try:
             bye = Envelope(
                 origin=Origin.WAVE,
@@ -291,11 +246,11 @@ class WaveHubBridge:
             self._reader_thread = None
 
     # ------------------------------------------------------------------
-    # outbound — WCP → hub
+    # outbound: WCP to hub
     # ------------------------------------------------------------------
 
     def on_wcp_event(self, event_name: str, msg: dict) -> None:
-        """Called from the WCP listener thread per relevant WCP event."""
+        """Translate one WCP event into a hub event (WCP listener thread)."""
 
         if self._stop.is_set():
             return
@@ -316,12 +271,7 @@ class WaveHubBridge:
                 type=envelope.type,
                 error=str(exc),
             )
-        # Cursor-driven wave-values producer. Runs AFTER the
-        # cursor_time_changed broadcast so peers always see the cursor
-        # advance before the new values land — without this ordering,
-        # a fast worker thread can race ahead and emit
-        # wave_values_changed first, which looks wrong in event logs
-        # even though the viewer's merge semantics are identical.
+        # Start the values producer only after cursor_time_changed is sent, so peers see the cursor move first.
         if event_name == "cursor_moved":
             ts = msg.get("timestamp")
             if (
@@ -342,11 +292,6 @@ class WaveHubBridge:
             ts = msg.get("timestamp")
             if not isinstance(ts, int):
                 return None
-            # NB: the cursor-driven ``wave_values_changed`` producer is
-            # kicked off in :meth:`on_wcp_event` AFTER the
-            # ``cursor_time_changed`` envelope has been sent, so peers
-            # see cursor-move-then-values rather than the other way
-            # around. See the matching block there.
             return Envelope(
                 origin=Origin.WAVE,
                 kind=Kind.EVENT,
@@ -382,7 +327,7 @@ class WaveHubBridge:
         return None
 
     # ------------------------------------------------------------------
-    # inbound — hub → WCP
+    # inbound: hub to WCP
     # ------------------------------------------------------------------
 
     def _read_loop(self) -> None:
@@ -422,8 +367,6 @@ class WaveHubBridge:
     def _handle_inbound(self, env: Envelope) -> None:
         if env.kind is Kind.REQUEST:
             self._handle_request(env)
-        # Hub-side events (selection_changed from view, source_focused from
-        # src, etc.) are not surfer-actionable in v1; logged at DEBUG.
         elif env.kind is Kind.EVENT and env.type != "bye":
             log_event(
                 logger,
@@ -432,7 +375,6 @@ class WaveHubBridge:
                 type=env.type,
                 origin=env.origin.value,
             )
-        # responses / errors → unused in v1, just log.
         elif env.kind in (Kind.RESPONSE, Kind.ERROR):
             log_event(
                 logger,
@@ -480,19 +422,10 @@ class WaveHubBridge:
                 "variables": variables,
             }
         )
-        # Wait for surfer's WCP response so we can pass ids + not_found back
-        # to the hub caller (typically `rb hub send wave-add`). Surfer's WCP
-        # has no request IDs but responses arrive in send order per-command,
-        # so the listener uses a per-command FIFO of waiters. On timeout we
-        # fall back to an optimistic empty reply rather than fail the call —
-        # the bridge has run for years without this round-trip.
+        # On timeout, reply with an empty id list rather than fail.
         resp = self._listener.await_response("add_variables", timeout=2.0)
         reply_payload = self._build_add_reply(resp)
-        # Update the tracked-variables cache so cursor-driven
-        # ``wave_values_changed`` queries (below) target the set the
-        # user actually cares about. Track only the variables surfer
-        # resolved — querying for paths that came back in ``not_found``
-        # would just waste a round-trip.
+        # Track only variables surfer resolved.
         not_found_set = set()
         if isinstance(resp, dict):
             nf = resp.get("not_found")
@@ -528,7 +461,7 @@ class WaveHubBridge:
         )
 
     def _handle_set_viewport(self, env: Envelope) -> None:
-        """Pan the surfer viewport to center on a timestamp (zoom unchanged)."""
+        """Center the viewport on a timestamp without changing zoom."""
         payload = env.payload if isinstance(env.payload, dict) else {}
         t_fs = payload.get("t_fs")
         if not isinstance(t_fs, str) or not t_fs:
@@ -549,7 +482,7 @@ class WaveHubBridge:
         )
 
     def _handle_zoom_to_range(self, env: Envelope) -> None:
-        """Zoom + pan to fit ``[start_fs, end_fs]`` in surfer's viewport."""
+        """Zoom and pan to fit ``[start_fs, end_fs]``."""
         payload = env.payload if isinstance(env.payload, dict) else {}
         start_fs = payload.get("start_fs")
         end_fs = payload.get("end_fs")
@@ -575,10 +508,8 @@ class WaveHubBridge:
         )
 
     def _handle_zoom_to_fit(self, env: Envelope) -> None:
-        """Zoom out surfer's viewport to fit the entire waveform."""
-        # WCP's zoom_to_fit takes a viewport_idx; surfer only opens viewport 0
-        # in the wcp-initiate flow, so hard-code that until we expose a second
-        # viewport from the hub.
+        """Zoom out to fit the whole waveform."""
+        # surfer opens only viewport 0 under --wcp-initiate.
         self._drive_ack(
             env,
             {"type": "command", "command": "zoom_to_fit", "viewport_idx": 0},
@@ -590,12 +521,7 @@ class WaveHubBridge:
         scope = payload.get("wave_scope")
         if not isinstance(scope, str) or not scope:
             return self._reply_bad_request(env, "missing wave_scope")
-        # surfer's `set_scope` (rtl-buddy fork PR #6) navigates the active
-        # scope without mutating the displayed item list — the right
-        # semantics for "follow source-focus" tinting. Best-effort ack: an
-        # explicit surfer rejection (e.g. unknown scope) is now propagated
-        # back to the requesting peer as a hub error; a missing reply still
-        # resolves as ok so a slow/old surfer doesn't stall scope-follow.
+        # set_scope changes the active scope without editing the item list.
         self._drive_ack(
             env,
             {"type": "command", "command": "set_scope", "scope": scope},
@@ -603,25 +529,18 @@ class WaveHubBridge:
         )
 
     # ------------------------------------------------------------------
-    # inbound — wave-view item management (list / remove / move / comment)
+    # inbound: wave-view item management
     # ------------------------------------------------------------------
 
     WCP_REPLY_TIMEOUT = 2.0
-    """Wall-time the bridge waits on a surfer WCP reply for a hub-driven
-    command before treating it as no-reply. Surfer's WCP is in-process and
-    acks in well under this; the budget is generous for a loaded design."""
+    """Seconds to wait for a surfer reply to a hub-driven command."""
 
     def _drive_ack(self, env: Envelope, frame: dict[str, Any], *, strict: bool) -> bool:
-        """Send an ack-returning WCP command and report genuine status back.
+        """Send a WCP command and reply to the hub with surfer's ack status.
 
-        ``strict=True`` turns a no-reply into a hub error (the caller needs
-        confirmation — destructive / structural commands). ``strict=False``
-        is best-effort: an explicit surfer ``error`` is still surfaced as a
-        hub error, but a missing reply resolves as ``{"ok": true}`` so the
-        high-frequency navigation commands never stall on a dropped ack.
+        A surfer ``error`` becomes a hub error. With ``strict=True`` a missing reply is also a hub error; otherwise it resolves as ``{"ok": true}``.
 
-        Returns ``True`` when an ``{"ok": true}`` response was sent, ``False``
-        when a hub error was sent instead.
+        Returns True when ``ok`` was sent, False when an error was sent.
         """
         self._send_to_surfer(frame)
         reply = self._listener.await_reply({"ack"}, timeout=self.WCP_REPLY_TIMEOUT)
@@ -643,8 +562,7 @@ class WaveHubBridge:
         return True
 
     def _fetch_item_ids(self) -> list[int] | None:
-        """Return surfer's current displayed-item ids, or ``None`` on
-        no-reply / surfer error."""
+        """Return the ids of the items in surfer's view, or None on no reply or a surfer error."""
         self._send_to_surfer({"type": "command", "command": "get_item_list"})
         reply = self._listener.await_reply(
             {"get_item_list"}, timeout=self.WCP_REPLY_TIMEOUT
@@ -655,7 +573,7 @@ class WaveHubBridge:
         return [i for i in ids if isinstance(i, int)] if isinstance(ids, list) else []
 
     def _handle_get_items(self, env: Envelope) -> None:
-        """List the items currently in surfer's view (get_item_list + info)."""
+        """Reply with the items in surfer's view."""
         self._send_to_surfer({"type": "command", "command": "get_item_list"})
         list_reply = self._listener.await_reply(
             {"get_item_list"}, timeout=self.WCP_REPLY_TIMEOUT
@@ -690,13 +608,7 @@ class WaveHubBridge:
     def _build_items(results: Any) -> list[dict[str, Any]]:
         """Translate surfer ``get_item_info`` results into hub item dicts.
 
-        surfer reports item kinds capitalised (``Variable``, ``Divider``,
-        ``Marker``, ``Group``, …); they are normalised to lower-case here so
-        the hub exposes a stable ``variable | divider | marker | group | …``
-        vocabulary regardless of surfer's internal casing. For a variable
-        whose name is a dotted hierarchy path, the leading scope is split
-        out into the optional ``scope`` field so a consumer can address it
-        without re-parsing.
+        Item types are lower-cased. A variable with a dotted name also gets a ``scope`` field.
         """
         items: list[dict[str, Any]] = []
         if not isinstance(results, list):
@@ -724,11 +636,9 @@ class WaveHubBridge:
         return items
 
     def _handle_remove_items(self, env: Envelope) -> None:
-        """Remove items by id, reporting which were actually removed.
+        """Remove items by id and report ``removed`` and ``not_found``.
 
-        surfer's ``remove_items`` acks unconditionally and silently ignores
-        unknown ids, so the bridge diffs the item list before/after to
-        report genuine ``removed`` / ``not_found`` sets to the caller.
+        surfer acks unknown ids, so the two sets come from diffing the item list before and after.
         """
         payload = env.payload if isinstance(env.payload, dict) else {}
         ids = payload.get("ids")
@@ -765,7 +675,7 @@ class WaveHubBridge:
         )
 
     def _handle_move_items(self, env: Envelope) -> None:
-        """Reorder items: move ids so the block starts at to_index."""
+        """Move the given ids so the block starts at ``to_index``."""
         payload = env.payload if isinstance(env.payload, dict) else {}
         ids = payload.get("ids")
         to_index = payload.get("to_index")
@@ -789,7 +699,7 @@ class WaveHubBridge:
         )
 
     def _handle_add_comments(self, env: Envelope) -> None:
-        """Add comment rows (named dividers) to the view; return their ids."""
+        """Add comments as named dividers and reply with their ids."""
         payload = env.payload if isinstance(env.payload, dict) else {}
         texts = payload.get("texts")
         if (
@@ -823,10 +733,9 @@ class WaveHubBridge:
         self._reply_response(env, type_=env.type, payload={"ids": out_ids})
 
     def _produce_wave_values(self, native_timestamp: int) -> None:
-        """Sample every tracked variable at the cursor and broadcast.
+        """Sample every tracked variable at the cursor and broadcast the values.
 
-        Runs on a daemon thread; the in-flight gate is released before
-        return so the next cursor_moved can spawn its own worker.
+        Runs on a daemon thread and releases the in-flight gate on exit.
         """
 
         try:
@@ -838,21 +747,14 @@ class WaveHubBridge:
                     "type": "command",
                     "command": "query_variable_values",
                     "variables": variables,
-                    # No timestamp → surfer samples at its current
-                    # cursor. The cursor_moved event we're responding
-                    # to means CursorSet has already landed, so this
-                    # matches the event's timestamp by construction
-                    # and avoids re-sending the value the bridge just
-                    # received in the event payload.
+                    # No timestamp: surfer samples at its current cursor.
                 }
             )
             resp = self._listener.await_response(
                 "query_variable_values", timeout=QUERY_TIMEOUT_SECONDS
             )
             if resp is None:
-                # Either surfer didn't reply in time or the WCP socket
-                # dropped. Either way we just skip this sample; the
-                # next cursor_moved will retry.
+                # Skip this sample; the next cursor move retries.
                 log_event(
                     logger,
                     logging.DEBUG,
@@ -881,25 +783,12 @@ class WaveHubBridge:
     def _wave_values_envelope(
         self, resp: dict, fallback_native_ts: int
     ) -> Envelope | None:
-        """Translate a surfer ``query_variable_values`` response into the
-        hub's ``wave_values_changed`` event envelope.
+        """Translate a surfer ``query_variable_values`` response into a ``wave_values_changed`` envelope.
 
-        ``fallback_native_ts`` is the native-tick timestamp from the
-        cursor_moved event that triggered this query — used when the
-        response doesn't carry a parsable ``timestamp`` (defensive; the
-        new surfer command always sets one).
+        ``fallback_native_ts`` is the triggering cursor_moved timestamp, used when the response has no parsable one.
         """
 
-        # surfer serializes the response timestamp as a decimal string
-        # (see surfer-wcp proto.rs). The cursor_moved event uses an
-        # integer in native ticks. The hub-side ``t_fs`` envelope wants
-        # a decimal string in *fs* — so we have to convert through
-        # surfer's tick → fs mapping, which the bridge doesn't track
-        # explicitly. Instead, reuse the cursor_moved event's timestamp
-        # (already in surfer-native ticks) since the new surfer command
-        # samples at-cursor and the two values agree by construction.
-        # If a future caller passes an explicit ``timestamp`` to the
-        # query, we re-derive from the response.
+        # Timestamps stay in surfer-native ticks; the bridge does no tick-to-fs conversion.
         ts_raw = resp.get("timestamp")
         native_ts: int
         if isinstance(ts_raw, str):
@@ -924,10 +813,7 @@ class WaveHubBridge:
             if not isinstance(variable, str) or "." not in variable:
                 continue
             if not isinstance(value, str):
-                # value is null when the variable has no transition
-                # before the sample point. Drop from the broadcast so
-                # the viewer's "absent signals retain prior values"
-                # semantics keep painting whatever was last known.
+                # null: no transition before the sample point. Omit it so the viewer keeps the last value.
                 continue
             scope, _, signal = variable.rpartition(".")
             if not scope or not signal:
@@ -944,10 +830,9 @@ class WaveHubBridge:
 
     @staticmethod
     def _build_add_reply(resp: dict | None) -> dict:
-        """Translate surfer's WCP add_* response into the hub reply payload.
+        """Translate surfer's add_* response into the hub reply payload.
 
-        ``not_found`` is surfaced only when present and non-empty so older
-        surfer binaries (no not_found field) keep the legacy shape.
+        ``not_found`` is included only when non-empty.
         """
         if resp is None:
             return {"ids": []}
@@ -1037,14 +922,7 @@ class WaveHubBridge:
         )
 
     def _reply_surfer_error(self, env: Envelope, err_msg: dict) -> None:
-        """Translate a surfer WCP ``error`` frame into a hub error reply.
-
-        surfer's error carries ``error`` (a short tag, usually the command
-        name), ``arguments``, and a human ``message``. We map it to the
-        hub's ``bad_request`` code — a surfer rejection means the request
-        couldn't be applied (unknown id, illegal move, unknown scope) — and
-        preserve the surfer detail in ``context``.
-        """
+        """Reply with a ``bad_request`` hub error carrying the surfer error's tag and arguments in ``context``."""
         message = (
             err_msg.get("message")
             or err_msg.get("error")
@@ -1066,12 +944,7 @@ def maybe_connect_bridge(
     project_root: Path | None = None,
     client_version: str = "0.1.0",
 ) -> WaveHubBridge | None:
-    """Discover the project hub and connect a bridge, or ``None``.
-
-    The return value is the live bridge (with the reader thread
-    running) when a hub was reachable. ``None`` means "no hub for this
-    project / standalone mode" — the spec's graceful-degradation path.
-    """
+    """Connect to the project hub and return the running bridge, or None for standalone mode when no hub is reachable."""
 
     addr = _discover_hub_addr(project_root=project_root)
     if addr is None:

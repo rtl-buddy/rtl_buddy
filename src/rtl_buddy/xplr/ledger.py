@@ -1,20 +1,6 @@
-"""Ledger layout primitives for ``rb xplr`` — no CLI surface.
+"""On-disk ledger layout for ``rb xplr``: one ``artefacts/xplr/<exp-id>/record.json`` per experiment.
 
-The ledger is one directory per experiment under the project's artefact
-tree::
-
-    artefacts/xplr/<exp-id>/record.json
-
-``record.json`` is the canonical P0 experiment record (see
-:mod:`rtl_buddy.xplr.schema`); later phases add per-experiment flow
-artifacts next to it. Experiment ids auto-increment: ``exp-0001``,
-``exp-0002``, ... — :func:`next_id` scans existing directory names so
-ids stay unique even if a run died before writing its record.
-
-All functions take the ledger root :class:`~pathlib.Path` explicitly;
-:func:`ledger_root` derives it from an
-:class:`~rtl_buddy.exec_context.ExecutionContext` using the standard
-``artifact_dir`` convention.
+Functions take the ledger root explicitly; :func:`ledger_root` derives it from an execution context.
 """
 
 from __future__ import annotations
@@ -33,15 +19,12 @@ from .schema import ExperimentRecord, dumps_record, loads_record
 logger = logging.getLogger(__name__)
 
 LEDGER_DIRNAME = "xplr"
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+# Defined in `tools.artifact_paths` so the artefact-clearing helpers can protect it.
 from ..tools.artifact_paths import (  # noqa: E402
     XPLR_RECORD_NAME as RECORD_FILENAME,
 )
 
-# Non-experiment dirs that legitimately live under the ledger root: the
-# default cfg-xplr worktree-root is artefacts/xplr/worktrees/ (P2).
+# Non-experiment directories under the ledger root.
 RESERVED_DIRNAMES = ("worktrees",)
 
 _AUTO_ID_RE = re.compile(r"^exp-(\d{4,})$")
@@ -49,24 +32,22 @@ _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def ledger_root(exec_ctx: ExecutionContext) -> Path:
-    """Return the ledger root (``artefacts/xplr``) for an execution context."""
+    """Return the ledger root (``artefacts/xplr``)."""
 
     return exec_ctx.artifact_dir(LEDGER_DIRNAME)
 
 
 def record_path(root: Path, exp_id: str) -> Path:
-    """Return ``<root>/<exp_id>/record.json`` (validates the id shape)."""
+    """Return ``<root>/<exp_id>/record.json``; raises on an invalid id."""
 
     _check_id(exp_id)
     return root / exp_id / RECORD_FILENAME
 
 
 def next_id(root: Path) -> str:
-    """Return the next auto-increment experiment id (``exp-NNNN``).
+    """Return the next experiment id (``exp-NNNN``).
 
-    Scans every entry under ``root`` matching ``exp-NNNN`` — with or
-    without a ``record.json`` — so an experiment directory created by a
-    crashed run still reserves its number.
+    Counts every ``exp-NNNN`` directory, with or without a record.
     """
 
     highest = 0
@@ -79,17 +60,14 @@ def next_id(root: Path) -> str:
 
 
 def write_record(root: Path, record: ExperimentRecord) -> Path:
-    """Validate + write ``record`` to ``<root>/<id>/record.json`` atomically.
+    """Validate ``record`` and write it atomically to ``<root>/<id>/record.json``.
 
-    The canonical serialization is written to a same-directory temp file
-    then ``os.replace``d into place, so readers never observe a partial
-    record. Returns the record path.
+    Returns the record path.
     """
 
     path = record_path(root, record.id)
     text = dumps_record(record)
-    # dumps_record serializes without validating; re-parse so a record
-    # mutated into an invalid state fails loudly before touching disk.
+    # dumps_record does not validate; re-parse to reject an invalid record before writing.
     loads_record(text)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{RECORD_FILENAME}.tmp.{os.getpid()}")
@@ -103,10 +81,9 @@ def write_record(root: Path, record: ExperimentRecord) -> Path:
 
 
 def read_record(root: Path, exp_id: str) -> ExperimentRecord:
-    """Load + validate ``<root>/<exp_id>/record.json``.
+    """Load and validate ``<root>/<exp_id>/record.json``.
 
-    Raises :class:`FatalRtlBuddyError` if the record is missing,
-    malformed JSON, or fails schema validation.
+    Raises :class:`FatalRtlBuddyError` if the record is missing, malformed or invalid.
     """
 
     path = record_path(root, exp_id)
@@ -123,12 +100,9 @@ def read_record(root: Path, exp_id: str) -> ExperimentRecord:
 
 
 def list_records(root: Path) -> list[ExperimentRecord]:
-    """Return every valid record under ``root``, sorted by experiment id.
+    """Return every record under ``root``, sorted by id.
 
-    Experiment directories without a ``record.json`` (e.g. from a
-    crashed run) are skipped with a warning rather than failing the
-    whole listing; an invalid record still raises, since it means the
-    ledger contract was broken.
+    Directories without a ``record.json`` are skipped with a warning; an invalid record raises.
     """
 
     if not root.is_dir():

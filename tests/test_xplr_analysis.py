@@ -1,13 +1,6 @@
-"""Contract tests for the rb xplr P3 analysis surface (#299).
+"""Tests for `rb xplr` frontier, diff and knob-effect through the machine-mode JSON envelope, using hand-built ledgers.
 
-frontier / diff / knob-effect, exercised against hand-built fixture
-ledgers through the machine-mode JSON envelope — the same contract the
-agent consumes. The Pareto cases use the primer example: with both
-metrics minimized, A(40,9.0) G(50,7.0) B(55,6.0) C(70,5.0) F(85,4.8)
-are non-dominated while D(60,8.0) and E(45,9.5) are dominated.
-
-The git-diff part of ``rb xplr diff`` is tested against two real
-commits made in a tmp git repo; everything else needs no git at all.
+The Pareto cases use a fixed landscape (both metrics minimized) where A, B, C, F and G are non-dominated and D and E are dominated. The git part of `rb xplr diff` runs against two commits in a temporary repository.
 """
 
 from __future__ import annotations
@@ -33,7 +26,7 @@ def _run(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture,
 ) -> tuple[int, str, str]:
-    """Run one rb invocation through RtlBuddy.run(); return (code, out, err)."""
+    """Run one rb invocation through RtlBuddy.run() and return (code, out, err)."""
     rb = RtlBuddy(name="test_xplr_analysis")
     monkeypatch.setattr(sys, "argv", ["rb", *argv])
     try:
@@ -71,7 +64,7 @@ def _git(root: Path, *args: str) -> str:
 
 @pytest.fixture
 def git_project(minimal_project: Path) -> Path:
-    """minimal_project turned into a clean git repo (artefacts gitignored)."""
+    """Return minimal_project as a clean git repo with artefacts ignored."""
     (minimal_project / ".gitignore").write_text("artefacts/\nrtl_buddy.log\n")
     _git(minimal_project, "init", "-q", "-b", "main", ".")
     _git(minimal_project, "add", "-A")
@@ -108,7 +101,7 @@ def _record(
 
 def _write_ledger(project: Path, records: list[dict]) -> None:
     for record in records:
-        validate_record(record)  # fixtures must honour the P0 contract
+        validate_record(record)
         path = project / "artefacts" / "xplr" / record["id"] / "record.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(record, indent=2) + "\n")
@@ -338,7 +331,7 @@ def test_frontier_bad_inputs_exit_2(minimal_project: Path, monkeypatch, capsys):
 def test_error_envelope_reports_full_subcommand(
     minimal_project: Path, monkeypatch, capsys
 ):
-    """Exit-2 envelopes name the subcommand, matching the success path."""
+    """Exit-2 envelopes name the subcommand, as success envelopes do."""
     _write_ledger(minimal_project, _primer_records())
 
     code, out, _ = _run(
@@ -582,7 +575,7 @@ def test_knob_effect_history_with_parent_deltas(
 def test_knob_effect_typo_gets_known_knobs_and_suggestions(
     minimal_project: Path, monkeypatch, capsys
 ):
-    """A knob declared nowhere exits 0 with empty effects + correction hints."""
+    """A knob declared nowhere exits 0 with empty effects and correction hints."""
     _write_ledger(minimal_project, _effect_chain())
     payload = _machine(["xplr", "knob-effect", "rtl.DEPHT"], monkeypatch, capsys)
     assert payload["knob"] == "rtl.DEPHT"
@@ -630,8 +623,7 @@ def test_xplr_help_lists_analysis_commands():
 
     from typer.testing import CliRunner
 
-    # CI terminals (GitHub Actions) get rich help with ANSI styling that
-    # splits option tokens; strip escapes before substring asserts.
+    # Rich help in CI splits option tokens with ANSI escapes; strip them first.
     ansi = re.compile(r"\x1b\[[0-9;]*m")
     rb = RtlBuddy(name="test_xplr_analysis_help")
     result = CliRunner().invoke(rb.app, ["xplr", "--help"])

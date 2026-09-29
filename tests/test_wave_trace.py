@@ -37,7 +37,7 @@ def test_newest_trace_falls_back_to_vcd(tmp_path):
 
 
 def test_newest_trace_picks_newest_mtime(tmp_path):
-    # Both present — follow whichever builder ran last (newest mtime wins).
+    # Both present: the newest mtime wins.
     _touch(tmp_path / "dump.fst", mtime=1000)
     _touch(tmp_path / "dump.vcd", mtime=2000)
     assert newest_trace(str(tmp_path)) == str(tmp_path / "dump.vcd")
@@ -67,7 +67,7 @@ def test_prepare_passes_fst_through(tmp_path):
 def test_prepare_passes_vcd_through_without_postproc(tmp_path):
     vcd = str(tmp_path / "dump.vcd")
     _touch(tmp_path / "dump.vcd")
-    # Surfer reads VCD natively, so no conversion when wave_format is unset.
+    # No conversion when wave_format is unset.
     assert prepare_surfer_trace(vcd, None, "basic") == vcd
 
 
@@ -102,7 +102,7 @@ def test_prepare_fst_postproc_falls_back_when_tool_missing(tmp_path, monkeypatch
     vcd = str(tmp_path / "dump.vcd")
     _touch(tmp_path / "dump.vcd")
     monkeypatch.setattr(wave_launcher_module.shutil, "which", lambda _: None)
-    # No vcd2fst on PATH → return the VCD unchanged (Surfer reads it anyway).
+    # No vcd2fst on PATH: the VCD is returned unchanged.
     assert prepare_surfer_trace(vcd, "fst-postproc", "basic") == vcd
 
 
@@ -110,7 +110,7 @@ def test_prepare_fst_postproc_uses_cache(tmp_path, monkeypatch):
     vcd = str(tmp_path / "dump.vcd")
     fst = str(tmp_path / "dump.fst")
     _touch(tmp_path / "dump.vcd", mtime=1000)
-    _touch(tmp_path / "dump.fst", mtime=2000)  # fst newer than vcd → cached
+    _touch(tmp_path / "dump.fst", mtime=2000)  # An FST newer than the VCD is reused.
 
     def _boom(*a, **k):
         raise AssertionError("vcd2fst should not run when cache is fresh")

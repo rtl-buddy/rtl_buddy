@@ -1,9 +1,6 @@
-"""End-to-end tests for ``WaveHubBridge`` against a real HubServer.
+"""End-to-end tests for `WaveHubBridge` against a real HubServer.
 
-The bridge runs in a worker thread, connects to a live asyncio hub
-running in another thread, and we drive the WCP-side events through
-its public observer hook. A fake ``SurferWcpListener`` stand-in
-captures the WCP commands the bridge would send to surfer.
+The bridge runs in a worker thread against a hub in another thread, WCP events are driven through the bridge's observer hook, and a fake `SurferWcpListener` records the commands sent to surfer.
 """
 
 from __future__ import annotations
@@ -28,21 +25,15 @@ from rtl_buddy.tools.wave_hub_bridge import (
 
 
 class _FakeListener:
-    """Captures `send_to_surfer` calls; mirrors the listener observer hook."""
+    """Records `send_to_surfer` calls and exposes the listener observer hook."""
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.event_observer = None
-        # Pre-stage WCP responses by command name. Tests can push expected
-        # response dicts onto these queues to drive the bridge through
-        # the new await_response correlation path. Default behaviour
-        # (empty queue) returns None — the bridge then falls back to
-        # the optimistic empty reply as if surfer never answered.
+        # Staged await_response results by command name; an empty queue returns None.
         self.next_responses: dict[str, list[dict | None]] = {}
-        # Pre-stage await_reply outcomes per WCP command name. Each entry is
-        # a ("response", msg) or ("error", msg) tuple, or None for a timeout.
-        # Ack-returning commands (set_cursor, move_items, remove_items, ...)
-        # are keyed under "ack". Empty queue → None (no surfer reply).
+        # Staged await_reply results by command name: ("response", msg), ("error", msg) or None for a timeout.
+        # Ack-returning commands are keyed under "ack". An empty queue returns None.
         self.next_replies: dict[str, list[tuple[str, dict] | None]] = {}
 
     def send_to_surfer(self, frame: dict) -> None:
@@ -70,12 +61,7 @@ class _FakeListener:
 
 
 class _HubInThread:
-    """Spin a HubServer on a dedicated asyncio loop in a thread.
-
-    The bridge uses sync TCP; the hub is asyncio. Running the hub in a
-    background thread is the cleanest way to exercise both from one
-    test process.
-    """
+    """Run a HubServer on its own asyncio loop in a background thread."""
 
     def __init__(self) -> None:
         self.server: HubServer | None = None
@@ -106,11 +92,7 @@ class _HubInThread:
                 self.started.set()
                 raise
             finally:
-                # Drain pending tasks before close. Python 3.12's
-                # asyncio surfaces "RuntimeError: Event loop is closed"
-                # from transport finalisers that fire against a closed
-                # loop; without this, neighbouring fixtures' teardowns
-                # in the same pytest session can fail flakily.
+                # Drain pending tasks first; otherwise transport finalisers raise "Event loop is closed" in later fixtures.
                 try:
                     pending = asyncio.all_tasks(loop)
                     for t in pending:
@@ -138,10 +120,7 @@ class _HubInThread:
             future.result(timeout=5.0)
         except Exception:
             pass
-        # Same race as in test_hub_send_cli.py: the runner thread can
-        # close the loop in its finally block before we manage to
-        # schedule loop.stop here. Treat the closed-loop RuntimeError
-        # as "already stopped" — which is exactly what we wanted.
+        # The runner thread may already have closed the loop.
         try:
             self.loop.call_soon_threadsafe(self.loop.stop)
         except RuntimeError:
@@ -294,14 +273,9 @@ def _recv_line(sock) -> Envelope:
 
 
 class _Recv:
-    """Buffered envelope receiver that preserves bytes past the first ``\\n``.
+    """Envelope receiver that keeps bytes read past the first newline.
 
-    The plain ``_recv_line`` helper discards post-newline data — that's
-    safe when each test expects exactly one envelope per cursor_moved /
-    request, but the wave-values producer emits two envelopes
-    back-to-back per ``cursor_moved`` and TCP coalesces them into a
-    single recv on slower hosts (notably CI). This class keeps the
-    leftover bytes between reads so the second envelope isn't dropped.
+    ``_recv_line`` drops them, which loses the second of two envelopes that TCP delivers in one recv.
     """
 
     def __init__(self, sock):
@@ -378,15 +352,14 @@ def test_goto_declaration_becomes_signal_selected(hub_in_thread: _HubInThread):
 
 
 def test_malformed_wcp_event_is_dropped(hub_in_thread: _HubInThread):
-    """Bridge swallows malformed events rather than crashing the WCP thread."""
+    """A malformed event is dropped without raising."""
 
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
     try:
-        # No timestamp field — bridge translates to None and drops.
+        # No timestamp field.
         bridge.on_wcp_event("cursor_moved", {})
-        # No exception, no message — success.
     finally:
         bridge.stop()
 
@@ -414,9 +387,9 @@ def test_wave_add_variables_translates_to_wcp_command(hub_in_thread: _HubInThrea
         resp = _recv_line(view_sock)
         assert resp.kind is Kind.RESPONSE
         assert resp.id == req.id
-        # No surfer response staged → bridge falls back to optimistic empty reply.
+        # No surfer response staged: the reply has empty ids.
         assert resp.payload == {"ids": []}
-        # And the bridge translated the request into a WCP command.
+        # The request became a WCP command.
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline and not listener.sent:
             time.sleep(0.02)
@@ -433,10 +406,7 @@ def test_wave_add_variables_translates_to_wcp_command(hub_in_thread: _HubInThrea
 
 
 def test_wave_add_variables_forwards_ids_and_not_found(hub_in_thread: _HubInThread):
-    """When surfer answers add_variables with ids + not_found, the bridge
-    surfaces both back to the hub caller. This is what makes `rb hub send
-    wave-add path1 path2` actually useful — without it, the cli can't tell
-    a typo from a valid-but-resolved path."""
+    """The reply to add_variables carries surfer's ids and not_found."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_responses["add_variables"] = [
@@ -470,10 +440,7 @@ def test_wave_add_variables_forwards_ids_and_not_found(hub_in_thread: _HubInThre
 def test_wave_set_scope_no_reply_acks_best_effort(
     hub_in_thread: _HubInThread,
 ):
-    """When surfer sends no reply (e.g. an older build that doesn't ack
-    set_scope), the best-effort handler still resolves {"ok": True} so the
-    scope-follow path never stalls. An explicit surfer error is propagated
-    instead — see test_wave_set_scope_surfer_error_propagates."""
+    """With no surfer reply, set_scope still resolves {"ok": True}; an explicit surfer error is propagated instead."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
@@ -532,7 +499,7 @@ def test_wave_set_cursor_translates_to_wcp_command(hub_in_thread: _HubInThread):
 
 
 def test_wave_set_viewport_translates_to_wcp_command(hub_in_thread: _HubInThread):
-    """`wave_set_viewport { t_fs }` → WCP `set_viewport_to { timestamp }`."""
+    """`wave_set_viewport { t_fs }` becomes WCP `set_viewport_to { timestamp }`."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
@@ -568,8 +535,7 @@ def test_wave_set_viewport_translates_to_wcp_command(hub_in_thread: _HubInThread
 
 
 def test_wave_zoom_to_range_translates_to_wcp_command(hub_in_thread: _HubInThread):
-    """`wave_zoom_to_range { start_fs, end_fs }` → WCP
-    `set_viewport_range { start, end }`."""
+    """`wave_zoom_to_range { start_fs, end_fs }` becomes WCP `set_viewport_range { start, end }`."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
@@ -606,7 +572,7 @@ def test_wave_zoom_to_range_translates_to_wcp_command(hub_in_thread: _HubInThrea
 
 
 def test_wave_zoom_to_fit_translates_to_wcp_command(hub_in_thread: _HubInThread):
-    """`wave_zoom_to_fit {}` → WCP `zoom_to_fit { viewport_idx: 0 }`."""
+    """`wave_zoom_to_fit {}` becomes WCP `zoom_to_fit { viewport_idx: 0 }`."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
@@ -643,10 +609,7 @@ def test_wave_zoom_to_fit_translates_to_wcp_command(hub_in_thread: _HubInThread)
 def test_wave_set_scope_translates_to_wcp_set_scope(
     hub_in_thread: _HubInThread,
 ):
-    """`wave_set_scope { wave_scope }` → WCP `set_scope { scope }` (surfer
-    rtl-buddy fork PR #6). The bridge no longer falls back to add_scope,
-    so the surfer variable panel is left alone on cross-view scope
-    navigation."""
+    """`wave_set_scope { wave_scope }` becomes WCP `set_scope { scope }` and leaves the variable panel alone."""
 
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
@@ -664,9 +627,7 @@ def test_wave_set_scope_translates_to_wcp_set_scope(
         view_sock.sendall(encode(req).encode("utf-8") + b"\n")
         resp = _recv_line(view_sock)
         assert resp.kind is Kind.RESPONSE
-        # Optimistic reply: just {"ok": True}. set_scope doesn't return
-        # ids (no items added) and the bridge doesn't await surfer's ack
-        # to keep the reply path symmetrical with set_cursor / set_viewport.
+        # No ids: set_scope adds no items.
         assert resp.payload == {"ok": True}
 
         deadline = time.monotonic() + 1.0
@@ -685,7 +646,7 @@ def test_wave_set_scope_translates_to_wcp_set_scope(
 
 
 # ---------------------------------------------------------------------------
-# wave-view item management (list / remove / move / comment)
+# wave-view item management
 # ---------------------------------------------------------------------------
 
 
@@ -702,8 +663,7 @@ def _send_request(view_sock, type_: str, payload: dict) -> Envelope:
 
 
 def test_wave_get_items_lists_view(hub_in_thread: _HubInThread):
-    """`wave_get_items` → WCP get_item_list then get_item_info; the bridge
-    flattens surfer's ItemInfo rows into {id, type, name(, scope)}."""
+    """`wave_get_items` sends get_item_list then get_item_info and returns {id, type, name(, scope)} rows."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_replies["get_item_list"] = [
@@ -751,7 +711,7 @@ def test_wave_get_items_lists_view(hub_in_thread: _HubInThread):
 
 
 def test_wave_get_items_empty_view_skips_info(hub_in_thread: _HubInThread):
-    """An empty item list short-circuits — no get_item_info round-trip."""
+    """An empty item list skips get_item_info."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_replies["get_item_list"] = [
@@ -771,9 +731,9 @@ def test_wave_get_items_empty_view_skips_info(hub_in_thread: _HubInThread):
 
 
 def test_wave_get_items_no_surfer_reply_errors(hub_in_thread: _HubInThread):
-    """No reply from surfer → hub error (the caller needs the data)."""
+    """No reply from surfer yields a hub error."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
-    listener = _FakeListener()  # nothing staged → await_reply returns None
+    listener = _FakeListener()  # nothing staged: await_reply returns None
     bridge = WaveHubBridge.connect((host, port), listener=listener)
     bridge.start()
     view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
@@ -788,8 +748,7 @@ def test_wave_get_items_no_surfer_reply_errors(hub_in_thread: _HubInThread):
 
 
 def test_wave_remove_items_reports_removed_and_not_found(hub_in_thread: _HubInThread):
-    """Diff the item list before/after to report genuine removed vs
-    not_found, since surfer's remove_items acks unconditionally."""
+    """removed and not_found come from diffing the item list before and after, because surfer acks unknown ids."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     # before: [3, 5, 9]; remove_items ack; after: [3, 9]
@@ -820,8 +779,7 @@ def test_wave_remove_items_reports_removed_and_not_found(hub_in_thread: _HubInTh
 
 
 def test_wave_move_items_translates_to_wcp_command(hub_in_thread: _HubInThread):
-    """`wave_move_items { ids, to_index }` → WCP move_items { ids,
-    target_index }, strict ack → {"ok": True}."""
+    """`wave_move_items { ids, to_index }` becomes WCP move_items { ids, target_index } and requires a surfer ack."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_replies["ack"] = [
@@ -849,8 +807,7 @@ def test_wave_move_items_translates_to_wcp_command(hub_in_thread: _HubInThread):
 
 
 def test_wave_move_items_surfer_error_propagates(hub_in_thread: _HubInThread):
-    """A surfer error frame (e.g. unknown id / illegal move) becomes a hub
-    error reply — this is the genuine success/error reporting requirement."""
+    """A surfer error frame (unknown id, illegal move) becomes a hub error reply."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_replies["ack"] = [
@@ -880,8 +837,7 @@ def test_wave_move_items_surfer_error_propagates(hub_in_thread: _HubInThread):
 
 
 def test_wave_add_comments_returns_ids(hub_in_thread: _HubInThread):
-    """`wave_add_comments { texts }` → WCP add_dividers { names }, returning
-    the new item ids."""
+    """`wave_add_comments { texts }` becomes WCP add_dividers { names } and returns the new item ids."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_replies["add_dividers"] = [
@@ -913,9 +869,7 @@ def test_wave_add_comments_returns_ids(hub_in_thread: _HubInThread):
 
 
 def test_wave_set_scope_surfer_error_propagates(hub_in_thread: _HubInThread):
-    """Best-effort handlers still surface an explicit surfer error: an
-    unknown-scope rejection now comes back as a hub error instead of a
-    false {"ok": True}."""
+    """A best-effort handler still returns an explicit surfer error (unknown scope) as a hub error, not {"ok": True}."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_replies["ack"] = [
@@ -965,12 +919,10 @@ def _send_wave_add(view_sock, variables: list[str]) -> Envelope:
 def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
     hub_in_thread: _HubInThread,
 ):
-    """End-to-end producer: viewer adds variables → cursor moves → bridge
-    queries surfer → ``wave_values_changed`` lands on the bus."""
+    """A viewer adds variables, the cursor moves, and ``wave_values_changed`` reaches the bus."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
-    # Stage surfer's add_variables response so the bridge can record the
-    # variables as ``tracked``. ids/not_found shape matches surfer's PR #3.
+    # add_variables response: the variables become tracked.
     listener.next_responses["add_variables"] = [
         {
             "type": "response",
@@ -979,9 +931,7 @@ def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
             "not_found": [],
         }
     ]
-    # Stage surfer's query_variable_values response so the cursor-driven
-    # query has something to translate. timestamp echoes back as a
-    # decimal string per surfer PR #7's wire shape.
+    # query_variable_values response; surfer sends the timestamp as a decimal string.
     listener.next_responses["query_variable_values"] = [
         {
             "type": "response",
@@ -999,41 +949,33 @@ def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
     view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
     rx = _Recv(view_sock)
     try:
-        # Step 1: viewer adds variables. Wait for the reply so we know
-        # the bridge has finished updating its tracked-vars cache before
-        # we fire the cursor_moved.
+        # Wait for the reply so the variables are tracked before the cursor moves.
         req = _send_wave_add(view_sock, ["tb.dut.q", "tb.dut.clk"])
         ack = rx.next()
         assert ack.id == req.id
 
-        # Step 2: drive a cursor_moved through the WCP observer hook.
         bridge.on_wcp_event(
             "cursor_moved",
             {"type": "event", "event": "cursor_moved", "timestamp": 12500000},
         )
 
-        # First envelope on the bus: cursor_time_changed (synchronous
-        # translation on the listener thread).
+        # cursor_time_changed arrives first.
         env_cursor = rx.next()
         assert env_cursor.type == "cursor_time_changed"
         assert env_cursor.payload == {"t_fs": "12500000"}
 
-        # Second envelope: wave_values_changed, produced by the daemon
-        # thread that issued the query. The fake listener pops the
-        # staged response immediately, so this should arrive promptly.
+        # wave_values_changed follows, from the query thread.
         env_values = rx.next()
         assert env_values.type == "wave_values_changed"
         assert env_values.origin is Origin.WAVE
         assert env_values.payload["t_fs"] == "12500000"
         values = env_values.payload["values"]
-        # Order matches surfer's response order (which mirrors the
-        # request, which is the order add_variables saw).
+        # Order follows the add_variables request.
         assert values == [
             {"wave_scope": "tb.dut", "signal": "q", "value": "1"},
             {"wave_scope": "tb.dut", "signal": "clk", "value": "0"},
         ]
 
-        # And the bridge actually sent the query to surfer.
         query_sent = next(
             (
                 cmd
@@ -1056,8 +998,7 @@ def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
 def test_cursor_moved_without_tracked_variables_skips_query(
     hub_in_thread: _HubInThread,
 ):
-    """Until any wave_add_variables has happened, cursor moves don't
-    pay a WCP round-trip — there's nothing to sample."""
+    """Without tracked variables, a cursor move sends no query to surfer."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
@@ -1067,17 +1008,13 @@ def test_cursor_moved_without_tracked_variables_skips_query(
             "cursor_moved",
             {"type": "event", "event": "cursor_moved", "timestamp": 9000},
         )
-        # cursor_time_changed still lands (the user wants the cursor
-        # marker to track regardless of value plumbing).
+        # cursor_time_changed is still sent.
         env_cursor = _recv_line(view_sock)
         assert env_cursor.type == "cursor_time_changed"
-        # But no query went to surfer — the listener's sent log is empty.
-        # Give any spurious worker thread time to act so we're not
-        # racing with it.
+        # Give a spurious worker thread time to act before checking.
         time.sleep(0.05)
         assert listener.sent == []
-        # And the bus only ever saw the cursor_time_changed envelope
-        # (no wave_values_changed broadcast).
+        # No wave_values_changed follows.
         view_sock.settimeout(0.2)
         with pytest.raises((TimeoutError, OSError, BlockingIOError)):
             _recv_line(view_sock)
@@ -1087,11 +1024,7 @@ def test_cursor_moved_without_tracked_variables_skips_query(
 
 
 def test_wave_values_changed_drops_null_values(hub_in_thread: _HubInThread):
-    """Per the surfer protocol, ``value: null`` means the variable
-    resolved but has no transition before the sample point. The bridge
-    must filter those out so the viewer's last-known-value cache
-    survives — otherwise a freshly-loaded design would clobber static
-    Phase-8 snapshots with empty strings."""
+    """A ``value: null`` (no transition before the sample point) is omitted from the broadcast."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_responses["add_variables"] = [
@@ -1115,8 +1048,8 @@ def test_wave_values_changed_drops_null_values(hub_in_thread: _HubInThread):
     rx = _Recv(view_sock)
     try:
         req = _send_wave_add(view_sock, ["tb.dut.q", "tb.dut.preset"])
-        _ = rx.next()  # ack — id matches req
-        assert req.id  # silence linter on unused-binding
+        _ = rx.next()  # ack
+        assert req.id
 
         bridge.on_wcp_event(
             "cursor_moved",
@@ -1125,7 +1058,7 @@ def test_wave_values_changed_drops_null_values(hub_in_thread: _HubInThread):
         _ = rx.next()  # cursor_time_changed
         env = rx.next()
         assert env.type == "wave_values_changed"
-        # Only the populated row appears; preset (value=null) is gone.
+        # The null-valued preset is omitted.
         assert env.payload["values"] == [
             {"wave_scope": "tb.dut", "signal": "q", "value": "1"},
         ]
@@ -1137,9 +1070,7 @@ def test_wave_values_changed_drops_null_values(hub_in_thread: _HubInThread):
 def test_add_variables_not_found_paths_are_not_tracked(
     hub_in_thread: _HubInThread,
 ):
-    """Variables that surfer reports in ``not_found`` shouldn't be added
-    to the tracked-variables cache — querying them on every cursor_moved
-    would just waste a round-trip producing no values."""
+    """Variables in surfer's ``not_found`` are not tracked."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     listener.next_responses["add_variables"] = [
@@ -1150,9 +1081,6 @@ def test_add_variables_not_found_paths_are_not_tracked(
             "not_found": ["tb.dut.bogus"],
         }
     ]
-    # If the bridge mistakenly tracked the bogus path, the cursor-driven
-    # query would include it. Stage a response that asserts on the
-    # variables list it's actually queried for.
     listener.next_responses["query_variable_values"] = [
         {
             "type": "response",
@@ -1187,8 +1115,7 @@ def test_add_variables_not_found_paths_are_not_tracked(
             None,
         )
         assert query_sent is not None
-        # The bogus path is gone — only the resolved variable made it
-        # into the cursor-driven query.
+        # Only the resolved variable is queried.
         assert query_sent["variables"] == ["tb.dut.real_signal"]
     finally:
         view_sock.close()
