@@ -23,9 +23,9 @@ Use the graph for transitive impact through elaborated hierarchy, paths that cro
 - Narrow a build with a repeatable `--model NAME` or with `-c/--regression FILE`. The two are mutually exclusive.
 - `--no-design`, `--no-tb`, `--no-flow-tops`, `--no-bind` and `--no-extract` skip individual parts; `--force` ignores the cache. See the [CLI reference](../reference/cli.md#graph).
 
-A build has three tiers: the design hierarchy from `rtl-buddy-view`, the declarations in rtl_buddy configs, and bindings (cocotb, Python imports, signal access, golden models, DPI). An optional external binding tier is added when `rtl-buddy-graph-extract` is installed.
+A build has three tiers: the design hierarchy from `rtl-buddy-view`, the declarations in rtl_buddy configs, and bindings (cocotb, Python imports, signal access, golden models, DPI). An optional external binding tier is added when `rtl-buddy-graph-extract` is installed; without it that tier is `skipped` and the graph stays usable.
 
-The design tier needs a compatible `rtl-buddy-view`; check it with `rb tool-check --explain rtl-buddy-view`. A tier whose tool is missing is `skipped` and the graph stays usable; a requested tier that breaks is `failed`. Per-model failures make the command exit non-zero only with `--strict`. `graph-meta.json` records each tier's status and failures.
+The design tier needs a compatible `rtl-buddy-view`; check it with `rb tool-check --explain rtl-buddy-view`. A missing or incompatible `rtl-buddy-view` makes the design tier `failed`. Per-model failures make the command exit non-zero only with `--strict`. `graph-meta.json` records each tier's status and failures.
 
 ## Cached builds
 
@@ -35,15 +35,14 @@ A build with the same inputs, tool versions and tier selection does nothing. A c
 
 The design tier elaborates each model from its `top:`, which defaults to the model name. If no module has that name (an SV `interface` published as a library entry, a filelist of vendored IP), set `top:` to the real root module or set `graph: false` in [`models.yaml`](../reference/yaml.md#modelsyaml).
 
-- A `graph: false` model is listed under the design tier's `skipped` entries, never `failures`, and does not change the exit code even with `--strict`. If every model in scope opts out, the whole tier is `skipped`.
-- Its cocotb testbenches and synth, CDC and FPGA runs that would elaborate the same root are skipped with it.
-- Opting out a model exported earlier deletes its `artefacts/graph/design/<model>/` directory, so no stale hierarchy is served.
-- The config tier keeps a node for the model, so `spec:` and test references resolve, but adds no edge into the design tier. A model outside the `--model` or `-c` selection is treated the same way.
+- A `graph: false` model is listed under the design tier's `skipped` entries, not `failures`, and does not change the exit code even with `--strict`. If every model in scope opts out, the whole tier is `skipped`.
+- Its cocotb testbenches and synth, CDC and FPGA runs that would elaborate the same root are skipped with it, and a hierarchy exported earlier is deleted.
+- The model keeps its config-tier node, so `spec:` and test references resolve, but it has no edge into the design tier. A model outside the `--model` or `-c` selection is treated the same way.
 - `rb hier`, `rb hier-query` and `rb axi-profile` ignore `graph: false`.
 
 ## Model names and tops must be distinct
 
-Every selected model needs a distinct `name`, and every exported model needs a distinct top module, because `module:<top>` is a global node id. `graph build` refuses a violation before running the exporter and names both models and both `models.yaml` files. Rename one of two models with the same name; `graph: false` does not help. For two models with the same top, give one a different `top:` or set `graph: false` on it.
+Every selected model needs a distinct `name`, and every exported model needs a distinct top module. `graph build` refuses a violation and names both models and both `models.yaml` files. Rename one of two models with the same name; `graph: false` does not help. For two models with the same top, give one a different `top:` or set `graph: false` on it.
 
 ## Query the graph
 
@@ -59,7 +58,7 @@ rb graph explain test:verif/demo_tiny_alu#flags
 - `path` returns shortest paths. Traversal is undirected by default, because edge direction expresses role, not reachability. Pass `--directed` when direction matters.
 - `explain` returns one node's attributes, edges, test result, coverage entry, and, for instance nodes, a command that cites the source.
 
-A bare name works only when it identifies one node; otherwise the command fails with the candidate ids. `query` exits 1 when nothing matches, and an invalid or ambiguous node reference exits 2. The verbs take no write lock and can run during a regression. Pass `--no-results` for a structural-only answer.
+A bare name works only when it identifies one node; otherwise the command fails with the candidate ids. `query` exits 1 when nothing matches, and an invalid or ambiguous node reference exits 2. The verbs can run during a regression. Pass `--no-results` for a structural-only answer.
 
 With `--machine` each verb emits the standard [machine envelope](../agents.md#machine-mode). Truncation metadata reports neighbours cut off by bounded expansion; raise the limit or explain a specific peer rather than assuming the result is complete.
 
@@ -99,18 +98,17 @@ Each coverage item gets one state:
 | `declared-only` | The item was declared but no matched point fired. |
 | `observed-but-undeclared` | An observed cover point has no `covers:` declaration. |
 
-Names match exactly first, then case-insensitively, then after normalisation, then with a `cov`/`cvr`/`c` affix removed. The overlay records which rule matched; an `affix` match is a prompt to align the names. LCOV has no module or per-test identity, so it joins design coverage by source file only. Unresolved paths are reported, not guessed.
+Names match exactly first, then case-insensitively, then after normalisation, then with a `cov`/`cvr`/`c` affix removed. The overlay records which rule matched; an `affix` match is a prompt to align the names. LCOV has no module or per-test identity, so design coverage joins by source file, and any available per-test databases still feed test badges and coverage-item verdicts. Unresolved paths are reported, not guessed.
 
 ## Physical Heat on the Graph
 
 The `/gph` pane can fill module nodes with the physical model that `rb synth` and `rb power` write, the same data as the [`/phy` pane](phys.md#browse-the-model-in-the-hub).
 
-- Tick `heat` in the header. The model loads on the first tick, because a mapped design's power data is megabytes.
-- `metric` offers `cells`, `area`, `leakage`, `dynamic` and `total`. `run` selects the artefact directory; `/gph?dir=<phys dir>` opens the pane on one run.
-- A run the server refuses (no manifest, or outside the project) leaves the current model and shows the refusal in the status line. A bad `?dir=` on an empty pane falls back to the newest run and says so.
+- Tick `heat` in the header. The model loads on the first tick.
+- `metric` offers `cells`, `area`, `leakage`, `dynamic` and `total`. `run` selects the artefact directory; `/gph?dir=<phys dir>` opens the pane on one run. A run the server refuses (no manifest, or outside the project) leaves the current model and shows the refusal in the status line.
 - Each node shows its value in a badge, every metric in its tooltip and the full row in the inspector. Coverage and heat share the node fill, so enabling one turns off the other.
 
-Cells and area come from a module's definition and are counted once however often it is instantiated; area already includes submodules. Power is summed over every instantiation, so eight FIFOs give one FIFO row of area and eight FIFOs' leakage. The inspector prints `instances` and `leaf rows` beside the figures. Do not add the two halves together or divide power by area. Power is attributed by instance path, so an incomplete design tier degrades it; see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows).
+Cells and area are counted once per module definition; power is summed over every instantiation. Do not add cells or area to power, and do not divide power by area. Power is attributed by instance path, so an incomplete design tier degrades it; see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows).
 
 A `phys-focus` from a script turns heat on, loads the model if needed, and highlights the node:
 
@@ -165,17 +163,9 @@ Graph, test-status, coverage, physical-metrics and hierarchy tools mirror their 
 | `config` | Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, and golden models. |
 | `binding` | Python modules, imports, cocotb-to-DUT and signal bindings, golden-model checks, and DPI implementations. |
 
-Node ids, which you pass to `path` and `explain`:
+Node ids you pass to `path` and `explain`: `module:<name>`, `inst:<top>/<dot.path>`, `port:<module>.<port>`, `test:<suite dir>#<name>`, `tb:<suite dir>#<name>`, `model:<models.yaml>#<name>`, `spec:<block>`, `covitem:<block>#<id>`, `py:<path>`. Use `explain` on a node to see its edges.
 
-- Design: `module:<name>`, `inst:<top>/<dot.path>`, `port:<module>.<port>`, `param:<module>.<name>`, `iface:<name>`, `modport:<interface>.<name>`.
-- Config: `suite:<suite dir>`, `test:<suite dir>#<name>`, `tb:<suite dir>#<name>`, `model:<models.yaml>#<name>`, `spec:<block>`, `covitem:<block>#<id>`, `doc:<path>`, `golden:<path>`.
-- Binding: `py:<path>`.
-
-Edge types:
-
-- Design: `instantiates`, `child_of`, `instance_of`, `connects`, `implements`, `overrides`.
-- Config: `declares` (suite to test or testbench, spec block to coverage item), `runs_on` (test to testbench), `exercises` (testbench or run to model), `covers` (test or formal run to coverage item), `specified_by` and `documented_by` (traceability), `maps_to` (model to module), `elaborates_as` and `targets` (testbench or run to its top module).
-- Binding: `binds_to`, `imports`, `drives`, `checks_against`, `implemented_by`. `drives` and `implemented_by` can be `INFERRED`; an unresolved match has `resolved: false`.
+Edges relate a suite to its tests, a test to its testbench and coverage items, a testbench or run to its model and top module, a spec block to its coverage items, and a Python module to the DUT signals it drives or checks. `drives` and `implemented_by` can be `INFERRED`; an unresolved match has `resolved: false`.
 
 Results, seeds and timestamps live only in the overlay. `graph.json` is plain JSON; NetworkX is optional:
 
@@ -199,12 +189,12 @@ Build errors:
 Build warnings (the build continues):
 
 - `graph_build.design_export_failed`, `tb_export_failed`, `run_export_failed`: `rtl-buddy-view graph` failed. The event names its log; fix the elaboration error and rebuild.
-- `graph_build.extract_failed`: the external binding tier failed; the graph is built without it.
-- `graph_build.extract_merge_mismatch`: external and built-in bindings disagree. `graph-meta.json` lists examples.
-- `graph_build.tb_id_collision`: testbench ids from different suites collided and were qualified with `@<suite dir>`.
-- `graph_merge.node_type_conflict`: two tiers gave one node id different types.
 - `graph_config.regression_load_failed`, `suite_load_failed`: a regression or `tests.yaml` file did not load, so its tests are missing. Fix the file.
-- `graph_bind.cocotb_module_not_found`, `dpi_symbol_not_found`: the source for a test's cocotb module or DPI symbol was not found; the binding stays unresolved.
+- `graph_build.extract_failed`, `extract_merge_mismatch`: the external binding tier failed or disagrees with the built-in bindings; the built-in result is written. `graph-meta.json` lists examples.
+- `graph_build.tb_id_collision`: testbench ids from different suites collided and were qualified with `@<suite dir>`. Rename the duplicated module.
+- `graph_config.node_id_conflict`, `graph_merge.node_type_conflict`: one node id was claimed with two types and the first is kept. Rename one node so the id is unique.
+- `graph_bind.cocotb_module_not_found`: the test still binds to the DUT, but nothing was scanned for `dut.<signal>` accesses or golden-model imports. Create or fix the named cocotb module file.
+- `graph_bind.dpi_symbol_not_found`: the function node stays in the graph with no `implemented_by` edge. Put the C, C++ or Python DPI source under `verif/` or `spec/`.
 
 Query and overlay:
 
@@ -212,4 +202,4 @@ Query and overlay:
 - `is not valid JSON` or `is not node-link JSON`: run `rb graph build --force`.
 - `'X' matches N nodes; use a full node id`, `no node matches 'X'`: pick from the listed candidate ids.
 - `graph_results.overlay_rejected`: the overlay has the wrong type or schema version and is ignored. Rerun `rb graph results`.
-- `graph_coverage.unavailable`: the coverage source was missing or unreadable. The join is skipped and the reason is listed under `problems`.
+- `graph_coverage.unavailable`: the coverage source was missing or unreadable, so the join is skipped. When you named a source (`--cov-dir`, `--cov-manifest`, an `.info` file or `--coverage model`), the reason is listed under `problems`.

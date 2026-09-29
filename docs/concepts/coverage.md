@@ -90,9 +90,7 @@ Merged Coverage: L:0.92 B:0.95 T:FAIL F:FAIL
 Coverage merge FAILED: verilator_coverage --write wrote no merged database, so toggle, expression, functional read FAIL (measurement lost), not UNSP (not instrumented) — see the coverage.merge.failed event
 ```
 
-The run exits 1, even when every test passed. Results, the coverage model and the manifest are still written. The `coverage.merge.failed` event carries the tool's return code and output. If the cause is memory or a killed process, rerun the coverage command on a compute node instead of the submit host.
-
-Machine output, `cov_dir/manifest.json` and `rb cov` payloads report the failure as `merge_failed` and `failed_metrics`. Manifest `totals` is unaffected because it comes from the per-test databases, so check `merge_failed` before comparing it with a console summary.
+The run exits 1, even when every test passed. Results and saved coverage are still written, and the `coverage.merge.failed` event carries the tool's return code and output. If the cause is memory or a killed process, rerun the coverage command on a compute node instead of the submit host. Machine output reports the failure as `merge_failed`.
 
 ## Per-elaboration vs source-point figures
 
@@ -109,19 +107,9 @@ rtl_buddy reports both:
 - **Per elaboration** (`totals`) answers "is this point covered in every build". Use it when one compile key is what you care about.
 - **Source point** (`source_totals`) answers "is this point covered by the suite", which is how a closure target is normally stated. A point counts as covered when any elaboration hit it.
 
-Line figures are already collapsed, so the `run` and `run (source)` rows of `rb cov summary` agree on line and differ on branch, toggle, expression and cover.
+Line figures are already collapsed, so the `run` and `run (source)` rows of `rb cov summary` agree on line and differ on branch, toggle, expression and cover. `rb cov summary` shows both figures, and `--by-source` ranks the coldest files by source point. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
 
-Where each figure appears:
-
-| Surface | Figure |
-|---|---|
-| `rb cov summary` | `run` and `run (source)` rows; `--by-source` ranks the coldest files by source point |
-| `rb --machine cov summary`, MCP `cov_summary` | `source_totals` beside `totals`, per run, test and file |
-| `test` / `regression` `--coverage-source-summary` | `Coverage source points <metric>:` lines |
-| `cov_dir/manifest.json`, `cov_dir/coverage-model.json` | `source_totals` beside `totals` |
-| `--coverage-dir-summary` | per elaboration only |
-
-The directory summary is parsed from LCOV, which has already folded elaborations together, so it has no source-point form. Source points come from the coverage model, built from per-test raw `.dat` databases. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
+Source points come from the coverage model. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
 
 ## Inspect cover-property hits
 
@@ -131,14 +119,7 @@ Other simulator families omit the field. Omitted means not collected, not zero c
 
 ## Use saved coverage artefacts
 
-Every coverage run writes `<command root>/cov_dir/manifest.json`, even without merging. It records the run context, totals, tests, and paths to the raw, merged, HTML, Coverview and model artefacts. Artefacts that were not produced are `null`. `merge_mode` is `raw`, `info_process` or `null`.
-
-`cov_dir/coverage-model.json` holds the detail:
-
-- totals per elaboration (`totals`) and per source point (`source_totals`), on the run, each test and each file;
-- files and their modules;
-- line, branch, toggle, expression and cover points;
-- hit counts per test, unless the run used `--coverage-model totals`.
+Every coverage run writes `<command root>/cov_dir/manifest.json`, even without merging, and `cov_dir/coverage-model.json` with the per-file, per-module and per-point detail. `rb cov` and the hub read these; you do not need to open them.
 
 Toggle, expression and labeled cover detail need raw Verilator databases. Without them the model falls back to LCOV and holds only unnamed line and branch data.
 
@@ -146,13 +127,11 @@ Toggle, expression and labeled cover detail need raw Verilator databases. Withou
 
 Per-test attribution grows with points times tests, and for a large toggle-instrumented suite it can dominate the run's output and post-dispatch time. `--coverage-model` on `test` and `regression` chooses how much to write:
 
-| Value | `coverage-model.json` | Manifest |
-|---|---|---|
-| `full` (default) | Every point with per-test hit counts | `model` names the file |
-| `totals` | Every point and hit count, no per-test attribution | `model` names the file |
-| `none` | Not written; a model left by an earlier run is removed | `model` is `null` |
+- `full` (default): every point with per-test hit counts.
+- `totals`: every point and hit count, without per-test attribution.
+- `none`: no `coverage-model.json`; a model left by an earlier run is removed.
 
-The manifest always keeps `totals`, `source_totals` and the per-test rows, and the console summary, merges and directory and source summaries are unchanged. Use `none` for a CI job that records the suite figure and discards its artefacts:
+Console summaries, merges and the directory and source summaries are unchanged. Use `none` for a CI job that records the suite figure and discards its artefacts:
 
 ```bash
 rb -M cov regression --coverage-merge --coverage-model none
