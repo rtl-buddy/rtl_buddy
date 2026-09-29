@@ -83,7 +83,7 @@ class DummyRootCfg:
         return self.get_rtl_builder_cfg()
 
     def resolve_extra_sim_timeout(self, _rtl_builder_cfg):
-        return 0  # these tests assert on paths, not on the timeout allowance
+        return 0  # these tests do not exercise the timeout
 
     def get_use_lcov(self, _simulator_name):
         return False
@@ -292,7 +292,7 @@ def test_compile_fingerprint_stats_quoted_absolute_source(tmp_path, monkeypatch)
 
 
 def test_compile_fingerprint_degrades_on_unbalanced_quote(tmp_path, monkeypatch):
-    """A malformed quoted line stamps nulls instead of aborting."""
+    """A malformed quoted line is stamped with nulls instead of aborting."""
     sim = _make_sim(tmp_path, monkeypatch)
     sim._ensure_artifact_dir()
     run_f = Path(sim._get_filelist_path())
@@ -305,14 +305,14 @@ def test_compile_fingerprint_degrades_on_unbalanced_quote(tmp_path, monkeypatch)
 
 
 def _ver_files(obj_dir: Path) -> str:
-    """Verilator's record of every file the verilation actually consumed."""
+    """Return the contents of Verilator's record of the files it consumed."""
     ver_files_path = next(iter(sorted(obj_dir.glob("*__verFiles.dat"))), None)
     assert ver_files_path is not None, f"no *__verFiles.dat under {obj_dir}"
     return ver_files_path.read_text()
 
 
 def _nested_worktree_repro(tmp_path: Path):
-    """Build the path geometry from #457, including an ancestor with spaces."""
+    """Build a worktree nested in a project whose path contains spaces."""
     primary = tmp_path / "project with spaces"
     primary_source = primary / "design" / "dut.sv"
     primary_source.parent.mkdir(parents=True)
@@ -358,7 +358,7 @@ def _nested_worktree_repro(tmp_path: Path):
 def test_write_output_absolute_sources_blocks_nested_worktree_composition(
     tmp_path: Path,
 ):
-    """Explicit sources and search directories are both pinned (#457, #474)."""
+    """Explicit sources and search directories are both pinned to absolute paths."""
     primary_source, worktree_source, testbench, run_f = _nested_worktree_repro(tmp_path)
     output_dir = run_f.parent
     worktree = output_dir.parents[3]
@@ -366,15 +366,13 @@ def test_write_output_absolute_sources_blocks_nested_worktree_composition(
 
     assert f'-v "{worktree_source}"' in lines
     assert f'"{testbench}"' in lines
-    # The worktree sits under a directory with a space, so the pinned search
-    # directories come back quoted exactly like the pinned sources do.
+    # The path contains a space, so pinned search directories are quoted like sources.
     assert f'+incdir+"{worktree / "common"}"' in lines
     assert f'-y "{worktree / "lib"}"' in lines
     assert "+define+WIDTH=8" in lines
     assert "+libext+.sv" in lines
 
-    # Before #457, Verilator tried this composed candidate before its cwd
-    # fallback. It exists in the primary checkout, so the wrong source won.
+    # A relative entry would compose to the primary checkout's source, which Verilator tries before its cwd fallback.
     old_source_entry = os.path.relpath(worktree_source, output_dir)
     incdir_entry = next(
         line.removeprefix("+incdir+").strip('"')
@@ -387,7 +385,7 @@ def test_write_output_absolute_sources_blocks_nested_worktree_composition(
 
 @pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
 def test_verilator_compiles_nested_worktree_source_from_absolute_run_f(tmp_path: Path):
-    """The real builder consumes the worktree source, including a spaced path."""
+    """Verilator consumes the worktree source through a path with spaces."""
     primary_source, worktree_source, _testbench, run_f = _nested_worktree_repro(
         tmp_path
     )
@@ -423,25 +421,11 @@ def _nested_incdir_repro(
     scratch_artefacts: bool = False,
     library_dir: bool = True,
 ):
-    """The #474 geometry: a design filelist that owns its own include path.
+    """Build a project whose design filelist, pulled in with ``-F``, carries ``+incdir+.`` and ``-y .`` for its own directory.
 
-    ``models.yaml`` at the project root pulls ``design/blk/blk.f`` in with
-    ``-F``; that nested filelist carries ``+incdir+.`` and ``-y .`` for its
-    own directory. The consuming suite lives in an unrelated subtree, so
-    every search directory needs four ``..`` hops from ``run.f``. The
-    default root has a space in it to exercise quoting.
+    The consuming suite is in an unrelated subtree, so search directories are four ``..`` hops from ``run.f``. The default root contains a space.
 
-    ``library_dir`` off drops the ``-y .`` entry, leaving ``+incdir+`` as
-    the only way to reach the header: Verilator searches ``-y`` directories
-    for includes too, so a test that means to exercise ``+incdir+`` alone
-    has to take the library directory away.
-
-    ``scratch_artefacts`` puts the suite's ``artefacts/`` tree on a
-    different path and symlinks it into the suite — the ordinary "artefacts
-    live on scratch space" setup, and the reason ``rb test`` was exposed
-    even though it compiles with its cwd set to ``run.f``'s directory:
-    ``os.path.relpath`` collapses ``..`` textually while the builder walks
-    it physically.
+    ``library_dir=False`` drops ``-y .`` so that only ``+incdir+`` can reach the header, since Verilator also searches ``-y`` directories for includes. ``scratch_artefacts`` puts the suite's ``artefacts/`` on another path and symlinks it in, so ``relpath`` (textual) and the builder (physical) disagree about ``..``.
     """
     root = tmp_path / root_name
     (root / ".git").mkdir(parents=True)
@@ -491,17 +475,15 @@ def _nested_incdir_repro(
 def test_write_output_pins_nested_filelist_search_dirs_to_declaring_filelist(
     tmp_path: Path,
 ):
-    """``+incdir+.`` in a nested ``-F`` names the nested filelist's directory,
-    and is emitted as an absolute path so no consumer's cwd can reinterpret
-    it (#474)."""
+    """``+incdir+.`` in a nested ``-F`` names that filelist's directory and is emitted as an absolute path."""
     _root, design, suite, run_f = _nested_incdir_repro(tmp_path)
     lines = run_f.read_text().splitlines()
 
     assert f'+incdir+"{design}"' in lines
     assert f'-y "{design}"' in lines
-    # The suite-level entry is still anchored on tests.yaml, not on the model.
+    # The suite-level entry stays anchored on tests.yaml.
     assert f'+incdir+"{suite / "tb_inc"}"' in lines
-    # Nothing directory-valued is left for a consumer's cwd to reinterpret.
+    # Every search directory is absolute.
     search_dirs = [
         line.removeprefix("+incdir+").removeprefix("-y ").strip('"')
         for line in lines
@@ -512,9 +494,7 @@ def test_write_output_pins_nested_filelist_search_dirs_to_declaring_filelist(
 
 @pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
 def test_verilator_resolves_nested_incdir_from_a_foreign_cwd(tmp_path: Path):
-    """The reported failure: ``-f`` makes relative filelist entries resolve
-    against the *builder's* cwd, so a relative ``+incdir+`` silently landed on
-    the consuming directory and the header was not found (#474)."""
+    """Verilator finds the header and library module through absolute entries when run from an unrelated cwd."""
     root, design, _suite, run_f = _nested_incdir_repro(tmp_path)
     obj_dir = run_f.parent / "obj_dir"
     result = subprocess.run(
@@ -528,7 +508,7 @@ def test_verilator_resolves_nested_incdir_from_a_foreign_cwd(tmp_path: Path):
             "-f",
             str(run_f),
         ],
-        # Deliberately not run.f's own directory.
+        # Not run.f's own directory.
         cwd=root,
         capture_output=True,
         text=True,
@@ -537,7 +517,7 @@ def test_verilator_resolves_nested_incdir_from_a_foreign_cwd(tmp_path: Path):
     assert result.returncode == 0, result.stdout + result.stderr
 
     ver_files = _ver_files(obj_dir)
-    # The header came through +incdir+ and the library module through -y.
+    # The header came through +incdir+, the library module through -y.
     assert str(design / "blk_helper.svh") in ver_files
     assert str(design / "blk_lib.sv") in ver_files
 
@@ -545,10 +525,7 @@ def test_verilator_resolves_nested_incdir_from_a_foreign_cwd(tmp_path: Path):
 def test_write_output_keeps_search_dirs_relative_without_absolute_sources(
     tmp_path: Path,
 ):
-    """The other half of the contract: only the flow that opts in gets the
-    pin. Every other consumer reads its filelist back itself and resolves
-    entries against the filelist's own directory, so their spelling is
-    unchanged (#474)."""
+    """Without absolute sources, search directories stay relative to the filelist."""
     _root, design, suite, run_f = _nested_incdir_repro(tmp_path, absolute_sources=False)
     lines = run_f.read_text().splitlines()
     output_dir = run_f.parent
@@ -562,11 +539,7 @@ def test_write_output_keeps_search_dirs_relative_without_absolute_sources(
 def test_write_output_pins_search_dirs_through_a_symlinked_artefact_dir(
     tmp_path: Path,
 ):
-    """A symlink anywhere between ``run.f`` and the design is enough to
-    reproduce the report under ``rb test`` itself: it compiles with its cwd
-    set to ``run.f``'s directory, but ``relpath`` collapses ``..``
-    textually while the builder walks it physically, so the two disagree
-    (#474)."""
+    """Search directories are absolute even when a symlink lies between ``run.f`` and the design."""
     _root, design, _suite, run_f = _nested_incdir_repro(
         tmp_path, scratch_artefacts=True
     )
@@ -575,10 +548,7 @@ def test_write_output_pins_search_dirs_through_a_symlinked_artefact_dir(
     assert f'+incdir+"{design}"' in lines
     assert f'-y "{design}"' in lines
 
-    # The spelling emitted before the fix, resolved the way a process whose
-    # cwd is run.f's directory actually resolves it. It misses the design
-    # entirely — which is the "directory exists, wrong directory" trap when
-    # something else happens to sit there.
+    # A relative spelling, resolved physically from run.f's directory, misses the design.
     stale = os.path.relpath(design, run_f.parent)
     physically = os.path.join(os.path.realpath(run_f.parent), stale)
     assert not os.path.isdir(physically)
@@ -588,8 +558,7 @@ def test_write_output_pins_search_dirs_through_a_symlinked_artefact_dir(
 def test_verilator_resolves_nested_incdir_through_a_symlinked_artefact_dir(
     tmp_path: Path,
 ):
-    """Belt and braces for the symlink case, with the builder invoked the
-    way ``rb test`` invokes it: cwd is ``run.f``'s own directory (#474)."""
+    """Verilator run from ``run.f``'s directory resolves the nested include through a symlinked artefact directory."""
     _root, design, _suite, run_f = _nested_incdir_repro(
         tmp_path, scratch_artefacts=True
     )
@@ -617,10 +586,7 @@ def test_verilator_resolves_nested_incdir_through_a_symlinked_artefact_dir(
 def test_write_output_keeps_incdir_relative_when_the_path_contains_plus(
     tmp_path: Path, caplog
 ):
-    """``+incdir+`` cannot express a ``+`` in a path — every filelist parser
-    reads ``+incdir+a+b`` as two directories, and quoting does not help — so
-    such an entry keeps its relative spelling and says so. ``-y`` takes its
-    argument as a separate token and is still pinned (#474)."""
+    """An ``+incdir+`` path containing ``+`` stays relative and logs a warning; ``-y`` is still pinned."""
     with caplog.at_level(logging.WARNING, logger="rtl_buddy.tools.vlog_filelist"):
         _root, design, _suite, run_f = _nested_incdir_repro(
             tmp_path, root_name="pro+ject"
@@ -642,11 +608,8 @@ def test_write_output_keeps_incdir_relative_when_the_path_contains_plus(
 
 @pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
 def test_verilator_compiles_when_the_checkout_path_contains_plus(tmp_path: Path):
-    """The fallback is what keeps a ``+`` checkout working at all: pinning
-    such an include directory absolute would split it in two (#474)."""
-    # No `-y`: Verilator also searches library directories for includes, and
-    # `-y` is unaffected by `+`, so it would rescue the include and hide
-    # whatever the `+incdir+` entry does.
+    """Verilator compiles with a ``+`` in the checkout path."""
+    # No `-y`: Verilator would find the include through it and hide the `+incdir+` behaviour.
     _root, design, _suite, run_f = _nested_incdir_repro(
         tmp_path, root_name="pro+ject", library_dir=False
     )
@@ -668,7 +631,6 @@ def test_verilator_compiles_when_the_checkout_path_contains_plus(tmp_path: Path)
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    # Recorded relative, because the entry that found it stayed relative.
     assert "blk_helper.svh" in _ver_files(obj_dir)
 
 
@@ -910,12 +872,12 @@ def test_vlog_sim_icarus_compile_emits_dash_o_snapshot(tmp_path, monkeypatch):
     snapshot = str(tmp_path / "artefacts" / "basic" / "obj_dir_basic" / "simv.vvp")
     assert "-o" in captured["cmd"]
     assert snapshot in captured["cmd"]
-    # The wrapper script is materialized on successful compile.
+    # A successful compile writes the wrapper script.
     wrapper = Path(tmp_path / "artefacts" / "basic" / "simv")
     assert wrapper.is_file()
     assert "exec vvp" in wrapper.read_text()
     assert snapshot in wrapper.read_text()
-    # And the wrapper is executable so execute()'s existing path works.
+    # The wrapper must be executable.
     import os as _os
 
     assert _os.access(wrapper, _os.X_OK)
@@ -982,7 +944,7 @@ def test_vlog_sim_cli_builder_override_wins_over_per_test_builder(
 
 
 def test_license_marker_helpers_share_one_implementation():
-    """The live monitor and the post-hoc compile check must agree (#358)."""
+    """The live monitor and the post-compile check use the same license markers."""
     from rtl_buddy.tools import vcs_license
 
     for text in (
@@ -998,7 +960,7 @@ def test_license_marker_helpers_share_one_implementation():
 
 
 # ---------------------------------------------------------------------------
-# clear_stale_artefacts (#469)
+# clear_stale_artefacts
 # ---------------------------------------------------------------------------
 
 
@@ -1014,12 +976,10 @@ def test_clear_stale_artefacts_removes_only_what_exists(tmp_path):
 
 
 def test_clear_stale_artefacts_fails_loudly_when_removal_fails(tmp_path):
-    """An artefact we cannot delete would silently mask the run, so refuse to
-    run rather than risk reporting a previous run's numbers."""
+    """An artefact that cannot be removed is fatal."""
     from rtl_buddy.errors import FatalRtlBuddyError
 
-    # A directory at the artefact's path: unlink() raises, and no flow
-    # writes a directory there, so this stands in for any undeletable file.
+    # A directory at the path makes unlink() raise, standing in for any undeletable file.
     blocked = tmp_path / "report.json"
     blocked.mkdir()
 
@@ -1028,8 +988,7 @@ def test_clear_stale_artefacts_fails_loudly_when_removal_fails(tmp_path):
 
 
 def test_clear_managed_outputs_matches_by_suffix_only(tmp_path):
-    """Suffix matching is what makes the clear independent of the design's
-    top; everything else in the artefact dir must survive (#469)."""
+    """Only files with a managed suffix are cleared; everything else survives."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     (tmp_path / "old_top.bit").write_bytes(b"\x00")
@@ -1048,7 +1007,7 @@ def test_clear_managed_outputs_matches_by_suffix_only(tmp_path):
     ]
     assert (tmp_path / "fpga.f").exists()
     assert (tmp_path / "yosys.log").exists()
-    # Never recursive: a nested workdir a tool owns is left alone.
+    # Not recursive.
     assert (nested / "inner.bit").exists()
 
 
@@ -1073,14 +1032,7 @@ def test_clear_managed_outputs_missing_dir_is_not_an_error(tmp_path):
 
 
 def test_clear_managed_outputs_unlistable_dir_is_fatal(tmp_path):
-    """An unlistable directory is not an empty one.
-
-    Swallowing the ``PermissionError`` would report "nothing to clear" while
-    the previous run's bitstream sat there waiting to be read back as this
-    run's result — and the bare exception escapes the CLI's
-    ``FatalRtlBuddyError`` handler, so machine mode emits no error envelope
-    and the exit code is not the documented 2.
-    """
+    """An unlistable directory raises FatalRtlBuddyError rather than reading as empty."""
     if os.geteuid() == 0:  # pragma: no cover - depends on the runner
         pytest.skip("root ignores directory permissions")
     from rtl_buddy.errors import FatalRtlBuddyError
@@ -1099,14 +1051,12 @@ def test_clear_managed_outputs_unlistable_dir_is_fatal(tmp_path):
     message = str(excinfo.value)
     assert "demo" in message
     assert str(locked) in message
-    # The stale output is still there — which is exactly why this is fatal.
+    # The stale output remains.
     assert (locked / "top.bit").exists()
 
 
 def test_clear_managed_outputs_directory_at_an_output_path_is_fatal(tmp_path):
-    """A directory sitting where an output belongs must not be silently
-    skipped: something has to be removed before the tool can write there, so
-    it takes the documented fatal path rather than being ignored (#469)."""
+    """A directory where an output belongs is fatal and is not removed."""
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
@@ -1117,14 +1067,12 @@ def test_clear_managed_outputs_directory_at_an_output_path_is_fatal(tmp_path):
     with pytest.raises(FatalRtlBuddyError, match="could not remove"):
         clear_managed_outputs(tmp_path, (".bit",), owner="demo")
 
-    # Never recurses and never removes a tree — the user is told to deal with it.
     assert blocked.is_dir()
     assert (blocked / "inside.txt").exists()
 
 
 def test_clear_managed_outputs_removes_a_dangling_symlink(tmp_path):
-    """A broken symlink is not a file, but it *is* the stale artefact, and
-    unlinking it succeeds — so it is cleared rather than skipped (#469)."""
+    """A dangling symlink is cleared."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     link = tmp_path / "top.bit"
@@ -1138,19 +1086,14 @@ def test_clear_managed_outputs_removes_a_dangling_symlink(tmp_path):
 
 
 def test_protected_names_are_outputs_a_flow_really_writes():
-    """Drift guard: every sibling name in the protected set has to be one a
-    flow actually writes into `artefacts/<name>/`, or the set is stale and
-    protecting nothing (#469)."""
+    """Every protected sibling name is written by some flow."""
     from rtl_buddy.tools import vlog_sim as vlog_sim_mod
     from rtl_buddy.tools.artifact_paths import (
         SHARED_BUILD_STAMP_NAME,
         SIBLING_OUTPUT_NAMES,
     )
 
-    # Several of these are shared constants rather than literals in their
-    # writer — `artifact_paths` is the bottom of the import graph, so the
-    # owning module imports the name from here rather than the reverse.
-    # Check the *bindings* for those instead of grepping for the string.
+    # Several names are shared constants imported from `artifact_paths`; check their bindings rather than grepping for the string.
     from rtl_buddy.cov import manifest as cov_manifest, model as cov_model
     from rtl_buddy.graph import config_tier, results as graph_results
     from rtl_buddy.phys import (
@@ -1190,7 +1133,7 @@ def test_protected_names_are_outputs_a_flow_really_writes():
             "axi_profile_rtl_buddy.py",
         )
     )
-    # `cdc.json` / `cdc.txt` are built as f"cdc.{fmt}"; check the stem.
+    # `cdc.json` and `cdc.txt` are built as f"cdc.{fmt}"; check the stem.
     unwritten = [
         name
         for name in SIBLING_OUTPUT_NAMES
@@ -1200,10 +1143,7 @@ def test_protected_names_are_outputs_a_flow_really_writes():
 
 
 def test_a_suffix_clear_spares_every_protected_name_but_takes_its_own():
-    """The protected set must stop a flow eating a *sibling's* outputs without
-    stopping it clearing its own. Every flow that clears by suffix names its
-    outputs after the design's top, so none of them is a fixed name and none
-    can be protected by accident (#469)."""
+    """A suffix clear spares every protected name and removes the flow's own top-named outputs."""
     import tempfile
     from rtl_buddy.tools import fpga_openxc7, pnr_openroad
     from rtl_buddy.tools.artifact_paths import (
@@ -1220,7 +1160,7 @@ def test_a_suffix_clear_spares_every_protected_name_but_takes_its_own():
         protected = [n for n in PROTECTED_OUTPUT_PATTERNS if "*" not in n]
         for name in protected:
             (d / name).write_text("sibling output\n")
-        # The flow's own outputs, named after this run's top.
+        # The flow's own outputs, named after the top.
         mine = [f"demo_top{suffix}" for suffix in suffixes]
         for name in mine:
             (d / name).write_text("mine\n")
@@ -1234,9 +1174,7 @@ def test_a_suffix_clear_spares_every_protected_name_but_takes_its_own():
 
 
 def test_clear_managed_outputs_own_wins_over_the_protected_patterns(tmp_path):
-    """A flow always owns its own outputs, whatever they are called. A design
-    topped `graph` writes `graph.json`, which is a *sibling's* protected name
-    — without `own` the flow could not clear its own netlist (#469)."""
+    """`own` overrides the protected names, so a design topped `graph` can clear its own `graph.json`."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     mine = tmp_path / "graph.json"  # this run's <top>.json netlist
@@ -1254,8 +1192,7 @@ def test_clear_managed_outputs_own_wins_over_the_protected_patterns(tmp_path):
 
 
 def test_clear_managed_outputs_own_beats_keep_too(tmp_path):
-    """`own` is the caller asserting ownership, so it outranks `keep` as well
-    — otherwise the two could contradict each other silently (#469)."""
+    """`own` outranks `keep`."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     (tmp_path / "top.bit").write_bytes(b"\x00")
@@ -1281,7 +1218,7 @@ def test_clear_managed_outputs_own_clears_even_without_a_matching_suffix(tmp_pat
 
 
 def test_owned_ledger_round_trips(tmp_path):
-    """The ledger is how ownership survives a rename (#469)."""
+    """The ownership ledger round-trips per flow."""
     from rtl_buddy.tools.artifact_paths import (
         OWNED_LEDGER_NAME,
         read_owned_ledger,
@@ -1300,14 +1237,12 @@ def test_owned_ledger_round_trips(tmp_path):
     assert read_owned_ledger(tmp_path, "demo-flow") == {"a.bit", "b.json"}
     assert read_owned_ledger(tmp_path, "other-flow") == {"c.bit"}
 
-    # A dotfile with none of the managed suffixes, so no suffix clear can
-    # ever match it.
+    # A dotfile, so no suffix clear matches it.
     assert OWNED_LEDGER_NAME.startswith(".")
 
 
 def test_owned_ledger_missing_or_unreadable_is_an_empty_claim(tmp_path):
-    """A first run, or a directory written by an rtl_buddy that predates the
-    ledger, behaves exactly as before it existed (#469)."""
+    """A missing or unreadable ledger reads as an empty claim."""
     from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
 
     assert read_owned_ledger(tmp_path / "never-made", "demo-flow") == set()
@@ -1318,10 +1253,7 @@ def test_owned_ledger_missing_or_unreadable_is_an_empty_claim(tmp_path):
 
 
 def test_clear_managed_outputs_clears_a_renamed_tops_protected_output(tmp_path):
-    """Ownership is durable, not re-derived. A run topped `graph` claims
-    `graph.json`; after the top is renamed, `own` no longer names it and it
-    matches `rb graph`'s protected name again — the ledger is what keeps it
-    clearable (#469)."""
+    """The ledger keeps a renamed top's protected-name output clearable."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     suffixes = (".json", ".bit")
@@ -1349,9 +1281,7 @@ def test_clear_managed_outputs_clears_a_renamed_tops_protected_output(tmp_path):
 
 
 def test_clear_managed_outputs_spares_a_sibling_dir_it_never_owned(tmp_path):
-    """The ledger distinguishes a previously-owned protected name from a
-    genuinely sibling-owned one: a directory this flow has never written has
-    no claim, so `rb graph`'s own output is untouched (#469)."""
+    """A protected name in a directory the flow never wrote is spared."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     theirs = tmp_path / "graph.json"
@@ -1363,8 +1293,7 @@ def test_clear_managed_outputs_spares_a_sibling_dir_it_never_owned(tmp_path):
 
 
 def test_clear_managed_outputs_without_own_does_not_claim_the_directory(tmp_path):
-    """A caller that declares no ownership is not speaking for the directory,
-    so it must not write a claim (#469)."""
+    """A caller that passes no `own` writes no claim."""
     from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, clear_managed_outputs
 
     clear_managed_outputs(tmp_path, (".bit",), owner="demo", own_flow="demo-flow")
@@ -1373,12 +1302,7 @@ def test_clear_managed_outputs_without_own_does_not_claim_the_directory(tmp_path
 
 
 def test_owned_ledger_claims_do_not_leak_between_flows(tmp_path):
-    """An artefact directory is keyed on a run's *name*, so a P&R run and an
-    FPGA run called the same thing share one ledger. A claim is always-clear
-    and bypasses the caller's suffix filter, so inheriting another flow's
-    claim would delete its outputs outright — P&R's `<design>.routed.odb` is
-    none of the FPGA suffixes, yet a flat ledger handed it straight to the
-    FPGA cleanup (#469)."""
+    """Two flows sharing a run name and artefact directory do not clear each other's claimed outputs."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     pnr_suffixes = (".def", ".routed.odb")
@@ -1418,9 +1342,7 @@ def test_owned_ledger_claims_do_not_leak_between_flows(tmp_path):
 
 
 def test_owned_ledger_ignores_the_pre_namespace_flat_format(tmp_path):
-    """The flat list this ledger briefly used was never released. It is
-    ignored rather than migrated: guessing which flow those names belonged to
-    is exactly the mistake being fixed (#469)."""
+    """A ledger in the flat, non-namespaced format is ignored."""
     from rtl_buddy.tools.artifact_paths import OWNED_LEDGER_NAME, read_owned_ledger
 
     (tmp_path / OWNED_LEDGER_NAME).write_text("# old format\ngraph.json\ngraph.bit\n")
@@ -1430,11 +1352,7 @@ def test_owned_ledger_ignores_the_pre_namespace_flat_format(tmp_path):
 
 
 def test_owned_ledger_retires_a_claim_once_the_leftover_is_cleared(tmp_path):
-    """A claim is a one-shot licence to clear, not a permanent title. An FPGA
-    run once topped `graph` must be able to clear the `graph.json` it left
-    behind — but once that is done the name is retired, so the file `rb graph`
-    later writes at its own protected path is not treated as this flow's
-    history and deleted (#469)."""
+    """A claim is retired once its leftover is cleared, so a later `rb graph` output of the same name is spared."""
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs, read_owned_ledger
 
     suffixes = (".json", ".bit")

@@ -3,16 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-wave_launcher: orchestrates the `rb wave` workflow.
-
-Sequence:
-  1. Check for existing debug FST; run debug sim if absent.
-  2. Bind WCP listener socket (must happen before Surfer starts).
-  3. Launch Surfer with --wcp-initiate <port>.
-  4. Start WCP listener thread.
-  5. Block until Ctrl-C or Surfer exits.
-"""
+"""Orchestrates `rb wave`: binds a WCP listener, launches Surfer against it, and blocks until Surfer exits."""
 
 import logging
 import os
@@ -40,18 +31,9 @@ logger = logging.getLogger(__name__)
 def prepare_surfer_trace(
     trace_path: str, wave_format: str | None, test_name: str
 ) -> str:
-    """Adapt a resolved debug trace to a path Surfer (wellen) can open.
+    """Return a trace path Surfer can open.
 
-    Surfer reads FST and VCD natively, so the default Icarus ``dump.vcd``
-    opens without conversion. Two cases need handling:
-
-    * **VCS VPD** — wellen cannot read ``.vpd``; `rb wave` does not bundle
-      the Synopsys conversion tools (that lives in `rb axi-profile`). Fail
-      with a pointer rather than handing Surfer a file it can't open.
-    * **``wave-format: fst-postproc``** — when the builder requests it and
-      the trace is a VCD, convert to a sibling ``.fst`` via ``vcd2fst``
-      (GTKWave). If ``vcd2fst`` is absent, fall back to the VCD (Surfer
-      reads it anyway) with a warning.
+    A ``.vpd`` raises. With ``wave-format: fst-postproc`` a ``.vcd`` is converted to ``.fst`` via ``vcd2fst``; other traces pass through.
     """
     if trace_path.endswith(".vpd"):
         raise FatalRtlBuddyError(
@@ -68,10 +50,9 @@ def prepare_surfer_trace(
 
 
 def _vcd_to_fst(vcd_path: str, test_name: str) -> str:
-    """Convert ``vcd_path`` to a cached sibling ``.fst`` via ``vcd2fst``.
+    """Convert ``vcd_path`` to a sibling ``.fst`` via ``vcd2fst``, reusing a newer existing one.
 
-    Cached against the VCD's mtime so repeated `rb wave` invocations skip
-    re-conversion. Returns the VCD unchanged when ``vcd2fst`` is missing.
+    Returns the VCD unchanged when ``vcd2fst`` is missing or fails.
     """
     fst_path = os.path.splitext(vcd_path)[0] + ".fst"
     if os.path.isfile(fst_path) and os.path.getmtime(fst_path) >= os.path.getmtime(
@@ -121,9 +102,7 @@ def _vcd_to_fst(vcd_path: str, test_name: str) -> str:
 
 
 class WaveLauncher:
-    """
-    Launches Surfer and manages the WCP client lifecycle for a single test.
-    """
+    """Launches Surfer for one test and runs the WCP listener until Surfer exits."""
 
     def __init__(
         self,
@@ -163,9 +142,7 @@ class WaveLauncher:
         resolver = SurferSourceResolver(self._test_cfg, self._suite_dir)
         editor = EditorLauncher(self._surfer_cfg)
         value_reader = WaveformValueReader(self._fst_path)
-        # Fail loud on the main thread (trace missing / pywellen API break)
-        # before Surfer starts — not as blank annotations from the WCP
-        # listener thread (#263).
+        # Check on the main thread so failures surface before Surfer starts.
         value_reader.check()
         listener = SurferWcpListener(
             self._surfer_cfg,
@@ -176,7 +153,6 @@ class WaveLauncher:
         )
 
         # Bind before launching Surfer so the port is ready when it connects.
-        # actual_port is OS-assigned when wcp_port=0, otherwise matches wcp_port.
         actual_port = listener.bind()
 
         cmd = [self._surfer_cfg.get_surfer_exe(), self._fst_path]
@@ -205,9 +181,7 @@ class WaveLauncher:
             ctrl = WaveControlServer(self._surfer_cfg.resolved_ctrl_sock, listener)
             ctrl.start()
 
-        # Opportunistic hub adapter: registers as the `wave` origin client
-        # when a project hub is running. Standalone behavior is unchanged
-        # when no hub is reachable (the bridge is None).
+        # None when no hub is reachable.
         hub_bridge = maybe_connect_bridge(listener=listener)
 
         emit_console_text(

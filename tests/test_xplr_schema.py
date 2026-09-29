@@ -1,4 +1,4 @@
-"""Tests for the rb xplr P0 contract — record schema + ledger layout."""
+"""Tests for the rb xplr record schema and ledger layout."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def test_schema_is_loadable_and_versioned():
 
 
 def test_fixture_inventory_matches_contract():
-    # The two #296 samples, one minimal record, one mockflow-flavored record.
+    # Two fixtures: one minimal record and one mockflow record.
     assert _fixture_ids(VALID_FIXTURES) == [
         "exp-0001",
         "exp-0002",

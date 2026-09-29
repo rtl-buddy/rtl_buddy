@@ -1,23 +1,6 @@
-"""Command-layer logic for the ``rb xplr`` CLI surface.
+"""Command logic for ``rb xplr``, independent of Typer.
 
-The handlers in ``rtl_buddy.py`` stay thin; everything that decides
-*what* a command does lives here so it can be tested without Typer.
-
-Inputs are JSON documents (``--json <file|->``) because the primary
-consumer is an agent, not a human. Each command's input shape is
-checked explicitly (unknown keys fail loudly with the allowed-key
-list), then the resulting record is validated against the strict P0
-schema before anything touches disk — an agent that sends a malformed
-manifest gets a message naming exactly what was wrong.
-
-Source pinning (P2): when the agent declares ``source.git_sha`` it is
-taken verbatim — the agent owns that pin. Otherwise the cfg-xplr commit
-policy applies (:func:`rtl_buddy.xplr.gitprov.pin_with_policy`): in the
-default ``auto`` mode a dirty source scope is snapshotted to an
-``exp/<id>`` branch without disturbing the user's tree, a clean scope
-just records ``HEAD``; ``self-managed`` mode requires the user to have
-committed. Either way the recorded sha is exact, and ``diff_from``
-records the baseline so two experiments can be diffed at the RTL level.
+Inputs are JSON documents (``--json <file|->``). Unknown keys are rejected with the allowed-key list, and the record is schema-validated before anything is written.
 """
 
 from __future__ import annotations
@@ -61,10 +44,9 @@ _ATTACH_PROVENANCE_KEYS = ("tools", "reused_state")
 
 
 def load_json_doc(json_arg: str, *, cwd: Path, what: str) -> dict[str, Any]:
-    """Read the ``--json`` argument: a file path, or ``-`` for stdin.
+    """Read the ``--json`` argument (a file path, or ``-`` for stdin) as a JSON object.
 
-    Returns the parsed JSON object; raises :class:`FatalRtlBuddyError`
-    for a missing file, malformed JSON, or a non-object document.
+    Raises :class:`FatalRtlBuddyError` for a missing file, malformed JSON or a non-object.
     """
 
     if json_arg == "-":
@@ -109,12 +91,12 @@ def _check_keys(doc: Any, allowed: tuple[str, ...], where: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# source pinning (P2: cfg-xplr commit policy; plumbing lives in gitprov)
+# source pinning
 # ---------------------------------------------------------------------------
 
 
 def _git(project_root: Path, *args: str) -> str | None:
-    """Run a git query in ``project_root``; None on any failure."""
+    """Run git in ``project_root``; return stdout, or None on failure."""
 
     result = subprocess.run(
         ["git", *args],
@@ -140,15 +122,7 @@ def pin_source(
 ) -> dict[str, Any]:
     """Resolve the ``source`` block for a new experiment.
 
-    An agent-declared ``git_sha`` is taken verbatim (with optional
-    ``branch``/``diff_from``) — the agent owns that pin, and no
-    ``dirty`` bit is recorded since the working tree says nothing about
-    an arbitrary sha. Otherwise the cfg-xplr commit policy applies
-    (see :func:`rtl_buddy.xplr.gitprov.pin_with_policy`): the recorded
-    sha is exact in every mode, ``diff_from`` defaults to the parent
-    experiment's pinned sha (HEAD-before-snapshot otherwise), and rb
-    bookkeeping (``ledger_root``, worktrees, the rb log) is excluded
-    from the dirtiness check and any snapshot.
+    A declared ``git_sha`` is taken verbatim, with no ``dirty`` bit. Otherwise the cfg-xplr commit policy applies (:func:`rtl_buddy.xplr.gitprov.pin_with_policy`).
     """
 
     _check_keys(declared, _REGISTER_SOURCE_KEYS, "register: 'source'")
@@ -188,12 +162,9 @@ def source_diff(
     *,
     patch: bool = False,
 ) -> dict[str, Any]:
-    """The ``source`` block of ``rb xplr diff``: both refs + the git diff.
+    """Return the ``source`` block of ``rb xplr diff``: both refs and ``git diff --stat`` (plus the patch with ``patch``).
 
-    Runs ``git diff --stat <shaA>..<shaB>`` (plus ``-p`` with ``patch``)
-    in the project root. When either sha is unknown to the repo — a
-    pinned ref from another clone, a shallow checkout, no git at all —
-    the diff degrades gracefully to a ``note`` instead of failing.
+    If either sha is unknown to the repository, the result carries a ``note`` instead of failing.
     """
 
     sha_a, sha_b = source_a["git_sha"], source_b["git_sha"]
@@ -234,13 +205,7 @@ def register_experiment(
 ) -> tuple[ExperimentRecord, Path]:
     """Open a new experiment from a register manifest.
 
-    Allocates the next ``exp-NNNN`` id, pins the source under the
-    cfg-xplr commit policy (loaded from the project root when ``cfg``
-    is not given), sets ``outcome.status = "pending"`` and
-    ``provenance.created`` = now, validates the assembled record
-    against the schema, and writes it. The disk backstop runs first:
-    over the high watermark gc is triggered by policy, and the hard
-    cap blocks the new run only when gc could not free enough.
+    Enforces the disk backstop, allocates the next id, pins the source, sets status ``pending``, and writes the validated record. ``cfg`` defaults to the project's cfg-xplr.
     """
 
     _check_keys(doc, _REGISTER_KEYS, "register")
@@ -256,7 +221,7 @@ def register_experiment(
     parent_sha: str | None = None
     parent_id = doc.get("parent")
     if isinstance(parent_id, str):
-        try:  # the schema allows any string parent; only ledger ids resolve
+        try:  # only ledger ids resolve to a parent sha
             parent_known = ledger.record_path(root, parent_id).is_file()
         except FatalRtlBuddyError:
             parent_known = False
@@ -309,11 +274,9 @@ def register_experiment(
 def attach_outcome(
     root: Path, exp_id: str, doc: dict[str, Any], *, force: bool = False
 ) -> tuple[ExperimentRecord, Path]:
-    """Attach a flow-declared outcome to an existing experiment.
+    """Attach an outcome to an existing experiment.
 
-    ``status`` must be terminal (``success``/``failed``); re-attaching
-    to an already-terminal experiment requires ``force``. The merged
-    record is validated against the schema before it is written.
+    ``status`` must be ``success`` or ``failed``; overwriting a terminal outcome requires ``force``.
     """
 
     record, path = get_experiment(root, exp_id)
@@ -362,7 +325,7 @@ def attach_outcome(
 
 
 def get_experiment(root: Path, exp_id: str) -> tuple[ExperimentRecord, Path]:
-    """Load one experiment; unknown ids fail with the known-id list."""
+    """Load one experiment; an unknown id raises with the list of known ids."""
 
     path = ledger.record_path(root, exp_id)
     if not path.is_file():
@@ -387,7 +350,7 @@ def get_experiment(root: Path, exp_id: str) -> tuple[ExperimentRecord, Path]:
 def list_experiments(
     root: Path, *, status: str | None = None
 ) -> list[ExperimentRecord]:
-    """All ledger records, optionally filtered by outcome status."""
+    """Return all records, optionally filtered by outcome status."""
 
     if status is not None and status not in STATUSES:
         raise FatalRtlBuddyError(
@@ -400,7 +363,7 @@ def list_experiments(
 
 
 def summarize(record: ExperimentRecord) -> dict[str, Any]:
-    """The ``rb xplr list`` summary row for one record."""
+    """Return the ``rb xplr list`` row for a record."""
 
     out: dict[str, Any] = {
         "id": record.id,

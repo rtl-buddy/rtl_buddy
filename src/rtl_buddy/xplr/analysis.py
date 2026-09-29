@@ -1,30 +1,11 @@
-"""Analysis views over the ``rb xplr`` ledger — pure functions, no I/O.
+"""Pure analysis views over the ``rb xplr`` ledger: Pareto frontier, pairwise diff and per-knob effect history.
 
-These are the views an agent reasons over to decide what to try next:
+Dominance rules:
 
-* :func:`pareto_frontier` — the non-dominated set over the declared
-  numeric outcome metrics, with dominated/infeasible/excluded
-  experiments reported alongside (rb xplr curates; it never optimizes).
-* :func:`diff_records` — knob delta + direction-aware outcome delta
-  between two experiments (the git/RTL part of ``rb xplr diff`` needs
-  a repository, so it lives in :mod:`rtl_buddy.xplr.commands`).
-* :func:`knob_effect` — per-knob effect history: every experiment that
-  declared the knob, with metric deltas vs its parent when available.
-
-Dominance rules (settled in #299):
-
-* Only ``outcome.status == "success"`` experiments participate.
-* A boolean metric named ``routed`` with value ``false`` marks the
-  experiment infeasible — excluded from the frontier, reported in the
-  ``infeasible`` list.
-* Dominance is computed over metrics that are numeric *and* have a
-  declared ``min``/``max`` direction (record-level ``metric_meta``,
-  overridable via ``--metrics name:min,...``). Undirected metrics are
-  ignored for dominance but still reported on each member.
-* Experiments missing one of the dominance metrics are excluded and
-  flagged with a reason.
-* X dominates Y iff X is at least as good on every dominance metric
-  and strictly better on at least one.
+* Only ``success`` experiments participate.
+* A boolean metric ``routed`` that is ``false`` marks an experiment infeasible.
+* Dominance is computed over numeric metrics with a declared ``min``/``max`` direction, from ``metric_meta`` or ``--metrics``. An experiment missing one of them is excluded with a reason.
+* X dominates Y if it is at least as good on every such metric and strictly better on one.
 """
 
 from __future__ import annotations
@@ -48,7 +29,7 @@ _METRIC_NAME_RE = re.compile(r"^[^\s:*,+]+$")
 
 
 def _is_number(value: Any) -> bool:
-    """True for JSON numbers — bools are excluded (bool is an int subtype)."""
+    """True for JSON numbers, excluding bools."""
 
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -68,7 +49,7 @@ def _knobs_by_name(record: ExperimentRecord) -> dict[str, Knob]:
 
 
 def _assess(delta: float, direction: str | None) -> str:
-    """Direction-aware verdict for a metric delta (B - A)."""
+    """Return equal, better, worse or unknown for a metric delta (B - A)."""
 
     if delta == 0:
         return "equal"
@@ -79,7 +60,7 @@ def _assess(delta: float, direction: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# option parsing (trivial grammars, fail loudly)
+# option parsing
 # ---------------------------------------------------------------------------
 
 
@@ -113,11 +94,9 @@ def parse_metric_directions(spec: str) -> dict[str, str]:
 
 
 def parse_preference(expr: str) -> dict[str, float]:
-    """Parse a ``--prefer`` expression: ``0.7*lut_pct+0.3*delay_ns``.
+    """Parse a ``--prefer`` expression such as ``0.7*lut_pct+0.3*delay_ns`` into ``{metric: weight}``.
 
-    The grammar is deliberately trivial: comma- or plus-separated
-    ``weight*metric`` terms (a bare ``metric`` means weight 1.0).
-    Returns ``{metric: weight}``.
+    Terms are comma- or plus-separated ``weight*metric``; a bare metric has weight 1.
     """
 
     weights: dict[str, float] = {}
@@ -157,7 +136,7 @@ def _declared_directions(
     candidates: list[ExperimentRecord],
     overrides: dict[str, str] | None,
 ) -> dict[str, str]:
-    """Merge record-level metric directions; overrides win conflicts."""
+    """Merge record-level metric directions; overrides win."""
 
     directions: dict[str, str] = {}
     declared_by: dict[str, str] = {}
@@ -188,16 +167,9 @@ def pareto_frontier(
     direction_overrides: dict[str, str] | None = None,
     preference: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Curate the Pareto frontier (non-dominated set) over the ledger.
+    """Return the Pareto frontier as ``{metrics, frontier, dominated, infeasible, excluded}``.
 
-    Returns the machine payload::
-
-        {metrics, frontier, dominated, infeasible, excluded}
-
-    With ``preference`` (``{metric: weight}``), every frontier member
-    gets a ``preference_score`` (weighted sum after direction
-    normalization, lower = better) and the frontier is sorted by it —
-    non-dominated points are never dropped.
+    With ``preference`` (``{metric: weight}``), each frontier member gets a ``preference_score`` (lower is better) and the frontier is sorted by it; no member is dropped.
     """
 
     infeasible: list[str] = []
@@ -217,7 +189,6 @@ def pareto_frontier(
         candidates.append(record)
 
     directions = _declared_directions(candidates, direction_overrides)
-    # dominance metrics: directed AND numeric in at least one candidate
     dominance_metrics = sorted(
         name
         for name in directions
@@ -318,17 +289,14 @@ def pareto_frontier(
 
 
 # ---------------------------------------------------------------------------
-# pairwise diff (knobs + outcome; the git part lives in commands.py)
+# pairwise diff (knobs and outcome)
 # ---------------------------------------------------------------------------
 
 
 def diff_records(a: ExperimentRecord, b: ExperimentRecord) -> dict[str, Any]:
-    """Knob delta + direction-aware outcome delta between two experiments.
+    """Return the knob delta and direction-aware outcome delta between two experiments.
 
-    Knobs are compared by name on their ``to`` values: ``added`` (in B
-    only), ``reverted`` (in A only — B no longer declares the change),
-    ``changed`` (same name, different ``to``), ``unchanged`` (names).
-    Both full manifests are included so nothing is lost in translation.
+    Knobs are compared by name on their ``to`` values: ``added`` (only in B), ``reverted`` (only in A), ``changed`` and ``unchanged``. Both full manifests are included.
     """
 
     knobs_a = _knobs_by_name(a)
@@ -360,7 +328,7 @@ def diff_records(a: ExperimentRecord, b: ExperimentRecord) -> dict[str, Any]:
     metrics_a = _metrics_of(a)
     metrics_b = _metrics_of(b)
     meta = {name: m for name, m in _meta_of(a).items()}
-    meta.update(_meta_of(b))  # B's declaration wins, it is the newer view
+    meta.update(_meta_of(b))  # B's declaration wins
     metric_rows: list[dict[str, Any]] = []
     common = sorted(set(metrics_a) & set(metrics_b))
     for name in common:
@@ -403,21 +371,11 @@ def diff_records(a: ExperimentRecord, b: ExperimentRecord) -> dict[str, Any]:
 
 
 def knob_effect(records: list[ExperimentRecord], name: str) -> dict[str, Any]:
-    """Effect history for one knob: how its changes moved each metric.
+    """Return the effect history of one knob.
 
-    For every experiment whose manifest declares the knob, returns
-    ``{exp, status, from, to, rationale?, metrics_after, parent?,
-    metrics_parent_delta?}``. When the experiment names a ``parent``
-    that exists in the ledger with metrics, ``metrics_parent_delta``
-    carries per-metric numeric deltas (child - parent) — that is the
-    "effect"; no fitting, the agent does the reasoning.
+    Each experiment that declares the knob yields ``{exp, status, from, to, rationale?, metrics_after, parent?, metrics_parent_delta?}``. ``metrics_parent_delta`` (child minus parent) is present when the parent is in the ledger with metrics.
 
-    A knob that appears in **no** experiment's manifest is not an error
-    (an empty history is a legitimate answer), but it is also exactly
-    what a typo looks like — so the payload then carries ``known_knobs``
-    (every distinct knob name declared anywhere in the ledger, sorted)
-    and ``suggestions`` (close matches to the requested name) so an
-    agent can self-correct without a second round trip.
+    If no experiment declares the knob, the payload adds ``known_knobs`` and close-match ``suggestions``.
     """
 
     by_id = {record.id: record for record in records}

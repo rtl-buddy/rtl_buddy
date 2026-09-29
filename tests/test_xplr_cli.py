@@ -1,14 +1,6 @@
-"""Contract tests for the rb xplr P1 command surface.
+"""Tests for `rb xplr` register, attach-outcome, list and show as an agent drives them.
 
-register / attach-outcome / list / show, exercised the way an agent
-drives them: machine-mode JSON envelopes on stdout, JSON manifests in
-via ``--json <file|->``. Error paths must exit 2 with a message naming
-exactly what was wrong, and (in machine mode) still emit an envelope.
-
-Commands run through ``RtlBuddy.run()`` with a patched ``sys.argv`` —
-the same entry point real agents hit — because the FatalRtlBuddyError
--> exit-2 -> machine-envelope contract lives in ``run()``, which
-``CliRunner.invoke`` bypasses.
+Commands run through `RtlBuddy.run()` with a patched `sys.argv`, because the exit-2 and machine-envelope handling lives in `run()`, which `CliRunner.invoke` bypasses.
 """
 
 from __future__ import annotations
@@ -42,12 +34,9 @@ def _run(
     *,
     stdin: str | None = None,
 ) -> tuple[int, str, str]:
-    """Run one rb invocation through RtlBuddy.run(); return (code, out, err).
+    """Run one rb invocation through RtlBuddy.run() and return (code, out, err).
 
-    Locks are released after each run: ArtifactLocks holds its flock
-    fds until process exit, and a second fd on the same lock file
-    conflicts even within one process — so back-to-back commands in one
-    test would deadlock-fail without this.
+    Locks are released afterwards; ArtifactLocks would otherwise hold its flock until process exit and block the next command in the test.
     """
     rb = RtlBuddy(name="test_xplr_cli")
     monkeypatch.setattr(sys, "argv", ["rb", *argv])
@@ -81,11 +70,7 @@ def _git(root: Path, *args: str) -> str:
 
 @pytest.fixture
 def git_project(minimal_project: Path) -> Path:
-    """minimal_project turned into a clean git repo.
-
-    artefacts/ and rtl_buddy.log are gitignored — as any real rb
-    project must — so command side effects don't flip the dirty bit.
-    """
+    """Return minimal_project as a clean git repo with artefacts/ and rtl_buddy.log ignored."""
     (minimal_project / ".gitignore").write_text("artefacts/\nrtl_buddy.log\n")
     _git(minimal_project, "init", "-q", "-b", "main", ".")
     _git(minimal_project, "add", "-A")
@@ -98,7 +83,7 @@ def _head_sha(root: Path) -> str:
 
 
 def _manifest_path(project: Path, doc: dict, name: str = "manifest.json") -> Path:
-    """Write a JSON input doc *outside* the repo so the tree stays clean."""
+    """Write a JSON input document outside the repo so the tree stays clean."""
     path = project.parent / name
     path.write_text(json.dumps(doc))
     return path
@@ -122,7 +107,7 @@ def _register(
     capsys: pytest.CaptureFixture,
     doc: dict | None = None,
 ) -> dict:
-    """Register an experiment via stdin JSON; return the machine payload."""
+    """Register an experiment from stdin JSON and return the machine payload."""
     doc = doc if doc is not None else {"knobs": _KNOBS}
     code, out, _ = _run(
         ["--machine", "xplr", "register", "--json", "-"],
@@ -144,8 +129,7 @@ def test_xplr_help_lists_subcommands():
 
     from typer.testing import CliRunner
 
-    # CI terminals (GitHub Actions) get rich help with ANSI styling that
-    # splits option tokens; strip escapes before substring asserts.
+    # Rich help in CI splits option tokens with ANSI escapes; strip them first.
     ansi = re.compile(r"\x1b\[[0-9;]*m")
     rb = RtlBuddy(name="test_xplr_help")
     result = CliRunner().invoke(rb.app, ["xplr", "--help"])
@@ -226,9 +210,7 @@ def test_register_without_json_opens_baseline_experiment(
 def test_register_snapshots_dirty_tree_to_exp_branch(
     git_project: Path, monkeypatch, capsys
 ):
-    """P2 commit policy (auto, the default): a dirty tree is snapshotted
-    to an exp/<id> branch so the pin is exact — never recorded dirty.
-    The full policy matrix lives in test_xplr_gitprov.py."""
+    """Under the default auto policy a dirty tree is snapshotted to an exp/<id> branch and never recorded dirty."""
     head_before = _head_sha(git_project)
     (git_project / "tests.yaml").write_text("# mutated tracked file\n")
     record = _register(git_project, monkeypatch, capsys)["record"]
@@ -586,7 +568,7 @@ def test_xplr_outside_project_error_mentions_root_flag(
 
 
 # ---------------------------------------------------------------------------
-# fixture records (the P0 contract corpus) read back through the CLI
+# fixture records read back through the CLI
 # ---------------------------------------------------------------------------
 
 

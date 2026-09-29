@@ -1,34 +1,10 @@
-"""Git-pinned source provenance, worktree isolation, and GC (P2, #298).
+"""Git-pinned source provenance, worktree isolation and disk reclamation for ``rb xplr``.
 
-The L0 layer of an experiment is its **source revision**. This module
-makes it a first-class, reproducible knob:
+* :func:`pin_with_policy` applies the commit policy behind ``rb xplr register``: ``auto`` snapshots a dirty source scope to an ``exp/<id>`` branch without touching the user's tree, ``self-managed`` requires a clean scope.
+* :func:`materialize` and :func:`release` create and remove a disposable git worktree at an experiment's pinned sha.
+* :func:`gc` evicts heavy artifacts, frontier members last, and never deletes ``record.json``.
 
-* :func:`pin_with_policy` — the commit policy behind ``rb xplr
-  register``. ``auto`` mode (the default, and the recommended one): a
-  dirty tree gets its configured source scope snapshotted to an
-  ``exp/<id>`` branch via plumbing (temporary ``GIT_INDEX_FILE`` +
-  ``commit-tree``), so the user's working tree, index, and current
-  branch are never disturbed; a clean tree just records ``HEAD`` — the
-  two paths converge and no redundant commit is created. rb's own
-  bookkeeping (the xplr ledger dir, the worktree root, and the rb log
-  file) is always excluded from both the dirtiness check and the
-  snapshot (:func:`bookkeeping_excludes`), gitignored or not — only
-  the user's source decides whether a new sha is minted.
-  ``self-managed`` mode requires a clean scope and records ``HEAD``.
-* :func:`materialize` / :func:`release` — build each RTL variant in a
-  disposable git worktree at its pinned sha (default under the
-  configured ``worktree-root``, which must be gitignored; the default
-  lives under ``artefacts/``). The branch is the durable artifact, the
-  worktree is not. The worktree path lives in a
-  ``artefacts/xplr/<exp>/worktree.json`` sidecar — the record schema
-  stays frozen.
-* :func:`gc` — frontier-aware, **non-interactive** disk reclamation.
-  Eviction removes the heavy artifacts (worktree + the files listed in
-  ``outcome.artifacts``), never ``record.json``: source is git-pinned,
-  so an evicted experiment can always be re-materialized and replayed
-  from its recorded ``config_snapshot``.
-
-All git operations run via subprocess against the project-root repo.
+All git operations run via subprocess in the project-root repository.
 """
 
 from __future__ import annotations
@@ -53,9 +29,7 @@ from .schema import ABSENT, ExperimentRecord
 logger = logging.getLogger(__name__)
 
 GB = 1024**3
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+# Defined in `tools.artifact_paths` so the artefact-clearing helpers can protect it.
 from ..tools.artifact_paths import (  # noqa: E402
     XPLR_WORKTREE_SIDECAR_NAME as WORKTREE_SIDECAR,
 )
@@ -74,10 +48,9 @@ def _git(
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run one git command in ``repo``; fail loudly unless ``check=False``.
+    """Run one git command in ``repo``; raise on failure unless ``check=False``.
 
-    ``--no-optional-locks`` keeps reads from orphaning ``.git/index.lock``;
-    write paths still take the lock they need (#581).
+    ``--no-optional-locks`` stops read-only commands from leaving ``.git/index.lock`` behind.
     """
 
     full_env = None
@@ -99,31 +72,31 @@ def _git(
 
 
 def head_sha(project_root: Path) -> str | None:
-    """HEAD's full sha, or None when not a git repo / no commits yet."""
+    """Return HEAD's full sha, or None outside a git repo or before the first commit."""
 
     result = _git(project_root, "rev-parse", "HEAD", check=False)
     return result.stdout.strip() if result.returncode == 0 else None
 
 
 def current_branch(project_root: Path) -> str | None:
-    """The checked-out branch name, or None when detached / no repo."""
+    """Return the checked-out branch, or None when detached or outside a repo."""
 
     result = _git(project_root, "rev-parse", "--abbrev-ref", "HEAD", check=False)
     if result.returncode != 0:
         return None
     name = result.stdout.strip()
-    return None if name == "HEAD" else name  # "HEAD" == detached
+    return None if name == "HEAD" else name
 
 
 def resolve_ref(project_root: Path, ref: str) -> str:
-    """Resolve ``ref`` to a full commit sha; fail loudly when unknown."""
+    """Resolve ``ref`` to a full commit sha; raises when unknown."""
 
     result = _git(project_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
     return result.stdout.strip()
 
 
 def _repo_relative(project_root: Path, path: Path) -> Path | None:
-    """``path`` relative to the project root, or None when outside it."""
+    """Return ``path`` relative to the project root, or None when outside it."""
 
     try:
         return path.resolve().relative_to(project_root.resolve())
@@ -134,20 +107,9 @@ def _repo_relative(project_root: Path, path: Path) -> Path | None:
 def bookkeeping_excludes(
     project_root: Path, ledger_root: Path | None, cfg: XplrConfig
 ) -> list[str]:
-    """Pathspecs that keep rb bookkeeping out of dirt checks and snapshots.
+    """Return ``:(exclude)`` pathspecs for the ledger, the worktree root and the rb log.
 
-    The xplr ledger dir (records, locks, prior experiments' artifacts),
-    the worktree root, and the rb log file are bookkeeping, not source.
-    Snapshotting them would mint a fresh ``git_sha`` on every register
-    even when the RTL is identical (breaking the "same source revision"
-    signal of ``xplr diff``), embed every prior record into each
-    ``exp/<id>`` branch (growing without bound), and leak stale ledger
-    copies into materialized worktrees — so they are excluded with
-    ``:(exclude)`` pathspec magic whether or not they are gitignored.
-
-    Paths git already ignores are skipped: ``status``/``add -A`` never
-    pick them up, and ``git add`` refuses a pathspec — even an exclude
-    one — that literally names an ignored path.
+    They are bookkeeping, not source, and must not count as dirt or enter a snapshot. Paths git already ignores are omitted, because ``git add`` rejects a pathspec that names an ignored path.
     """
 
     candidates = [cfg.worktree_dir(project_root), project_root / DEFAULT_FILE_LOG]
@@ -166,17 +128,10 @@ def bookkeeping_excludes(
 
 
 def warn_if_ledger_not_ignored(project_root: Path, ledger_root: Path) -> None:
-    """Register-time hygiene warning, mirroring ``xplr.worktree_not_ignored``.
-
-    Snapshots and dirt checks already exclude rb bookkeeping
-    (:func:`bookkeeping_excludes`), but a ledger dir or rb log file
-    that is inside the repo and not gitignored still clutters ``git
-    status`` and gets swept into the user's own commits — warn once
-    per offending path with the fix spelled out.
-    """
+    """Warn about each in-repo ledger or rb log path that is not gitignored."""
 
     if head_sha(project_root) is None:
-        return  # not a git repo: nothing to ignore
+        return
     for target in (ledger_root, project_root / DEFAULT_FILE_LOG):
         if _repo_relative(project_root, target) is None or not target.exists():
             continue
@@ -197,7 +152,7 @@ def warn_if_ledger_not_ignored(project_root: Path, ledger_root: Path) -> None:
 def _scope_dirty(
     project_root: Path, scope: list[str], excludes: list[str] | None = None
 ) -> bool:
-    """True when ``git status --porcelain`` reports changes inside scope."""
+    """Return True when ``git status --porcelain`` reports changes inside ``scope``."""
 
     result = _git(
         project_root, "status", "--porcelain", "--", *scope, *(excludes or [])
@@ -206,14 +161,7 @@ def _scope_dirty(
 
 
 def _commit_ident_env(project_root: Path) -> dict[str, str]:
-    """Author/committer env fallback so snapshots never stall on identity.
-
-    A repo without ``user.name``/``user.email`` would make
-    ``commit-tree`` fail and stall the non-interactive agent loop; the
-    snapshot commit is rb-internal bookkeeping, so a neutral fallback
-    identity is used instead of erroring. A configured identity always
-    wins.
-    """
+    """Return a fallback author/committer env for ``commit-tree``, used only where git has no configured identity."""
 
     env: dict[str, str] = {}
     name = _git(project_root, "config", "user.name", check=False).stdout.strip()
@@ -226,18 +174,14 @@ def _commit_ident_env(project_root: Path) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# commit policy (register's L0 layer)
+# commit policy
 # ---------------------------------------------------------------------------
 
 
 def _existing_snapshot(project_root: Path, tree: str, base_sha: str) -> str | None:
-    """An existing ``exp/*`` snapshot commit with this tree off this base.
+    """Return an existing ``exp/*`` snapshot commit with this tree and base, or None.
 
-    Lets :func:`snapshot_scope` reuse the prior commit when the scoped
-    source is byte-identical (e.g. two registers probing flow-layer
-    knobs over the same dirty RTL): identical source must pin an
-    identical sha, or "did the source actually change?" is unanswerable
-    from the ledger.
+    Identical source must pin an identical sha.
     """
 
     result = _git(
@@ -264,23 +208,11 @@ def snapshot_scope(
     *,
     excludes: list[str] | None = None,
 ) -> str | None:
-    """Snapshot the source scope to an ``exp/<exp_id>`` branch off ``base_sha``.
+    """Snapshot the scoped working tree to branch ``exp/<exp_id>`` off ``base_sha``.
 
-    Implemented with plumbing so the user's working tree, index, and
-    checked-out branch are untouched: a temporary ``GIT_INDEX_FILE``
-    is seeded from ``base_sha`` (``read-tree``), the scoped working-tree
-    state is staged into it (``add -A -- <scope>``, which also picks up
-    untracked files and deletions), and the resulting tree is committed
-    with ``commit-tree`` and pointed at by ``refs/heads/exp/<exp_id>``.
-    ``excludes`` (``:(exclude)`` pathspecs, see
-    :func:`bookkeeping_excludes`) are never staged.
+    Uses a temporary index, so the user's working tree, index and branch are untouched. ``excludes`` (see :func:`bookkeeping_excludes`) are never staged. An existing snapshot with the same tree and base is reused.
 
-    Returns the snapshot commit sha — or None when the scoped tree is
-    identical to ``base_sha`` (dirtiness outside the scope), in which
-    case no commit and no branch are created. An existing ``exp/*``
-    snapshot with the same tree off the same base is reused (the new
-    branch points at it), so registering twice with identical RTL pins
-    the same sha and ``xplr diff`` can say so.
+    Returns the commit sha, or None (creating nothing) when the scoped tree equals ``base_sha``.
     """
 
     tmp_dir = tempfile.mkdtemp(prefix="rb-xplr-index-")
@@ -333,16 +265,9 @@ def pin_with_policy(
     parent_sha: str | None = None,
     ledger_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Pin the source for a new experiment under the configured policy.
+    """Pin the source for a new experiment under the cfg-xplr commit policy and return its ``source`` block.
 
-    Returns the record's ``source`` block. ``diff_from`` resolution
-    order: explicit ``--baseline`` ref (resolved against the repo) ==
-    declared ``source.diff_from`` (taken verbatim; the two may not
-    disagree), else the parent experiment's pinned sha, else
-    HEAD-before-snapshot — so the RTL-level diff of #299 is always
-    well-defined. rb bookkeeping (``ledger_root``, the worktree root,
-    the rb log file) never counts as source: it is excluded from both
-    the dirtiness check and any auto-commit snapshot.
+    ``diff_from`` is, in order, the ``--baseline`` ref, the declared ``source.diff_from`` (the two may not disagree), the parent's pinned sha, or HEAD before the snapshot.
     """
 
     head = head_sha(project_root)
@@ -378,7 +303,7 @@ def pin_with_policy(
         )
 
     snapshot = None
-    if dirty:  # auto mode: snapshot the scope, leave the user's tree alone
+    if dirty:
         snapshot = snapshot_scope(project_root, exp_id, scope, head, excludes=excludes)
 
     source: dict[str, Any] = {}
@@ -397,8 +322,6 @@ def pin_with_policy(
         if branch is not None:
             source["branch"] = branch
     source["diff_from"] = diff_from
-    # the pinned sha is exact by construction in every mode: either the
-    # scope was clean (HEAD == the scoped tree) or it was snapshotted
     source["dirty"] = False
     return source
 
@@ -413,13 +336,13 @@ def _now() -> str:
 
 
 def sidecar_path(ledger_root: Path, exp_id: str) -> Path:
-    """``artefacts/xplr/<exp>/worktree.json`` — schema stays frozen."""
+    """Return the ``artefacts/xplr/<exp>/worktree.json`` path."""
 
     return ledger.record_path(ledger_root, exp_id).parent / WORKTREE_SIDECAR
 
 
 def read_sidecar(ledger_root: Path, exp_id: str) -> dict[str, Any] | None:
-    """The parsed worktree sidecar, or None when absent/malformed."""
+    """Return the parsed worktree sidecar, or None when absent or malformed."""
 
     path = sidecar_path(ledger_root, exp_id)
     try:
@@ -430,12 +353,12 @@ def read_sidecar(ledger_root: Path, exp_id: str) -> dict[str, Any] | None:
 
 
 def _warn_if_not_ignored(project_root: Path, worktree: Path) -> None:
-    """A worktree inside the repo that isn't gitignored dirties the tree."""
+    """Warn when a worktree inside the repo is not gitignored."""
 
     try:
         worktree.relative_to(project_root)
     except ValueError:
-        return  # outside the repo: nothing to ignore
+        return
     result = _git(project_root, "check-ignore", "-q", str(worktree), check=False)
     if result.returncode != 0:
         log_event(
@@ -456,13 +379,9 @@ def materialize(
     *,
     path: Path | None = None,
 ) -> dict[str, Any]:
-    """Create (or reuse) the experiment's worktree at its pinned sha.
+    """Create the experiment's worktree at its pinned sha, or reuse the live one.
 
-    Idempotent: when the sidecar already points at a live worktree the
-    existing one is returned (``reused: true``); an explicit ``--path``
-    that disagrees with it fails loudly rather than silently growing a
-    second copy. Stale sidecars (worktree dir removed out-of-band) are
-    pruned and re-created.
+    A reused worktree is reported with ``reused: true``; an explicit ``path`` that differs from it raises. A sidecar whose worktree no longer exists is pruned and recreated.
     """
 
     existing = read_sidecar(ledger_root, record.id)
@@ -482,7 +401,7 @@ def materialize(
                 path=worktree,
             )
             return {**existing, "reused": True}
-        _git(project_root, "worktree", "prune", check=False)  # stale sidecar
+        _git(project_root, "worktree", "prune", check=False)
 
     worktree = path if path is not None else cfg.worktree_dir(project_root) / record.id
     worktree.parent.mkdir(parents=True, exist_ok=True)
@@ -516,10 +435,9 @@ def materialize(
 
 
 def release(project_root: Path, ledger_root: Path, exp_id: str) -> dict[str, Any]:
-    """Remove the experiment's worktree; the branch (if any) is kept.
+    """Remove the experiment's worktree and keep its branch.
 
-    Idempotent: releasing an experiment with no live worktree succeeds
-    with ``removed: false`` (stale state is still pruned).
+    Succeeds with ``removed: false`` when there is no live worktree.
     """
 
     info = read_sidecar(ledger_root, exp_id)
@@ -530,7 +448,7 @@ def release(project_root: Path, ledger_root: Path, exp_id: str) -> dict[str, Any
             project_root, "worktree", "remove", "--force", str(worktree), check=False
         )
         if result.returncode != 0 and worktree.exists():
-            # e.g. registered against another clone; reclaim the disk anyway
+            # git may not own the worktree (e.g. another clone); free the disk anyway
             shutil.rmtree(worktree)
         removed = True
     _git(project_root, "worktree", "prune", check=False)
@@ -556,7 +474,7 @@ def release(project_root: Path, ledger_root: Path, exp_id: str) -> dict[str, Any
 
 
 def _tree_bytes(path: Path) -> int:
-    """Recursive apparent size of ``path`` (files + symlink entries)."""
+    """Return the apparent size in bytes of ``path``, recursively."""
 
     if not path.exists():
         return 0
@@ -584,7 +502,7 @@ def _worktree_of(
 
 
 def total_usage_bytes(project_root: Path, ledger_root: Path, cfg: XplrConfig) -> int:
-    """Disk usage of every experiment dir plus its worktree, in bytes."""
+    """Return bytes used by every experiment directory and its worktree."""
 
     total = 0
     if not ledger_root.is_dir():
@@ -602,12 +520,9 @@ def total_usage_bytes(project_root: Path, ledger_root: Path, cfg: XplrConfig) ->
 def _protected_ids(
     records: list[ExperimentRecord],
 ) -> tuple[set[str], str | None]:
-    """Frontier members plus their direct lineage (parent chains).
+    """Return ``(ids, note)``: frontier members and their parent chains.
 
-    Returns ``(ids, note)``; when the frontier cannot be computed (no
-    success with directed numeric metrics yet) nothing is
-    frontier-protected and the note says why — eviction is still safe
-    because every record keeps its pinned sha.
+    When the frontier cannot be computed, ``ids`` is empty and ``note`` says why.
     """
 
     try:
@@ -628,12 +543,9 @@ def _protected_ids(
 def _artifact_eviction_targets(
     record: ExperimentRecord, exp_dir: Path, project_root: Path
 ) -> list[Path]:
-    """The heavy artifact paths safe to delete for one experiment.
+    """Return the ``outcome.artifacts`` paths that may be deleted for one experiment.
 
-    Only paths that resolve **inside the experiment dir** are eligible
-    (relative entries are tried against the project root, then the
-    experiment dir); ``record.json`` and the worktree sidecar are never
-    candidates — the ledger record is permanent.
+    Only existing paths inside the experiment directory qualify; relative entries are tried against the project root, then the experiment directory. ``record.json`` and the worktree sidecar never qualify.
     """
 
     artifacts = record.outcome.artifacts
@@ -666,23 +578,15 @@ def gc(
     target_gb: float | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Reclaim experiment disk space, frontier-first-protected, non-interactive.
+    """Evict worktrees and artifacts, oldest first, until usage is under the target.
 
-    Measures every experiment dir + worktree; when usage exceeds the
-    target (``--target-gb`` or the configured high watermark), evicts
-    heavy artifacts per policy until under target:
+    The target is ``target_gb`` or the configured high watermark. Policies:
 
-    * ``keep-frontier`` (default): frontier members and their direct
-      lineage are never auto-evicted; everything else (dominated,
-      failed, superseded) goes oldest-first.
-    * ``oldest-first``: no frontier protection, oldest-first.
-    * ``manual``: only lists the candidates; evicts nothing.
+    * ``keep-frontier``: frontier members and their parent chains are protected.
+    * ``oldest-first``: nothing is protected.
+    * ``manual``: candidates are listed, nothing is evicted.
 
-    Non-terminal (pending/running) experiments are never evicted — a
-    flow may be writing into them right now. Eviction removes the
-    worktree and the ``outcome.artifacts`` files inside the experiment
-    dir; ``record.json`` (and the exp branch + sha) always survive, so
-    any evicted experiment can be re-materialized and replayed.
+    Pending and running experiments are never evicted, and ``record.json`` and the pinned sha always survive.
     """
 
     policy = policy if policy is not None else cfg.eviction_policy
@@ -746,7 +650,7 @@ def gc(
             if worktree is not None:
                 freed += _tree_bytes(worktree)
             if freed == 0:
-                continue  # nothing heavy here; the record itself is kept
+                continue
             if not dry_run:
                 if worktree is not None:
                     release(project_root, ledger_root, exp_id)
@@ -779,7 +683,7 @@ def gc(
                 "experiment is protected (frontier/lineage/non-terminal) or "
                 "holds no evictable artifacts"
             )
-    elif remaining > target_bytes:  # manual policy: list, never evict
+    elif remaining > target_bytes:
         notes.append(
             "policy 'manual': listed eviction candidates only; nothing evicted"
         )
@@ -816,13 +720,9 @@ def gc(
 def enforce_disk_backstop(
     project_root: Path, ledger_root: Path, cfg: XplrConfig
 ) -> None:
-    """The register-time disk backstop (non-interactive, never prompts).
+    """Run gc when usage exceeds the high watermark (unless the policy is ``manual``).
 
-    Crossing the high watermark triggers gc under the configured policy
-    (``manual`` opts out of auto-gc); the hard cap is the backstop that
-    blocks the new run only when gc could not free enough. The agent
-    loop is never stalled by a prompt — only by a hard error with the
-    fix spelled out.
+    Raises if usage still exceeds the hard cap.
     """
 
     hard_cap = int(cfg.disk_hard_cap_gb * GB)
