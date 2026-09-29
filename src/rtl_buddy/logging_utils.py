@@ -1794,6 +1794,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
             )
+        # A whole-suite `rb pnr` does not attempt a run whose blocks failed
+        # (#95): its abstract would be missing, or a stale one.
+        case "pnr_suite.blocked":
+            blocks = ", ".join(f"'{b}'" for b in fields.get("blocks") or [])
+            return (
+                f'pnr "{fields.get("pnr")}": not run — block {blocks} did not '
+                "pass, so there is no abstract of it to assemble"
+            )
         # `rb pnr-export` (#618). Every one of these stops an export over a
         # saved result before KLayout is launched, and each says which of
         # the saved result's pieces is the problem — an export that runs on

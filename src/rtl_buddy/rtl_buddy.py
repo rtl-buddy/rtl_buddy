@@ -188,7 +188,8 @@ from .runner.xfail import apply_xfail, xfail_refusal
 from .runner.fpga_runner import FpgaRunner
 from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrExportRunner, PnrRunner
-from .runner.pnr_results import PnrSkipResults
+from .runner.pnr_plan import PlannedRun, plan_pnr_runs
+from .runner.pnr_results import PnrFailResults, PnrSkipResults
 from .runner.power_runner import PowerRunner
 from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
@@ -11378,6 +11379,12 @@ class RtlBuddy:
             "abstract_manifest",
             # The hardened blocks' abstracts the run consumed (#95).
             "blocks",
+            # The stage that failed instead of a verdict (an abstract that
+            # could not be published, a block that failed first), and for
+            # a run a whole-suite `rb pnr` did not attempt, which blocks
+            # stopped it (#95).
+            "fail_stage",
+            "blocked_by",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -11677,7 +11684,11 @@ class RtlBuddy:
         pnr_name: Annotated[
             str,
             typer.Argument(
-                help="name of pnr run", show_default="run all entries in the suite"
+                help="name of pnr run",
+                show_default=(
+                    "run all entries in the suite, each block before the runs "
+                    "that consume it"
+                ),
             ),
         ] = None,
         list_runs: Annotated[
@@ -11772,7 +11783,9 @@ class RtlBuddy:
             self._emit_machine_result(
                 "pnr",
                 exit_code,
-                results=[self._pnr_result_row(r) for r in results],
+                results=[
+                    self._pnr_result_row(r, suite=r.get("suite")) for r in results
+                ],
             )
         else:
             self._render_pnr_summary("P&R Results Summary", results)
@@ -11790,10 +11803,35 @@ class RtlBuddy:
         accept_stale: bool = False,
     ):
         root_cfg = self.root_cfg
-        runs = suite_cfg.get_runs(pnr_name)
-        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        suite_path = suite_cfg.get_path()
+        if pnr_name is None:
+            # The whole suite, blocks before the runs that consume them, and
+            # the blocks it names in other pnr.yaml files pulled in (#95).
+            plan = plan_pnr_runs(suite_cfg)
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr_suite.plan",
+                order=[
+                    p.name if not p.pulled_in else f"{p.name} ({p.suite_path})"
+                    for p in plan
+                ],
+            )
+        else:
+            # A named run consumes whatever abstract is published, and fails
+            # fast when there is none: never re-run a block behind its back.
+            plan = [
+                PlannedRun(suite_path=suite_path, cfg=run)
+                for run in suite_cfg.get_runs(pnr_name)
+            ]
+        outcomes = {}
         results = []
-        for run in runs:
+        for planned in plan:
+            run = planned.cfg
+            suite_dir = str(Path(planned.suite_path).resolve().parent)
+            row = {"pnr_name": run.get_name()}
+            if planned.pulled_in:
+                row["suite"] = planned.suite_path
             pnr_level = run.get_reglvl(run.get_tool_name())
             if reg_level is not None and pnr_level > reg_level:
                 log_event(
@@ -11805,16 +11843,53 @@ class RtlBuddy:
                     pnr_level=pnr_level,
                     reg_level=reg_level,
                 )
-                results.append(
-                    {
-                        "pnr_name": run.get_name(),
-                        "results": PnrSkipResults(
-                            name=f"{run.get_name()}/results",
-                            desc=(f"reglvl {pnr_level} above {reg_level}"),
-                        ),
-                    }
+                res = PnrSkipResults(
+                    name=f"{run.get_name()}/results",
+                    desc=(f"reglvl {pnr_level} above {reg_level}"),
                 )
+                outcomes[planned.key] = res
+                results.append({**row, "results": res})
                 continue
+            # A block's run delivered its abstract when it passed (an XPASS
+            # did pass), or was skipped and left the published one alone.
+            # An XFAIL is a pass for the suite and still no abstract.
+            blocked_by = [
+                dep
+                for dep in planned.deps
+                if dep.key in outcomes
+                and outcomes[dep.key].results.get("result")
+                not in ("PASS", "XPASS", "SKIP")
+            ]
+            if blocked_by:
+                # Not attempted: its abstract would be missing, or worse, a
+                # stale one left by an earlier run. FAIL rather than SKIP so
+                # the suite does not pass, with a fail_stage an xfail marker
+                # never excuses (#553).
+                names = ", ".join(
+                    f"'{dep.block}' (pnr run '{dep.key[1]}')" for dep in blocked_by
+                )
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_suite.blocked",
+                    pnr=run.get_name(),
+                    blocks=[dep.block for dep in blocked_by],
+                )
+                noun = "block" if len(blocked_by) == 1 else "blocks"
+                res = PnrFailResults(
+                    name=f"{run.get_name()}/results",
+                    desc=f"blocked: {noun} {names} did not pass",
+                    fail_stage="blocked",
+                    fields={"blocked_by": [dep.block for dep in blocked_by]},
+                )
+                outcomes[planned.key] = res
+                results.append({**row, "results": res})
+                continue
+            if planned.pulled_in:
+                # Its own artefact tree, locked like any `rb pnr -c` of it.
+                self._artifact_locks.acquire(
+                    Path(suite_dir) / "artefacts", command="pnr"
+                )
             runner = PnrRunner(
                 name=run.get_name(),
                 root_cfg=root_cfg,
@@ -11829,7 +11904,8 @@ class RtlBuddy:
             res = runner.run()
             if run.is_xfail():
                 self._apply_xfail_logged(res, run, "pnr_suite.xfail")
-            results.append({"pnr_name": run.get_name(), "results": res})
+            outcomes[planned.key] = res
+            results.append({**row, "results": res})
         return results
 
     def _render_pnr_summary(self, title, pnr_results, *, metadata=None):

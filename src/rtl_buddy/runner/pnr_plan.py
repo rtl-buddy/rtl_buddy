@@ -1,0 +1,156 @@
+"""Block-before-top ordering for an `rb pnr` over a whole suite (#95).
+
+A run that names hardened blocks under `blocks:` consumes the abstracts
+their `harden: true` runs publish, so those runs have to go first. This
+module turns a suite into that order: a topological sort over the
+`blocks:` edges, stable in the file's own order wherever the edges leave
+a choice, so a suite with no `blocks:` runs exactly as it always has.
+
+A block defined in *another* `pnr.yaml` is pulled into the plan, ahead of
+the run that consumes it, and so are its own blocks in turn — asking for a
+suite means asking for everything it is built from. Only the whole-suite
+form does this: a named run consumes whatever abstract is published, and
+fails fast when there is none, as it always has.
+"""
+
+import os
+from dataclasses import dataclass
+
+from ..config.pnr import PnrConfig, PnrSuiteConfig
+from ..errors import FatalRtlBuddyError
+
+RunKey = tuple[str, str]
+
+
+def run_key(suite_path: str, run_name: str) -> RunKey:
+    """A run's identity across files: its `pnr.yaml`, resolved, and its name."""
+    return (os.path.realpath(suite_path), run_name)
+
+
+@dataclass(frozen=True)
+class BlockDep:
+    """One `blocks:` entry of a planned run, as an edge of the plan."""
+
+    block: str
+    key: RunKey
+
+
+@dataclass(frozen=True)
+class PlannedRun:
+    suite_path: str
+    cfg: PnrConfig
+    deps: tuple[BlockDep, ...] = ()
+    # From another pnr.yaml, only because a run of the requested suite
+    # (or one of its blocks) consumes it.
+    pulled_in: bool = False
+
+    @property
+    def name(self) -> str:
+        return self.cfg.get_name()
+
+    @property
+    def key(self) -> RunKey:
+        return run_key(self.suite_path, self.name)
+
+
+def _label(key: RunKey, root: str) -> str:
+    suite, name = key
+    return name if suite == root else f"{name} ({suite})"
+
+
+def plan_pnr_runs(suite_cfg: PnrSuiteConfig, *, load_suite=PnrSuiteConfig):
+    """Every run of ``suite_cfg`` plus the blocks it is built from, in order.
+
+    Raises :class:`FatalRtlBuddyError` for a block that names a run no
+    `pnr.yaml` defines, and for a cycle, naming it — both before anything
+    has run.
+    """
+    root = os.path.realpath(suite_cfg.get_path())
+    suites: dict[str, PnrSuiteConfig] = {root: suite_cfg}
+    found: dict[RunKey, tuple[str, PnrConfig, bool]] = {}
+    for cfg in suite_cfg.get_runs():
+        found[run_key(root, cfg.get_name())] = (root, cfg, False)
+
+    deps: dict[RunKey, list[BlockDep]] = {}
+    pending = list(found)
+    while pending:
+        key = pending.pop(0)
+        cfg = found[key][1]
+        edges = deps.setdefault(key, [])
+        for ref in cfg.get_blocks():
+            dep = run_key(ref.pnr_suite_path, ref.pnr_run)
+            edges.append(BlockDep(block=ref.name, key=dep))
+            if dep in found:
+                continue
+            dep_suite = dep[0]
+            if dep_suite not in suites:
+                if not os.path.isfile(dep_suite):
+                    raise FatalRtlBuddyError(
+                        f"pnr run '{_label(key, root)}': block '{ref.name}' "
+                        f"names pnr-path {ref.pnr_suite_path}, which does not exist"
+                    )
+                suites[dep_suite] = load_suite(dep_suite)
+            runs = suites[dep_suite].runs
+            if ref.pnr_run not in runs:
+                raise FatalRtlBuddyError(
+                    f"pnr run '{_label(key, root)}': block '{ref.name}' names "
+                    f"pnr run '{ref.pnr_run}', which {dep_suite} does not define"
+                )
+            found[dep] = (dep_suite, runs[ref.pnr_run], True)
+            pending.append(dep)
+
+    # Two pnr.yaml files in one directory share its artefacts/: a run name
+    # both define would be one output directory written twice, and under
+    # `-j` at once.
+    outputs: dict[tuple[str, str], RunKey] = {}
+    for key in found:
+        out = (os.path.dirname(key[0]), key[1])
+        if out in outputs:
+            raise FatalRtlBuddyError(
+                f"pnr runs '{_label(outputs[out], root)}' and "
+                f"'{_label(key, root)}' would both write "
+                f"{os.path.join(out[0], 'artefacts', out[1])}: rename one"
+            )
+        outputs[out] = key
+
+    order = list(found)
+    index = {key: i for i, key in enumerate(order)}
+    done: set[RunKey] = set()
+    planned: list[PlannedRun] = []
+    while len(planned) < len(order):
+        ready = [
+            key
+            for key in order
+            if key not in done and all(d.key in done for d in deps[key])
+        ]
+        if not ready:
+            cycle = _find_cycle([k for k in order if k not in done], deps)
+            raise FatalRtlBuddyError(
+                "pnr blocks: cycle: "
+                + " -> ".join(_label(key, root) for key in cycle)
+                + " — a block cannot be built from a run that consumes it"
+            )
+        key = min(ready, key=index.__getitem__)
+        suite, cfg, pulled = found[key]
+        planned.append(
+            PlannedRun(
+                suite_path=suite, cfg=cfg, deps=tuple(deps[key]), pulled_in=pulled
+            )
+        )
+        done.add(key)
+    return planned
+
+
+def _find_cycle(keys: list[RunKey], deps: dict[RunKey, list[BlockDep]]):
+    """One cycle among ``keys`` (the runs no order could place), as a path
+    that ends where it starts."""
+    remaining = set(keys)
+    path: list[RunKey] = []
+    on_path: dict[RunKey, int] = {}
+    key = keys[0]
+    # Every run left has a block that is also left, so the walk repeats.
+    while key not in on_path:
+        on_path[key] = len(path)
+        path.append(key)
+        key = next(d.key for d in deps[key] if d.key in remaining)
+    return [*path[on_path[key] :], key]
