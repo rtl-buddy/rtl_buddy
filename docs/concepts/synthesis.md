@@ -183,7 +183,7 @@ endfunction
 
 Class methods, `extern` and `pure virtual` prototypes, DPI imports and exports, and anything declared `automatic` are exempt. For testbench and non-synthesisable sources, Verible's `explicit-function-lifetime` rule runs through `rb lint` and `cfg-verible`.
 
-The scan is a tokenizer, not an elaborator. It follows `` `include `` and evaluates `` `ifdef `` on definedness only. It misses declarations produced by macros, under `-y` library directories, or in unresolvable headers, and can report spuriously because `` `if `` expressions are not evaluated.
+The scan is a tokenizer, not an elaborator. It follows `` `include `` and evaluates `` `ifdef `` on definedness only. It misses declarations produced by macros, under `-y` library directories, or in unresolvable headers. Scope nesting is tracked by keyword pairing, so unusual but legal code can change which declarations count as exempt.
 
 ## Preprocessor definitions
 

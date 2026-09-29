@@ -88,7 +88,7 @@ wave = "tb.legacy_dut.clk"
 view = "tb.dut.clk"
 ```
 
-Port `0` lets the OS choose. Relative paths resolve from the project root. Signal aliases apply before `tb_prefix` is removed. Check edits with `rb hub config validate`.
+Port `0` lets the OS choose. Relative paths resolve from the project root. Signal aliases apply before `tb_prefix` is removed. Only `[hub]` and `[mapping]` are accepted: an unknown top-level section is an error, and unknown keys inside them are ignored. Check edits with `rb hub config validate`.
 
 ## Connect peers
 
@@ -139,11 +139,7 @@ rb hub start --serve-viewer
 
 Clicking a node selects the instance (or the shallowest instance of a module) in the schematic, opens its source when it has a file location, and sets the coverage focus. A model with `graph: false` has no design coordinate, so its send buttons stay dark and say so.
 
-Ticking `heat` colors module nodes by a synthesis or power metric from `/phy.json`. Cells and area are counted once per module definition. Power sums every leaf row in every instantiation of the module, and the inspector shows how many instantiations and rows each figure covers.
-
-- The metric switcher and run dropdown are the `/phy` pane's. `/gph?dir=<phys dir>` opens the overlay on one run.
-- With no `phys-manifest.json` under the project, the control is muted and names `rb synth` and `rb power`. A model produced after the tab opened needs a reload.
-- Coverage and heat share the node fill, so enabling one releases the other.
+Ticking `heat` colors module nodes by a synthesis or power metric from the [`/phy` pane](#synthpower-pane); `/gph?dir=<phys dir>` opens the overlay on one run. With no `phys-manifest.json` under the project, the control is muted and names `rb synth` and `rb power`; reload after producing one. Coverage and heat share the node fill, so enabling one releases the other.
 
 ## Coverage pane
 
@@ -165,11 +161,10 @@ Clicking a module focuses the graph pane, and clicking an instance selects it in
 
 ### Select a run
 
-The run dropdown in the pane header lists the 50 newest runs, as `run · top · backends · mode (activity) · experiment`. Bare `/phy.json` follows the newest run; choosing an older one fetches `/phy.json?dir=<project-relative phys_dir>`. A refused selection keeps the current run on screen and reports the refusal in the status line.
+The run dropdown in the pane header lists the 50 newest runs. `/phy.json` follows the newest run; `/phy.json?dir=<project-relative phys_dir>` selects another.
 
-- A `dir` outside the project root is 403, and a directory with no `phys-manifest.json` is 404 and names `rb phys runs`.
-- A `phys-focus` names a target and metric but no run, so it applies to the run on display.
-- A reload keeps the metric, sort, filter, module and selected instance if the same model comes back. If a different model arrives, such as a newer run, the controls stay and the module and selection are dropped.
+- A `dir` outside the project root returns 403, and a directory with no `phys-manifest.json` returns 404 and names `rb phys runs`.
+- A refused selection keeps the current run on screen and reports the refusal in the status line.
 
 ## AXI-perf overlay and notebook spawning
 
@@ -186,9 +181,7 @@ The file must exist at startup and keep its canonical location under the test's 
 
 The protocol is UTF-8 line-delimited JSON over TCP or WebSocket. A peer sends `hello`, receives `welcome`, and tracks `peer_joined` and `bye`. State events go to every peer except their origin. Requests go to the origin that owns the target coordinate system; an absent target returns `not_connected`. `GET /healthz` is the liveness endpoint.
 
-The JSON Schema is `src/rtl_buddy/hub/schema/hub-protocol-v1.json`, a vendored copy of [`rtl-buddy-sch/schemas/hub-protocol-v1.json`](https://github.com/rtl-buddy/rtl-buddy-sch/blob/main/schemas/hub-protocol-v1.json). Re-copy it byte-for-byte instead of editing it. The `Origin` enum in `hub/protocol.py` must list the schema's origins, which `tests/test_hub_protocol.py::test_origin_enum_matches_vendored_schema` checks. Adding an origin is a coordinated change across three repositories, with the schema merged first; the checklist is [`docs/hub-protocol.md` section 13](https://github.com/rtl-buddy/rtl-buddy-sch/blob/main/docs/hub-protocol.md#13-adding-or-renaming-an-origin--lockstep-checklist) in `rtl-buddy-sch`.
-
-A new adapter should validate envelopes against the schema and follow `src/rtl_buddy/tools/wave_hub_bridge.py`.
+The JSON Schema is `src/rtl_buddy/hub/schema/hub-protocol-v1.json`, a vendored copy of [`rtl-buddy-sch/schemas/hub-protocol-v1.json`](https://github.com/rtl-buddy/rtl-buddy-sch/blob/main/schemas/hub-protocol-v1.json). Do not edit the copy; re-copy it from `rtl-buddy-sch`. A new adapter should validate envelopes against the schema and follow `src/rtl_buddy/tools/wave_hub_bridge.py`.
 
 ## Auto-start on macOS
 
