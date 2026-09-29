@@ -4,11 +4,11 @@ description: Open simulation and formal waveforms in Surfer, configure editor na
 
 # Waveform Viewer
 
-`rb wave` opens a test waveform in Surfer. With the RTL Buddy Surfer fork and nvim plugin, it also supports source navigation, live value annotations, and adding signals from the editor.
+`rb wave` opens a test waveform in Surfer. With the RTL Buddy Surfer fork and the nvim plugin it also navigates to source, annotates signals with live values, and adds signals from the editor.
 
 ## Install Surfer
 
-Basic FST and VCD viewing works with mainline Surfer. Live editor annotation requires the `rtl-buddy` branch of the [RTL Buddy Surfer fork](https://github.com/rtl-buddy/surfer/tree/rtl-buddy):
+Mainline Surfer is enough to view FST and VCD files. Live editor annotation needs the `rtl-buddy` branch of the [RTL Buddy Surfer fork](https://github.com/rtl-buddy/surfer/tree/rtl-buddy):
 
 ```bash
 git clone https://github.com/rtl-buddy/surfer.git ../surfer
@@ -17,24 +17,22 @@ git checkout rtl-buddy
 cargo build --release
 ```
 
-Put the binary on `PATH` or configure its path in `cfg-surfer`.
+Put the binary on `PATH` or set its path in `cfg-surfer`.
 
 ## Open a test waveform
 
-From a suite containing `tests.yaml`:
+Run from a suite that contains `tests.yaml`:
 
 ```bash
 uv run rb wave basic
 uv run rb wave basic --resim
 ```
 
-If no waveform exists, the first command runs the test in debug mode. `--resim` always reruns it. RTL Buddy opens the newest supported FST or VCD under the test artefacts.
-
-If `basic.surfer` exists beside `tests.yaml`, RTL Buddy passes it to Surfer as the initial signal layout.
+`rb wave` opens the newest supported FST or VCD under the test's artefacts. If none exists it first runs the test in debug mode; `--resim` always reruns the test. If `basic.surfer` exists beside `tests.yaml`, it is passed to Surfer as the initial signal layout.
 
 ## Configure Surfer and the editor
 
-Add a named entry to `root_config.yaml` and route it from the active platform:
+Add a named `cfg-surfer` entry to `root_config.yaml` and route it from the active platform:
 
 ```yaml
 cfg-platforms:
@@ -53,9 +51,12 @@ cfg-surfer:
     ctrl-sock: ~/.local/share/rtl-buddy/wave-ctrl.sock
 ```
 
-`%f` and `%l` expand to the source file and line. `wcp-port: 0` lets the OS select a free port. `editor-sock` enables nvim reuse and annotations; `ctrl-sock` enables editor-to-Surfer actions. Omit the sockets when using another editor for one-way source navigation.
+- `%f` and `%l` in `editor-cmd` expand to the source file and line.
+- `wcp-port: 0` lets the OS pick a free port.
+- `editor-sock` enables nvim reuse and annotations.
+- `ctrl-sock` enables editor-to-Surfer actions.
 
-See [YAML Formats](../reference/yaml.md#root_configyaml) for all fields.
+With another editor, omit both sockets to get one-way source navigation. See [YAML Formats](../reference/yaml.md#root_configyaml) for all fields.
 
 ## Install the nvim integration
 
@@ -64,17 +65,17 @@ rb nvim-install
 rb nvim-install --update
 ```
 
-The command installs a compatible revision of `rtl-buddy-nvim` and writes an auto-loaded setup file; no `init.lua` change is required. It needs Git and network access. For an offline checkout:
+This installs a compatible revision of `rtl-buddy-nvim` and writes an auto-loaded setup file, so `init.lua` needs no change. It needs Git and network access. For an offline checkout:
 
 ```bash
 rb nvim-install --source /path/to/rtl-buddy-nvim --ref <branch>
 ```
 
-Use `--force` to replace a broken install. Run `:checkhealth rtlbuddy` in nvim to verify hub, language-server, and wave integration.
+`--force` replaces a broken install. In nvim, `:checkhealth rtlbuddy` verifies the hub, language-server and wave integration.
 
 ## Navigate and annotate signals
 
-In Surfer, select a signal to establish the active instance scope, then choose **Go to declaration**. RTL Buddy opens the declaration and annotates signals in that scope with their values at the current waveform cursor. Moving the cursor refreshes the annotations.
+In Surfer, select a signal to set the active instance scope, then choose **Go to declaration**. The editor opens the declaration and annotates the signals in that scope with their values at the waveform cursor. Moving the cursor refreshes the annotations.
 
 To annotate only the selected signal:
 
@@ -82,9 +83,9 @@ To annotate only the selected signal:
 rb wave basic --focused-signal
 ```
 
-With `ctrl-sock` configured, place the nvim cursor on a signal and press `<leader>wa` to add it to Surfer. Select a Surfer signal first so the active scope is unambiguous.
+With `ctrl-sock` set, put the nvim cursor on a signal and press `<leader>wa` to add it to Surfer. Select a Surfer signal first so the scope is unambiguous.
 
-If an nvim socket is stale, the next navigation request starts a new editor instance. If the plugin is missing, `rb wave` warns and continues without annotations.
+If the nvim socket is stale, the next navigation request starts a new editor. If the plugin is missing, `rb wave` warns and continues without annotations.
 
 ## Open a formal counterexample
 
@@ -92,18 +93,20 @@ If an nvim socket is stale, the next navigation request starts a new editor inst
 uv run rb wave-fpv demo_fpv_counter_safety
 ```
 
-`rb wave-fpv` reads `fpv.yaml`, finds the first counterexample trace under the verification's artefacts, and opens it in the configured Surfer entry. Use `-c` for another config or `--surfer <name>` to override routing.
+`rb wave-fpv` reads `fpv.yaml`, finds the first counterexample trace under the verification's artefacts, and opens it in the configured Surfer entry. Use `-c` for another config and `--surfer <name>` to override the routing. There is no editor annotation, so mainline Surfer works.
 
-This command does not enable the editor annotation round trip, so mainline Surfer is sufficient. It fails with a clear message when the verification has not run, passed without a counterexample, or produced no trace.
+It fails with a message if the verification has not run, passed without a counterexample, or produced no trace.
 
 ## Use correct time units
 
-Signal reads through pywellen use waveform timescale ticks. Convert them with `Waveform.timescale`.
+Three interfaces use three units. Convert between them; never pass a value across unchanged.
 
-Hub and WCP navigation commands use femtoseconds. For example, with a 10 ps waveform tick, 95 ns is 9,500 ticks but 95,000,000 fs. Pass femtoseconds to `rb hub send wave-cursor` and `wave-zoom`.
+- pywellen signal reads use waveform timescale ticks. Convert with `Waveform.timescale`.
+- Hub and WCP navigation, including `rb hub send wave-cursor` and `wave-zoom`, use femtoseconds.
+- Surfer command files use waveform ticks.
 
-Surfer command files use waveform ticks, not femtoseconds. Do not pass values between these interfaces without conversion.
+With a 10 ps waveform tick, 95 ns is 9,500 ticks and 95,000,000 fs.
 
 ## Use the coordination hub
 
-When [the hub](hub.md) is running, `rb wave` connects automatically and shares cursor, scope, selection, and waveform values with other peers. It also accepts hub requests to navigate and curate displayed signals. Without a reachable hub, waveform viewing and editor annotation continue standalone.
+When [the hub](hub.md) is running, `rb wave` connects automatically. It shares cursor, scope, selection and waveform values with other peers and accepts hub requests to navigate and curate the displayed signals. Without a reachable hub, waveform viewing and editor annotation work standalone.

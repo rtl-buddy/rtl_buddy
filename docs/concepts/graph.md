@@ -4,53 +4,57 @@ description: Build and query rtl_buddy's design knowledge graph, join test and c
 
 # Design Knowledge Graph
 
-The design knowledge graph connects project configuration, elaborated RTL hierarchy, tests, specifications, and source bindings. Use it for questions that cross files or require elaborated relationships; read a source or config file directly for a fact contained in one file.
+The design knowledge graph connects project configuration, elaborated RTL hierarchy, tests, specifications, and source bindings. Use it for questions that cross files or need elaborated relationships. Read the file directly for a fact that lives in one file.
 
 ## Build and refresh the graph
 
-Build structural data first, then refresh the independent results overlay after tests or coverage runs:
+Build the structural data first, then refresh the results overlay after tests or coverage runs:
 
 ```bash
 rb graph build
 rb graph results
 ```
 
-By default, `graph build` finds every model under the design directory. Select a smaller scope with a repeatable `--model NAME` or with `-c/--regression FILE`; those two selectors are mutually exclusive.
+`graph build` covers every model under the design directory. Narrow it with a repeatable `--model NAME` or with `-c/--regression FILE`; the two selectors are mutually exclusive. `--no-design`, `--no-tb`, `--no-flow-tops`, `--no-bind` and `--no-extract` skip individual parts, and `--force` ignores a valid cache. See the [CLI reference](../reference/cli.md#graph) for all options.
 
-The normal build includes:
+A build contains:
 
 - DUT, testbench, and non-simulation run hierarchies from `rtl-buddy-view`.
 - Test, model, regression, specification, and coverage declarations from rtl_buddy configs.
 - cocotb, Python import, signal-access, golden-model, and DPI bindings.
-- An optional external binding tier when `rtl-buddy-graph-extract` is installed.
+- An optional external binding tier, present when `rtl-buddy-graph-extract` is installed.
 
-Useful reductions are `--no-design`, `--no-tb`, `--no-flow-tops`, `--no-bind`, and `--no-extract`. Use `--force` to ignore a valid cache. See the [CLI reference](../reference/cli.md#graph) for the complete option list.
+The design tier needs a compatible `rtl-buddy-view`; check it with `rb tool-check --explain rtl-buddy-view`. A missing extractor makes its tier `skipped` and the graph stays usable. A requested tier that breaks is `failed`. Per-model failures give a non-zero exit only with `--strict`. `graph-meta.json` records each tier's status and failure details.
 
-The design tier requires a compatible `rtl-buddy-view`:
+## Cached builds
 
-```bash
-rb tool-check --explain rtl-buddy-view
-```
+A build with the same inputs, tool versions, schema and tier selection is a cached no-op. The selection includes the flags that narrowed each tier and, for every selected model, its `models.yaml` path, `name`, `top:` and `graph:`.
 
-The external extractor is optional. If absent, its tier is `skipped` and the graph remains usable. A requested tier that breaks is `failed`; per-model failures become non-zero only with `--strict`. Inspect `graph-meta.json` for tier status and failure details.
+A cached failure stays cached until an input, tool version or selection changes. Pass `--force` to rebuild anyway.
 
 ## Models with no elaborable root
 
-The design tier roots each model's export at the model's `top:`, defaulting to the model name. A model that has no such module — an SV `interface` published as a library entry, or a filelist of vendored IP — sets `graph: false` in [`models.yaml`](../reference/yaml.md#modelsyaml).
+The design tier roots each model's export at the model's `top:`, which defaults to the model name. If no module has that name (an SV `interface` published as a library entry, a filelist of vendored IP), either set `top:` to the real root module or set `graph: false` in [`models.yaml`](../reference/yaml.md#modelsyaml).
 
-An opted-out model, and every testbench and non-simulation run rooted at it, is listed under the design tier's `skipped` entries in the envelope and in `graph-meta.json`, never under `failures`. That includes the ones a normal build never reaches: a cocotb testbench whose `toplevel:` is the model's own root, and the synth, CDC or FPGA runs that default their top to it, are dropped as redundant with the DUT export when the model is graphable, and reported when there is no DUT export to be redundant with. Testbenches and runs that de-duplicate into one export are listed individually: the de-duplication key is what the viewer is handed, so two `testbenches:` entries with the same model, filelist and top elaborate once, but each remains a testbench the project declared. `skipped` does not affect the exit code, including under `--strict`. If every model in scope opts out, the tier itself is `skipped`.
+A model with `graph: false` is listed under the design tier's `skipped` entries, in the envelope and in `graph-meta.json`, and never under `failures`. `skipped` does not change the exit code, even with `--strict`. If every model in scope opts out, the whole tier is `skipped`. The same listing covers every testbench and non-simulation run rooted at the model:
 
-Opting a previously exported model out also removes its `artefacts/graph/design/<model>/` directory, including the testbench- and run-rooted exports nested under it. Those files are durable — nothing rewrites them but a later export of the same model — so leaving them would keep serving a hierarchy the build has just declared the model does not have. A removal that fails, for example under a read-only artefact directory, is fatal rather than ignored: reporting the model as skipped while its old hierarchy stays readable is the state the retraction exists to prevent. The target is re-checked before the delete and must resolve to a direct child of the design-export directory, so a symlinked model directory is refused rather than followed. Name collisions are reported before any retraction runs, so a rejected build never deletes the export of the model it was colliding with.
+- A cocotb testbench whose `toplevel:` is the model's root, and synth, CDC or FPGA runs whose top defaults to it, are dropped as redundant when the model is graphable. They are reported when there is no DUT export.
+- Testbenches and runs that share one export (same model, filelist and top) are each listed individually.
 
-The config tier still emits the model node, carrying `graph: false`, so `spec:` and test cross-references resolve. It emits no `maps_to` edge for it, and no `elaborates_as` or `targets` edge from a testbench or run over it, because the design tier will not define those `module:` nodes. A testbench is judged by the models its tests name, not by the module it tops at, so an exported model's testbench keeps its edge even when the two models share a root module. Give the model a `top:` instead when the filelist elaborates and only the root module name differs.
+Opting out a model that was exported before deletes its `artefacts/graph/design/<model>/` directory, including the nested testbench and run exports, so no stale hierarchy is served. If the deletion fails (for example under a read-only artefact directory) the build fails. A symlinked model directory is refused rather than followed. Name collisions are reported before any deletion.
 
-The same rule covers a model this build did not select. The config tier reads the whole design directory whatever `--model` or `-c` narrowed the design tier to, so it holds models that will not be exported; those get a node and no config-to-design stitch. Withholding the stitch rather than letting it dangle matters because `module:<top>` is a global id: an unselected model whose `top:` matches a selected one's would otherwise resolve, after the merge, against that other model's hierarchy, and the graph would state a mapping that does not exist. Two models that are *both* exported still cannot share a top — that is refused before the build runs. A `--no-design` build has no selection to respect and stitches every graphable model, as it always has.
+The config tier still emits the model node, marked `graph: false`, so `spec:` and test references resolve. It emits no `maps_to` edge for the model and no `elaborates_as` or `targets` edge from testbenches or runs over it. A testbench keeps its edge when the models its tests name are exported, even if two models share a root module.
 
-The opt-out is design-tier-only. `rb hier`, `rb hier-query`, and `rb axi-profile` still elaborate the model and still fail if its root does not resolve.
+- A model outside the build's selection (`--model` or `-c`) gets a node and no edge into the design tier, even though the config tier reads the whole design directory. This keeps `module:<top>` from resolving to another model's hierarchy.
+- A `--no-design` build has no selection and stitches every graphable model.
+- `rb hier`, `rb hier-query` and `rb axi-profile` ignore `graph: false`: they still elaborate the model and fail if its root does not resolve.
 
-Every model the build selects must carry a distinct `name`, and every model it exports must root at a distinct module. Sharing a name collides on disk — both exports land in `artefacts/graph/design/<name>/` and the second overwrites the first — and it collides in every lookup that spells a model by name, so `graph: false` does not excuse it; rename one. Sharing a top collides in the graph, where `module:<top>` is a global id and DUT ids are never suite-qualified, so the two hierarchies merge into one hybrid; there `graph: false` on one of them is a way out, because an opted-out model is never exported. `graph build` refuses either input before invoking the exporter and names both models and both `models.yaml` files.
+## Model names and tops must be distinct
 
-Unchanged inputs, tool versions, schema, and tier selection produce a cached no-op build. Selection covers the flags that narrowed each tier and, for every selected model, its declaration: the `models.yaml` it comes from, its `name`, its `top:`, and its `graph:`. Both halves are load-bearing. A tier whose models all opted out reads no inputs, so `--model`, `--no-tb`, `--no-flow-tops`, and `--no-design` would otherwise leave `graph-meta.json`'s `skipped` list describing the previous invocation. And a `models.yaml` outside `--design-dir` — one a `--regression` selection reaches through a test's `model_path:` — is hashed by no tier, so editing `top:` alone would otherwise leave the graph rooted at the module the model used to name. A failure remains cached until an input, tool version, or selection changes, or `--force` is used.
+Every selected model needs a distinct `name`, and every exported model needs a distinct root module. `graph build` refuses either violation before invoking the exporter and names both models and both `models.yaml` files.
+
+- Two models with the same name write to the same `artefacts/graph/design/<name>/` directory and collide in every lookup by name. `graph: false` does not help; rename one.
+- Two models with the same top would merge into one hybrid hierarchy, because `module:<top>` is a global id. Set `graph: false` on one of them, since an opted-out model is not exported.
 
 ## Query the graph
 
@@ -62,28 +66,28 @@ rb graph path cocotb_random module:demo_tiny_alu
 rb graph explain test:verif/demo_tiny_alu#flags
 ```
 
-- `query` performs deterministic keyword matching and bounded neighbourhood expansion. Use `--type`, `--tier`, `--depth`, or `--limit` to narrow the result.
-- `path` returns shortest paths. Traversal is undirected by default because edge direction expresses role, not reachability; pass `--directed` when direction matters.
-- `explain` returns one node's attributes, incident edges, test result, coverage entry, and a source-citation command for instance nodes.
+- `query` does deterministic keyword matching with bounded neighbourhood expansion. Narrow it with `--type`, `--tier`, `--depth` or `--limit`.
+- `path` returns shortest paths. Traversal is undirected by default, since edge direction expresses role, not reachability. Pass `--directed` when direction matters.
+- `explain` returns one node's attributes, incident edges, test result, coverage entry, and, for instance nodes, a command that cites the source.
 
-Bare names are accepted only when they identify one node. Ambiguous names fail with candidate ids instead of choosing silently. `query` exits 1 when nothing matches; an invalid or ambiguous node reference exits 2.
+A bare name is accepted only when it identifies one node. An ambiguous name fails with the candidate ids. `query` exits 1 when nothing matches; an invalid or ambiguous node reference exits 2.
 
-All three verbs read without taking the graph write lock, so they can run while a regression is writing separate test artefacts. Pass `--no-results` for a structural-only query.
+The verbs do not take the graph write lock, so they can run during a regression. Pass `--no-results` for a structural-only query.
 
-With `--machine`, each command emits the standard [machine envelope](../agents.md#machine-mode). Query payloads include the graph and overlay paths plus `matches`, `paths`, or the explained node. Truncation metadata reports neighbours omitted by bounded expansion; raise the corresponding limit or explain a specific peer rather than assuming the result is complete.
+With `--machine` each verb emits the standard [machine envelope](../agents.md#machine-mode) with the graph and overlay paths and the `matches`, `paths` or explained node. Truncation metadata reports neighbours cut off by bounded expansion. Raise the limit or explain a specific peer rather than assuming the result is complete.
 
 ## Choose graph or source lookup
 
-The graph is most useful for:
+Use the graph for:
 
 - transitive impact through elaborated hierarchy;
-- paths that cross design, test, specification, and binding data;
+- paths that cross design, test, specification and binding data;
 - stable node ids and exact structural relationships;
-- joining current results or coverage to those relationships.
+- current results or coverage joined to those relationships.
 
-For a port list, a YAML field, or another single-file fact, use the graph to locate the source and read the relevant lines. Do not enumerate a small config file through many `explain` calls. Use `explain --expand` only when the full attributes of every peer are needed.
+For a port list, a YAML field or another single-file fact, use the graph to find the file and read the lines. Do not enumerate a small config file through many `explain` calls. Use `explain --expand` only when you need the full attributes of every peer.
 
-`scripts/graph_token_benchmark.py` compares graph and raw-file routes on a built project. Run it after changing query payloads:
+After changing query payloads, compare graph and raw-file routes on a built project:
 
 ```bash
 uv run python scripts/graph_token_benchmark.py -p /path/to/project --markdown
@@ -91,36 +95,42 @@ uv run python scripts/graph_token_benchmark.py -p /path/to/project --markdown
 
 ## Results Overlay
 
-`rb graph results` writes current run state to `artefacts/graph/results-overlay.json` without modifying structural `graph.json`:
+`rb graph results` writes current run state to `artefacts/graph/results-overlay.json` and never modifies the structural `graph.json`:
 
 ```bash
 rb graph results
 rb graph results --strict
 ```
 
-Entries are keyed by `test:<suite dir>#<test name>` and contain the latest result status, seed, timestamp, and paths to artefacts that exist. The timestamp is the result envelope's file modification time, so refreshing unchanged inputs is byte-stable.
+Entries are keyed by `test:<suite dir>#<test name>`. Each holds the latest result status, seed, timestamp, and paths to artefacts that exist. The timestamp is the result envelope's modification time, so refreshing unchanged inputs gives identical bytes. Status comes from `result.json`, not from logs. A test directory with artefacts but no envelope is `UNKNOWN`. Random-test iterations are listed under `runs`, and the newest one supplies the top-level status.
 
-An entry also carries an optional `compile` block with `duration_sec`, `builder`, and `reused` when the run's result envelope records one. A local run records its own. A dispatched run produces two envelopes that disagree on purpose: the simulation job writes `artefacts/<test>/result.json` with its own `compile` block, which says `reused: true` and near-zero duration because the shared build already produced the `simv`, and at collect the head overwrites the `compile` block in `artefacts/<test>/dispatch/result-<tag>.json` with the build job's record. The overlay takes the newest envelope, which is the head's, so a dispatched run reports the shared build's compile — the one that did the work. The exception is a simulation job that had to rebuild because the build job left no record for its config, so its own stamp check had nothing to reuse (`compile.prebuilt_stamp_invalid`): the overlay still reports the build job's record, not the recompile that actually produced that run's `simv`. Its values are read from the envelope, never measured at overlay time, and the block is absent when the envelope says nothing about the compile, so byte-stability holds for a refresh with nothing rerun.
+An entry has an optional `compile` block (`duration_sec`, `builder`, `reused`) copied from the envelope; it is absent when the envelope has none. For a dispatched run the block is the shared build job's record, not the simulation job's own `reused: true` record. This also holds when a simulation job had to rebuild (`compile.prebuilt_stamp_invalid`).
 
-Point the refresh at one run's tree with `--run-tag <name>`, matching the tag its `rb regression` used. The scan then reads `<suite>/artefacts/.runs/<tag>/` and the overlay is written to `artefacts/.runs/<tag>/graph/results-overlay.json`, so two concurrent regressions each convert their own results. `graph.json` is structural, not per-run, and is still read from `artefacts/graph/`. Consumers that resolve the overlay implicitly — the hub, the MCP server, `rb graph query` — read the untagged one; publish a tagged run's results there with `rb graph results --run-tag <name> -o artefacts/graph`.
+To convert one run's results, pass the tag used by its `rb regression`:
 
-Result status comes from each run's `result.json`, not from log parsing. A test directory with artefacts but no result envelope is retained as `UNKNOWN`. Random-test iterations remain available under `runs`; the newest iteration supplies the entry's top-level status.
+- `--run-tag <name>` reads `<suite>/artefacts/.runs/<tag>/` and writes `artefacts/.runs/<tag>/graph/results-overlay.json`, so concurrent regressions do not collide. `graph.json` is still read from `artefacts/graph/`.
+- The hub, the MCP server and `rb graph query` read the untagged overlay. Publish a tagged run there with `rb graph results --run-tag <name> -o artefacts/graph`.
 
-When cross-checking against `graph.json`:
+The refresh cross-checks against `graph.json`:
 
-- `missing` identifies graph test nodes with no result.
-- `unmatched` identifies results with no declared test node, such as generated sweep names.
-- `problems` identifies unreadable result data.
+- `missing` lists graph test nodes with no result.
+- `unmatched` lists results with no declared test node, such as generated sweep names.
+- `problems` lists unreadable result data.
 
-These are reported normally and become failures with `--strict`. A missing or unreadable overlay does not prevent structural queries.
+These are reported normally and fail the command with `--strict`. A missing or unreadable overlay does not stop structural queries.
 
 ## Coverage on the Graph
 
-`rb graph results` can correlate declared `covers:` relationships with observed coverage already on disk. It never reruns the simulator or rewrites `graph.json`.
+`rb graph results` can join declared `covers:` relationships to coverage already on disk. It never reruns the simulator or rewrites `graph.json`.
 
-The default `--coverage auto` uses the newest coverage manifest and model, then falls back to per-test `coverage.dat` files. You can select a manifest with `--cov-dir` or `--cov-manifest`, pass a merged LCOV `.info` file, require the model source with `--coverage model`, or disable the join with `--no-coverage`.
+The default `--coverage auto` uses the newest coverage manifest and model, then falls back to per-test `coverage.dat` files. Other choices:
 
-Coverage items receive one of three states:
+- `--cov-dir` or `--cov-manifest` selects a manifest.
+- A merged LCOV `.info` file can be passed as the source.
+- `--coverage model` requires the model source.
+- `--no-coverage` disables the join.
+
+Each coverage item gets one state:
 
 | State | Meaning |
 | --- | --- |
@@ -128,21 +138,28 @@ Coverage items receive one of three states:
 | `declared-only` | The item was declared but no matched point fired. |
 | `observed-but-undeclared` | An observed cover point has no `covers:` declaration. |
 
-Name correlation prefers exact, case-insensitive, normalized, then `cov`/`cvr`/`c`-affix matches. The selected rung is recorded; treat an `affix` match as a prompt to align the names. Module coverage joins exact elaborated names first, then names with one trailing parameterization suffix removed. Multiple elaborations are aggregated onto the source-module node.
+Names match in this order: exact, case-insensitive, normalized, then `cov`/`cvr`/`c`-affix. The rung used is recorded; an `affix` match is a prompt to align the names. Module coverage matches exact elaborated names first, then names with one trailing parameterization suffix removed, and aggregates multiple elaborations onto the source-module node.
 
-LCOV lacks module and per-test identity. It joins design coverage by resolved file and still uses any available per-test databases for test badges and coverage-item verdicts. Unresolved, re-anchored, or unmatched paths are reported rather than guessed.
-
-See [Coverage](coverage.md) for metric semantics and coverage collection.
+LCOV has no module or per-test identity, so it joins design coverage by resolved file. Per-test databases, when available, still supply test badges and item verdicts. Unresolved, re-anchored or unmatched paths are reported, not guessed. See [Coverage](coverage.md) for metric semantics.
 
 ## Physical Heat on the Graph
 
-The `/gph` pane can fill its module nodes with the physical model `rb synth` and `rb power` write, read from the hub's `GET /phy.json` — the same body and the same numbers the [`/phy` pane](phys.md#browse-the-model-in-the-hub) shows. Tick `heat` in the header: the model is fetched on the first tick, not on load, because a mapped design's power half is megabytes of leaf rows. The `metric` switcher offers the same five metrics in the same order as `/phy` (`cells`, `area`, `leakage`, `dynamic`, `total`), the `run` dropdown selects which artefact directory the numbers come from, and `/gph?dir=<phys dir>` opens the pane on one run. A run the server refuses — a directory with no manifest, a run outside the project — leaves the model on screen alone and reports the refusal in the status line; a bad `?dir=` on a tab that has loaded nothing yet falls back to the newest run and says so. The ramp is the shared heat ramp in `/hub/theme.css`, scaled against the largest module in the graph; the value rides in a badge beside each node, every metric in its tooltip, and the whole row in the inspector.
+The `/gph` pane can fill module nodes with the physical model that `rb synth` and `rb power` write. It reads the hub's `GET /phy.json`, the same data as the [`/phy` pane](phys.md#browse-the-model-in-the-hub). Tick `heat` in the header; the model loads on the first tick because a mapped design's power data is megabytes.
 
-The two halves are joined two different ways, because they are two namespaces. The synthesis half joins **by module name** — its `module` column is an RTL module name, as Yosys' `stat` saw it — and gives each node its cells and area. The power half joins **by path**: a leaf row's `module` is the Liberty cell it is an instance of, so each row's rootless instance path is resolved to the enclosing RTL instance and its power is added to that instance's module.
+- `metric` offers `cells`, `area`, `leakage`, `dynamic` and `total`, as `/phy` does.
+- `run` selects the artefact directory, and `/gph?dir=<phys dir>` opens the pane on one run. A run the server refuses (no manifest, outside the project) leaves the current model and shows the refusal in the status line. A bad `?dir=` on a pane with nothing loaded falls back to the newest run and says so.
+- The ramp is scaled against the largest module in the graph. Each node shows the value in a badge, every metric in its tooltip and the full row in the inspector.
 
-The two halves therefore do not count over the same thing, and the pane says which is which. A module's **cells and area are its definition's**, counted once however many times it is instantiated, and its area already includes its submodules' because that is how the synthesis reports it. Its **power is summed over every instantiation** of it, because every leaf inside every one of them burns power: a design with eight FIFOs has one FIFO row in the synthesis half and eight FIFOs' worth of leakage here. That sum is the right number for a heat map — which module is this design spending its power on — and the wrong number to divide by the area, so the inspector prints `instances` (how many instantiations contributed) and `leaf rows` (how many rows were summed) beside the figures and the tooltip repeats them. Do not add the two halves together, and see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows) for what an incomplete design tier does to the roll-up.
+The synthesis half joins by module name and gives each node its cells and area. The power half joins by instance path: each leaf row's rootless path is resolved to the enclosing RTL instance, and its power is added to that instance's module.
 
-Coverage and heat share the node fill, so ticking either releases the other. An inbound `phys_focus` **turns the overlay on**: it is a message about the physical model and it carries the metric to foreground, so a pane that has not read the model yet ticks `heat`, fetches it, and applies the focus when the body lands. It then highlights the node the target belongs to — a module by name, an instance path by the module whose body holds the leaf — and every export of that module when a suite qualifier split it into several nodes. Clicking a node still emits only the pane's own `selection_changed` and `open_source`:
+The figures count different things:
+
+- A module's cells and area come from its definition, counted once however often it is instantiated. Area already includes submodules.
+- Its power is summed over every instantiation. Eight FIFOs give one FIFO row of area and eight FIFOs' leakage.
+
+The inspector prints `instances` and `leaf rows` beside the figures. Do not add the two halves together or divide power by area. An incomplete design tier degrades the roll-up; see [Known Issues](../known-issues.md#graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows).
+
+Coverage and heat share the node fill, so enabling one releases the other. An inbound `phys_focus` turns heat on, fetches the model if needed, and highlights the node the target belongs to (a module by name, an instance path by the module holding the leaf), including every suite-qualified export of that module. Clicking a node emits only the pane's own `selection_changed` and `open_source`.
 
 ```bash
 rb hub send phys-focus module:dma_engine --metric area
@@ -150,9 +167,7 @@ rb hub send phys-focus module:dma_engine --metric area
 
 ## Graph data model
 
-`graph.json` is directed, multigraph [NetworkX node-link JSON](https://networkx.org/documentation/stable/reference/readwrite/json_graph.html). Every node has `id`, `type`, `label`, and `tier`; source-backed nodes also carry a project-relative `file`. Every edge has `type` and `confidence`.
-
-The tiers share one id namespace and merge by node id:
+`graph.json` is a directed [NetworkX node-link](https://networkx.org/documentation/stable/reference/readwrite/json_graph.html) multigraph. Every node has `id`, `type`, `label` and `tier`; source-backed nodes also have a project-relative `file`. Every edge has `type` and `confidence`. Tiers share one id namespace and merge by node id:
 
 | Tier | Contents |
 | --- | --- |
@@ -160,9 +175,9 @@ The tiers share one id namespace and merge by node id:
 | `config` | Suites, tests, testbenches, flow runs, models, specs, coverage items, docs, and golden models. |
 | `binding` | Python modules, imports, cocotb-to-DUT and signal bindings, golden-model checks, and DPI implementations. |
 
-Paths inside ids are project-relative and POSIX-separated. When different testbench files declare the same module name, testbench-side ids are qualified with `@<suite dir>`; DUT ids remain unqualified so the tiers can stitch through them. Use the full qualified id when a label is ambiguous.
+Paths in ids are project-relative and POSIX-separated. When different testbench files declare the same module name, testbench-side ids get an `@<suite dir>` qualifier; DUT ids stay unqualified so the tiers can stitch through them. Use the full qualified id when a label is ambiguous. `reglvl` is stored as written, since builder-specific values need runtime context to resolve.
 
-## Node Types
+## Node types
 
 | Type | Id form |
 | --- | --- |
@@ -180,13 +195,9 @@ Paths inside ids are project-relative and POSIX-separated. When different testbe
 | `spec_doc`, `golden_model` | `doc:<path>`, `golden:<path>` |
 | `python_module` | Normally `py:<path>`; an extractor may supply another id for the same file. |
 
-`reglvl` is stored as written because resolving builder-specific values requires runtime context.
+## Edge types
 
-## Edge Types
-
-Design edges are `instantiates`, `child_of`, `instance_of`, `connects`, `implements`, and `overrides`.
-
-Important cross-tier and config edges are:
+Design edges are `instantiates`, `child_of`, `instance_of`, `connects`, `implements` and `overrides`. Config and cross-tier edges:
 
 | Edge | Relationship |
 | --- | --- |
@@ -199,17 +210,13 @@ Important cross-tier and config edges are:
 | `elaborates_as` | Testbench to its elaborated top module. |
 | `targets` | Non-simulation run to its top module. |
 
-Binding edges are `binds_to`, `imports`, `drives`, `checks_against`, and `implemented_by`. Only `drives` and `implemented_by` may be `INFERRED`; unresolved signal or symbol matches carry `resolved: false`. A `via` field identifies evidence inherited through a helper module.
+Binding edges are `binds_to`, `imports`, `drives`, `checks_against` and `implemented_by`. Only `drives` and `implemented_by` can be `INFERRED`. Unresolved signal or symbol matches carry `resolved: false`, and a `via` field names evidence inherited through a helper module.
 
-The config tier reads the same loaders as the test, spec, and regression commands.
+Config-only graphs have dangling endpoints on purpose: config-to-design edges name modules that the design tier supplies when it is included.
 
-## Flow provenance
+The config tier reads the same loaders as the test, spec and regression commands. Flow ownership comes from each flow's regression manifest, first at the project root and then at the path in [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml). A missing manifest means the project does not use that flow; an invalid one is reported. Unclaimed `tests.yaml` suites default to `sim`.
 
-Flow ownership comes from each flow's regression manifest, first at the project root and then at the path configured in [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml). A missing manifest means the project does not use that flow; an invalid manifest is reported. Unclaimed `tests.yaml` suites default to `sim`.
-
-## Output Paths
-
-The stable outputs are:
+## Output paths
 
 ```text
 artefacts/graph/
@@ -222,15 +229,15 @@ artefacts/graph/
 └── bind/graph.json
 ```
 
-`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, skipped items, stitch points, dangling targets, and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`. Their generated filelists and renderer logs live under `artefacts/hier/`.
+`graph-meta.json` records the build fingerprint, input hashes, tool versions, tier status, failures, skipped items, stitch points, dangling targets and id collisions. Per-testbench and per-run design exports are nested under `design/<model>/tb/` and `design/<model>/run/`; their filelists and renderer logs are under `artefacts/hier/`.
 
-A `--run-tag` run keeps the same shape one level down, under `artefacts/.runs/<tag>/graph/`, and holds only `results-overlay.json`: the design graph is shared.
+A `--run-tag` run writes only `results-overlay.json`, under `artefacts/.runs/<tag>/graph/`.
 
-Volatile results, seeds, timestamps, and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
+Volatile results, seeds, timestamps and artefact paths belong only in the overlay. Consumers may join them in memory but must not write the annotated document over `graph.json`.
 
 ## Looking at the Graph
 
-Serve the interactive graph pane through the hub:
+Serve the graph pane through the hub and open `http://127.0.0.1:<http_port>/gph`:
 
 ```bash
 rb graph build
@@ -238,19 +245,19 @@ rb graph results
 rb hub start --serve-viewer
 ```
 
-Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage or module nodes with the physical model's area and power (see [Physical Heat on the Graph](#physical-heat-on-the-graph)).
+The pane rereads the graph and overlay on reload and groups nodes by specification, design and verification flow. It can tint design nodes with joined coverage, or module nodes with physical area and power (see [Physical Heat on the Graph](#physical-heat-on-the-graph)). Clicking a node focuses the schematic or opens the source in a connected editor.
 
-Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
+Drive the pane from a script; the hub caches the focus and delivers it when the pane connects:
 
 ```bash
 rb hub send graph-focus module:dma_engine
 ```
 
-The hub caches the focus so it is delivered when the pane connects. See [Hub](hub.md#design-knowledge-graph-pane) for browser behavior.
+See [Hub](hub.md#design-knowledge-graph-pane) for pane behavior.
 
 ## The MCP Server
 
-Install the optional MCP dependency and configure an agent host to launch the stateless stdio server:
+Install the optional dependency, list the tools, and configure the agent host to launch the stateless stdio server:
 
 ```bash
 uv add 'rtl_buddy[mcp]'
@@ -265,9 +272,9 @@ rb mcp --list-tools
 }
 ```
 
-Graph, test-status, coverage, physical-metrics, and hierarchy tools mirror their `rb --machine` payloads. Each call rereads the graph, coverage, and physical artefact files, so no daemon is required and updates are visible without restarting the MCP server.
+Graph, test-status, coverage, physical-metrics and hierarchy tools mirror their `rb --machine` payloads. Each call rereads the artefact files, so there is no daemon and updates show up without restarting the server.
 
-When a live hub is discoverable, the server also advertises tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage and physical focus. Without a hub those tools are omitted rather than exposed in a permanently failing state.
+When a live hub is discoverable, the server also offers tools for hub state, selection, source opening, coordinate resolution, diagnostics, and coverage and physical focus. Without a hub those tools are omitted.
 
 ## Load graph.json directly
 
@@ -282,5 +289,3 @@ with open("artefacts/graph/graph.json") as handle:
 
 graph = nx.node_link_graph(data, edges="links")
 ```
-
-Do not assume that a config-only graph has no dangling endpoints: config-to-design edges intentionally name modules that the design tier supplies when included.
