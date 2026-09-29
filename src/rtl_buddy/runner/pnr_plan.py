@@ -58,8 +58,16 @@ def _label(key: RunKey, root: str) -> str:
     return name if suite == root else f"{name} ({suite})"
 
 
-def plan_pnr_runs(suite_cfg: PnrSuiteConfig, *, load_suite=PnrSuiteConfig):
+def plan_pnr_runs(
+    suite_cfg: PnrSuiteConfig, *, load_suite=PnrSuiteConfig, synth_blocks=None
+):
     """Every run of ``suite_cfg`` plus the blocks it is built from, in order.
+
+    ``synth_blocks`` (`rb pnr --synth`) is a predicate over a run's config:
+    where it holds, the run also depends on the blocks its upstream
+    synthesis names — that synthesis runs just before the run and reads
+    those abstracts, and its `blocks:` list is its own. It is false for a
+    run `-l` deselects, whose synthesis never runs and so is never read.
 
     Raises :class:`FatalRtlBuddyError` for a block that names a run no
     `pnr.yaml` defines, and for a cycle, naming it — both before anything
@@ -77,8 +85,13 @@ def plan_pnr_runs(suite_cfg: PnrSuiteConfig, *, load_suite=PnrSuiteConfig):
         key = pending.pop(0)
         cfg = found[key][1]
         edges = deps.setdefault(key, [])
-        for ref in cfg.get_blocks():
+        refs = list(cfg.get_blocks())
+        if synth_blocks is not None and synth_blocks(cfg):
+            refs += cfg.resolve_synth_cfg().get_blocks()
+        for ref in refs:
             dep = run_key(ref.pnr_suite_path, ref.pnr_run)
+            if any(edge.key == dep for edge in edges):
+                continue
             edges.append(BlockDep(block=ref.name, key=dep))
             if dep in found:
                 continue

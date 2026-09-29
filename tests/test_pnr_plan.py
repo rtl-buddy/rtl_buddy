@@ -383,3 +383,162 @@ def test_two_suites_in_one_directory_defining_one_run_name_are_refused(tmp_path)
 
     with pytest.raises(FatalRtlBuddyError, match=r"would both write .*artefacts/x"):
         plan_pnr_runs(suite)
+
+
+# --- rb pnr --synth -----------------------------------------------------------
+
+
+def _synth_driver(monkeypatch, verdicts, synth_verdicts):
+    """As `_driver`, with `_do_synth_suite` recording which syntheses ran
+    and answering from ``synth_verdicts`` (synth name -> result)."""
+    from rtl_buddy.runner.synth_results import SynthFailResults, SynthPassResults
+
+    rb, ran = _driver(monkeypatch, verdicts)
+    synths = []
+    monkeypatch.setattr(
+        "rtl_buddy.rtl_buddy.SynthSuiteConfig", lambda path: ("suite", path)
+    )
+
+    def _do_synth_suite(suite_cfg, *, synth_name=None, accept_stale=False, **_kw):
+        synths.append((synth_name, accept_stale))
+        ran.append(f"synth:{synth_name}")
+        if synth_verdicts.get(synth_name, True):
+            res = SynthPassResults(name=f"{synth_name}/results")
+        else:
+            res = SynthFailResults(name=f"{synth_name}/results", desc="yosys failed")
+        return [{"synth_name": synth_name, "results": res}]
+
+    rb._do_synth_suite = _do_synth_suite
+    return rb, ran, synths
+
+
+def _synth_run(name, synth, blocks=(), *, reglvl=0):
+    return _run(name, blocks, reglvl=reglvl).replace(
+        "    synth: s\n", f"    synth: {synth}\n"
+    )
+
+
+def _synth_yaml(path: Path, *names, blocks=None):
+    """A real synth.yaml (and the models.yaml it reads) defining ``names``;
+    ``blocks`` maps a synthesis to its own `blocks:` list of
+    (block, pnr run, pnr-path)."""
+    text = "rtl-buddy-filetype: synth_config\nsyntheses:\n"
+    for name in names:
+        text += (
+            f"  - name: {name}\n    desc: {name}\n    model: m\n"
+            "    model_path: models.yaml\n    tool: yosys\n"
+        )
+        entries = (blocks or {}).get(name, ())
+        if entries:
+            text += "    blocks:\n"
+        for block, run, pnr_path in entries:
+            text += f"      - {{name: {block}, pnr: {run}, pnr-path: {pnr_path}}}\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    (path.parent / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n  - name: m\n    filelist: []\n"
+    )
+    return path
+
+
+def test_synth_runs_each_synthesis_just_before_its_pnr(tmp_path, monkeypatch):
+    """The top's synthesis reads the blocks' abstracts, so it lands after
+    their P&R — and a synthesis two P&R runs share runs once."""
+    _synth_yaml(tmp_path / "synth.yaml", "top_s", "blk_s")
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _synth_run("top", "top_s", [("b", "blk", None)]),
+        _synth_run("blk", "blk_s"),
+        _synth_run("blk_mc", "blk_s"),
+    )
+    rb, ran, synths = _synth_driver(monkeypatch, {}, {})
+
+    results = _by_name(rb._do_pnr_suite(suite, run_synth=True, accept_stale=True))
+
+    assert ran == ["synth:blk_s", "blk", "synth:top_s", "top", "blk_mc"]
+    assert synths == [("blk_s", True), ("top_s", True)]
+    synth = results["top"]["results"].results["synth"]
+    assert synth["name"] == "top_s"
+    assert synth["result"] == "PASS"
+    assert synth["suite"] == str(tmp_path / "synth.yaml")
+    row = RtlBuddy._pnr_result_row(rb, results["top"])
+    assert row["synth"] == synth
+    locked = rb._artifact_locks.acquired
+    assert locked == [tmp_path / "artefacts"] * 2
+
+
+def test_a_failed_synthesis_fails_its_pnr_and_blocks_the_top(tmp_path, monkeypatch):
+    _synth_yaml(tmp_path / "synth.yaml", "top_s", "blk_s")
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _synth_run("blk", "blk_s"),
+        _synth_run("top", "top_s", [("b", "blk", None)]),
+    )
+    rb, ran, _synths = _synth_driver(monkeypatch, {}, {"blk_s": False})
+
+    results = _by_name(rb._do_pnr_suite(suite, run_synth=True))
+
+    assert ran == ["synth:blk_s"]
+    blk = results["blk"]["results"].results
+    assert blk["result"] == "FAIL"
+    assert blk["fail_stage"] == "synth"
+    assert blk["desc"] == "synthesis 'blk_s' did not pass: yosys failed"
+    assert blk["synth"]["result"] == "FAIL"
+    assert results["top"]["results"].results["fail_stage"] == "blocked"
+
+
+def test_without_synth_no_synthesis_runs(tmp_path, monkeypatch):
+    suite = _suite(tmp_path / "pnr.yaml", _synth_run("a", "a_s"))
+    rb, ran, synths = _synth_driver(monkeypatch, {}, {})
+
+    results = rb._do_pnr_suite(suite)
+
+    assert ran == ["a"]
+    assert synths == []
+    assert "synth" not in results[0]["results"].results
+
+
+def test_synth_is_not_run_for_a_pnr_run_that_is_skipped(tmp_path, monkeypatch):
+    suite = _suite(tmp_path / "pnr.yaml", _run("a", reglvl=2000))
+    rb, ran, synths = _synth_driver(monkeypatch, {}, {})
+
+    rb._do_pnr_suite(suite, reg_level=1000, run_synth=True)
+
+    assert ran == []
+    assert synths == []
+
+
+def test_synth_resolves_every_synthesis_before_anything_runs(tmp_path, monkeypatch):
+    """A typo in the top's `synth:` must not wait for its blocks' P&R."""
+    _synth_yaml(tmp_path / "synth.yaml", "blk_s")
+    suite = _suite(
+        tmp_path / "pnr.yaml",
+        _synth_run("blk", "blk_s"),
+        _synth_run("top", "tpo_s", [("b", "blk", None)]),
+    )
+    rb, ran, _synths = _synth_driver(monkeypatch, {}, {})
+
+    with pytest.raises(FatalRtlBuddyError, match="tpo_s"):
+        rb._do_pnr_suite(suite, run_synth=True)
+    assert ran == []
+
+
+def test_synth_waits_for_the_blocks_its_synthesis_names(tmp_path, monkeypatch):
+    """The synthesis reads the abstracts in its own `blocks:`, which the P&R
+    run need not list: with --synth those are edges too, and pulled in."""
+    _suite(tmp_path / "b" / "pnr.yaml", _synth_run("blk", "blk_s"))
+    _synth_yaml(
+        tmp_path / "synth.yaml",
+        "blk_s",
+        "top_s",
+        blocks={"top_s": [("b", "blk", "b/pnr.yaml")]},
+    )
+    _synth_yaml(tmp_path / "b" / "synth.yaml", "blk_s")
+    suite = _suite(tmp_path / "pnr.yaml", _synth_run("top", "top_s"))
+
+    plain = plan_pnr_runs(suite)
+    with_synth = plan_pnr_runs(suite, synth_blocks=lambda _cfg: True)
+
+    assert _names(plain) == ["top"]
+    assert _names(with_synth) == ["blk", "top"]
+    assert [d.block for d in with_synth[1].deps] == ["b"]
