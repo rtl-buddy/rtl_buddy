@@ -12,11 +12,6 @@ def _results(tmp_path, text):
 
 
 def test_fail_without_err_marker_reports_fail(tmp_path):
-    # An ERR:/FAT: line is conventional alongside FAIL but not guaranteed --
-    # a testbench may print its verdict and nothing else. Reading the ERR
-    # match unconditionally raised AttributeError here, which aborted the
-    # whole run instead of reporting the failure, taking the results table
-    # for every other test in a regression with it.
     results = _results(tmp_path, "running...\nFAIL (nerr=1) the thing broke\n")
     assert results["result"] == "FAIL"
     assert results["desc"] == "(nerr=1) the thing broke"
@@ -55,10 +50,6 @@ def test_no_markers_reports_na(tmp_path):
 
 
 def test_fail_wins_when_pass_appears_after_it(tmp_path):
-    # A failure signal must not be erasable by a PASS line elsewhere in the
-    # log: a per-phase PASS, a wrapper printing PASS after a failing
-    # sub-check, or two phases' output concatenated would otherwise score a
-    # failing run green.
     results = _results(tmp_path, "FAIL tb: 3 mismatches\nPASS tb: done\n")
     assert results["result"] == "FAIL"
 
@@ -92,10 +83,7 @@ def test_pass_alone_does_not_warn_about_conflict(tmp_path, caplog):
 
 
 def test_conflicting_markers_has_dedicated_human_message():
-    """Guidelines -> Logging: every WARNING/ERROR event gets a dedicated case,
-    otherwise the fallback renders `postproc conflicting_markers` with none of
-    `test`, `log` or `chosen` -- the fields that say which log contradicted
-    itself and which way it was resolved."""
+    """The conflicting-markers warning has a dedicated human message naming the test, log and chosen verdict."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(

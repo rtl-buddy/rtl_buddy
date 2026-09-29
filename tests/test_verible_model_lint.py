@@ -1,15 +1,6 @@
 """Tests for ``rb verible lint/format --model`` and the exclude machinery.
 
-Covers:
-- ``VlogFilelist.extract_source_files``: bare sources only, ``-F`` unrolled,
-  ``-v``/``-y``/``+incdir+``/``+define+``/``+libext+`` dropped, deduplicated.
-- ``--model`` expansion feeds the verible binary the model's source files.
-- cfg-verible ``exclude`` globs and ``--exclude`` both filter the expansion;
-  ``*`` crosses directory separators (fnmatch semantics).
-- Unknown options pass through to the binary without a ``--`` separator.
-- ``--exclude`` without ``--model`` warns and has no effect.
-- An expansion left empty by excludes is fatal.
-- ``extra_args`` are applied per command uniformly (``format`` included).
+``--model`` expands to the model's bare source files. cfg-verible ``exclude`` globs and ``--exclude`` filter the expansion with fnmatch semantics; an empty result is fatal, and ``--exclude`` without ``--model`` warns. Unknown options pass through to the binary, and ``extra_args`` apply to every command including ``format``.
 """
 
 from __future__ import annotations
@@ -31,7 +22,7 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
     return CliRunner(), RtlBuddy(name="test_verible_model_lint")
 
 
-# --- VlogFilelist.extract_source_files (unit) -----------------------------
+# VlogFilelist.extract_source_files (unit)
 
 
 def test_extract_source_files_bare_only(tmp_path: Path):
@@ -76,7 +67,7 @@ def test_extract_source_files_unrolls_dash_F(tmp_path: Path):
     assert [os.path.basename(f) for f in files] == ["inner.sv", "top.sv"]
 
 
-# --- fake verible install --------------------------------------------------
+# Fake verible install
 
 
 def _install_fake_verible(project: Path) -> Path:
@@ -104,7 +95,7 @@ def _argv(project: Path, exe: str = "verible-verilog-lint") -> list[str]:
 
 
 def _add_csr_model(project: Path) -> None:
-    """Add a model mixing bare, generated-pattern, and library entries."""
+    """Add a model mixing bare, generated-pattern and library entries."""
     gen = project / "src" / "gen"
     gen.mkdir()
     (gen / "example_csr_pkg.sv").write_text("package p; endpackage\n")
@@ -124,11 +115,11 @@ def _add_csr_model(project: Path) -> None:
     )
 
 
-# --- rb verible lint --model (integration through Typer) ------------------
+# rb verible lint --model (integration through Typer)
 
 
 def test_rb_verible_lint_model_expands_files(minimal_project: Path):
-    """``--model`` appends the model's bare sources; ``-v`` entries dropped."""
+    """``--model`` appends the model's bare sources and drops ``-v`` entries."""
     _install_fake_verible(minimal_project)
     _add_csr_model(minimal_project)
     runner, rb = _runner()
@@ -141,8 +132,7 @@ def test_rb_verible_lint_model_expands_files(minimal_project: Path):
 
 
 def test_rb_verible_lint_model_cli_exclude(minimal_project: Path):
-    """``--exclude`` globs match project-root-relative paths; ``*`` crosses
-    directory separators."""
+    """``--exclude`` globs match project-root-relative paths, and ``*`` crosses directory separators."""
     _install_fake_verible(minimal_project)
     _add_csr_model(minimal_project)
     runner, rb = _runner()
@@ -157,7 +147,7 @@ def test_rb_verible_lint_model_cli_exclude(minimal_project: Path):
 
 
 def test_rb_verible_lint_model_cfg_exclude(minimal_project: Path):
-    """cfg-verible ``exclude`` filters the expansion without any CLI flag."""
+    """cfg-verible ``exclude`` filters the expansion without a CLI flag."""
     _install_fake_verible(minimal_project)
     _add_csr_model(minimal_project)
     rc = minimal_project / "root_config.yaml"
@@ -176,7 +166,7 @@ def test_rb_verible_lint_model_cfg_exclude(minimal_project: Path):
 
 
 def test_rb_verible_lint_unknown_option_passes_through(minimal_project: Path):
-    """Verible's own flags need no ``--`` separator in front of them."""
+    """Verible flags need no ``--`` separator."""
     _install_fake_verible(minimal_project)
     runner, rb = _runner()
     result = runner.invoke(
@@ -190,7 +180,7 @@ def test_rb_verible_lint_unknown_option_passes_through(minimal_project: Path):
 
 
 def test_rb_verible_lint_exclude_without_model_warns(minimal_project: Path):
-    """``--exclude`` alone filters nothing — warn instead of silently no-op."""
+    """``--exclude`` without ``--model`` warns."""
     _install_fake_verible(minimal_project)
     runner, rb = _runner()
     result = runner.invoke(
@@ -222,7 +212,7 @@ def test_rb_verible_lint_unknown_model_is_fatal(minimal_project: Path):
 
 
 def test_rb_verible_format_model_expands_files(minimal_project: Path):
-    """``format --model`` shares the lint expansion path."""
+    """``format --model`` uses the same expansion as lint."""
     _install_fake_verible(minimal_project)
     _add_csr_model(minimal_project)
     runner, rb = _runner()
@@ -233,7 +223,7 @@ def test_rb_verible_format_model_expands_files(minimal_project: Path):
     assert "src/lib_cell.sv" not in argv
 
 
-# --- extra_args uniformity (unit) -----------------------------------------
+# extra_args uniformity (unit)
 
 
 def _capture_verible(extra_args: dict[str, list[str]]) -> tuple[Verible, list]:
@@ -247,8 +237,7 @@ def _capture_verible(extra_args: dict[str, list[str]]) -> tuple[Verible, list]:
 
 
 def test_extra_args_applied_to_format():
-    """A configured ``extra_args: {format: [...]}`` block is honoured — it
-    used to be silently ignored (only ``lint`` applied its extra_args)."""
+    """A configured ``extra_args: {format: [...]}`` block applies to ``format``."""
     ver, calls = _capture_verible({"format": ["--column_limit=130"]})
     ver.do_cmd(cmd="format", verible_args=["f.sv"])
     assert calls == [("verible-verilog-format", ["--column_limit=130", "f.sv"])]
@@ -261,8 +250,7 @@ def test_extra_args_applied_to_lint_once():
 
 
 def test_extra_args_lead_so_cli_wins():
-    """Configured args come first: for repeated gflags the later (CLI)
-    occurrence wins inside verible."""
+    """Configured args come first so the CLI occurrence wins for repeated gflags."""
     ver, calls = _capture_verible({"lint": ["--rules=-no-tabs"]})
     ver.do_cmd(cmd="lint", verible_args=["--rules=+no-tabs", "f.sv"])
     assert calls[0][1] == ["--rules=-no-tabs", "--rules=+no-tabs", "f.sv"]

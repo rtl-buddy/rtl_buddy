@@ -1,18 +1,6 @@
-"""Unit tests for the vendored Tcl-aware word tokenizer (#642).
+"""Tests for the vendored Tcl-aware word tokenizer.
 
-Copied from rtl-buddy-cdc's ``tests/test_sdc_tokenizer.py`` at the same
-pinned commit as :mod:`rtl_buddy.constraints.tcl_tokenizer` itself
-(``df996d55af0e8b824183d03d531426b8601af429``); only the import path is
-adapted. Upstream's ``test_sdc_re_exports_the_tokenizer`` is left out: it
-pins that cdc's ``sdc`` module still re-exports ``_tokenize`` after the
-rtl-buddy/rtl-buddy-cdc#298 split, which has no counterpart here.
-Upstream's own rationale follows.
-
-The tokenizer is the foundation of the issue #144 parser refactor —
-every collection-handling bug we fixed in #140 / #142 ultimately
-traced to mis-counting tokens emitted by ``shlex``. These tests pin
-the tokenizer's behaviour directly so a regression here would surface
-as a focused failure rather than a downstream parser mystery.
+Copied from rtl-buddy-cdc's ``tests/test_sdc_tokenizer.py`` at the commit pinned for :mod:`rtl_buddy.constraints.tcl_tokenizer` (``df996d55af0e8b824183d03d531426b8601af429``); only the import path differs. The upstream test that checks the cdc ``sdc`` module re-exports ``_tokenize`` is omitted because it has no counterpart here.
 """
 
 from __future__ import annotations
@@ -27,38 +15,31 @@ def test_plain_command() -> None:
 
 
 def test_brace_collection_is_one_word() -> None:
-    """``{a b}`` is a single Tcl word — the whole point of the rewrite.
-
-    With the old ``shlex`` layer this came back as ``["{a", "b}"]`` and
-    forced the per-command handlers to re-stitch tokens."""
+    """``{a b}`` is a single word."""
     assert _tokenize("set_clock_groups -group {ck_a ck_b}") == [
         ["set_clock_groups", "-group", "{ck_a ck_b}"],
     ]
 
 
 def test_bracket_collection_is_one_word() -> None:
-    """Same contract for ``[get_ports clk]`` — one word, not two."""
+    """``[get_ports clk]`` is a single word."""
     assert _tokenize("create_clock -name clk [get_ports clk]") == [
         ["create_clock", "-name", "clk", "[get_ports clk]"],
     ]
 
 
 def test_single_token_brace_is_one_word() -> None:
-    """The shape that triggered #142: ``{ck_a}`` with no internal
-    whitespace stays one word."""
+    """``{ck_a}`` without internal whitespace is a single word."""
     assert _tokenize("-source {ck_a}") == [["-source", "{ck_a}"]]
 
 
 def test_single_token_bracket_is_one_word() -> None:
-    """Sibling case to the brace form above."""
+    """``[ck_a]`` without internal whitespace is a single word."""
     assert _tokenize("-source [ck_a]") == [["-source", "[ck_a]"]]
 
 
 def test_nested_braces_respected() -> None:
-    """A ``{...}`` word containing another ``{...}`` must scan to the
-    *matching* outer ``}``, not the first one. Real-world driver:
-    Tcl-style nested filter expressions like
-    ``[get_ports -filter {NAME =~ "clk*"}]``."""
+    """A ``{...}`` word containing nested braces ends at the matching outer ``}``."""
     [words] = _tokenize("set_x {{a b} {c d}}")
     assert words == ["set_x", "{{a b} {c d}}"]
 
@@ -70,17 +51,13 @@ def test_nested_brackets_respected() -> None:
 
 
 def test_braces_inside_brackets_do_not_terminate_bracket() -> None:
-    """Mixing: ``[get_ports -filter {NAME =~ "clk*"}]`` — the ``}``
-    inside the bracket must not close the bracket scan. Regression
-    pin for ``test_filter_clause_is_partial_warning`` in test_sdc.py."""
+    """A ``}`` inside a bracket word does not close the bracket scan."""
     [words] = _tokenize('[get_ports -filter {NAME =~ "clk*"}]')
     assert words == ['[get_ports -filter {NAME =~ "clk*"}]']
 
 
 def test_line_continuation_collapses_to_whitespace() -> None:
-    """``\\<newline>`` is the SDC line-continuation marker; the
-    tokenizer collapses it to inter-word whitespace so the multi-
-    line command parses as one."""
+    """A backslash-newline collapses to inter-word whitespace."""
     src = "create_clock -name foo \\\n    -period 10 [get_ports foo]"
     assert _tokenize(src) == [
         ["create_clock", "-name", "foo", "-period", "10", "[get_ports foo]"],
@@ -88,9 +65,7 @@ def test_line_continuation_collapses_to_whitespace() -> None:
 
 
 def test_comment_skips_to_end_of_line() -> None:
-    """``#`` at a word boundary starts a comment to end-of-line. Any
-    partial command in progress is flushed (matches the existing
-    ``_logical_lines`` "comments break continuation" behaviour)."""
+    """``#`` at a word boundary starts a comment to end of line and flushes any partial command."""
     src = "create_clock -name a -period 10 # the rest is comment\nset_x bar"
     assert _tokenize(src) == [
         ["create_clock", "-name", "a", "-period", "10"],
@@ -113,8 +88,7 @@ def test_blank_lines_and_comment_only_lines_ignored() -> None:
 
 
 def test_double_quoted_word_strips_quotes() -> None:
-    """``"..."`` is one word; the quotes are stripped and backslash
-    escapes the next character inside."""
+    """``"..."`` is one word with the quotes stripped; a backslash escapes the next character."""
     src = 'set_name "hello world" "with \\"embedded\\" quotes"'
     [words] = _tokenize(src)
     assert words == ["set_name", "hello world", 'with "embedded" quotes']
@@ -129,8 +103,7 @@ def test_multiple_commands_on_separate_lines() -> None:
 
 
 def test_repeated_flag_words_preserved_in_order() -> None:
-    """Two ``-group`` clauses tokenize as two distinct words; the
-    arg-spec layer is what stitches them into a list of occurrences."""
+    """Repeated ``-group`` flags tokenize as distinct words in order."""
     [words] = _tokenize("set_clock_groups -group {a} -group {b}")
     assert words == ["set_clock_groups", "-group", "{a}", "-group", "{b}"]
 
@@ -141,17 +114,12 @@ def test_empty_input_yields_no_commands() -> None:
 
 
 def test_brace_with_spaces_at_edges() -> None:
-    """``{ ck_a }`` (with leading/trailing whitespace inside the
-    braces) is still one word — handlers strip the whitespace on
-    extraction."""
+    """``{ ck_a }`` is one word; handlers strip the inner whitespace."""
     [words] = _tokenize("-group { ck_a }")
     assert words == ["-group", "{ ck_a }"]
 
 
-# ---------------------------------------------------------------------------
-# _extract_names — the other half of the vendored copy (upstream exercises it
-# through the parser's own tests, so these pin it directly here).
-# ---------------------------------------------------------------------------
+# _extract_names
 
 
 def test_extract_names_bare_identifier() -> None:
