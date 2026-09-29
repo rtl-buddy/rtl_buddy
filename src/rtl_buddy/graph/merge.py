@@ -57,15 +57,15 @@ def merge_graphs(
 
     Args:
       tier_graphs: `(tier name, node-link graph)` pairs, processed in `TIER_ORDER`.
-    generator: `{"tool", "version"}` of the merging tool; `tier` and `tiers` are filled
-    in here.
+      generator: `{"tool", "version"}` of the merging tool; `tier` and `tiers` are filled
+        in here.
       schema_version: Value for `graph.schema_version`.
-    project_root_rel: Project root relative to the written file (`"../.."` for
-    `artefacts/graph/graph.json`).
+      project_root_rel: Project root relative to the written file (`"../.."` for
+        `artefacts/graph/graph.json`).
 
     Returns:
-    The merged payload, with nodes sorted by id and links by canonical form so an
-    unchanged project re-merges byte-identically.
+      The merged payload, with nodes sorted by id and links by canonical form so an
+      unchanged project re-merges byte-identically.
     """
     ordered = sorted(tier_graphs, key=lambda item: tier_sort_key(item[0]))
 

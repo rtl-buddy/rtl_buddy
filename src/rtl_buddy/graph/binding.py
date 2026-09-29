@@ -366,8 +366,8 @@ class BindingStage:
       checks: `checks_against` edges emitted.
       dpi_functions: `dpi_function` imports searched for an implementation.
       dpi_implemented: `implemented_by` edges emitted.
-    unresolved: Missing cocotb module files, `dut.<name>` accesses that matched no port,
-    and DPI symbols no source defines.
+      unresolved: Missing cocotb module files, `dut.<name>` accesses that matched no port,
+        and DPI symbols no source defines.
     """
 
     graph: dict
@@ -483,13 +483,13 @@ def bind_python(
       Graphs without `dpi_function` nodes skip this pass.
 
     Args:
-    merged: The merged graph after the design and config tiers are unioned. Not
-    modified; the contribution comes back in `BindingStage.graph`.
-    project_root: Directory holding `root_config.yaml`; node-id paths are relative to
-    it.
+      merged: The merged graph after the design and config tiers are unioned. Not
+        modified; the contribution comes back in `BindingStage.graph`.
+      project_root: Directory holding `root_config.yaml`; node-id paths are relative to
+        it.
       generator: `graph.generator` block for the emitted graph.
-    verif_dir, spec_dir: Roots for the DPI source scan. Default to
-    `<project_root>/verif` and `<project_root>/spec`.
+      verif_dir, spec_dir: Roots for the DPI source scan. Default to
+        `<project_root>/verif` and `<project_root>/spec`.
 
     Never raises: unparseable helpers, missing cocotb modules, accesses matching no port
     and DPI symbols nothing defines are recorded in `unresolved` and the pass continues.

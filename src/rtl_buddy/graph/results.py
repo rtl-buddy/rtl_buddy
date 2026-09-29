@@ -413,20 +413,20 @@ def collect_results(
     Never raises for a broken envelope; it lands in `problems`.
 
     Args:
-    project_root: Directory holding `root_config.yaml`; ids and paths are relative to
-    it.
-    verif_dir: Tree searched for `tests.yaml`. Defaults to `<project_root>/verif`, as
-    the config tier does.
-    graph: A loaded `graph.json`. When given, entries are cross-checked (`in_graph`) and
-    declared tests with no result are listed in `missing`.
-    coverage: `True` or `"auto"` reads the newest `cov_dir/manifest.json` and falls back
-    to per-test raw databases; `"model"` reads the manifest only; any other string is a
-    merged LCOV `.info` path; `False` skips the join. A tree with no coverage artefacts
-    leaves the `coverage` block absent.
-    cov_dir, cov_manifest: Read coverage from here instead. Naming either makes a read
-    failure a reported problem.
-    run_tag: Scan one `--run-tag` tree (`<suite>/artefacts/.runs/<tag>/`) instead of the
-    flat one.
+      project_root: Directory holding `root_config.yaml`; ids and paths are relative to
+        it.
+      verif_dir: Tree searched for `tests.yaml`. Defaults to `<project_root>/verif`, as
+        the config tier does.
+      graph: A loaded `graph.json`. When given, entries are cross-checked (`in_graph`) and
+        declared tests with no result are listed in `missing`.
+      coverage: `True` or `"auto"` reads the newest `cov_dir/manifest.json` and falls back
+        to per-test raw databases; `"model"` reads the manifest only; any other string is a
+        merged LCOV `.info` path; `False` skips the join. A tree with no coverage artefacts
+        leaves the `coverage` block absent.
+      cov_dir, cov_manifest: Read coverage from here instead. Naming either makes a read
+        failure a reported problem.
+      run_tag: Scan one `--run-tag` tree (`<suite>/artefacts/.runs/<tag>/`) instead of the
+        flat one.
 
     Returns:
       The payload plus the bookkeeping the CLI reports.

@@ -154,9 +154,9 @@ class TierReport:
       nodes, links: Contributed before the union.
       generator: The tier's own `graph.generator` block.
       failures: Per-item failures that did not sink the tier.
-    skipped: Per-item opt-outs (models with `graph: false` and the testbench and
-    flow-run exports over them). Kept apart from `failures` so they do not affect the
-    `--strict` exit code.
+      skipped: Per-item opt-outs (models with `graph: false` and the testbench and
+        flow-run exports over them). Kept apart from `failures` so they do not affect the
+        `--strict` exit code.
       extra: Tier-specific fields for the meta sidecar.
     """
 
@@ -341,17 +341,17 @@ class TestbenchTarget:
     """One TB-rooted design-tier export.
 
     Attributes:
-    suite_rel: Repo-relative suite directory, as in the config tier's `tb:<suite
-    dir>#<name>`.
-    suite_dir: Absolute suite directory; anchors the testbench filelist's relative
-    entries.
-    tb_names: Every `testbenches:` entry collapsed into this export. De-duplication keys
-    on what the viewer is handed (model, filelist, top), not the entry name, but each
-    name is a real `tb:` node owed its own stitch and report row.
-    tb_top: Module the export is rooted at: `toplevel:` when declared, else the
-    testbench name.
+      suite_rel: Repo-relative suite directory, as in the config tier's `tb:<suite
+        dir>#<name>`.
+      suite_dir: Absolute suite directory; anchors the testbench filelist's relative
+        entries.
+      tb_names: Every `testbenches:` entry collapsed into this export. De-duplication keys
+        on what the viewer is handed (model, filelist, top), not the entry name, but each
+        name is a real `tb:` node owed its own stitch and report row.
+      tb_top: Module the export is rooted at: `toplevel:` when declared, else the
+        testbench name.
       model: The DUT whose filelist the TB filelist is merged onto.
-    test: The first test naming this testbench; it carries the `tb` the exporter reads.
+      test: The first test naming this testbench; it carries the `tb` the exporter reads.
     """
 
     suite_rel: str
@@ -415,8 +415,8 @@ def testbenches_from_suites(
     Args:
       project_root: Root that `suite_rel` is relative to.
       verif_dir: Tree walked for `tests.yaml`.
-    models: When given, keep only testbenches of these models, so `--model` /
-    `--regression` narrows TB exports like DUT exports. `None` means no filtering.
+      models: When given, keep only testbenches of these models, so `--model` /
+        `--regression` narrows TB exports like DUT exports. `None` means no filtering.
     """
     from ..config.suite import SuiteConfig
     from ..tools.spec_trace import _walk_yaml_files
@@ -487,12 +487,12 @@ class FlowRunTarget:
       suite_rel: Repo-relative suite directory, as in `test:<suite dir>#<name>`.
       suite_dir: Absolute suite directory; anchors relative entries in `sources`.
       flow: Owning flow (`fpv`, `synth`, ...).
-    run_names: Every run collapsed into this export; each run's `test:` node still gets
-    its own stitch.
+      run_names: Every run collapsed into this export; each run's `test:` node still gets
+        its own stitch.
       top: The run's `top:`, the module the export is rooted at.
       model: The DUT whose filelist the flow sources are merged onto.
-    sources: The flow's own HDL beyond the model filelist (an fpv run's `properties:`
-    and `constraints:`), as absolute paths.
+      sources: The flow's own HDL beyond the model filelist (an fpv run's `properties:`
+        and `constraints:`), as absolute paths.
     """
 
     suite_rel: str
@@ -579,7 +579,7 @@ def flow_runs_from_regressions(
 
     Args:
       project_root: Root the regression files are discovered under.
-    models: When given, keep only runs against these models. `None` means no filtering.
+      models: When given, keep only runs against these models. `None` means no filtering.
     """
     root = Path(os.path.realpath(str(project_root)))
     allowed = {_model_key(m) for m in models} if models is not None else None
@@ -768,9 +768,9 @@ def _drop_stale_export(out_dir: Path, model: ModelConfig) -> bool:
     or symlink).
 
     Raises:
-    FatalRtlBuddyError: when the target is not a direct child of the design-export
-    directory, or cannot be removed. The error is not swallowed because `rmtree` is not
-    atomic and a silent failure would leave a stale tree that contradicts the report.
+      FatalRtlBuddyError: when the target is not a direct child of the design-export
+        directory, or cannot be removed. The error is not swallowed because `rmtree` is not
+        atomic and a silent failure would leave a stale tree that contradicts the report.
     """
     design_root = out_dir / DESIGN_SUBDIR
     target = design_root / model.name
@@ -868,8 +868,8 @@ def _reject_colliding_models(
       graphable: The subset that will be exported.
 
     Raises:
-    FatalRtlBuddyError: naming every model in the collision, the `models.yaml` each
-    comes from, and the ways out.
+      FatalRtlBuddyError: naming every model in the collision, the `models.yaml` each
+        comes from, and the ways out.
     """
     for name, claimants in _grouped(models, lambda m: m.name).items():
         log_event(
@@ -1317,25 +1317,25 @@ def build_graph(
     propagate.
 
     Args:
-    project_root: Directory holding `root_config.yaml`; node ids and meta paths are
-    relative to it.
-    models: Models to export in the design tier. `None` means every model under
-    `design_dir`; an empty list means none.
-    spec_dir, verif_dir, design_dir: Search-root overrides, matching
-    `extract_config_tier`.
+      project_root: Directory holding `root_config.yaml`; node ids and meta paths are
+        relative to it.
+      models: Models to export in the design tier. `None` means every model under
+        `design_dir`; an empty list means none.
+      spec_dir, verif_dir, design_dir: Search-root overrides, matching
+        `extract_config_tier`.
       out_dir: Output directory. Defaults to `<root>/artefacts/graph`.
-    view_executable, view_version: The `rtl-buddy-view` binary and its probed version
-    (feature gate and fingerprint).
+      view_executable, view_version: The `rtl-buddy-view` binary and its probed version
+        (feature gate and fingerprint).
       design: False skips the design tier (config-only graph).
-    tb: False skips the TB-rooted exports (DUT hierarchies only). A cost switch, since
-    each testbench doubles elaboration work.
+      tb: False skips the TB-rooted exports (DUT hierarchies only). A cost switch, since
+        each testbench doubles elaboration work.
       flow_tops: False skips the run-rooted exports. A cost switch like `tb`.
-    bind: False skips the post-merge binding stage (no `binds_to`, `drives` or
-    `checks_against` edges).
-    extract_enabled: False skips the extractor's binding tier without probing for the
-    tool.
-    extract_cross_check: Compare the extractor's `merge-graphs` against the internal
-    union.
+      bind: False skips the post-merge binding stage (no `binds_to`, `drives` or
+        `checks_against` edges).
+      extract_enabled: False skips the extractor's binding tier without probing for the
+        tool.
+      extract_cross_check: Compare the extractor's `merge-graphs` against the internal
+        union.
       force: Rebuild even when the fingerprint is unchanged.
 
     Returns:

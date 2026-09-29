@@ -118,8 +118,8 @@ class CoverageJoin:
     Attributes:
       block: The overlay's `coverage` block.
       per_test: Test node id -> that test's coverage scalars.
-    problems: Why coverage could not be joined. Empty problems with `block is None`
-    means the tree has no coverage artefacts, which is not an error.
+      problems: Why coverage could not be joined. Empty problems with `block is None`
+        means the tree has no coverage artefacts, which is not an error.
     """
 
     block: dict | None = None
@@ -413,16 +413,16 @@ def join_coverage(
 
     Args:
       project_root: Project the overlay is refreshed for.
-    entries: The overlay's `tests` block, for per-test scalars keyed by test node id and
-    for item pass status.
-    graph: A loaded `graph.json`. Without one, module coverage is keyed by
-    `module:<name>` and no declared items are known.
-    cov_dir, manifest: Where to read coverage from. Default to the newest
-    `cov_dir/manifest.json` under the project.
-    required: When true, a missing or unreadable manifest is reported in `problems`
-    instead of meaning "no coverage".
-    source: `COVERAGE_SOURCE_AUTO`, `COVERAGE_SOURCE_MODEL`, or a path to a merged
-    `.info`.
+      entries: The overlay's `tests` block, for per-test scalars keyed by test node id and
+        for item pass status.
+      graph: A loaded `graph.json`. Without one, module coverage is keyed by
+        `module:<name>` and no declared items are known.
+      cov_dir, manifest: Where to read coverage from. Default to the newest
+        `cov_dir/manifest.json` under the project.
+      required: When true, a missing or unreadable manifest is reported in `problems`
+        instead of meaning "no coverage".
+      source: `COVERAGE_SOURCE_AUTO`, `COVERAGE_SOURCE_MODEL`, or a path to a merged
+        `.info`.
 
     Returns:
       A `CoverageJoin` with `block` set when coverage was found.

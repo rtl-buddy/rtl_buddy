@@ -248,11 +248,11 @@ class ConfigTier:
 
     Attributes:
       graph: Node-link JSON, ready to write as `graph.json`.
-    meta: Provenance sidecar for `graph-meta.json`: generator identity and the content
-    hash of every config file read. Kept out of `graph` because hashes churn on every
-    edit.
-    suite_load_failures: Repo-relative `tests.yaml` paths that failed to load.
-    Extraction is best-effort; callers decide whether to fail.
+      meta: Provenance sidecar for `graph-meta.json`: generator identity and the content
+        hash of every config file read. Kept out of `graph` because hashes churn on every
+        edit.
+      suite_load_failures: Repo-relative `tests.yaml` paths that failed to load.
+        Extraction is best-effort; callers decide whether to fail.
     """
 
     graph: dict
@@ -301,10 +301,10 @@ class _Flows:
     """What the repo-level regression files said.
 
     Attributes:
-    by_suite: Suite dir (repo-relative) -> the flows that claim it, in `FLOW_SOURCES`
-    order.
-    suites: `(flow, suite config, entries accessor)` for the non-simulation flows, whose
-    suites the `verif/` walk cannot reach.
+      by_suite: Suite dir (repo-relative) -> the flows that claim it, in `FLOW_SOURCES`
+        order.
+      suites: `(flow, suite config, entries accessor)` for the non-simulation flows, whose
+        suites the `verif/` walk cannot reach.
       inputs: Every file read, for the input hashes.
       failures: Regression files that would not load.
     """
@@ -875,13 +875,13 @@ def extract_config_tier(
       spec_dir: Tree searched for `specs.yaml`. Defaults to `<project_root>/spec`.
       verif_dir: Tree searched for `tests.yaml`. Defaults to `<project_root>/verif`.
       design_dir: Tree searched for `models.yaml`. Defaults to `<project_root>/design`.
-    exported_models: Models the design tier will export. Config-to-design stitches are
-    emitted only for these. `None` means no selection, and every graphable model is
-    stitched.
+      exported_models: Models the design tier will export. Config-to-design stitches are
+        emitted only for these. `None` means no selection, and every graphable model is
+        stitched.
 
     Returns:
-    The graph, provenance meta and any suites that failed to load. A missing search
-    directory is not an error.
+      The graph, provenance meta and any suites that failed to load. A missing search
+      directory is not an error.
     """
     root = Path(os.path.realpath(str(project_root)))
     search_spec = str(spec_dir) if spec_dir is not None else str(root / "spec")
