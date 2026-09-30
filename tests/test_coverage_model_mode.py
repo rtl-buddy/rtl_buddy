@@ -1,17 +1,6 @@
-"""Tests for #660 — `--coverage-model` chooses how much of the model to write.
+"""Tests for `--coverage-model`, which chooses how much of the model to write.
 
-The per-point `tests` map is the points x tests term that makes the model
-the biggest and slowest thing a large coverage run produces, and a CI job
-that only records the suite figure never reads it. What these pin:
-
-* `totals` builds the model without per-point attribution and changes no
-  figure: totals, per-test rows and source totals match `full`;
-* `none` writes no model, removes a stale one, and still writes the
-  manifest with its totals, which headless consumers read on their own;
-* the manifest records the choice, and `rb cov` names the flag when there
-  is no model to read;
-* `test` and `regression` pass the flag to the reporter.
-"""
+`totals` drops per-point attribution without changing any figure, `none` writes no model but still writes the manifest, and `test` and `regression` pass the flag to the reporter."""
 
 from __future__ import annotations
 
@@ -148,7 +137,7 @@ def test_totals_drops_only_the_per_point_attribution(project):
     assert manifest["model"] is not None
     assert totals["attribution"] is False
     assert not any("tests" in point for point in _points(totals))
-    # Every figure is the same numbers, per run, per test and per file.
+    # Totals match `full` per run, per test and per file.
     assert totals["totals"] == full["totals"]
     assert totals["source_totals"] == full["source_totals"]
     assert totals["tests"] == full["tests"]
@@ -164,8 +153,7 @@ def test_none_writes_the_manifest_and_its_totals_without_a_model(project):
 
     artefacts, manifest, cov_dir = _write(project, "none")
 
-    # The earlier run's model is gone, so the directory holds nothing the
-    # manifest does not describe.
+    # The earlier run's model is removed, so the directory holds nothing the manifest does not describe.
     assert not (cov_dir / MODEL_FILENAME).exists()
     assert manifest["coverage_model"] == "none"
     assert manifest["model"] is None

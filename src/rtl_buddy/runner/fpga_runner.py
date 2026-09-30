@@ -11,11 +11,7 @@ from ..tools.fpga_openxc7 import OpenXc7Fpga
 from ..tools.fpga_vivado import VivadoFpga
 
 
-# Backend registry. Adding another flow (Quartus, ...) is a one-line
-# entry here plus a BaseFpga subclass in tools/fpga_<tool>.py. The
-# default stays "vivado" (FpgaConfigFile.tool): openxc7 covers only
-# 7-series parts, so an open default would break every other platform
-# out of the box — select it per run with `tool: openxc7`.
+# The default tool stays "vivado" (FpgaConfigFile.tool) because openxc7 covers only 7-series parts.
 _FPGA_BACKENDS: dict[str, type[BaseFpga]] = {
     "vivado": VivadoFpga,
     "openxc7": OpenXc7Fpga,
@@ -66,8 +62,7 @@ class FpgaRunner:
 
         backend_cls = _FPGA_BACKENDS.get(tool_name)
         if backend_cls is None:
-            # A typo'd tool name is a config error, not a skippable
-            # condition — surface it loudly (exit 2).
+            # A config error, not a skippable condition.
             raise FatalRtlBuddyError(
                 f"fpga run '{self.fpga_cfg.get_name()}': unknown tool "
                 f"'{tool_name}' (registered: {sorted(_FPGA_BACKENDS)})"
@@ -84,14 +79,9 @@ class FpgaRunner:
         return self._apply_timing_gate(backend.run())
 
     def _apply_timing_gate(self, result: FpgaResults) -> FpgaResults:
-        """Convert a passing run with unmet timing into a FAIL when the run
-        sets ``require-timing-met``.
+        """Turn a passing run with unmet timing into a FAIL under ``require-timing-met``.
 
-        Backend-agnostic so it covers every backend uniformly. Only acts
-        when the backend explicitly reported ``timing_met is False`` — a
-        ``None`` (backend cannot measure timing) is never gated, since we
-        cannot prove timing was missed. The routed metrics ride along on
-        the failing result so a closure loop still sees them.
+        Only ``timing_met is False`` fails; ``None`` (timing not measurable) passes. The routed metrics stay on the failing result.
         """
         if not self.fpga_cfg.get_require_timing_met():
             return result

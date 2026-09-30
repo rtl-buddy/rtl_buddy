@@ -1,12 +1,7 @@
 """Configuration schema for style-lint (verible) runs.
 
-Mirrors the CDC schema (``config/cdc.py``) at a smaller surface: each
-``lint.yaml`` lists one or more checks; each check names a model whose
-filelist supplies the files to lint (bare source entries only — the
-same "files the model owns" expansion ``rb verible lint --model``
-applies) plus optional exclude globs and extra lint arguments. The
-linter is the project's routed ``cfg-verible`` entry; there is no
-per-check ``tool:`` field until a second style linter exists.
+Each ``lint.yaml`` lists checks: a model whose filelist supplies the files to lint (bare source entries only, the same expansion as ``rb verible lint --model``), plus optional exclude globs and extra lint arguments.
+The linter is always the project's ``cfg-verible`` entry.
 """
 
 import logging
@@ -34,21 +29,12 @@ class LintConfigFile:
     desc: str
     model: str
     model_path: str = field(rename="model_path")
-    # Glob patterns dropped from the model expansion, *in addition to*
-    # the routed cfg-verible entry's ``exclude`` list. Same semantics:
-    # fnmatch against the project-root-relative path with ``/``
-    # separators; ``*`` crosses directory boundaries.
+    # fnmatch globs against the project-root-relative path, added to the cfg-verible ``exclude`` list; ``*`` crosses ``/``.
     exclude: list[str] = field(default_factory=list)
-    # Extra verible-verilog-lint arguments for this check, appended
-    # after the cfg-verible ``extra_args.lint`` block (later gflags
-    # occurrences win, so a check can override the project default).
+    # Appended after cfg-verible ``extra_args.lint``; later gflags win.
     extra_args: list[str] = field(default_factory=list)
     reglvl: int | None = None
-    # Expected-fail markers (pytest-style), as in cdc.yaml: either flag
-    # marks the check expected-to-fail (a FAIL becomes XFAIL, a pass);
-    # `xfail_strict` additionally counts an unexpected pass (XPASS) as a
-    # failure. Use for a block whose style debt is tracked but not yet
-    # paid, so the regression stays green while the debt stays visible.
+    # Either flag turns a FAIL into XFAIL; an unexpected pass (XPASS) fails only for `xfail_strict`.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
@@ -89,18 +75,10 @@ class LintConfig:
         return self.model
 
     def get_top(self) -> str:
-        """The module this run elaborates — the model's root module.
-
-        Delegates to :meth:`ModelConfig.get_top` so a models.yaml
-        ``top:`` override (#479) reaches this flow too; without the
-        override it is still the model name.
-        """
+        """The module this run elaborates (see :meth:`ModelConfig.get_top`)."""
         return self.model.get_top()
 
     def get_tool_name(self) -> str:
-        # The linter is always the routed cfg-verible entry; the constant
-        # keeps the graph's `tool` stamp meaningful next to the other
-        # flows' entries.
         return "verible"
 
     def get_exclude(self) -> list[str]:
@@ -149,9 +127,7 @@ class LintSuiteConfig:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
-        # Fail loud on duplicate ``name:`` — the dict build below would
-        # silently overwrite the first check with the second, hiding the
-        # user's typo until "check X not found" at lookup time.
+        # The dict build below would silently drop the first of two same-named checks.
         seen: dict[str, int] = {}
         for idx, check in enumerate(data.checks):
             if check.name in seen:

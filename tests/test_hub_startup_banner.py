@@ -1,14 +1,6 @@
 """Tests for ``rtl_buddy.hub.loop._print_startup_banner``.
 
-The banner is the first thing a user sees after ``rb hub start``;
-silently blocking the terminal was the #1 papercut in early demos.
-Exercise the conditional pieces:
-
-* viewer URL only when ``--serve-viewer`` provided an http_port
-* ``?view=/view.json`` suffix only when view_json_path resolves to
-  an existing file (don't dangle a 404 URL)
-* logs line only when ``[hub].log_path`` is configured
-* TCP + the Ctrl-C hint are always present
+The viewer URL appears only with an http_port, the ``?view=/view.json`` suffix only when view_json_path is an existing file, and the logs line only when ``[hub].log_path`` is set. TCP and the Ctrl-C hint are always present.
 """
 
 from __future__ import annotations
@@ -19,7 +11,7 @@ from rtl_buddy.hub.loop import _print_startup_banner
 
 
 def test_banner_tcp_only_no_viewer(capfd):
-    """Without --serve-viewer there's no HTTP port — only TCP."""
+    """Without --serve-viewer there is no HTTP port, only TCP."""
 
     _print_startup_banner(
         tcp_host="127.0.0.1",
@@ -38,9 +30,7 @@ def test_banner_tcp_only_no_viewer(capfd):
 
 
 def test_banner_with_viewer_but_no_view_json(capfd):
-    """With --serve-viewer but no view.json on disk, the viewer URL
-    omits the ?view=/view.json suffix so the user doesn't click into
-    a 404."""
+    """With --serve-viewer but no view.json on disk, the viewer URL has no ?view=/view.json suffix."""
 
     _print_startup_banner(
         tcp_host="127.0.0.1",
@@ -56,8 +46,7 @@ def test_banner_with_viewer_but_no_view_json(capfd):
 
 
 def test_banner_view_json_path_set_but_file_missing(capfd, tmp_path: Path):
-    """view_json_path configured but file doesn't exist → no ?view=
-    suffix (matches the /view.json 404 behaviour from #141)."""
+    """A configured view_json_path whose file is missing gives no ?view= suffix."""
 
     missing = tmp_path / "view.json"
     _print_startup_banner(
@@ -74,7 +63,7 @@ def test_banner_view_json_path_set_but_file_missing(capfd, tmp_path: Path):
 
 
 def test_banner_view_json_present_appends_query(capfd, tmp_path: Path):
-    """view.json exists → URL includes the auto-load query string."""
+    """An existing view.json adds the auto-load query string."""
 
     view_json = tmp_path / "view.json"
     view_json.write_text('{"schema_version":"1.0"}')
@@ -87,8 +76,7 @@ def test_banner_view_json_present_appends_query(capfd, tmp_path: Path):
     )
     out = capfd.readouterr().err
     assert "Hub:      http://127.0.0.1:54321/" in out
-    # The PAGE is /sch; the `?view=` query still names /view.json, which
-    # is a data route and did not move (#423).
+    # The page is /sch; the `?view=` query still names the /view.json data route.
     assert "Viewer:   http://127.0.0.1:54321/sch?view=/view.json" in out
 
 
@@ -101,9 +89,7 @@ def test_banner_includes_log_path_when_configured(capfd, tmp_path: Path):
         view_json_path=None,
         log_path=log_path,
     )
-    # Rich wraps long paths mid-string when the terminal width is narrow
-    # (as it is under pytest capture). Strip whitespace before asserting so
-    # the path-on-disk shows up as one contiguous substring.
+    # Rich wraps long paths under pytest's narrow terminal; strip whitespace so the path is one substring.
     out = "".join(capfd.readouterr().err.split())
     assert "Logs:" in out
     assert "".join(str(log_path).split()) in out

@@ -44,7 +44,10 @@ def publish(
     version: str,
     update_latest: bool,
 ) -> None:
-    """Publish a build without disturbing other version directories."""
+    """Copy a build into ``pages_dir/<version>``, leaving other versions in place.
+
+    With ``update_latest``, also make it the ``latest`` alias and root redirect.
+    """
     build_dir = build_dir.resolve()
     pages_dir = pages_dir.resolve()
     if not _VERSION_RE.fullmatch(version):

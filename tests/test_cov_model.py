@@ -1,9 +1,6 @@
-"""
-Unit tests for the structured coverage model and its artefact manifest (#399).
+"""Unit tests for the structured coverage model and its artefact manifest.
 
-The fixtures are captured Verilator record shapes written inline rather than
-binary blobs: `coverage.dat` is a text format, so the exact bytes a test needs
-are readable in the test that needs them.
+Fixtures are captured Verilator record shapes written inline; `coverage.dat` is text, so each test shows the bytes it needs.
 """
 
 import json
@@ -183,12 +180,7 @@ def test_per_test_totals_are_that_test_only(tmp_path):
 def _two_elaboration_model(tmp_path):
     """One source file elaborated twice, as a multi-key suite records it.
 
-    Verilator keys every point on the module it *elaborated*, and
-    mangles the parameterisation into the name — one source module
-    compiled two ways is ``blk__W13`` and ``blk__Wc``. The branch, the
-    toggle bit and the cover property below are therefore recorded
-    twice, and the second copy is exercised by neither test: the shape
-    #637 is about.
+    Verilator keys each point on the elaborated module and mangles the parameterisation into its name (``blk__W13``, ``blk__Wc``). The branch, toggle bit and cover property are recorded twice, and the second copy is exercised by neither test.
     """
     root, suite = _project(tmp_path)
     records = []
@@ -251,12 +243,9 @@ def _two_elaboration_model(tmp_path):
 
 
 def test_source_totals_score_a_point_hit_by_any_elaboration(tmp_path):
-    """The two figures, on the same records (#637).
+    """Source totals score a point hit by any elaboration as hit.
 
-    Per elaboration the branch is two points and one of them is cold —
-    the reading that had blocks reported short when the suite had in
-    fact covered them. Collapsed on ``(file, line, column, name)`` it is
-    one point, and hit.
+    Per elaboration the branch is two points and one is cold; collapsed on ``(file, line, column, name)`` it is one point, and hit.
     """
     _root, _suite, model = _two_elaboration_model(tmp_path)
     (file_row,) = model["files"]
@@ -265,14 +254,12 @@ def test_source_totals_score_a_point_hit_by_any_elaboration(tmp_path):
     assert file_row["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
     assert model["totals"]["branch"] == file_row["totals"]["branch"]
     assert model["source_totals"]["branch"] == file_row["source_totals"]["branch"]
-    # Same for the cover property compiled into both elaborations.
     assert file_row["totals"]["cover"] == {"found": 2, "hit": 1, "ratio": 0.5}
     assert file_row["source_totals"]["cover"] == {"found": 1, "hit": 1, "ratio": 1.0}
 
 
 def test_source_totals_keep_a_point_no_elaboration_hit_dark(tmp_path):
-    """Collapsing is not rounding up: the toggle bit neither elaboration
-    toggled is one point and still a miss."""
+    """A toggle bit that no elaboration toggled is still one missed point."""
     _root, _suite, model = _two_elaboration_model(tmp_path)
     (file_row,) = model["files"]
 
@@ -281,17 +268,14 @@ def test_source_totals_keep_a_point_no_elaboration_hit_dark(tmp_path):
 
 
 def test_line_points_already_fold_per_file_so_both_figures_agree(tmp_path):
-    """Line points carry no module in their identity, so the *file* figure
-    has always been collapsed; the per-elaboration count is what a test row
-    and Verilator's own report show. Documented rather than changed."""
+    """Line points carry no module, so the file figure is the same collapsed count under both readings."""
     _root, _suite, model = _two_elaboration_model(tmp_path)
     (file_row,) = model["files"]
     (test_row,) = model["tests"]
 
     assert file_row["totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
     assert file_row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
-    # The per-test row counts one record per elaboration, as the simulator
-    # wrote them; its source row collapses them.
+    # A per-test row counts one record per elaboration; its source row collapses them.
     assert test_row["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
     assert test_row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
     assert test_row["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
@@ -299,8 +283,7 @@ def test_line_points_already_fold_per_file_so_both_figures_agree(tmp_path):
 
 
 def test_source_totals_equal_totals_on_an_info_only_model(tmp_path):
-    """An LCOV-derived model records no module at all, so the two readings
-    are the same numbers — degraded gracefully, not refused."""
+    """An LCOV-derived model records no module, so the two readings give the same numbers."""
     root, suite = _project(tmp_path)
     info = suite / "artefacts" / "basic" / "coverage.info"
     info.write_text(
@@ -321,8 +304,7 @@ def test_source_totals_equal_totals_on_an_info_only_model(tmp_path):
 
 
 def test_manifest_carries_the_source_totals_beside_the_totals(tmp_path):
-    """The manifest is the discovery contract; the second figure is a key
-    on it, not a re-read of the model."""
+    """The manifest carries the source totals as a key beside the totals."""
     root, suite, model = _two_elaboration_model(tmp_path)
 
     manifest = build_manifest(
@@ -335,7 +317,7 @@ def test_manifest_carries_the_source_totals_beside_the_totals(tmp_path):
 
     assert manifest["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
     assert manifest["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
-    # Absent figure is null, never a copy of the other one.
+    # An absent figure is null, never a copy of the other one.
     assert (
         build_manifest(project_root=root, cov_dir=suite / "cov_dir", command="test")[
             "source_totals"
@@ -437,12 +419,7 @@ def test_manifest_discovery_and_project_root_inference(tmp_path):
 
 
 def _symlink_or_skip(link, target):
-    """Link ``link`` at directory ``target``, or skip where it cannot.
-
-    The link is the whole subject of the tests below, so a platform that
-    refuses to make one has nothing to assert rather than a failure to
-    report.
-    """
+    """Link ``link`` at directory ``target``, or skip where the platform cannot."""
     try:
         link.symlink_to(target, target_is_directory=True)
     except (OSError, NotImplementedError):  # pragma: no cover - POSIX CI
@@ -450,7 +427,7 @@ def _symlink_or_skip(link, target):
 
 
 def _bare_manifest(cov_dir, project_root):
-    """A manifest with nothing in it but the two paths discovery reads."""
+    """A manifest with only the two paths discovery reads."""
     return write_manifest(
         build_manifest(project_root=project_root, cov_dir=cov_dir, command="test"),
         cov_dir,
@@ -460,9 +437,7 @@ def _bare_manifest(cov_dir, project_root):
 def _project_with_symlinked_artefacts(tmp_path):
     """A project whose ``artefacts/`` is a link onto scratch storage.
 
-    Returns the root and the suite directory *as the project reaches
-    them* — the paths every producer holds, and the ones the manifest's
-    own paths have to be expressed in.
+    Returns the root and the suite directory as the project reaches them, which is what the manifest's paths must be expressed in.
     """
     root = tmp_path / "repo"
     suite = root / "verif" / "blk"
@@ -477,10 +452,7 @@ def _project_with_symlinked_artefacts(tmp_path):
 
 
 def test_discovery_reaches_a_cov_dir_behind_a_symlinked_artefact_dir(tmp_path):
-    """``artefacts/`` linked onto scratch storage is an ordinary, documented
-    setup, and the default ``cov_dir`` lives inside it — so a walk that did
-    not follow the link reported "no coverage found" for a run sitting right
-    there (rtl-buddy/rtl_buddy#564)."""
+    """Discovery reaches a cov_dir behind a symlinked ``artefacts/`` directory."""
     root, suite = _project_with_symlinked_artefacts(tmp_path)
     _bare_manifest(suite / "artefacts" / "cov_dir", root)
 
@@ -490,13 +462,10 @@ def test_discovery_reaches_a_cov_dir_behind_a_symlinked_artefact_dir(tmp_path):
 
 
 def test_manifest_round_trips_through_a_symlinked_artefacts_dir(tmp_path):
-    """The other end of what discovery now reaches. Resolving both operands
-    put the scratch path on both sides of the comparison, so every path came
-    out absolute and host-specific; `project_root_for` then took its
-    ``isabs`` branch and answered with the scratch ``cov_dir`` itself, and
-    `rb cov` reported its own manifest as a bare ``manifest.json`` — which no
-    consumer can join back onto the project, and the MCP ``manifest``
-    override cannot round-trip."""
+    """The manifest round-trips through a symlinked artefacts dir.
+
+    Resolving both operands would put the scratch path on both sides, making every path absolute; `project_root_for` would then answer with the scratch ``cov_dir`` and `rb cov` would report a bare ``manifest.json``.
+    """
     root, suite = _project_with_symlinked_artefacts(tmp_path)
     run_dir = suite / "artefacts" / "basic"
     raw = _write_dat(
@@ -534,8 +503,7 @@ def test_manifest_round_trips_through_a_symlinked_artefacts_dir(tmp_path):
     assert manifest["model"] == "verif/blk/artefacts/cov_dir/coverage-model.json"
     assert project_root_for(manifest_path) == str(root)
     assert os.path.samefile(resolve(manifest_path, manifest["model"]), model_path)
-    # And what `rb cov --machine` / the MCP tools hand a consumer: paths
-    # relative to the project, not to the scratch directory they live in.
+    # `rb cov --machine` and the MCP tools hand consumers paths relative to the project.
     block = artefacts_block(load_context(root))
     assert block["manifest"] == "verif/blk/artefacts/cov_dir/manifest.json"
     assert block["cov_dir"] == "verif/blk/artefacts/cov_dir"
@@ -543,10 +511,10 @@ def test_manifest_round_trips_through_a_symlinked_artefacts_dir(tmp_path):
 
 
 def test_discovery_terminates_on_a_symlink_loop(tmp_path):
-    """Following links costs a loop risk, and either guard alone stops this
-    one: the boundary refuses a link whose realpath is an ancestor of the
-    project, and behind it a directory is admitted once by its real path. The
-    run the link circles is still reported exactly once."""
+    """Discovery terminates on a symlink loop and reports the run the link circles once.
+
+    Either guard stops it: the boundary refuses a link whose realpath is a project ancestor, and a directory is admitted once by its real path.
+    """
     root, suite = _project(tmp_path)
     cov_dir = suite / "artefacts" / "cov_dir"
     manifest_path = _bare_manifest(cov_dir, root)
@@ -556,12 +524,9 @@ def test_discovery_terminates_on_a_symlink_loop(tmp_path):
 
 
 def _project_with_in_project_artefact_link(tmp_path):
-    """A project whose ``artefacts/`` links to storage *inside* the project.
+    """A project whose ``artefacts/`` links to storage inside the project.
 
-    The awkward middle case: both routes to the same ``cov_dir`` are under
-    the project root, so discovery can legitimately report either, and the
-    manifest's ``cov_dir`` describes only one of them. Returns the root
-    and the two routes, the link's target first.
+    Both routes to the same ``cov_dir`` are under the project root, and the manifest's ``cov_dir`` describes only one. Returns the root and the two routes, the link's target first.
     """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -574,12 +539,7 @@ def _project_with_in_project_artefact_link(tmp_path):
 
 
 def test_discovery_reports_a_cov_dir_reachable_two_ways_once(tmp_path):
-    """An ``artefacts/`` link whose target is itself inside the project puts
-    one ``cov_dir`` on two paths. Admitting a directory once by its real path
-    keeps the same run from being reported — and reported on — twice, and
-    whichever of the two routes the walk happens to reach first has to
-    resolve back onto its own artefacts: that invariant must not depend on
-    the order a directory is read in."""
+    """A cov_dir reachable two ways is reported once, and whichever route is reached first resolves back onto its own artefacts."""
     root, target_route, logical_route = _project_with_in_project_artefact_link(tmp_path)
     _bare_manifest(logical_route, root)
 
@@ -594,13 +554,10 @@ def test_discovery_reports_a_cov_dir_reachable_two_ways_once(tmp_path):
 
 
 def test_project_root_survives_a_manifest_read_through_the_link_target(tmp_path):
-    """The physical walk's #561 finding, which the coverage walk inherits the
-    moment it follows links. Counting ``cov_dir``'s components back off the
-    *target* route climbs two levels above the project, and every artefact
-    the manifest names then resolves to nothing — `rb cov` reporting a
-    missing model that is sitting right there, on nothing but directory-order
-    luck. So the counted root is checked against the directory the manifest
-    is in, and the marker walk gets the second try."""
+    """The project root survives a manifest read through the link target.
+
+    Counting ``cov_dir`` components back off the target route would climb above the project, so the counted root is checked against the manifest's directory and the marker walk gets a second try.
+    """
     root, target_route, logical_route = _project_with_in_project_artefact_link(tmp_path)
     _bare_manifest(logical_route, root)
 
@@ -612,11 +569,7 @@ def test_project_root_survives_a_manifest_read_through_the_link_target(tmp_path)
 
 
 def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path):
-    """The other half of the boundary, and the reason the coverage walk asks
-    the same question the physical one does (its #560 round-10 review finding):
-    following *every* link made a ``vendor/`` link — or one to ``$HOME`` — part
-    of the project's walk, so an unrelated tree was scanned and its coverage
-    reported as this project's own run."""
+    """Discovery does not enter a symlink outside the artefact layout, so an unrelated tree is not reported as this project's run."""
     root, suite = _project(tmp_path)
     manifest_path = _bare_manifest(suite / "artefacts" / "cov_dir", root)
     unrelated = tmp_path / "elsewhere"
@@ -625,6 +578,5 @@ def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path
     _bare_manifest(unrelated / "verif" / "blk" / "artefacts" / "cov_dir", unrelated)
     _symlink_or_skip(root / "vendor", unrelated)
 
-    # Neither the manifest at the link's top nor the one buried inside it:
-    # the link is not entered at all, so nothing under it is even scanned.
+    # The link is not entered, so neither the manifest at its top nor one inside it is found.
     assert discover_manifests(root) == [manifest_path]

@@ -1,10 +1,4 @@
-"""Typer CliRunner smoke tests for the rtl_buddy CLI.
-
-These tests target subcommands that do not need a project root
-(``docs``, ``skill``, ``--version``, ``--help``). The goal is to give
-CLI-wiring coverage and catch regressions in option parsing and exit
-codes without spinning up RootConfig.
-"""
+"""Typer CliRunner smoke tests for subcommands that need no project root (``docs``, ``skill``, ``--version``, ``--help``)."""
 
 from __future__ import annotations
 
@@ -35,11 +29,10 @@ def test_help_lists_subcommands():
 
 
 def test_no_args_shows_help():
-    """Typer is configured with no_args_is_help=True; bare invocation should
-    print help and exit non-zero (Typer's standard behavior for help)."""
+    """Bare invocation prints help and exits non-zero (no_args_is_help)."""
     runner, rb = _runner()
     result = runner.invoke(rb.app, [])
-    # exit_code may be 0 or 2 depending on Typer version; just confirm help shown.
+    # The exit code is 0 or 2 depending on the Typer version.
     assert "Usage:" in result.output or "usage:" in result.output.lower()
 
 
@@ -47,7 +40,6 @@ def test_docs_list_human():
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["docs", "list"])
     assert result.exit_code == 0, result.output
-    # Each line is "<slug> - <title>: <description>"; at least one slug present.
     assert " - " in result.output
     assert ":" in result.output
 
@@ -61,7 +53,6 @@ def test_docs_list_machine_outputs_json():
     assert payload["exit_code"] == 0
     assert isinstance(payload["payload"]["pages"], list)
     assert payload["payload"]["pages"], "expected at least one bundled docs page"
-    # Each entry should have slug/title/description keys.
     first = payload["payload"]["pages"][0]
     for key in ("slug", "title", "description"):
         assert key in first, f"{key} missing from page list item"
@@ -78,8 +69,7 @@ def test_docs_show_unknown_slug_exits_nonzero():
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["docs", "show", "does/not/exist"])
     assert result.exit_code != 0
-    # Typer 0.26+ leaves the ClickException on result.exception rather than
-    # mixing its text into result.output (stdout); accept either location.
+    # Typer 0.26+ keeps the ClickException on result.exception, not in output.
     assert "Unknown docs page" in result.output + str(result.exception)
 
 

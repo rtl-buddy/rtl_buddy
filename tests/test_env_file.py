@@ -12,15 +12,9 @@ from rtl_buddy.config.env_file import (
 from rtl_buddy.errors import FatalRtlBuddyError
 
 
-# The `clean_environ` fixture these tests take lives in conftest.py and
-# is autouse there: the leak it guards against belongs to
-# `RootConfig.__init__`, not to this file. Requested by name below anyway,
-# because here it is load-bearing rather than incidental.
-
-
-# ---------------------------------------------------------------------------
-# parse_env_file
-# ---------------------------------------------------------------------------
+# `clean_environ` (autouse in conftest.py) guards against env leaks from
+# `RootConfig.__init__`. It is requested by name so these tests depend on it
+# explicitly.
 
 
 def test_parse_basic_pairs(tmp_path):
@@ -83,11 +77,6 @@ def test_parse_empty_key_fails_loud(tmp_path):
         parse_env_file(f)
 
 
-# ---------------------------------------------------------------------------
-# apply_env_file
-# ---------------------------------------------------------------------------
-
-
 def _write_project_env(tmp_path, text):
     env_path = tmp_path / ENV_FILE_RELPATH
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,8 +125,8 @@ def test_apply_logs_info_only_when_vars_injected(
     _write_project_env(tmp_path, "RB_TEST_ENVFILE_D=x\n")
 
     with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.env_file"):
-        apply_env_file(tmp_path)  # injects -> INFO
-        apply_env_file(tmp_path)  # nothing new -> DEBUG
+        apply_env_file(tmp_path)
+        apply_env_file(tmp_path)
 
     levels = [
         r.levelno
@@ -148,7 +137,7 @@ def test_apply_logs_info_only_when_vars_injected(
 
 
 def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch, clean_environ):
-    """End-to-end through the consumer that motivated the feature."""
+    """Applying the env file feeds the slang plugin resolver."""
     from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path
 
     monkeypatch.setattr(os, "environ", dict(os.environ))
@@ -161,11 +150,8 @@ def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch, clean_environ)
 def test_env_file_applies_before_tool_paths_expand(
     tmp_path, monkeypatch, clean_environ
 ):
-    """`.rtl-buddy/.env` must land before cfg-surfer expands its path (#439).
-
-    cfg-verible and cfg-surfer resolve their paths inside RootConfig's
-    constructor, so an env file applied afterwards would be too late for
-    exactly the per-user override it exists to provide.
+    """`.rtl-buddy/.env` is applied before cfg-verible and cfg-surfer expand their
+    paths in `RootConfig.__init__`.
     """
     import shutil as _shutil
     from pathlib import Path as _Path

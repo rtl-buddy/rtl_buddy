@@ -1,29 +1,15 @@
-"""Audit a Vivado XDC's CDC-relevant exceptions against rtl-buddy-cdc's
-independently-derived crossing set (issue #290).
+"""Audit the CDC-relevant exceptions in a Vivado XDC against the rtl-buddy-cdc crossing set.
 
-This is the *audit* half of the constraint loop (#291 is the *generation*
-half). It is **not** a general XDC validator — pin/IO/placement/electrical
-correctness stays Vivado's job. Scope is strictly the CDC subset:
-``create_clock`` / ``create_generated_clock``, ``set_clock_groups
--asynchronous``, ``set_false_path``, ``set_max_delay -datapath_only``,
-``set_bus_skew``.
+Only ``create_clock``, ``set_clock_groups -asynchronous``, ``set_false_path``,
+``set_max_delay`` and ``set_bus_skew`` are read. Findings:
 
-The audit is a diff between the XDC's exceptions and the open engine's truth:
+* unconstrained crossing (blocker): a crossing with no matching XDC exception.
+* over-waive (blocker): a false path or asynchronous group on a path rtl-buddy-cdc
+  reports as not safely synchronized.
+* missing bus skew (warning): a multi-bit crossing waived without ``set_bus_skew``.
+* clock graph (warning or info): XDC clocks that differ from the RTL clocks.
 
-* **Completeness** — a crossing rtl-buddy-cdc finds, with no matching XDC
-  exception → *unconstrained CDC* (the tool times a metastable-by-design path
-  or the design gets false confidence).
-* **Over-waive (dangerous)** — an XDC ``set_false_path`` / ``-asynchronous`` on
-  a path rtl-buddy-cdc reports as *not* a safely synchronized crossing → the
-  XDC **masks a real metastability / data-coherency bug**. This is where the
-  independent open engine beats trusting the constraint file.
-* **Missing bus skew** — a multi-bit crossing waived with a bare false-path /
-  clock-group and no ``set_bus_skew`` → bit-to-bit skew incoherency is hidden.
-* **Clock-graph consistency** — XDC ``create_clock`` disagreeing with the RTL
-  clocking changes the derived domain set and can hide waived crossings.
-
-Pure functions over the XDC text + the rtl-buddy-cdc domain map / report — no
-subprocess — so the contract is testable against checked-in fixtures.
+Pure functions over the XDC text, the domain map and the report.
 """
 
 from __future__ import annotations
@@ -54,14 +40,9 @@ _EXCEPTION_KINDS = {
 
 
 def _tokens(word: str | None) -> list[str]:
-    """Pull the bare names out of one tokenized Tcl word.
+    """Return the bare names in a Tcl word such as ``[get_clocks clk_a]`` or ``[get_cells u_sync/*]``.
 
-    Handles ``[get_clocks clk_a]``, ``[get_clocks {clk_a clk_b}]``,
-    ``[get_cells u_sync/* -filter {IS_SEQUENTIAL}]``,
-    ``[get_cells -hierarchical u_sync/*]``, ``[get_pins [get_cells u_a]/C]``,
-    ``{clk_a}`` and bare ``clk_a``. Flags, the ``get_*`` head (nested ones
-    too) and ``-filter`` predicates are dropped; a trailing ``/*`` cell
-    wildcard is trimmed to the instance token.
+    Flags, ``get_*`` heads and ``-filter`` predicates are dropped and a trailing ``/*`` is trimmed.
     """
     if word is None:
         return []
@@ -77,7 +58,7 @@ def _flag_value(cmd: TclCommand, flag: str) -> str | None:
 
 
 def _flag_values(cmd: TclCommand, flag: str) -> list[str]:
-    """Every value word following a repeated ``flag`` (e.g. ``-group``)."""
+    """Every value word following a repeated ``flag`` such as ``-group``."""
     out = []
     for i, word in enumerate(cmd.words):
         if word == flag and i + 1 < len(cmd.words):
@@ -131,17 +112,12 @@ def _period(word: str | None) -> float | None:
 def extract_cdc_constraints(
     xdc_text: str, *, source: str | None = None
 ) -> XdcConstraints:
-    """Read the CDC-relevant subset of an XDC/SDC into :class:`XdcConstraints`.
+    """Read the CDC-relevant commands of an XDC/SDC into :class:`XdcConstraints`.
 
-    Reading goes through the constraint reader (#642, #641) rather than a
-    regex per physical line, so ``\\``-continued commands, braced values and
-    nested collections (``[get_pins [get_cells u_a]/C]``) are read the way
-    Vivado reads them. Which backend answered does not change what is
-    extracted — the ``tcl`` interp rebuilds a collection as
-    ``[get_cells u_a]``, exactly the word the tokenizer would have handed
-    over — except that the interp also evaluates ``$p`` / ``[expr …]``, so a
-    computed ``-period`` becomes a number instead of ``None``. ``source``
-    only names the file in the reader's per-file warnings.
+    The constraint reader handles continued lines, braces and nested collections.
+    A ``-period`` computed with ``$var`` or ``[expr]`` is a number only when the
+    reader's ``tcl`` backend evaluates it, otherwise ``None``. ``source`` names the
+    file in reader warnings.
     """
     commands, _backend = read_commands(xdc_text, interest=_INTEREST, source=source)
     xc = XdcConstraints()
@@ -161,7 +137,6 @@ def extract_cdc_constraints(
             if "-asynchronous" not in cmd.words and "-async" not in cmd.words:
                 continue
             groups = [_tokens(g) for g in _flag_values(cmd, "-group")]
-            # every cross-group clock pair is declared asynchronous
             for i in range(len(groups)):
                 for j in range(i + 1, len(groups)):
                     for a in groups[i]:
@@ -186,11 +161,6 @@ def extract_cdc_constraints(
             )
         )
     return xc
-
-
-# --------------------------------------------------------------------------
-# audit
-# --------------------------------------------------------------------------
 
 
 @dataclass
@@ -245,7 +215,6 @@ def _cell_match(cells: list[str], crossing_inst: str) -> bool:
             continue
         if c in (leaf, rel) or c.endswith("/" + leaf) or leaf == c:
             return True
-        # the emitted form is the relative path of the instance itself
         if rel and (c == rel or rel.endswith(c) or c.endswith(rel)):
             return True
     return False
@@ -269,13 +238,11 @@ def audit_xdc(
     xc: XdcConstraints,
     recognized_syncs: list[str] | None = None,
 ) -> AuditResult:
-    """Diff the XDC's CDC exceptions against the verified crossing set.
+    """Diff the XDC's CDC exceptions against the crossing set and report violations.
 
-    ``recognized_syncs`` is a list of instance-path regexes the user declares
-    as real synchronizers the analyzer did not recognize structurally (e.g. a
-    blackboxed ``xpm_cdc_*`` macro). A violation whose instance matches one is
-    treated as a safe crossing: a correct XDC waiver of it is NOT a dangerous
-    over-waive. (Completeness still applies — it is a real crossing.)
+    ``recognized_syncs`` are instance-path regexes for synchronizers the analyzer did not
+    recognize (e.g. a blackboxed ``xpm_cdc_*``). Waiving a matching violation is not an
+    over-waive, but the crossing must still be constrained.
     """
     res = AuditResult()
     recognized = []
@@ -283,8 +250,6 @@ def audit_xdc(
         try:
             recognized.append(re.compile(p))
         except re.error as e:
-            # User-supplied (cdc.yaml recognized-syncs / --recognize-sync) — a
-            # bad pattern is a config error, not a traceback.
             raise FatalRtlBuddyError(
                 f"--check-xdc: invalid recognized-syncs regex {p!r}: {e}"
             ) from e
@@ -292,11 +257,8 @@ def audit_xdc(
         c for c in domain_map.get("crossings", []) if c.get("async_per_sdc", True)
     ]
 
-    # A flattening frontend (Yosys `flatten`) collapses every crossing's capture
-    # instance to the design top, so cell-scoped exceptions in the XDC cannot be
-    # matched to a specific crossing. Clock-level coverage (groups / clock-pair
-    # false_path) is still audited correctly; warn only when the XDC actually
-    # relies on cell scoping, so the user knows that half is not being verified.
+    # A flattening frontend (Yosys `flatten`) reports every capture instance as the top, so
+    # cell-scoped exceptions cannot be matched; clock-level coverage is still audited.
     map_flattened = bool(crossings) and all(
         "." not in c.get("dst_source_instance_path", "") for c in crossings
     )
@@ -316,7 +278,6 @@ def audit_xdc(
             )
         )
 
-    # --- completeness + bus-skew on the SAFE crossing set ---
     for c in crossings:
         src, dst = c.get("src_clock"), c.get("dst_clock")
         inst = c.get("dst_source_instance_path", "")
@@ -327,9 +288,7 @@ def audit_xdc(
             e.kind == "false_path" and _cell_match(e.to_cells, inst)
             for e in xc.path_exceptions
         )
-        # Only a `-datapath_only` max_delay is a valid async CDC exception; a
-        # bare max_delay still times the launch->capture clock relationship,
-        # so it does NOT count as covering a crossing.
+        # A bare max_delay still times the path, so only `-datapath_only` covers a crossing.
         md_dp = [
             e for e in xc.path_exceptions if e.kind == "max_delay" and e.datapath_only
         ]
@@ -376,24 +335,18 @@ def audit_xdc(
                     )
                 )
 
-    # --- over-waive on the UNSAFE crossing set (unsuppressed violations) ---
     for v in cdc_report.get("violations", []):
         c = v.get("crossing") or {}
         src, dst = c.get("src_clock"), c.get("dst_clock")
         if not src or not dst:
             continue
         inst = "/".join(v.get("instance_path", [])) or c.get("dst_flop", "")
-        # A user-declared recognized synchronizer the analyzer missed
-        # structurally (e.g. a blackboxed xpm_cdc_* macro): a correct XDC
-        # waiver of it is not an over-waive, so skip it here. Completeness
-        # above still requires it to be constrained.
         if recognized and any(
             r.search(inst) or r.search(c.get("dst_flop", "")) for r in recognized
         ):
             continue
         pair = frozenset({src, dst})
-        # false_path / clock_groups make the tool IGNORE the path; max_delay
-        # still times it, so it is not an over-waive.
+        # max_delay still times the path, so it is not a waiver.
         ignored = (
             pair in xc.async_clock_pairs
             or _covers_clock_pair(pair, xc.path_exceptions, {"false_path"})
@@ -419,7 +372,6 @@ def audit_xdc(
                 )
             )
 
-    # --- clock-graph consistency ---
     rtl_clocks = {c.get("name"): c.get("period") for c in domain_map.get("clocks", [])}
     for name, period in xc.clocks.items():
         if name not in rtl_clocks:

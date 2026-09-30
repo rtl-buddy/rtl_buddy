@@ -1,15 +1,7 @@
 """Configuration schema for ``rb mut`` (mutation testing) runs.
 
-A ``mut.yaml`` names a design file to mutate, the set of mutation
-operators to apply (mapped 1:1 onto ``rtl_buddy_xeno.MutationKind``),
-a budget, and the FPV verification that acts as the kill oracle. The
-mutation engine itself lives in the external ``rtl-buddy-xeno``
-library; this schema only describes *what* to mutate and *how* to
-score it.
-
-Unlike ``fpv.yaml`` (a list of verifications), one ``mut.yaml``
-describes a single mutation campaign — keeping ``rb mut list`` /
-``rb mut run`` unambiguous about which design is under test.
+One ``mut.yaml`` describes a single mutation campaign: a design file, the operators to apply, a budget, and the kill oracle (FPV, simulation, or both).
+The mutation engine is the external ``rtl-buddy-xeno`` library.
 """
 
 import logging
@@ -28,10 +20,8 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
-# The six rb-mut operators implemented in rtl-buddy-xeno. Validated here
-# (rather than by importing xeno) so config loading stays light and does
-# not pull in the Verible / pyslang toolchain just to parse a YAML file.
-# Must stay in sync with rtl_buddy_xeno.MutationKind's rb-mut variants.
+# Validated here, not by importing xeno, to keep config loading light.
+# Keep in sync with the rb-mut variants of rtl_buddy_xeno.MutationKind.
 _VALID_OPERATORS = (
     "arith_flip",
     "bit_op_flip",
@@ -50,10 +40,7 @@ _VALID_SCHEDULES = ("sequential", "round_robin")
 @serde
 class MutBudgetFile:
     max_mutants: int = field(rename="max_mutants", default=100)
-    # Caps mutants PER SCOPED FILE: in scoped mode each source file is
-    # treated as one unit, so this bounds how many mutants any single
-    # scoped file contributes; for the single-file default it caps that
-    # one file.
+    # Caps mutants per file: each scoped file counts separately, or the one design file when unscoped.
     per_file_cap: int | None = field(rename="per_file_cap", default=None)
     time_budget_minutes: float | None = field(
         rename="time_budget_minutes", default=None
@@ -74,33 +61,26 @@ class MutBudget:
 
 @serde
 class MutVerifyFile:
-    # FPV oracle: a verification inside an fpv.yaml. A mutant is killed
-    # when the proof flips from PASS to FAIL.
+    # FPV oracle: a verification in an fpv.yaml. A mutant is killed when the proof flips from PASS to FAIL.
     fpv_config: str | None = field(rename="fpv_config", default=None)
     verification: str | None = None
-    # Simulation oracle: a tests.yaml run with SVA assertions compiled in.
-    # A mutant is killed when a test FAILs or an assertion fires.
+    # Simulation oracle: a tests.yaml run. A mutant is killed when a test FAILs or an assertion fires.
     test_config: str | None = field(rename="test_config", default=None)
-    # Optional subset of test names to run; empty = every test in the suite.
+    # Empty means every test in the suite.
     tests: list[str] = field(default_factory=list)
-    # Compile SVA in (Verilator --assert). Defaults on — the sim oracle is
-    # far weaker without assertions firing.
+    # Compiles SVA in (Verilator --assert).
     assertions: bool = True
 
 
-# ---- scope (optional; no-op for single-file leaf blocks) -------------------
+# ---- scope (optional) ------------------------------------------------------
 
 
 @serde
 class MutScopeFile:
     """Scope selector for a hierarchical mutation campaign.
 
-    Patterns are matched (case-sensitively, shell-glob via ``fnmatch`` —
-    so no ``**`` recursion) against BOTH a node's instance path
-    (e.g. ``top.u_alu``) AND its source file (matched in both absolute and
-    model-relative forms). An empty ``include`` means every in-scope node
-    is selected; any ``exclude`` match drops a node. An empty resulting
-    selection is a fatal error.
+    Patterns are case-sensitive ``fnmatch`` globs matched against a node's instance path (e.g. ``top.u_alu``) and its source file, absolute or model-relative.
+    An empty ``include`` selects every node; any ``exclude`` match drops one. An empty selection is fatal.
     """
 
     include: list[str] = field(default_factory=list)
@@ -115,12 +95,8 @@ class MutConfigFile:
     filetype: Literal["mut_config"] = field(rename="rtl-buddy-filetype")
     model: str
     model_path: str = field(rename="model_path")
-    # SystemVerilog file, relative to mut.yaml. Must be one of the model's
-    # source files and must live within the model directory (the directory
-    # containing models.yaml) so per-mutant isolation can copy the tree and
-    # splice the mutant in. It is the baseline-oracle target in BOTH modes;
-    # when a scope block is set it is NOT itself the mutation target (the
-    # scoped file-set is) — it only anchors the model dir / oracle baseline.
+    # Relative to mut.yaml; must be a model source file inside the models.yaml directory.
+    # With a scope block it only anchors the model dir and oracle baseline; the scoped files are mutated.
     design_file: str = field(rename="design_file")
     operators: list[str]
     verify: MutVerifyFile
@@ -144,7 +120,6 @@ class MutConfigFile:
                 f"{', '.join(_VALID_SCHEDULES)}"
             )
 
-        # At least one kill oracle must be configured.
         has_fpv = bool(self.verify.fpv_config)
         has_sim = bool(self.verify.test_config)
         if not has_fpv and not has_sim:
@@ -159,8 +134,7 @@ class MutConfigFile:
             )
 
         if self.top is not None and not has_fpv:
-            # Only the FPV oracle elaborates a top; the sim oracle runs the
-            # suite's own testbenches.
+            # Only the FPV oracle elaborates a top.
             log_event(
                 logger,
                 logging.WARNING,
@@ -215,10 +189,7 @@ class MutConfig:
     design_file: str
     operators: list[str]
     budget: MutBudget
-    # The campaign's own `top:` when mut.yaml states one, else None. `top`
-    # above is the effective value, so the runner needs this to tell an
-    # override apart from the model default it would otherwise impose on
-    # an FPV oracle that names its own top.
+    # `top` above is the effective value; this is the explicit `top:` (None if unset), so the runner can tell an override from the model default.
     top_override: str | None = None
     # FPV oracle (optional)
     fpv_config: str | None = None
@@ -268,7 +239,7 @@ class MutConfig:
 
 
 class MutSuiteConfig:
-    """Loads a single ``mut.yaml`` into a resolved :class:`MutConfig`."""
+    """Loads one ``mut.yaml`` into a :class:`MutConfig`."""
 
     def __init__(self, path: str):
         self.path = path
@@ -286,9 +257,7 @@ class MutSuiteConfig:
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
         config_dir = os.path.dirname(os.path.abspath(path))
-        # The campaign's own `top:` wins over the model's and reaches the
-        # same generated yosys / sby scripts through the FPV oracle, so it
-        # answers to the same rule the model top does.
+        # The campaign `top:` reaches generated yosys/sby scripts, so it gets the model top's validation.
         if data.top is not None:
             validate_top(
                 data.top,

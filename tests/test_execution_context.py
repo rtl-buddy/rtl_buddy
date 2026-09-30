@@ -1,13 +1,5 @@
-"""Regression tests for issue #216 — execution-context anchoring.
-
-When ``rb`` is invoked from a directory unrelated to the suite (e.g.
-from ``design/<block>/`` with ``-c ../verif/<block>/tests.yaml``), no
-artifacts, no orchestration log, no scratch directories should land in
-the invocation directory.
-
-The fix introduces :class:`rtl_buddy.exec_context.ExecutionContext` which
-anchors each command on ``dirname(primary_config)``. These tests make
-sure the anchoring sticks and the invocation directory stays clean.
+"""Tests that commands anchor artifacts, logs and scratch directories on the primary
+config's directory, not the invocation directory.
 """
 
 from __future__ import annotations
@@ -26,11 +18,6 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
 
 def _snapshot_dir(path: Path) -> set[str]:
     return {p.name for p in path.iterdir()}
-
-
-# ---------------------------------------------------------------------------
-# ExecutionContext dataclass behaviour
-# ---------------------------------------------------------------------------
 
 
 def test_for_command_anchors_command_root_on_primary_config(tmp_path: Path):
@@ -56,7 +43,7 @@ def test_artifact_dir_sanitizes_components(tmp_path: Path):
         invocation_cwd=tmp_path,
         primary_config=tmp_path / "tests.yaml",
     )
-    # Slashes / colons get sanitized; the path stays single-level.
+    # Slashes and colons are sanitized so the path stays single-level.
     out = ctx.artifact_dir("foo/bar:baz")
     assert out.parent == ctx.artifact_root
     assert "/" not in out.name
@@ -75,22 +62,18 @@ def test_resolve_input_anchors_to_invocation_cwd(tmp_path: Path):
         invocation_cwd=invocation,
         primary_config=cfg,
     )
-    # Explicit CLI output paths follow shell semantics — they anchor to
-    # the directory the user invoked from, not the command root.
+    # Explicit CLI output paths anchor to the invocation directory, not the command
+    # root.
     assert ctx.resolve_input("report.svg") == invocation.resolve() / "report.svg"
-    # Absolute paths pass through.
     abs_path = tmp_path / "elsewhere" / "x.txt"
     assert ctx.resolve_input(abs_path) == abs_path.resolve()
 
 
 def test_attach_file_log_re_anchors_append(tmp_path: Path):
-    """Re-attaching the file log to the same path appends, not truncates.
+    """Re-attaching the file log to the same path appends instead of truncating.
 
-    This is the contract the regression orchestrator relies on: it
-    attaches the log to ``dirname(regression.yaml)/rtl_buddy.log``,
-    re-anchors per suite, and finally re-anchors back to the regression
-    root for the summary phase. The final re-attach must not erase the
-    pre-loop events.
+    The regression orchestrator re-anchors the log per suite and back to the
+    regression root, and the final re-attach must keep earlier events.
     """
     import logging
 
@@ -114,14 +97,13 @@ def test_attach_file_log_re_anchors_append(tmp_path: Path):
     attach_file_log(log_a)
     test_logger.info("after-suite")
 
-    # First attach to log_a truncated; second appended.
+    # First attach truncated; second appended.
     text_a = log_a.read_text()
     assert "first-write" in text_a
     assert "after-suite" in text_a, (
         "re-anchoring to a previously-opened path must append; "
         "found only the second write — earlier events were truncated"
     )
-    # log_b is independent.
     assert "during-suite" in log_b.read_text()
 
 
@@ -134,20 +116,11 @@ def test_for_dir_uses_explicit_command_root(tmp_path: Path):
     assert ctx.primary_config is None
 
 
-# ---------------------------------------------------------------------------
-# Artifact root redirection — forward-ready for `--artifact-root` (see PR #219
-# review). Exercises the dataclass-level override that lets a future CLI flag
-# send artefacts onto a different disk, outside the root_config.yaml tree.
-# ---------------------------------------------------------------------------
-
-
 def test_for_command_honors_artifact_root_outside_command_tree(tmp_path: Path):
     project = tmp_path / "project"
     cfg = project / "verif" / "block" / "tests.yaml"
     cfg.parent.mkdir(parents=True)
     cfg.write_text("rtl-buddy-filetype: test_config\n")
-    # Artefact target lives in a completely separate subtree — outside the
-    # project root that holds root_config.yaml.
     elsewhere = tmp_path / "scratch_disk" / "rtl_buddy_artefacts"
     elsewhere.mkdir(parents=True)
 
@@ -157,15 +130,12 @@ def test_for_command_honors_artifact_root_outside_command_tree(tmp_path: Path):
         artifact_root=elsewhere,
     )
 
-    # Override is honored; downstream artefact paths land outside the project tree.
     assert ctx.artifact_root == elsewhere.resolve()
     artefact = ctx.artifact_dir("foo")
     assert artefact == elsewhere.resolve() / "foo"
-    # The override is independent of command_root — the project tree
-    # containing root_config.yaml is not in the artefact path.
+    # The override is independent of command_root.
     assert project.resolve() not in artefact.parents
-    # Command root + log path still anchor on the primary config (only the
-    # artefact tree is redirected).
+    # Command root and log path still anchor on the primary config.
     assert ctx.command_root == cfg.parent.resolve()
     assert ctx.log_path == cfg.parent.resolve() / "rtl_buddy.log"
 
@@ -186,17 +156,10 @@ def test_for_dir_honors_artifact_root_outside_command_tree(tmp_path: Path):
     assert project.resolve() not in ctx.artifact_dir("x").parents
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: invoking from an unrelated directory keeps it clean (#216)
-# ---------------------------------------------------------------------------
-
-
 def test_test_list_from_unrelated_cwd_does_not_pollute_invocation_dir(
     minimal_project: Path, monkeypatch
 ):
-    """Repro of #216: run ``rb test --list`` from a sibling directory that
-    has no relationship to the suite, and confirm it stays clean.
-    """
+    """`rb test --list` from an unrelated directory leaves that directory empty."""
     unrelated = minimal_project.parent / "unrelated"
     unrelated.mkdir()
     monkeypatch.chdir(unrelated)
@@ -211,8 +174,6 @@ def test_test_list_from_unrelated_cwd_does_not_pollute_invocation_dir(
     )
     assert result.exit_code == 0, result.output
 
-    # The unrelated directory must remain empty — no rtl_buddy.log, no
-    # verif/, no artefacts/.
     after = _snapshot_dir(unrelated)
     assert after == set(), (
         f"invocation directory leaked files: {sorted(after)}; "
@@ -221,16 +182,11 @@ def test_test_list_from_unrelated_cwd_does_not_pollute_invocation_dir(
 
 
 def test_test_list_opens_no_log_anywhere(minimal_project: Path, monkeypatch):
-    """A `--list` is a read, and a read does not open the project's log.
+    """`rb test --list` opens no log, so it neither fails in a read-only checkout nor
+    truncates an earlier run's log.
 
-    It used to write one under the command root — which is where a log
-    belongs (#216), but not something a metadata-only listing should be
-    creating at all: the handler opens for writing and a process's first
-    open of a path truncates it, so listing a suite in a read-only
-    checkout failed, and listing one after a run emptied that run's log
-    (#561). The anchoring rule the old assertion stood for is pinned by
-    `test_filelist_explicit_output_anchors_to_invocation_dir`, whose
-    command does write a log.
+    `test_filelist_explicit_output_anchors_to_invocation_dir` pins the log
+    anchoring for a command that does write one.
     """
     unrelated = minimal_project.parent / "unrelated"
     unrelated.mkdir()
@@ -252,8 +208,8 @@ def test_test_list_opens_no_log_anywhere(minimal_project: Path, monkeypatch):
 def test_filelist_explicit_output_anchors_to_invocation_dir(
     minimal_project: Path, monkeypatch
 ):
-    """``rb filelist <model> <output>`` follows shell semantics for the
-    output path — relative names land in the user's shell cwd.
+    """``rb filelist <model> <output>`` resolves a relative output path against the
+    shell cwd.
     """
     unrelated = minimal_project.parent / "unrelated"
     unrelated.mkdir()
@@ -272,20 +228,16 @@ def test_filelist_explicit_output_anchors_to_invocation_dir(
     )
     assert result.exit_code == 0, result.output
 
-    # The explicit output path is relative to the invocation directory.
     assert (unrelated / "out.f").exists()
-    # And the orchestration log lands under the command root (models.yaml dir).
+    # The orchestration log lands under the command root.
     assert (minimal_project / "rtl_buddy.log").exists()
 
 
 def test_enter_command_context_log_path_override_attaches_there(
     minimal_project: Path,
 ):
-    """``log_path=`` moves the file handler without moving the context.
-
-    This is what keeps a dispatched job out of the head's
-    ``<suite>/rtl_buddy.log``: the job is rooted at the same
-    ``tests.yaml``, so only the override separates the two files (#437).
+    """``log_path=`` moves the file handler without moving the context, keeping a
+    dispatched job's log apart from the head's ``<suite>/rtl_buddy.log``.
     """
     import logging
 
@@ -306,7 +258,7 @@ def test_enter_command_context_log_path_override_attaches_there(
         h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)
     ]
     assert [h.baseFilename for h in handlers] == [str(override)]
-    # The parent dir was created for it, and the context is unchanged.
+    # The parent dir is created and the context is unchanged.
     assert override.parent.is_dir()
     assert ctx.command_root == minimal_project
     assert ctx.log_path == minimal_project / "rtl_buddy.log"

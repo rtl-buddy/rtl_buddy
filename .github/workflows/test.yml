@@ -9,13 +9,11 @@ on:
       - 'uv.lock'
       - 'pytest.ini'
       - 'src/**/*.py'
-      # The P&R flow template and the Tcl it embeds are packaged
-      # resources with tests of their own (#626).
       - 'src/**/*.tcl'
       - 'src/**/*.template'
       - 'tests/**/*.py'
-  # No `branches:` filter — stacked PRs are based on their predecessor's
-  # branch, not on main, and a base filter would silently skip their checks.
+  # No `branches:` filter: stacked PRs target their predecessor branch, and a
+  # filter would skip their checks.
   pull_request:
     paths:
       - '.github/workflows/test.yml'
@@ -23,8 +21,6 @@ on:
       - 'uv.lock'
       - 'pytest.ini'
       - 'src/**/*.py'
-      # The P&R flow template and the Tcl it embeds are packaged
-      # resources with tests of their own (#626).
       - 'src/**/*.tcl'
       - 'src/**/*.template'
       - 'tests/**/*.py'
@@ -41,20 +37,12 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Install test dependencies
-        # --extra graph-extract installs the bundled binding-tier
-        # extractor (from PyPI since rtl-buddy-graph-extract 0.1.0), so
-        # the extractor subprocess path and the merge-graphs cross-check
-        # run for real here instead of being skip-if-missing everywhere.
-        #
-        # --managed-python (#641): without it uv picks the runner's
-        # /usr/bin/python3, which ships without _tkinter, and the whole
-        # `tcl` half of the parametrised constraint-reader tests skips
-        # silently. python-build-standalone bundles Tcl/Tk.
+        # graph-extract: runs the extractor subprocess tests instead of skipping them.
+        # --managed-python: the runner's /usr/bin/python3 has no _tkinter, which
+        # silently skips the `tcl` constraint-reader tests.
         run: uv sync --managed-python --python 3.12 --group test --extra graph-extract
 
-      # Which SDC/XDC reader backend this job exercises (#641). This
-      # must print `tcl (...)`; `tokenizer` means the interpreter above
-      # lost _tkinter and the interp tests are being skipped.
+      # Must print `tcl (...)`; `tokenizer` means _tkinter is missing and the tcl tests are skipped.
       - name: Report the constraint reader backend
         run: uv run --managed-python --python 3.12 python -c "from rtl_buddy.tool_manifest import constraint_reader_description as d; print('constraint reader:', d())"
 

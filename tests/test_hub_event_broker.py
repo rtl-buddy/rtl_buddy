@@ -1,8 +1,5 @@
-"""Tests for the SPA↔notebook event broker (Phase 3 of axi-profiler #16).
-
-Splits in two layers: the in-memory ``EventBroker`` (pure asyncio queue
-fan-out, no IO) and the ``/api/events/sync`` WS endpoint on
-``ViewerServer`` (round-trip through ``websockets.serve``).
+"""Tests for the SPA/notebook event broker: in-memory fan-out and the
+``/api/events/sync`` WebSocket endpoint.
 """
 
 from __future__ import annotations
@@ -15,11 +12,6 @@ import websockets
 
 from rtl_buddy.hub.event_broker import EventBroker, _CLIENT_QUEUE_MAX
 from rtl_buddy.hub.viewer_http import ViewerServer
-
-
-# ---------------------------------------------------------------------
-# EventBroker (no IO)
-# ---------------------------------------------------------------------
 
 
 def test_broadcast_reaches_other_clients_not_sender() -> None:
@@ -69,8 +61,8 @@ def test_full_queue_drops_oldest_and_keeps_latest() -> None:
         for i in range(_CLIENT_QUEUE_MAX + 5):
             broker.broadcast(sender_id, f"m{i}")
 
-        # Drained order: oldest 5 messages were evicted; queue still holds
-        # exactly _CLIENT_QUEUE_MAX latest messages, ending with m{N-1}.
+        # The oldest messages were evicted; the queue holds the latest
+        # ``_CLIENT_QUEUE_MAX``.
         drained = []
         while not slow.queue.empty():
             drained.append(slow.queue.get_nowait())
@@ -79,11 +71,6 @@ def test_full_queue_drops_oldest_and_keeps_latest() -> None:
         assert drained[-1] == f"m{_CLIENT_QUEUE_MAX + 4}"
 
     asyncio.run(go())
-
-
-# ---------------------------------------------------------------------
-# /api/events/sync end-to-end (real websockets server)
-# ---------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -96,8 +83,7 @@ async def test_two_clients_receive_each_others_messages_not_their_own() -> None:
             websockets.connect(url) as ws_a,
             websockets.connect(url) as ws_b,
         ):
-            # Give the server a moment to register both clients before
-            # publishing — otherwise B might miss A's first message.
+            # Let the server register both clients before publishing.
             for _ in range(20):
                 if server._event_broker.client_count == 2:
                     break
@@ -130,8 +116,6 @@ async def test_disconnect_removes_client_from_broker() -> None:
                     break
                 await asyncio.sleep(0.01)
             assert server._event_broker.client_count == 1
-        # After ``async with`` exits, the close propagates; the server
-        # cleanup runs in the handler's ``finally``.
         for _ in range(50):
             if server._event_broker.client_count == 0:
                 break

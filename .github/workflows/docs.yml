@@ -5,7 +5,7 @@ on:
     branches: [main]
     tags:
       - 'v*.*.*'
-  # No base-branch filter: stacked PRs may target their predecessor branch.
+  # No base-branch filter: stacked PRs target their predecessor branch.
   pull_request:
     paths:
       - 'docs/**'
@@ -164,9 +164,7 @@ jobs:
       - name: Check site links
         uses: lycheeverse/lychee-action@v2
         with:
-          # Docusaurus emits root-relative /rtl_buddy/<version>/ URLs. Point
-          # Lychee at the equivalent local tree while retaining builds/ as the
-          # deployment artifact layout.
+          # Docusaurus emits root-relative /rtl_buddy/<version>/ URLs; link-root maps them to builds/.
           args: --offline --root-dir link-root builds/**/*.html
           fail: true
 

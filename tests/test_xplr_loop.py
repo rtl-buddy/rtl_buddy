@@ -1,27 +1,6 @@
-"""P4 eval harness: a scripted agent drives the full xplr loop (#300).
+"""Closed-loop test: a scripted coordinate-descent agent drives `xplr register`, `mock run` and `attach-outcome` through the machine-mode CLI.
 
-This is the closed-loop demonstration behind ``docs/concepts/xplr.md``:
-a deliberately dumb coordinate-descent heuristic plays the role of the
-agent and drives ``register -> mock run -> attach-outcome`` through the
-real machine-mode CLI for K iterations, exactly as a real agent would
-drive a real flow. Two properties make it an honest harness:
-
-* the agent's working state between iterations lives in the LEDGER,
-  not in Python — the current best point is re-read every step via
-  ``xplr frontier`` + ``xplr show`` (``config_snapshot.knobs``), so the
-  test proves the machine-mode contract is sufficient to close the
-  loop end to end;
-* the agent reads only the knob domains from ``mock info`` — never
-  ``ground_truth``, which is reserved for ``mock score``. Because
-  mockflow's optimum/front is analytic, "did the agent optimize?" is a
-  pass/fail number: regret must fall on ``rastrigin`` and hypervolume
-  must grow on ``zdt1`` (#304's "use as a benchmark").
-
-Knob manifests follow the conventions documented in
-``docs/concepts/xplr.md``: every probe declares a ``hypothesis``, a
-``parent``, per-knob ``rationale``, and a full ``config_snapshot``;
-``source.git_sha`` is agent-declared (taken verbatim) so the harness
-needs no git repository.
+The agent keeps its state in the ledger (`xplr frontier` and `xplr show`) and reads only knob domains from `mock info`, never `ground_truth`. Regret must fall on `rastrigin` and hypervolume must grow on `zdt1`. See `docs/concepts/xplr.md` for the manifest conventions.
 """
 
 from __future__ import annotations
@@ -35,14 +14,13 @@ import pytest
 
 from rtl_buddy.rtl_buddy import RtlBuddy
 
-# Agent-declared source pin: mockflow has no RTL, so the scripted agent
-# owns the pin (any hex sha is taken verbatim by `xplr register`).
+# mockflow has no RTL, so the agent declares the source pin; `xplr register` takes any hex sha verbatim.
 _PINNED_SHA = "feedc0de" * 5
 _AGENT = "scripted-coordinate-descent"
 
 
 # ---------------------------------------------------------------------------
-# CLI plumbing (same pattern as test_xplr_mockflow.py)
+# CLI plumbing
 # ---------------------------------------------------------------------------
 
 
@@ -53,7 +31,7 @@ def _run(
     *,
     stdin: str | None = None,
 ) -> tuple[int, str, str]:
-    """One rb invocation through RtlBuddy.run(); locks released after."""
+    """Run one rb invocation through RtlBuddy.run() and release locks."""
     rb = RtlBuddy(name="test_xplr_loop")
     monkeypatch.setattr(sys, "argv", ["rb", *argv])
     if stdin is not None:
@@ -67,15 +45,9 @@ def _run(
 
 
 class ScriptedAgent:
-    """A plain-Python heuristic that drives the loop through the CLI.
+    """Coordinate descent with a halving step schedule, driven through the CLI.
 
-    Coordinate descent with a halving step schedule: per sweep, probe
-    each numeric knob with a greedy line search (keep stepping in an
-    improving direction; stop on the first regression) from the current
-    ledger-best point. Every evaluation is three CLI calls — register
-    (manifest with hypothesis/parent/rationale), ``mock run`` (the
-    "flow"), attach-outcome — so the eval count is also a CLI-contract
-    soak test.
+    Each sweep line-searches every numeric knob from the ledger-best point. Each evaluation is three CLI calls: register, ``mock run``, attach-outcome.
     """
 
     def __init__(self, scenario: str, monkeypatch, capsys):
@@ -83,8 +55,7 @@ class ScriptedAgent:
         self.monkeypatch = monkeypatch
         self.capsys = capsys
         info = self._machine(["xplr", "mock", "info", "--scenario", scenario])
-        # Knob domains only — ground_truth stays unread (that would be
-        # cheating; `mock score` owns the answer key).
+        # Knob domains only; ground_truth is reserved for `mock score`.
         self.specs = {k["name"]: k for k in info["knobs"]}
         self.defaults = {k["name"]: k["default"] for k in info["knobs"]}
         self.evals = 0
@@ -98,7 +69,7 @@ class ScriptedAgent:
         assert {"command", "exit_code", "meta", "payload"} <= set(envelope)
         return envelope["payload"]
 
-    # -- the loop primitives -------------------------------------------------
+    # -- loop primitives -----------------------------------------------------
 
     def evaluate(
         self,
@@ -109,7 +80,7 @@ class ScriptedAgent:
         hypothesis: str,
         rationale: str,
     ) -> tuple[str, dict]:
-        """register -> mock run -> attach-outcome for one knob vector."""
+        """Run register, mock run and attach-outcome for one knob vector."""
         resolved = {**self.defaults, **values}
         knobs = [
             {
@@ -154,7 +125,7 @@ class ScriptedAgent:
         return exp_id, record["outcome"]["metrics"]
 
     def best_point(self) -> tuple[str, dict, dict]:
-        """Current best from the LEDGER: frontier head + its knob state."""
+        """Return the ledger's current best: the frontier head and its knob state."""
         frontier = self._machine(["xplr", "frontier"])["frontier"]
         assert frontier, "frontier must never be empty once a run succeeded"
         best = frontier[0]
@@ -164,7 +135,7 @@ class ScriptedAgent:
     def score(self) -> dict:
         return self._machine(["xplr", "mock", "score", "--scenario", self.scenario])
 
-    # -- the heuristic -------------------------------------------------------
+    # -- heuristic -----------------------------------------------------------
 
     def _clamp(self, name: str, value):
         spec = self.specs[name]
@@ -173,12 +144,9 @@ class ScriptedAgent:
         return int(round(value)) if spec["type"] == "int" else value
 
     def sweep(self, steps: dict, *, objective) -> None:
-        """One coordinate-descent sweep: greedy line search per knob.
+        """Run one sweep of greedy line search per knob.
 
-        ``objective(metrics)`` returns a number to MINIMIZE (infeasible
-        points map to +inf). Improvements are kept implicitly — the
-        next ``best_point()`` read returns whatever now leads the
-        ledger's frontier.
+        ``objective(metrics)`` returns a number to minimize, +inf for infeasible points.
         """
         for name, step in steps.items():
             best_id, base, best_metrics = self.best_point()
@@ -218,7 +186,7 @@ def _feasible(metrics: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# rastrigin: single-objective — regret must fall and end up small
+# rastrigin: regret must fall and end small
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +238,7 @@ def test_rastrigin_loop_regret_decreases(minimal_project: Path, monkeypatch, cap
 
 
 # ---------------------------------------------------------------------------
-# zdt1: multi-objective — hypervolume must grow
+# zdt1: hypervolume must grow
 # ---------------------------------------------------------------------------
 
 

@@ -1,12 +1,6 @@
 """Constraint-file (SDC / XDC) reading.
 
-:mod:`~rtl_buddy.constraints.tcl_tokenizer` is a vendored copy of
-rtl-buddy-cdc's Tcl-aware word tokenizer;
-:mod:`~rtl_buddy.constraints.tcl_reader` wraps it in the
-:class:`~rtl_buddy.constraints.tcl_reader.TclCommand` shape every
-constraint consumer in this repo reads through, so the backend can be
-swapped (rtl-buddy/rtl_buddy#641 adds a real Tcl interp) without
-touching the consumers.
+:mod:`~rtl_buddy.constraints.tcl_reader` returns :class:`~rtl_buddy.constraints.tcl_reader.TclCommand` records, using either a real Tcl interp (:mod:`~rtl_buddy.constraints.tcl_worker`) or the vendored word tokenizer (:mod:`~rtl_buddy.constraints.tcl_tokenizer`).
 """
 
 from __future__ import annotations

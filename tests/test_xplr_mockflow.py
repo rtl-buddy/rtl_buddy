@@ -1,13 +1,6 @@
-"""Tests for the mockflow synthetic DSE backend (rb xplr mock, #304).
+"""Tests for the mockflow synthetic backend (`rb xplr mock`).
 
-Two layers:
-
-* pure-module tests — determinism, the documented optimum/front, the
-  feasibility cliff, the cost/layer model, and the scoring math on
-  hand-constructed points (no project, no CLI);
-* CLI contract tests — ``mock info`` / ``mock run [--register]`` /
-  ``mock score`` through ``RtlBuddy.run()`` in machine mode, including
-  the P0-schema round trip of a registered run through the ledger.
+Pure-module tests cover determinism, the known optimum and front, the feasibility cliff, the cost model and the scoring math. CLI tests run `mock info`, `mock run [--register]` and `mock score` through `RtlBuddy.run()` in machine mode.
 """
 
 from __future__ import annotations
@@ -39,7 +32,7 @@ def _run(
     *,
     stdin: str | None = None,
 ) -> tuple[int, str, str]:
-    """One rb invocation through RtlBuddy.run(); locks released after."""
+    """Run one rb invocation through RtlBuddy.run() and release locks."""
     rb = RtlBuddy(name="test_xplr_mockflow")
     monkeypatch.setattr(sys, "argv", ["rb", *argv])
     if stdin is not None:
@@ -71,7 +64,7 @@ def _git(root: Path, *args: str) -> str:
 
 @pytest.fixture
 def git_project(minimal_project: Path) -> Path:
-    """minimal_project turned into a clean git repo (artefacts ignored)."""
+    """Return minimal_project as a clean git repo with artefacts ignored."""
     (minimal_project / ".gitignore").write_text("artefacts/\nrtl_buddy.log\n")
     _git(minimal_project, "init", "-q", "-b", "main", ".")
     _git(minimal_project, "add", "-A")
@@ -421,7 +414,7 @@ def test_mock_run_register_roundtrips_through_ledger(
     )
     assert payload["id"] == "exp-0001"
     record = payload["record"]
-    validate_record(record)  # P0 schema conformance
+    validate_record(record)  # schema conformance
     assert record["outcome"]["status"] == "success"
     assert record["outcome"]["metrics"] == payload["metrics"]
     assert record["outcome"]["metric_meta"] == payload["metric_meta"]
@@ -437,7 +430,7 @@ def test_mock_run_register_roundtrips_through_ledger(
     on_disk = json.loads(Path(payload["record_path"]).read_text())
     assert on_disk == record
 
-    # readable back through the P1 surface
+    # readable back through `xplr show`
     code, out, _ = _run(["--machine", "xplr", "show", "exp-0001"], monkeypatch, capsys)
     assert code == 0
     assert _envelope(out)["payload"]["record"] == record
@@ -457,7 +450,7 @@ def test_mock_run_register_infeasible_point(git_project: Path, monkeypatch, caps
 def test_mock_run_outcome_pipes_into_attach_outcome(
     git_project: Path, monkeypatch, capsys
 ):
-    """payload.outcome is a verbatim-valid attach-outcome --json input."""
+    """payload.outcome is valid attach-outcome --json input."""
     code, out, _ = _run(
         ["--machine", "xplr", "register", "--json", "-"],
         monkeypatch,
@@ -492,7 +485,7 @@ def test_mock_run_outcome_pipes_into_attach_outcome(
 def test_mock_run_register_source_sha_in_non_git_sandbox(
     minimal_project: Path, monkeypatch, capsys
 ):
-    """--source-sha is the agent-declared pin path: verbatim, no dirty bit."""
+    """--source-sha pins the declared sha verbatim, with no dirty bit."""
     payload = _mock_run(
         monkeypatch,
         capsys,
@@ -656,8 +649,7 @@ def test_mock_help_lists_subcommands():
 
     from typer.testing import CliRunner
 
-    # CI terminals (GitHub Actions) get rich help with ANSI styling that
-    # splits option tokens; strip escapes before substring asserts.
+    # Rich help in CI splits option tokens with ANSI escapes; strip them first.
     ansi = re.compile(r"\x1b\[[0-9;]*m")
     rb = RtlBuddy(name="test_mock_help")
     result = CliRunner().invoke(rb.app, ["xplr", "mock", "--help"])

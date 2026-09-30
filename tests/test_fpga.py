@@ -1,9 +1,8 @@
-"""Tests for the rb fpga MVP flow (#285): config, Vivado backend, CLI.
+"""Tests for the rb fpga flow: config, Vivado backend, CLI.
 
-No test here invokes a real Vivado — the backend tests monkeypatch
-``run_managed_process`` with a fake that drops the sanitized fixture
-reports from ``tests/fixtures/fpga/`` into the run directory, exactly
-where the batch flow would have written them.
+No test invokes Vivado. Backend tests monkeypatch ``run_managed_process`` with a
+fake that writes the sanitized fixture reports from ``tests/fixtures/fpga/`` into
+the run directory.
 """
 
 from __future__ import annotations
@@ -42,20 +41,10 @@ from rtl_buddy.tools.fpga_vivado_flow import REPORT_FILES
 FIXTURES = Path(__file__).parent / "fixtures" / "fpga"
 
 
-# ---------------------------------------------------------------------------
-# FpgaToolConfig
-# ---------------------------------------------------------------------------
-
-
 def test_fpga_tool_cfg_exposes_name_and_executable():
     cfg = FpgaToolConfig(FpgaToolConfigFile(name="vivado", tool="/opt/Vivado/vivado"))
     assert cfg.get_name() == "vivado"
     assert cfg.get_executable() == "/opt/Vivado/vivado"
-
-
-# ---------------------------------------------------------------------------
-# FpgaSuiteConfig — YAML loading + initialise
-# ---------------------------------------------------------------------------
 
 
 _FPGA_YAML = dedent("""\
@@ -99,7 +88,7 @@ def test_fpga_suite_loads_runs(tmp_path):
     assert run.get_part() == "xczu7ev-ffvc1156-2-e"
     assert run.get_top() == "demo_top"
     assert run.get_reglvl("vivado") == 1000
-    # xdc paths are resolved relative to fpga.yaml
+    # xdc paths resolve relative to fpga.yaml.
     assert run.get_xdc_files() == [str(tmp_path / "constraints" / "demo.xdc")]
 
 
@@ -111,10 +100,10 @@ def test_fpga_suite_tool_defaults_to_vivado(tmp_path):
 
 
 def test_fpga_suite_require_timing_met_defaults_false_and_parses(tmp_path):
-    # Absent -> default False (unmet timing still PASSes).
+    # Absent defaults to False (unmet timing still PASSes).
     suite = FpgaSuiteConfig(str(_write_suite(tmp_path)))
     assert suite.get_runs("demo_fpga")[0].get_require_timing_met() is False
-    # Present -> parsed from the kebab-case YAML key.
+    # Present: parsed from the kebab-case YAML key.
     yaml = _FPGA_YAML.replace(
         '    tool: "vivado"\n', '    tool: "vivado"\n    require-timing-met: true\n'
     )
@@ -165,11 +154,6 @@ def test_fpga_suite_loads_xfail_flags(tmp_path):
     assert suite.get_runs("fpga_xfail_strict")[0].get_xfail_strict() is True
 
 
-# ---------------------------------------------------------------------------
-# reglvl polymorphism
-# ---------------------------------------------------------------------------
-
-
 def _make_fpga_cfg(
     tmp_path,
     *,
@@ -207,11 +191,6 @@ def test_fpga_reglvl_int_dict_default_and_malformed(tmp_path):
         _make_fpga_cfg(tmp_path, reglvl="bogus").get_reglvl("vivado")
 
 
-# ---------------------------------------------------------------------------
-# FpgaResults shapes
-# ---------------------------------------------------------------------------
-
-
 def test_fpga_pass_result_carries_metrics():
     r = FpgaPassResults(
         name="demo/results",
@@ -237,7 +216,7 @@ def test_fpga_pass_result_carries_metrics():
 
 
 def test_fpga_pass_result_bitstream_none_is_explicit():
-    """Without --bitstream the key is still present, valued None."""
+    """Without --bitstream the key is present with value None."""
     r = FpgaPassResults(name="demo/results")
     assert "bitstream" in r.results
     assert r.results["bitstream"] is None
@@ -246,11 +225,6 @@ def test_fpga_pass_result_bitstream_none_is_explicit():
 def test_fpga_skip_is_pass_and_fail_is_not():
     assert FpgaSkipResults(name="d/results", desc="no tool").is_pass()
     assert not FpgaFailResults(name="d/results", desc="boom").is_pass()
-
-
-# ---------------------------------------------------------------------------
-# Backend registry — dispatch is data-driven, not hardcoded
-# ---------------------------------------------------------------------------
 
 
 def test_fpga_backends_registry_contains_vivado():
@@ -262,16 +236,11 @@ def test_fpga_backends_registry_contains_vivado():
     assert issubclass(VivadoFpga, BaseFpga)
 
 
-# ---------------------------------------------------------------------------
-# FpgaRunner — executable resolution, reglvl skip, unknown tool
-# ---------------------------------------------------------------------------
-
-
 def _run_with_stub_backend(runner):
     """Run an FpgaRunner with the registry's vivado entry stubbed out.
 
-    The registry dict captures the class object at import time, so the
-    dict entry (not the module attribute) is what must be patched.
+    The registry dict holds the class captured at import time, so the dict entry,
+    not the module attribute, is what gets patched.
     """
     from rtl_buddy.runner import fpga_runner as fpga_runner_module
 
@@ -349,11 +318,6 @@ def test_fpga_runner_unknown_tool_raises(tmp_path):
         runner.run()
 
 
-# ---------------------------------------------------------------------------
-# FpgaRunner — require-timing-met gate
-# ---------------------------------------------------------------------------
-
-
 def _run_with_pass_backend(runner, *, timing_met):
     """Stub the vivado backend to return a PASS carrying the given timing_met."""
     from rtl_buddy.runner import fpga_runner as fpga_runner_module
@@ -391,7 +355,7 @@ def test_fpga_require_timing_met_fails_unmet_run_and_keeps_metrics(tmp_path):
     assert res.results["result"] == "FAIL"
     assert "timing not met" in res.results["desc"]
     assert "WNS=-1.25" in res.results["desc"]
-    # metrics ride along so a closure loop still sees them on the fail
+    # Metrics ride along so a closure loop still sees them on the fail.
     assert res.results["wns_ns"] == -1.25
     assert res.results["timing_met"] is False
     assert res.results["failing_endpoints"] == 4
@@ -406,8 +370,7 @@ def test_fpga_require_timing_met_passes_when_timing_met(tmp_path):
 
 
 def test_fpga_unmet_timing_passes_by_default(tmp_path):
-    # Default (no require-timing-met): unmet timing still PASSes — metrics
-    # carry the truth, matching rb pnr.
+    # Without require-timing-met, unmet timing still PASSes, matching rb pnr.
     res = _run_with_pass_backend(_runner(tmp_path), timing_met=False)
     assert isinstance(res, FpgaPassResults)
     assert res.results["result"] == "PASS"
@@ -415,18 +378,13 @@ def test_fpga_unmet_timing_passes_by_default(tmp_path):
 
 
 def test_fpga_require_timing_met_does_not_gate_unknown_timing(tmp_path):
-    # A backend that cannot measure timing (timing_met None, e.g. openxc7
-    # without a timing report) is never gated — we cannot prove a miss.
+    # A backend that cannot measure timing (timing_met None, e.g. openxc7 without a
+    # timing report) is never gated.
     res = _run_with_pass_backend(
         _runner(tmp_path, require_timing_met=True), timing_met=None
     )
     assert isinstance(res, FpgaPassResults)
     assert res.results["result"] == "PASS"
-
-
-# ---------------------------------------------------------------------------
-# Human-mode messages for the new WARNING/ERROR events (no lossy fallback)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -488,15 +446,10 @@ def test_fpga_cdc_human_messages_are_specific(event, fields, expected_substrings
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(event, fields)
-    # Not the lossy fallback ("foo.bar" -> "foo bar").
+    # Not the lossy fallback ("foo.bar" becomes "foo bar").
     assert msg != event.replace(".", " ")
     for sub in expected_substrings:
         assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
-
-
-# ---------------------------------------------------------------------------
-# VivadoFpga backend — skip / pass / fail without a real Vivado
-# ---------------------------------------------------------------------------
 
 
 def _make_backend(tmp_path, *, emit_bitstream=False):
@@ -579,15 +532,15 @@ def test_vivado_fpga_pass_parses_fixture_reports(tmp_path, monkeypatch):
     }
     assert res.results["bitstream"].endswith("demo_top.bit")
 
-    # The rendered flow.tcl carries the part, the XDC, and the source.
+    # The rendered flow.tcl carries the part, the XDC and the source.
     script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
     assert "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e" in script
     assert "report_methodology -file methodology.rpt" in script
     assert "read_xdc" in script
     assert "demo_top.sv" in script
     assert "write_bitstream -force demo_top.bit" in script
-    # Bitgen-blocking I/O DRCs are downgraded for IP-level models that
-    # carry no board pinout (report_drc still records them).
+    # Bitgen-blocking I/O DRCs are downgraded for IP-level models with no board
+    # pinout; report_drc still records them.
     assert "set_property SEVERITY {Warning} [get_drc_checks NSTD-1]" in script
     assert "set_property SEVERITY {Warning} [get_drc_checks UCIO-1]" in script
 
@@ -665,7 +618,7 @@ def test_vivado_fpga_fails_on_error_lines_in_log(tmp_path, monkeypatch):
 
 
 def test_vivado_fpga_error_scan_ignores_non_bracketed_lines(tmp_path, monkeypatch):
-    """`puts "ERROR something"` from user Tcl must not trip the scan."""
+    """`puts "ERROR something"` from user Tcl does not trip the error scan."""
     backend = _make_backend(tmp_path)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
@@ -713,8 +666,9 @@ def test_vivado_fpga_fails_when_bitstream_missing(tmp_path, monkeypatch):
 
 
 def test_vivado_fpga_ignores_a_previous_runs_reports(tmp_path, monkeypatch):
-    """A run that writes no reports must not be scored off the reports (or
-    the bitstream) an earlier run left in the artefact dir (#469)."""
+    """A run that writes no reports is not scored from the reports or bitstream an
+    earlier run left in the artefact dir.
+    """
     backend = _make_backend(tmp_path, emit_bitstream=True)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
@@ -740,10 +694,9 @@ def test_vivado_fpga_ignores_a_previous_runs_reports(tmp_path, monkeypatch):
 
 
 def test_vivado_fpga_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypatch):
-    """The bitstream is cleared even on a run that was not asked to build one
-    (#469): the artefact dir describes the latest run, and a run reporting no
-    bitstream beside a deployable `.bit` from an older run is the same trap.
-    Rerun with `--bitstream` to regenerate it."""
+    """The bitstream is cleared even on a run not asked to build one, so the artefact
+    dir describes the latest run. Rerun with `--bitstream` to regenerate it.
+    """
     backend = _make_backend(tmp_path, emit_bitstream=False)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
@@ -758,15 +711,16 @@ def test_vivado_fpga_clears_the_bitstream_without_emit_bitstream(tmp_path, monke
     )
     res = backend.run()
 
-    # The run itself still passes — it produced every report it was asked for.
+    # The run passes: it produced every report it was asked for.
     assert isinstance(res, FpgaPassResults), res.results["desc"]
     assert res.results.get("bitstream") is None
     assert not stale_bit.exists()
 
 
 def test_vivado_fpga_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
-    """The clear sits above the filelist step, so a rerun that dies before
-    Vivado leaves no reports or bitstream from the previous run (#469)."""
+    """The clear happens before the filelist step, so a rerun that dies before Vivado
+    leaves nothing from the previous run.
+    """
     from rtl_buddy.errors import FilelistError
 
     backend = _make_backend(tmp_path, emit_bitstream=True)
@@ -795,9 +749,9 @@ def test_vivado_fpga_filelist_failure_still_clears_artefacts(tmp_path, monkeypat
 
 
 def test_vivado_fpga_skip_keeps_a_previous_runs_artefacts(tmp_path, monkeypatch):
-    """The clear sits *after* the tool-availability skip on purpose: a box
-    without Vivado never ran it, so it must not delete what a box that has
-    Vivado produced (#469)."""
+    """The clear happens after the tool-availability skip, so a box without Vivado
+    does not delete another box's artefacts.
+    """
     backend = _make_backend(tmp_path, emit_bitstream=True)
     monkeypatch.setattr(fpga_vivado_module.shutil, "which", lambda _name: None)
 
@@ -812,8 +766,9 @@ def test_vivado_fpga_skip_keeps_a_previous_runs_artefacts(tmp_path, monkeypatch)
 
 
 def test_vivado_fpga_clears_a_previous_tops_bitstream(tmp_path, monkeypatch):
-    """The bitstream is the one top-named Vivado output, so it goes by suffix:
-    editing the run's model or top must not strand the old `.bit` (#469)."""
+    """The bitstream is cleared by suffix, so editing the model or top does not strand
+    the old `.bit`.
+    """
     backend = _make_backend(tmp_path, emit_bitstream=True)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
@@ -832,7 +787,7 @@ def test_vivado_fpga_clears_a_previous_tops_bitstream(tmp_path, monkeypatch):
 
 
 def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
-    """A routed-but-timing-failed run still passes; metrics carry the truth."""
+    """A routed run that fails timing still passes; metrics carry the truth."""
     backend = _make_backend(tmp_path)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
@@ -851,11 +806,6 @@ def test_vivado_fpga_uses_failing_timing_fixture(tmp_path, monkeypatch):
     assert isinstance(res, FpgaPassResults)
     assert res.results["wns_ns"] == -0.882
     assert res.results["timing_met"] is False
-
-
-# ---------------------------------------------------------------------------
-# CLI wiring — --list, machine envelope, config errors -> exit 2
-# ---------------------------------------------------------------------------
 
 
 def _fpga_project(minimal_project: Path) -> Path:
@@ -917,7 +867,7 @@ def test_cli_fpga_machine_envelope(minimal_project: Path, capsys, monkeypatch):
     assert row["result"] == "PASS"
     assert row["wns_ns"] == 8.452
     assert row["lut"]["used"] == 1
-    # Power: total/dynamic/static watts — the FPGA answer to #103.
+    # Power: total, dynamic and static watts.
     assert row["total_power_w"] == 0.636
     assert row["dynamic_power_w"] == 0.044
     assert row["static_power_w"] == 0.592
@@ -925,7 +875,7 @@ def test_cli_fpga_machine_envelope(minimal_project: Path, capsys, monkeypatch):
     # Methodology findings ride through as {id, severity, description}.
     assert len(row["methodology_warnings"]) == 49
     assert row["methodology_warnings"][0]["id"] == "TIMING-18#1"
-    # bitstream is explicit null when --bitstream was not passed.
+    # bitstream is an explicit null when --bitstream was not passed.
     assert row["bitstream"] is None
 
 
@@ -959,7 +909,7 @@ def test_cli_fpga_bitstream_flag_carries_path(
 def test_cli_fpga_failing_timing_payload_carries_loop_fields(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """Machine JSON for a timing-failing run feeds the closure loop (#288)."""
+    """Machine JSON for a timing-failing run carries the closure-loop fields."""
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     _fpga_project(minimal_project)
@@ -977,7 +927,7 @@ def test_cli_fpga_failing_timing_payload_carries_loop_fields(
     rb = RtlBuddy(name="test_fpga_timing_loop")
     exit_code = rb.run()
     captured = capsys.readouterr()
-    # Failing timing is not a flow failure — the metrics carry the truth.
+    # Failing timing is not a flow failure; the metrics carry the truth.
     assert exit_code == 0, captured
     row = json.loads(captured.out)["payload"]["results"][0]
     assert row["result"] == "PASS"
@@ -1019,7 +969,7 @@ def test_cli_fpga_skip_when_vivado_missing(minimal_project: Path, capsys, monkey
     rb = RtlBuddy(name="test_fpga_skip")
     exit_code = rb.run()
     captured = capsys.readouterr()
-    # SKIP counts as a pass — the feature is optional.
+    # SKIP counts as a pass because the feature is optional.
     assert exit_code == 0, captured
     payload = json.loads(captured.out)
     row = payload["payload"]["results"][0]
@@ -1105,11 +1055,6 @@ def test_cli_fpga_reglvl_gates_run(minimal_project: Path, capsys, monkeypatch):
     assert "reglvl 1000 above 0" in row["desc"]
 
 
-# ---------------------------------------------------------------------------
-# P2 (#286): cfg-fpga-platforms, XDC ownership, regression/reglvl
-# ---------------------------------------------------------------------------
-
-
 def test_fpga_platform_cfg_fields_and_xdc_anchoring(tmp_path):
     cfg = FpgaPlatformConfigFile(
         name="zu7ev_board",
@@ -1123,7 +1068,7 @@ def test_fpga_platform_cfg_fields_and_xdc_anchoring(tmp_path):
     assert platform.get_part() == "xczu7ev-ffvc1156-2-e"
     assert platform.get_board() == "generic-zu7ev"
     assert platform.get_package() == "ffvc1156"
-    # default XDC paths anchor at root_config.yaml's directory
+    # Default XDC paths anchor at the root_config.yaml directory.
     assert platform.get_xdc_files() == [str(tmp_path / "constraints" / "board.xdc")]
 
 
@@ -1192,11 +1137,6 @@ def test_fpga_suite_neither_part_nor_platform_is_config_error(tmp_path):
         FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
 
 
-# ---------------------------------------------------------------------------
-# resolve_target — the platform/inline-part resolution seam
-# ---------------------------------------------------------------------------
-
-
 def _make_platform(tmp_path, *, part="xcvu19p-fsva3824-1-e", xdc=None):
     cfg = FpgaPlatformConfigFile(name="plat", part=part, xdc=xdc or [])
     return FpgaPlatformConfig(cfg, str(tmp_path / "root_config.yaml"))
@@ -1212,7 +1152,9 @@ def test_resolve_target_inline_part(tmp_path):
 
 
 def test_resolve_target_platform_part_and_xdc_merge_order(tmp_path):
-    """Platform default XDC come first; per-run XDC extend (later wins)."""
+    """Platform default XDC come first; per-run XDC extend them and the later one
+    wins.
+    """
     from rtl_buddy.tools.fpga_base import resolve_target
 
     platform = _make_platform(tmp_path, xdc=["constraints/board.xdc"])
@@ -1254,11 +1196,6 @@ def test_resolve_target_platform_without_root_cfg_raises(tmp_path):
         resolve_target(cfg, root_cfg=None)
 
 
-# ---------------------------------------------------------------------------
-# CLI — platform refs end-to-end (mocked Vivado)
-# ---------------------------------------------------------------------------
-
-
 def test_cli_fpga_platform_ref_resolves_part_and_merges_xdc(
     minimal_project: Path, capsys, monkeypatch
 ):
@@ -1288,9 +1225,9 @@ def test_cli_fpga_platform_ref_resolves_part_and_merges_xdc(
     assert payload["payload"]["results"][0]["result"] == "PASS"
 
     script = (minimal_project / "artefacts" / "demo_fpga" / "flow.tcl").read_text()
-    # part comes from the platform, not the run
+    # The part comes from the platform, not the run.
     assert "-part xczu7ev-ffvc1156-2-e" in script
-    # platform XDC first, run XDC after (later read_xdc wins in Vivado)
+    # Platform XDC first, run XDC after (the later read_xdc wins in Vivado).
     board_xdc = str(minimal_project / "constraints" / "board.xdc")
     run_xdc = str(minimal_project / "constraints" / "run.xdc")
     assert script.index(board_xdc) < script.index(run_xdc)
@@ -1345,11 +1282,6 @@ def test_cli_fpga_part_and_platform_exits_2(minimal_project: Path, capsys, monke
     assert "mutually exclusive" in payload["payload"]["error"]
 
 
-# ---------------------------------------------------------------------------
-# FpgaRegConfig + rb fpga-regression
-# ---------------------------------------------------------------------------
-
-
 def test_fpga_reg_config_loads_suite_paths(tmp_path):
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
@@ -1377,8 +1309,8 @@ def test_fpga_reg_config_missing_file_raises(tmp_path):
 def _fpga_regression_project(minimal_project: Path) -> Path:
     """Two suites running the same RTL on two parts via platform refs.
 
-    suite_a/run_zu7ev targets the ZU7EV platform at reglvl 0;
-    suite_b/run_vu19p targets the VU19P platform at reglvl 1000.
+    suite_a/run_zu7ev targets the ZU7EV platform at reglvl 0; suite_b/run_vu19p
+    targets the VU19P platform at reglvl 1000.
     """
     _add_platforms_to_root(minimal_project)
     for suite, platform, reglvl in (
@@ -1497,9 +1429,9 @@ def test_cli_fpga_regression_missing_config_exits_2(
 
 
 def test_vivado_fpga_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
-    """`resolve_target` raises on an unknown `platform:`. That is a config
-    error, but raising it with the previous run's reports and a deployable
-    `.bit` still in place is the same trap as any other failure (#469)."""
+    """An unknown `platform:` makes `resolve_target` raise, and the previous run's
+    reports and `.bit` are still cleared.
+    """
     from rtl_buddy.errors import FatalRtlBuddyError
 
     model = ModelConfig(name="demo_top", filelist=[], path=str(tmp_path / "m.yaml"))
@@ -1541,9 +1473,10 @@ def test_vivado_fpga_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
 
 
 def test_vivado_fpga_bitstream_stage_failure_publishes_nothing(tmp_path, monkeypatch):
-    """The Tcl writes all five reports before `write_bitstream`, so a run that
-    dies at the bitstream stage leaves fresh reports and a partial `.bit`.
-    A FAIL publishes nothing (#469)."""
+    """The Tcl writes all five reports before `write_bitstream`, so a run that dies at
+    the bitstream stage leaves fresh reports and a partial `.bit`. A FAIL publishes
+    nothing.
+    """
     backend = _make_backend(tmp_path, emit_bitstream=True)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"
@@ -1569,8 +1502,9 @@ def test_vivado_fpga_bitstream_stage_failure_publishes_nothing(tmp_path, monkeyp
 
 
 def test_vivado_fpga_missing_bitstream_clears_the_reports(tmp_path, monkeypatch):
-    """The "bitstream not produced" gate fires after the reports were written,
-    so it has to clear them too (#469)."""
+    """The "bitstream not produced" gate fires after the reports were written, so it
+    clears them too.
+    """
     backend = _make_backend(tmp_path, emit_bitstream=True)
     monkeypatch.setattr(
         fpga_vivado_module.shutil, "which", lambda _name: "/usr/bin/vivado"

@@ -1,30 +1,6 @@
-"""Coordinate translator for the rtl-buddy-hub.
+"""Coordinate translator between ``view.json`` instance paths, wave paths, source anchors and signals.
 
-Implements §1 of the protocol spec: the hub's only real intelligence is
-mapping between three coordinate systems plus a derived fourth.
-
-* **view**   ``top.u_fifo.u_wr_ptr``      — node in ``view.json``
-* **wave**   ``tb.dut.u_fifo.u_wr_ptr``  — surfer / WCP path
-* **src**    ``(file, line, col)``       — source anchor
-* **signal** ``wr_ptr_q``                — flat signal name in surfer
-
-The four mappings used at the wire layer:
-
-* ``view ↔ wave``   — testbench-prefix strip + per-instance aliases.
-* ``view → src``    — `nodes[].location` lookup.
-* ``signal → view`` — walk the ``port_connections`` of the node at the
-  given ``wave_scope`` and return every child whose port net matches
-  the signal name.
-
-Source of view-side truth is ``view.json`` as emitted by
-``rtl-buddy-view --format json`` (rtl-buddy/rtl-buddy-view). The
-contract is pinned by ``schema_version`` + ``JSON_CONTRACT`` upstream;
-this loader is strict about the fields it consumes and tolerant about
-the rest.
-
-Lookup pieces in this module are pure functions / dataclasses; the
-hub's server layer wraps them into request handlers so the resolver
-itself never touches the network.
+Implements §1 of the protocol spec: ``view`` (``top.u_fifo.u_wr_ptr``), ``wave`` (``tb.dut.u_fifo.u_wr_ptr``), ``src`` (``file, line, col``) and ``signal`` (``wr_ptr_q``). The view side comes from ``view.json`` as emitted by ``rtl-buddy-view --format json``. Nothing here touches the network.
 """
 
 from __future__ import annotations
@@ -47,24 +23,17 @@ SUPPORTED_VIEW_SCHEMA_MAJOR = 1
 
 
 class ResolverError(Exception):
-    """Raised for unrecoverable load-time errors.
+    """Raised for unrecoverable ``view.json`` load errors.
 
-    Per-request resolution failures use sentinel return values (``None``
-    / empty lists) — the server layer translates those into
-    ``error{code: "unresolvable"}`` envelopes.
+    Failed lookups return ``None`` or an empty tuple instead.
     """
 
 
 @dataclass(frozen=True, slots=True)
 class SourceAnchor:
-    """A ``view.json`` ``source`` value — translated to wire shape.
+    """A ``view.json`` source range.
 
-    The wire protocol's ``open_source`` / ``source_focused`` payloads
-    are ``{file, line, col}`` — single point. ``view.json``'s
-    ``source_block`` is a range with ``start_line`` / ``start_column``
-    + optional ``end_line`` / ``end_column``. This dataclass keeps both
-    so :meth:`as_payload` returns the wire shape (start point) while
-    :meth:`contains` enables range queries for ``src_to_view``.
+    :meth:`as_payload` gives the start point in wire shape; :meth:`contains` tests a point against the range.
     """
 
     file: str
@@ -74,45 +43,26 @@ class SourceAnchor:
     end_col: int | None = None
 
     def as_payload(self) -> dict[str, object]:
+        """Return the ``{file, line, col}`` wire payload for the start point."""
         return {"file": self.file, "line": self.line, "col": self.col}
 
     def contains(self, *, line: int, col: int | None = None) -> bool:
-        """Return True when ``(line, col)`` falls inside the source
-        range, with a deliberate UX choice: line-only matching for
-        multi-line ranges.
+        """Return whether ``(line, col)`` is inside the range.
 
-        Strict column checks at the start/end lines would reject the
-        common "cursor at column 1 on the instantiation line" case —
-        editors often park the cursor at indentation while the actual
-        instance keyword is much further right. A line-inside-range
-        match keeps ``src_to_view`` useful for `:RtlBuddyShow` without
-        forcing the user to land on the exact column.
-
-        For single-line ranges (``end_line == start_line``), columns
-        are still consulted to disambiguate adjacent instances on the
-        same line (rare but does happen with generate blocks).
+        Multi-line ranges match on line alone, so a cursor at the indentation of an instantiation still matches. Single-line ranges also compare the column when both ``col`` and ``end_col`` are known.
         """
         if self.end_line is None:
-            # Point anchor (no range) — match exact line only.
             return line == self.line
         if not (self.line <= line <= self.end_line):
             return False
-        # Multi-line range: line membership is enough. The
-        # smallest-range tiebreak in :meth:`Resolver.src_to_view`
-        # already favours the most-specific instance.
         if self.end_line != self.line:
             return True
-        # Single-line range: column boundaries matter (otherwise two
-        # instantiations on one line would both match every cursor on
-        # that line).
         if col is None or self.end_col is None:
             return True
         return self.col <= col <= self.end_col
 
     def range_size(self) -> int:
-        """Total covered lines, used to break ties when multiple
-        anchors contain the same point — the smaller range is the
-        more-specific match (a nested instance over its parent)."""
+        """Return the number of lines covered; smaller ranges are more specific."""
         if self.end_line is None:
             return 1
         return max(1, self.end_line - self.line + 1)
@@ -128,39 +78,30 @@ class SignalDriver:
 
 @dataclass
 class Node:
-    """A single ``nodes[]`` entry — only the fields the resolver uses."""
+    """A ``nodes[]`` entry, reduced to the fields the resolver uses."""
 
     instance_path: str
     location: SourceAnchor | None = None
     port_connections: tuple[tuple[str, str], ...] = field(default_factory=tuple)
-    """``(port_name, net_expr_text)`` pairs in the order view.json emits them."""
+    """``(port_name, net_expr_text)`` pairs in ``view.json`` order."""
 
 
 @dataclass
 class ViewModel:
-    """In-memory image of ``view.json`` — keyed for O(1) lookups."""
+    """In-memory image of ``view.json``."""
 
     top: str
     nodes_by_path: dict[str, Node]
     edges_parent_to_children: dict[str, tuple[str, ...]]
     source_path: Path | None = None
     source_mtime_ns: int | None = None
-    # view.json v1.1 (rtl-buddy-view #99): when the renderer was
-    # invoked with ``--tb-top``, the rendered root is the testbench
-    # top and the wave path is the identity of the view path — no
-    # ``tb_prefix`` strip. ``tb_top`` is the recorded TB top name;
-    # the identity check at the view↔wave boundary is
-    # ``top == tb_top``. ``None`` for v1.0 payloads or DUT-only
-    # views, in which case the legacy tb_prefix strip applies.
+    # tb_top is set (view.json v1.1) when the view was rendered from the testbench top.
     tb_top: str | None = None
     dut_top: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict, *, source_path: Path | None = None) -> "ViewModel":
-        # Shape before dereference: a `view.json` whose top level is a list
-        # parses as valid JSON and then raises `AttributeError` on `.get`,
-        # which is not the `ResolverError` the caller handles — so a hub
-        # request would die on it instead of degrading to "invalid" (#469).
+        # A non-object top level must raise ResolverError, not AttributeError on .get.
         if not isinstance(raw, dict):
             raise ResolverError(
                 f"view.json top level is {type(raw).__name__}, not an object"
@@ -178,10 +119,7 @@ class ViewModel:
                 f"(expected {SUPPORTED_VIEW_SCHEMA_MAJOR})"
             )
 
-        # Canonical schema lives in rtl-buddy-view/docs/view-json-v1.md
-        # and emits `top` flat at the root. Hand-rolled fixtures from
-        # before that doc was written use the older `design.top` shape,
-        # so we accept both rather than break legacy tests / projects.
+        # Accepts `top` at the root or the older `design.top`.
         top = raw.get("top")
         if not (isinstance(top, str) and top):
             top = (
@@ -192,17 +130,13 @@ class ViewModel:
         if not isinstance(top, str) or not top:
             raise ResolverError("view.json missing top (or design.top)")
 
-        # v1.1 envelope fields (#99). Both nullable: omitted on v1.0
-        # payloads, ``None`` on TB-only or DUT-only renders. Wrong
-        # type is silently demoted to None to preserve the v1.0
-        # consumer-tolerant contract.
+        # Optional v1.1 fields; a wrong type is treated as absent.
         tb_top_raw = raw.get("tb_top")
         tb_top = tb_top_raw if isinstance(tb_top_raw, str) and tb_top_raw else None
         dut_top_raw = raw.get("dut_top")
         dut_top = dut_top_raw if isinstance(dut_top_raw, str) and dut_top_raw else None
 
-        # Same dual-schema acceptance for nodes: canonical uses `id` +
-        # `source`; legacy fixtures use `instance_path` + `location`.
+        # Accepts `id` + `source` or the older `instance_path` + `location`.
         nodes_by_path: dict[str, Node] = {}
         for entry in raw.get("nodes", []):
             ip = entry.get("id")
@@ -212,8 +146,7 @@ class ViewModel:
                 continue
             loc = _location_to_anchor(entry.get("source") or entry.get("location"))
             ports: list[tuple[str, str]] = []
-            # Canonical schema uses `ports` with `{name, expr}`; legacy
-            # fixtures use `port_connections` with `{port_name, net_expr_text}`.
+            # `ports` is {name, expr}; the older `port_connections` is {port_name, net_expr_text}.
             ports_raw = entry.get("ports")
             if isinstance(ports_raw, list):
                 for p in ports_raw:
@@ -235,7 +168,7 @@ class ViewModel:
                 instance_path=ip, location=loc, port_connections=tuple(ports)
             )
 
-        # Edges: canonical uses `{from, to}`; legacy uses `{parent, child}`.
+        # Accepts {from, to} or the older {parent, child}.
         edges: dict[str, list[str]] = {}
         for e in raw.get("edges", []):
             if not isinstance(e, dict):
@@ -261,26 +194,14 @@ class ViewModel:
 
     @property
     def tb_rooted(self) -> bool:
-        """True when the rendered tree is the testbench top (#99 / 6b).
-
-        The renderer pins ``top == tb_top`` whenever ``--tb-top`` was
-        passed (see rtl-buddy-view's :mod:`render.json_render`
-        envelope rule). At this point view paths and wave paths are
-        the same coordinate frame — the SPA shows the TB hierarchy
-        verbatim, and surfer loads waveforms keyed by the same
-        instance paths.
-        """
+        """Return whether the view is rooted at the testbench top, so view paths equal wave paths."""
         return self.tb_top is not None and self.top == self.tb_top
 
 
 def _location_to_anchor(raw: object) -> SourceAnchor | None:
-    """Translate a view.json ``source_block`` (or legacy ``location``)
-    into a :class:`SourceAnchor`.
+    """Convert a ``view.json`` source block to a :class:`SourceAnchor`, or ``None`` if malformed.
 
-    Accepts both the canonical schema from rtl-buddy-view's
-    ``view-json-v1.md`` (``start_line`` + ``start_column`` + optional
-    ``end_line`` / ``end_column``) and the historical ``line`` / ``col``
-    shorthand used by hand-rolled test fixtures.
+    Accepts ``start_line``/``start_column`` or the older ``line``/``col``.
     """
     if not isinstance(raw, dict):
         return None
@@ -305,16 +226,9 @@ def _location_to_anchor(raw: object) -> SourceAnchor | None:
 
 
 class Resolver:
-    """Coordinate translator backed by a ``view.json`` snapshot.
+    """Coordinate translator backed by ``view.json``.
 
-    Thread-safe for read paths via a lock around lazy reloads. The
-    resolver lazily reloads view.json when the file's ``mtime`` changes
-    so a re-run of ``rb hier --format json`` mid-session is picked up
-    without restarting the hub.
-
-    Mapping config — ``tb_prefix``, ``signal_aliases`` — is held by
-    reference; rotate it in place from the server layer when config is
-    reloaded.
+    The file is reloaded when its mtime changes. A lock makes lookups thread-safe. Use :meth:`update_mapping` to change ``tb_prefix`` or ``signal_aliases``.
     """
 
     def __init__(
@@ -330,10 +244,6 @@ class Resolver:
         self._wave_alias_to_view: dict[str, str] = {}
         self._view_alias_to_wave: dict[str, str] = {}
         self._rebuild_alias_index()
-
-    # ------------------------------------------------------------------
-    # configuration
-    # ------------------------------------------------------------------
 
     @property
     def view_json_path(self) -> Path | None:
@@ -361,26 +271,10 @@ class Resolver:
             a.view: a.wave for a in self._mapping.signal_aliases
         }
 
-    # ------------------------------------------------------------------
-    # view ↔ wave (pure transforms; no view.json required)
-    # ------------------------------------------------------------------
-
     def view_to_wave(self, instance_path: str) -> str | None:
-        """Return the wave path for an instance path, or ``None``.
+        """Return the wave path for a view instance path, or ``None``.
 
-        Returns ``None`` when ``instance_path`` does not exist in the
-        loaded ``view.json`` — the spec requires that the hub does not
-        guess. If view.json is absent, returns the prefix-transformed
-        path optimistically; this is the "no resolver loaded" fallback
-        the server's error handler exposes as unresolvable when the
-        guess matters.
-
-        v1.1 (#99 / 6b): when the loaded view.json is TB-rooted
-        (``ViewModel.tb_rooted``), the wave path IS the view path —
-        the renderer elaborated from the testbench top so view paths
-        already match the names surfer / WCP advertise. ``tb_prefix``
-        is bypassed entirely in that mode; it stays as the v1.0
-        fallback for DUT-only renders.
+        Signal aliases are checked first. Then, if ``view.json`` is loaded, ``None`` is returned for an unknown path. A TB-rooted view maps a path to itself; otherwise the design top is stripped and ``tb_prefix`` prepended. With no ``view.json``, the prefix mapping is applied without checking the path.
         """
 
         if instance_path in self._view_alias_to_wave:
@@ -388,18 +282,13 @@ class Resolver:
 
         model = self._load_if_possible()
         if model is not None and model.tb_rooted:
-            # Identity mapping. Still gate on node existence so a
-            # typo or stale request returns ``None`` rather than a
-            # path the wave side will fail to find.
             return instance_path if instance_path in model.nodes_by_path else None
 
-        # Drop the design.top root if present, then prepend tb_prefix.
         if model is not None:
             if instance_path not in model.nodes_by_path:
                 return None
             stripped = _strip_top(instance_path, model.top)
         else:
-            # Best-effort: no top to anchor against.
             stripped = instance_path
 
         prefix = self._mapping.tb_prefix
@@ -410,9 +299,7 @@ class Resolver:
     def wave_to_view(self, wave_scope: str) -> str | None:
         """Return the view instance path for a wave path, or ``None``.
 
-        v1.1 (#99 / 6b): when TB-rooted, the view path IS the wave
-        path; gate on node existence rather than the legacy
-        prefix-strip.
+        Signal aliases are checked first. A TB-rooted view maps a path to itself if the node exists; otherwise ``tb_prefix`` is stripped and the design top prepended. With no ``view.json``, the prefix is stripped without checking the result.
         """
 
         if wave_scope in self._wave_alias_to_view:
@@ -431,7 +318,7 @@ class Resolver:
             return None
 
         if model is None:
-            return tail  # Best-effort.
+            return tail
 
         candidate = tail
         if not candidate.startswith(model.top + "."):
@@ -441,11 +328,8 @@ class Resolver:
             return candidate
         return None
 
-    # ------------------------------------------------------------------
-    # view → src
-    # ------------------------------------------------------------------
-
     def view_to_src(self, instance_path: str) -> SourceAnchor | None:
+        """Return the source anchor of an instance path, or ``None`` if unknown."""
         model = self._load_if_possible()
         if model is None:
             return None
@@ -454,25 +338,12 @@ class Resolver:
             return None
         return node.location
 
-    # ------------------------------------------------------------------
-    # src → view  (`:RtlBuddyShow` from nvim → schematic selection)
-    # ------------------------------------------------------------------
-
     def src_to_view(
         self, *, file: str, line: int, col: int | None = None
     ) -> tuple[str, ...]:
-        """Return instance paths whose source range contains the point.
+        """Return the instance paths whose source range contains the point, smallest range first.
 
-        Used to translate the editor's ``source_focused {file, line, col}``
-        event into a ``selection_changed`` the schematic SPA can act on.
-        Path matching is on absolute, normalised form (``Path.resolve``)
-        so a relative path in ``view.json`` matches an absolute path
-        from the editor — and vice versa.
-
-        Multiple matches can occur because a child instance's range is
-        nested in its parent's; results are ordered smallest range first
-        so the caller can pick the most-specific match (typically the
-        instance being clicked, not the surrounding module).
+        File paths are compared after ``Path.resolve``, so relative and absolute spellings match. Nested instances all match; the first result is the most specific.
         """
         model = self._load_if_possible()
         if model is None:
@@ -503,25 +374,12 @@ class Resolver:
         except (OSError, RuntimeError):
             return None
 
-    # ------------------------------------------------------------------
-    # signal → drivers (the spec's resolve_signal_to_view)
-    # ------------------------------------------------------------------
-
     def signal_drivers(
         self, *, signal: str, wave_scope: str
     ) -> tuple[SignalDriver, ...]:
-        """Return the list of view instances that drive ``signal`` at ``wave_scope``.
+        """Return the child instances of the node at ``wave_scope`` that have a port connected to ``signal``.
 
-        The spec (§7) requires this be a list — a bus driven by N flops
-        in a generate, or a packed-array assignment, collapses to N
-        instance paths. Empty tuple → "unresolvable".
-
-        Implementation: walk the children of the node at ``wave_scope``
-        and return every child whose ``port_connections`` carry a
-        ``net_expr_text`` equal to ``signal``. Today's view.json is
-        textual (``net_expr_text`` is a raw AST snippet), so this is an
-        exact string match; richer port_pair data lands with Phase 4
-        view.json v1.
+        The match is an exact string comparison against the port's net expression. An empty tuple means unresolvable (§7).
         """
 
         model = self._load_if_possible()
@@ -547,10 +405,6 @@ class Resolver:
                     )
                     break
         return tuple(drivers)
-
-    # ------------------------------------------------------------------
-    # internal: lazy view.json load
-    # ------------------------------------------------------------------
 
     def _load_if_possible(self) -> ViewModel | None:
         with self._lock:
@@ -608,7 +462,7 @@ class Resolver:
 
 
 def _strip_top(instance_path: str, top: str) -> str:
-    """Drop the leading ``top.`` (or bare ``top``) anchor from a view path."""
+    """Remove a leading ``top.`` (or a bare ``top``) from a view path."""
 
     if instance_path == top:
         return ""
@@ -619,18 +473,18 @@ def _strip_top(instance_path: str, top: str) -> str:
 
 
 def default_view_json_path(project_root: Path) -> Path:
-    """Where the resolver looks for view.json inside ``project_root``."""
+    """Return the default ``view.json`` path, ``<project_root>/.rtl-buddy/view.json``."""
 
     return project_root / ".rtl-buddy" / "view.json"
 
 
-# Convenience used by tests that want to skip the lazy-load dance.
 def resolver_from_paths(
     *,
     view_json_path: Path | None,
     tb_prefix: str = "tb.dut.",
     signal_aliases: Iterable[SignalAlias] = (),
 ) -> Resolver:
+    """Build a :class:`Resolver` from a path, ``tb_prefix`` and aliases."""
     mapping = HubMappingConfig(
         tb_prefix=tb_prefix, signal_aliases=tuple(signal_aliases)
     )

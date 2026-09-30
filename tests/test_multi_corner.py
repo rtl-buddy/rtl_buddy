@@ -1,10 +1,6 @@
-"""Multi-corner signoff shared by `rb pnr` and `rb power` (#104, #105).
+"""Multi-corner signoff shared by `rb pnr` and `rb power`.
 
-The schema (`cfg-pnr-platforms.corners`), the Tcl both flows render for it,
-and the parsing of what OpenROAD prints back. The log and report fixtures
-are real OpenROAD 26Q2 output, captured from the project template's
-`demo_tiny_alu_subsys_sky130_compute_mc_pnr` / `_mc_power` runs on sky130hd
-at tt, ss_n40C_1v40 and ff_n40C_1v95.
+The tests cover the schema (`cfg-pnr-platforms.corners`), the Tcl both flows render, and parsing of OpenROAD output. The log and report fixtures are real OpenROAD 26Q2 output from the project template's `_mc_pnr` / `_mc_power` runs on sky130hd at tt, ss_n40C_1v40 and ff_n40C_1v95.
 """
 
 from contextlib import nullcontext
@@ -47,18 +43,12 @@ def _platform(pdk, **overrides):
     return PnrPlatformConfig(PnrPlatformConfigFile(**base), lambda _name: pdk)
 
 
-# ---------------------------------------------------------------------------
-# Schema
-# ---------------------------------------------------------------------------
-
-
 def test_corners_list_selects_every_corner_primary_first(tmp_path):
     platform = _platform(_pdk(tmp_path), sta_corners=["ss", "tt", "ff"])
 
     assert platform.is_multi_corner()
     assert platform.get_sta_corners() == ["ss", "tt", "ff"]
-    # The primary is the first entry, and the single-corner accessors
-    # answer for it — so a caller written for one corner keeps working.
+    # The primary is the first entry, and the single-corner accessors answer for it.
     assert platform.get_sta_corner() == "ss"
     assert platform.get_sta_lib_path() == str(tmp_path / "pdk/lib/ss.lib")
     assert list(platform.get_sta_corner_lib_paths().items()) == [
@@ -116,12 +106,11 @@ def test_corners_rejects_a_corner_listed_twice(tmp_path):
 
 
 def test_corners_rejects_a_name_tcl_or_a_file_name_cannot_carry(tmp_path):
-    """A single `corner:` is only a key into `cfg-pdks.corners`; one of
-    several becomes a scene name, a Tcl list word and a report file name."""
+    """A single `corner:` is a key into `cfg-pdks.corners`; one of several becomes a scene name, a Tcl list word and a report file name."""
     pdk = _pdk(tmp_path, {"tt": "tt.lib", "slow corner": "ss.lib"})
     with pytest.raises(FatalRtlBuddyError, match="corner name 'slow corner'"):
         _platform(pdk, sta_corners=["tt", "slow corner"])
-    # ...and the same name stays usable as the one corner of a platform.
+    # The same name stays usable as the one corner of a platform.
     assert _platform(pdk, sta_corner="slow corner").get_sta_corner() == "slow corner"
 
 
@@ -130,11 +119,6 @@ def test_a_one_entry_corners_list_is_the_single_corner_run(tmp_path):
 
     assert not platform.is_multi_corner()
     assert platform.get_sta_corner() == "ss"
-
-
-# ---------------------------------------------------------------------------
-# rb pnr — Tcl
-# ---------------------------------------------------------------------------
 
 
 def _write_macro(tmp_path):
@@ -187,8 +171,7 @@ def test_pnr_multi_corner_reports_follow_the_global_worst(tmp_path):
     platform = _platform(_pdk(tmp_path), sta_corners=["tt", "ss", "ff"])
     text = _render_flow(tmp_path, platform)
 
-    # The global reports stay as they were: they are the worst across
-    # corners and the scalar results are parsed from them.
+    # The global reports stay the worst across corners; the scalar results are parsed from them.
     assert "report_worst_slack -max\nreport_worst_slack -min\nreport_tns\n" in text
     block = text.index('puts ">>> Per-corner timing"')
     assert text.index("report_tns\n") < block < text.index("report_checks")
@@ -199,12 +182,7 @@ def test_pnr_multi_corner_reports_follow_the_global_worst(tmp_path):
     assert "sta::worst_slack_corner $corner max" in text
 
 
-# ---------------------------------------------------------------------------
-# rb pnr — log parsing and results
-# ---------------------------------------------------------------------------
-
-# The final-reports tail of a real multi-corner `pnr.log` (see the module
-# docstring for the run): ss sets the setup worst, ff the hold worst.
+# Final-reports tail of a real multi-corner `pnr.log` (see the module docstring): ss sets the setup worst, ff the hold worst.
 _PNR_LOG_TAIL = """\
 >>> Final reports
 Design area 2580 um^2 43% utilization.
@@ -340,10 +318,6 @@ def test_pnr_row_and_table_surface_the_worst_corners():
     assert _pnr_worst_corner_cell({"wns_setup_ps": 1.0}) == "-"
 
 
-# ---------------------------------------------------------------------------
-# rb power
-# ---------------------------------------------------------------------------
-
 _CORNERS = {
     "tt": "/pdk/fake/tt.lib",
     "ss": "/pdk/fake/ss.lib",
@@ -358,7 +332,7 @@ def _mc_power_backend(tmp_path):
 
 
 def _report(internal, switching, leakage, total):
-    """A `report_power` design table, in OpenSTA's own layout."""
+    """Return a `report_power` design table in OpenSTA's layout."""
     return (
         "Group                  Internal  Switching    Leakage      Total\n"
         "                          Power      Power      Power      Power (Watts)\n"
@@ -456,7 +430,7 @@ def test_multi_corner_power_fails_when_a_corner_report_is_missing(
 
     assert res.results["result"] == "FAIL"
     assert "corner 'ss'" in res.results["desc"]
-    # Nothing this run wrote is left to answer for the next one.
+    # Nothing this run wrote is left for the next run.
     assert not Path(backend._report_path()).exists()
     assert not Path(backend._corner_report_path("tt")).exists()
 
@@ -470,8 +444,7 @@ def test_multi_corner_power_fails_without_the_worst_corner_marker(
 
 
 def test_a_previous_runs_corner_report_is_cleared(tmp_path, monkeypatch):
-    """A corner dropped from the platform must not leave its report behind
-    to be read as this run's (#469)."""
+    """A corner dropped from the platform leaves no report to be read as this run's."""
     backend = _mc_power_backend(tmp_path)
     stale = Path(backend.artefact_dir) / "power.sf.rpt"
     stale.write_text(_CORNER_REPORTS["tt"])
@@ -511,8 +484,7 @@ def test_power_row_and_table_carry_the_worst_corner():
 
 
 def test_corners_written_as_a_scalar_is_refused_by_name(tmp_path):
-    """pyserde would turn `corners: ss` into ['s', 's']; the platform must
-    say it wants a list instead (#104, #105)."""
+    """`corners: ss` would become ['s', 's']; the platform must say it wants a list."""
     from serde.yaml import from_yaml
 
     from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
@@ -526,8 +498,7 @@ def test_corners_written_as_a_scalar_is_refused_by_name(tmp_path):
 
 
 def test_a_failing_corner_report_does_not_stop_the_flow():
-    """The per-corner block is report-only; a Tcl error in it must not abort
-    the script ahead of `write_db`."""
+    """The per-corner block is report-only; a Tcl error in it must not abort the script ahead of `write_db`."""
     import shutil as _sh
     import subprocess
 

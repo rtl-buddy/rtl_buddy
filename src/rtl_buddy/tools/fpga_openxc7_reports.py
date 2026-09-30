@@ -1,29 +1,16 @@
-"""Parser for nextpnr-xilinx log output (``rb fpga`` openxc7 backend).
+"""Parse the nextpnr-xilinx log (``artefacts/<run>/nextpnr.log``) for the ``rb fpga`` openxc7 backend.
 
-Pure text -> dict parsing, parallel to :mod:`.fpga_vivado_reports`. The
-openXC7 toolchain has no report files — utilization and timing both
-come from the nextpnr log, which the backend captures to
-``artefacts/<run>/nextpnr.log``:
-
-* "Device utilisation:" sections (``Info: <BEL>: used/avail pct%``)
-  give post-pack resource usage per bel type.
-* "Max frequency for clock 'x': F MHz (PASS|FAIL at T MHz)" lines give
-  the achieved Fmax against the constrained target per clock.
-* "Critical path report for clock 'x'" sections carry the worst path's
-  start (``Source <cell.port>``) and end (``Sink <cell.port>``).
-
-The contract is tested against hand-built fixture logs under
-``tests/fixtures/fpga/`` that follow nextpnr's documented output format
-(nextpnr-xilinx and prjxray are not exercised live in CI). WNS is
-derived per clock as ``1000/target_mhz - 1000/fmax_mhz`` (ns) since
-nextpnr reports frequencies, not slack.
+Utilization comes from "Device utilisation:" sections, Fmax and target per clock from
+"Max frequency for clock" lines, and critical-path endpoints from "Critical path report"
+sections. nextpnr reports frequencies, so slack is derived as
+``1000/target_mhz - 1000/fmax_mhz`` ns.
 """
 
 from __future__ import annotations
 
 import re
 
-# Canonical resource aliases onto nextpnr-xilinx (xc7) bel types.
+# Resource aliases onto nextpnr-xilinx (xc7) bel types.
 _BEL_ALIASES: dict[str, tuple[str, ...]] = {
     "lut": ("SLICE_LUTX",),
     "ff": ("SLICE_FFX",),
@@ -44,7 +31,7 @@ _CRIT_SINK_RE = re.compile(r"^Info:\s+(?:[\d.]+\s+[\d.]+\s+)?Sink\s+(\S+)")
 
 
 def _slack_ns(fmax_mhz: float, target_mhz: float) -> float | None:
-    """Worst negative slack in ns derived from achieved vs target Fmax."""
+    """Slack in ns derived from achieved vs target Fmax."""
     if fmax_mhz <= 0 or target_mhz <= 0:
         return None
     return round(1000.0 / target_mhz - 1000.0 / fmax_mhz, 3)
@@ -69,10 +56,8 @@ def parse_nextpnr_log(text: str) -> dict:
           "failing_paths": [...],     # FAIL clocks' critical paths
         }
 
-    nextpnr prints the utilisation section more than once (after pack
-    and again before routing); the last occurrence wins. A log with no
-    "Max frequency" lines (no clock constraint) yields ``timing_met``
-    ``None`` and empty ``clocks``.
+    The last utilisation section in the log wins. A log with no "Max frequency"
+    lines yields ``timing_met`` ``None`` and empty ``clocks``.
 
     Raises:
       ValueError: if the text has no "Device utilisation:" section.
@@ -82,7 +67,6 @@ def parse_nextpnr_log(text: str) -> dict:
 
     lines = text.splitlines()
 
-    # --- utilization (last section wins) -----------------------------------
     bels: dict[str, dict] = {}
     in_util = False
     for line in lines:
@@ -101,9 +85,7 @@ def parse_nextpnr_log(text: str) -> dict:
         else:
             in_util = False
 
-    # --- per-clock critical paths -------------------------------------------
-    # Source/Sink of the worst path, keyed by clock; a path's Sink is
-    # the last one printed within its section.
+    # A path's sink is the last Sink line in its section.
     crit: dict[str, dict] = {}
     current_clock: str | None = None
     for line in lines:
@@ -126,7 +108,6 @@ def parse_nextpnr_log(text: str) -> dict:
         if not stripped.startswith("Info:"):
             current_clock = None
 
-    # --- per-clock Fmax verdicts --------------------------------------------
     clocks: list[dict] = []
     for line in lines:
         m = _FMAX_RE.match(line.strip())

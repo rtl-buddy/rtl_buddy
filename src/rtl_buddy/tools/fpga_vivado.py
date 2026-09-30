@@ -28,24 +28,17 @@ from .fpga_vivado_reports import (
     parse_utilization,
 )
 
-# Vivado error lines look like `ERROR: [Synth 8-439] module ...` — match
-# on the bracketed message-id form so the word ERROR inside user puts
-# output doesn't false-positive.
+# Matches Vivado errors such as `ERROR: [Synth 8-439] ...`, not the word ERROR in user output.
 _VIVADO_ERROR_RE = re.compile(r"^ERROR: \[")
 
 
 class VivadoFpga(BaseFpga):
-    """Vivado-driven FPGA implementation backend.
+    """Vivado FPGA backend.
 
-    Renders the non-project batch-Tcl flow from
-    :mod:`.fpga_vivado_flow` (read sources/XDC -> ``synth_design`` ->
-    ``opt_design`` -> ``place_design`` -> ``route_design`` -> reports
-    -> optional ``write_bitstream``), runs::
-
-        vivado -mode batch -source flow.tcl -nojournal -log vivado.log
-
-    with ``cwd=artefacts/<run>/``, and parses the post-route reports
-    (:mod:`.fpga_vivado_reports`) into the results dataclasses.
+    Renders the batch Tcl flow from :mod:`.fpga_vivado_flow`, runs
+    ``vivado -mode batch -source flow.tcl -nojournal -log vivado.log`` in
+    ``artefacts/<run>/`` and parses the post-route reports
+    (:mod:`.fpga_vivado_reports`) into the results.
     """
 
     def __init__(
@@ -66,10 +59,6 @@ class VivadoFpga(BaseFpga):
             emit_bitstream=emit_bitstream,
         )
 
-    # ------------------------------------------------------------------
-    # Artefact paths
-    # ------------------------------------------------------------------
-
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, "flow.tcl")
 
@@ -79,15 +68,8 @@ class VivadoFpga(BaseFpga):
     def _bitstream_path(self) -> str:
         return os.path.join(self.artefact_dir, f"{self.fpga_cfg.get_top()}.bit")
 
-    # ------------------------------------------------------------------
-    # Tcl script generation
-    # ------------------------------------------------------------------
-
     def _write_script(self, fl_path: str) -> str:
         top = self.fpga_cfg.get_top()
-        # Platform vs inline part is resolved behind this seam; the
-        # effective XDC list is platform defaults first, run files after
-        # (later read_xdc wins in Vivado).
         target = resolve_target(self.fpga_cfg, self.root_cfg)
         script = render_flow_tcl(
             top=top,
@@ -102,16 +84,11 @@ class VivadoFpga(BaseFpga):
         Path(script_path).write_text(script)
         return script_path
 
-    # ------------------------------------------------------------------
-    # Report parsing
-    # ------------------------------------------------------------------
-
     def _parse_reports(self) -> dict:
-        """Read + parse the post-route reports from the run dir.
+        """Parse the post-route reports in the run dir.
 
         Raises:
-          RuntimeError: when a report is missing or unparsable — the
-            caller maps this to a FAIL with the message as desc.
+          RuntimeError: a report is missing or unparsable; the message becomes the FAIL desc.
         """
         parsers = {
             "utilization": parse_utilization,
@@ -131,25 +108,12 @@ class VivadoFpga(BaseFpga):
                 raise RuntimeError(f"failed to parse report '{filename}': {e}") from e
         return parsed
 
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
-
     def _clear_managed_outputs(self) -> None:
-        """Remove every output a run of this entry produces.
+        """Remove the post-route reports and any bitstream left by a previous run.
 
-        The five post-route reports and the bitstream are read back off fixed
-        paths, and Vivado exiting 0 with no ERROR line is not proof that it
-        rewrote them — so clearing them is what lets `_parse_reports` either
-        see this run's numbers or take its "not produced" path, instead of
-        quoting a previous run's utilization/WNS/power (#469). The bitstream
-        goes even without `--bitstream`: the artefact dir describes the latest
-        run, and a run reporting "no bitstream" beside a deployable
-        `<top>.bit` from an older run is the same trap — rerun with
-        `--bitstream` to regenerate it. It is matched by suffix, being the one
-        top-named output, so editing the run's model or top does not strand
-        the previous top's `.bit`; the reports have fixed names (`util.rpt`
-        and friends) and carry no `.bit` suffix.
+        The reports are read from fixed paths, so stale ones would be reported as this
+        run's results. The bitstream is cleared even without `--bitstream` and matched by
+        suffix, so a changed top leaves no old `.bit` behind.
         """
         stale = clear_stale_artefacts(
             [
@@ -158,8 +122,7 @@ class VivadoFpga(BaseFpga):
             ],
             owner=self.fpga_cfg.get_name(),
         )
-        # `own` so a design whose top collides with a sibling's protected
-        # name still has its own bitstream cleared (#469).
+        # `own`: clear this run's bitstream even if its name matches another flow's protected name.
         stale += clear_managed_outputs(
             self.artefact_dir,
             (".bit",),
@@ -177,33 +140,16 @@ class VivadoFpga(BaseFpga):
             )
 
     def _fail_after_vivado(self, desc: str) -> FpgaFailResults:
-        """Fail a run that has already invoked Vivado, publishing nothing.
-
-        The Tcl writes all five post-route reports before it reaches
-        `write_bitstream`, so a run that dies at the bitstream stage — or
-        exits non-zero, or logs an ERROR, or leaves a report this wrapper
-        cannot parse — has fresh reports and possibly a partial `<top>.bit`
-        on disk at the fixed paths the next run would otherwise read (#469).
-        Every post-Vivado failure return goes through here.
-        """
+        """Clear the run's outputs and return a FAIL; every failure after Vivado starts goes through here."""
         self._clear_managed_outputs()
         return FpgaFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> FpgaResults:
-        # Resolved up front, and ahead of the tool skip below, because an
-        # unknown `platform:` ref is a config error (exit 2) whether or not
-        # Vivado is installed. Raising it over a previous run's reports and a
-        # deployable bitstream would leave exactly the stale artefacts this
-        # fix removes, so a config error clears them on its way out — it is a
-        # failed run, not a skip (#469).
+        # Config errors are raised before the Vivado availability skip and clear the old outputs.
         try:
             target = resolve_target(self.fpga_cfg, self.root_cfg)
         except Exception:
-            # Every exception, not a list of the expected ones: enumerating
-            # them is how the CDC backend came to miss `FilelistError`, a
-            # sibling of `FatalRtlBuddyError` rather than a subclass (#469).
-            # A run that fails here publishes nothing; re-raised at once, so
-            # nothing is masked.
+            # Catch everything (FilelistError is not a FatalRtlBuddyError); re-raised.
             self._clear_managed_outputs()
             raise
 
@@ -234,10 +180,7 @@ class VivadoFpga(BaseFpga):
                 ),
             )
 
-        # Everything past the skip is a run of this entry, however it ends —
-        # including the filelist error below. Deliberately *after* the skip:
-        # a box without Vivado never ran the tool, so it has no business
-        # deleting what a box with Vivado built.
+        # After the skip: a host without Vivado must not delete another host's outputs.
         self._clear_managed_outputs()
 
         try:
@@ -272,8 +215,7 @@ class VivadoFpga(BaseFpga):
                 fail_stage="setup",
             )
 
-        # Relative paths: the process runs with cwd=artefacts/<run>/ so
-        # Vivado's own side-files (.Xil/, webtalk) stay inside the run dir.
+        # Relative paths keep Vivado's side files (.Xil/, webtalk) inside the run dir.
         cmd = [
             self.executable,
             "-mode",
@@ -377,8 +319,7 @@ class VivadoFpga(BaseFpga):
             whs_ns=timing.get("whs_ns"),
             timing_met=timing.get("timing_met"),
             failing_endpoints=timing.get("failing_endpoints"),
-            # Omitted entirely when there are none — agents key off
-            # timing_met first, then dig into the paths.
+            # None when empty, so the field is omitted.
             failing_paths=timing.get("failing_paths") or None,
             total_power_w=power.get("total_on_chip_w"),
             dynamic_power_w=power.get("dynamic_w"),

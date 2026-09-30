@@ -1,6 +1,6 @@
 # rtl-buddy
 # vim: set sw=2:ts=2:et:
-"""Tests for per-suite / per-test simulator builder selection (`builder:`)."""
+"""Tests for per-suite and per-test simulator builder selection (`builder:`)."""
 
 from textwrap import dedent
 
@@ -11,9 +11,6 @@ from rtl_buddy.config.root import RootConfig
 from rtl_buddy.config.suite import SuiteConfigFile
 from rtl_buddy.config.test import TestConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
-
-
-# --- YAML schema parsing -----------------------------------------------------
 
 
 def test_suite_config_parses_suite_and_per_test_builder():
@@ -70,9 +67,6 @@ def test_suite_config_builder_defaults_to_none_when_absent():
     assert cfg.builder is None
 
 
-# --- initialise() suite/per-test fallback ------------------------------------
-
-
 class _FakeModelLoader:
     def __init__(self, *_args, **_kwargs):
         pass
@@ -127,9 +121,6 @@ def test_initialise_no_builder_anywhere_is_none(_patch_model_loader):
     assert tc.get_builder_name() is None
 
 
-# --- RootConfig.resolve_rtl_builder_cfg precedence ---------------------------
-
-
 class _FakePlatform:
     def __init__(self, builder):
         self._builder = builder
@@ -161,7 +152,6 @@ def test_resolve_uses_per_test_builder_when_requested():
 
 def test_cli_builder_override_forces_builder_over_per_test():
     verilator, icarus = object(), object()
-    # builder_override means platform_cfg already resolves to the forced builder.
     root = _make_root(
         verilator,
         {"verilator": verilator, "icarus": icarus},
@@ -175,9 +165,6 @@ def test_resolve_unknown_builder_name_raises():
     root = _make_root(verilator, {"verilator": verilator})
     with pytest.raises(FatalRtlBuddyError):
         root.resolve_rtl_builder_cfg("nonexistent")
-
-
-# --- summary footer: builder reported as a list -----------------------------
 
 
 class _NamedBuilder:
@@ -232,7 +219,6 @@ def test_builder_footer_lists_multiple_builders_sorted():
         "icarus": _NamedBuilder("icarus"),
     }
     rb = _make_rtl_buddy(builders)
-    # Mixed suite: one test pins icarus, one falls back to platform (verilator).
     suite = _FakeSuite(["icarus", None])
     assert rb._builder_metadata_line(suite) == "Builders: icarus, verilator"
 
@@ -243,7 +229,6 @@ def test_builder_footer_cli_override_collapses_to_one():
         "icarus": _NamedBuilder("icarus"),
     }
     rb = _make_rtl_buddy(builders, builder_override="verilator")
-    # Override forces every test onto verilator, so the footer lists only it.
     suite = _FakeSuite(["icarus", None])
     assert rb._builder_metadata_line(suite) == "Builder: verilator"
 
@@ -256,9 +241,6 @@ def test_builder_footer_unions_across_regression_suites():
     rb = _make_rtl_buddy(builders)
     suites = [_FakeSuite(["verilator"]), _FakeSuite(["icarus"])]
     assert rb._builder_metadata_line(suites) == "Builders: icarus, verilator"
-
-
-# --- summary table: per-row Builder column when >1 builder ------------------
 
 
 class _FakeResults:
@@ -306,16 +288,8 @@ def test_summary_adds_builder_column_when_multiple_builders(monkeypatch):
     assert {row["builder"] for row in captured["rows"]} == {"icarus", "verilator"}
 
 
-# --- builder path pinning: env expansion + candidate lists (#439) ------------
-
-
 def _touch_exe(path):
-    """Create an executable stub.
-
-    Tool-path resolution requires the executable bit for binary-valued
-    fields, so its existence test agrees with the callers' availability
-    checks (#439) — a plain `touch` would be skipped.
-    """
+    """Create an executable stub; tool-path resolution requires the executable bit."""
     path.write_text("#!/bin/sh\nexit 0\n")
     path.chmod(0o755)
     return path
@@ -341,7 +315,7 @@ def _builder(builder: str):
 
 
 def test_builder_path_uses_individual_env_override(tmp_path, monkeypatch):
-    """individual env override -> committed canonical path -> PATH."""
+    """An individual env override wins over the committed canonical path, which wins over PATH."""
     mine = tmp_path / "mine" / "bin"
     mine.mkdir(parents=True)
     _touch_exe(mine / "verilator")
@@ -377,5 +351,5 @@ def test_builder_path_falls_back_to_path(tmp_path, monkeypatch):
 
 
 def test_builder_bare_name_is_unchanged():
-    """The pre-#439 single-string shape keeps passing through verbatim."""
+    """A bare builder name passes through verbatim."""
     assert _builder("verilator").get_exe() == "verilator"

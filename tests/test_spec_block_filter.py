@@ -1,15 +1,6 @@
-"""Tests for #340 — block filtering for spec traceability.
+"""Tests for the repeatable ``--block`` filter on ``rb spec check-design`` and ``check-coverage``.
 
-``rb spec check-design`` and ``rb spec check-coverage`` gained a
-repeatable ``--block NAME`` option. Only matching blocks are included
-(human + machine); an unknown block name raises
-``FatalRtlBuddyError("Unknown spec block(s): ...")`` (a nonzero exit),
-not an empty success.
-
-Fixture (``tests/fixtures/spec_block_filter/``):
-  spec/demo/specs.yaml   -- block "demo" with coverage item DEMO-1
-  spec/other/specs.yaml  -- block "other" with coverage item OTHER-1
-  verif/dummy_suite/tests.yaml -- loadable, empty (no tests/testbenches)
+Fixture ``tests/fixtures/spec_block_filter/`` has blocks ``demo`` (item DEMO-1) and ``other`` (item OTHER-1).
 """
 
 from __future__ import annotations

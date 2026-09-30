@@ -1,10 +1,4 @@
-"""Resolve SymbiYosys counterexample VCD paths for ``rb wave-fpv``.
-
-Sby writes a CEX VCD at ``<workdir>/engine_<N>/trace.vcd`` whenever the
-proof disproves a property. Multiple engines can each produce a trace —
-we return the first one found (sorted by engine name) since they all
-witness the same property failure.
-"""
+"""Locate SymbiYosys counterexample VCDs for ``rb wave-fpv``."""
 
 from __future__ import annotations
 
@@ -12,12 +6,10 @@ from pathlib import Path
 
 
 def find_cex_vcd(suite_dir: str, verif_name: str) -> str | None:
-    """Return the CEX VCD path for an FPV verification, or ``None``.
+    """Return the first ``engine_<N>/trace.vcd`` under the verification's sby workdir, or ``None``.
 
-    Looks for ``<suite_dir>/artefacts/<verif_name>/sby_workdir/engine_<N>/trace.vcd``.
-    Returns the first match in sorted engine order. ``None`` when the
-    workdir is absent (verification has not run) or no engine produced
-    a trace (the proof passed, or sby died before any engine started).
+    Engines are searched in sorted name order. ``None`` means the workdir is
+    absent or no engine wrote a trace.
     """
     workdir = Path(suite_dir) / "artefacts" / verif_name / "sby_workdir"
     if not workdir.is_dir():

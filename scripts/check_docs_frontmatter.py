@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that all non-generated docs pages have a non-empty description: frontmatter field."""
+"""Check that every docs page has a non-empty `description:` frontmatter field."""
 
 import argparse
 import re
@@ -10,7 +10,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 DOCS_ROOT = REPO_ROOT / "docs"
 
-# No pages are exempt — reference/cli.md has its description managed by gen_cli_reference.py.
 GENERATED_PAGES: set = set()
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)

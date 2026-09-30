@@ -137,13 +137,7 @@ def test_run_managed_process_restores_signal_handlers(monkeypatch):
 
 
 def test_run_managed_process_works_from_worker_thread(monkeypatch):
-    """``signal.signal()`` only works in the main thread, so callers
-    invoking ``run_managed_process`` from a worker thread (e.g. the
-    hub's ``asyncio.to_thread`` per-model lock in
-    ``rb hub start --model``) MUST NOT crash. The helper has to
-    detect non-main-thread context and skip the signal-handler
-    install/restore entirely.
-    """
+    """run_managed_process works from a worker thread, where signal handlers cannot be installed."""
     import threading
 
     proc = FakeProcess()
@@ -169,13 +163,7 @@ def test_run_managed_process_works_from_worker_thread(monkeypatch):
 
 
 def test_sweeper_kills_a_process_started_from_a_worker_thread(tmp_path):
-    """The registry is the main thread's only handle on a worker's child (#495).
-
-    A worker thread installs no signal handler (``signal.signal`` is
-    main-thread-only) and the child is in its own session, so a signal aimed
-    at this process group never reaches it. Without the sweeper a cancelled
-    parallel build job dies and leaves its compilers running.
-    """
+    """The sweeper kills a child started from a worker thread, which installs no signal handler."""
     import threading
 
     out_path = tmp_path / "out.log"
@@ -195,8 +183,7 @@ def test_sweeper_kills_a_process_started_from_a_worker_thread(tmp_path):
     t = threading.Thread(target=runner)
     t.start()
     assert started.wait(timeout=5.0)
-    # The registration happens right after Popen, which is a moment after the
-    # event above; poll rather than sleep a fixed amount.
+    # Registration follows Popen slightly after the event; poll rather than sleep.
     deadline = time.monotonic() + 5.0
     while not process_utils._live_processes and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -209,19 +196,13 @@ def test_sweeper_kills_a_process_started_from_a_worker_thread(tmp_path):
 
     assert not t.is_alive()
     assert "error" not in result, result.get("error")
-    assert result["value"].returncode != 0  # signalled, not a clean exit
-    assert elapsed < 9.0  # nowhere near the 30s sleep
+    assert result["value"].returncode != 0
+    assert elapsed < 9.0
     assert process_utils._live_processes == {}
 
 
 def test_sweeper_latches_cancellation_before_it_snapshots(monkeypatch):
-    """The latch is set on entry, not after the fleet is reaped (#496 review).
-
-    Ordering is the whole point: a process registering *after* the snapshot
-    is only safe if the latch it re-reads is already visible. Observed from
-    inside the signalling, which is the earliest point a racing thread could
-    be running.
-    """
+    """The cancellation latch is set before the sweeper snapshots the registry."""
     proc = FakeProcess()
     seen = []
     monkeypatch.setattr(
@@ -238,14 +219,7 @@ def test_sweeper_latches_cancellation_before_it_snapshots(monkeypatch):
 
 
 def test_run_managed_process_refuses_to_spawn_once_cancelled(monkeypatch):
-    """A latched process starts nothing (#496 review).
-
-    ``ThreadPoolExecutor.__exit__`` shuts down with ``wait=True`` and cancels
-    no pending future, so after the sweeper has run a queued worker still
-    gets to call in here. Spawning then is the orphan: the snapshot is taken,
-    a worker thread installs no handler of its own, and the child is in its
-    own session.
-    """
+    """A cancelled process spawns nothing, even when a queued worker calls in after the sweep."""
 
     def _fail_popen(*_args, **_kwargs):
         raise AssertionError("Popen must not run after cancellation started")
@@ -256,7 +230,6 @@ def test_run_managed_process_refuses_to_spawn_once_cancelled(monkeypatch):
     process_utils.terminate_live_managed_processes()
     result = process_utils.run_managed_process(["sleep", "30"])
 
-    # Shaped like a process the sweep killed, because that is what it is.
     assert result.returncode == -signal.SIGTERM
     assert result.stdout is None
     assert result.stderr is None
@@ -264,7 +237,7 @@ def test_run_managed_process_refuses_to_spawn_once_cancelled(monkeypatch):
 
 
 def test_run_managed_process_still_validates_its_arguments_when_cancelled(monkeypatch):
-    """A programming error stays one; the latch is not a bypass."""
+    """Argument validation still raises after cancellation."""
     process_utils._cancellation_started.set()
 
     with pytest.raises(ValueError):
@@ -279,21 +252,14 @@ def test_run_managed_process_still_validates_its_arguments_when_cancelled(monkey
 def test_run_managed_process_kills_a_child_that_lost_the_register_race(
     tmp_path, monkeypatch
 ):
-    """The other half of the race: sweep first, register second (#496 review).
-
-    The sweeper's snapshot can be taken between this call's ``Popen`` and its
-    registration, and then nothing in the registry knows about the child. The
-    re-check after registering is what makes the two orders exhaustive, so
-    the race point is exactly where this test sets the latch.
-    """
+    """A child born between the sweeper's snapshot and its registration is still killed."""
     real_register = process_utils._register_live_process
     pids = []
 
     def _register_then_cancel(proc):
         token = real_register(proc)
         pids.append(proc.pid)
-        # Precisely the losing interleaving: the sweep ran (latch set, fleet
-        # snapshotted) while this child was being born.
+        # Interleaving under test: the sweep ran while this child was being spawned.
         process_utils._cancellation_started.set()
         return token
 
@@ -308,17 +274,16 @@ def test_run_managed_process_kills_a_child_that_lost_the_register_race(
     elapsed = time.perf_counter() - start
 
     assert result.returncode == -signal.SIGTERM
-    assert elapsed < 9.0  # nowhere near the 30s sleep
+    assert elapsed < 9.0
     assert len(pids) == 1
     with pytest.raises(ProcessLookupError):
-        # Reaped by the terminate above, so the pid is gone rather than a
-        # zombie this process could still signal.
+        # Reaped by the terminate above, so the pid is gone rather than a zombie.
         os.kill(pids[0], 0)
     assert process_utils._live_processes == {}
 
 
 def test_sweeper_is_a_no_op_for_an_already_exited_process(monkeypatch):
-    """An exited process is skipped, not signalled, and never counted."""
+    """The sweeper skips and does not count an exited process."""
     proc = FakeProcess()
     proc.completed = True
     signals_sent = []
@@ -332,7 +297,7 @@ def test_sweeper_is_a_no_op_for_an_already_exited_process(monkeypatch):
 
 
 def test_registry_is_empty_after_a_normal_run(tmp_path):
-    """Registration is scoped to the call, on every exit path."""
+    """Registration is scoped to the call on every exit path."""
     out_path = tmp_path / "out.log"
     with open(out_path, "w") as out_fp:
         result = process_utils.run_managed_process(
@@ -357,7 +322,7 @@ def test_timeout_pauser_true_lets_process_finish(tmp_path):
 
     assert result.timed_out is False
     assert result.returncode == 0
-    assert elapsed >= 1.5  # the sim ran to completion, not cut short at 0.5s
+    assert elapsed >= 1.5
 
 
 def test_timeout_pauser_false_times_out_quickly(tmp_path):
@@ -376,7 +341,7 @@ def test_timeout_pauser_false_times_out_quickly(tmp_path):
 
     assert result.timed_out is True
     assert result.returncode == 4444
-    assert elapsed < 1.9  # well under the 2s sleep duration
+    assert elapsed < 1.9
 
 
 def test_timeout_pauser_rejects_capture_output(monkeypatch):

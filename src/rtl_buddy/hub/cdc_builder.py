@@ -1,23 +1,6 @@
-"""On-demand domain_map.json generator for ``rb hub`` clock overlay.
+"""Generate the clock-domain map for a model's ``cdc:`` back-pointer by running ``rtl-buddy-cdc lint --emit-domain-map``.
 
-When a ``ModelConfig.cdc`` back-pointer is set (#168 schema), the hub
-invokes ``rtl-buddy-cdc lint --emit-domain-map ...`` to produce the
-clock-domain map that ``rtl-buddy-view --cdc-annotations`` consumes.
-The result is then baked into ``view.json`` and the SPA's clock
-overlay toggle works without further configuration.
-
-Two stages:
-
-  1. Resolve the back-pointer (``models.yaml::entry.cdc``) → load
-     the named ``cdc.yaml`` and pick the right analysis. The
-     fragment (``cdc.yaml#analysis_name``) wins when present;
-     otherwise we find the analysis whose ``model:`` field matches
-     ``model_cfg.name``.
-  2. Run ``rtl-buddy-cdc lint`` with ``--emit-domain-map`` plus the
-     SDC + waivers from the analysis, writing the domain map into
-     ``.rtl-buddy/cache/domain-<model>.json``. Lint output itself is
-     discarded — the hub doesn't surface CDC violations, only the
-     overlay.
+The map is cached under ``.rtl-buddy/cache/`` and baked into ``view.json`` for the clock overlay.
 """
 
 from __future__ import annotations
@@ -41,21 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 def domain_map_path(project_root: Path, model_name: str) -> Path:
-    """Stable cache path for the model's domain map.
-
-    Mirrors ``view_builder.view_json_path`` so the two cache files
-    sit next to each other under ``.rtl-buddy/cache/``.
-    """
+    """Return the cache path of the model's domain map."""
     return cache_dir(project_root) / f"domain-{model_name}.json"
 
 
 def _resolve_cdc_analysis(model_cfg: ModelConfig) -> CdcConfig | None:
-    """Resolve ``model_cfg.cdc`` back-pointer to a ``CdcConfig``.
+    """Resolve the ``cdc:`` back-pointer to a ``CdcConfig``.
 
-    Returns ``None`` when the back-pointer is unset (no overlay
-    requested). Raises ``FatalRtlBuddyError`` when the back-pointer
-    is set but the referenced file / analysis can't be loaded —
-    failing loud at hub start beats a silent dark overlay.
+    Returns ``None`` when the back-pointer is unset. Raises ``FatalRtlBuddyError`` when the referenced file or analysis cannot be resolved.
     """
     resolved = resolve_back_pointer(model_cfg, "cdc")
     if resolved is None:
@@ -69,21 +45,11 @@ def _resolve_cdc_analysis(model_cfg: ModelConfig) -> CdcConfig | None:
 
     suite = CdcSuiteConfig(cdc_yaml_path)
 
-    # If the back-pointer carried a ``#analysis_name`` fragment,
-    # honour it verbatim — the model author picked one specific
-    # analysis as canonical.
     if analysis_name is not None:
         analyses = suite.get_analyses(analysis_name)
         return analyses[0]
 
-    # Otherwise pick the analysis whose ``model:`` field matches
-    # this model's name. Ambiguity (multiple analyses for the same
-    # model) is the user's bug — tell them to add a #fragment.
-    #
-    # Matched on the model's *identity*, never on ``get_top()``: since
-    # #479 an analysis's top follows the model's ``top:`` override, so a
-    # model with ``top: axi_xbar`` would match nothing here and the hub
-    # would refuse to start with "no analysis there has model:".
+    # Match on the model name, not get_top(): the analysis top follows the model's ``top:`` override.
     matches = [a for a in suite.get_analyses() if a.get_model().name == model_cfg.name]
     if len(matches) == 0:
         names = ", ".join(suite.get_analysis_names()) or "(none)"
@@ -117,17 +83,13 @@ def _resolve_cdc_executable() -> str:
     return exe
 
 
-# Filelist entries we drop from the rtl-buddy-cdc command line —
-# CDC takes plain SystemVerilog source paths; ``-y`` / ``-F`` don't
-# apply, and ``+incdir+`` has no analyzer option to map onto (warned
-# via ``cdc.filelist_incdirs_unsupported``).
+# rtl-buddy-cdc takes plain source paths only; these filelist options are dropped.
 _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 
 def _source_files_from_filelist(fl_path: str) -> list[str]:
-    """Same extraction logic as RtlBuddyCdc, inlined for the hub
-    use case so we don't import a tool-internal helper."""
+    """Return the source paths listed in a filelist, resolved against its directory."""
     fl_dir = os.path.dirname(os.path.abspath(fl_path))
     paths: list[str] = []
     with open(fl_path) as f:
@@ -144,7 +106,7 @@ def _source_files_from_filelist(fl_path: str) -> list[str]:
 
 
 def _clear_cached_map(out_path: Path, model_name: str) -> None:
-    """Drop the cached domain map, logging what went."""
+    """Remove the cached domain map."""
     removed = clear_stale_artefacts([out_path], owner=model_name)
     if removed:
         log_event(
@@ -161,29 +123,11 @@ def build_domain_map(
     project_root: Path,
     model_cfg: ModelConfig,
 ) -> Path | None:
-    """Generate the domain_map.json for ``model_cfg``'s clock overlay.
+    """Generate the domain map for ``model_cfg``'s clock overlay.
 
-    Returns:
-      - ``Path`` to the domain map when the model has a ``cdc:``
-        back-pointer that resolves to a valid analysis.
-      - ``None`` when the model has no ``cdc:`` field — overlay
-        unavailable, caller should fall back to running
-        rtl-buddy-view without ``--cdc-annotations``.
-
-    Raises ``FatalRtlBuddyError`` when the back-pointer IS set but
-    the resolution / lint subprocess fails — the user asked for the
-    overlay and a dark toggle would be worse than a clear startup
-    error.
+    Returns the map path, or ``None`` when the model has no ``cdc:`` back-pointer. Raises ``FatalRtlBuddyError`` when a back-pointer is set but resolution or lint fails.
     """
-    # Before every step that can fail. The map lives in the *persistent*
-    # `.rtl-buddy/cache/`, so a warm cache outlives the build that filled it,
-    # and each of the steps below — back-pointer resolution, SDC and waiver
-    # validation, filelist generation, the analyzer lookup — can raise. Any
-    # of them raising over a previous build's map leaves the hub rendering a
-    # clock overlay for a design state this build never confirmed (#469).
-    # There is no missing-tool carve-out here, unlike the tool flows: this is
-    # the hub's own derived cache rather than a user-produced artefact, and a
-    # rebuild that cannot run must not leave stale data to be served.
+    # Clear before any step that can raise, so a failed build never leaves a previous build's map to be served.
     out_path = domain_map_path(project_root, model_cfg.name)
     _clear_cached_map(out_path, model_cfg.name)
 
@@ -206,9 +150,6 @@ def build_domain_map(
     cache = cache_dir(project_root)
     cache.mkdir(parents=True, exist_ok=True)
 
-    # Build a CDC-friendly filelist (unrolled + deduplicated). We
-    # write into the same artefacts area RtlBuddyCdc uses so a
-    # subsequent ``rb cdc`` invocation re-uses the elaboration.
     artefact_dir = project_root / "artefacts" / "hub-cdc" / model_cfg.name
     artefact_dir.mkdir(parents=True, exist_ok=True)
     fl_path = str(artefact_dir / "cdc.f")
@@ -230,10 +171,7 @@ def build_domain_map(
     cdc_exe = _resolve_cdc_executable()
     warn_unsupported_incdirs(analysis.get_name(), fl_path)
     log_path = artefact_dir / "cdc.log"
-    # ``--format json --output /dev/null`` keeps lint's chatter off
-    # the hub log; we only care about the emitted domain map. The
-    # ``--format text`` path is skipped — no human-facing lint
-    # report is needed for the hub.
+    # Lint output is discarded; only the emitted domain map is used.
     cmd = [
         cdc_exe,
         "lint",
@@ -270,14 +208,9 @@ def build_domain_map(
             stdout=logf,
             stderr=subprocess.STDOUT,
         )
-    # rtl-buddy-cdc returns 0 for clean, 1 for rule violations,
-    # 2+ for elaboration failures. We tolerate violations because
-    # they don't impede the overlay (the domain map still gets
-    # emitted); we hard-fail on anything worse.
+    # Exit 0 is clean and 1 is rule violations (the map is still emitted); 2+ is a failure.
     if proc.returncode not in (0, 1):
-        # The analyzer writes the map before it finishes, so an unsupported
-        # exit code can arrive with the file already recreated — clear it
-        # again or the rejected build's map is what the hub serves (#469).
+        # The analyzer may already have written the map; clear it.
         _clear_cached_map(out_path, model_cfg.name)
         raise FatalRtlBuddyError(
             f"cdc analysis {analysis.get_name()!r}: rtl-buddy-cdc "

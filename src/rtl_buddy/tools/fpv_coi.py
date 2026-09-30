@@ -1,30 +1,9 @@
 """Cone-of-influence (COI) coverage for ``rb fpv``.
 
-After the primary sby pass, run a separate yosys invocation against
-the same design + properties to compute:
-
-- the total cell count (per module + design-wide)
-- the union of every `$assert` cell's COI (the cells that any
-  assertion's logic transitively depends on)
-- coverage = COI_cells / total_cells
-
-Logic outside any property's COI is provably unverified by the
-property set — this gives users a direct "what's still uncovered"
-signal that simulation coverage doesn't reach.
-
-The pass uses yosys's existing selection language: `t:$assert %ci*`
-selects every cell reachable backward through the design from an
-`$assert` cell (`%ci*` is the transitive input-cone operator — it
-repeats `%ci` until fixpoint).
-
-Scope today:
-
-- Aggregate (design-wide) coverage + per-module rollup. Per-property
-  COI is not split out — yosys's `$assert` cells don't carry an
-  identifier that maps back to source-level property names without
-  a custom frontend pass.
-- Uses the default `yosys` on PATH. A configurable path lands when
-  the next backend (jaspergold / vcformal) needs one too.
+A separate yosys run over the same design and properties reports the total cell count and
+the cells in the union of every assertion's COI (found with `%ci*`, the transitive
+input-cone operator). Coverage is COI cells divided by total cells; logic outside the COI
+is not verified by any property. The result is design-wide with a per-module rollup, not per property.
 """
 
 from __future__ import annotations
@@ -42,35 +21,19 @@ from ..logging_utils import log_event
 from ..process_utils import run_managed_process
 
 
-# yosys's `stat` output uses one block per module:
-#   === <module> ===
-#
-#      Number of wires: 12
-#      Number of cells: 8
-#        $assert  3
-#        ...
-# Module header: `=== <name> ===`. yosys's `stat` decorates the name
-# with `(partially selected)` when a non-full selection is active —
-# so the inner pattern is "anything except newline and `=`" rather
-# than a single non-whitespace token. The captured name is trimmed
-# below.
+# `stat` prints one `=== <module> ===` block per module. It appends `(partially selected)`
+# to the name under a partial selection, so the name pattern allows spaces.
 _STAT_BLOCK_RE = re.compile(
     r"===\s*(?P<module>[^\n=]+?)\s*===\s*\n"
     r"(?P<body>.*?)(?====\s*[^\n=]+\s*===|\Z)",
     re.DOTALL,
 )
-# yosys's `stat` prints counts as `<N> cells` / `<N> wires` with leading
-# whitespace and a header line "+----------Local Count, ...". The
-# anchored regex below targets the standalone "<N> cells" line and
-# ignores both the header and the per-cell-type breakdown that
-# follows (`1   $add`, etc.).
+# Match the standalone "<N> cells" line, not the header or the per-cell-type breakdown.
 _CELLS_RE = re.compile(r"^\s*(?P<n>\d+)\s+cells\s*$", re.MULTILINE)
 _WIRES_RE = re.compile(r"^\s*(?P<n>\d+)\s+wires\s*$", re.MULTILINE)
 
 
-# Markers we emit in the yosys script so we can locate the two `stat`
-# blocks deterministically. yosys's `log` command echoes verbatim so a
-# unique sentinel survives any module-name collisions.
+# Sentinels logged before each `stat` so its block can be located.
 _MARK_TOTAL = "RTL_BUDDY_COI_TOTAL"
 _MARK_SELECTED = "RTL_BUDDY_COI_SELECTED"
 _MARK_ASSUMES_TOTAL = "RTL_BUDDY_ASSUMES_TOTAL"
@@ -91,75 +54,30 @@ def render_slang_read(
     defines: list[str] | None = None,
     params: list[tuple[str, str]] | None = None,
 ) -> str:
-    """Render the single ``read_slang`` command shared by the proof
-    (``SbyFpv._render_sby``) and the COI walk (``build_yosys_script``).
+    """Render the ``read_slang`` command shared by the proof (``SbyFpv._render_sby``) and the COI walk.
 
-    These two MUST stay identical so the COI pass parses the exact design the
-    proof did; centralising the line here makes that invariant structural
-    instead of comment-enforced. The only thing callers vary is the ``sources``
-    token list (basenames for the sby workdir vs full paths for COI).
+    Both must parse the same design, so callers vary only ``sources`` (basenames for the
+    sby workdir, full paths for COI).
 
-    - ``--single-unit`` compiles the whole filelist as one compilation unit, so
-      ``\\`define`` macros carry across files and a compilation-unit-scope
-      ``\\`bind`` sees modules from sibling files (yosys-slang otherwise treats
-      each file as its own unit).
-    - include dirs go on the read_slang line as ``-I`` (``read_slang`` ignores
-      ``verilog_defaults -add -I``, which only configures yosys's built-in
-      verilog frontend).
-    - ``--no-synthesis-define -DFORMAL=1`` mirrors ``read -formal`` so in-RTL
-      ``\\`ifdef FORMAL`` asserts survive preprocessing (#246). It is emitted
-      *before* the model's own defines because yosys-slang keeps the FIRST
-      definition of a macro (yosys's verilog frontend keeps the last), so
-      leading with it is what makes a stray ``+define+FORMAL=0`` inert on
-      this frontend; ``SbyFpv._parse_filelist`` drops such a define outright,
-      with a warning, so neither frontend can lose it silently (#305).
-    - ``+define+NAME[=VALUE]`` entries from the model filelist become ``-D``
-      flags (#305). They are passed through verbatim — yosys tokenises a
-      script line on whitespace only and does *not* strip quotes, so a define
-      value containing whitespace cannot be expressed here. Nothing arrives
-      in that shape: ``SbyFpv._parse_filelist`` drops such an entry with a
-      warning that names it, rather than letting a malformed script line
-      surface as an unrelated ``read_slang`` error deep in ``fpv.log``. It
-      also collapses a name defined twice to its last definition, because
-      the two frontends disagree about which duplicate survives.
+    - ``--single-unit`` compiles the filelist as one unit, so macros and compilation-unit
+      ``bind`` reach across files.
+    - Include dirs are ``-I`` flags here because ``read_slang`` ignores
+      ``verilog_defaults -add -I``.
+    - ``--no-synthesis-define -DFORMAL=1`` mirrors ``read -formal``. It comes before the
+      model's defines because yosys-slang keeps the first definition of a macro.
+    - ``+define+NAME[=VALUE]`` entries become ``-D`` flags verbatim. Yosys splits script
+      lines on whitespace and keeps inner quotes, so a value containing whitespace cannot
+      be expressed; ``SbyFpv._parse_filelist`` drops those with a warning.
+    - Top parameter overrides become ``-G NAME=VALUE``. ``chparam`` fails on this
+      frontend because elaboration is eager.
 
-    - top-module parameter overrides become ``-G NAME=VALUE`` (#359).
-      ``chparam`` is **not** an option on this frontend: yosys-slang
-      elaborates eagerly, so by the time the script could run ``chparam`` the
-      module is already non-parametric and yosys aborts the following
-      ``prep`` with "Module `X' is used with parameters but is not
-      parametric!". slang's own top-level override is the only route.
-
-    Filesystem paths are ``shlex.quote``d, the same convention as
-    ``synth_yosys.py``. Measured against yosys 0.64+193, that convention is
-    weaker than it looks and the rule it protects against is worth stating
-    exactly, because two comments in this function used to disagree:
-
-    * yosys splits a script line on **whitespace**. It is not a shell:
-      ``read_verilog -DX="a b" t.v`` fails with ``File `b"' not found``,
-      i.e. the quotes did not group anything and the closing one stayed
-      attached.
-    * A token that *begins* with ``"`` is the one exception — it is grouped
-      to the matching ``"`` and those quotes are stripped.
-    * Quotes anywhere else in a token pass through **verbatim**:
-      ``-DW="4"`` reaches the frontend as the string literal ``"4"``
-      (``[`W-1:0]`` becomes 52 bits wide, not 4).
-
-    So ``shlex.quote`` is a no-op on an ordinary path and does not rescue
-    one containing a space: it emits *single* quotes, which yosys does not
-    honour, so ``'a dir/x.v'`` fails as ``File `'a' not found``. Whitespace
-    in a source path simply does not work on a yosys script line; see
-    ``docs/known-issues.md``. The call is kept for the escaping it does do
-    and for parity with ``synth_yosys.py``.
+    Source paths go through ``shlex.quote``, which yosys does not honour, so a path with
+    whitespace does not work (see ``docs/known-issues.md``).
     """
     inc_args = "".join(f" -I {shlex.quote(inc)}" for inc in incdirs)
     def_args = "".join(f" -D{d}" for d in (defines or []))
-    # Not shlex.quote()d, per the third rule above: a quote inside a token
-    # survives verbatim, so quoting here would hand slang the quote
-    # characters. Values are whitespace-free by config validation, and a
-    # string-typed parameter carries its own inner quotes — which is exactly
-    # what makes it work: `-G MODE="small"` elaborates, `-G MODE=small` is
-    # rejected by slang as "not a valid form of parameter override".
+    # Not shlex.quote()d: yosys passes inner quotes to slang verbatim, and string
+    # parameters need their own (`-G MODE="small"` works, `-G MODE=small` is rejected).
     param_args = "".join(f" -G {name}={value}" for name, value in (params or []))
     src_args = " ".join(shlex.quote(s) for s in sources)
     return (
@@ -169,12 +87,7 @@ def render_slang_read(
 
 
 def render_chparam(top: str, params: list[tuple[str, str]] | None) -> list[str]:
-    """Render the ``chparam`` lines for the yosys **verilog** frontend.
-
-    Emitted after the reads and before ``prep``/``hierarchy``, which is when
-    yosys derives the parametric module. Returns an empty list when there is
-    nothing to override, so callers can splice unconditionally.
-    """
+    """Render ``chparam`` lines for the yosys verilog frontend, to go after the reads and before ``prep``."""
     return [f"chparam -set {name} {value} {top}" for name, value in (params or [])]
 
 
@@ -190,14 +103,10 @@ def build_yosys_script(
     defines: list[str] | None = None,
     params: list[tuple[str, str]] | None = None,
 ) -> str:
-    """Render the yosys script that runs the COI analysis.
+    """Render the yosys script for the COI analysis.
 
-    Order mirrors the sby script (sources → constraints → properties)
-    so the assertion cells exist in the same context they're proved
-    in. The `frontend` arg picks the same SystemVerilog parser the
-    sby pass used — using a different frontend here would risk
-    `$check` cells disappearing under `t:$check` selection because
-    slang's `bind` resolution and verilog-frontend's diverge.
+    Reads sources, constraints, then properties, as the sby script does. ``frontend`` must
+    match the one the proof used, since `bind` resolution differs between frontends.
     """
     lines: list[str] = []
     if frontend == "slang":
@@ -206,9 +115,6 @@ def build_yosys_script(
                 "fpv_coi: frontend='slang' requires a non-empty plugin_path"
             )
         lines.append(f"plugin -i {plugin_path}")
-    # Verilog-frontend incdirs go through verilog_defaults; for slang they are
-    # carried on the read_slang line by render_slang_read (read_slang ignores
-    # verilog_defaults).
     if frontend != "slang":
         for inc in incdirs:
             lines.append(f"verilog_defaults -add -I {inc}")
@@ -217,71 +123,35 @@ def build_yosys_script(
     constraint_files = [constraints] if constraints else []
     all_files = list(sources) + constraint_files + list(properties)
     if frontend == "slang":
-        # Shared with the SbyFpv proof renderer so the COI walk parses the same
-        # design; COI passes full paths (no sby workdir) rather than basenames.
         lines.append(render_slang_read(top, incdirs, all_files, defines, params))
     else:
         for src in all_files:
             lines.append(f"read -sv -formal {src}")
-        # The COI walk must measure the same elaboration the proof did, so
-        # the parameter overrides apply here too.
         lines.extend(render_chparam(top, params))
-    # `prep -flatten -top` mirrors what sby itself runs for proof:
-    # hierarchy + proc + opt while preserving formal cells, then
-    # collapses everything into the top module. Flattening matters
-    # here because `bind`-style property modules elaborate as
-    # submodules — without flatten, `$assert` cells live in those
-    # submodules and yosys's default `stat` (which only counts the
-    # top module) silently reports zero. Flattening trades the
-    # per-submodule rollup for a correct aggregate count.
+    # Flatten: `bind` property modules are submodules, and `stat` counts only the top,
+    # so unflattened `$assert` cells would be reported as zero.
     lines.append(f"prep -flatten -top {top}")
 
     lines.append(f"log === {_MARK_TOTAL} ===")
     lines.append("stat")
 
-    # Select every assertion cell and walk back through its cone of
-    # influence. Modern yosys (>= 2024) unifies asserts/assumes/covers
-    # into a single `$check` cell type with a `FLAVOR` parameter
-    # ("assert" / "assume" / "cover" / "live" / "fair"). Older yosys
-    # versions still emit dedicated `$assert` / `$assume` cells. We
-    # union both so the COI walk works on either generation.
-    #
-    # `%ci*` is yosys's transitive input-cone operator: repeats `%ci`
-    # until fixpoint — exactly the cone of influence of the assertion
-    # cells. (Plain `%ci` walks only one step.)
+    # Newer yosys emits `$check` cells with a FLAVOR parameter, older yosys emits `$assert`
+    # and `$assume`; select both. `%ci*` repeats `%ci` to a fixpoint (plain `%ci` is one step).
     lines.append("select -set property_cells t:$assert t:$check r:FLAVOR=assert %i %u")
     lines.append("select -set property_coi @property_cells %ci*")
     lines.append("select @property_coi")
     lines.append(f"log === {_MARK_SELECTED} ===")
     lines.append("stat")
 
-    # Dead-assume analysis (#135): count assume cells total, then
-    # count those whose fan-in cone shares logic with the assertion
-    # COI. The delta is the structural lower bound on "assumes
-    # constraining signals no assertion observes" — a flag for
-    # environment-spec drift. Same `$check` / `$assume` dual-selector
-    # applies.
+    # Dead-assume analysis: count all assumes, then those constraining logic in the assertion COI.
     lines.append("select -set all_assumes t:$assume t:$check r:FLAVOR=assume %i %u")
     lines.append("select @all_assumes")
     lines.append(f"log === {_MARK_ASSUMES_TOTAL} ===")
     lines.append("stat")
-    # An assume cell is a sink (it has no outputs), so it can never
-    # appear inside an assertion's *input* cone — intersecting the
-    # assume cells with @property_coi directly is empty by
-    # construction and reported every assume as dead (#250). Instead
-    # walk *forward* from the assertion COI: an assume lands in the
-    # COI's output cone exactly when its own fan-in cone intersects
-    # the COI, i.e. when it constrains logic some assertion observes.
-    #
-    # The walk must not follow clock/reset network edges: every
-    # clocked assume hangs off `clk` via its `$check` TRG port (and
-    # every FF via CLK/ARST/SRST/...), and clk/rst sit in essentially
-    # every assertion COI — following those edges would mark every
-    # assume in the design as used. The rules below exclude those
-    # ports; data ports (FF `D`, `$dffe` EN, `$check` A/EN) still
-    # traverse, so assumes on registered functions of COI signals are
-    # found. The cell list must track the FF/memory types `prep` can
-    # emit.
+    # An assume is a sink, so it is never in an input cone; walk forward from the COI
+    # instead. The walk must skip clock and reset ports (`$check` TRG, FF CLK/ARST/SRST/...),
+    # or every assume would count as used. Keep the cell list in step with the FF and memory
+    # types `prep` can emit.
     lines.append(
         "select @property_coi %co*"
         ":-$check[TRG]"
@@ -300,18 +170,13 @@ def build_yosys_script(
 
 
 def parse_stat_blocks(log_text: str) -> dict[str, dict[str, dict[str, int]]]:
-    """Parse the marked `stat`/`stat -selection` blocks from a yosys log.
+    """Parse the marked `stat` blocks of a yosys log into ``{marker: {module: {"cells": N, "wires": M}}}``.
 
-    Returns ``{marker: {module: {"cells": N, "wires": M}}}`` for each of
-    our markers. A missing marker becomes an empty dict so callers can
-    detect partial output.
+    A missing marker maps to an empty dict.
     """
     out: dict[str, dict[str, dict[str, int]]] = {m: {} for m in _ALL_MARKERS}
 
-    # Slice the log into one section per marker. The closest following
-    # marker (in order of appearance, not in our enumeration) bounds
-    # each slice — preserves order across the four markers without
-    # depending on the enumeration order.
+    # Each section runs to the next marker in log order.
     marker_positions: list[tuple[int, str]] = []
     for marker in _ALL_MARKERS:
         idx = log_text.find(f"=== {marker} ===")
@@ -329,9 +194,7 @@ def parse_stat_blocks(log_text: str) -> dict[str, dict[str, dict[str, int]]]:
             raw_module = match.group("module").strip()
             if raw_module in _ALL_MARKERS:
                 continue
-            # Strip yosys's `(partially selected)` decoration so the
-            # selected stat for module `dut` rolls up against the
-            # baseline stat for the same module.
+            # Drop "(partially selected)" so selected and total stats share a module key.
             module = raw_module.split(" (")[0].strip()
             body = match.group("body")
             cells_m = _CELLS_RE.search(body)
@@ -348,13 +211,7 @@ def parse_stat_blocks(log_text: str) -> dict[str, dict[str, dict[str, int]]]:
 def compute_coverage(
     blocks: dict[str, dict[str, dict[str, int]]],
 ) -> dict:
-    """Compute aggregate + per-module COI coverage from parsed blocks.
-
-    Also rolls up the dead-assume analysis (#135): total `$assume`
-    cells vs the subset that intersect with the assertion COI. The
-    delta is the structural lower bound on "assumes constraining
-    signals no assertion observes."
-    """
+    """Compute aggregate and per-module COI coverage, plus assume counts (total, used, dead)."""
     total_blocks = blocks.get(_MARK_TOTAL, {})
     coi_blocks = blocks.get(_MARK_SELECTED, {})
     assumes_total_blocks = blocks.get(_MARK_ASSUMES_TOTAL, {})
@@ -377,10 +234,7 @@ def compute_coverage(
     percent = (coi_cells / total_cells * 100.0) if total_cells else 0.0
 
     assumes_total = sum(s["cells"] for s in assumes_total_blocks.values())
-    # "in_assert_coi" is kept for the key name, but since #250 the
-    # marker counts assumes whose *fan-in cone* intersects the COI
-    # (forward walk from the COI), not assumes inside the COI itself —
-    # assume cells are sinks and can never be in an input cone.
+    # `in_assert_coi` counts assumes whose fan-in intersects the COI, not assumes inside it.
     assumes_used = sum(s["cells"] for s in assumes_in_coi_blocks.values())
     assumes_dead = max(assumes_total - assumes_used, 0)
 
@@ -413,11 +267,9 @@ def run_coi_analysis(
     defines: list[str] | None = None,
     params: list[tuple[str, str]] | None = None,
 ) -> dict | None:
-    """Run yosys and return the parsed coverage summary, or None on error.
+    """Run yosys and return the parsed coverage summary.
 
-    Soft-failure semantics: if yosys is missing or the script errors,
-    log a warning and return None so the caller falls back to "no COI
-    data" rather than failing the whole FPV run.
+    Returns None, with a logged warning, when yosys is missing or fails, so the FPV run continues without COI data.
     """
     script = build_yosys_script(
         sources=sources,

@@ -2,50 +2,11 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""``cov_dir/manifest.json`` — the coverage artefact discovery contract (#399).
+"""``cov_dir/manifest.json``: which coverage artefacts a run produced and where they are.
 
-Every run that produces coverage writes one manifest beside its
-artefacts. It answers the only two questions a later consumer has: *what
-did this run produce*, and *where is it*. Without it, finding last
-night's coverage meant knowing the suite basename, the merge mode and
-the working directory the command happened to run from.
+Every coverage run writes one manifest into its ``cov_dir``, rewritten whole each run. The blocks ``merged``, ``datasets``, ``descriptions``, ``tests`` and ``coverview`` are always present, with ``null`` for an artefact not produced. Paths are POSIX and relative to the project root.
 
-Rules the file keeps:
-
-* **Stable keys.** The blocks (``merged``, ``datasets``,
-  ``descriptions``, ``tests``, ``coverview``) are always present; a
-  value is ``null`` when that artefact was not produced. Absent never
-  means "not produced" — ``null`` does.
-* **Project-relative paths.** Every path is POSIX and relative to the
-  project root, so a manifest survives being read from somewhere else,
-  archived, or attached to a CI artefact.
-* **One per ``cov_dir``.** ``cov_dir`` is the run's coverage artefact
-  directory; the manifest is its index, rewritten whole on each run.
-
-A **failed merge** is stated, not implied (#638). Under ``merge_mode:
-"raw"``, ``merged.raw`` is the path to the merged database when
-``verilator_coverage --write`` succeeded and ``null`` when it was asked
-for and produced nothing — the mode says it was requested, so ``null``
-there is a failure and not an absence. That inference is now unnecessary:
-``merge_failed`` is the explicit fact and ``failed_metrics`` names what it
-cost (``toggle``, ``expression`` and ``functional`` come only from the
-merged database; an LCOV ``.info`` cannot represent them).
-
-``totals`` is deliberately **left intact** when that happens. It is built
-from the per-test databases by :mod:`rtl_buddy.cov.model`, not from the
-merged one, so it is a real measurement of exactly what it says and
-blanking a metric there would destroy data the run did produce. What a
-failed merge costs is the *merged summary* number — the one the console
-prints — so the failure is reported beside ``totals`` rather than written
-into it. A consumer that needs one number per metric keeps reading
-``totals``; a consumer comparing it against the console summary reads
-``merge_failed`` first.
-
-``model`` is ``null`` when the run was asked not to write one
-(``coverage_model: "none"``, #660). ``totals`` and ``source_totals`` are
-still written then: they come from the same pass over the per-test
-databases, and a consumer that reads only the manifest's figures must not
-lose them to a flag that exists to skip the per-point document.
+``merge_failed`` is true when a requested merge produced nothing, and ``failed_metrics`` lists the metrics lost with it (``toggle``, ``expression`` and ``functional`` exist only in the merged database). ``totals`` is built from the per-test databases and is unaffected by a failed merge. ``model`` is ``null`` under ``coverage_model: "none"``; ``totals`` and ``source_totals`` are still written.
 
 Schema (``schema_version`` 1)::
 
@@ -61,10 +22,10 @@ Schema (``schema_version`` 1)::
       "merge_failed": false,             # true: the requested merge died
       "failed_metrics": [],              # e.g. ["toggle", "expression"]
       "cov_dir": "artefacts/cov_dir",
-      "coverage_model": "full"|"totals"|"none",  # --coverage-model (#660)
+      "coverage_model": "full"|"totals"|"none",  # --coverage-model
       "model": "artefacts/cov_dir/coverage-model.json"|null,
       "totals": {"line": {"found": .., "hit": .., "ratio": ..}, ...},
-      "source_totals": {...}|null,     # same shape, module dropped (#637)
+      "source_totals": {...}|null,     # same shape, module dropped from point identity
       "merged": {"info": .., "raw": .., "desc": .., "html_dir": ..},
       "datasets": {"line": .., "branch": .., "toggle": .., "expression": ..},
       "descriptions": {"line": .., "branch": .., "toggle": .., "expression": ..},
@@ -87,14 +48,7 @@ from ..fs_walk import artefact_layout_boundary, walk_unique
 #: Bumped when the manifest's shape changes incompatibly.
 MANIFEST_SCHEMA_VERSION = 1
 
-#: Filename inside ``cov_dir``, and the path rules its contents keep.
-# All defined in `tools.artifact_paths` — the bottom of the import graph:
-# the filename because that is where the artefact-clearing helpers protect
-# it from a co-named run's suffix clear (#469), and the path helpers
-# because the physical manifest keeps the same rules and this module kept
-# a resolve-both copy of `project_relative` that broke on a symlinked
-# `artefacts/` (rtl-buddy/rtl_buddy#564). Re-exported here, where
-# consumers already look.
+# Defined in `tools.artifact_paths` (shared with the physical manifest) and re-exported here.
 from ..tools.artifact_paths import (  # noqa: E402
     COV_MANIFEST_NAME as MANIFEST_FILENAME,
     joins_back,
@@ -155,17 +109,13 @@ def build_manifest(
         "builder": builder,
         "simulator_family": simulator_family,
         "merge_mode": merge_mode,
-        # Always written, both of them: a consumer must never have to read
-        # the absence of a key as "the merge was fine" (#638).
+        # Always written, so an absent key never means the merge was fine.
         "merge_failed": bool(merge_failed),
         "failed_metrics": list(failed_metrics or []),
         "cov_dir": rel(cov_dir),
         "coverage_model": coverage_model,
         "model": rel(model_path),
         "totals": totals,
-        # The same run scored with the elaborated module dropped from a
-        # point's identity (#637) — null when the model carried no such
-        # figure. Beside `totals`, not instead of it.
         "source_totals": source_totals,
         "merged": {
             "info": rel(merged.get("info")),
@@ -211,14 +161,7 @@ def load_manifest(path) -> dict:
 
 
 def resolve(manifest_path, relative_path) -> str | None:
-    """Turn a manifest-relative path into an absolute one.
-
-    Paths are relative to the *project root*, not to the manifest, so
-    resolution walks up from ``cov_dir`` using the manifest's own
-    ``cov_dir`` value. That keeps a manifest joinable after the tree has
-    been moved, which a project-root field baked in at write time would
-    not.
-    """
+    """Turn a manifest path (relative to the project root, not to the manifest) into an absolute one."""
     if relative_path is None:
         return None
     if os.path.isabs(relative_path):
@@ -232,28 +175,7 @@ def resolve(manifest_path, relative_path) -> str | None:
 def project_root_for(manifest_path) -> str | None:
     """Infer the project root a manifest's relative paths hang off.
 
-    Counted back up the *logical* path, not the resolved one, for the
-    reason :func:`~rtl_buddy.tools.artifact_paths.project_relative`
-    spells out: the ``cov_dir`` the count consumes is relative to the
-    project root as the writer saw it, and a ``cov_dir`` behind an
-    ``artefacts/`` symlinked to scratch resolves to a path with none of
-    those components above it. Counting them off *that* path climbs out
-    of scratch entirely and returns a root no manifest path joins onto —
-    `rb cov` then reporting a missing model that is sitting right there.
-
-    The count alone is only right when the manifest is *read* through the
-    same route it was written through, and one ordinary layout breaks
-    that: an ``artefacts/`` link whose target is itself inside the
-    project. :func:`discover_manifests` admits each directory once by its
-    real path, so whichever of the two routes the walk reaches first wins
-    — and when that is the target the count climbs off the wrong stem.
-    So the count is *checked* against the directory the manifest actually
-    sits in (:func:`~rtl_buddy.tools.artifact_paths.joins_back`), and the
-    marker walk gets a second try when it fails. Failing both, the
-    counted root stands: it is no worse than before, and a manifest read
-    from outside any project has no better answer available. The same
-    rule, and the same two helpers, as the physical manifest's
-    :func:`rtl_buddy.phys.manifest.project_root_for`.
+    Counts up the logical path by the number of components in the manifest's ``cov_dir``, not the resolved path, so a symlinked ``artefacts/`` still works. The count is checked with :func:`~rtl_buddy.tools.artifact_paths.joins_back`, then a project-marker walk is tried; if neither joins back, the counted root is returned. Same rule as :func:`rtl_buddy.phys.manifest.project_root_for`.
     """
     manifest_path = Path(os.path.abspath(manifest_path))
     try:
@@ -275,31 +197,9 @@ def project_root_for(manifest_path) -> str | None:
 
 
 def discover_manifests(project_root) -> list[str]:
-    """Every ``cov_dir/manifest.json`` under a project, newest first.
+    """Return every ``cov_dir/manifest.json`` under a project, newest first (ties by path).
 
-    Coverage artefacts land wherever the command ran, so discovery is a
-    bounded walk rather than one fixed path. Version-control and build
-    directories are skipped; ties break on the path so the order is
-    deterministic on a tree with identical timestamps.
-
-    **Symlinked directories are followed only inside the artefact
-    layout**, the boundary the physical walk draws and for the same
-    reasons (:func:`~rtl_buddy.fs_walk.may_follow_link`). A ``cov_dir``
-    defaults to ``artefacts/cov_dir``, so a suite whose ``artefacts/`` is
-    a link onto scratch storage keeps its coverage behind that link and a
-    walk stopping there answered "no coverage found" for a run sitting
-    right in front of it (rtl-buddy/rtl_buddy#564). Following *every*
-    link is the other error: a ``vendor/`` link, or one to ``$HOME``,
-    drags an unrelated tree into the walk and reports someone else's
-    coverage as this project's. ``cov_dir`` is configurable, though, so
-    the boundary is a real limit and not only a safety rail: a
-    ``cov_dir`` pointed somewhere else and reached *only* through a link
-    with no ``artefacts`` component on its path below the root is not
-    discovered. Name it with ``--cov-dir`` (or ``--manifest``) and it is
-    read directly, discovery unneeded.
-
-    Each directory is also admitted once by its real path, so a cycle
-    terminates and a ``cov_dir`` reachable two ways is reported once.
+    Version-control and build directories are skipped. Symlinked directories are followed only inside the artefact layout (:func:`~rtl_buddy.fs_walk.may_follow_link`), so a ``cov_dir`` reachable only through a link outside an ``artefacts`` path is not found; pass ``--cov-dir`` or ``--manifest``. Each real directory is visited once.
     """
     root = Path(project_root)
     found: list[tuple[float, str]] = []

@@ -1,5 +1,4 @@
-"""Per-analysis CDC runner — picks the right tool wrapper based on the
-analysis config's ``tool`` field and delegates."""
+"""Runs one CDC analysis with the backend named by the analysis config's ``tool`` field."""
 
 import logging
 
@@ -13,10 +12,7 @@ from ..tools.cdc_vivado import VivadoCdc
 logger = logging.getLogger(__name__)
 
 
-# Backend registry, keyed on the analysis config's ``tool:`` field (which
-# must also name a ``cfg-cdc-tools`` entry). Adding another second-opinion
-# backend (SpyGlass, Questa CDC, ...) is a one-line entry here plus a
-# wrapper class in tools/cdc_<tool>.py — the same move power_runner made.
+# Keyed on the analysis config's ``tool:`` field, which must also name a ``cfg-cdc-tools`` entry.
 _CDC_BACKENDS: dict[str, type] = {
     "rtl-buddy-cdc": RtlBuddyCdc,
     "vivado": VivadoCdc,
@@ -46,8 +42,7 @@ class CdcRunner:
 
         backend_cls = _CDC_BACKENDS.get(tool_name)
         if backend_cls is None:
-            # A typo'd tool name is a config error, not a skippable
-            # condition — surface it loudly (exit 2).
+            # A config error, not a skippable condition.
             raise FatalRtlBuddyError(
                 f"CDC analysis '{self.cdc_cfg.get_name()}': unknown tool "
                 f"'{tool_name}' (registered: {sorted(_CDC_BACKENDS)})"

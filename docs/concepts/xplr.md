@@ -4,7 +4,7 @@ description: Record, compare, reproduce, and prune design-space experiments with
 
 # Design-Space Exploration (`rb xplr`)
 
-`rb xplr` records design-space experiments as a source revision, declared knob changes, rationale, and outcome. It does not choose changes or run real flows; use it to preserve the evidence an agent or engineer needs to continue a search.
+`rb xplr` is a ledger of design-space experiments: each record holds a source revision, the declared knob changes, a rationale and an outcome. It does not choose changes or run real flows. Use it to keep the evidence an agent or engineer needs to continue a search.
 
 ## Run the experiment lifecycle
 
@@ -16,15 +16,14 @@ rb --machine xplr register --json manifest.json
 rb --machine xplr attach-outcome exp-0001 --json outcome.json
 ```
 
-`register` allocates an `exp-NNNN` id, pins the source, records the declared changes, and writes `outcome.status: pending`. `attach-outcome` accepts `success` or `failed`; replacing a terminal outcome requires `--force`.
-
-Use `failed` only when the flow did not complete. A completed but infeasible design point is `success` with `routed: false`, which keeps it out of the Pareto frontier without losing its measurements.
-
-Records live at `<project root>/artefacts/xplr/<id>/record.json` regardless of the invocation directory. Ledger writes use their own lock and do not contend with suite artefact locks.
+- `register` allocates an `exp-NNNN` id, pins the source, records the declared changes and writes `outcome.status: pending`.
+- `attach-outcome` accepts `success` or `failed`. Replacing a terminal outcome needs `--force`.
+- Use `failed` only when the flow did not complete. A completed but infeasible point is `success` with `routed: false`, which keeps it off the Pareto frontier and preserves its measurements.
+- Records live at `<project root>/artefacts/xplr/<id>/record.json` whatever directory you run from. Ledger writes have their own lock and do not contend with suite artefact locks.
 
 ## Declare an experiment
 
-A useful manifest records both the delta from its parent and the complete resolved state:
+The manifest records the delta from its parent and the complete resolved state:
 
 ```json
 {
@@ -51,26 +50,27 @@ A useful manifest records both the delta from its parent and the complete resolv
 }
 ```
 
-`knobs` is the change from `parent`; `config_snapshot` is the absolute state needed to reproduce or branch from the experiment. Knob values are arbitrary JSON scalars. The optional layer is `source`, `flow`, or `impl`.
-
-Write one falsifiable sentence in `hypothesis`: what should move, in which direction, and why. Give every changed knob a rationale tied to an earlier experiment, report, or observation. Set `parent` to the experiment actually used as the starting point.
-
-Input keys are strict. Unknown fields or schema violations exit 2 and name the invalid key and allowed alternatives.
+- `knobs` is the change from `parent`; `config_snapshot` is the absolute state needed to reproduce or branch from the experiment.
+- Knob values are arbitrary JSON scalars. The optional `layer` is `source`, `flow` or `impl`.
+- Write `hypothesis` as one falsifiable sentence: what should move, in which direction, and why.
+- Give every changed knob a rationale tied to an earlier experiment, report or observation.
+- Set `parent` to the experiment you actually started from.
+- Keys are strict. An unknown field or schema violation exits 2 and names the invalid key and the allowed alternatives.
 
 ## Pin the source revision
 
-If `source.git_sha` is supplied in the manifest, xplr records it verbatim. Otherwise `cfg-xplr.commit-mode` controls pinning:
+A `source.git_sha` in the manifest is recorded verbatim. Otherwise `cfg-xplr.commit-mode` decides:
 
-- `auto` records `HEAD` when the configured source scope is clean. If dirty, it snapshots the scope onto an `exp/<id>` branch without changing the working tree.
+- `auto` records `HEAD` when the configured source scope is clean. If it is dirty, xplr snapshots the scope onto an `exp/<id>` branch without changing the working tree.
 - `self-managed` rejects an uncommitted source scope.
 
-`source.diff_from` defaults to the parent's pinned revision. Override it with `--baseline <ref>`.
+`source.diff_from` defaults to the parent's pinned revision; `--baseline <ref>` overrides it.
 
-The ledger directory, xplr worktree root, and `rtl_buddy.log` are excluded from source dirtiness and automatic snapshots. Agent scratch files are not; keep `artefacts/`, logs, worktrees, and temporary manifests gitignored. `register` warns when the ledger or log is inside a repository but not ignored.
+The ledger directory, the xplr worktree root and `rtl_buddy.log` are excluded from the dirtiness check and from snapshots. Agent scratch files are not, so keep `artefacts/`, logs, worktrees and temporary manifests gitignored. `register` warns when the ledger or log is inside a repository but not ignored.
 
 ## Attach an outcome
 
-Declare terminal status, metrics, directions, units, and artefact paths:
+The outcome gives terminal status, metrics, their directions and units, and artefact paths:
 
 ```json
 {
@@ -89,11 +89,11 @@ Declare terminal status, metrics, directions, units, and artefact paths:
 }
 ```
 
-Metrics are numbers or booleans. Only numeric metrics with a `min` or `max` direction participate in Pareto dominance. Undirected measurements remain available for reporting and comparison.
+Metrics are numbers or booleans. Only numeric metrics with a `min` or `max` direction take part in Pareto dominance; undirected ones stay available for reporting and comparison.
 
-## Read the ledger: frontier, diff, knob-effect
+## Read the ledger
 
-Use machine mode so the result is a single stable JSON envelope:
+Use machine mode so each result is one stable JSON envelope:
 
 ```bash
 rb --machine xplr list
@@ -105,22 +105,20 @@ rb --machine xplr knob-effect fifo_depth
 
 - `list` returns compact experiment summaries.
 - `show` returns the complete record, including the reproducible `config_snapshot`.
-- `frontier` separates non-dominated, dominated, infeasible, and excluded experiments. Use `--metrics name:min,...` to override directions and `--prefer` to sort the frontier without dropping points.
-- `diff` compares knob manifests, direction-aware outcome deltas, and pinned Git revisions. Add `--patch` for the source diff.
-- `knob-effect` reports each declared change to one knob and its metric delta from the parent. An unknown knob returns an empty effect list plus known names and suggestions.
+- `frontier` separates non-dominated, dominated, infeasible and excluded experiments. `--metrics name:min,...` overrides directions; `--prefer` sorts the frontier without dropping points.
+- `diff` compares knob manifests, direction-aware outcome deltas and pinned Git revisions. `--patch` adds the source diff.
+- `knob-effect` reports every declared change to one knob with its metric delta from the parent. An unknown knob returns an empty list plus known names and suggestions.
 
-An empty frontier with populated `excluded` usually means successful experiments lack directed metrics. Fix `metric_meta` before drawing optimization conclusions.
+An empty frontier with a populated `excluded` list usually means the successful experiments lack directed metrics. Fix `metric_meta` before drawing conclusions.
 
 ## Use the exploration loop
 
-Repeat this decision cycle:
-
 1. Read `frontier`; use `show` to recover a candidate's absolute configuration.
-2. Check `knob-effect` before retrying a knob and `diff` when comparing neighbours.
+2. Check `knob-effect` before retrying a knob, and `diff` when comparing neighbours.
 3. Form one hypothesis and apply one interpretable change outside xplr.
-4. Register the experiment with its parent, delta, rationale, and snapshot.
+4. Register the experiment with its parent, delta, rationale and snapshot.
 5. Run the real flow and attach the terminal outcome with directed metrics.
-6. Read the updated frontier and continue.
+6. Read the updated frontier and repeat.
 
 The ledger is the shared state, so another agent or machine can continue from the same records.
 
@@ -135,13 +133,14 @@ rb xplr gc --dry-run
 rb xplr gc --policy keep-frontier --target-gb 40
 ```
 
-`materialize` is idempotent and defaults to `artefacts/xplr/worktrees/<id>`. `release` removes that worktree but keeps the source branch and experiment record.
+- `materialize` is idempotent and defaults to `artefacts/xplr/worktrees/<id>`.
+- `release` removes that worktree and keeps the source branch and the record.
+- `gc` always keeps `record.json`. The default `keep-frontier` policy also protects frontier members, their direct lineage and non-terminal experiments, and removes eligible worktrees and listed outcome artefacts oldest-first until usage is below the target.
+- `register` runs the configured policy automatically above the high watermark, and blocks only when a hard-cap overrun cannot be reclaimed.
 
-Garbage collection always preserves `record.json`. The default `keep-frontier` policy also protects frontier members, their direct lineage, and non-terminal experiments; eligible worktrees and listed outcome artefacts are removed oldest-first until usage is below the target. `register` automatically invokes the configured policy above the high watermark and blocks only when a hard-cap overrun cannot be reclaimed.
+## Test a policy with the mock flow
 
-## Mockflow: a synthetic benchmark with known answers
-
-Use `rb xplr mock` to test an exploration policy without EDA runtime:
+`rb xplr mock` is a synthetic benchmark with known answers, so you can test an exploration policy without EDA runtime:
 
 ```bash
 rb --machine xplr mock info --scenario zdt1
@@ -149,11 +148,11 @@ rb --machine xplr mock run --scenario zdt1 --register
 rb --machine xplr mock score --scenario zdt1
 ```
 
-`mock info` returns knob domains, costs, infeasible combinations, and analytic ground truth. `mock run` deterministically evaluates a knob vector; `--noise` adds seeded objective noise and `--register` records the experiment and outcome together. Without `--register`, the payload's `outcome` can be passed directly to `attach-outcome`.
-
-Available scenarios are `rastrigin` for single-objective WNS maximization and `zdt1` for LUT/delay minimization. `mock score` reports regret for a single objective or hypervolume and distance-to-front for multiple objectives.
-
-When registering mock results outside a Git repository, provide `--source-sha` and optionally `--source-branch`.
+- `mock info` returns knob domains, costs, infeasible combinations and the analytic ground truth.
+- `mock run` deterministically evaluates a knob vector. `--noise` adds seeded objective noise. `--register` records the experiment and outcome together; without it, pass the payload's `outcome` to `attach-outcome`.
+- Scenarios: `rastrigin` (single-objective WNS maximization) and `zdt1` (LUT/delay minimization).
+- `mock score` reports regret for one objective, or hypervolume and distance-to-front for several.
+- Outside a Git repository, `--register` needs `--source-sha` and optionally `--source-branch`.
 
 ## Configure xplr
 
@@ -169,7 +168,7 @@ cfg-xplr:
   worktree-root: artefacts/xplr/worktrees
 ```
 
-`rb xplr` needs only a `root_config.yaml` or Git root; it does not load builder or platform configuration. When invoking it from elsewhere, anchor project discovery explicitly:
+`rb xplr` needs only a `root_config.yaml` or a Git root and loads no builder or platform configuration. From elsewhere, anchor discovery explicitly:
 
 ```bash
 rb xplr --root /path/to/project frontier
@@ -179,6 +178,6 @@ See the [CLI reference](../reference/cli.md) for the full command surface.
 
 ## Record and machine contracts
 
-Each `record.json` validates against the bundled draft-2020-12 schema `rtl_buddy/xplr/xplr-experiment-1.0.json`. The main blocks are `source`, `knobs`, optional `config_snapshot`, `outcome`, and `provenance`; the record also carries `schema_version`, id, optional parent, and hypothesis.
+Each `record.json` validates against the bundled draft-2020-12 schema `rtl_buddy/xplr/xplr-experiment-1.0.json`. Its main blocks are `source`, `knobs`, optional `config_snapshot`, `outcome` and `provenance`, plus `schema_version`, the id, an optional parent and the hypothesis.
 
-Every `rb --machine xplr ...` command prints one [machine envelope](../agents.md#machine-mode). Exit 0 means success. Exit 2 reports user or schema errors as `payload.error`. Optional payload keys may be added in minor releases; removing or changing record fields requires a schema-version change.
+Every `rb --machine xplr ...` command prints one [machine envelope](../agents.md#machine-mode). Exit 0 is success; exit 2 reports user or schema errors in `payload.error`. Minor releases may add optional payload keys; removing or changing record fields requires a schema-version change.

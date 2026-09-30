@@ -2,9 +2,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-coverage module handles rtl-buddy coverage result orchestration
-"""
+"""Coverage result orchestration for rtl-buddy summaries."""
 
 import contextlib
 import os
@@ -17,26 +15,17 @@ from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 
 
 class CoverageReporter:
-    """
-    Orchestrate per-test and merged coverage reporting for rtl-buddy summaries.
-    """
+    """Per-test and merged coverage reporting for rtl-buddy summaries."""
 
     def __init__(self, root_cfg):
-        """
-        Build a coverage reporter for the currently selected builder.
-        """
+        """Build a reporter for the currently selected builder."""
         self.root_cfg = root_cfg
 
     def _get_cov_tool(self):
-        """
-        Create a `VlogCov` helper for the active simulator family.
+        """Create a `VlogCov` for the platform-selected builder's simulator family.
 
-        NOTE: coverage keys off the platform-selected builder, not a per-test
-        or per-suite ``builder:`` override (see docs/reference/yaml.md). When a
-        test's effective builder differs from the platform default and no
-        ``--builder`` is in effect, this family can mismatch the one the test
-        actually simulated on. Use ``--builder`` to collect coverage on an
-        alternate builder consistently.
+        A per-test or per-suite ``builder:`` override is not consulted, so the family can
+        differ from the one a test simulated on unless ``--builder`` is given.
         """
         simulator_family = self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
         return VlogCov(
@@ -46,9 +35,7 @@ class CoverageReporter:
         )
 
     def _get_coverview_tool(self):
-        """
-        Create a `CoverviewPacker` helper for the active simulator family.
-        """
+        """Create a `CoverviewPacker` for the active simulator family."""
         simulator_family = self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
         return CoverviewPacker(
             cfg=self.root_cfg.get_coverview_cfg(simulator_family),
@@ -56,27 +43,21 @@ class CoverageReporter:
         )
 
     def _coverview_dataset_name(self, suite_name: str) -> str:
-        """
-        Derive a stable merged Coverview dataset name from a suite/regression name.
-        """
+        """Derive the merged Coverview dataset name from a suite or regression name."""
         dataset = os.path.splitext(os.path.basename(suite_name))[0]
         if dataset.endswith("_regression"):
             dataset = dataset[: -len("_regression")]
         return dataset
 
     def format_summary(self, test_results):
-        """
-        Return the one-line coverage summary string for a single test result.
-        """
+        """Return the one-line coverage summary for a test result, or None."""
         coverage = test_results.results.get("coverage")
         if coverage is None:
             return None
         return coverage.get("summary")
 
     def collect_paths(self, suite_results):
-        """
-        Collect raw coverage database paths from a list of suite results.
-        """
+        """Collect the raw coverage database paths from suite results."""
         raw_paths = []
         for suite_result in suite_results:
             coverage = suite_result["results"].results.get("coverage")
@@ -86,20 +67,10 @@ class CoverageReporter:
         return raw_paths
 
     def collect_cover_records(self, suite_results):
-        """
-        Aggregate per-test user cover points across a suite into one list.
+        """Fold per-test user cover points into run-wide ``{name, file, line, module, hits}`` records.
 
-        Folds the per-test ``covers`` lists (each already one entry per cover
-        point per module) into a run-wide list of
-        ``{name, file, line, module, hits}``, keyed on
-        ``(file, line, name, module)``. Built from the per-test data rather than
-        a merged database, so it behaves the same under ``--coverage-merge`` and
-        ``--coverage-merge-raw`` — only the latter produces a merged ``.dat`` at
-        all.
-
-        Returns None when the run recorded no user cover points; callers omit the
-        payload key entirely in that case, so "absent" consistently means "not
-        collected" (see docs/agents.md).
+        Keyed on ``(file, line, name, module)`` and independent of the merge mode.
+        Returns None when no user cover points were recorded.
         """
         records = []
         for suite_result in suite_results:
@@ -110,9 +81,7 @@ class CoverageReporter:
         return aggregate_cover_records(records)
 
     def _normalize_source_roots(self, outdir, source_roots=None, suite_name=None):
-        """
-        Return resolved source roots, adding the suite directory when available.
-        """
+        """Return absolute source roots, defaulting to the suite directory when none are given."""
         roots = []
         seen = set()
 
@@ -134,18 +103,13 @@ class CoverageReporter:
         return roots
 
     def _cov_dir(self, outdir):
-        """
-        Return the intermediate coverage artifact directory under the command output directory.
-        """
+        """Return (creating it) the `cov_dir` intermediate artifact directory under ``outdir``."""
         cov_dir = os.path.join(outdir, "cov_dir")
         os.makedirs(cov_dir, exist_ok=True)
         return cov_dir
 
     def resolve_dir_summary_paths(self, dir_summary_paths=None, dir_summary_file=None):
-        """
-        Resolve a deduplicated list of repo-relative directory prefixes from
-        repeated CLI args and/or a file containing one path per line.
-        """
+        """Return deduplicated repo-relative directory prefixes from CLI args and/or a file of one path per line."""
         resolved = []
         seen = set()
 
@@ -176,12 +140,7 @@ class CoverageReporter:
 
     @staticmethod
     def _metrics_payload(metrics):
-        """Structured per-metric dict for a CoverageMetrics.
-
-        Carries ``expression`` even though the display summary does not:
-        the scalar existed nowhere before (#399), while the per-signal
-        detail behind it lives in the coverage model.
-        """
+        """Structured per-metric dict for a CoverageMetrics, including ``expression``, which the display summary omits."""
         return {
             "line": metrics.line,
             "branch": metrics.branch,
@@ -205,11 +164,9 @@ class CoverageReporter:
         return lines
 
     def _dir_summary_records(self, lcov_path, dir_summary_paths):
-        """
-        Structured per-prefix coverage records parsed from an LCOV file.
+        """Per-prefix ``{prefix, line, branch, toggle, functional}`` records from an LCOV file.
 
-        Each record is ``{prefix, line, branch, toggle, functional}`` (toggle and
-        functional are ``None`` here — an LCOV file carries only line/branch).
+        ``toggle`` and ``functional`` are ``None``; an LCOV file has only line and branch.
         """
         if lcov_path is None or not os.path.exists(lcov_path) or not dir_summary_paths:
             return []
@@ -230,10 +187,7 @@ class CoverageReporter:
         return records
 
     def _dir_summary_records_from_dataset_files(self, dataset_files, dir_summary_paths):
-        """
-        Structured per-prefix coverage records from typed coverage dataset files,
-        including toggle when available.
-        """
+        """Per-prefix coverage records from typed dataset files, including toggle when available."""
         if not dataset_files or not dir_summary_paths:
             return []
 
@@ -265,28 +219,14 @@ class CoverageReporter:
             )
         return records
 
-    # ------------------------------------------------------------------
-    # source-point summary (#637)
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _source_summary_record(model):
-        """Both run-level figures, or None when the model has neither.
+        """Return ``{"source_totals": {...}, "totals": {...}}``, or None when the model has neither.
 
-        ``{"source_totals": {...}, "totals": {...}}`` — the run scored
-        once per *source* point (covered when any elaboration hit it) and
-        once per elaborated point, in the model's
-        ``{found, hit, ratio}`` shape per metric.
-
-        Derived from the coverage **model**, i.e. from the per-test raw
-        ``.dat`` databases, which are the only input that records the
-        elaborated module per point. That is a different input from the
-        directory summary's, which reads the merged/typed LCOV
-        ``.info`` — LCOV has already folded the elaborations together by
-        file and line and dropped every point name, so the collapsed
-        figure cannot be recovered from it. On a run with no raw
-        database at all (an ``.info``-only fallback) no point carries a
-        module, so the two figures this returns are simply equal.
+        ``source_totals`` scores each source point once (covered when any elaboration hit
+        it); ``totals`` scores each elaborated point. Both are ``{found, hit, ratio}`` per
+        metric. They come from the model built from raw ``.dat`` databases, since LCOV
+        has already merged elaborations. With no raw database the two are equal.
         """
         collapsed = model_mod.source_totals(model or {})
         if collapsed is None:
@@ -295,13 +235,10 @@ class CoverageReporter:
 
     @staticmethod
     def _source_summary_lines(record):
-        """Format a source-summary record into one display line per metric.
+        """Format a source-summary record as one line per metric.
 
-        ``Coverage source points <metric>: <hit>/<found> (NN.N%)
-        [per elaboration <hit>/<found> (NN.N%)]`` — both figures on the
-        line, because the number that matters to a reader is usually the
-        difference between them. Metrics no point was recorded for are
-        skipped: "0/0" is not a coverage hole.
+        ``Coverage source points <metric>: <hit>/<found> (NN.N%) [per elaboration <hit>/<found> (NN.N%)]``.
+        Metrics with no recorded points are skipped.
         """
         if not record:
             return []
@@ -341,18 +278,8 @@ class CoverageReporter:
             )
         )
 
-    # ------------------------------------------------------------------
-    # structured model + artefact manifest (#399)
-    # ------------------------------------------------------------------
-
     def _test_artefacts(self, suite_results, *, outdir, suite_name, source_roots):
-        """Per-test coverage artefacts for the model builder.
-
-        Reads the mutated per-test coverage dicts rather than any merge
-        product, so the model — and with it the per-test attribution —
-        is built from whatever the run left on disk, under every merge
-        mode and under none.
-        """
+        """Per-test coverage artefacts for the model builder, taken from the per-test coverage dicts rather than any merge product."""
         suite_roots = self._normalize_source_roots(
             outdir, source_roots=source_roots, suite_name=suite_name
         )
@@ -409,25 +336,12 @@ class CoverageReporter:
         merged_info=None,
         model_mode=model_mod.MODEL_MODE_FULL,
     ):
-        """The structured coverage model for a run, or None.
+        """Build the structured coverage model for a run.
 
-        None when the run produced no coverage at all, and also when
-        artefacts were named but none of them parsed into a single point
-        — a simulator with no coverage support, or databases that have
-        since been cleaned. The test list alone does not redeem it: a
-        test whose `.info` exists but holds no `DA:`/`BRDA:` record still
-        earns a `tests` entry, and no file means no coverage point
-        whatever that list says.
-
-        Split out of `write_artefacts` so one build serves both the
-        artefacts it writes and the source-point summary (#637) reported
-        beside them; the model is the only input that carries the
-        elaborated module per point, which is what the collapsed figure
-        is defined against.
-
-        ``model_mode`` other than ``full`` builds without per-point test
-        attribution (#660): the totals, per-test rows and source-point
-        figures are the same, and the points x tests term is gone.
+        Returns None when the run produced no coverage, or when no artefact parsed into a
+        coverage point (no simulator coverage support, or databases since cleaned).
+        A ``model_mode`` other than ``full`` omits per-point test attribution; totals,
+        per-test rows and source-point figures are unchanged.
         """
         tests = self._test_artefacts(
             suite_results,
@@ -464,16 +378,10 @@ class CoverageReporter:
         model=None,
         model_mode=model_mod.MODEL_MODE_FULL,
     ):
-        """Write the coverage model and manifest, returning the artefacts block.
+        """Write the coverage model and manifest and return the artefacts block, or None if there is no coverage.
 
-        Returns None when the run produced no coverage at all — there is
-        nothing to index, and an empty manifest would advertise coverage
-        that does not exist. ``model`` reuses an already-built model (see
-        :meth:`build_run_model`) rather than parsing every database twice.
-
-        ``model_mode="none"`` (#660) writes the manifest, totals included,
-        and no model; a model left by an earlier run is removed, so the
-        directory never holds a document the manifest does not describe.
+        ``model`` reuses a model from :meth:`build_run_model`. ``model_mode="none"`` writes
+        the manifest with totals but no model, and removes any earlier model file.
         """
         project_root = self.root_cfg.get_project_rootdir()
         builder_cfg = self.root_cfg.get_rtl_builder_cfg()
@@ -544,9 +452,7 @@ class CoverageReporter:
         html_output=False,
         source_roots=None,
     ):
-        """
-        Merge raw coverage files across multiple tests and return aggregate metrics.
-        """
+        """Merge the raw coverage files of all tests and return aggregate metrics."""
         raw_paths = self.collect_paths(suite_results)
         if len(raw_paths) == 0:
             return None
@@ -570,9 +476,7 @@ class CoverageReporter:
         coverview_output=False,
         source_roots=None,
     ):
-        """
-        Generate per-test LCOV and HTML artifacts for the provided suite results.
-        """
+        """Generate per-test LCOV and HTML artifacts."""
         return self.generate_per_test_artifacts(
             suite_results,
             outdir=outdir,
@@ -592,9 +496,7 @@ class CoverageReporter:
         coverview_output=False,
         source_roots=None,
     ):
-        """
-        Generate per-test LCOV and optional HTML/Coverview artifacts for a suite.
-        """
+        """Generate per-test LCOV and optional HTML and Coverview artifacts."""
         cov = self._get_cov_tool()
         coverview = self._get_coverview_tool()
         cov_dir = self._cov_dir(outdir)
@@ -668,14 +570,10 @@ class CoverageReporter:
         coverview_output=False,
         source_roots=None,
     ):
-        """
-        Merge per-test `.info` files with `info-process merge` and optionally emit HTML/Coverview.
+        """Merge per-test `.info` files with `info-process merge`, optionally emitting HTML and Coverview.
 
-        Returns ``(metrics, coverview_zip, dataset_files, description_files)``.
-        The description files are the per-type ``.desc`` attribution
-        `info-process` writes alongside each merge; they are reported
-        whether or not a Coverview archive was packaged, since the
-        manifest indexes them either way.
+        Returns ``(metrics, coverview_zip, dataset_files, description_files)``, or None if
+        nothing merged. The ``.desc`` files are reported whether or not Coverview was packaged.
         """
         cov = self._get_cov_tool()
         coverview = self._get_coverview_tool()
@@ -831,13 +729,8 @@ class CoverageReporter:
             )
             if merged_expression is not None:
                 merged_dataset_files["expression"] = merged_expression
-                # This is the per-type expression dataset the info-process
-                # route writes (`coverage_expression_*.info`), not the merged
-                # LCOV — which is what `summary_str` and docs/concepts/
-                # coverage.md mean when they say an `.info` carries no
-                # expression detail. This one records one `DA:` per term, so
-                # its line ratio *is* the expression ratio — the same reading
-                # the toggle dataset gets above.
+                # This per-type file records one `DA:` per term, so its line ratio is the
+                # expression ratio (as for toggle); the merged LCOV has no expression detail.
                 metrics.expression, _ = cov.parse_lcov_summary(merged_expression)
                 if os.path.exists(merged_expression_desc):
                     rby_description_files["expression"] = merged_expression_desc
@@ -883,9 +776,7 @@ class CoverageReporter:
     def generate_per_test_coverview(
         self, reg_results, *, outdir, suite_name, source_roots=None
     ):
-        """
-        Generate one Coverview archive containing one dataset per test result.
-        """
+        """Generate one Coverview archive with one dataset per test."""
         cov = self._get_cov_tool()
         coverview = self._get_coverview_tool()
         cov_dir = self._cov_dir(outdir)
@@ -964,44 +855,23 @@ class CoverageReporter:
         command="regression",
         model_mode=model_mod.MODEL_MODE_FULL,
     ):
-        """
-        Build coverage artifact summaries for merged or unmerged runs.
+        """Build the coverage summaries for merged or unmerged runs.
 
-        Returns ``(metadata, coverage)`` where ``metadata`` is the list of
-        human-display lines and ``coverage`` is the structured payload
-        ``{"merged": {line,branch,toggle,functional}|None, "dir_summary": [...],
-        "covers": [{name,file,line,module,hits}], "artefacts": {...}}`` for
-        machine consumers. ``coverage["merged"]`` is populated only when a merge
-        actually happened.
-        ``coverage["covers"]`` is folded on ``(file, line, name, module)`` and is
-        present whenever the run recorded user cover points, merge or not — the
-        key is omitted entirely when it recorded none, matching how the per-test
-        rows behave.
+        Returns ``(metadata, coverage)``: ``metadata`` is the list of display lines and
+        ``coverage`` the machine payload. Its keys:
 
-        ``coverage["artefacts"]`` is the paths block (#399): every artefact the
-        run wrote, project-relative, plus the ``cov_dir/manifest.json`` that
-        indexes them and the structured model beside it. Written on every run
-        that produced coverage at all, including one with no merge flag — the
-        display lines used to be the only record of where anything landed.
+        - ``merged``: ``{line, branch, toggle, functional}``, or None when no merge happened.
+        - ``dir_summary``: per-prefix records.
+        - ``covers``: user cover points; omitted when none were recorded.
+        - ``artefacts``: project-relative paths of everything written, including
+          ``cov_dir/manifest.json``; present whenever the run produced coverage.
+        - ``merge_failed`` and ``failed_metrics``: always present. A requested merge that
+          died sets them, and the named metrics read ``FAIL`` instead of ``UNSP``.
+        - ``source_summary``: only with ``source_summary=True``; see
+          :meth:`_source_summary_record`.
 
-        ``coverage["merge_failed"]`` and ``coverage["failed_metrics"]`` are
-        always present (#638). They are false/empty on a healthy run and on a
-        run that asked for no merge; they are true and populated when a
-        requested merge died, and the metrics they name read ``FAIL`` in the
-        display lines instead of ``UNSP``. They are explicit keys rather than
-        something to infer from a null metric, because a null metric already
-        means "never instrumented" everywhere else.
-
-        ``source_summary=True`` adds ``coverage["source_summary"]``
-        (#637): the run scored per source point *and* per elaboration,
-        from the coverage model rather than from LCOV — see
-        :meth:`_source_summary_record`. The key is omitted when the
-        summary was not asked for, so "absent" keeps meaning "not
-        collected" here too.
-
-        ``model_mode`` is ``--coverage-model`` (#660): ``full`` writes the
-        whole model, ``totals`` writes it without per-point test
-        attribution, and ``none`` writes only the manifest.
+        ``model_mode`` is ``--coverage-model``: ``full``, ``totals`` (no per-point test
+        attribution) or ``none`` (manifest only).
         """
         metadata = []
         coverage = {
@@ -1013,9 +883,7 @@ class CoverageReporter:
         covers = self.collect_cover_records(suite_results)
         if covers:
             coverage["covers"] = covers
-        # Artefact paths accumulated across the branches below and handed to
-        # `write_artefacts` at the end, so one manifest describes the whole run
-        # whichever merge mode produced it.
+        # Paths accumulated by the branches below for the single manifest.
         merge_mode = None
         merged_paths = {"info": None, "raw": None, "desc": None, "html_dir": None}
         dataset_files = None
@@ -1028,13 +896,7 @@ class CoverageReporter:
             merged_paths["html_dir"] = merged_cov.html_dir
 
         def record_merge_failure(merged_cov):
-            """Carry a dead raw merge onto the payload and the console.
-
-            The display line is the reader's half of the fix: the summary
-            table now prints `FAIL` for the metrics the merge alone carried,
-            and this says, once, underneath, what failed and where to look.
-            Without it `FAIL` is as unexplained as `UNSP` was.
-            """
+            """Record a failed raw merge in the payload and add a console line explaining it."""
             if not merged_cov.merge_failed:
                 return
             failed = list(merged_cov.failed_metrics or [])
@@ -1144,9 +1006,7 @@ class CoverageReporter:
                     ) = merged_info
                     dataset_files = merged_dataset_files
                     merged_paths["desc"] = description_files.get("line")
-                    # The info-process merge rewrites `coverage_merged.info`
-                    # over the raw merge's; the manifest names the file that
-                    # is actually on disk when the run ends.
+                    # This merge overwrites the raw merge's `coverage_merged.info`.
                     if info_metrics.lcov_path is not None:
                         merged_paths["info"] = info_metrics.lcov_path
                     records = self._dir_summary_records_from_dataset_files(
@@ -1158,8 +1018,7 @@ class CoverageReporter:
                         coverview_paths["zip"] = coverview_zip
                         metadata.append(f"Merged Coverview: {coverview_zip}")
                 elif merged_cov is not None and merged_cov.lcov_path is not None:
-                    # Coverview unavailable — fall back to the LCOV-based
-                    # summary rather than dropping the requested output (#403)
+                    # Coverview unavailable; fall back to the LCOV-based summary.
                     records = self._dir_summary_records(
                         merged_cov.lcov_path, dir_summary_paths
                     )
@@ -1247,9 +1106,7 @@ class CoverageReporter:
                         f"Coverage Coverview {test_name_i}: {coverview_zip}"
                     )
 
-        # One model build for both the artefacts and the source-point
-        # summary; `merged_info` is read only when no test produced a
-        # point of its own, exactly as before.
+        # One model serves both the artefacts and the source-point summary.
         model = self.build_run_model(
             suite_results,
             outdir=outdir,
@@ -1280,11 +1137,7 @@ class CoverageReporter:
         if source_summary:
             record = self._source_summary_record(model)
             if record is None:
-                # Requested and unanswerable: the run left no model to
-                # collapse. Said out loud rather than reported as zero
-                # coverage or as agreement with the other figure.
-                # (See the guard in `_guard_coverage_requested`: a run
-                # that produced no coverage at all fails before here.)
+                # No model to collapse; say so rather than report zero coverage.
                 metadata.append(
                     "Coverage source points: unavailable (no coverage model)"
                 )

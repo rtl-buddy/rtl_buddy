@@ -1,8 +1,7 @@
-"""Round-trip tests for per-run result JSON artifacts (#351 P0).
+"""Round-trip tests for per-run result JSON artifacts.
 
-Covers ``TestResults.to_json_dict`` / ``from_json_dict`` and the
-``write_result_json`` / ``load_result_json`` envelope layer that a
-dispatch backend relies on to collect remotely produced results.
+Covers ``TestResults.to_json_dict`` and ``from_json_dict`` and the ``write_result_json``
+and ``load_result_json`` envelope layer.
 """
 
 from __future__ import annotations
@@ -62,7 +61,7 @@ def test_round_trip_preserves_semantics(result):
 
 
 def _sim_verdict_fail() -> TestResults:
-    """A FAIL the simulation itself reported — the excusable kind."""
+    """A FAIL the simulation itself reported, which is excusable."""
     return TestResults(
         name="t/results",
         results={"result": "FAIL", "name": "t", "desc": "mismatch at 120ns"},
@@ -71,7 +70,6 @@ def _sim_verdict_fail() -> TestResults:
 
 @pytest.mark.parametrize("strict", [False, True])
 def test_round_trip_preserves_xfail_semantics(strict):
-    # FAIL->XFAIL always passes; PASS->XPASS passes only when non-strict.
     failed = apply_xfail(_sim_verdict_fail(), strict=strict)
     assert TestResults.from_json_dict(failed.to_json_dict()).is_pass()
 
@@ -91,11 +89,8 @@ def test_round_trip_preserves_xfail_semantics(strict):
 )
 @pytest.mark.parametrize("strict", [False, True])
 def test_round_trip_keeps_a_stage_failure_unexcusable(result, strict):
-    """#553/#594: the refusal travels in the envelope, not in the class.
-
-    ``from_json_dict`` rebuilds every kind as a plain ``TestResults``, so
-    a dispatched job's compile failure or timeout can only stay
-    non-excusable if the marker key rides along in the results dict.
+    """The non-excusable marker travels in the envelope's results dict, because
+    ``from_json_dict`` rebuilds every kind as a plain ``TestResults``.
     """
     clone = TestResults.from_json_dict(result.to_json_dict())
     apply_xfail(clone, strict=strict)
@@ -173,16 +168,12 @@ def test_run_token_round_trips_and_matches(tmp_path: Path):
         run_token="abc123",
     )
     assert json.loads(out.read_text())["run_token"] == "abc123"
-    # Matching token loads normally.
     assert load_result_json(out, expected_run_token="abc123")["result"].is_pass()
-    # No expectation → token ignored (legacy / non-dispatch callers).
     assert load_result_json(out)["result"].is_pass()
 
 
 def test_stale_run_token_is_rejected_like_a_missing_file(tmp_path: Path):
-    """A leftover envelope from an earlier run (different token) must not be
-    mistaken for this run's result — this replaces the pre-unlink the head
-    used to do, which blinded it on NFS (#362)."""
+    """An envelope stamped with a different run token is rejected like a missing file."""
     out = tmp_path / "result.json"
     write_result_json(
         out,
@@ -193,8 +184,7 @@ def test_stale_run_token_is_rejected_like_a_missing_file(tmp_path: Path):
     )
     with pytest.raises(FatalRtlBuddyError, match="different run"):
         load_result_json(out, expected_run_token="NEW-run")
-    # A dispatch job that never stamped a token (None) also fails the check
-    # when the head expects one.
+    # An envelope with no token fails when the head expects one.
     write_result_json(
         out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
     )
@@ -212,7 +202,6 @@ def test_attach_telemetry_round_trip(tmp_path: Path):
     attach_telemetry_json(out, {"state": "COMPLETED", "max_rss_bytes": 1024})
     envelope = json.loads(out.read_text())
     assert envelope["telemetry"]["max_rss_bytes"] == 1024
-    # Result payload is untouched and still loads.
     assert load_result_json(out)["result"].is_pass()
     assert not out.with_name(out.name + ".tmp").exists()
 
@@ -224,11 +213,8 @@ def test_attach_telemetry_missing_file_is_noop(tmp_path: Path):
     assert not (tmp_path / "nope.json").exists()
 
 
-# --------------------------------------------------- build envelope (#495)
-
-
 def test_attach_result_key_folds_into_the_runs_own_results(tmp_path: Path):
-    """`rb graph results` reads `result.results`, so that is where it goes."""
+    """The key lands in the run's own ``results``, where `rb graph results` reads it."""
     from rtl_buddy.runner.result_io import attach_result_key
 
     out = tmp_path / "result.json"
@@ -238,7 +224,6 @@ def test_attach_result_key_folds_into_the_runs_own_results(tmp_path: Path):
     attach_result_key(out, "compile", {"duration_sec": 3.5, "builder": "verilator"})
     envelope = json.loads(out.read_text())
     assert envelope["result"]["results"]["compile"]["duration_sec"] == 3.5
-    # The verdict is untouched and the envelope still loads.
     assert load_result_json(out)["result"].is_pass()
     assert not out.with_name(out.name + ".tmp").exists()
 
@@ -248,23 +233,23 @@ def test_attach_result_key_folds_into_the_runs_own_results(tmp_path: Path):
     [None, "not json at all", '{"result": "a string, not a dict"}'],
 )
 def test_attach_result_key_degrades_instead_of_raising(tmp_path: Path, content):
-    """An annotation must never re-score a collected run."""
+    """A missing, corrupt or malformed envelope is left as found, with no exception."""
     from rtl_buddy.runner.result_io import attach_result_key
 
     out = tmp_path / "result.json"
-    if content is None:  # no envelope at all
+    if content is None:
         attach_result_key(out, "compile", {"duration_sec": 1.0})
         assert not out.exists()
         return
     out.write_text(content)
     attach_result_key(out, "compile", {"duration_sec": 1.0})
-    # Left exactly as found — including no stray .tmp beside it.
+    # No stray .tmp file remains.
     assert out.read_text() == content
     assert not out.with_name(out.name + ".tmp").exists()
 
 
 def test_an_unserialisable_annotation_leaves_the_envelope_as_found(tmp_path: Path):
-    """The value is the caller's problem, never the collected run's."""
+    """An unserialisable value leaves the envelope as found."""
     from rtl_buddy.runner.result_io import attach_result_key
 
     out = tmp_path / "result.json"
@@ -281,12 +266,7 @@ def test_an_unserialisable_annotation_leaves_the_envelope_as_found(tmp_path: Pat
 def test_a_write_that_cannot_land_does_not_take_the_collection_down(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """ENOSPC/EROFS at collect time must not lose a finished fleet.
-
-    The head performs one of these rewrites per collected row; an
-    exception here would abandon every result already gathered and turn a
-    fully finished run into a traceback.
-    """
+    """A failed write (ENOSPC, EROFS) does not raise, so collection continues."""
     from rtl_buddy.runner import result_io
     from rtl_buddy.runner.result_io import attach_telemetry_json
 
@@ -310,15 +290,7 @@ def test_a_write_that_cannot_land_does_not_take_the_collection_down(
 def test_a_coverage_refresh_that_cannot_land_degrades_instead_of_raising(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The refresh shares the attach path's write helper, and its contract.
-
-    ``refresh_result_json`` runs after post-processing, long after the
-    run's verdict is decided — its only job is to put the coverage paths
-    the LCOV/HTML/Coverview stages produced back into the side-car. A full
-    or read-only shared filesystem there must cost the artefact paths, not
-    the run: ``None`` is returned, the envelope is left exactly as found,
-    and nothing propagates to the caller.
-    """
+    """A failed refresh returns None and leaves the envelope as found, without raising."""
     from rtl_buddy.runner import result_io
     from rtl_buddy.runner.result_io import refresh_result_json
 
@@ -363,10 +335,8 @@ def test_build_envelope_round_trips_its_compile_records(tmp_path: Path):
 
 
 def test_a_build_envelope_without_records_is_still_readable(tmp_path: Path):
-    """Old envelope, new head: `builds` is additive, so it degrades (#495).
-
-    The schema version deliberately does not move — bumping it would make
-    an old head read None and lose the compile-fail parity it has today.
+    """An old envelope read by a new head lacks `builds` and still loads; the schema
+    version is unchanged.
     """
     from rtl_buddy.runner.result_io import (
         BUILD_RESULT_SCHEMA_VERSION,
@@ -387,11 +357,7 @@ def test_a_build_envelope_without_records_is_still_readable(tmp_path: Path):
 def test_a_new_build_envelope_read_the_old_way_keeps_built_and_failed(
     tmp_path: Path,
 ):
-    """New envelope, old head: the extra key is simply not looked at (#495).
-
-    Simulated by dropping `builds` the way an older loader's fixed key set
-    does, which is the whole claim `schema_version: 1` is making.
-    """
+    """A new envelope read by an old head ignores the extra `builds` key."""
     from rtl_buddy.runner.result_io import (
         BUILD_RESULT_SCHEMA_VERSION,
         write_build_result_json,

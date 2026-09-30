@@ -1,4 +1,4 @@
-"""Tests for ``rtl_buddy.hub.protocol`` — envelope codec + schema."""
+"""Tests for ``rtl_buddy.hub.protocol``: envelope codec and schema."""
 
 from __future__ import annotations
 
@@ -23,11 +23,6 @@ from rtl_buddy.hub.protocol import (
     make_welcome,
     new_id,
 )
-
-
-# ---------------------------------------------------------------------------
-# round trips
-# ---------------------------------------------------------------------------
 
 
 def test_decode_encode_round_trip_event():
@@ -67,11 +62,6 @@ def test_encode_drops_payload_when_none():
     )
     obj = json.loads(encode(env))
     assert "payload" not in obj
-
-
-# ---------------------------------------------------------------------------
-# schema enforcement
-# ---------------------------------------------------------------------------
 
 
 def test_decode_rejects_unknown_origin():
@@ -160,7 +150,7 @@ def test_decode_rejects_wrong_kind_for_event_type():
             "v": 1,
             "id": str(uuid.uuid4()),
             "origin": "view",
-            "kind": "request",  # selection_changed is event-only
+            "kind": "request",
             "type": "selection_changed",
             "payload": {"instance_path": "top"},
         }
@@ -170,10 +160,7 @@ def test_decode_rejects_wrong_kind_for_event_type():
 
 
 def test_decode_silently_accepts_unknown_type():
-    """§11: unknown types MUST be silently dropped at DEBUG.
-
-    The codec accepts them; downstream routing is what discards them.
-    """
+    """Unknown types are accepted by the codec; routing drops them silently at DEBUG."""
 
     raw = json.dumps(
         {
@@ -194,13 +181,8 @@ def test_decode_rejects_malformed_json():
         decode("{not-json")
 
 
-# ---------------------------------------------------------------------------
-# encode-side validation
-# ---------------------------------------------------------------------------
-
-
 def test_encode_rejects_invalid_envelope():
-    """A bug in a caller surfaces here, not on the remote peer."""
+    """Encoding validates, so a caller bug surfaces at the caller."""
 
     env = Envelope(
         origin=Origin.VIEW,
@@ -213,11 +195,6 @@ def test_encode_rejects_invalid_envelope():
         encode(env)
 
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-
 def test_make_hello_produces_valid_envelope():
     env = make_hello(client=Origin.VIEW, version="0.1.0", capabilities=["x", "y"])
     raw = encode(env)
@@ -225,9 +202,7 @@ def test_make_hello_produces_valid_envelope():
 
 
 def test_make_hello_accepts_notebook_origin():
-    """The axi-profiler notebook registers as origin=notebook
-    (rtl-buddy-axi-profiler#48). decode() schema-validates, so a clean
-    round-trip proves the wire contract accepts the new origin."""
+    """A notebook peer with ``origin=notebook`` round-trips through the schema."""
     env = make_hello(client=Origin.NOTEBOOK, version="0.1.0", capabilities=[])
     assert env.origin is Origin.NOTEBOOK
     assert decode(encode(env)) == env
@@ -257,12 +232,12 @@ def test_make_error_carries_request_id_when_in_reply_to():
     )
     assert err.id == "11111111-1111-1111-1111-111111111111"
     assert err.payload["code"] == "unresolvable"
-    encode(err)  # must pass schema
+    encode(err)
 
 
 def test_make_error_generates_id_when_spontaneous():
     err = make_error(origin=Origin.CLI, code="bad_request", message="oops")
-    uuid.UUID(err.id)  # must parse
+    uuid.UUID(err.id)
 
 
 def test_new_id_is_uuid4():
@@ -271,36 +246,17 @@ def test_new_id_is_uuid4():
     assert parsed.version == 4
 
 
-# ---------------------------------------------------------------------------
-# vendored schema drift
-# ---------------------------------------------------------------------------
-
-
 def test_origin_enum_matches_vendored_schema():
-    """``Origin`` is a hand-copy of the schema's vocabulary — pin it.
-
-    The vendored schema is the wire contract and ``decode`` validates
-    against it, but the *Python* vocabulary is this enum. Re-syncing the
-    schema (say, after rtl-buddy-sch adds a peer) without extending
-    ``Origin`` leaves a hole that schema validation cannot see: the
-    envelope passes ``_validate`` and then ``Origin(obj["origin"])``
-    raises ``ValueError`` on the first message from the new peer.
-
-    The cross-repo checklist this backstops lives in rtl-buddy-sch's
-    ``docs/hub-protocol.md`` §13.
+    """``Origin`` matches the vendored schema's origin enum, so a schema re-sync without
+    an ``Origin`` update fails here.
     """
 
     enum = protocol.schema()["properties"]["origin"]["enum"]
-    # Guard the guard: a schema refactor that moved the enum would make
-    # the comparison below pass against nothing.
+    # Guard against the enum moving in the schema, which would make the comparison
+    # vacuous.
     assert isinstance(enum, list) and enum, "schema has no origin enum"
-    # Order-sensitive on purpose. The owner repo pins its own enum in
-    # order too (rtl-buddy-sch
-    # tests/test_hub_protocol_schema.py::test_origin_enum_is_the_full_vocabulary),
-    # so a reordering there is already a deliberate, reviewed act — and
-    # this enum is declared to mirror it. Making the comparison a set
-    # would leave the one place the two orders can silently diverge
-    # unchecked, for no gain: the fix is reordering the members.
+    # Order-sensitive: the owner repo pins its enum order, and a set comparison would
+    # leave order divergence unchecked.
     assert [o.value for o in Origin] == enum, (
         "Origin does not match the vendored schema's origin enum. Add the "
         "missing member (or drop the extra one) and keep the declaration "
@@ -309,7 +265,7 @@ def test_origin_enum_matches_vendored_schema():
 
 
 def test_vendored_schema_has_expected_types():
-    """Catch accidental schema drift: every spec ``type`` is present."""
+    """Every spec ``type`` is present in the schema."""
 
     schema = protocol.schema()
     types_seen: set[str] = set()
@@ -359,11 +315,6 @@ def test_vendored_schema_has_expected_types():
     assert types_seen == expected
 
 
-# ---------------------------------------------------------------------------
-# diagnostics_set
-# ---------------------------------------------------------------------------
-
-
 def test_make_diagnostics_set_round_trips_minimal_and_full_items():
     env = make_diagnostics_set(
         origin=Origin.CLI,
@@ -405,7 +356,7 @@ def test_make_diagnostics_set_accepts_dict_items():
         source="manual",
         items=[{"file": "/x.sv", "line": 5, "severity": "info", "message": "ok"}],
     )
-    assert encode(env)  # validates via schema
+    assert encode(env)
 
 
 def test_diagnostics_set_empty_items_is_legal_clear():
@@ -415,10 +366,9 @@ def test_diagnostics_set_empty_items_is_legal_clear():
 
 
 def test_diagnostics_set_carries_optional_instance_path():
-    """The view-side resolver (rtl-buddy-view#82) prefers
-    ``item.instance_path`` over file+line range matching. Make sure
-    the dataclass + ``make_diagnostics_set`` + schema round-trip
-    preserve the hint when set, and omit it cleanly when None."""
+    """``instance_path`` on a diagnostics item survives the dataclass,
+    ``make_diagnostics_set`` and schema round-trip, and is omitted when None.
+    """
 
     env = make_diagnostics_set(
         origin=Origin.CLI,
@@ -442,8 +392,7 @@ def test_diagnostics_set_carries_optional_instance_path():
 
 
 def test_diagnostics_set_rejects_empty_instance_path():
-    """Schema clamps to minLength: 1 so a producer can't send an
-    empty string and trip the consumer's fast path on garbage."""
+    """The schema requires ``minLength: 1`` for ``instance_path``."""
 
     with pytest.raises(HubProtocolError):
         encode(
@@ -530,22 +479,13 @@ def test_diagnostics_set_rejects_line_zero():
         )
 
 
-#: Directory names an owner checkout may go by, newest first. The repo
-#: was renamed ``rtl-buddy-view`` → ``rtl-buddy-sch``, and checkouts
-#: predating that keep the old directory name (some deliberately — other
-#: sibling-path tests in that repo look for ``../rtl_buddy`` and are
-#: indifferent to its own folder). Probing both is the difference between
-#: a drift check and a silent skip.
+# Directory names an owner checkout may have, newest first.
 _OWNER_REPO_DIRS = ("rtl-buddy-sch", "rtl-buddy-view")
 
 
 def test_vendored_schema_matches_source_when_view_repo_present():
-    """Schema is vendored — drift detection when the owner repo is a sibling.
-
-    The source of truth lives in ``rtl-buddy/rtl-buddy-sch`` (formerly
-    ``rtl-buddy-view``). CI for rtl_buddy does not clone that repo, so
-    this test no-ops there; it fires locally when both checkouts are
-    side-by-side.
+    """Drift check against the owner repo's schema; skipped unless it is checked out
+    beside this repo.
     """
 
     parent = Path(__file__).resolve().parents[2]

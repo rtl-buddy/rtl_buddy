@@ -1,15 +1,7 @@
 """Project-local environment defaults from ``.rtl-buddy/.env``.
 
-Machine-local values that are project-scoped but must not be committed
-(e.g. ``RTL_BUDDY_SLANG_PLUGIN``, ``SYSTEMC_HOME``) get a home that rb
-picks up automatically, instead of dirtying tracked configs or relying
-on every shell having sourced a toolchain env script.
-
-Precedence is strictly a fallback: a variable already present in the
-process environment is never overridden, so explicit YAML config beats
-the process environment beats this file. Loading is idempotent — once a
-key is applied it is in the process environment, so a re-entry (e.g. a
-regression iterating suites) cannot flip it.
+The file holds machine-local, uncommitted values (e.g. ``RTL_BUDDY_SLANG_PLUGIN``, ``SYSTEMC_HOME``).
+It is a fallback only: a variable already in the process environment is never overridden.
 """
 
 import logging
@@ -21,23 +13,15 @@ logger = logging.getLogger(__name__)
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
-# Relative to the project root (the directory containing
-# root_config.yaml). Lives inside .rtl-buddy/ so it is self-namespaced —
-# a bare .env would collide with the docker-compose/node/direnv
-# conventions that auto-load one.
+# Under .rtl-buddy/ because a bare .env collides with docker-compose/node/direnv.
 ENV_FILE_RELPATH = Path(".rtl-buddy") / ".env"
 
 
 def parse_env_file(path: str | Path) -> dict[str, str]:
     """Parse ``KEY=VALUE`` lines from an env file.
 
-    Blank lines and ``#`` comments are skipped; a leading ``export `` is
-    tolerated (so shell-style lines can be pasted verbatim); surrounding
-    matching single or double quotes are stripped from the value. Values
-    are otherwise literal — no ``$VAR`` interpolation, no escapes. A
-    line without ``=`` or with an empty key fails loud: this is a config
-    file, and a typo silently dropping a variable would surface much
-    later as a missing-tool error.
+    Blank lines and ``#`` comments are skipped, a leading ``export `` is accepted, and matching surrounding quotes are stripped.
+    Values are otherwise literal. A line without ``=`` or with an empty key raises ``FatalRtlBuddyError``.
     """
     env: dict[str, str] = {}
     for lineno, raw in enumerate(Path(path).read_text().splitlines(), start=1):
@@ -62,9 +46,8 @@ def parse_env_file(path: str | Path) -> dict[str, str]:
 def apply_env_file(project_root: str | Path) -> dict[str, str]:
     """Load ``<project_root>/.rtl-buddy/.env`` into ``os.environ``.
 
-    Only keys absent from the process environment are applied; the rest
-    are reported as skipped. Missing file is a silent no-op. Returns the
-    dict of variables actually applied.
+    Only keys absent from the process environment are applied. A missing file is a no-op.
+    Returns the variables applied.
     """
     path = Path(project_root) / ENV_FILE_RELPATH
     if not path.is_file():
@@ -72,9 +55,6 @@ def apply_env_file(project_root: str | Path) -> dict[str, str]:
     parsed = parse_env_file(path)
     applied = {k: v for k, v in parsed.items() if k not in os.environ}
     os.environ.update(applied)
-    # INFO when something was actually injected — this mutates the
-    # environment of every downstream tool subprocess, so it should be
-    # discoverable in rtl_buddy.log; DEBUG otherwise to stay quiet.
     log_event(
         logger,
         logging.INFO if applied else logging.DEBUG,

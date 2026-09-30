@@ -1,11 +1,9 @@
-"""Tests for the openXC7 fpga backend (#288): parser, backend, CLI.
+"""Tests for the openXC7 fpga backend: parser, backend, CLI.
 
-nextpnr-xilinx and prjxray are never invoked (they are not assumed
-installed anywhere CI runs) — the backend tests monkeypatch
-``run_managed_process`` with a fake that drops the fixture logs from
-``tests/fixtures/fpga/`` into the run directory. The fixture logs are
-hand-built to nextpnr's / yosys's documented output formats, not
-captured from a real run.
+nextpnr-xilinx and prjxray are never invoked. Backend tests monkeypatch
+``run_managed_process`` with a fake that writes the fixture logs from
+``tests/fixtures/fpga/`` into the run directory. The fixture logs are hand-built to
+the documented nextpnr and yosys output formats.
 """
 
 from __future__ import annotations
@@ -40,11 +38,6 @@ def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text()
 
 
-# ---------------------------------------------------------------------------
-# parse_nextpnr_log
-# ---------------------------------------------------------------------------
-
-
 def test_parse_nextpnr_log_pass_utilization_and_timing():
     metrics = parse_nextpnr_log(_fixture("nextpnr_xilinx_pass.log"))
 
@@ -66,7 +59,7 @@ def test_parse_nextpnr_log_pass_utilization_and_timing():
     assert clk["clock"] == "clk"
     assert clk["target_mhz"] == 100.0
     assert clk["met"] is True
-    # Critical path endpoints from the report section.
+    # Critical path endpoints come from the report section.
     assert clk["source"] == "count_reg.0_SLICE_FFX.Q"
     assert clk["destination"] == "count_reg.7_SLICE_FFX.D"
 
@@ -95,11 +88,6 @@ def test_parse_nextpnr_log_rejects_garbage():
         parse_nextpnr_log("Info: nothing useful here\n")
 
 
-# ---------------------------------------------------------------------------
-# Backend registry
-# ---------------------------------------------------------------------------
-
-
 def test_fpga_backends_registry_contains_openxc7():
     from rtl_buddy.runner.fpga_runner import _FPGA_BACKENDS
     from rtl_buddy.tools.fpga_base import BaseFpga
@@ -111,11 +99,6 @@ def test_fpga_backends_registry_contains_openxc7():
     from rtl_buddy.config.fpga import FpgaConfigFile
 
     assert FpgaConfigFile.__dataclass_fields__["tool"].default == "vivado"
-
-
-# ---------------------------------------------------------------------------
-# OpenXc7Fpga backend — mocked pipeline, no real toolchain
-# ---------------------------------------------------------------------------
 
 
 def _make_backend(tmp_path, *, part=_PART, emit_bitstream=False, tool_overrides=None):
@@ -247,7 +230,7 @@ def test_openxc7_mocked_pipeline_passes(tmp_path, monkeypatch):
     for absent in ("tns_ns", "whs_ns", "total_power_w", "drc_violations"):
         assert absent not in res.results
 
-    # Stage pipeline: yosys -> nextpnr (no prjxray without --bitstream).
+    # Stage pipeline: yosys, then nextpnr (no prjxray without --bitstream).
     assert [os.path.basename(c[0]) for c in calls] == ["yosys", "nextpnr-xilinx"]
     nextpnr_cmd = calls[1]
     assert nextpnr_cmd[nextpnr_cmd.index("--chipdb") + 1] == "/opt/chipdb/xc7a35t.bin"
@@ -308,7 +291,7 @@ def test_openxc7_bitstream_runs_prjxray_stages(tmp_path, monkeypatch):
     ]
     fasm_cmd = calls[2]
     assert fasm_cmd[fasm_cmd.index("--part") + 1] == _PART
-    # xc7a -> artix7 family directory of the prjxray database.
+    # xc7a maps to the artix7 family directory of the prjxray database.
     assert fasm_cmd[fasm_cmd.index("--db-root") + 1] == "/opt/prjxray-db/artix7"
     bit_cmd = calls[3]
     assert (
@@ -321,9 +304,10 @@ def test_openxc7_bitstream_runs_prjxray_stages(tmp_path, monkeypatch):
 
 
 def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
-    """xc7frames2bit exiting 0 without writing must not promote the `.bit` an
-    earlier run left behind, and each stage must consume the handoff file this
-    run's predecessor wrote rather than a previous run's (#469)."""
+    """A run whose xc7frames2bit exits 0 without writing does not promote a previous
+    run's `.bit`, and each stage consumes the handoff file its predecessor wrote in
+    this run.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -334,8 +318,8 @@ def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
     (artefacts / "demo_top.json").write_text('{"stale": true}')
     (artefacts / "demo_top.fasm").write_text("# stale fasm\n")
 
-    # The stage handoffs are cleared too, so what nextpnr and fasm2frames
-    # consume is what this run's yosys / nextpnr actually wrote.
+    # Stage handoffs are cleared too, so nextpnr and fasm2frames consume what this run
+    # wrote.
     seen: dict[str, str] = {}
 
     def _no_bitstream(cmd, **kwargs):
@@ -361,9 +345,9 @@ def test_openxc7_ignores_a_previous_runs_bitstream(tmp_path, monkeypatch):
 
 
 def test_openxc7_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypatch):
-    """Matches the Vivado backend: a run not asked for a bitstream still
-    removes a previous one, so the artefact dir describes the latest run
-    (#469)."""
+    """A run not asked for a bitstream still removes a previous one, as in the Vivado
+    backend.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -380,9 +364,9 @@ def test_openxc7_clears_the_bitstream_without_emit_bitstream(tmp_path, monkeypat
 
 
 def test_openxc7_clears_stale_frames_without_emit_bitstream(tmp_path, monkeypatch):
-    """`<top>.frames` is on the up-front clear list even though the stage that
-    writes it truncates it: a run without `--bitstream` never reaches that
-    stage, so nothing else would ever remove it (#469)."""
+    """`<top>.frames` is on the up-front clear list because a run without
+    `--bitstream` never reaches the stage that truncates it.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -398,8 +382,9 @@ def test_openxc7_clears_stale_frames_without_emit_bitstream(tmp_path, monkeypatc
 
 
 def test_openxc7_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
-    """The clear sits above the filelist step, so a bitstream rerun that dies
-    before any stage runs leaves no frames or bitstream behind (#469)."""
+    """The clear happens before the filelist step, so a bitstream rerun that dies
+    before any stage leaves no frames or bitstream.
+    """
     from rtl_buddy.errors import FilelistError
     from rtl_buddy.tools.fpga_openxc7 import OpenXc7Fpga
 
@@ -432,9 +417,9 @@ def test_openxc7_filelist_failure_still_clears_artefacts(tmp_path, monkeypatch):
 
 
 def test_openxc7_clears_a_previous_tops_artefacts(tmp_path, monkeypatch):
-    """The outputs are named after the design's top, so editing a run's model
-    or top would strand the previous top's files in the same artefact dir —
-    still at the paths an edit-back would resolve. They go by suffix (#469)."""
+    """Outputs are named after the top, so they are cleared by suffix; otherwise
+    editing the model or top strands the previous top's files.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -450,7 +435,7 @@ def test_openxc7_clears_a_previous_tops_artefacts(tmp_path, monkeypatch):
     }
     for path in old_top.values():
         path.write_bytes(b"\x00previous top\x00")
-    # Fixed-name inputs the run owns must survive: they carry no managed suffix.
+    # Fixed-name inputs the run owns survive: they carry no managed suffix.
     kept = artefacts / "synth.ys"
     kept.write_text("# generated script\n")
 
@@ -496,11 +481,6 @@ def test_openxc7_error_lines_in_stage_log_fail(tmp_path, monkeypatch):
     res = backend.run()
     assert isinstance(res, FpgaFailResults)
     assert "1 ERROR(s) in yosys log" in res.results["desc"]
-
-
-# ---------------------------------------------------------------------------
-# CLI wiring
-# ---------------------------------------------------------------------------
 
 
 def _openxc7_project(minimal_project: Path) -> Path:
@@ -585,9 +565,10 @@ def test_cli_openxc7_non_7series_part_exits_2(
 
 
 def test_openxc7_bad_platform_still_clears_artefacts(tmp_path, monkeypatch):
-    """Target resolution now runs after the clear, so an unknown `platform:`
-    (or a non-7-series part) does not raise over a previous run's netlist,
-    FASM and deployable bitstream (#469)."""
+    """Target resolution runs after the clear, so an unknown `platform:` or a
+    non-7-series part does not raise over a previous run's netlist, FASM and
+    bitstream.
+    """
     model = ModelConfig(
         name="demo_top", filelist=[], path=str(tmp_path / "models.yaml")
     )
@@ -646,10 +627,9 @@ def test_openxc7_non_7series_part_still_clears_artefacts(tmp_path, monkeypatch):
 
 
 def test_openxc7_clear_spares_the_test_runners_result_json(tmp_path, monkeypatch):
-    """Artefact directories are keyed on a run's *name*, and names are not
-    required to be unique across commands — an `rb fpga` run and a simulation
-    test called the same thing share `artefacts/<name>/`. The `.json` suffix
-    clear must not eat the test runner's durable `result.json` (#469)."""
+    """The `.json` suffix clear spares the test runner's `result.json`, which shares
+    `artefacts/<name>/` with a same-named `rb fpga` run.
+    """
     from rtl_buddy.tools.artifact_paths import RESULT_JSON_NAME
 
     backend = _make_backend(
@@ -674,9 +654,9 @@ def test_openxc7_clear_spares_the_test_runners_result_json(tmp_path, monkeypatch
 
 
 def test_openxc7_clear_spares_a_co_named_cdc_analysis(tmp_path, monkeypatch):
-    """Artefact directories are keyed on a run's name, so an FPGA run and a
-    CDC analysis called the same thing share `artefacts/<name>/`. The `.json`
-    suffix clear must not eat the analyzer's report or its domain maps (#469)."""
+    """The `.json` suffix clear spares a same-named CDC analysis's report and domain
+    maps.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -704,9 +684,9 @@ def test_openxc7_clear_spares_a_co_named_cdc_analysis(tmp_path, monkeypatch):
 def test_openxc7_stage_failure_removes_the_earlier_stages_outputs(
     tmp_path, monkeypatch
 ):
-    """Each stage writes its output before the next reads it, so a pipeline
-    that dies at `fasm2frames` leaves the netlist and FASM its predecessors
-    wrote. A run that reports FAIL publishes nothing (#469)."""
+    """A pipeline that dies at `fasm2frames` removes the netlist and FASM its
+    predecessors wrote, because a FAIL publishes nothing.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -730,9 +710,9 @@ def test_openxc7_stage_failure_removes_the_earlier_stages_outputs(
 
 
 def test_openxc7_clear_spares_a_co_named_tests_build_stamp(tmp_path, monkeypatch):
-    """An unshared simulator build writes `rb-compile-stamp.json` straight
-    into `artefacts/<test>/`, so a co-named FPGA run's `.json` clear would
-    silently invalidate the build cache and force a recompile (#469)."""
+    """The `.json` suffix clear spares a same-named test's `rb-compile-stamp.json`, so
+    the build cache stays valid.
+    """
     from rtl_buddy.tools.artifact_paths import SHARED_BUILD_STAMP_NAME
 
     backend = _make_backend(
@@ -749,10 +729,9 @@ def test_openxc7_clear_spares_a_co_named_tests_build_stamp(tmp_path, monkeypatch
 
 
 def test_openxc7_clear_spares_a_co_named_graph_build(tmp_path, monkeypatch):
-    """`rb graph` writes `graph.json`, `graph-meta.json` and the results
-    overlay directly into `artefacts/graph/`, so an FPGA run named `graph`
-    shares the directory and the `.json` suffix clear would take all three
-    (#469)."""
+    """The `.json` suffix clear spares `graph.json`, `graph-meta.json` and the results
+    overlay of a same-named `rb graph` build.
+    """
     from rtl_buddy.graph.config_tier import GRAPH_JSON_NAME, GRAPH_META_NAME
     from rtl_buddy.graph.results import RESULTS_OVERLAY_NAME
 
@@ -780,8 +759,9 @@ def test_openxc7_clear_spares_a_co_named_graph_build(tmp_path, monkeypatch):
 
 
 def test_openxc7_clear_spares_a_co_named_cov_and_xplr_output(tmp_path, monkeypatch):
-    """Same for `rb cov`'s manifest and model, which sit directly in a
-    user-named coverage directory (#469)."""
+    """The `.json` suffix clear spares `rb cov`'s manifest and model in a user-named
+    coverage directory.
+    """
     from rtl_buddy.cov.manifest import MANIFEST_FILENAME
     from rtl_buddy.cov.model import MODEL_FILENAME
 
@@ -801,11 +781,10 @@ def test_openxc7_clear_spares_a_co_named_cov_and_xplr_output(tmp_path, monkeypat
 
 
 def test_openxc7_clears_its_own_netlist_when_the_top_collides(tmp_path, monkeypatch):
-    """A design topped `graph` writes `graph.json`, which is `rb graph`'s
-    protected name. If the flow cannot clear its own netlist, a Yosys run
-    that exits 0 without writing hands the *previous* run's JSON to nextpnr
-    and the run reports success against a design it never synthesised
-    (#469)."""
+    """A design topped `graph` writes `graph.json`, which is `rb graph`'s protected
+    name. The flow still clears its own netlist, so a Yosys run that exits 0
+    without writing does not hand the previous netlist to nextpnr.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -837,8 +816,7 @@ def test_openxc7_clears_its_own_netlist_when_the_top_collides(tmp_path, monkeypa
 
 
 def test_openxc7_stage_failure_clears_a_colliding_top_netlist(tmp_path, monkeypatch):
-    """And the failure path clears it too — a FAIL publishes nothing, even
-    when the netlist's name belongs to a sibling command (#469)."""
+    """The failure path clears a colliding netlist too."""
     backend = _make_backend(
         tmp_path, emit_bitstream=True, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -868,10 +846,9 @@ def test_openxc7_stage_failure_clears_a_colliding_top_netlist(tmp_path, monkeypa
 
 
 def test_openxc7_clears_a_renamed_tops_protected_netlist(tmp_path, monkeypatch):
-    """Ownership is durable. A run topped `graph` claims `graph.json`; after
-    the top is renamed, `own` names only the new top and `graph.json` matches
-    `rb graph`'s protected name again — without the ledger it would survive
-    every clear from then on (#469)."""
+    """Ownership is durable: after a run topped `graph` is renamed, `graph.json` is
+    still cleared as this flow's output rather than protected as `rb graph`'s.
+    """
     backend = _make_backend(
         tmp_path, emit_bitstream=False, tool_overrides=_CHIPDB_OVERRIDES
     )
@@ -897,8 +874,8 @@ def test_openxc7_clears_a_renamed_tops_protected_netlist(tmp_path, monkeypatch):
     assert isinstance(backend.run(), FpgaPassResults)
     assert (artefacts / "graph.json").exists()
 
-    # Run 2: the top is renamed. The previous top's netlist is this flow's
-    # output, not a sibling's, and must go.
+    # Run 2: the top is renamed. The previous top's netlist is this flow's output and
+    # must go.
     monkeypatch.setattr(type(backend.fpga_cfg), "get_top", lambda _self: "other_top")
     _mock_toolchain(monkeypatch, _pipeline("other_top"))
     assert isinstance(backend.run(), FpgaPassResults)
@@ -909,10 +886,9 @@ def test_openxc7_clears_a_renamed_tops_protected_netlist(tmp_path, monkeypatch):
 
 
 def test_openxc7_does_not_inherit_a_co_named_pnr_runs_claim(tmp_path, monkeypatch):
-    """A P&R run and an FPGA run sharing a name share `artefacts/<name>/` and
-    therefore one ledger. A claim bypasses the suffix filter, so inheriting
-    P&R's would delete its routed database outright even though
-    `.routed.odb` is none of the FPGA suffixes (#469)."""
+    """A co-named P&R run shares `artefacts/<name>/` and its ledger; the FPGA run must
+    not inherit P&R's claim and delete its `.routed.odb`.
+    """
     from rtl_buddy.tools.artifact_paths import clear_managed_outputs
 
     backend = _make_backend(

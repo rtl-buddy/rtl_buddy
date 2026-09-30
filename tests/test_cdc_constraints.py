@@ -1,9 +1,6 @@
-"""Contract tests for `rb cdc --emit-constraints` generation (#291).
+"""Contract tests for `rb cdc --emit-constraints` generation.
 
-Drives the pure generator (`tools/cdc_constraints.generate_constraints`)
-against checked-in rtl-buddy-cdc map fixtures — the reference synchronizer set
-(single-bit 2FF, multi-bit gray bus, req/ack handshake, reset sync). No live
-tool: the maps are the contract.
+Drives the pure generator (`tools/cdc_constraints.generate_constraints`) against checked-in rtl-buddy-cdc map fixtures: the reference synchronizer set (2FF, gray bus, req/ack handshake, reset sync). No live tool runs.
 """
 
 from __future__ import annotations
@@ -39,36 +36,24 @@ def test_emit_xdc_top_has_clock_framing_and_per_crossing_exceptions(
 ):
     r = generate_constraints(domain_map, reset_map, fmt="xdc", scoped=False)
     k = _kinds(r)
-    # 5 async crossings -> 5 max_delay; the two width-8 buses -> 2 bus_skew
     assert k["max_delay"] == 5
     assert k["bus_skew"] == 2
-    # two clocks echoed + one async group at the top
     assert k["create_clock"] == 2
     assert k["clock_groups"] == 1
-    # four reset-sync flops collapse to two synchronizer instances
     assert k["reset_false_path"] == 2
 
     text = r.text
     assert "create_clock -name clk_a -period 8.0" in text
     assert "set_clock_groups -asynchronous -group {clk_a} -group {clk_b}" in text
-    # max_delay is bounded to the *destination* period, not the launch period.
-    # The whole-domain source (the bare top) is addressed by its launch clock
-    # (canonical CDC -from, all valid startpoints); the destination is a rooted,
-    # sequential-only instance selector — never the `-hierarchical <inst>/*`
-    # form Vivado binds to nothing, and never the bare `<inst>/*` that drags in
-    # combinational / VCC / clock-buffer cells (18-401/18-402 noise).
+    # max_delay is bounded to the destination period. The whole-domain source is addressed by its launch clock; the destination is a rooted, sequential-only instance selector, never `-hierarchical <inst>/*` (Vivado binds it to nothing) or bare `<inst>/*` (pulls in combinational cells).
     assert (
         "set_max_delay -datapath_only 10.0 -from [get_clocks {clk_a}]"
         " -to [get_cells u_flag_sync/* -filter {IS_SEQUENTIAL}]" in text
     )
-    # the clk_b->clk_a ack crossing is bounded to clk_a's 8.0 ns
     assert "set_max_delay -datapath_only 8.0" in text
-    # reset synchronizers get their own false_path, not a data exception
     assert "set_false_path -to [get_cells u_rst_a/* -filter {IS_SEQUENTIAL}]" in text
     assert "set_false_path -to [get_cells u_rst_b/* -filter {IS_SEQUENTIAL}]" in text
-    # path-exception start/endpoints are sequential-only
     assert "-from [get_cells u_hs/* -filter {IS_SEQUENTIAL}]" in text
-    # the broken `-hierarchical <inst>/*` selector must never be emitted
     assert "-hierarchical u_" not in text
     assert "-hierarchical cdc_ref_top" not in text
 
@@ -76,7 +61,6 @@ def test_emit_xdc_top_has_clock_framing_and_per_crossing_exceptions(
 def test_bus_skew_only_on_multibit_crossings(domain_map, reset_map):
     r = generate_constraints(domain_map, reset_map, fmt="xdc")
     bus_targets = {e["target"] for e in r.manifest if e["kind"] == "bus_skew"}
-    # gray bus and handshake data bus are width 8; the 1-bit syncs are not skewed
     assert "u_gray_sync" in bus_targets
     assert all(e["width"] > 1 for e in r.manifest if e["kind"] == "bus_skew")
     assert all(
@@ -90,17 +74,13 @@ def test_bus_skew_only_on_multibit_crossings(domain_map, reset_map):
 def test_scoped_omits_top_clock_framing_and_uses_relative_cells(domain_map, reset_map):
     r = generate_constraints(domain_map, reset_map, fmt="xdc", scoped=True)
     k = _kinds(r)
-    # scoped IP emit: no top-level clock defs / groups
     assert k["create_clock"] == 0
     assert k["clock_groups"] == 0
-    # data + reset exceptions remain, with IP-relative (non-hierarchical) cells
     assert k["max_delay"] == 5
     assert k["reset_false_path"] == 2
     assert "SCOPED_TO_REF" in r.text
-    # rooted/relative, sequential-only instance selector
     assert "[get_cells u_flag_sync/* -filter {IS_SEQUENTIAL}]" in r.text
-    # the broken `-hierarchical <inst>/*` form must never appear (scoped uses a
-    # filtered `-hierarchical *` for the whole-domain source, which is valid)
+    # Scoped output uses a filtered `-hierarchical *` for the whole-domain source, which is valid.
     assert "-hierarchical u_" not in r.text
     assert "-hierarchical cdc_ref_top" not in r.text
 
@@ -108,7 +88,6 @@ def test_scoped_omits_top_clock_framing_and_uses_relative_cells(domain_map, rese
 def test_sdc_and_xdc_share_the_cdc_subset(domain_map, reset_map):
     sdc = generate_constraints(domain_map, reset_map, fmt="sdc")
     xdc = generate_constraints(domain_map, reset_map, fmt="xdc")
-    # the CDC-relevant commands are identical; only the header differs
     assert sdc.manifest == xdc.manifest
     body = lambda t: "\n".join(  # noqa: E731
         ln for ln in t.splitlines() if not ln.startswith("#")
@@ -117,7 +96,7 @@ def test_sdc_and_xdc_share_the_cdc_subset(domain_map, reset_map):
 
 
 def test_missing_period_is_flagged_not_guessed(reset_map):
-    # A crossing whose dst clock has no period must not emit a bogus number.
+    # A destination clock without a period must not emit a bogus number.
     dm = {
         "design": {"top": "t"},
         "clocks": [{"name": "clk_a", "period": 8.0, "ports": ["clk_a"]}],
@@ -125,7 +104,7 @@ def test_missing_period_is_flagged_not_guessed(reset_map):
         "crossings": [
             {
                 "src_clock": "clk_a",
-                "dst_clock": "clk_b",  # no period defined
+                "dst_clock": "clk_b",
                 "src_source_instance_path": "t.a",
                 "dst_source_instance_path": "t.b",
                 "width": 1,
@@ -144,12 +123,7 @@ def test_unknown_format_raises():
 
 
 def test_emitted_xdc_round_trips_through_check_xdc_clean(domain_map, reset_map):
-    """The generated XDC, fed back through the audit, is coverage-complete with
-    zero over-waive — i.e. emit and check-xdc agree on the cell-selector syntax.
-
-    This is the guard the binding bug needed: emit and audit must parse the same
-    selector grammar, so a generated file always audits clean.
-    """
+    """The generated XDC, audited by check-xdc, is coverage-complete with zero over-waive."""
     from rtl_buddy.tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
 
     report = json.loads((FIX / "cdc_ref_report.json").read_text())
@@ -161,16 +135,9 @@ def test_emitted_xdc_round_trips_through_check_xdc_clean(domain_map, reset_map):
 
 
 def test_emitted_scoped_xdc_round_trips_clean_coverage(domain_map, reset_map):
-    """Same emit -> check-xdc round-trip for the ``scoped`` path.
+    """The same emit and check-xdc round trip holds for the ``scoped`` path.
 
-    The scoped whole-domain source is a *different* selector
-    (``[get_cells -hierarchical * -filter {IS_SEQUENTIAL}]``) that exercises a
-    separate branch of the audit's ``_tokens`` parser, so it needs its own
-    guard. A scoped IP file omits the top-level clock framing (clocks belong to
-    the instantiating parent), so the audit legitimately reports two
-    ``clock_graph`` warnings — but the *coverage* must still be complete: no
-    ``unconstrained_crossing`` (every crossing's selector parsed and matched)
-    and no ``over_waive``, and no blockers.
+    A scoped file has no top-level clocks, so two ``clock_graph`` warnings are expected; there must be no ``unconstrained_crossing``, ``over_waive`` or blockers.
     """
     from rtl_buddy.tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
 
@@ -182,13 +149,10 @@ def test_emitted_scoped_xdc_round_trips_clean_coverage(domain_map, reset_map):
     kinds = {f.kind for f in res.findings}
     assert "unconstrained_crossing" not in kinds, [f.message for f in res.findings]
     assert "over_waive" not in kinds, [f.message for f in res.findings]
-    # the only findings are the expected clock_graph warnings (no create_clock
-    # in a scoped IP file)
     assert kinds <= {"clock_graph"}, [f.message for f in res.findings]
 
 
-# A map from a flattening frontend (Yosys `flatten`): every crossing's capture
-# instance collapses to the design top, so no IP-relative cell can be formed.
+# A flattening frontend collapses every capture instance to the design top, so no IP-relative cell can be formed.
 _FLATTENED_MAP = {
     "design": {"top": "ip_top"},
     "clocks": [
@@ -200,8 +164,7 @@ _FLATTENED_MAP = {
         {
             "src_clock": "clk_a",
             "dst_clock": "clk_b",
-            # source_instance_path flattened to the top; the real endpoint only
-            # survives in *_flop (with a frontend-synthetic name).
+            # The real endpoint survives only in ``*_flop``, with a frontend-synthetic name.
             "src_source_instance_path": "ip_top",
             "dst_source_instance_path": "ip_top",
             "src_flop": "ip_top.$driver$flag_q",
@@ -214,26 +177,19 @@ _FLATTENED_MAP = {
 
 
 def test_scoped_flattened_map_is_marked_unscoped_not_wildcarded():
-    # Scoped emit must NOT silently produce `[get_cells ip_top/*]` wildcards.
+    # Scoped emit must not produce `[get_cells ip_top/*]` wildcards.
     r = generate_constraints(_FLATTENED_MAP, {}, fmt="xdc", scoped=True)
     assert r.unscoped, "flattened crossing should be reported as unscoped"
-    # no over-broad exception emitted for it
     assert not any(e["kind"] == "max_delay" for e in r.manifest)
     assert "[get_cells ip_top/*]" not in r.text
     assert "UNSCOPED" in r.text and "frontend: slang" in r.text
 
 
 def test_top_level_emit_tolerates_flattened_map():
-    # Non-scoped (top-level) output is hierarchy-searched and clock-framed, so a
-    # flattened map is fine there — no unscoped report, exceptions still emit.
+    # Non-scoped output is hierarchy-searched and clock-framed, so a flattened map is fine.
     r = generate_constraints(_FLATTENED_MAP, {}, fmt="xdc", scoped=False)
     assert not r.unscoped
     assert any(e["kind"] == "max_delay" for e in r.manifest)
-
-
-# ---------------------------------------------------------------------------
-# RtlBuddyCdc(emit_maps=True) — argv plumbing + map readback
-# ---------------------------------------------------------------------------
 
 
 def test_emit_maps_adds_flags_and_reads_back(tmp_path, monkeypatch):
@@ -280,20 +236,17 @@ def test_emit_maps_adds_flags_and_reads_back(tmp_path, monkeypatch):
     def _fake_run(cmd, stdout, stderr, **kwargs):
         calls.append(list(cmd))
         json_report.write_text('{"summary": {"violations": 0, "suppressed": 0}}')
-        # The real tool writes the maps at the requested paths; emulate that.
         Path(wrapper._domain_map_path()).write_text('{"crossings": [], "clocks": []}')
         Path(wrapper._reset_map_path()).write_text('{"reset_synchronizers": []}')
         return ManagedProcessResult(returncode=0)
 
-    # rtl_buddy does not depend on rtl-buddy-cdc, and `run` skips when it is
-    # not on PATH (#469) — pretend it is installed so this exercises the run.
+    # `run` skips when rtl-buddy-cdc is not on PATH; pretend it is installed.
     monkeypatch.setattr(mod.shutil, "which", lambda name: f"/fake/bin/{name}")
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullcontext())
     monkeypatch.setattr(mod, "run_managed_process", _fake_run)
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
 
     wrapper.run()
-    # the analysis (json + text) invocations both carry the emit-map flags
     assert any(
         "--emit-domain-map" in c and "--emit-reset-domain-map" in c for c in calls
     )

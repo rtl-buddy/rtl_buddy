@@ -1,29 +1,8 @@
-"""``cfg-xplr`` root-config support for ``rb xplr`` (P2, #298).
+"""Optional ``cfg-xplr`` block in ``root_config.yaml`` for ``rb xplr``.
 
-A single optional block on root_config.yaml that settles the source
-commit policy, the auto-commit scope, the worktree location, and the
-disk-eviction policy for the experiment ledger:
+Sets the commit mode, the auto-commit source scope, the disk watermark and hard cap in GB, the eviction policy and the worktree root. Every key is optional. ``worktree-root`` is relative to the project root and must be gitignored.
 
-    cfg-xplr:
-      commit-mode: "auto"                # auto | self-managed
-      source-scope: ["src", "design"]    # what auto-commit snapshots
-      disk-high-watermark-gb: 50         # gc trigger
-      disk-hard-cap-gb: 80               # backstop that blocks new runs
-      eviction-policy: "keep-frontier"   # keep-frontier|oldest-first|manual
-      worktree-root: "artefacts/xplr/worktrees"
-
-Every key is optional; the defaults above apply. ``worktree-root`` is
-resolved relative to the project root and MUST be gitignored — the
-default lives under ``artefacts/``, which every rb project already
-ignores, so worktrees never flip the main tree's dirty bit.
-
-Unlike most cfg blocks, xplr commands run without loading the full
-:class:`~rtl_buddy.config.root.RootConfig` (they only need a project
-root, not builders/platforms), so :func:`load_xplr_config` reads the
-block leniently straight from ``root_config.yaml`` — a missing file or
-missing block yields the defaults, while a malformed block fails
-loudly. The block is also wired into ``RootConfigFile`` so a full
-root-config load exposes it via ``RootConfig.get_xplr_cfg()``.
+:func:`load_xplr_config` reads the block directly from ``root_config.yaml`` without loading the full RootConfig.
 """
 
 from __future__ import annotations
@@ -60,7 +39,7 @@ _KNOWN_KEYS = (
 
 @dataclass(frozen=True)
 class XplrConfig:
-    """Resolved + validated cfg-xplr settings consumed by the xplr package."""
+    """Validated cfg-xplr settings."""
 
     commit_mode: str = DEFAULT_COMMIT_MODE
     source_scope: list[str] = dc_field(
@@ -72,7 +51,7 @@ class XplrConfig:
     worktree_root: str = DEFAULT_WORKTREE_ROOT
 
     def worktree_dir(self, project_root: Path) -> Path:
-        """The worktree root resolved against the project root."""
+        """Return the worktree root, resolved against `project_root`."""
 
         root = Path(self.worktree_root)
         return root if root.is_absolute() else project_root / root
@@ -80,7 +59,7 @@ class XplrConfig:
 
 @serde
 class XplrConfigFile:
-    """YAML-backed cfg-xplr block (all keys optional)."""
+    """YAML form of the cfg-xplr block."""
 
     commit_mode: str = field(rename="commit-mode", default=DEFAULT_COMMIT_MODE)
     source_scope: list[str] = field(
@@ -99,7 +78,7 @@ class XplrConfigFile:
     worktree_root: str = field(rename="worktree-root", default=DEFAULT_WORKTREE_ROOT)
 
     def initialise(self) -> XplrConfig:
-        """Validate and freeze the block into an :class:`XplrConfig`."""
+        """Validate the block and return an :class:`XplrConfig`."""
 
         if self.commit_mode not in COMMIT_MODES:
             raise FatalRtlBuddyError(
@@ -142,14 +121,9 @@ class XplrConfigFile:
 
 
 def load_xplr_config(project_root: Path) -> XplrConfig:
-    """Read the optional ``cfg-xplr`` block from ``root_config.yaml``.
+    """Read the ``cfg-xplr`` block from ``root_config.yaml``.
 
-    xplr commands anchor on the project root without loading the full
-    RootConfig (no builders/platforms are needed), so this reads just
-    the one block. A missing ``root_config.yaml`` or a missing
-    ``cfg-xplr`` block yields the defaults; a malformed block raises
-    :class:`FatalRtlBuddyError` naming what was wrong (unknown keys
-    fail loudly so a typo'd key is never silently ignored).
+    A missing file or block yields the defaults. A malformed block or an unknown key raises :class:`FatalRtlBuddyError`.
     """
 
     path = Path(project_root) / "root_config.yaml"

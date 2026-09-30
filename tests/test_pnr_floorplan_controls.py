@@ -1,8 +1,7 @@
-"""Floorplan controls for `rb pnr` (#105): the macro-packer anchor corner,
-standard-cell placement blockages, and IO pin placement after the macros.
+"""Tests for the `rb pnr` floorplan controls.
 
-The packing geometry itself is tested in test_pnr_macro_pack.py; this file
-covers the `pnr.yaml` schema and the Tcl the flow renders from it.
+Covers the macro-packer anchor corner, standard-cell placement blockages and IO pin
+placement after the macros. Packing geometry is tested in test_pnr_macro_pack.py.
 """
 
 import textwrap
@@ -26,10 +25,6 @@ from rtl_buddy.config.pnr import (
 )
 from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
-
-# ----------------------------------------------------------------------
-# Schema
-# ----------------------------------------------------------------------
 
 
 def _load(tmp_path, **floorplan) -> PnrConfig:
@@ -169,11 +164,6 @@ def test_a_bad_blockage_in_yaml_fails_the_suite_load(tmp_path):
         PnrSuiteConfig(str(path))
 
 
-# ----------------------------------------------------------------------
-# Rendering
-# ----------------------------------------------------------------------
-
-
 def _render(tmp_path, floorplan: PnrFloorplan | None = None, **overrides) -> str:
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -241,10 +231,10 @@ def test_unset_controls_render_no_blockages_and_the_plain_packer_call(tmp_path):
 
 
 def test_io_pins_are_placed_after_the_macros_and_the_power_grid(tmp_path):
-    """`place_pins` warns about every unplaced macro (PPL-0015) and sees it
-    at the origin, so the pins go in once the macros are FIRM and, as in
-    OpenROAD's reference flow, after the PDN — and before any standard cell
-    is placed (#105)."""
+    """Pins are placed after the macros are FIRM and the PDN is built, before cells.
+
+    `place_pins` warns (PPL-0015) about macros still at the origin.
+    """
     pins = tmp_path / "pins.tcl"
     pins.write_text("# pins\n")
     text = _render(tmp_path, pin_constraints=str(pins))
@@ -255,7 +245,6 @@ def test_io_pins_are_placed_after_the_macros_and_the_power_grid(tmp_path):
     global_place = text.index("global_placement -density")
     assert text.index("make_tracks") < macros < source < place_pins
     assert place_pins < global_place
-    # Exactly one pin-placement stage, and none before the macros.
     assert text.count('puts ">>> IO pin placement"') == 1
     assert text.index('puts ">>> IO pin placement"') > macros
 
@@ -376,8 +365,7 @@ def test_blockage_rect_of_one_nanometre_is_accepted():
 
 
 def test_blockages_fail_at_setup_without_create_blockage(tmp_path, monkeypatch):
-    """`create_blockage` first shipped in OpenROAD 26Q1; an older build must be
-    refused before the flow starts, not die after the floorplan (#105)."""
+    """A build without `create_blockage` (added in OpenROAD 26Q1) is refused at setup."""
     from rtl_buddy.tools import pnr_openroad
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 

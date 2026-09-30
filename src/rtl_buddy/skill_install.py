@@ -1,12 +1,6 @@
-"""`rtl-buddy skill ...` subcommands: materialize the bundled agent skills.
+"""`rtl-buddy skill ...` subcommands: copy the bundled agent skills from the wheel (`rtl_buddy.skill`) to the Claude Code and Codex skill directories.
 
-Skill content ships inside the wheel at `rtl_buddy.skill`. There is no
-PEP 517 post-install hook, so users run `rtl-buddy skill install` once to
-copy the skill family to the Claude Code / Codex skill directories. The primary
-directory remains `rtl-buddy`; every directory matches its SKILL.md frontmatter
-name, as the Agent Skills spec requires. Default scope is user-level; `--project`
-(or `--root PATH`) opts into project-level, which Claude Code resolves with
-higher precedence than user-level.
+The scope is user-level by default; `--project` or `--root PATH` selects project-level, which Claude Code prefers.
 """
 
 from __future__ import annotations
@@ -24,9 +18,7 @@ from .config.root import discover_project_root
 from .errors import FatalRtlBuddyError
 
 
-# Must match the `name:` field in the bundled SKILL.md frontmatter: the Agent
-# Skills spec requires a skill's name to equal its containing directory name,
-# and spec-validating loaders warn on every load when they diverge.
+# Each directory name must equal the `name:` in its bundled SKILL.md frontmatter.
 SKILL_DIRNAME = "rtl-buddy"
 SPECIALIST_SKILL_DIRNAMES = (
     "rtl-buddy-test",
@@ -36,8 +28,7 @@ SPECIALIST_SKILL_DIRNAMES = (
     "rtl-buddy-implementation",
 )
 SKILL_DIRNAMES = (SKILL_DIRNAME, *SPECIALIST_SKILL_DIRNAMES)
-# Installs predating the rename used the underscore spelling. `install`
-# migrates them away and `uninstall` cleans both.
+# Underscore spelling of the primary directory; `install` removes it and `uninstall` cleans both.
 LEGACY_SKILL_DIRNAME = "rtl_buddy"
 SKILL_FILENAME = "SKILL.md"
 VERSION_MARKER = ".rtl_buddy_skill_version"
@@ -127,19 +118,12 @@ def _legacy_dir(target_dir: Path) -> Path:
 
 
 def _is_ours(target_dir: Path) -> bool:
-    """True when target_dir holds a skill this tool installed.
-
-    Keyed on the version marker so a directory a user created by hand (or
-    renamed something else into) is never touched.
-    """
+    """Return whether target_dir holds a skill this tool installed, judged by the version marker."""
     return (target_dir / VERSION_MARKER).is_file()
 
 
 def _remove_skill_files(target_dir: Path) -> bool:
-    """Delete our files from target_dir; rmdir it when nothing else remains.
-
-    Returns True when a SKILL.md was removed.
-    """
+    """Delete our files from target_dir and rmdir it when empty; return whether a SKILL.md was removed."""
     removed = False
     skill_path = target_dir / SKILL_FILENAME
     marker_path = target_dir / VERSION_MARKER
@@ -163,23 +147,14 @@ def _same_content(path: Path, text: str) -> bool:
 
 
 def _legacy_pattern(pattern: str) -> str:
-    """The pre-rename spelling of one snippet pattern line.
-
-    Derived from the shipped snippet rather than hardcoded, so the two stay
-    in lockstep if the ignored paths ever change again.
-    """
+    """Return the underscore-spelled form of one snippet pattern line."""
     return pattern.replace(f"/{SKILL_DIRNAME}/", f"/{LEGACY_SKILL_DIRNAME}/")
 
 
 def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> str:
-    """Add the snippet's patterns, and drop the pre-rename ones (#434).
+    """Add the snippet's patterns to `.gitignore` and remove their underscore-spelled forms.
 
-    `.gitignore` is the one *tracked* file the directory rename touches, so
-    appending alone would leave four lines under a single comment — two
-    live, two dead — and every future reader has to work out which pair is
-    real. A legacy line is removed only when it matches the pre-rename
-    snippet text exactly; anything a user hand-edited (a different path, a
-    trailing comment, a negation) does not match and is left alone.
+    Only lines that match a legacy pattern exactly are removed; hand-edited lines are kept.
     """
     snippet_lines = snippet.strip().splitlines()
     comment_lines = [line for line in snippet_lines if line.startswith("#")]
@@ -458,8 +433,7 @@ def cmd_status(
             marker = target_dir / VERSION_MARKER
             skill_path = target_dir / SKILL_FILENAME
             legacy = _legacy_dir(target_dir)
-            # The current primary wins over its legacy-path fallback. Specialist
-            # directories never had a legacy spelling.
+            # The current path wins over the legacy fallback, which only the primary skill has.
             if not skill_path.is_file():
                 if (
                     skill_name == SKILL_DIRNAME

@@ -20,13 +20,7 @@ from rtl_buddy.tools import vlog_sim as vlog_sim_module
 
 @pytest.fixture(autouse=True)
 def _forget_rebuild_claims():
-    """``--rebuild`` is honoured once per build dir per PROCESS (#494).
-
-    pytest is one process for the whole file, so a claim left standing by
-    one test would silently turn the next test's forced rebuild into a
-    reuse — and the tmp_path spellings are close enough to collide once
-    somebody parametrises them.
-    """
+    """Reset the once-per-process ``--rebuild`` claim for each build dir between tests."""
     vlog_sim_module._reset_rebuilt_dirs()
     yield
     vlog_sim_module._reset_rebuilt_dirs()
@@ -34,13 +28,7 @@ def _forget_rebuild_claims():
 
 @pytest.fixture(autouse=True)
 def _forget_content_hashes():
-    """The hash memo is keyed on (path, size, mtime_ns) per PROCESS (#494).
-
-    tmp_path spellings and restored mtimes recur across tests in this file
-    by design — the stale-stat tests fabricate exactly the collisions the
-    memo is keyed on — so a stale memo entry would validate content one
-    test rewrote for another.
-    """
+    """Clear the per-process content-hash memo, keyed on (path, size, mtime_ns), between tests."""
     with vlog_sim_module._CONTENT_HASH_LOCK:
         vlog_sim_module._CONTENT_HASH_CACHE.clear()
     yield
@@ -50,8 +38,7 @@ def _forget_content_hashes():
 
 @pytest.fixture(autouse=True)
 def _forget_reuse_announcements():
-    """``compile.build_reused`` hits the console once per build dir per
-    PROCESS (#494 review); console-assertion tests need a fresh slate."""
+    """Reset the once-per-process ``compile.build_reused`` console announcement between tests."""
     vlog_sim_module._reset_reuse_announcements()
     yield
     vlog_sim_module._reset_reuse_announcements()
@@ -59,8 +46,7 @@ def _forget_reuse_announcements():
 
 @pytest.fixture(autouse=True)
 def _forget_lock_degrade_warnings():
-    """``compile.build_lock_unavailable`` is emitted once per build dir per
-    PROCESS (#494), which is one claim per pytest session unless reset."""
+    """Reset the once-per-process ``compile.build_lock_unavailable`` warning between tests."""
     artifact_lock_module._reset_degrade_warnings()
     yield
     artifact_lock_module._reset_degrade_warnings()
@@ -110,10 +96,7 @@ class DummyRootCfg:
     def __init__(self, builder_cfg, project_root=None):
         self.builder_cfg = builder_cfg
         if project_root is not None:
-            # Only a root config that really has one gets the accessor: the
-            # absent-accessor fallback (VlogSim built straight from tests,
-            # older config objects) is a live path too, and the rest of this
-            # file exercises it.
+            # Only a root config with a project root gets the accessor; the fallback without it is also exercised.
             self.get_project_rootdir = lambda: str(project_root)
 
     def get_rtl_builder_cfg(self):
@@ -248,18 +231,11 @@ def _install_fake_builder(
     phony_tail=True,
     simv="simv",
 ):
-    """run_managed_process stand-in that drops a simv where the flags say.
+    """Fake ``run_managed_process`` that drops a simv where the flags say.
 
-    Mirrors each supported family's output convention: Verilator's
-    ``--Mdir <dir>`` (simv inside it), and the ``-o <path>`` that VCS and
-    Icarus take (simv/snapshot at exactly that path).
-
-    ``depends`` (Verilator only) is the prerequisite list to write into a
-    ``V<prefix>__ver.d`` beside the build, in the format Verilator really
-    emits: absolute targets and the prerequisites relative to the *compile
-    cwd* (not to ``--Mdir``), followed by ``--MP``'s tail of phony
-    ``<prerequisite>:`` rules. That tail is what a project enabling ``--MP``
-    in ``builder-opts`` gets, and it must not be mistaken for input.
+    Follows each family's output convention: Verilator's ``--Mdir <dir>`` and the ``-o <path>`` of VCS and Icarus.
+    ``depends`` (Verilator only) is written to a ``V<prefix>__ver.d`` beside the build, with absolute targets,
+    prerequisites relative to the compile cwd, and the phony ``<prerequisite>:`` tail that ``--MP`` adds.
     """
 
     def _fake_run(cmd, capture_output, text, cwd, env=None):
@@ -284,8 +260,7 @@ def _install_fake_builder(
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("binary\n")
         else:
-            # A builder rtl_buddy cannot redirect: it drops its executable
-            # where `builder-simv:` says, relative to the compile dir.
+            # A builder rtl_buddy cannot redirect writes its executable where `builder-simv:` says, relative to the compile dir.
             out = _resolve(simv)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("binary\n")
@@ -315,17 +290,12 @@ def test_share_build_reuses_simv_across_tests_with_identical_inputs(
     assert sim_a._get_simv_path() == sim_b._get_simv_path()
     shared_root = tmp_path / "artefacts" / ".shared-builds"
     assert Path(sim_a._get_simv_path()).parent.parent == shared_root
-    # --Mdir was passed as the absolute shared build dir
     cmd = calls[0]["cmd"]
     assert cmd[cmd.index("--Mdir") + 1] == str(Path(sim_a._get_simv_path()).parent)
 
-    # The compile record the build envelope and the results overlay are
-    # built from (#495). The producer is here, on the sim instance: a real
-    # compile times itself, a reuse costs 0.0 and says so, and both name
-    # the builder that (would have) run.
+    # The compile record: a real compile is timed, a reuse is 0.0, and both name the builder.
     assert sim_a.last_compile["reused"] is False
-    # A real number, timed around the builder (0.0 here only because the
-    # fake builder returns instantly); the reuse below is 0.0 by decision.
+    # Timed around the builder; 0.0 here only because the fake builder returns instantly.
     assert isinstance(sim_a.last_compile["duration_sec"], float)
     assert sim_a.last_compile["builder"] == "verilator"
     assert sim_b.last_compile == {
@@ -336,13 +306,7 @@ def test_share_build_reuses_simv_across_tests_with_identical_inputs(
 
 
 def test_an_unshareable_builder_also_records_its_reuse(tmp_path, monkeypatch):
-    """The per-test-stamp reuse path stamps the same record (#495).
-
-    A builder that cannot share still short-circuits on its own stamp, and
-    that branch is the one a dispatched re-run of an unchanged suite takes
-    for every test — the reuse it reports is what stops right-sizing from
-    reading "nothing compiled" as "the compile is fast".
-    """
+    """The per-test-stamp reuse path also stamps the compile record."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -367,11 +331,7 @@ def test_an_unshareable_builder_also_records_its_reuse(tmp_path, monkeypatch):
 
 
 def test_a_probe_records_the_builder_without_claiming_a_compile(tmp_path, monkeypatch):
-    """Probing settles the builder; it does not compile anything (#495).
-
-    So a config that never reaches a builder still names one, with the
-    duration and the reuse flag left unknown rather than guessed at 0.
-    """
+    """Probing names the builder but leaves duration and reuse flag unknown."""
     _write_source(tmp_path)
     _install_fake_builder(monkeypatch, [])
 
@@ -386,12 +346,7 @@ def test_a_probe_records_the_builder_without_claiming_a_compile(tmp_path, monkey
 
 
 def test_a_failed_compile_still_records_what_it_cost(tmp_path, monkeypatch):
-    """A failure is an observation too — the record is not gated on success.
-
-    A compile that failed after 14 minutes is exactly the number the build
-    job's reservation has to cover, so it counts as work that ran: the
-    record is stamped before the pass/fail branch.
-    """
+    """A failed compile still records its duration and builder."""
     _write_source(tmp_path)
     _install_fake_builder(monkeypatch, [], returncode=1)
 
@@ -417,14 +372,7 @@ def test_share_build_recompiles_when_plusdefines_differ(tmp_path, monkeypatch):
 
 
 def test_a_plusarg_override_never_moves_the_compile_key(tmp_path, monkeypatch):
-    """`rb test --plusarg` must not cost a rebuild (#552).
-
-    Plusargs are runtime-only — they reach the simulator on the RUN command
-    line, never the compile one — which is the whole reason the issue asks
-    for them and not for a `--plusdefine`. The counterpart above
-    (`...recompiles_when_plusdefines_differ`) is what a compile-time
-    override would look like.
-    """
+    """`rb test --plusarg` does not force a rebuild; plusargs reach only the run command line."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -453,7 +401,6 @@ def test_share_build_recompiles_in_place_when_source_changes(tmp_path, monkeypat
     sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
     assert sim_b.compile() == 0
     assert len(calls) == 2  # stale stamp forced a rebuild
-    # same compile config -> same shared dir, rebuilt in place
     assert sim_a._get_simv_path() == sim_b._get_simv_path()
 
     sim_c = _make_sim(tmp_path, monkeypatch, test_name="test_c")
@@ -480,7 +427,7 @@ def test_share_build_ignores_missing_stamp_simv_pair(tmp_path, monkeypatch):
 
 
 def test_share_build_reuses_simv_across_tests_on_vcs(tmp_path, monkeypatch):
-    """VCS shares one build like Verilator does (#358)."""
+    """VCS shares one build like Verilator."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -494,20 +441,19 @@ def test_share_build_reuses_simv_across_tests_on_vcs(tmp_path, monkeypatch):
 
     assert sim_a.compile() == 0
     assert sim_b.compile() == 0
-    # Second test short-circuits on the stamp: one elaboration, not two.
+    # Second test short-circuits on the stamp.
     assert len(calls) == 1
     assert sim_a._get_simv_path() == sim_b._get_simv_path()
     shared = Path(sim_a._get_simv_path()).parent
     assert shared.parent == tmp_path / "artefacts" / ".shared-builds"
-    # The executable AND its intermediate C tree land in the shared dir, so
-    # the build is self-contained and a later rebuild reuses it.
+    # The executable and its intermediate C tree land in the shared dir.
     assert "-o" in calls[0]["cmd"]
     assert calls[0]["cmd"][calls[0]["cmd"].index("-o") + 1] == str(shared / "simv")
     assert f"-Mdir={shared / 'csrc'}" in calls[0]["cmd"]
 
 
 def test_share_build_on_vcs_overrides_configured_output_opts(tmp_path, monkeypatch):
-    """A configured -o / -Mdir must not fight the shared build's own."""
+    """A configured -o / -Mdir does not override the shared build's own."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -527,7 +473,6 @@ def test_share_build_on_vcs_overrides_configured_output_opts(tmp_path, monkeypat
     assert "-Mdir=mycsrc" not in cmd
     assert cmd.count("-o") == 1
     assert cmd[cmd.index("-o") + 1] == str(shared / "simv")
-    # Non-output opts survive untouched.
     assert "-sverilog" in cmd and "-full64" in cmd
 
 
@@ -548,7 +493,6 @@ def test_share_build_reuses_snapshot_across_tests_on_icarus(tmp_path, monkeypatc
     assert len(calls) == 1
     shared = Path(sim_a._get_simv_path()).parent
     assert sim_a._get_icarus_snapshot_path() == str(shared / "simv.vvp")
-    # The wrapper the execute() path invokes is the stamp-validated `simv`.
     assert Path(sim_a._get_simv_path()).is_file()
     assert sim_b._get_simv_path() == sim_a._get_simv_path()
 
@@ -573,10 +517,7 @@ def test_share_build_falls_back_for_unsupported_builders(tmp_path, monkeypatch):
 
 
 def test_unshareable_builder_still_stamps_its_own_build(tmp_path, monkeypatch):
-    """A build that cannot be *shared* can still be *reused* by the next
-    process to ask for the same test — which is what lets a dispatched
-    fan-out compile once in the build job instead of racing N compiles into
-    one directory (#369)."""
+    """A build that cannot be shared is still reused by the next process that asks for the same test."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -586,8 +527,7 @@ def test_unshareable_builder_still_stamps_its_own_build(tmp_path, monkeypatch):
     )
     assert first.compile() == 0
     assert len(calls) == 1
-    # The stamp lands beside the test's compile outputs: an unshared build
-    # has no directory of rtl_buddy's choosing.
+    # The stamp lands beside the test's compile outputs.
     stamp = tmp_path / "artefacts" / "test_a" / vlog_sim_module.SHARED_BUILD_STAMP_NAME
     assert stamp.is_file()
 
@@ -597,8 +537,7 @@ def test_unshareable_builder_still_stamps_its_own_build(tmp_path, monkeypatch):
     assert second.compile() == 0
     assert len(calls) == 1  # reused, not recompiled
 
-    # ...and it is still not shared: a different test with identical inputs
-    # compiles for itself.
+    # It is still not shared: a different test with identical inputs compiles for itself.
     other = _make_sim(
         tmp_path, monkeypatch, test_name="test_b", exe="qrun", family="questa"
     )
@@ -626,7 +565,7 @@ def test_unshareable_builder_rebuilds_when_a_source_changes(tmp_path, monkeypatc
 
 
 def test_no_stamp_is_written_without_share_build(tmp_path, monkeypatch):
-    """Reuse stays opt-in: plain `rb test` compiles every time, as before."""
+    """Reuse is opt-in: plain `rb test` compiles every time."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -648,7 +587,7 @@ def test_no_stamp_is_written_without_share_build(tmp_path, monkeypatch):
 
 
 def test_share_build_declines_absolute_builder_simv(tmp_path, monkeypatch):
-    """An absolute builder-simv pins the executable; sharing would ignore it."""
+    """An absolute builder-simv pins the executable, so the build is not shared."""
     _write_source(tmp_path)
     calls = []
     pinned = str(tmp_path / "pinned" / "simv")
@@ -680,10 +619,7 @@ def test_share_build_declines_absolute_builder_simv(tmp_path, monkeypatch):
 def test_a_pinned_simv_overwritten_by_another_test_invalidates_the_stamp(
     tmp_path, monkeypatch
 ):
-    """An absolute `builder-simv:` is one path shared by every test on that
-    builder, while the stamp is per test. Without stamping the executable,
-    test_a's stamp keeps validating after test_b overwrote the binary they
-    both point at, and test_a silently simulates test_b's build (#369)."""
+    """A stamp is invalidated when another test overwrites the executable at the same absolute `builder-simv:` path."""
     _write_source(tmp_path)
     calls = []
     pinned = str(tmp_path / "pinned" / "simv")
@@ -702,30 +638,19 @@ def test_a_pinned_simv_overwritten_by_another_test_invalidates_the_stamp(
 
     assert _sim("test_a").compile() == 0
     assert len(calls) == 1
-    # Nothing else has touched the binary: test_a reuses its own build.
     assert _sim("test_a").compile() == 0
     assert len(calls) == 1
 
-    # test_b compiles a *different* configuration over the same pinned path.
     assert _sim("test_b", pd={"WIDTH": 8}).compile() == 0
     assert len(calls) == 2
     _touch(Path(pinned), "test_b's binary\n")
 
-    # test_a must not inherit it.
     assert _sim("test_a").compile() == 0
     assert len(calls) == 3
 
 
 def test_configs_pinned_to_one_absolute_simv_land_in_one_group(tmp_path, monkeypatch):
-    """One executable, one group — even though the compile dirs differ.
-
-    An absolute `builder-simv:` cannot be shared, so each test keeps its own
-    compile work dir and its own stamp; what it cannot keep to itself is the
-    binary, which is the one path every test on that builder writes. Group
-    on the compile dirs and `compile.parallel > 1` runs two builders onto
-    one output (#496 review), so the pinned path is the grouping key. The
-    fix is serialization, not sharing: the second member still rebuilds.
-    """
+    """Tests that write the same pinned executable path form one group, even with different compile dirs."""
     _write_source(tmp_path)
     _install_fake_builder(monkeypatch, [])
     pinned = str(tmp_path / "pinned" / "simv")
@@ -745,19 +670,16 @@ def test_configs_pinned_to_one_absolute_simv_land_in_one_group(tmp_path, monkeyp
     assert sim_a.compile_group_dir() == pinned
     assert sim_b.compile_group_dir() == pinned
 
-    # A different pinned path is a different output, so it may compile at
-    # the same time — over-serializing a fleet is a real cost too.
+    # A different pinned path is a different output and may compile concurrently.
     other = _sim("test_c", str(tmp_path / "elsewhere" / "simv"))
     assert other.compile_group_dir() != pinned
 
-    # A relative builder-simv resolves inside the test's own compile dir,
-    # which is already one writer per #369: still one group per test.
+    # A relative builder-simv resolves inside the test's own compile dir: one group per test.
     rel_a = _sim("test_d", "simv")
     rel_b = _sim("test_e", "simv")
     assert rel_a.compile_group_dir() != rel_b.compile_group_dir()
 
-    # The collision is not about sharing — `--no-share-build` writes the
-    # same pinned path — so the grouping does not depend on it either.
+    # `--no-share-build` writes the same pinned path, so grouping does not depend on sharing.
     unshared = _make_sim(
         tmp_path,
         monkeypatch,
@@ -773,15 +695,7 @@ def test_configs_pinned_to_one_absolute_simv_land_in_one_group(tmp_path, monkeyp
 def test_a_relative_simv_escaping_the_workspace_lands_in_one_group(
     tmp_path, monkeypatch
 ):
-    """`builder-simv: ../shared/simv` collides exactly like an absolute pin.
-
-    A relative spelling is joined to each test's own compile dir, so with
-    enough `..` two tests' paths meet at one suite-level file — the same
-    single-output collision the absolute case has (#496 review), it just
-    spells the path differently. The group is therefore the NORMALIZED
-    resolved output, not the raw config value: syntactic absoluteness is a
-    sharing question, never the collision predicate.
-    """
+    """`builder-simv: ../shared/simv` collides like an absolute pin; the group key is the normalized resolved output."""
     _write_source(tmp_path)
     _install_fake_builder(monkeypatch, [])
 
@@ -795,8 +709,7 @@ def test_a_relative_simv_escaping_the_workspace_lands_in_one_group(
             simv=simv,
         )
 
-    # artefacts/<test>/../shared/simv collapses to artefacts/shared/simv
-    # for every test in the suite: one file, one group.
+    # artefacts/<test>/../shared/simv collapses to artefacts/shared/simv for every test: one group.
     sim_a = _sim("test_a", "../shared/simv")
     sim_b = _sim("test_b", "../shared/simv")
     meeting_point = sim_a.compile_group_dir()
@@ -808,23 +721,14 @@ def test_a_relative_simv_escaping_the_workspace_lands_in_one_group(
     inside_b = _sim("test_d", "sub/simv")
     assert inside_a.compile_group_dir() != inside_b.compile_group_dir()
 
-    # Two spellings can also meet at one file through a symlinked parent,
-    # which textual normalization cannot see: the group is the CANONICAL
-    # output (`realpath`), so an aliased pin and the real one serialize.
+    # A symlinked parent can alias two spellings; the group key is the `realpath`.
     (tmp_path / "alias").symlink_to(tmp_path / "artefacts" / "shared")
     via_link = _sim("test_e", str(tmp_path / "alias" / "simv"))
     assert via_link.compile_group_dir() == meeting_point
 
 
 def test_verilator_ignores_an_absolute_builder_simv_for_grouping(tmp_path, monkeypatch):
-    """Verilator's output comes from `--Mdir`, so nothing is pinned.
-
-    The grouping predicate is the *same* one that declines sharing, and it
-    excuses verilator/icarus for the same reason: `builder-simv:` cannot
-    move their output, so two such configs write two build dirs and are two
-    groups. Grouping them together would serialize builds that never
-    collide.
-    """
+    """Verilator and Icarus output comes from `--Mdir` and is not pinned, so their configs are separate groups."""
     _write_source(tmp_path)
     _install_fake_builder(monkeypatch, [])
     pinned = str(tmp_path / "pinned" / "simv")
@@ -847,7 +751,7 @@ def test_share_build_supported_is_the_single_capability_source():
 
 
 def test_vcs_compile_license_queue_is_reported(tmp_path, monkeypatch):
-    """A licqueue wait makes compile elapsed untrustworthy — say so (#329)."""
+    """A licqueue wait makes compile elapsed time untrustworthy, and the compile record says so."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(
@@ -856,19 +760,13 @@ def test_vcs_compile_license_queue_is_reported(tmp_path, monkeypatch):
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs")
     assert sim.compile() == 0
-    # The evidence is kept even though the compile succeeded.
     transcript = Path(sim._get_compile_transcript_path())
     assert transcript.is_file()
     assert "Queuing for License" in transcript.read_text()
 
 
 def test_verilator_compile_never_reports_license_queue(tmp_path, monkeypatch, caplog):
-    """Only VCS queues, so the marker in another family's output is text.
-
-    Asserted on the event rather than on an absent ``compile.log``: since
-    #494 every compile that runs leaves a transcript, so the file's absence
-    no longer means anything.
-    """
+    """Only VCS queues, so the marker in another family's output is treated as text."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -904,7 +802,7 @@ def test_share_build_disabled_keeps_per_test_build_dirs(tmp_path, monkeypatch):
     )
 
 
-# --- include-dir headers in the reuse stamp (issue #303) ---------------------
+# --- include-dir headers in the reuse stamp ---------------------
 
 
 def _write_header(tmp_path, content="`define W 8\n"):
@@ -925,14 +823,11 @@ def _stamp_of(sim):
 
 
 def test_share_build_invalidates_when_an_include_header_changes(tmp_path, monkeypatch):
-    """The reported gap: a header reachable only through +incdir+ is not in
-    the filelist, so the stamp used to stay valid across an edit to it and a
-    warm run reused a simv built from the old header (#303)."""
+    """A header reachable only through +incdir+ invalidates the stamp when edited."""
     _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
-    # Verilator names the header among the inputs it consumed, relative to
-    # the compile cwd (the test's artefact dir).
+    # Verilator lists the header among its inputs, relative to the compile cwd.
     _install_fake_builder(
         monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
     )
@@ -970,8 +865,7 @@ def test_share_build_stamp_records_the_consumed_inputs(tmp_path, monkeypatch):
 
 
 def test_share_build_deps_exclude_the_regenerated_filelist(tmp_path, monkeypatch):
-    """`run.f` is rewritten on every compile, so tracking its mtime would
-    make the test that built the simv rebuild it on its own next run."""
+    """`run.f` is rewritten on every compile and is excluded from the stamp, so it does not invalidate its own build."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, depends=["run.f", "../../src/top.sv"])
@@ -989,7 +883,7 @@ def test_share_build_deps_exclude_the_regenerated_filelist(tmp_path, monkeypatch
 def test_share_build_records_no_tracking_when_the_builder_emits_no_depfile(
     tmp_path, monkeypatch
 ):
-    """VCS and Icarus emit nothing comparable; reuse must still work there."""
+    """VCS and Icarus emit no dependency file; reuse still works."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -1010,8 +904,7 @@ def test_share_build_records_no_tracking_when_the_builder_emits_no_depfile(
 def test_share_build_rejects_a_stamp_predating_dependency_tracking(
     tmp_path, monkeypatch
 ):
-    """A stamp with no `deps` key cannot say whether headers were tracked;
-    "we do not know" must not validate a reuse."""
+    """A stamp without `deps` cannot validate a reuse."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
@@ -1026,7 +919,6 @@ def test_share_build_rejects_a_stamp_predating_dependency_tracking(
     sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
     assert sim_b.compile() == 0
     assert len(calls) == 2
-    # ...and the rebuild leaves a stamp that does say.
     assert "deps" in json.loads(stamp.read_text())
 
 
@@ -1067,10 +959,7 @@ def _dir_entry(sim, prefix):
 def test_an_incdir_header_edit_invalidates_a_stamp_with_no_depfile(
     tmp_path, monkeypatch
 ):
-    """Gap 1 of #478: VCS and Icarus emit no dependency file, so before the
-    directory listing their stamps recorded `deps: null` and a header edit
-    reachable only through `+incdir+` reused a simv built from the old
-    header — on the builder that usually signs a merge off."""
+    """VCS and Icarus emit no dependency file, so a header edit reachable only through `+incdir+` invalidates the stamp via the directory listing."""
     _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
@@ -1106,8 +995,7 @@ def test_an_incdir_header_edit_invalidates_a_stamp_with_no_depfile(
 def test_a_header_added_to_an_incdir_invalidates_a_stamp_with_no_depfile(
     tmp_path, monkeypatch
 ):
-    """A header that did not exist cannot be in any dependency record, so
-    only the directory listing can notice it appear."""
+    """A header that appears in an include dir invalidates the stamp."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1133,10 +1021,7 @@ def test_a_header_added_to_an_incdir_invalidates_a_stamp_with_no_depfile(
 
 
 def test_a_file_appearing_in_a_library_dir_invalidates_the_stamp(tmp_path, monkeypatch):
-    """Gap 2 of #478: `-y` resolves by module name on demand, so a file that
-    nobody consumed yet can change tomorrow's elaboration. A depfile records
-    what was opened and structurally cannot name it — this must invalidate
-    even for Verilator, with a `.d` present."""
+    """A file that appears in a `-y` library directory invalidates the stamp, including for Verilator with a `.d` present."""
     _write_source(tmp_path)
     _write_lib(tmp_path, "bar.sv")
     calls = []
@@ -1162,12 +1047,9 @@ def test_a_file_appearing_in_a_library_dir_invalidates_the_stamp(tmp_path, monke
 
 
 def test_a_library_dir_listing_is_unfiltered_by_suffix(tmp_path, monkeypatch):
-    """`+libext+` can be set on the builder command line
-    (`builder-opts.compile-time`) and never reach run.f, so a listing that
-    filtered by the suffixes run.f declares would silently miss the library
-    file that appears with any other one — Gap 2, still open. Everything in
-    the directory is listed instead. `+libext+` itself is a suffix, not a
-    path, and keeps the untracked entry shape."""
+    """Every file in a `-y` directory is listed, because `+libext+` can be set in `builder-opts.compile-time` without reaching run.f.
+    `+libext+` itself is a suffix, not a path, and keeps the untracked entry shape.
+    """
     _write_source(tmp_path)
     _write_lib(tmp_path, "bar.sv")
     _write_lib(tmp_path, "notes.txt", "not verilog\n")
@@ -1188,16 +1070,14 @@ def test_a_library_dir_listing_is_unfiltered_by_suffix(tmp_path, monkeypatch):
     assert [entry[0] for entry in listing] == ["bar.sv", "notes.txt"]
     assert _dir_entry(sim_a, "+libext+") == ["+libext+.sv", None, None, None]
 
-    # The suffix run.f never mentions: only an unfiltered listing sees it.
+    # The suffix run.f never mentions; only an unfiltered listing sees it.
     _write_lib(tmp_path, "newmod.vp", "module newmod; endmodule\n")
     assert _sim("test_b").compile() == 0
     assert len(calls) == 2
 
 
 def test_a_library_dir_listing_stays_flat(tmp_path, monkeypatch):
-    """`-y` maps a module name to a file in the directory itself, so a
-    subdirectory holds nothing the search can reach and walking it would
-    charge the stamp for files no compile can see."""
+    """`-y` resolves module names to files in the directory itself, so subdirectories are not listed."""
     _write_source(tmp_path)
     _write_lib(tmp_path, "bar.sv")
     (tmp_path / "lib" / "vendor").mkdir()
@@ -1216,11 +1096,7 @@ def test_a_library_dir_listing_stays_flat(tmp_path, monkeypatch):
 
 
 def test_an_incdir_listing_is_recursive_and_keeps_dot_files(tmp_path, monkeypatch):
-    """Any name at all can be `include`d, so an include dir is listed
-    unfiltered — and recursively, because `` `include "nested/deep.svh" ``
-    resolves *beneath* the directory. A dot-*file* is ordinary input
-    (`` `include ".config.svh" `` resolves and compiles); only dot
-    *directories* and a denylist of editor/VCS bookkeeping are dropped."""
+    """An include dir is listed unfiltered and recursively; dot-files are input, while dot-directories and editor/VCS bookkeeping names are dropped."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     (tmp_path / "inc" / "table.txt").write_text("0\n")
@@ -1253,8 +1129,7 @@ def test_an_incdir_listing_is_recursive_and_keeps_dot_files(tmp_path, monkeypatc
 def test_a_dot_header_edit_inside_an_incdir_invalidates_the_stamp(
     tmp_path, monkeypatch
 ):
-    """The counterpart to the denylist: `.config.svh` is a legal include, so
-    dropping every dot name would reopen the gap this stamp closes."""
+    """`.config.svh` is a legal include and is tracked."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     dot_header = tmp_path / "inc" / ".config.svh"
@@ -1284,12 +1159,7 @@ def test_a_dot_header_edit_inside_an_incdir_invalidates_the_stamp(
 def test_an_incdir_above_the_artefact_dir_does_not_stamp_rtl_buddys_output(
     tmp_path, monkeypatch
 ):
-    """`+incdir+.` in a tests.yaml, or `+incdir+..` from a design directory
-    holding verif suites, puts the suite's own `artefacts/` inside the walk.
-    Everything under it — run.f, compile.log, the obj_dir, the stamp itself
-    — is written AFTER the fingerprint that would list it, so a stamp that
-    listed them could never validate again and every gated dispatch job
-    would recompile."""
+    """An `artefacts/` directory inside an include dir (`+incdir+.` or `+incdir+..`) is excluded from the listing, since its contents are written after the fingerprint."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1313,7 +1183,6 @@ def test_an_incdir_above_the_artefact_dir_does_not_stamp_rtl_buddys_output(
     assert "src/top.sv" in listing  # the walk did happen
     assert not [name for name in listing if name.startswith("artefacts/")], listing
 
-    # The reuse the artefact tree would otherwise have made impossible.
     assert _sim("test_b").compile() == 0
     assert len(calls) == 1
     assert _sim("test_c").compile() == 0
@@ -1321,13 +1190,7 @@ def test_an_incdir_above_the_artefact_dir_does_not_stamp_rtl_buddys_output(
 
 
 def test_a_generated_header_under_the_artefact_dir_is_tracked(tmp_path, monkeypatch):
-    """A `preproc` hook is documented to generate headers into its
-    `artifact_dir`, and the filelist then names `+incdir+artefacts/<test>/gen`.
-    The walk STARTS inside the managed tree, so no `artefacts` component is
-    ever seen and pruning by directory name cannot help. The generated
-    header must be tracked — that is the point of the include — while
-    rtl_buddy's own outputs beside it must not be, because every one of them
-    is written after the fingerprint that would list it."""
+    """A `preproc`-generated header under a managed `+incdir+artefacts/<test>/gen` is tracked, while rtl_buddy's own outputs beside it are not."""
     _write_source(tmp_path)
     gen = tmp_path / "artefacts" / "test_a" / "gen"
     gen.mkdir(parents=True)
@@ -1352,28 +1215,21 @@ def test_a_generated_header_under_the_artefact_dir_is_tracked(tmp_path, monkeypa
 
     listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
     assert "gen/gen_w.svh" in listing, listing
-    # ...and nothing rtl_buddy wrote into that same directory.
     for output in ("run.f", "compile.log", "result.json", "rb-compile-stamp.json"):
         assert not any(name.endswith(output) for name in listing), listing
 
-    # The reuse those outputs would otherwise have made impossible: the
-    # compile writes run.f and the stamp *after* the fingerprint is taken.
     assert _sim("test_b").compile() == 0
     assert len(calls) == 1
     assert _sim("test_c").compile() == 0
     assert len(calls) == 1
 
-    # But the generated header itself is a real input.
     _touch(generated, "`define GW 16\n")
     assert _sim("test_d").compile() == 0
     assert len(calls) == 2
 
 
 def test_rtl_buddys_own_outputs_are_never_listed(tmp_path, monkeypatch):
-    """The exclusion is by name and applies wherever a listing is taken, so
-    a run directory's logs and envelopes are out too. Pinned against the
-    constants the writers use, so a renamed output cannot silently start
-    being stamped."""
+    """Managed outputs (run directory logs and envelopes) are excluded by name, pinned to the constants the writers use."""
     _write_source(tmp_path)
     inc = tmp_path / "inc"
     inc.mkdir(parents=True, exist_ok=True)
@@ -1408,8 +1264,7 @@ def test_rtl_buddys_own_outputs_are_never_listed(tmp_path, monkeypatch):
 
 
 def test_a_build_directory_beside_the_sources_is_pruned_too(tmp_path, monkeypatch):
-    """`obj_dir*` is rtl_buddy's build-directory spelling wherever it lands,
-    including an unshared build dropped next to the sources."""
+    """`obj_dir*` build directories are excluded wherever they land, including an unshared build next to the sources."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     stray = tmp_path / "inc" / "obj_dir_test_a"
@@ -1438,9 +1293,7 @@ def test_a_build_directory_beside_the_sources_is_pruned_too(tmp_path, monkeypatc
 
 
 def test_a_header_nested_under_an_incdir_invalidates_the_stamp(tmp_path, monkeypatch):
-    """`` `include "nested/deep.svh" `` is an ordinary spelling and resolves
-    below the include directory, so a flat listing would leave an edit to it
-    invisible on a builder that reports no dependencies."""
+    """`` `include "nested/deep.svh" `` resolves below the include directory, so the listing is recursive."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     nested = tmp_path / "inc" / "nested"
@@ -1470,9 +1323,7 @@ def test_a_header_nested_under_an_incdir_invalidates_the_stamp(tmp_path, monkeyp
 
 
 def test_a_dot_file_appearing_in_an_incdir_does_not_invalidate(tmp_path, monkeypatch):
-    """The over-approximation stops at a denylist of names no simulator ever
-    reads. A `.DS_Store` dropped by browsing the directory in Finder must
-    not cost a rebuild of a whole chip."""
+    """Names no simulator reads, such as `.DS_Store`, are excluded from the listing."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1499,8 +1350,7 @@ def test_a_dot_file_appearing_in_an_incdir_does_not_invalidate(tmp_path, monkeyp
 
 
 def test_an_edit_outside_every_listed_directory_still_reuses(tmp_path, monkeypatch):
-    """The listing over-approximates on purpose, but only inside the
-    directories the filelist actually names."""
+    """The listing covers only the directories the filelist names."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1528,9 +1378,7 @@ def test_an_edit_outside_every_listed_directory_still_reuses(tmp_path, monkeypat
 
 
 def test_a_stamp_written_before_directory_listings_rebuilds_once(tmp_path, monkeypatch):
-    """A directory entry gained a fifth element, so a stamp written before
-    #478 is silent where a listing is now expected. Silence is not a reuse:
-    one rebuild, and what it writes back is readable."""
+    """A stamp written without the listing element is not reused; one rebuild rewrites it in the readable shape."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1562,9 +1410,7 @@ def test_a_stamp_written_before_directory_listings_rebuilds_once(tmp_path, monke
 
 
 def test_a_directory_listing_never_reaches_the_compile_key():
-    """The listing belongs on the stamp side of the line #494 drew: an edit
-    inside an include dir rebuilds *in place* instead of stranding one
-    obj_dir per edit."""
+    """An edit inside an include dir rebuilds in place instead of creating another obj_dir."""
     fingerprint = {
         "cmd": ["verilator", "--binary", "-f", "run.f"],
         "env": {},
@@ -1603,14 +1449,13 @@ def test_a_directory_listing_never_reaches_the_compile_key():
     assert key == vlog_sim_module.VlogSim._compile_config_key(edited)
     assert key == vlog_sim_module.VlogSim._compile_config_key(added)
 
-    # ...while the fingerprint sha, which asks "would the stamp match", moves.
     sha = vlog_sim_module._fingerprint_sha(fingerprint)
     assert sha != vlog_sim_module._fingerprint_sha(edited)
     assert sha != vlog_sim_module._fingerprint_sha(added)
 
 
 def test_an_edit_inside_an_include_dir_rebuilds_in_place(tmp_path, monkeypatch):
-    """End to end for the same property: same obj_dir, second compile."""
+    """End to end: the second compile reuses the same obj_dir."""
     _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
@@ -1646,10 +1491,7 @@ def _source_changed_entries(caplog):
 def test_a_changed_directory_entry_names_the_file_that_changed(
     tmp_path, monkeypatch, caplog
 ):
-    """`compile.build_source_changed` is the answer to "why did this
-    recompile", so a directory entry has to name the file inside it — for an
-    edit, and for a file added or removed, which shifts every entry after it
-    and used to be answered with a bare entry count."""
+    """`compile.build_source_changed` names the file inside a changed directory entry, for an edit, an addition and a removal."""
     _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
@@ -1693,8 +1535,7 @@ def test_a_changed_directory_entry_names_the_file_that_changed(
 
 
 def test_a_vanished_include_directory_invalidates_the_stamp(tmp_path, monkeypatch):
-    """A `+incdir+` whose directory is gone stamps as untracked again, which
-    cannot match the listing that was recorded — one rebuild, not a reuse."""
+    """A `+incdir+` whose directory is gone is not reused; one rebuild."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1715,9 +1556,7 @@ def test_a_vanished_include_directory_invalidates_the_stamp(tmp_path, monkeypatc
     assert len(calls) == 1
     assert _dir_entry(sim_a, "+incdir+")[-1]  # a listing was recorded
 
-    # The filelist writer refuses a missing directory, so the stamp is
-    # revalidated directly: this is what a compile from a stamp whose
-    # include tree has since been deleted decides.
+    # The filelist writer refuses a missing directory, so the stamp is revalidated directly.
     stored = json.loads(_stamp_of(sim_a).read_text())["sources"]
     run_f = sim_a._get_filelist_path()
     shutil.rmtree(tmp_path / "inc")
@@ -1732,9 +1571,7 @@ def test_a_vanished_include_directory_invalidates_the_stamp(tmp_path, monkeypatc
 
 
 def test_an_unreadable_directory_degrades_to_untracked(tmp_path, monkeypatch):
-    """A directory that cannot be listed records the pre-#478 untracked
-    entry, never an empty listing — "the directory is empty" is a claim, and
-    a false one would validate a reuse on the strength of it."""
+    """A directory that cannot be listed records the untracked entry, never an empty listing."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -1747,8 +1584,7 @@ def test_an_unreadable_directory_degrades_to_untracked(tmp_path, monkeypatch):
             raise PermissionError(13, "Permission denied")
         return real_scandir(path, *args, **kwargs)
 
-    # `os.walk` calls `scandir` too, and by default swallows a directory it
-    # cannot open — which would make an unreadable include dir look empty.
+    # `os.walk` swallows an unopenable directory by default, which would make it look empty.
     monkeypatch.setattr(vlog_sim_module.os, "scandir", _refuse)
     monkeypatch.setattr(os, "scandir", _refuse)
 
@@ -1765,7 +1601,7 @@ def test_an_unreadable_directory_degrades_to_untracked(tmp_path, monkeypatch):
 
 
 def test_a_corrupt_directory_listing_fails_closed():
-    """Every shape this version cannot read answers "rebuild", never raises."""
+    """A stamp shape this version cannot read means "rebuild" and never raises."""
     good = ["+incdir+inc", None, None, None, [["w.svh", 9, 17, "aaaa"]]]
     assert vlog_sim_module._entry_matches(good, list(good))
     for corrupt in (
@@ -1777,12 +1613,11 @@ def test_a_corrupt_directory_listing_fails_closed():
         assert not vlog_sim_module._entry_matches(good, corrupt)
 
 
-# ------------- what the run itself writes into a stamped directory (#535-537)
+# --- what the run itself writes into a stamped directory ---
 
 
 def _incdir_dot_sim(tmp_path, monkeypatch, test_name, *, family="vcs"):
-    """A sim whose filelist puts the working directory itself on the include
-    path — `+incdir+.` in a tests.yaml, the shape all three reports share."""
+    """A sim whose filelist puts the working directory on the include path with `+incdir+.`."""
     return _make_sim(
         tmp_path,
         monkeypatch,
@@ -1794,10 +1629,7 @@ def _incdir_dot_sim(tmp_path, monkeypatch, test_name, *, family="vcs"):
 
 
 def test_the_suite_log_is_never_listed_in_an_include_directory(tmp_path, monkeypatch):
-    """rtl_buddy's own log lands in the SUITE directory, not under
-    `artefacts/`, so the directory prune never reaches it. The head appends
-    to it once a minute for the whole life of a dispatched run — through
-    every gated job's stamp check (#537)."""
+    """The suite-level `rtl_buddy.log` is excluded from the listing."""
     _write_source(tmp_path)
     log = tmp_path / "rtl_buddy.log"
     log.write_text("dispatch: 4/5 jobs remaining\n")
@@ -1816,10 +1648,7 @@ def test_the_suite_log_is_never_listed_in_an_include_directory(tmp_path, monkeyp
 
 
 def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypatch):
-    """Only the suite's own `rtl_buddy.log` is skipped, by path. A file of
-    that name in some other include directory is a compile input — and on a
-    builder with no dependency file the listing is the only record of it, so
-    an edit there must still invalidate the stamp."""
+    """Only the suite's own `rtl_buddy.log` is skipped; a same-named file in another include directory is a compile input."""
     _write_source(tmp_path)
     (tmp_path / "rtl_buddy.log").write_text("dispatch: 4/5 jobs remaining\n")
     image = tmp_path / "inc" / "rtl_buddy.log"
@@ -1852,9 +1681,7 @@ def test_a_real_input_named_like_the_suite_log_stays_tracked(tmp_path, monkeypat
 
 
 def test_a_pycache_beside_a_preproc_helper_is_never_listed(tmp_path, monkeypatch):
-    """CPython writes bytecode beside a helper module a `preproc` hook
-    imports out of the suite directory, during the very phase that computes
-    the fingerprint (#537)."""
+    """Python bytecode written beside a `preproc` helper module during fingerprinting is excluded."""
     _write_source(tmp_path)
     cache = tmp_path / "__pycache__"
     cache.mkdir()
@@ -1873,12 +1700,7 @@ def test_a_pycache_beside_a_preproc_helper_is_never_listed(tmp_path, monkeypatch
 
 
 def _tmp_log_names(tmp_path):
-    """The temp names the suite-level log writers really build.
-
-    Taken from :func:`atomic_tmp_name` — the helper `force_symlink` uses —
-    rather than spelled out here, so this test fails if the writer's shape
-    and the fingerprint's exclusion ever part company (#613).
-    """
+    """The temp names the suite-level log writers build, taken from :func:`atomic_tmp_name` so the test tracks the writer."""
     return [
         atomic_tmp_name(str(tmp_path / name))
         for name in (
@@ -1891,12 +1713,7 @@ def _tmp_log_names(tmp_path):
 
 
 def test_a_transient_log_temp_file_appearing_does_not_invalidate(tmp_path, monkeypatch):
-    """`+incdir+.` puts the suite directory on the include path, and that is
-    where the per-test `test.log`/`test.err` symlinks are repointed — through
-    a `<name>.<pid>.<uuid>.tmp` that `os.replace` renames into place. One of
-    those existing while a gated sim job validates the build job's stamp used
-    to read as a changed compile input, and a fan-out of jobs recompiled
-    under a simulation reservation because of it (#613)."""
+    """A `<name>.<pid>.<uuid>.tmp` file from a `test.log`/`test.err` symlink repoint does not change the listing under `+incdir+.`."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -1907,7 +1724,6 @@ def test_a_transient_log_temp_file_appearing_does_not_invalidate(tmp_path, monke
     listing = [entry[0] for entry in _dir_entry(sim_a, "+incdir+")[-1]]
     assert "src/top.sv" in listing  # the walk did happen
 
-    # Between the build job's fingerprint and the sim job's check.
     for name in _tmp_log_names(tmp_path):
         Path(name).write_text("in flight\n")
 
@@ -1922,9 +1738,7 @@ def test_a_transient_log_temp_file_appearing_does_not_invalidate(tmp_path, monke
 def test_a_transient_log_temp_file_disappearing_does_not_invalidate(
     tmp_path, monkeypatch
 ):
-    """The other half of the race: the temp file existed when the build
-    fingerprint was taken and was renamed away before the sim job looked.
-    Neither listing may contain it, so the direction cannot matter (#613)."""
+    """A temp file that existed at build fingerprint time and is gone at sim check time does not affect the result either."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -1949,9 +1763,7 @@ def test_a_transient_log_temp_file_disappearing_does_not_invalidate(
 
 
 def test_a_settled_managed_output_temp_name_is_excluded_for_every_output():
-    """The exclusion is derived from the same patterns the final names come
-    from, so every managed output is covered rather than the two the report
-    happened to name."""
+    """Every managed output pattern is excluded from the listing."""
     for pattern in vlog_sim_module._MANAGED_OUTPUT_FILE_PATTERNS:
         name = pattern.replace("*", "job1")
         assert vlog_sim_module._is_non_input_file(name), name
@@ -1960,9 +1772,7 @@ def test_a_settled_managed_output_temp_name_is_excluded_for_every_output():
 
 
 def test_a_real_header_named_like_a_temp_file_stays_tracked(tmp_path, monkeypatch):
-    """Not a blanket `*.tmp`: the patterns are anchored to a managed output's
-    basename, so a project header that happens to end in `.tmp` is an
-    ordinary compile input and an edit to it still rebuilds (#613)."""
+    """Exclusion is anchored to managed output basenames; a project header ending in `.tmp` is an ordinary input."""
     _write_source(tmp_path)
     header = tmp_path / "defs.tmp"
     header.write_text("`define W 8\n")
@@ -1981,9 +1791,7 @@ def test_a_real_header_named_like_a_temp_file_stays_tracked(tmp_path, monkeypatc
 def test_a_real_header_in_a_suite_incdir_still_moves_the_fingerprint(
     tmp_path, monkeypatch
 ):
-    """The protection the temp-name exclusion must not weaken: adding,
-    editing and removing a genuine header in the same directory the temp
-    files appear in each rebuilds (#613)."""
+    """Adding, editing and removing a genuine header in the same directory each rebuild."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2008,11 +1816,7 @@ def test_a_real_header_in_a_suite_incdir_still_moves_the_fingerprint(
 def test_a_regenerated_file_the_build_never_read_does_not_invalidate(
     tmp_path, monkeypatch
 ):
-    """A dependency file names every input the verilation opened, so a file
-    it never opened cannot have changed the binary. A per-test `preproc`
-    regenerating its program directory under a stamped `+incdir+` is exactly
-    that file, and hashing it out of the listing is what made a build job
-    compile one key once per test (#535/#536)."""
+    """A file the dependency file never listed is excluded from hashing, so a per-test `preproc` regenerating its directory does not force a recompile."""
     _write_source(tmp_path)
     prog = tmp_path / "prog_a"
     prog.mkdir()
@@ -2038,8 +1842,7 @@ def test_a_regenerated_file_the_build_never_read_does_not_invalidate(
 def test_an_edit_inside_an_incdir_still_invalidates_when_the_build_read_it(
     tmp_path, monkeypatch
 ):
-    """The narrowing must not reach a file the build actually consumed: that
-    one is in `deps`, where content still decides (#303)."""
+    """A file the build consumed stays in `deps`, where content decides."""
     _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
@@ -2067,9 +1870,7 @@ def test_an_edit_inside_an_incdir_still_invalidates_when_the_build_read_it(
 def test_a_file_appearing_in_an_incdir_still_invalidates_with_a_depfile(
     tmp_path, monkeypatch
 ):
-    """What a dependency file structurally cannot see: a name that was not
-    there when the build ran, and could shadow one that was. The listing
-    keeps deciding that half (#478 gap 2)."""
+    """A newly appeared name that could shadow a consumed file is still decided by the listing."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -2095,11 +1896,7 @@ def test_a_file_appearing_in_an_incdir_still_invalidates_with_a_depfile(
 def test_same_key_siblings_reuse_when_every_probe_precedes_every_compile(
     tmp_path, monkeypatch
 ):
-    """The build job's own shape (#535): PRE and the compile-key probe run
-    for every config before the first compile, so a per-test `preproc`
-    writing under a stamped `+incdir+` moves the inputs between one member's
-    fingerprint and the stamp it is meant to reuse. Members of one group
-    compile once."""
+    """Build-job order: PRE and the compile-key probe run for every config before the first compile, and members of one group compile once."""
     _write_source(tmp_path)
     for name in ("test_a", "test_b"):
         prog = tmp_path / f"prog_{name}"
@@ -2111,7 +1908,7 @@ def test_same_key_siblings_reuse_when_every_probe_precedes_every_compile(
     sim_a = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family="verilator")
     sim_b = _incdir_dot_sim(tmp_path, monkeypatch, "test_b", family="verilator")
 
-    # PRE, then the probe, one config at a time — then the compiles.
+    # PRE, then the probe, one config at a time, then the compiles.
     _touch(tmp_path / "prog_test_a" / "data.txt", "second run\n")
     group_a = sim_a.compile_group_dir()
     _touch(tmp_path / "prog_test_b" / "data.txt", "second run\n")
@@ -2125,13 +1922,8 @@ def test_same_key_siblings_reuse_when_every_probe_precedes_every_compile(
 
 
 def _cold_tree_group_pair(tmp_path, monkeypatch, calls, *, family="verilator"):
-    """A leader that compiled and a sibling on the same key, cold-tree order.
-
-    The build job's serial phase, reproduced: PRE writes this config's
-    program directory under the stamped ``+incdir+.``, then the compile-key
-    probe fingerprints it — so the leader's stamp was taken before the
-    sibling's directory existed at all. Returns the sibling, ready to
-    adopt.
+    """Return a sibling of a leader that compiled, on the same compile key, in cold-tree build-job order.
+    PRE writes the sibling's program directory under the stamped ``+incdir+.`` before the compile-key probe, after the leader's stamp was taken.
     """
     leader = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family=family)
     (tmp_path / "prog_test_a").mkdir()
@@ -2148,15 +1940,8 @@ def _cold_tree_group_pair(tmp_path, monkeypatch, calls, *, family="verilator"):
 
 
 def test_a_group_sibling_adopts_the_leaders_build_on_a_cold_tree(tmp_path, monkeypatch):
-    """A name that appeared during the job is not a reason to recompile (#535).
-
-    The sibling's own PRE created a directory the leader's stamp never
-    listed, so the stamp genuinely does not validate — and the listing is
-    the half a dependency file cannot decide, so #536's narrowing does not
-    reach it either. What the sibling checks instead is the leader's
-    ``deps``: the inputs that build actually consumed. Unchanged means the
-    binary in the shared directory is the one this config's compile would
-    have produced.
+    """A name that appeared during the job does not force a recompile.
+    The sibling adopts the leader's build when the leader's ``deps`` are unchanged.
     """
     _write_source(tmp_path)
     calls = []
@@ -2177,13 +1962,7 @@ def test_a_group_sibling_adopts_the_leaders_build_on_a_cold_tree(tmp_path, monke
 def test_a_group_sibling_that_rewrote_a_consumed_input_is_reported(
     tmp_path, monkeypatch
 ):
-    """One compile key, two sets of bytes, is a misconfiguration (#535).
-
-    Recompiling would not fix it: both tests still share one shared
-    directory, so whichever compiled last would decide what both of them
-    simulate. Report it against the config that drifted, with a record
-    decisive enough that its own sim job declines the recompile too.
-    """
+    """One compile key with two sets of bytes is a misconfiguration: it is reported against the drifted config and its sim job declines to recompile."""
     source = _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
@@ -2196,8 +1975,7 @@ def test_a_group_sibling_that_rewrote_a_consumed_input_is_reported(
     assert dependency.endswith("src/top.sv")
     assert len(calls) == 1
     assert "same compile key, different compiled input" in sibling.compile_fail_desc
-    # The envelope record a build job writes from this: a returncode, so the
-    # gated sim job reads a verdict rather than an invitation to retry.
+    # The build job's envelope record carries a returncode, so the gated sim job reads a verdict.
     failure = sibling.last_compile_failure
     assert failure["returncode"] == 1
     assert "src/top.sv" in failure["error_tail"][0]
@@ -2206,13 +1984,7 @@ def test_a_group_sibling_that_rewrote_a_consumed_input_is_reported(
 def test_a_group_sibling_declines_to_adopt_without_a_dependency_file(
     tmp_path, monkeypatch
 ):
-    """VCS and Icarus report nothing, so nothing here can be narrowed (#535).
-
-    With no dependency file the listing is the only record of what the
-    build might have read, and nothing separates a consumed input from a
-    bystander. The sibling hands the decision back to the leader's own full
-    stamp comparison, which is the pre-#535 path.
-    """
+    """VCS and Icarus report no dependency file, so nothing is narrowed and the sibling falls back to the leader's full stamp comparison."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2224,17 +1996,11 @@ def test_a_group_sibling_declines_to_adopt_without_a_dependency_file(
     )
     assert sibling.last_compile["reused"] is None  # nothing decided yet
     assert sibling.compile() == 0
-    assert len(calls) == 2  # ...and the pre-#535 path recompiled, as it did
+    assert len(calls) == 2
 
 
 def test_every_adoption_decline_names_its_own_reason(tmp_path, monkeypatch):
-    """The remaining `(None, <reason>)` returns, one setup each (#534/#535).
-
-    The build job logs whatever comes back here as
-    `build_job.group_adoption_declined`, and "could not adopt" without a
-    reason leaves the reader of a job that compiled one key twice exactly
-    where they were before the event existed.
-    """
+    """Each remaining `(None, <reason>)` adoption return, one setup each; the reason appears in `build_job.group_adoption_declined`."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
@@ -2255,9 +2021,7 @@ def test_every_adoption_decline_names_its_own_reason(tmp_path, monkeypatch):
         f"stamp dependency format 1 != {vlog_sim_module._DEPS_FORMAT}",
     )
 
-    # The compile key fixes the command, so this is a toolchain replaced
-    # under a running job — cheap to check, and the one input a group's
-    # members do not share by construction.
+    # The compile key fixes the command, so this covers a toolchain replaced under a running job.
     _restamp(toolchain="verilator 4.999 from somewhere else")
     assert sibling.adopt_group_build() == (None, "stamp inputs differ")
 
@@ -2273,9 +2037,7 @@ def test_every_adoption_decline_names_its_own_reason(tmp_path, monkeypatch):
 def _group_pair_with_incdirs(
     tmp_path, monkeypatch, calls, *, filelist, depends, sibling_pre
 ):
-    """A leader that compiled and a same-key sibling, in build-job order:
-    ``sibling_pre`` (what this config's PRE hook writes) runs after the
-    leader's compile and before the sibling's compile-key probe."""
+    """Return a leader that compiled and a same-key sibling; ``sibling_pre`` runs after the leader's compile and before the sibling's probe."""
     _install_fake_builder(monkeypatch, calls, depends=depends)
 
     def _sim(test_name):
@@ -2294,11 +2056,7 @@ def _group_pair_with_incdirs(
 def test_a_group_sibling_declines_a_build_whose_include_is_now_shadowed(
     tmp_path, monkeypatch
 ):
-    """A header appearing under the same name as a consumed include, in an
-    ``+incdir+`` searched first, changes what the compile reads without
-    changing any consumed file — which is all a dependency list can see.
-    Not adoptable; the sibling hands the decision back to the stamp, whose
-    names-only listing recompiles for the new name."""
+    """A header appearing under the name of a consumed include in an earlier ``+incdir+`` is not adoptable; the sibling defers to the stamp."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     header = _write_header(tmp_path)  # inc/w.svh
@@ -2325,9 +2083,7 @@ def test_a_group_sibling_declines_a_build_whose_include_is_now_shadowed(
 def test_a_group_sibling_declines_a_build_when_a_library_file_appeared(
     tmp_path, monkeypatch
 ):
-    """A file appearing in a ``-y`` directory is tomorrow's module
-    resolution (#478 gap 2), and a dependency file cannot report a file the
-    leader's build never opened. Not adoptable either."""
+    """A file appearing in a ``-y`` directory is not adoptable."""
     _write_source(tmp_path)
     lib = tmp_path / "lib"
     lib.mkdir()
@@ -2365,10 +2121,7 @@ def _listing(*names):
 def test_a_stamped_directory_that_did_not_exist_counts_as_all_appeared(
     line, listing, expected
 ):
-    """A ``+incdir+``/``-y`` line whose directory was absent at the stamp
-    is a plain ``[line, None, None, None]`` entry there and a listing now.
-    That is every file in it appearing: a ``-y`` member or a shadowing
-    include declines adoption, and an unrelated header does not."""
+    """A directory absent at stamp time and present now counts as every file in it appearing; a `-y` member or shadowing include declines adoption, an unrelated header does not."""
     stored = [["src/top.sv", 1, 1, "sha"], [line, None, None, None]]
     current = [["src/top.sv", 1, 1, "sha"], [line, None, None, None, listing]]
     deps = [["src/top.sv", 1, 1, "sha"], ["inc/w.svh", 1, 1, "sha"]]
@@ -2377,9 +2130,7 @@ def test_a_stamped_directory_that_did_not_exist_counts_as_all_appeared(
 
 
 def test_a_group_sibling_still_adopts_past_an_unrelated_new_file(tmp_path, monkeypatch):
-    """The boundary of the two tests above: a new file under ``+incdir+``
-    that shadows nothing the leader consumed is the #535 case itself, and
-    adoption goes ahead."""
+    """A new file under `+incdir+` that shadows nothing the leader consumed is adopted."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     _write_header(tmp_path)
@@ -2400,11 +2151,7 @@ def test_a_group_sibling_still_adopts_past_an_unrelated_new_file(tmp_path, monke
 
 
 def test_an_adoption_leaves_a_stamp_the_gated_jobs_validate(tmp_path, monkeypatch):
-    """The sim jobs gated on that build job run after every member's PRE has
-    populated the tree, and validate the stamp's listing by name. A stamp
-    still listing the leader's cold view fails them all — the leader's too,
-    and a gated job whose build job built it does not recompile — so an
-    adoption rewrites the listing to what the tree now holds."""
+    """Adoption rewrites the stamp's listing to the tree as it now stands, so gated sim jobs that list the populated tree validate."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     _write_header(tmp_path)
@@ -2433,10 +2180,7 @@ def test_an_adoption_leaves_a_stamp_the_gated_jobs_validate(tmp_path, monkeypatc
 def test_an_adoption_validates_the_stamp_it_rewrites_under_the_lock(
     tmp_path, monkeypatch
 ):
-    """Another ``rb`` process may rebuild the shared directory between an
-    unlocked stamp check and the locked rewrite. Validated under the lock,
-    the stamp that a concurrent rebuild replaced is a different binary
-    with a different ``simv`` — not adoptable, and never rewritten."""
+    """A stamp replaced by a concurrent rebuild between the unlocked check and the locked rewrite is not adoptable and is not rewritten."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     _write_header(tmp_path)
@@ -2470,11 +2214,7 @@ def test_an_adoption_validates_the_stamp_it_rewrites_under_the_lock(
 
 
 def test_an_adoption_lists_the_tree_under_the_lock(tmp_path, monkeypatch):
-    """The plan's listing predates the wait for the lock. A header a
-    neighbour dropped in meanwhile, shadowing a consumed include, is a
-    resolution change the stale listing cannot show — and a stamp rewritten
-    from that listing would fail every gated job that lists the real tree.
-    Listed under the lock, the shadow declines the adoption."""
+    """The listing is taken under the lock, so a header dropped in while waiting for the lock and shadowing a consumed include declines adoption."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     _write_header(tmp_path)
@@ -2511,11 +2251,7 @@ def test_an_adoption_lists_the_tree_under_the_lock(tmp_path, monkeypatch):
 def test_an_adoption_whose_stamp_refresh_fails_is_not_an_adoption(
     tmp_path, monkeypatch
 ):
-    """An ``adopted`` verdict puts the config in the envelope's ``built``,
-    after which its gated sim jobs fail rather than recompile. So a stamp
-    that could not be rewritten — read-only, ``ENOSPC`` — hands the config
-    back undecided, to the compile path, instead of vouching for a listing
-    that never landed."""
+    """A stamp that cannot be rewritten (read-only, ``ENOSPC``) leaves the config undecided and sends it to the compile path."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     _write_header(tmp_path)
@@ -2546,15 +2282,8 @@ def test_an_adoption_whose_stamp_refresh_fails_is_not_an_adoption(
 
 
 def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeypatch):
-    """What a run reports having simulated (#535).
-
-    The digest is the one `_fingerprint_sha` takes of a live fingerprint —
-    the stamp is that dict plus deps/simv — so a build job's record and a
-    sim job's report of the same build are comparable. The `simv` entry is
-    the stamp's own, which is what makes a replaced binary visible. The
-    `build_dir` is the shared directory itself — the compile key, and the
-    one thing the runs of one key agree on when their inputs' digests do
-    not.
+    """The run reports the digest of the fingerprint it simulated, the stamp's own ``simv``, and the shared ``build_dir``.
+    The digest is the ``_fingerprint_sha`` of a live fingerprint, so build-job and sim-job records are comparable.
     """
     _write_source(tmp_path)
     calls = []
@@ -2569,7 +2298,6 @@ def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeyp
     assert stamp["fingerprint_sha"] == vlog_sim_module._fingerprint_sha(fingerprint)
     assert stamp["simv"] == vlog_sim_module._stat_entry(builder._get_simv_path())
 
-    # A reuse reports the same pair, read from the same stamp.
     reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
     assert reader.compile() == 0
     assert len(calls) == 1
@@ -2577,10 +2305,7 @@ def test_the_build_stamp_identity_names_the_key_and_the_binary(tmp_path, monkeyp
 
 
 def test_a_run_names_the_executable_it_launched(tmp_path, monkeypatch):
-    """The stamp check and the launch are separate moments. A neighbour that
-    rebuilt the shared directory between them replaced the binary this run
-    validated, and the head's audit can only see that if the run reports
-    the executable it ran, not the one its stamp vouched for."""
+    """The run reports the executable it launched, not the one the stamp check validated."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2592,7 +2317,6 @@ def test_a_run_names_the_executable_it_launched(tmp_path, monkeypatch):
 
     simv.write_bytes(simv.read_bytes() + b"\n# rebuilt by a neighbour\n")
 
-    # What ``execute()`` does with its command's argv[0] before launching it.
     sim._record_launched_simv(str(simv))
     assert sim.last_build_stamp["simv"] == vlog_sim_module._stat_entry(str(simv))
     assert sim.last_build_stamp["simv"] != vouched
@@ -2601,10 +2325,7 @@ def test_a_run_names_the_executable_it_launched(tmp_path, monkeypatch):
 def test_a_leaders_recorded_digest_follows_the_stamp_a_sibling_refreshed(
     tmp_path, monkeypatch
 ):
-    """An adoption rewrites the shared stamp's listing, which is part of the
-    digest. The leader recorded its digest before that, so a build job
-    writing the envelope once the group is done refreshes each member's
-    record from the stamp the gated jobs will actually compare against."""
+    """Writing the envelope refreshes each member's recorded digest from the current stamp, since adoption rewrites the listing."""
     _write_source(tmp_path)
     (tmp_path / "gen").mkdir()
     _write_header(tmp_path)
@@ -2624,16 +2345,14 @@ def test_a_leaders_recorded_digest_follows_the_stamp_a_sibling_refreshed(
     leader.refresh_build_stamp()
     assert leader.last_build_stamp == sibling.last_build_stamp
 
-    # A stamp that vanished is not a reason to forget what was recorded.
+    # A vanished stamp does not clear the recorded value.
     (Path(cold["build_dir"]) / vlog_sim_module.SHARED_BUILD_STAMP_NAME).unlink()
     leader.refresh_build_stamp()
     assert leader.last_build_stamp == sibling.last_build_stamp
 
 
 def test_each_of_a_runners_runs_keeps_the_executable_it_launched(tmp_path, monkeypatch):
-    """`run_multiple` launches one binary per seed off one sim instance, and
-    each launch restates the sim's `simv`. Every result carries the launch it
-    came from, not whatever the last seed happened to run."""
+    """`run_multiple` reports, for each seed, the launch that produced it."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2653,7 +2372,7 @@ def test_each_of_a_runners_runs_keeps_the_executable_it_launched(tmp_path, monke
     monkeypatch.setattr(
         sim,
         "post",
-        # `sim_returncode` rides along with every post() call since #546.
+        # `sim_returncode` is sent with every post() call.
         lambda *, run_id, sim_returncode=None: TestResults(
             "results", {"run_id": run_id}
         ),
@@ -2680,9 +2399,7 @@ def test_each_of_a_runners_runs_keeps_the_executable_it_launched(tmp_path, monke
 
 
 def test_a_gated_retry_says_what_drifted(tmp_path, monkeypatch, caplog):
-    """A dispatched job logs at INFO and the stamp check's own diagnostics
-    are DEBUG, so the one line a reader of an OOM-killed sim job gets has to
-    name the file (#536)."""
+    """The single INFO line from a dispatched job names the file that invalidated the stamp."""
     _write_source(tmp_path)
     source = tmp_path / "src" / "top.sv"
     calls = []
@@ -2717,11 +2434,7 @@ def test_parse_depend_prerequisites_handles_attached_colon_and_escaped_spaces():
 
 
 def test_parse_depend_prerequisites_ignores_mp_phony_rules():
-    """`--MP` appends one bare `<prerequisite>:` rule per dependency so make
-    does not fail on a deleted include. Those are targets; collecting them
-    would stamp a shadow entry per real dep, each ending in a colon and so
-    resolving to a path that never exists. Shape copied from a real
-    `V<prefix>__ver.d` (Verilator 5.048, `--cc --MP`)."""
+    """`--MP` phony `<prerequisite>:` rules are not collected as inputs. Shape copied from a real `V<prefix>__ver.d` (Verilator 5.048, `--cc --MP`)."""
     text = (
         "obj/Vtop.cpp obj/Vtop.mk  : /opt/verilator_bin ../src/top.sv ../inc/w.svh \n"
         "\n"
@@ -2737,7 +2450,7 @@ def test_parse_depend_prerequisites_ignores_mp_phony_rules():
 
 
 def test_share_build_stamp_ignores_the_mp_phony_tail(tmp_path, monkeypatch):
-    """End to end: the tail must not double the stamp."""
+    """End to end: the `--MP` tail does not double the stamp entries."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -2758,26 +2471,17 @@ def test_share_build_stamp_ignores_the_mp_phony_tail(tmp_path, monkeypatch):
 
 
 def test_parse_depend_prerequisites_returns_nothing_without_a_separator():
-    """Never mistake a target list for an input list."""
+    """A target list is not read as an input list."""
     assert (
         vlog_sim_module.parse_depend_prerequisites("obj/Vtop.cpp obj/Vtop.mk\n") == []
     )
 
 
-# --- content-hashed stamps (issue #494) --------------------------------------
+# --- content-hashed stamps ---------------------------------------
 
 
 def _edit_behind_a_stale_stat(path, text):
-    """Rewrite ``path``'s content while its size and mtime stay put.
-
-    This is what the reported failure looks like from the validating side.
-    The edit really happened, seconds ago, on the submit host; the compute
-    node that revalidates the stamp asks NFS for the file's attributes and
-    is served the *cached* pre-edit answer, so `stat` reports the size and
-    mtime the build recorded. Freezing both here reproduces that
-    deterministically, without a cluster: if size and mtime are all the
-    stamp compares, the edited design is reused and reports PASS.
-    """
+    """Rewrite ``path``'s content while keeping its size and mtime, as an NFS client with cached attributes would report."""
     stat = os.stat(path)
     assert len(text.encode()) == stat.st_size, "an equal-size edit is the repro"
     path.write_text(text)
@@ -2785,25 +2489,14 @@ def _edit_behind_a_stale_stat(path, text):
 
 
 def _as_a_fresh_process():
-    """Drop the per-process content-hash memo.
-
-    The memo is keyed on (path, size, mtime_ns), so within one process a
-    file whose stats never moved is hashed once — which is the whole point
-    of it, and which the equal-stat edits above would otherwise defeat.
-    The run that reuses a stale build is a *different* process (a later
-    `rb test`, or a sim job on another node), and this is that boundary.
-    """
+    """Drop the per-process content-hash memo, as when a later process revalidates the stamp."""
     vlog_sim_module._CONTENT_HASH_CACHE.clear()
 
 
 def test_an_edit_hidden_by_an_unchanged_stat_still_invalidates_the_stamp(
     tmp_path, monkeypatch
 ):
-    """The reported bug: a stale PASS on a design that was never simulated.
-
-    A source whose recorded size and mtime still describe it exactly must
-    not validate the build when its bytes have changed (#494).
-    """
+    """A source whose recorded size and mtime still match but whose bytes changed does not validate the build."""
     src = _write_source(tmp_path, "module top; /* aaa */ endmodule\n")
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2818,15 +2511,14 @@ def test_an_edit_hidden_by_an_unchanged_stat_still_invalidates_the_stamp(
     sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
     assert sim_b.compile() == 0
     assert len(calls) == 2, "the stamp validated against a stale stat"
-    # In place, as ever: an edit rebuilds the dir it had, it does not strand
-    # a new one per edit.
+    # An edit rebuilds the same dir in place.
     assert sim_b._get_simv_path() == sim_a._get_simv_path()
 
 
 def test_an_edited_header_hidden_by_an_unchanged_stat_invalidates_the_stamp(
     tmp_path, monkeypatch
 ):
-    """The same, on the deps side: a header reached only through +incdir+."""
+    """The same holds for a header reached only through +incdir+."""
     _write_source(tmp_path)
     header = _write_header(tmp_path, "`define W 08\n")
     calls = []
@@ -2847,10 +2539,7 @@ def test_an_edited_header_hidden_by_an_unchanged_stat_invalidates_the_stamp(
 
 
 def test_restoring_identical_content_no_longer_forces_a_rebuild(tmp_path, monkeypatch):
-    """The other side of hashing: content decides, so a moved mtime alone
-    is not a change. A `git checkout` that restores the same bytes, a
-    `touch`, or a regenerated file that came out identical used to cost a
-    full rebuild each; now the stamp still validates."""
+    """Content decides: a changed mtime with identical bytes (`git checkout`, `touch`, regeneration) still validates the stamp."""
     src = _write_source(tmp_path)
     header = _write_header(tmp_path)
     calls = []
@@ -2871,12 +2560,7 @@ def test_restoring_identical_content_no_longer_forces_a_rebuild(tmp_path, monkey
 
 
 def test_a_dependency_outside_the_project_root_stays_stat_only(tmp_path, monkeypatch):
-    """Verilator names its own std includes among the inputs it consumed.
-
-    Those are not the project's files and hashing an install per validation
-    buys nothing, so they keep the old stat comparison — which means a
-    moved mtime alone still invalidates there.
-    """
+    """Verilator's own std includes stay on the stat comparison, so a moved mtime alone invalidates them."""
     _write_source(tmp_path)
     outside_dir = tmp_path.parent / f"{tmp_path.name}-toolchain"
     outside_dir.mkdir(exist_ok=True)
@@ -2895,7 +2579,7 @@ def test_a_dependency_outside_the_project_root_stays_stat_only(tmp_path, monkeyp
     assert deps[os.path.realpath(outside)][3] is None  # never hashed
     assert deps[os.path.realpath(tmp_path / "src" / "top.sv")][3] is not None
 
-    # With no hash to decide, stats do — as they always did.
+    # With no hash, stats decide.
     _touch(outside, outside.read_text())
 
     sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
@@ -2904,9 +2588,7 @@ def test_a_dependency_outside_the_project_root_stays_stat_only(tmp_path, monkeyp
 
 
 def test_a_stamp_written_before_content_hashing_rebuilds_once(tmp_path, monkeypatch):
-    """Entries gained a fourth element, so every stamp an older rtl_buddy
-    wrote is a shape this version cannot read. "We do not know" is not a
-    reuse: it rebuilds, once, and what it writes back is readable."""
+    """A stamp entry without the hash element is not reused; one rebuild rewrites it in the readable shape."""
     _write_source(tmp_path)
     _write_header(tmp_path)
     calls = []
@@ -2936,13 +2618,7 @@ def test_a_stamp_written_before_content_hashing_rebuilds_once(tmp_path, monkeypa
 
 
 def test_the_compile_key_never_reads_the_content_hash():
-    """The hash lives in the stamp, never in the key.
-
-    If it leaked into the key an edit would name a *different* obj_dir,
-    stranding one build tree per edit instead of rebuilding in place — so
-    the key is pinned here against the exact input set, and the entry shape
-    change of #494 has to leave it alone.
-    """
+    """The hash is stored in the stamp, not in the key; the key is pinned against the exact input set."""
     fingerprint = {
         "cmd": ["verilator", "--binary", "-f", "run.f"],
         "env": {"VERILATOR_ROOT": "/opt/verilator"},
@@ -2969,11 +2645,7 @@ def test_the_compile_key_never_reads_the_content_hash():
 
 
 def test_a_file_is_hashed_once_per_process(tmp_path, monkeypatch):
-    """A suite validating N stamps over one source set reads each file once.
-
-    Content hashing is only affordable because of the memo: without it a
-    fifty-test suite re-reads every source fifty times per run.
-    """
+    """A suite validating N stamps over one source set reads each file once."""
     src = _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -2999,17 +2671,7 @@ def test_a_file_is_hashed_once_per_process(tmp_path, monkeypatch):
 def test_rtl_above_the_suite_is_hashed_because_the_root_is_the_project_root(
     tmp_path, monkeypatch
 ):
-    """The scope that makes this fix work is the PROJECT root, not the suite.
-
-    The reporter's layout is the ordinary one: the suite lives at
-    ``verif/<blk>/`` and owns ``artefacts/.shared-builds``, while the RTL it
-    compiles lives *above* it. Scoped to the suite dir, every one of those
-    sources falls outside the hashing policy and stays stat-only — which is
-    #494, still open, for exactly the projects that reported it. So this
-    test builds from a source outside the suite and asserts both halves:
-    the stamp carries a hash for it, and an edit a stale ``stat`` would hide
-    still invalidates the build.
-    """
+    """The hashing scope is the project root, not the suite: a source outside the suite gets a hash, and an edit that a stale ``stat`` hides invalidates the build."""
     suite = tmp_path / "verif" / "blk"
     suite.mkdir(parents=True)
     rtl = tmp_path / "rtl" / "a.sv"
@@ -3052,12 +2714,7 @@ def test_rtl_above_the_suite_is_hashed_because_the_root_is_the_project_root(
 def test_a_vendored_toolchain_under_the_project_root_is_still_not_hashed(
     tmp_path, monkeypatch
 ):
-    """ "Under the project root" is the implementation; "the project's files,
-    not the toolchain's" is the policy. A vendored install puts the two in
-    tension: ``verilator_bin`` and ``verilated.h`` land *inside* the root and
-    would be content-hashed, which is tens of megabytes read once per process
-    per node — the exact cost the policy exists to avoid.
-    """
+    """A vendored toolchain under the project root (``verilator_bin``, ``verilated.h``) is not content-hashed."""
     src = _write_source(tmp_path)
     install = tmp_path / "tools" / "verilator"
     bindir = install / "bin"
@@ -3077,13 +2734,7 @@ def test_a_vendored_toolchain_under_the_project_root_is_still_not_hashed(
 
 
 def test_a_toolchain_at_the_project_root_itself_excludes_nothing(tmp_path, monkeypatch):
-    """The exclusion is only taken when it is a *proper* subdirectory.
-
-    A project that keeps its simulator in ``<root>/bin`` would otherwise
-    derive ``<root>`` as the install prefix and exclude the entire design —
-    turning the fix off everywhere, silently, for the projects most likely
-    to vendor a toolchain in the first place.
-    """
+    """The toolchain exclusion applies only to a proper subdirectory; a simulator in ``<root>/bin`` does not exclude the design."""
     src = _write_source(tmp_path)
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -3100,12 +2751,7 @@ def test_a_toolchain_at_the_project_root_itself_excludes_nothing(tmp_path, monke
 def test_a_source_symlinked_in_from_outside_the_project_is_still_hashed(
     tmp_path, monkeypatch
 ):
-    """Symlinking a shared IP or RTL tree into the checkout is an ordinary
-    hardware-repo layout, and it is served off the same NFS mount #494 is
-    about. Deciding containment on where the name *resolves* would leave
-    exactly those files stat-only — the fix off for the case it exists
-    for — so the name ``run.f`` declares counts too.
-    """
+    """A symlinked-in RTL tree counts as in-project by the name ``run.f`` declares, not by where the name resolves."""
     external = tmp_path.parent / f"{tmp_path.name}-ip"
     external.mkdir(exist_ok=True)
     ip = external / "ip.sv"
@@ -3140,10 +2786,7 @@ def test_a_source_symlinked_in_from_outside_the_project_is_still_hashed(
 
 
 def test_a_symlinked_in_dependency_is_hashed_like_a_source(tmp_path, monkeypatch):
-    """The dependency list is keyed on the path the build used, not its
-    realpath, so a header reached through ``+incdir+`` from a symlinked-in
-    tree keeps the declared in-project name that qualifies it for hashing —
-    the same rule the test above states for the tree's sources."""
+    """A header reached through ``+incdir+`` in a symlinked-in tree keeps its declared in-project name and qualifies for hashing."""
     external = tmp_path.parent / f"{tmp_path.name}-inc"
     external.mkdir(exist_ok=True)
     header = external / "w.svh"
@@ -3164,12 +2807,7 @@ def test_a_symlinked_in_dependency_is_hashed_like_a_source(tmp_path, monkeypatch
 
 
 def test_retargeting_an_include_symlink_invalidates_the_stamp(tmp_path, monkeypatch):
-    """A retargeted symlink changes what the build reads without changing
-    any name a directory listing shows — and under names-only listing
-    (a dependency file is present) the listing is *meant* to look no
-    further. The dependency list is what has to catch it, and it can only
-    do so if it re-resolves the link on validation instead of stat'ing the
-    target the first build happened to resolve to."""
+    """A retargeted symlink invalidates the stamp because the dependency list re-resolves the link on validation."""
     _write_source(tmp_path)
     versions = tmp_path / "versions"
     versions.mkdir()
@@ -3202,12 +2840,7 @@ def test_retargeting_an_include_symlink_invalidates_the_stamp(tmp_path, monkeypa
 
 
 def test_a_stamp_with_resolved_dependency_paths_is_rebuilt_once(tmp_path, monkeypatch):
-    """A stamp written before deps were keyed by declared path holds the
-    link's *old* target as a plain path. Its entries have the current shape,
-    so nothing but a format marker can tell them apart — and revalidating
-    them would keep a retargeted link's old target valid for as long as it
-    exists. Such a stamp costs one rebuild, after which the marker is
-    there."""
+    """A stamp written before deps were keyed by declared path is rebuilt once and then carries the format marker."""
     _write_source(tmp_path)
     versions = tmp_path / "versions"
     versions.mkdir()
@@ -3236,7 +2869,7 @@ def test_a_stamp_with_resolved_dependency_paths_is_rebuilt_once(tmp_path, monkey
     assert stamp["deps_format"] == vlog_sim_module._DEPS_FORMAT
     assert any(entry[0] == str(link) for entry in stamp["deps"])
 
-    # Rewrite it the way the previous format did: no marker, realpaths.
+    # Rewrite the stamp in the previous format: no marker, realpaths.
     del stamp["deps_format"]
     stamp["deps"] = [
         [os.path.realpath(entry[0]), *entry[1:]] for entry in stamp["deps"]
@@ -3259,12 +2892,7 @@ def test_a_stamp_with_resolved_dependency_paths_is_rebuilt_once(tmp_path, monkey
 def test_an_oversized_input_stays_stat_only_and_says_which(
     tmp_path, monkeypatch, caplog
 ):
-    """The hashing policy is locational, so a memory-init ``.hex`` or a
-    vendored blob named in ``run.f`` qualifies exactly as a ``.sv`` does —
-    and would be read in full on every validation, on every node. Over the
-    cap it keeps the old stat comparison, and says so once so that "why was
-    this not hashed" has an answer in the log.
-    """
+    """A file over the size cap keeps the stat comparison and logs that once."""
     import logging as _logging
 
     monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
@@ -3291,47 +2919,26 @@ def test_an_oversized_input_stays_stat_only_and_says_which(
 def test_deps_validation_fails_closed_on_every_shape_it_cannot_read(
     tmp_path, monkeypatch
 ):
-    """A stamp is data from another machine and possibly another version.
-
-    Under dispatch the stamp is written on whichever node built and read on
-    whichever node reuses, and a mixed-version cluster (submit host upgraded,
-    compute nodes not) is the ordinary way the two disagree. Every shape
-    this version cannot read has to answer "rebuild" — not raise, which
-    under the build job's exit-0 contract would be a failed build instead of
-    a slow one.
-    """
+    """Every stamp shape this version cannot read answers "rebuild" and never raises."""
     _write_source(tmp_path)
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
 
     def _refuse(path, **kwargs):
         raise AssertionError(f"an unreadable stamp shape reached os.stat: {path!r}")
 
-    # The guards have to decide *before* anything is stat'd — the point of
-    # rejecting an int path is that `os.stat` would take it for a file
-    # *descriptor* and answer about whatever unrelated file is open on it,
-    # so "returns False anyway" is not the property being asserted here.
+    # The guards decide before anything is stat'd: `os.stat` would take an int path for a file descriptor.
     monkeypatch.setattr(vlog_sim_module, "_hashed_stat_entry", _refuse)
 
-    # Entries from before content hashing: three elements, no hash.
     assert sim._deps_unchanged("test_a", [["/x", 1, 2]]) is False
     assert sim._deps_unchanged("test_a", [[5, 1, 2, "abcd"]]) is False
     assert sim._deps_unchanged("test_a", ["not-an-entry"]) is False
-    # `deps` itself in a container this version was never taught.
     assert sim._deps_unchanged("test_a", 5) is False
     assert sim._deps_unchanged("test_a", {"/x": [1, 2, "abcd"]}) is False
     assert sim._deps_unchanged("test_a", None) is False
 
 
 def test_nothing_but_a_regular_file_is_ever_opened_for_hashing(tmp_path, monkeypatch):
-    """Stats decide *whether* to read, before anything is opened.
-
-    ``_collect_build_deps`` records whatever the builder's ``.d`` names, and
-    it does not gate on ``isfile`` the way the filelist fingerprint does. A
-    directory there is ordinary and merely raises on open; a FIFO is the case
-    that decides the shape of the guard, because opening one blocks forever —
-    a build job that never returns rather than one that fails closed. The
-    ``st_mode`` is already in hand, so the question is asked before the open.
-    """
+    """Stats decide whether to read a dep, before it is opened; a FIFO would block forever on open."""
     _write_source(tmp_path)
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
     a_directory = tmp_path / "src"
@@ -3382,13 +2989,7 @@ def test_test_runner_threads_share_build_to_vlog_sim(tmp_path, monkeypatch):
 def test_share_build_on_vcs_strips_output_opts_from_extra_compile_flags(
     tmp_path, monkeypatch
 ):
-    """A subclass-injected -o must not outrank the shared build's own.
-
-    _get_extra_compile_flags() is appended AFTER the shared-build output argv,
-    so an unfiltered -o there would win on VCS's duplicate-option precedence:
-    the simv lands outside the shared dir, the stamp check never finds it, and
-    every job recompiles silently and forever.
-    """
+    """A subclass-injected -o does not override the shared build's own output; `_get_extra_compile_flags()` is appended after the shared-build argv."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -3404,19 +3005,14 @@ def test_share_build_on_vcs_strips_output_opts_from_extra_compile_flags(
     assert "sneaky" not in cmd and "-Mdir=sneakier" not in cmd
     assert cmd.count("-o") == 1
     assert cmd[cmd.index("-o") + 1] == str(shared / "simv")
-    # The build really did land where the stamp validates it.
     assert (shared / "simv").is_file()
     assert sim._shared_build_is_valid(shared, None) is False  # wrong fingerprint
     assert Path(sim._get_simv_path()).is_file()
 
 
 def test_icarus_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
-    """The shared `simv` wrapper bakes in _icarus_vvp_extra_args() (#358).
-
-    CocotbSim adds the VPI module there while contributing no Icarus compile
-    flags, so two tests differing only in those args would otherwise share one
-    key and one wrapper — whichever compiled first deciding how vvp is invoked
-    for both.
+    """The shared `simv` wrapper includes _icarus_vvp_extra_args(), so tests that differ only in those args get different builds.
+    CocotbSim adds the VPI module there without adding Icarus compile flags.
     """
     _write_source(tmp_path)
     calls = []
@@ -3434,7 +3030,6 @@ def test_icarus_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
 
     assert plain.compile() == 0
     assert vpi.compile() == 0
-    # Different wrapper contents -> different build, so both compiled.
     assert len(calls) == 2
     assert plain._get_simv_path() != vpi._get_simv_path()
     assert "libcocotbvpi" in Path(vpi._get_simv_path()).read_text()
@@ -3442,7 +3037,7 @@ def test_icarus_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
 
 
 def test_relative_builder_simv_override_is_logged(tmp_path, monkeypatch, caplog):
-    """The shared build discards a relative builder-simv; don't do it silently."""
+    """The shared build warns when it discards a relative builder-simv."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -3475,13 +3070,7 @@ def test_default_builder_simv_override_is_not_logged(tmp_path, monkeypatch, capl
 
 
 def test_a_gated_job_that_compiles_anyway_says_so(tmp_path, monkeypatch, caplog):
-    """The build-job gate *orders* the elements; it does not exclude them.
-
-    If the stamp that build left fails to validate, every element compiles
-    into the same directory at once — #369 resurrected — and the resulting
-    `Compile failed` reads as a design error. This WARNING is the only thing
-    that says otherwise (#369 review).
-    """
+    """The build-job gate orders the elements but does not exclude them; a stamp that fails to validate produces a WARNING, since the resulting `Compile failed` would read as a design error."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -3497,7 +3086,7 @@ def test_a_gated_job_that_compiles_anyway_says_so(tmp_path, monkeypatch, caplog)
 
 
 def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, caplog):
-    """The normal path must not warn, or the signal is worthless."""
+    """The normal path does not warn."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -3515,12 +3104,7 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
 
 
 def test_clear_retry_transcripts_unlinks_every_named_run(tmp_path, monkeypatch):
-    """`run_multiple`'s one compile serves runs 1..N (#498 review).
-
-    The per-run cleanup in pre()/compile() reaches only the sim's own
-    run_id, so a local rerun after a dispatched fan-out relies on this to
-    stop runs 2..N advertising the dispatch's retry transcripts.
-    """
+    """`run_multiple`'s one compile clears stale retry transcripts for runs 1..N."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -3538,13 +3122,7 @@ def test_clear_retry_transcripts_unlinks_every_named_run(tmp_path, monkeypatch):
 
 
 def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch):
-    """A PRE failure must not resurrect the last invocation's retry (#498 review).
-
-    A reused run directory whose next invocation dies in `preproc` never
-    reaches compile(), so the cleanup there cannot run — the fresh
-    SetupFail envelope would be paired with the previous invocation's
-    `compile.retry.log` by the results overlay.
-    """
+    """A PRE failure does not leave the previous invocation's `compile.retry.log` paired with the new SetupFail envelope."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -3562,12 +3140,7 @@ def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch
 
 
 def test_a_stale_retry_log_does_not_survive_the_next_compile(tmp_path, monkeypatch):
-    """`compile.retry.log` describes exactly one run's retry (#498 review).
-
-    Left behind, a later run that reused the build (or never retried at
-    all) would keep advertising the old transcript through `rb graph
-    results`' existence check, implying this run retried compilation.
-    """
+    """`compile.retry.log` describes exactly one run's retry and is removed when a later run does not retry."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -3583,12 +3156,9 @@ def test_a_stale_retry_log_does_not_survive_the_next_compile(tmp_path, monkeypat
     assert not stale.exists()
 
 
-# ------------------------------- a gated job vs. a failed build (#498)
+# --- a gated job vs. a failed build -------------------------------
 
-# What the build job left in artefacts/<test>/compile.log. Every test below
-# asserts it byte-for-byte afterwards: the whole bug was a sim-side retry
-# writing its own `%Error: Verilator threw signal 9` over this text, so the
-# only visible failure became an OOM that read as a resource problem.
+# The build job's compile.log; every test asserts it is unchanged byte for byte afterwards.
 _BUILD_TRANSCRIPT = (
     "Command: verilator --Mdir obj_dir -f run.f\n\n"
     "=== stderr ===\n"
@@ -3599,7 +3169,7 @@ _BUILD_TRANSCRIPT = (
 
 
 def _seed_build_transcript(sim):
-    """Put the build job's compile.log where this sim would look for it."""
+    """Put the build job's compile.log where this sim looks for it."""
     path = Path(sim._get_compile_transcript_path())
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_BUILD_TRANSCRIPT)
@@ -3607,13 +3177,9 @@ def _seed_build_transcript(sim):
 
 
 def _write_build_envelope(tmp_path, *, failed, builds=None, built=None, partial=False):
-    """A build job's envelope. ``built`` defaults to "test_a, if it passed".
-
-    Pass it explicitly for the case the envelope names this test in
-    NEITHER list — a config the build job never reached, which is the one
-    thing that still earns a gated retry (#535). ``partial`` is the
-    envelope a build job rewrites mid-run, which is what a released key's
-    simulation jobs read while later keys are still compiling (#548).
+    """Write a build job's envelope. ``built`` defaults to "test_a, if it passed".
+    Pass ``built`` explicitly to omit the test from both lists (a config the build job never reached).
+    ``partial`` writes the mid-run envelope that released keys' simulation jobs read.
     """
     from rtl_buddy.runner.result_io import write_build_result_json
 
@@ -3639,13 +3205,7 @@ def _events(caplog, name):
 def test_a_gated_job_does_not_retry_a_compile_the_build_job_already_failed(
     tmp_path, monkeypatch, caplog
 ):
-    """A deterministic compile error will not pass on retry (#498).
-
-    Retrying it in the sim job runs the same elaboration under the *sim*
-    reservation, so a big design is OOM-killed and writes `signal 9` over
-    the build job's real error. Refuse the retry, report the build's exit
-    status and error lines, and leave that transcript alone.
-    """
+    """A deterministic compile error is not retried in the sim job; the build's exit status and error lines are reported and its transcript is left alone."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -3678,14 +3238,12 @@ def test_a_gated_job_does_not_retry_a_compile_the_build_job_already_failed(
     assert calls == []
     assert compile_log.read_text() == _BUILD_TRANSCRIPT
     assert not (compile_log.parent / "compile.retry.log").exists()
-    # The real error reaches the summary row, in one line.
     desc = sim.compile_fail_desc
     assert "Signal is not driven" in desc
     assert "(exit 1)" in desc
     assert str(compile_log) in desc
     assert "\n" not in desc
-    # ...and the retry WARNING must not fire: nothing is compiling here, so
-    # the "every sibling is compiling into one dir" advice would be wrong.
+    # The retry WARNING does not fire, since nothing is compiling.
     assert _events(caplog, "compile.prebuilt_stamp_invalid") == []
     assert _events(caplog, "compile.build_job_failed")[0]["returncode"] == 1
 
@@ -3693,22 +3251,13 @@ def test_a_gated_job_does_not_retry_a_compile_the_build_job_already_failed(
 def test_a_gated_job_retries_a_failure_recorded_without_compiler_evidence(
     tmp_path, monkeypatch, caplog
 ):
-    """`failed` alone is not a compile verdict (#498 review).
-
-    The envelope's `failed` list also carries PRE/setup failures, filelist
-    errors and worker exceptions, and a sim job re-runs its own preproc —
-    so a transient setup failure on the build side can pass here, and
-    suppressing the retry would turn that run into a false CompileFail.
-    Only a per-build record with a `returncode` — a builder that genuinely
-    ran and exited non-zero — is deterministic enough to stop the retry.
-    """
+    """A `failed` entry alone is not a compile verdict; only a per-build record with a `returncode` stops the retry."""
     import logging as _logging
 
     cases = (
-        # An older build job: listed as failed, no builds records at all.
+        # An older build job: listed as failed, with no builds records.
         ("no builds record", {"failed": ["test_a"]}),
-        # A worker exception / setup failure: a record, but no returncode
-        # because no builder ever ran.
+        # A worker exception or setup failure: a record without a returncode.
         (
             "record without returncode",
             {
@@ -3721,8 +3270,7 @@ def test_a_gated_job_retries_a_failure_recorded_without_compiler_evidence(
     for case_i, (label, shape) in enumerate(cases):
         calls = []
         _install_fake_builder(monkeypatch, calls)
-        # A distinct define per case, so no case short-circuits on the
-        # shared build stamp an earlier one left.
+        # A distinct define per case avoids reuse of an earlier stamp.
         sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", pd={"CASE": case_i})
         compile_log = _seed_build_transcript(sim)
         sim.expect_prebuilt = True
@@ -3730,12 +3278,11 @@ def test_a_gated_job_retries_a_failure_recorded_without_compiler_evidence(
 
         caplog.clear()
         with caplog.at_level(_logging.DEBUG):
-            assert sim.compile() == 0, label  # the retry ran, and passed
+            assert sim.compile() == 0, label
 
         assert len(calls) == 1, label
         assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
         assert _events(caplog, "compile.build_job_failed") == [], label
-        # The build job's transcript is untouched by the successful retry.
         assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
         assert sim.compile_fail_desc is None, label
 
@@ -3743,12 +3290,7 @@ def test_a_gated_job_retries_a_failure_recorded_without_compiler_evidence(
 def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
     tmp_path, monkeypatch, caplog
 ):
-    """The evidence-less retry is a gated retry like any other (#498 review).
-
-    Its transcript goes to `compile.retry.log` beside the build job's
-    `compile.log`, never over it — and its failure is the sim job's own
-    story (the generic desc), not the build job's verdict.
-    """
+    """A retry without build-side evidence writes to `compile.retry.log` beside the build job's `compile.log`, and its failure is the sim job's own."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -3767,7 +3309,7 @@ def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
     with caplog.at_level(_logging.DEBUG):
         assert sim.compile() == 1
 
-    assert len(calls) == 1  # the retry really ran
+    assert len(calls) == 1
     assert compile_log.read_text() == _BUILD_TRANSCRIPT
     retry_log = compile_log.parent / "compile.retry.log"
     assert retry_log.is_file()
@@ -3776,22 +3318,11 @@ def test_a_no_evidence_retry_that_fails_writes_the_retry_log(
 
 
 def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatch):
-    """Fan-out siblings share the test dir; retry logs are per run (#498 r6).
-
-    Run 1's gated retry fails and leaves `run-0001/compile.retry.log` — the
-    only diagnostic of what ITS recompile hit. Run 2 then enters compile();
-    its self-cleanup unlink must target run 2's own retry log, never run 1's
-    evidence, and run 2's own retry writes only inside run 2's directory.
-
-    Run 2's retry passes and still leaves a transcript, in its own
-    `run-0002/compile.retry.log`: since #494 a compile that RAN always
-    records what it ran, so the presence of a transcript cannot come to mean
-    "nothing compiled". #498 only redirects WHICH file that is, so the
-    build's `compile.log` survives untouched either way.
+    """Retry logs are per run: run 2 neither removes nor overwrites run 1's `run-0001/compile.retry.log`,
+    and each retry that runs records a transcript in its own run directory.
     """
     _write_source(tmp_path)
 
-    # Run 1: an evidence-less failure record earns the retry, which fails.
     calls1 = []
     _install_fake_builder(monkeypatch, calls1, returncode=1)
     run1 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
@@ -3807,10 +3338,8 @@ def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatc
     run1_retry = Path(run1._get_artifact_dir(run_id=1)) / "compile.retry.log"
     assert run1_retry.is_file()
     run1_evidence = run1_retry.read_text()
-    # The test-scoped retry name is gone: nothing writes it any more.
     assert not (compile_log.parent / "compile.retry.log").exists()
 
-    # Run 2, same test artefact dir: retries too, and passes.
     calls2 = []
     _install_fake_builder(monkeypatch, calls2, stdout="run 2 recompiled\n")
     run2 = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=2)
@@ -3819,37 +3348,26 @@ def test_a_siblings_retry_log_survives_another_runs_compile(tmp_path, monkeypatc
     assert run2.compile() == 0
     assert len(calls2) == 1
 
-    # Run 1's diagnostic survives, byte for byte; run 2's own retry recorded
-    # itself in run 2's directory and nowhere else.
     assert run1_retry.read_text() == run1_evidence
     run2_retry = Path(run2._get_artifact_dir(run_id=2)) / "compile.retry.log"
     assert run2_retry.is_file()
     assert "run 2 recompiled" in run2_retry.read_text()
     assert "run 2 recompiled" not in run1_evidence
     assert not (compile_log.parent / "compile.retry.log").exists()
-    # And the build job's own transcript was never touched either.
     assert compile_log.read_text() == _BUILD_TRANSCRIPT
 
 
 def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
     tmp_path, monkeypatch, caplog
 ):
-    """A recorded failure of a *different* compile earns the retry (#498 review).
-
-    The sim job's PRE has re-run and its fingerprint is recomputed; if the
-    sources, flags or toolchain moved since the build job's compile failed,
-    the new inputs might pass, and suppressing the recompile would report a
-    CompileFail nobody has run. The record's `fingerprint_sha` is compared
-    against the sim's own; only a match (or an older record without one)
-    keeps the verdict.
-    """
+    """A recorded failure of a different compile (a `fingerprint_sha` mismatch) earns the retry; a match, or a record without one, keeps the verdict."""
     import logging as _logging
 
     from rtl_buddy.tools.vlog_sim import _fingerprint_sha
 
     _write_source(tmp_path)
 
-    # --- the build job's side: a real failing compile records the sha.
+    # The build job records the sha of a real failing compile.
     calls = []
     _install_fake_builder(monkeypatch, calls, returncode=1)
     build_sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
@@ -3857,7 +3375,7 @@ def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
     recorded = build_sim.last_compile_failure
     assert recorded["fingerprint_sha"]
 
-    # --- same inputs: the gated job honours the verdict and does not retry.
+    # Same inputs: the gated job honours the verdict and does not retry.
     calls2 = []
     _install_fake_builder(monkeypatch, calls2)
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
@@ -3878,11 +3396,10 @@ def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
         assert sim.compile() == 1
     assert calls2 == []  # suppressed: same compile, known verdict
     assert compile_log.read_text() == _BUILD_TRANSCRIPT
-    # The sim's own hash really is the same helper over the same shape.
     assert _events(caplog, "compile.build_failure_inputs_changed") == []
     assert _fingerprint_sha(None) is None
 
-    # --- the inputs moved: the same record with a different sha retries.
+    # The inputs moved: the same record with a different sha retries.
     caplog.clear()
     calls3 = []
     _install_fake_builder(monkeypatch, calls3)
@@ -3905,17 +3422,7 @@ def test_the_no_retry_verdict_holds_only_for_the_same_inputs(
 
 
 def test_the_fingerprint_sha_agrees_with_the_stamp_comparison(tmp_path, monkeypatch):
-    """`_fingerprint_sha` means what `_entry_lists_match` means (#494 + #498).
-
-    The no-retry verdict compares two hashes of a fingerprint, and the
-    stamp compares the same fingerprint entry-wise — where a content hash
-    OUTVOTES a moved `mtime_ns` (#494). Hashing the raw entries would put
-    the two into disagreement in the one direction that costs a run: a
-    `touch`, or a regenerated file with identical bytes, would move the sha,
-    the gated job would call the inputs "changed", and it would recompile a
-    deterministic failure under the sim reservation — exactly what #498
-    exists to stop. An edited byte must still move both.
-    """
+    """`_fingerprint_sha` agrees with the stamp comparison: a new mtime with identical bytes does not move the sha, and an edited byte does."""
     from rtl_buddy.tools.vlog_sim import (
         _entry_lists_match,
         _fingerprint_sha,
@@ -3930,15 +3437,13 @@ def test_the_fingerprint_sha_agrees_with_the_stamp_comparison(tmp_path, monkeypa
     before = fingerprint()
     assert before["sources"][0][3], "the source must be content-hashed at all"
 
-    # Same bytes, new mtime: the stamp still validates, so the sha must not
-    # move either.
+    # Same bytes, new mtime: the sha does not move.
     os.utime(src, (0, 0))
     touched = fingerprint()
     assert touched["sources"] != before["sources"]  # the mtimes really moved
     assert _entry_lists_match(before["sources"], touched["sources"])
     assert _fingerprint_sha(touched) == _fingerprint_sha(before)
 
-    # A real edit moves both, in step.
     src.write_text("module top; wire q; endmodule\n")
     edited = fingerprint()
     assert not _entry_lists_match(before["sources"], edited["sources"])
@@ -3948,15 +3453,7 @@ def test_the_fingerprint_sha_agrees_with_the_stamp_comparison(tmp_path, monkeypa
 def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     tmp_path, monkeypatch, caplog
 ):
-    """A config the build job never reached still earns its retry (#498).
-
-    A crash, a cancellation, a plan the job did not finish: the envelope
-    names this test in neither list, nobody built it, and the recompile is
-    the only way it runs at all. What it may not do is truncate the build
-    job's compile.log, so its transcript goes to compile.retry.log — and
-    the compile.failed event names whichever file was actually written,
-    because that is what every reader is pointed at.
-    """
+    """A config the build job never reached earns a retry, written to `compile.retry.log`, and `compile.failed` names the file written."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -3978,22 +3475,13 @@ def test_a_gated_retry_writes_beside_the_build_log_never_over_it(
     assert "Command: " in retry_log.read_text()
     assert _events(caplog, "compile.prebuilt_stamp_invalid")
     assert _events(caplog, "compile.failed")[0]["transcript"] == str(retry_log)
-    # No build-side verdict to report, so the generic desc still applies.
     assert sim.compile_fail_desc is None
 
 
 def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
     tmp_path, monkeypatch, caplog
 ):
-    """A successful build record ends the retry, whatever the stamp says (#535).
-
-    The binary the whole fan-out was gated on exists. A stamp that
-    disagrees with it is worth reporting and worth fixing, but recompiling
-    is the one answer that cannot help: it runs at SIMULATION size into the
-    directory every sibling is queued on, and the memory kill that follows
-    replaces the reason with `signal 9`. So the test fails, once, with what
-    drifted — a row to read instead of N red jobs.
-    """
+    """A successful build record ends the retry whatever the stamp says: the test fails once with what drifted, without recompiling."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4004,7 +3492,6 @@ def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
     compile_log = _seed_build_transcript(sim)
     sim.expect_prebuilt = True
     own_sha = vlog_sim_module._fingerprint_sha(sim._compile_plan().fingerprint)
-    # The build job built it, from exactly these inputs.
     sim.build_result_json = _write_build_envelope(
         tmp_path,
         failed=[],
@@ -4020,8 +3507,7 @@ def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
     assert _events(caplog, "compile.prebuilt_stamp_invalid") == []
     rejected = _events(caplog, "compile.build_stamp_rejected")
     assert rejected and rejected[0]["inputs_differ"] is False
-    # The reason the stamp check recorded reaches the summary row, in one
-    # line, and says it is not compiling rather than that it failed to.
+    # The reason the stamp check recorded reaches the summary row in one line and says nothing is compiling.
     desc = sim.compile_fail_desc
     assert "no stamp or no simv" in desc
     assert "not recompiling" in desc
@@ -4029,17 +3515,7 @@ def test_a_gated_job_does_not_recompile_a_build_the_build_job_made(
 
 
 def test_a_released_job_declines_on_a_partial_envelope(tmp_path, monkeypatch, caplog):
-    """The verdict counts while the build job is still compiling (#548).
-
-    A released simulation starts the moment its own compile key is built,
-    which is while later keys are still going — so the envelope it reads
-    is the one the build job is still rewriting. It names this test, and
-    that is the whole question: the binary exists, so recompiling under
-    the simulation reservation is the one answer that cannot help, exactly
-    as for the complete envelope. Reading `partial` as "not decided yet"
-    would put this job, and every element released beside it, into the
-    shared build directory at once.
-    """
+    """A partial envelope that names the test as built gives the same verdict as a complete one."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4071,13 +3547,7 @@ def test_a_released_job_declines_on_a_partial_envelope(tmp_path, monkeypatch, ca
 def test_a_partial_envelope_that_has_not_reached_this_test_still_retries(
     tmp_path, monkeypatch, caplog
 ):
-    """Listed in neither list is "never reached", partial or not (#548).
-
-    Under a partial envelope that is the ordinary state of a key the build
-    job has not got to — but such a job was never released either, so it
-    is running after the build job ended and the retry it earns is the
-    pre-#548 recovery path, unchanged.
-    """
+    """A test listed in neither list is "never reached" under a partial envelope too, and earns the retry."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4101,7 +3571,7 @@ def test_a_partial_envelope_that_has_not_reached_this_test_still_retries(
 
 
 def test_a_complete_envelope_is_byte_identical_to_a_pre_partial_one(tmp_path):
-    """The key is only ever written true, so nothing downstream moves."""
+    """The `partial` key is only ever written true."""
     import json
 
     from rtl_buddy.runner.result_io import (
@@ -4125,8 +3595,7 @@ def test_a_complete_envelope_is_byte_identical_to_a_pre_partial_one(tmp_path):
     )
     assert json.loads(partial.read_text())["partial"] is True
     assert load_build_result_json(partial)["partial"] is True
-    # Additive: the schema version does not move, so an older head reading
-    # a partial envelope still gets its compile-fail mapping.
+    # Additive: the schema version does not change.
     assert (
         json.loads(partial.read_text())["schema_version"]
         == (json.loads(complete.read_text())["schema_version"])
@@ -4134,7 +3603,7 @@ def test_a_complete_envelope_is_byte_identical_to_a_pre_partial_one(tmp_path):
 
 
 def _stamp_path(sim):
-    """The shared stamp this sim's compile key validates against."""
+    """Return the shared stamp this sim's compile key validates against."""
     return Path(sim.compile_group_dir()) / vlog_sim_module.SHARED_BUILD_STAMP_NAME
 
 
@@ -4149,34 +3618,23 @@ def _gated(tmp_path, monkeypatch, name, *, envelope, **kwargs):
 def test_a_declining_gated_job_leaves_the_stamp_for_its_siblings(
     tmp_path, monkeypatch, caplog
 ):
-    """One element's drift must not invalidate the key for the fan-out (#534).
-
-    The unlink that clears a stale stamp belongs to a compile that is
-    actually about to run in that directory. Run before the gated verdict,
-    it fired on the one path that compiles nothing: the declining job left
-    the build job's outputs with no stamp beside them, and every sibling
-    element queued on that key then failed `_build_stamp_is_valid` with "no
-    stamp or no simv" — a cascade from one drift, and a plain re-run
-    rebuilding from scratch.
-    """
+    """One element's drift does not remove the shared stamp, so sibling elements on the same key still validate."""
     import logging as _logging
 
     source = _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
-    # The build job's compile, and the stamp it leaves.
     assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
     stamp = _stamp_path(_make_sim(tmp_path, monkeypatch, test_name="test_a"))
     stamped = stamp.read_bytes()
     calls.clear()
 
     envelope = _write_build_envelope(tmp_path, failed=[], built=["test_a", "test_b"])
-    # test_a's element derives its fingerprint from the tree as the build
-    # job left it, so its stamp check will pass...
+    # test_a's stamp check passes...
     reuser = _gated(tmp_path, monkeypatch, "test_a", envelope=envelope)
     reuser._compile_plan()
-    # ...while test_b's lands after an edit, so its check cannot.
+    # ...while test_b's follows an edit and fails.
     _touch(source, "module top; wire drifted; endmodule\n")
     decliner = _gated(tmp_path, monkeypatch, "test_b", envelope=envelope)
 
@@ -4196,13 +3654,7 @@ def test_a_declining_gated_job_leaves_the_stamp_for_its_siblings(
 def test_a_gated_job_whose_build_failed_also_leaves_the_stamp(
     tmp_path, monkeypatch, caplog
 ):
-    """Same guarantee on the other verdict (#534).
-
-    A config the build job recorded as a compile failure fails here too,
-    carrying that exit status — and it compiles nothing, so it has no more
-    business removing the shared stamp than the declining job above. Its
-    same-key siblings may be perfectly buildable.
-    """
+    """A recorded compile failure keeps the shared stamp too, since it compiles nothing."""
     import logging as _logging
 
     source = _write_source(tmp_path)
@@ -4238,14 +3690,7 @@ def test_a_gated_job_whose_build_failed_also_leaves_the_stamp(
 def test_a_gated_job_declines_on_a_missing_stamp_beside_a_real_simv(
     tmp_path, monkeypatch, caplog
 ):
-    """The MISSING-stamp case, not only the mismatching one (#534 ask 3).
-
-    `_build_stamp_is_valid` answers "no stamp or no simv in the build dir"
-    before it looks at anything else, so the envelope has to be consulted
-    after that verdict rather than only for a stamp that disagreed. The
-    binary is right there; recompiling it under the simulation reservation
-    is exactly the OOM the gate exists to prevent.
-    """
+    """A missing stamp, as well as a mismatching one, defers to the build job's envelope instead of recompiling."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4275,7 +3720,7 @@ def test_a_gated_job_declines_on_a_missing_stamp_beside_a_real_simv(
 
 
 def _break_stamp_writes(monkeypatch, *, error=errno.EROFS):
-    """Fail every stamp write, leaving every other artefact write alone."""
+    """Fail every stamp write and leave other artefact writes alone."""
     real = vlog_sim_module.VlogSim._replace_text
 
     def _refuse(self, path, text):
@@ -4289,14 +3734,7 @@ def _break_stamp_writes(monkeypatch, *, error=errno.EROFS):
 def test_a_stamp_that_cannot_be_written_does_not_fail_a_passing_compile(
     tmp_path, monkeypatch, caplog
 ):
-    """The compile succeeded; only the note saying so did not (#534).
-
-    A raising `write_text` escaped `compile()` — `_compile_outcome` catches
-    only `FilelistError` — so under `rb _build-job` it surfaced as a worker
-    exception and a build that was sitting in the directory was reported
-    failed, cancelling the afterok fan-out behind it. Keep the builder's
-    status, say what happened, and record it for the gated jobs.
-    """
+    """When only the stamp write fails, the builder's status is kept, the failure is reported, and it is recorded for the gated jobs."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4314,7 +3752,6 @@ def test_a_stamp_that_cannot_be_written_does_not_fail_a_passing_compile(
     assert failed["stamp"].endswith(vlog_sim_module.SHARED_BUILD_STAMP_NAME)
     assert failed["error"]
     assert _events(caplog, "compile.build_stamp_written") == []
-    # What the build job reads off the runner to write the envelope with.
     assert sim.stamp_write_failed is True
     assert sim.last_build_stamp is None
     assert not _stamp_path(sim).exists()
@@ -4322,14 +3759,7 @@ def test_a_stamp_that_cannot_be_written_does_not_fail_a_passing_compile(
 
 
 def test_a_stamp_write_that_fails_leaves_no_partial_file(tmp_path, monkeypatch):
-    """Atomic like every other artefact on this path (#534).
-
-    `compile()`'s reuse fast path reads the stamp with no lock held, so a
-    plain `write_text` let a reader see a truncated file, call it
-    unreadable, and recompile a build that was perfectly good. A tmp file
-    that could not be replaced into place is removed rather than left for
-    the next listing to trip over.
-    """
+    """The stamp is written atomically, and a temp file that cannot be moved into place is removed."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4345,13 +3775,7 @@ def test_a_stamp_write_that_fails_leaves_no_partial_file(tmp_path, monkeypatch):
 def test_a_gated_job_declines_when_the_build_job_could_not_stamp(
     tmp_path, monkeypatch, caplog
 ):
-    """`stamp_written: false` is read as "built", with its own reason (#534).
-
-    The build job already knows why there is no stamp: its compile
-    succeeded and the write failed. Rediscovering that here as "no stamp or
-    no simv" would send the reader looking for a build that is right there,
-    and recompiling would run it under the simulation reservation.
-    """
+    """`stamp_written: false` is read as "built" with its own reason, and no recompile."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4387,11 +3811,7 @@ def test_a_gated_job_declines_when_the_build_job_could_not_stamp(
 def test_a_gated_job_with_a_stamped_build_is_not_told_the_stamp_failed(
     tmp_path, monkeypatch, caplog
 ):
-    """The boundary: an envelope with no `stamp_written` key means stamped.
-
-    Every envelope written before this field existed says nothing, and must
-    keep meaning what it always did.
-    """
+    """An envelope without a `stamp_written` key means stamped."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4418,15 +3838,7 @@ def test_a_gated_job_with_a_stamped_build_is_not_told_the_stamp_failed(
 def test_a_gated_job_says_when_its_inputs_are_not_the_build_jobs(
     tmp_path, monkeypatch, caplog
 ):
-    """Same verdict, different diagnosis (#535).
-
-    A recorded digest that does not match the one this job just derived
-    says the two nodes are not looking at the same compile — a preproc that
-    generates different bytes here, an edit that landed mid-run. Still no
-    recompile: the shared directory holds the build the rest of the fan-out
-    is using, and rebuilding it from these inputs would hand them a binary
-    nobody asked for.
-    """
+    """A recorded digest that differs from this job's derives a different diagnosis but still no recompile."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4455,12 +3867,7 @@ def test_a_gated_job_says_when_its_inputs_are_not_the_build_jobs(
 def test_a_gated_job_declines_on_a_built_record_that_carries_no_digest(
     tmp_path, monkeypatch, caplog
 ):
-    """A build job too old to record a digest still says it BUILT (#535).
-
-    The digest refines the diagnosis; the `built` list is what decides.
-    Reading a record with no digest as "unknown, so recompile" would put
-    exactly the OOM back for the length of a mixed-version rollout.
-    """
+    """A build record without a digest still counts as built; the `built` list decides."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4482,12 +3889,7 @@ def test_a_gated_job_declines_on_a_built_record_that_carries_no_digest(
 def test_a_gated_job_that_validates_the_stamp_never_asks_the_envelope(
     tmp_path, monkeypatch, caplog
 ):
-    """The normal path is untouched: reuse, silently (#535).
-
-    Every gated job in a healthy fan-out has a successful build record and
-    a stamp that validates, so the new verdict must be reachable only after
-    the stamp has already lost.
-    """
+    """A healthy fan-out reuses the build silently; the envelope verdict is reached only after the stamp check fails."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4509,12 +3911,7 @@ def test_a_gated_job_that_validates_the_stamp_never_asks_the_envelope(
 def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
     tmp_path, monkeypatch, caplog
 ):
-    """Missing, corrupt, or simply not passed: retry, exactly as before.
-
-    Declining to compile on a guess would turn an unreadable file into a
-    lost run, so only an envelope that positively names this test as failed
-    stops the retry.
-    """
+    """A missing, corrupt or non-passing envelope retries; only one that names this test as failed stops the retry."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4529,8 +3926,7 @@ def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
     for case_i, (label, envelope) in enumerate(cases):
         calls = []
         _install_fake_builder(monkeypatch, calls)
-        # A distinct define per case, so no case short-circuits on the
-        # shared build stamp an earlier one left.
+        # A distinct define per case avoids reuse of an earlier stamp.
         sim = _make_sim(
             tmp_path, monkeypatch, test_name=f"test_{case_i}", pd={"CASE": case_i}
         )
@@ -4545,9 +3941,7 @@ def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
         assert len(calls) == 1, label
         assert _events(caplog, "compile.prebuilt_stamp_invalid"), label
         assert _events(caplog, "compile.build_job_failed") == [], label
-        # The retry's own transcript goes to compile.retry.log — since #494
-        # a compile that ran records itself even when it passed — so the
-        # build job's compile.log stays exactly as it was.
+        # The retry's transcript goes to compile.retry.log, so the build job's compile.log is unchanged.
         assert compile_log.read_text() == _BUILD_TRANSCRIPT, label
         assert (
             Path(sim._get_artifact_dir(run_id=sim.run_id)) / "compile.retry.log"
@@ -4555,12 +3949,7 @@ def test_a_gated_retry_falls_back_to_todays_behaviour_without_an_envelope(
 
 
 def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
-    """The `.retry.` name is for gated retries and nothing else (#498).
-
-    Every local run, and every dispatched job with no build job behind it,
-    must keep writing the file the docs, `rb graph results` and a decade of
-    muscle memory look for.
-    """
+    """The `.retry.` name is used only for gated retries; local runs and dispatched jobs without a build job write `compile.log`."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, returncode=1)
@@ -4572,10 +3961,7 @@ def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
     assert transcript.name == "compile.log"
     assert transcript.is_file()
     assert not (transcript.parent / "compile.retry.log").exists()
-    # And the record a dispatched build job would put in its envelope —
-    # including the identity of the inputs this compile failed on, which
-    # is what lets a gated sim job tell "same compile" from "inputs moved
-    # since" (#498 review).
+    # The record a dispatched build job puts in its envelope, including the `fingerprint_sha` of the inputs that failed.
     failure = sim.last_compile_failure
     assert failure["returncode"] == 1
     assert failure["transcript"] == str(transcript)
@@ -4584,12 +3970,7 @@ def test_an_ungated_compile_still_writes_compile_log(tmp_path, monkeypatch):
 
 
 def test_a_gated_build_failure_becomes_the_compile_fail_desc(tmp_path, monkeypatch):
-    """The desc reaches the run summary through TestRunner, not just VlogSim.
-
-    `_compile_outcome` maps a non-zero compile to CompileFailResults, and
-    that mapping is where a bare "Compile failed" used to erase everything
-    the sim had just learned (#498).
-    """
+    """The failure desc reaches the run summary through TestRunner, not only VlogSim."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4627,16 +4008,12 @@ def test_a_gated_build_failure_becomes_the_compile_fail_desc(tmp_path, monkeypat
     assert results.results["result"] == "FAIL"
     assert "Signal is not driven" in results.results["desc"]
     assert "(exit 2)" in results.results["desc"]
-    # The runner's own view of the failure, which the build job records.
     assert runner.last_compile_failure["returncode"] == 2
     assert calls == []
 
 
 def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():
-    """The head plans reservations and gating from this, and the job takes
-    the unshared path from it. Family alone is not enough: an absolute
-    `builder-simv:` declines sharing too, and a head consulting only the
-    family would plan such a builder as shareable (#369 review)."""
+    """The head plans reservations and gating from this predicate, and the job takes the unshared path from it; an absolute `builder-simv:` declines sharing as well as the family."""
     reason = vlog_sim_module.share_build_unsupported_reason
 
     assert reason(DummyBuilderCfg(simulator_family="verilator")) is None
@@ -4644,27 +4021,19 @@ def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():
     assert "no shared-build support" in reason(
         DummyBuilderCfg(simulator_family="questa")
     )
-    # The case the two predicates used to disagree on.
+    # The two predicates agree here.
     assert "builder-simv is an absolute path" in reason(
         DummyBuilderCfg(simulator_family="vcs", simv="/pinned/simv")
     )
-    # Verilator and Icarus are redirected wholesale, so a pinned simv is
-    # overridden rather than honoured, and sharing still applies.
+    # Verilator and Icarus are redirected wholesale, so a pinned simv is overridden and sharing still applies.
     assert (
         reason(DummyBuilderCfg(simulator_family="verilator", simv="/pinned/simv"))
         is None
     )
 
 
-# --- toolchain identity (INF-22) -------------------------------------------
-#
-# The stamp used to record the *configured* builder name ("verilator"), which
-# is the same string whichever install PATH resolves it to. So pointing the
-# project at a different simulator left every stamp validating, the compile
-# short-circuited, and the run reported PASS on a binary the new toolchain
-# never produced. Dispatch implies --share-build, so a dispatched toolchain
-# A/B reported green on both sides while the same regression run locally
-# (compiling per test) failed correctly.
+# --- toolchain identity -----------------------------------------
+# The stamp records the resolved toolchain (path, version banner), so pointing the project at a different install invalidates it.
 
 
 def _fake_toolchain(tmp_path, name, version, binary="verilator"):
@@ -4677,8 +4046,7 @@ def _fake_toolchain(tmp_path, name, version, binary="verilator"):
 
 
 def test_share_build_keeps_a_separate_build_per_toolchain(tmp_path, monkeypatch):
-    """Two installs, two build dirs — which is what an A/B wants: neither
-    side overwrites the other's simv, so both stay runnable."""
+    """Two installs get two build dirs, so neither overwrites the other's simv."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4694,7 +4062,6 @@ def test_share_build_keeps_a_separate_build_per_toolchain(tmp_path, monkeypatch)
     assert len(calls) == 2, "the second toolchain must not reuse the first's build"
     assert sim_a._get_simv_path() != sim_b._get_simv_path()
 
-    # And a third test back on the first toolchain reuses that one's build.
     sim_c = _make_sim(tmp_path, monkeypatch, test_name="test_c", exe=str(old))
     assert sim_c.compile() == 0
     assert len(calls) == 2
@@ -4704,8 +4071,7 @@ def test_share_build_keeps_a_separate_build_per_toolchain(tmp_path, monkeypatch)
 def test_share_build_rebuilds_when_one_install_is_upgraded_in_place(
     tmp_path, monkeypatch, caplog
 ):
-    """Same path, new binary behind it: rebuild in the same dir (no
-    directory per version) and say why, because nothing else would."""
+    """A new binary at the same path rebuilds in the same dir and logs why."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4717,8 +4083,7 @@ def test_share_build_rebuilds_when_one_install_is_upgraded_in_place(
     assert sim_a.compile() == 0
     assert len(calls) == 1
 
-    # Upgrade the install the project points at. The mtime bump is explicit
-    # so the version probe cannot answer from its (path, mtime) cache.
+    # Upgrade the install the project points at; the mtime bump avoids the version probe's (path, mtime) cache.
     _touch(exe, '#!/bin/sh\necho "Verilator 5.049 devel rev vBBBB"\n')
 
     sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
@@ -4733,10 +4098,7 @@ def test_share_build_rebuilds_when_one_install_is_upgraded_in_place(
 def test_a_wrapper_whose_size_and_mtime_survive_an_upgrade_still_rebuilds(
     tmp_path, monkeypatch
 ):
-    """`bin/verilator` is a script that execs `verilator_bin`; it can be
-    byte-identical and same-mtime across an upgrade of the binary behind it.
-    The version banner is the only entry that notices, so hold size and
-    mtime fixed and prove it does."""
+    """`bin/verilator` can stay byte-identical with the same mtime across a binary upgrade; the version banner detects it."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4749,15 +4111,13 @@ def test_a_wrapper_whose_size_and_mtime_survive_an_upgrade_still_rebuilds(
     assert len(calls) == 1
     before = os.stat(exe)
 
-    # Same length, same mtime -- only the banner moves.
+    # Same length, same mtime; only the banner moves.
     exe.write_text('#!/bin/sh\necho "Verilator 5.049 bbbb"\n')
     exe.chmod(0o755)
     os.utime(exe, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert os.stat(exe).st_size == before.st_size
     assert os.stat(exe).st_mtime_ns == before.st_mtime_ns
-    # The probe memoises on (path, mtime), which is exactly what did not
-    # change, so the cache has to be stepped around for the banner to be
-    # re-read at all -- as a fresh process would.
+    # The probe memoises on (path, mtime), so the cache is cleared as a fresh process would.
     vlog_sim_module._TOOLCHAIN_VERSION_CACHE.clear()
 
     sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
@@ -4784,8 +4144,7 @@ def test_the_stamp_records_which_toolchain_built_it(tmp_path, monkeypatch):
 def test_reusing_a_build_names_the_toolchain_that_produced_it(
     tmp_path, monkeypatch, caplog
 ):
-    """`compile skipped` on its own does not say which compiler's output is
-    about to be simulated, which is the whole INF-22 complaint."""
+    """`compile skipped` names the toolchain whose output will be simulated."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4808,8 +4167,7 @@ def test_reusing_a_build_names_the_toolchain_that_produced_it(
 def test_an_unshareable_builder_also_rebuilds_when_the_toolchain_changes(
     tmp_path, monkeypatch
 ):
-    """The unshared stamp (a family rtl_buddy cannot redirect) reuses the
-    same fingerprint, so it was fooled the same way and is fixed with it."""
+    """The unshared stamp uses the same fingerprint and follows the toolchain identity too."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, simv="simv")
@@ -4846,8 +4204,7 @@ def test_an_unshareable_builder_also_rebuilds_when_the_toolchain_changes(
 
 
 def test_a_version_probe_that_fails_never_fails_the_compile(tmp_path, monkeypatch):
-    """A simulator whose banner cannot be read still gets built; it only
-    costs the stamp the ability to notice an in-place upgrade."""
+    """A simulator whose banner cannot be read is still built."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4862,8 +4219,7 @@ def test_a_version_probe_that_fails_never_fails_the_compile(tmp_path, monkeypatc
 
 
 def test_a_builder_that_is_not_on_path_still_fingerprints(tmp_path, monkeypatch):
-    """`which` miss must not raise here — the compile below reports it far
-    better than this fingerprint could."""
+    """A `which` miss does not raise in the fingerprint; the compile reports it."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4884,9 +4240,7 @@ def test_a_builder_that_is_not_on_path_still_fingerprints(tmp_path, monkeypatch)
 def test_a_stamp_predating_the_toolchain_entry_does_not_warn(
     tmp_path, monkeypatch, caplog
 ):
-    """An rtl_buddy upgrade is not a toolchain change. The rebuild is
-    unavoidable (the entry is new); crying 'toolchain changed' about it
-    would train people to ignore the message that matters."""
+    """An rtl_buddy upgrade rebuilds without reporting a toolchain change."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -4908,12 +4262,8 @@ def test_a_stamp_predating_the_toolchain_entry_does_not_warn(
     assert "rebuilding rather than reusing it" not in caplog.text
 
 
-# --- the compile-key probe (#495) ------------------------------------------
-#
-# The dispatched build job groups its configs by the directory each compile
-# will write, then compiles the groups concurrently. The grouping value has
-# to be the one the compile itself uses, so these pin that it is derived in
-# exactly one place and asked for without compiling.
+# --- the compile-key probe -------------------------------------
+# The build job groups configs by the directory each compile writes; that key is derived in one place and obtainable without compiling.
 
 
 def test_compile_group_dir_is_the_shared_build_dir_when_sharing_applies(
@@ -4937,14 +4287,7 @@ def test_compile_group_dir_is_the_shared_build_dir_when_sharing_applies(
 def test_compile_group_dir_is_the_test_dir_when_sharing_is_unsupported(
     tmp_path, monkeypatch
 ):
-    """An unshared build's output stays in its per-test workspace: own group.
-
-    #369 already guarantees a single writer there, which is what makes it
-    safe for every unshared config to compile at once. The group is the
-    resolved OUTPUT path (not the directory), so a `builder-simv:` that
-    lands two tests on one file serializes them — see the pinned/escaping
-    tests above.
-    """
+    """An unshared build's output stays in its per-test workspace, and the group is the resolved output path."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4968,12 +4311,7 @@ def test_compile_group_dir_without_share_build_is_the_test_dir(tmp_path, monkeyp
 
 
 def test_probe_and_compile_derive_the_plan_once(tmp_path, monkeypatch):
-    """Probe then compile is ONE derivation, not two.
-
-    Two derivations is how the group key and the build dir drift apart, and
-    the symptom of that drift is two builders in one directory. Counting
-    ``_write_filelist`` counts derivations: it is the plan's side effect.
-    """
+    """Probe then compile derive the plan once; counting ``_write_filelist`` counts derivations."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -4994,11 +4332,7 @@ def test_probe_and_compile_derive_the_plan_once(tmp_path, monkeypatch):
 
 
 def test_a_second_compile_re_derives_the_plan(tmp_path, monkeypatch):
-    """The cached plan serves one compile, not the instance's lifetime.
-
-    A source edited between two compiles has to invalidate the stamp, and
-    it can only do that if the second compile re-stats its inputs.
-    """
+    """The cached plan serves one compile only, so a source edited between two compiles invalidates the stamp."""
     src = _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5027,7 +4361,7 @@ def test_identical_inputs_group_together_and_plusdefines_split_them(
     assert other.compile_group_dir() != same_a.compile_group_dir()
 
 
-# ---------------------------------------------- visible reuse + --rebuild (#494)
+# --- visible reuse and --rebuild ---------------------------------
 
 
 def _compile_log_of(sim):
@@ -5035,15 +4369,7 @@ def _compile_log_of(sim):
 
 
 def _console_events(monkeypatch):
-    """Collect the events that go out through ``log_console_event``.
-
-    The channel is the point, not the record: ``caplog`` captures
-    ``log_event`` and ``log_console_event`` identically, so a test that
-    only reads ``caplog`` cannot tell that a line survives a console
-    handler sitting at WARNING — which is the whole of #494's "a stale
-    reuse must be visible at default verbosity". Forwards to the real
-    function so the record is emitted as usual.
-    """
+    """Collect the events sent through ``log_console_event``; ``caplog`` cannot distinguish that channel from ``log_event``."""
     seen = []
     real = vlog_sim_module.log_console_event
 
@@ -5056,13 +4382,7 @@ def _console_events(monkeypatch):
 
 
 def _logged_events(monkeypatch):
-    """Collect the events that go out through ``log_event``.
-
-    A spy rather than ``caplog`` for the reason above turned inside out:
-    the first ``log_console_event`` of a pytest process detaches pytest's
-    capture handler, so what a test sees in ``caplog`` depends on which
-    tests ran before it. The call is the observable either way.
-    """
+    """Collect the events sent through ``log_event``; ``caplog`` contents depend on which tests ran earlier in the process."""
     seen = []
     real = vlog_sim_module.log_event
 
@@ -5077,14 +4397,7 @@ def _logged_events(monkeypatch):
 def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
     tmp_path, monkeypatch, caplog
 ):
-    """A stale reuse used to be deducible only from an *absent*
-    ``compile.log``, which reads as "nothing to do" (#494).
-
-    So the reuse names the directory and how old its stamp is, and it goes
-    out through ``log_console_event``: the console handler sits at WARNING,
-    and a dispatched run's job log is the only artifact a stale PASS can be
-    caught in.
-    """
+    """A reuse names the directory and the age of its stamp, and is sent through ``log_console_event`` so it shows at WARNING console level."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -5100,9 +4413,7 @@ def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
     with caplog.at_level(_logging.INFO):
         assert reader.compile() == 0
     assert len(calls) == 1
-    # Through the console channel, not merely into the log file: at default
-    # verbosity the handler is at WARNING, and a dispatched run's job log is
-    # the only artifact a stale PASS can be caught in.
+    # Through the console channel, not only the log file.
     assert console == ["compile.build_reused"]
 
     record = next(
@@ -5111,24 +4422,18 @@ def test_a_reuse_says_so_on_the_console_with_the_age_of_what_it_reused(
         if getattr(r, "rtl_event", None) == "compile.build_reused"
     )
     shared_dir = Path(writer._get_simv_path()).parent
-    # The basename, because that is what a reader compares against
-    # `ls artefacts/.shared-builds/`; the absolute path rides alongside.
+    # The basename is what a reader compares against `ls artefacts/.shared-builds/`; the absolute path rides alongside.
     assert record.rtl_fields["build_dir"] == shared_dir.name
     assert record.rtl_fields["build_path"] == str(shared_dir)
     assert record.rtl_fields["stamp_age_sec"] >= 0
     assert record.rtl_fields["toolchain"] == "Verilator 5.049 devel rev vBBBB"
-    # The rendered line, not just the fields: it is what a human reads.
+    # The rendered line is checked as well as the fields.
     assert shared_dir.name in record.getMessage()
     assert "ago" in record.getMessage()
 
 
 def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatch):
-    """ "The absence of compile.log reads as nothing to do" (#494).
-
-    So a skipped compile writes the same transcript a real one does, saying
-    which directory was reused, when its stamp was written, and the command
-    a rebuild would have run.
-    """
+    """A skipped compile writes a transcript naming the reused directory, the stamp time and the command a rebuild would run."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5144,8 +4449,7 @@ def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatc
     assert str(shared_dir) in text
     assert "Compile skipped" in text
     assert "Stamp written:" in text
-    # The command that WOULD have run, derived from the same assembly the
-    # real compile uses — so it names this build's --Mdir, not a guess.
+    # The command that would have run, from the same assembly the real compile uses.
     assert f"--Mdir {shared_dir}" in text
     assert "--rebuild" in text
 
@@ -5153,13 +4457,7 @@ def test_a_reuse_leaves_a_compile_log_naming_what_it_reused(tmp_path, monkeypatc
 def test_a_reuse_over_a_non_utf8_transcript_degrades_instead_of_raising(
     tmp_path, monkeypatch
 ):
-    """A carried transcript owes nobody valid UTF-8 (#494 review).
-
-    Real compile output is raw simulator bytes; a breadcrumb helper that
-    read it strictly would raise UnicodeDecodeError on the exit-0 path of
-    a build job. The reuse must still write its breadcrumb, carrying the
-    old transcript with undecodable bytes replaced.
-    """
+    """The breadcrumb of a reuse carries an old transcript with undecodable bytes replaced."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5181,9 +4479,7 @@ def test_a_reuse_over_a_non_utf8_transcript_degrades_instead_of_raising(
 def test_a_compile_that_ran_leaves_a_transcript_even_when_it_passed(
     tmp_path, monkeypatch
 ):
-    """Since a reuse writes ``compile.log``, a silent success would make the
-    file's *presence* mean "nothing compiled" — the inverse of what
-    docs/concepts/tests.md says it is (#494)."""
+    """A reuse that writes ``compile.log`` says so, so the file's presence does not mean "nothing compiled"."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, stdout="Parsing design\n")
@@ -5199,11 +4495,7 @@ def test_a_compile_that_ran_leaves_a_transcript_even_when_it_passed(
 def test_a_transcript_that_cannot_be_written_does_not_fail_a_passing_compile(
     tmp_path, monkeypatch, caplog
 ):
-    """The compile transcript is written on the SUCCESS path since #494, so
-    it has to degrade the way the reuse breadcrumb already does: a builder
-    that exited 0 must not become a failed compile — a failed row in the
-    build job, a traceback in-process — because its breadcrumb could not be
-    written."""
+    """A failure to write the compile transcript does not turn a successful build into a failed one."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -5226,10 +4518,7 @@ def test_a_transcript_that_cannot_be_written_does_not_fail_a_passing_compile(
 
 
 def test_a_reuse_keeps_the_compile_transcript_it_writes_over(tmp_path, monkeypatch):
-    """Under dispatch the build job's compile and then every gated element's
-    reuse write this one path in turn, and that first write is the run's only
-    file-level record of, say, a VCS ``-licqueue`` wait — so the breadcrumb
-    carries it rather than dropping it (#494)."""
+    """The breadcrumb of a reuse carries earlier compile output, such as a VCS ``-licqueue`` wait, forward."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls, stdout="Queuing for License...\n")
@@ -5251,8 +4540,7 @@ def test_a_reuse_keeps_the_compile_transcript_it_writes_over(tmp_path, monkeypat
     assert text.startswith("Compile skipped")
     assert "Queuing for License" in text
 
-    # And a reuse over a reuse carries that transcript forward instead of
-    # nesting breadcrumbs, so N elements leave one file of bounded size.
+    # A reuse over a reuse carries the transcript forward instead of nesting breadcrumbs.
     second_reuse = _vcs("test_a")
     assert second_reuse.compile() == 0
     text = _compile_log_of(second_reuse).read_text()
@@ -5263,8 +4551,7 @@ def test_a_reuse_keeps_the_compile_transcript_it_writes_over(tmp_path, monkeypat
 def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
     tmp_path, monkeypatch, caplog
 ):
-    """The per-test-stamp reuse is the branch a dispatched fan-out takes for
-    every element, so it is the one most likely to hide a stale build."""
+    """The per-test-stamp reuse, which a dispatched fan-out takes for every element, is visible too."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -5289,9 +4576,7 @@ def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
     )
     assert record.rtl_fields["shared"] is False
     assert "unshared build" in record.getMessage()
-    # Where the build is, not the test name a second time: an unshared
-    # build's directory IS `artefacts/<test>`, so its basename is the word
-    # the line already opens with and only the path identifies it.
+    # An unshared build's directory is `artefacts/<test>`, so only the path identifies it.
     build_dir = Path(second._get_compile_work_dir())
     assert record.rtl_fields["build_path"] == str(build_dir)
     assert record.rtl_fields["build_dir"] == build_dir.name
@@ -5300,15 +4585,13 @@ def test_an_unshareable_builders_reuse_also_leaves_a_breadcrumb(
 
 
 def test_rebuild_recompiles_over_a_warm_valid_stamp(tmp_path, monkeypatch):
-    """The escape hatch the issue asks for: dropping ``--share-build`` does
-    not stop the reuse, so there has to be something that does (#494)."""
+    """``--rebuild`` forces a recompile even when ``--share-build`` is off."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
     assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
     assert len(calls) == 1
-    # Same key, warm stamp: without --rebuild this is the reuse proven above.
     assert (
         _make_sim(tmp_path, monkeypatch, test_name="test_b", rebuild=True).compile()
         == 0
@@ -5317,12 +4600,7 @@ def test_rebuild_recompiles_over_a_warm_valid_stamp(tmp_path, monkeypatch):
 
 
 def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypatch):
-    """One user request is one rebuild of the shared directory, not one per
-    test: N builders into one directory is #369 with extra steps.
-
-    The first test through claims the directory and rebuilds; the rest
-    validate the stamp that rebuild just wrote and reuse it.
-    """
+    """One ``--rebuild`` request rebuilds the shared directory once: the first test claims it and the rest reuse the stamp it wrote."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5340,19 +4618,8 @@ def test_rebuild_forces_one_rebuild_per_build_dir_per_process(tmp_path, monkeypa
 def test_rebuild_claims_the_directory_through_a_second_spelling_of_it(
     tmp_path, monkeypatch
 ):
-    """Two spellings of one directory are one build, so the claim is
-    ``realpath``'d — the same reason the compile grouping is (#495).
-
-    Exercised with a symlinked suite dir, because that is the spelling
-    textual normalization cannot see through: the compile key excludes the
-    suite path, so both sims land in one ``obj_dir_<key>`` and a claim keyed
-    on the string would force a second rebuild of it.
-
-    The claim is read off ``compile.rebuild_forced``, which fires exactly
-    when a claim is granted. (A builder call count would not isolate it:
-    the stamp records ``simv`` by the path spelling that wrote it, so the
-    second spelling's stamp check fails on its own account — separate
-    behaviour, and not what this test is about.)
+    """The rebuild claim is keyed on the ``realpath``, so a symlinked suite dir that maps to the same ``obj_dir_<key>`` is one claim.
+    The claim is read off ``compile.rebuild_forced``, which fires when a claim is granted.
     """
     _write_source(tmp_path)
     calls = []
@@ -5369,7 +4636,6 @@ def test_rebuild_claims_the_directory_through_a_second_spelling_of_it(
     through_link = _make_sim(
         tmp_path, monkeypatch, test_name="test_b", suite_dir=link, rebuild=True
     )
-    # One directory under two names — the premise the claim has to see.
     assert (
         Path(through_link.compile_group_dir()).resolve()
         == Path(direct.compile_group_dir()).resolve()
@@ -5385,8 +4651,7 @@ def test_rebuild_claims_the_directory_through_a_second_spelling_of_it(
 
 
 def test_a_repeated_compile_on_one_instance_does_not_re_rebuild(tmp_path, monkeypatch):
-    """``compile()`` re-derives its plan every call, but the claim the first
-    call made still stands, so the second validates the stamp instead."""
+    """A second ``compile()`` on one instance validates the stamp, since the first call's claim stands."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5402,9 +4667,7 @@ def test_a_repeated_compile_on_one_instance_does_not_re_rebuild(tmp_path, monkey
 def test_rebuild_also_overrides_an_unshareable_builders_own_stamp(
     tmp_path, monkeypatch
 ):
-    """The per-test stamp is a reuse too, so the escape hatch has to reach
-    it — otherwise `--rebuild` works for verilator and silently does not for
-    the families that cannot share."""
+    """``--rebuild`` also reaches the per-test stamp of families that cannot share."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5431,8 +4694,7 @@ def test_rebuild_also_overrides_an_unshareable_builders_own_stamp(
 
 
 def test_without_rebuild_a_warm_stamp_is_still_reused(tmp_path, monkeypatch):
-    """Byte-parity when nothing is configured: the flag defaults off and the
-    reuse it overrides is the one that was there before it existed."""
+    """``--rebuild`` is off by default and changes nothing then."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5445,8 +4707,7 @@ def test_without_rebuild_a_warm_stamp_is_still_reused(tmp_path, monkeypatch):
 def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
     tmp_path, monkeypatch, caplog
 ):
-    """With ``--rebuild`` the reader's question flips from "is this stale?"
-    to "did it actually recompile?", so the answer has a line of its own."""
+    """``--rebuild`` emits its own event saying the build was recompiled."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -5468,31 +4729,21 @@ def test_a_forced_rebuild_says_which_directory_it_is_recompiling(
         for r in caplog.records
         if getattr(r, "rtl_event", None) == "compile.rebuild_forced"
     )
-    # The same field schema its counterpart `compile.build_reused` carries:
-    # basename in `build_dir`, absolute in `build_path`. A consumer keying
-    # on either across the pair gets one kind of thing.
+    # The same field schema as `compile.build_reused`: basename in `build_dir`, absolute in `build_path`.
     assert record.rtl_fields["build_dir"] == shared_dir.name
     assert record.rtl_fields["build_path"] == str(shared_dir)
     assert "--rebuild given" in record.getMessage()
     assert shared_dir.name in record.getMessage()
-    # And on the console, like the reuse line: "did --rebuild reach this
-    # job?" is unanswerable from a job log that never printed it.
+    # Also on the console, like the reuse line.
     assert console == ["compile.rebuild_forced"]
 
 
-# ------------------------------------------- cross-process build lock (#494)
-#
-# After a manual `rm -rf .shared-builds`, the issue's suite started eight
-# tests together, three of which died with `collect2: error: ld returned 1
-# exit status`: every process found no stamp and compiled into the one
-# freshly created directory. The #495 in-job grouping serialises the
-# compiles of ONE process, so the fix is a flock the stamp check sits
-# inside. These drive VlogSim directly, which is where that lock lives —
-# the cross-PROCESS half is in tests/test_artifact_lock.py.
+# --- cross-process build lock -------------------------------------
+# A flock around the stamp check keeps concurrent processes from compiling into one fresh shared directory. These drive VlogSim directly; the cross-process half is in tests/test_artifact_lock.py.
 
 
 def _lock_events(monkeypatch):
-    """Collect (and forward) the build lock's console events."""
+    """Collect and forward the build lock's console events."""
     seen = []
     real = artifact_lock_module.log_console_event
 
@@ -5508,23 +4759,9 @@ def _lock_events(monkeypatch):
 def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     tmp_path, monkeypatch, cached
 ):
-    """Double-checked locking: the waiter re-decides after acquiring.
-
-    Two compiles of one shared directory, the first held inside its
-    builder until the second is provably blocked on the lock. Waiting and
-    then compiling anyway would be the same two writers with extra
-    latency, so what the second must do is validate the stamp the first
-    just wrote and reuse it — one builder invocation for both.
-
-    Threads rather than processes only because the fake builder has to
-    live in this process; flock treats descriptors from separate
-    ``open()`` calls as separate holders, so the lock is genuinely
-    contended. The cross-PROCESS half is in tests/test_artifact_lock.py.
-
-    Read off the console spies rather than ``caplog``: the first
-    ``log_console_event`` of a pytest process initialises logging, which
-    detaches pytest's capture handler — and here that first event is the
-    waiting line itself.
+    """Double-checked locking: a compile waiting on the lock validates the stamp the first compile wrote and reuses it, so the builder runs once.
+    Threads stand in for processes because the fake builder lives in this process; flock treats separate ``open()`` calls as separate holders.
+    Events are read off the console spies because the first ``log_console_event`` of a pytest process detaches pytest's capture handler.
     """
     _write_source(tmp_path)
     calls = []
@@ -5551,11 +4788,7 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     monkeypatch.setattr(artifact_lock_module, "log_console_event", _note_wait)
     compile_events = _console_events(monkeypatch)
 
-    # Parametrised over the cache root (#542) because the lock lives *in*
-    # the build directory, and in cache mode that directory is outside the
-    # workspace and shared with every other checkout on the host — so the
-    # two-writer case it serialises is the normal case there, not the
-    # exception. The waiter must still reuse rather than rebuild.
+    # Parametrised over the cache root because in cache mode the lock lives in a directory shared with other checkouts, where the two-writer case is normal.
     cache_root = tmp_path / "cache" if cached else None
     first = _make_sim(
         tmp_path, monkeypatch, test_name="test_a", shared_build_root=cache_root
@@ -5573,9 +4806,7 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     assert compiling.wait(60)
     waiter = threading.Thread(target=_compile, args=("second", second))
     waiter.start()
-    # The wait line is emitted immediately before the blocking flock, so
-    # this is "the second compile is now queued behind the first" with no
-    # sleep to be flaky about.
+    # The wait line is emitted immediately before the blocking flock, so no sleep is needed.
     assert waiting.wait(60), "the second compile did not queue on the lock"
     finish.set()
     builder.join(60)
@@ -5584,15 +4815,13 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
     assert results == {"first": 0, "second": 0}
     assert len(calls) == 1, "the waiter recompiled instead of reusing"
     assert [event for event, _ in lock_events] == ["compile.build_lock_wait"]
-    # It waited, then reused — the double check paying for itself. (Only
-    # the waiter reports a reuse; the compile it waited for reports none.)
+    # Only the waiter reports a reuse.
     assert compile_events == ["compile.build_reused"]
 
     _, fields = lock_events[0]
     shared_dir = Path(first._get_simv_path()).parent
     assert (shared_dir.parent.parent == cache_root) is cached
-    # The same directory-field schema every other compile.* build event
-    # carries, so one consumer reads the whole family.
+    # The same directory-field schema as the other compile.* build events.
     assert {key: fields[key] for key in ("build_dir", "build_path")} == (
         vlog_sim_module._build_dir_fields(shared_dir, shared=True)
     )
@@ -5602,15 +4831,7 @@ def test_a_compile_blocked_on_the_build_lock_reuses_what_it_waited_for(
 
 
 def test_a_warm_shared_build_is_reused_without_taking_the_lock(tmp_path, monkeypatch):
-    """The reuse fast path never queues.
-
-    A dispatched suite's gated sim elements all call ``compile()`` against
-    one already-valid shared build. Serialising those on the lock would
-    put N stamp validations on the critical path back to back and leave
-    every reuser hostage to whatever compile happened to hold it — for a
-    guarantee the reuse path does not get anyway, since the lock is
-    released before the simulation runs.
-    """
+    """The reuse fast path never takes the lock."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5636,12 +4857,7 @@ def test_a_warm_shared_build_is_reused_without_taking_the_lock(tmp_path, monkeyp
 
 @pytest.mark.skipif(os.name != "posix", reason="flock(2) is POSIX")
 def test_a_reuse_does_not_wait_for_a_process_holding_the_lock(tmp_path, monkeypatch):
-    """The same claim, made against a lock somebody really holds.
-
-    Held from a separate file description, which flock counts as another
-    holder even in this process, so a reuse that took the lock would
-    block here forever — the timeout is what the assertion is made of.
-    """
+    """The same claim against a lock held from a separate file description; a reuse that took the lock would block until the timeout."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5670,13 +4886,7 @@ def test_a_reuse_does_not_wait_for_a_process_holding_the_lock(tmp_path, monkeypa
 
 
 def test_a_forced_rebuild_still_takes_the_lock(tmp_path, monkeypatch):
-    """``--rebuild`` skips the fast path, not the serialisation.
-
-    The claim ``_rebuild_forced`` makes is the decision to compile, so it
-    belongs inside the lock next to the compile it forces — a rebuild
-    racing another process into one directory is the very thing the lock
-    is for.
-    """
+    """``--rebuild`` skips the fast path but still takes the lock."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5697,13 +4907,7 @@ def test_a_forced_rebuild_still_takes_the_lock(tmp_path, monkeypatch):
 
 
 def test_a_stale_stamp_explains_itself_once_across_both_checks(tmp_path, monkeypatch):
-    """The pre-check is advisory; the in-lock check owns the diagnostics.
-
-    Asking twice must not say everything twice.
-    ``compile.build_toolchain_changed`` is a WARNING that names an
-    upgrade a reader is meant to act on, and hearing it twice for one
-    rebuild reads as two upgrades.
-    """
+    """The pre-check is advisory; ``compile.build_toolchain_changed`` is reported once, from the in-lock check."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5727,10 +4931,7 @@ def test_a_stale_stamp_explains_itself_once_across_both_checks(tmp_path, monkeyp
 def test_a_build_lock_the_filesystem_refuses_still_compiles(
     tmp_path, monkeypatch, caplog
 ):
-    """flock support varies (ENOLCK on some NFS mounts, EROFS on a
-    read-only tree). A lock that cannot be taken costs the cross-process
-    serialisation and nothing else — never a red build, because nothing on
-    this path may change a build job's exit code."""
+    """A lock that cannot be taken (ENOLCK, EROFS) costs the serialisation only and does not fail the build."""
     import logging as _logging
 
     _write_source(tmp_path)
@@ -5756,9 +4957,7 @@ def test_a_build_lock_the_filesystem_refuses_still_compiles(
 
 
 def test_an_unshared_build_takes_no_build_lock(tmp_path, monkeypatch):
-    """Per-test build directories already have one writer within a
-    dispatched run (#369), and the lock file would land in the test's
-    artefact directory for nothing."""
+    """Per-test build directories take no lock."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -5781,8 +4980,7 @@ def test_the_lock_lives_in_the_shared_build_directory_it_guards(tmp_path, monkey
 
 
 def test_a_wait_line_stands_up_when_the_holder_is_unknown():
-    """The holder metadata is advisory: a lock file a dead process left
-    behind, or one nobody had written yet, must still leave a sentence."""
+    """Missing or stale holder metadata still yields a sentence."""
     from rtl_buddy.logging_utils import _human_message
 
     message = _human_message(
@@ -5790,14 +4988,11 @@ def test_a_wait_line_stands_up_when_the_holder_is_unknown():
         {"build_dir": "obj_dir_abc", "build_path": "/w/obj_dir_abc"},
     )
     assert "another rtl-buddy process to finish compiling obj_dir_abc" in message
-    # The first line of a wait says nothing about elapsed time, because
-    # none has elapsed.
     assert "so far" not in message
 
 
 def test_a_repeated_wait_line_says_how_long_it_has_been():
-    """A wait re-announced every few minutes has to distinguish itself
-    from the line that started it, or a job log reads as a stutter."""
+    """A repeated wait line differs from the first."""
     from rtl_buddy.logging_utils import _human_message
 
     message = _human_message(
@@ -5808,9 +5003,7 @@ def test_a_repeated_wait_line_says_how_long_it_has_been():
 
 
 def test_a_reuse_line_reports_the_stamp_age_before_the_toolchain():
-    """The question a stale reuse raises is "was this built before my
-    edit?", so the age leads and is written the way a reader reads a
-    wall clock rather than as a raw second count (#494)."""
+    """The reuse line leads with the stamp age, written as a wall-clock duration."""
     from rtl_buddy.logging_utils import _human_message
 
     message = _human_message(
@@ -5830,9 +5023,7 @@ def test_a_reuse_line_reports_the_stamp_age_before_the_toolchain():
 
 
 def test_an_unknown_stamp_age_says_so_rather_than_going_quiet():
-    """The stamp can vanish between validating and being stat-ed, and a
-    reuse must not fail over telemetry. "Age unknown" is still a fact a
-    reader wants, so the line states it instead of dropping the clause."""
+    """A stamp that vanishes before stat still produces a reuse line, stating that the age is unknown."""
     from rtl_buddy.logging_utils import _human_message
 
     message = _human_message(
@@ -5850,18 +5041,11 @@ def test_an_unknown_stamp_age_says_so_rather_than_going_quiet():
     )
 
 
-# ---------------------------------------------------------------------------
-# Persistent shared-build cache root (#542)
-# ---------------------------------------------------------------------------
+# Persistent shared-build cache root
 
 
 def _write_checkout(root, *, rtl="module top; endmodule\n"):
-    """One checkout of a project: a suite under ``verif/`` over RTL above it.
-
-    The shape the cache is for — RTL shared between suites, so the compile
-    key's source lines are paths *through* the project root rather than
-    inside the suite.
-    """
+    """One checkout of a project: a suite under ``verif/`` over RTL above it."""
     suite = root / "verif" / "blk"
     suite.mkdir(parents=True, exist_ok=True)
     src = root / "rtl" / "a.sv"
@@ -5892,7 +5076,7 @@ _ROOT_WAIVER_OPTS = ["--binary", "${RTL_BUDDY_PROJECT_ROOT}/rtl/waive.vlt"]
 def test_a_project_root_path_in_compile_opts_names_one_file_under_any_tag(
     tmp_path, monkeypatch, run_tag
 ):
-    """`${RTL_BUDDY_PROJECT_ROOT}` survives the deeper cwd `--run-tag` gives (#659)."""
+    """`${RTL_BUDDY_PROJECT_ROOT}` survives the deeper cwd `--run-tag` gives."""
     _write_checkout(tmp_path)
     sim = _make_sim(
         tmp_path,
@@ -5914,7 +5098,7 @@ def test_a_project_root_path_in_compile_opts_names_one_file_under_any_tag(
 def test_a_project_root_path_in_compile_opts_keeps_the_cache_key_portable(
     tmp_path, monkeypatch
 ):
-    """Expanded to an absolute path, the token is still relativised in the key (#659)."""
+    """An absolute expansion of the token is still relativised in the key."""
     cache = tmp_path / "cache"
     keys = []
     for name in ("wt-a", "wt-b"):
@@ -5934,22 +5118,16 @@ def test_a_project_root_path_in_compile_opts_keeps_the_cache_key_portable(
 
 
 def test_the_cache_namespace_is_the_suite_relative_to_the_project_root(tmp_path):
-    """One root, many suites, many checkouts — and no collisions (#542).
-
-    The namespace is the suite's place in the PROJECT, never in the
-    filesystem, which is the whole point: two checkouts of one project must
-    land in the same namespace or the cache serves neither of them.
-    """
+    """The cache namespace is the suite's place in the project, so two checkouts of one project share it."""
     suite = tmp_path / "verif" / "demo_tiny_alu"
     suite.mkdir(parents=True)
     assert (
         vlog_sim_module.shared_build_namespace(suite, tmp_path)
         == "verif__demo_tiny_alu"
     )
-    # A suite that IS the project root has no relative components to name.
+    # A suite that is the project root has no relative components.
     assert vlog_sim_module.shared_build_namespace(tmp_path, tmp_path) == "_root"
-    # Outside the root there is no relative spelling, so a digest of the
-    # absolute path keeps it unique instead of colliding on "..".
+    # Outside the root, a digest of the absolute path keeps the namespace unique.
     outside = tmp_path.parent / f"{tmp_path.name}-elsewhere"
     outside.mkdir()
     namespace = vlog_sim_module.shared_build_namespace(outside, tmp_path)
@@ -5957,8 +5135,7 @@ def test_the_cache_namespace_is_the_suite_relative_to_the_project_root(tmp_path)
 
 
 def test_shared_build_dir_helper_cache_layout(tmp_path):
-    """``<root>/<suite-namespace>/obj_dir_<key>`` — and the in-tree default
-    is untouched by the new keyword arguments (#542)."""
+    """The cache path is ``<root>/<suite-namespace>/obj_dir_<key>``, and the in-tree default is unchanged."""
     suite = tmp_path / "verif" / "blk"
     suite.mkdir(parents=True)
     assert shared_build_dir(
@@ -5970,13 +5147,7 @@ def test_shared_build_dir_helper_cache_layout(tmp_path):
 
 
 def test_two_checkouts_of_identical_content_share_one_cache_dir(tmp_path, monkeypatch):
-    """The reported gap, in one assertion (#542).
-
-    Two checkouts at different paths, byte-identical content, one cache
-    root: cache mode puts them in the same content-addressed directory and
-    the second reuses the first's build, while the in-tree key — a function
-    of the absolute ``run.f`` lines — puts them in two.
-    """
+    """Two checkouts with identical content and one cache root share a build; in-tree keys differ."""
     cache = tmp_path / "cache"
     first = _write_checkout(tmp_path / "wt-a")
     second = _write_checkout(tmp_path / "wt-b")
@@ -6001,8 +5172,7 @@ def test_two_checkouts_of_identical_content_share_one_cache_dir(tmp_path, monkey
     assert len(calls) == 1, "the second checkout recompiled instead of reusing"
     assert sim_b.last_compile["reused"] is True
 
-    # ...and without a root, the same two checkouts get two keys, which is
-    # exactly the cold cache the issue describes.
+    # Without a root, the two checkouts get two keys.
     plain_a = _make_sim(
         first.parent.parent,
         monkeypatch,
@@ -6030,13 +5200,7 @@ def test_two_checkouts_of_identical_content_share_one_cache_dir(tmp_path, monkey
 def test_a_cache_mode_key_separates_two_checkouts_on_different_content(
     tmp_path, monkeypatch
 ):
-    """Content-addressed, so the reuse is never a clobber (#542).
-
-    Path-only keys would give these two the same directory and let them
-    rebuild over each other — which under dispatch is a build replaced
-    beneath a running fan-out (#539). Different content must mean a
-    different directory, and the first checkout's build must survive it.
-    """
+    """The cache is content-addressed: different content gets a different directory and does not clobber the first build."""
     cache = tmp_path / "cache"
     first = _write_checkout(tmp_path / "wt-a")
     _write_checkout(tmp_path / "wt-b", rtl="module top; /* patched */ endmodule\n")
@@ -6061,20 +5225,12 @@ def test_a_cache_mode_key_separates_two_checkouts_on_different_content(
 
 
 def test_a_stamp_written_by_one_checkout_validates_from_another(tmp_path, monkeypatch):
-    """The other half of a persistent cache: the STAMP has to travel too.
-
-    A stamp full of one checkout's absolute paths validates for nobody
-    else, so the cache would be found and then rejected on every entry.
-    In cache mode the tracked inputs are spelled relative to the project
-    root and re-anchored against the reader's own (#542).
-    """
+    """In cache mode the stamp's tracked inputs are relative to the project root and re-anchored against the reader's root."""
     cache = tmp_path / "cache"
     first = _write_checkout(tmp_path / "wt-a")
     _write_checkout(tmp_path / "wt-b")
     calls = []
-    # A dependency file, so the deps half of the stamp is exercised and not
-    # just `sources`: it is the list that is re-stat'ed rather than only
-    # compared.
+    # A dependency file exercises the deps half of the stamp, which is re-stat'ed.
     _install_fake_builder(monkeypatch, calls, depends=["../../../../rtl/a.sv"])
 
     sim_a = _cache_sim(
@@ -6087,8 +5243,7 @@ def test_a_stamp_written_by_one_checkout_validates_from_another(tmp_path, monkey
     assert [entry[0] for entry in stored["deps"]] == ["rtl/a.sv"], (
         "a dependency recorded absolute pins the stamp to one checkout"
     )
-    # The executable lives in the cache, outside either project root, so it
-    # keeps the one absolute spelling both checkouts already agree on.
+    # The executable lives in the cache outside either project root, so its absolute spelling is shared.
     assert stored["simv"][0] == str(Path(sim_a._get_simv_path()))
 
     sim_b = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="t")
@@ -6099,8 +5254,7 @@ def test_a_stamp_written_by_one_checkout_validates_from_another(tmp_path, monkey
     assert sim_b.compile() == 0
     assert len(calls) == 1
 
-    # ...and the re-stat is real: an edit in the SECOND checkout is seen
-    # through its own root, not the one the stamp names.
+    # An edit in the second checkout is seen through its own root.
     _touch(tmp_path / "wt-b" / "rtl" / "a.sv", "module top; /* edited */ endmodule\n")
     sim_c = _cache_sim(tmp_path / "wt-b", monkeypatch, cache_root=cache, test_name="u")
     assert sim_c.compile() == 0
@@ -6110,10 +5264,7 @@ def test_a_stamp_written_by_one_checkout_validates_from_another(tmp_path, monkey
 def test_an_absolute_in_root_compile_flag_is_relativised_for_the_key(
     tmp_path, monkeypatch
 ):
-    """A ``+incdir+`` (or ``--Mdir``, or a bare source argument) spelled
-    absolute inside the project root is as much a function of the checkout
-    as a ``run.f`` line is, so cache mode relativises the command too
-    (#542)."""
+    """Absolute ``+incdir+``, ``--Mdir`` and bare source arguments inside the project root are relativised in the command."""
     cache = tmp_path / "cache"
     first = _write_checkout(tmp_path / "wt-a")
     _write_checkout(tmp_path / "wt-b")
@@ -6139,8 +5290,7 @@ def test_an_absolute_in_root_compile_flag_is_relativised_for_the_key(
 
 
 def test_the_default_mode_keeps_absolute_spellings_everywhere(tmp_path, monkeypatch):
-    """No root configured, nothing re-spelled: the in-tree stamp is the same
-    file this version wrote before #542, absolute paths and no ``root``."""
+    """With no cache root, the stamp uses absolute paths and has no ``root``."""
     suite = _write_checkout(tmp_path / "wt-a")
     calls = []
     _install_fake_builder(monkeypatch, calls, depends=["../../../../rtl/a.sv"])
@@ -6162,7 +5312,7 @@ def test_the_default_mode_keeps_absolute_spellings_everywhere(tmp_path, monkeypa
 
 
 def test_the_cache_root_is_created_on_demand(tmp_path, monkeypatch):
-    """``mkdir -p``: the first run against a fresh NFS path must not need one."""
+    """``mkdir -p``: the first run against a fresh NFS path needs no existing directory."""
     cache = tmp_path / "does" / "not" / "exist" / "yet"
     suite = _write_checkout(tmp_path / "wt-a")
     calls = []
@@ -6174,8 +5324,7 @@ def test_the_cache_root_is_created_on_demand(tmp_path, monkeypatch):
 
 
 def test_a_relative_cache_root_anchors_to_the_project_root(tmp_path, monkeypatch):
-    """Not to the cwd: a build job on a compute node and every simulation job
-    read the same configured value from different directories (#542)."""
+    """A relative cache root is resolved against the project root, not the cwd."""
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
     sim = _cache_sim(checkout, monkeypatch, cache_root=".rb-cache", test_name="t")
@@ -6183,7 +5332,7 @@ def test_a_relative_cache_root_anchors_to_the_project_root(tmp_path, monkeypatch
 
 
 def test_resolve_shared_build_root_precedence_and_expansion(tmp_path, monkeypatch):
-    """CLI over environment over config, and a blank value turns it off."""
+    """The cache root comes from the CLI, then the environment, then config, and a blank value turns it off."""
     resolve = vlog_sim_module.resolve_shared_build_root
     assert resolve(None, tmp_path) is None
     assert resolve("  ", tmp_path) is None
@@ -6194,7 +5343,7 @@ def test_resolve_shared_build_root_precedence_and_expansion(tmp_path, monkeypatc
 
 
 def test_the_cli_resolves_the_cache_root_cli_over_env_over_config(monkeypatch):
-    """The three sources, in the documented order (#542)."""
+    """The three cache-root sources apply in the documented order."""
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     class _Root:
@@ -6212,19 +5361,16 @@ def test_the_cli_resolves_the_cache_root_cli_over_env_over_config(monkeypatch):
     assert app.shared_build_root == "/from/env"
     app._shared_build_root_flag = "/from/cli"
     assert app.shared_build_root == "/from/cli"
-    # An explicit empty value is an override too: the cache goes off for
-    # this run without the project's config being edited.
+    # An explicit empty value is an override: the cache goes off for this run.
     app._shared_build_root_flag = ""
     assert app.shared_build_root is None
-    # No root config, nothing to anchor to, nothing configured.
+    # No root config: nothing to anchor to and nothing configured.
     app.root_cfg = None
     assert app.shared_build_root is None
 
 
 def test_share_build_off_ignores_a_configured_cache_root(tmp_path, monkeypatch):
-    """Cache mode is a property of the SHARED build: with no sharing there is
-    no directory a second checkout could reuse, and re-spelling the per-test
-    stamps would only cost one recompile."""
+    """Cache mode applies to the shared build only; per-test stamps are unchanged without sharing."""
     _write_checkout(tmp_path / "wt-a")
     suite = tmp_path / "wt-a" / "verif" / "blk"
     sim = _make_sim(
@@ -6244,16 +5390,7 @@ def test_share_build_off_ignores_a_configured_cache_root(tmp_path, monkeypatch):
 def test_switching_the_cache_root_on_or_off_rebuilds_once_and_says_why(
     tmp_path, monkeypatch
 ):
-    """A stamp from the other mode spells its inputs differently, so it is
-    read as "we do not know" rather than compared spelling to spelling (#542).
-
-    The in-tree stamp is the one that can meet both modes: with a cache root
-    the SHARED stamp moves to a new directory, but an unshareable builder
-    keeps stamping the test's own compile work dir either way. Re-anchoring
-    a relative entry there with no root to anchor to would stat it against
-    the process's working directory, so the answer is one rebuild — and a
-    reason that names the mode instead of blaming the compile line.
-    """
+    """A stamp written in the other mode is read as unknown and rebuilt once, with a reason that names the mode."""
     _write_source(tmp_path)
     calls = []
     pinned = tmp_path / "pinned" / "simv"
@@ -6283,18 +5420,13 @@ def test_switching_the_cache_root_on_or_off_rebuilds_once_and_says_why(
     )
     assert plain.compile() == 0
     assert len(calls) == 2
-    # ...and once is once: the rebuild's own stamp validates from then on.
+    # The rebuild's own stamp validates from then on.
     assert _sim(None).compile() == 0
     assert len(calls) == 2
 
 
 def _write_cmd_incdir(checkout, content="`define CMD_W 8\n"):
-    """A header reachable only through a compile-LINE `+incdir+`.
-
-    Not in `run.f` and not in `tests.yaml`'s filelist: it gets to the builder
-    through `builder-opts.compile-time`, which is exactly the input the
-    cache-mode key used to see as text alone.
-    """
+    """A header reachable only through a compile-line `+incdir+` from `builder-opts.compile-time`."""
     header = checkout / "hdr" / "cmd.svh"
     header.parent.mkdir(parents=True, exist_ok=True)
     header.write_text(content)
@@ -6304,15 +5436,7 @@ def _write_cmd_incdir(checkout, content="`define CMD_W 8\n"):
 def test_a_compile_line_incdir_is_content_addressed_in_cache_mode(
     tmp_path, monkeypatch
 ):
-    """The key must move when a compile-line input's CONTENT moves (#542 review).
-
-    Keyed on the relativised text alone, two checkouts whose `run.f` entries
-    matched but whose header under a `builder-opts` `+incdir+` differed took
-    the same persistent `obj_dir` — and the second rebuilt into it, replacing
-    a binary the first checkout's simulations may already be running. A
-    simulating job holds no build lock, so that is the clobber the
-    content-addressed key exists to prevent.
-    """
+    """The cache-mode key moves when the content of a compile-line input moves, so two checkouts with differing headers under a `builder-opts` `+incdir+` get different `obj_dir`s."""
     cache = tmp_path / "cache"
     for name in ("wt-a", "wt-b"):
         _write_checkout(tmp_path / name)
@@ -6333,8 +5457,7 @@ def test_a_compile_line_incdir_is_content_addressed_in_cache_mode(
         "two checkouts with different header content share one obj_dir"
     )
 
-    # ...and identical content still shares, which is the whole point of the
-    # cache: the key is addressed on the content, not on having one at all.
+    # Identical content still shares.
     _write_cmd_incdir(tmp_path / "wt-b")
     _as_a_fresh_process()
     assert _sim("wt-a")._compile_plan().shared_dir == (
@@ -6345,8 +5468,7 @@ def test_a_compile_line_incdir_is_content_addressed_in_cache_mode(
 def test_a_compile_line_source_and_library_dir_are_content_addressed(
     tmp_path, monkeypatch
 ):
-    """The same for a bare source argument and a `-y` library directory —
-    the other two shapes a compile line names an input in (#542 review)."""
+    """The same holds for a bare source argument and a `-y` library directory."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -6376,8 +5498,7 @@ def test_a_compile_line_source_and_library_dir_are_content_addressed(
     assert after_source != before
     _touch(library / "cell.sv", "module cell; /* edited */ endmodule\n")
     assert _key() != after_source
-    # A file APPEARING in a `-y` directory is tomorrow's module resolution,
-    # so the listing decides that too.
+    # A file appearing in a `-y` directory can change module resolution, so the listing decides it.
     (library / "late.sv").write_text("module late; endmodule\n")
     assert _key() != after_source
 
@@ -6385,9 +5506,7 @@ def test_a_compile_line_source_and_library_dir_are_content_addressed(
 def test_a_compile_line_path_outside_the_project_root_stays_text_only(
     tmp_path, monkeypatch
 ):
-    """Outside the root there is no checkout-independent spelling and no
-    hashing policy, so such a path keeps the one thing that IS comparable
-    between checkouts on a host: its absolute text (#542 review)."""
+    """A path outside the root keeps its absolute text in the key."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -6417,13 +5536,7 @@ def test_a_compile_line_path_outside_the_project_root_stays_text_only(
 def test_an_output_path_on_the_compile_line_never_reaches_the_key(
     tmp_path, monkeypatch
 ):
-    """A key that hashed the build's own output would move on every build,
-    stranding one cache directory per run (#542 review).
-
-    `-o <abs path under the root>` is an unrecognised flag's argument, so it
-    is skipped rather than read as a bare source path — even once the file it
-    names exists.
-    """
+    """`-o <abs path under the root>` is an unrecognised flag's argument and is skipped, so the build's own output is not hashed into the key."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -6454,9 +5567,7 @@ def test_an_output_path_on_the_compile_line_never_reaches_the_key(
 def test_a_bare_source_after_a_boolean_flag_still_reaches_the_key(
     tmp_path, monkeypatch
 ):
-    """`--binary /proj/tb.sv` is the commonest way a compile line names a
-    source, so refusing every token that follows a flag would miss it (#542
-    review). Only a known OUTPUT option's argument is refused."""
+    """`--binary /proj/tb.sv` names a source; only a known output option's argument is refused."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -6483,10 +5594,7 @@ def test_a_bare_source_after_a_boolean_flag_still_reaches_the_key(
 
 
 def test_a_path_inside_an_artefact_tree_never_reaches_the_key(tmp_path, monkeypatch):
-    """The general guard behind the output-option list: anything under an
-    `artefacts/`, a `.shared-builds/` or an `obj_dir*` is written by a build,
-    so an option this code does not recognise cannot smuggle one in (#542
-    review)."""
+    """Anything under `artefacts/`, `.shared-builds/` or `obj_dir*` is build output and is never keyed, even after an unrecognised option."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -6514,9 +5622,7 @@ def test_a_path_inside_an_artefact_tree_never_reaches_the_key(tmp_path, monkeypa
 
 
 def test_a_run_f_incdir_is_not_walked_twice_for_the_key(tmp_path, monkeypatch):
-    """A directory `run.f` already names under the same spelling is skipped:
-    its identity is in `sources`, and a second walk buys nothing (#542
-    review)."""
+    """A directory that `run.f` already names under the same spelling is not walked again."""
     checkout = tmp_path / "wt-a"
     suite = _write_checkout(checkout)
     (checkout / "inc").mkdir()
@@ -6538,8 +5644,7 @@ def test_a_run_f_incdir_is_not_walked_twice_for_the_key(tmp_path, monkeypatch):
 
 
 def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch):
-    """No cache root, no change: the in-tree key is the dict it always was,
-    and an edit under a compile-line `+incdir+` still rebuilds IN PLACE."""
+    """Without a cache root the in-tree key is unchanged, and an edit under a compile-line `+incdir+` rebuilds in place."""
     checkout = tmp_path / "wt-a"
     suite = _write_checkout(checkout)
     header = _write_cmd_incdir(checkout)
@@ -6564,7 +5669,7 @@ def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch
     before = _key()
     _touch(header, "`define CMD_W 16\n")
     assert _key() == before
-    # ...and the key function itself never reads the new field without it.
+    # The key function never reads the new field without a root.
     fingerprint = {
         "cmd": ["verilator"],
         "env": {},
@@ -6579,15 +5684,8 @@ def test_the_default_mode_key_ignores_compile_line_content(tmp_path, monkeypatch
 
 
 def _write_nested_filelists(checkout, *, source="module nested; endmodule\n"):
-    """A compile-line `-F` list that names a further list, which names RTL.
-
-    Byte-identical in every checkout on purpose: the bytes of the lists are
-    not what two branches differ in — the RTL they reach is.
-
-    `-F` throughout, so every relative entry anchors to the list that
-    declared it — the spelling a self-contained list tree uses. The `-f`
-    rule, where entries anchor to the builder's working directory instead,
-    has its own tests below.
+    """A compile-line `-F` list that names a further list, which names RTL. The list bytes are identical in every checkout.
+    Every relative entry anchors to the list that declared it; the `-f` rule is tested below.
     """
     (checkout / "rtl" / "nested.sv").write_text(source)
     lists = checkout / "lists"
@@ -6598,14 +5696,7 @@ def _write_nested_filelists(checkout, *, source="module nested; endmodule\n"):
 
 
 def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monkeypatch):
-    """A filelist is not an input whose own bytes decide anything: what it
-    NAMES is (#542 review).
-
-    Keyed on the list's hash alone, two checkouts with byte-identical
-    nested lists over different RTL took one persistent build directory —
-    and for VCS and Icarus, which report no dependencies, the stamp agreed
-    too, so the second checkout silently simulated the first's binary.
-    """
+    """A filelist is keyed by what it names, not by its own bytes; identical nested lists over different RTL get different keys."""
     cache = tmp_path / "cache"
     for name in ("wt-a", "wt-b"):
         _write_checkout(tmp_path / name)
@@ -6631,12 +5722,10 @@ def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monke
     assert _key("wt-a") != _key("wt-b"), (
         "two checkouts whose nested filelists reach different RTL share one dir"
     )
-    # ...and identical RTL behind identical lists still shares, which is
-    # what the cache is for.
+    # Identical RTL behind identical lists still shares.
     _write_nested_filelists(tmp_path / "wt-b")
     assert _key("wt-a") == _key("wt-b")
-    # The whole chain is keyed, not just its head: both lists and the
-    # source they reach.
+    # The whole chain is keyed: both lists and the source they reach.
     sim = _cache_sim(
         tmp_path / "wt-a",
         monkeypatch,
@@ -6659,8 +5748,7 @@ def test_a_nested_compile_line_filelist_is_expanded_into_the_key(tmp_path, monke
 
 
 def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeypatch):
-    """A nested list may name an `+incdir+` of its own — listed like any
-    other — and a list that includes itself costs one visit, not a hang."""
+    """A nested list may name its own `+incdir+`, and a list that includes itself is visited once."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -6669,7 +5757,7 @@ def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeyp
     lists = checkout / "lists"
     lists.mkdir()
     (lists / "top.f").write_text("+incdir+../hdr\n-F top.f\n")
-    # `-F`, so `+incdir+../hdr` anchors to `lists/` as the builder anchors it.
+    # `-F`, so `+incdir+../hdr` anchors to `lists/`.
 
     def _sim():
         _as_a_fresh_process()
@@ -6684,25 +5772,16 @@ def test_a_nested_filelist_incdir_and_a_cycle_are_both_handled(tmp_path, monkeyp
     sim = _sim()
     plan = sim._compile_plan()
     entries = sim._fingerprint_cmd_inputs(plan.key_cmd, plan.fingerprint["sources"])
-    # The self-include contributes once, under the spelling it was first
-    # reached by, and is not followed a second time.
+    # The self-include contributes once, under the spelling it was first reached by.
     assert [entry[0] for entry in entries] == ["-F lists/top.f", "+incdir+hdr"]
-    # ...and the include directory is keyed by its listing, so a header
-    # inside it moves the key.
+    # The include directory is keyed by its listing, so a header inside it moves the key.
     before = plan.shared_dir.name
     _touch(checkout / "hdr" / "w.svh", "`define W 16\n")
     assert _sim()._compile_plan().shared_dir.name != before
 
 
 def test_an_input_too_large_to_hash_keeps_two_checkouts_apart(tmp_path, monkeypatch):
-    """Above the hashing cap `_content_sha` answers None, and `[path, null]`
-    is the same answer for every checkout — so two branches with different
-    ROM images took one persistent build directory (#542 review).
-
-    The fallback is the input's stats. That costs this suite cross-checkout
-    reuse, since mtimes differ per checkout; a silently wrong binary costs
-    more.
-    """
+    """Above the hashing cap the input falls back to its stats, so two branches with different ROM images get different keys."""
     cache = tmp_path / "cache"
     monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
     for name, rom in (("wt-a", "0" * 64), ("wt-b", "1" * 64)):
@@ -6730,8 +5809,7 @@ def test_an_input_too_large_to_hash_keeps_two_checkouts_apart(tmp_path, monkeypa
 
 
 def test_an_unhashable_run_f_source_keeps_two_checkouts_apart(tmp_path, monkeypatch):
-    """The same hole on the `run.f` side, where the entry is a `sources`
-    stamp rather than a compile-line token (#542 review)."""
+    """The same holds for a `run.f` entry, which is a `sources` stamp."""
     cache = tmp_path / "cache"
     monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
 
@@ -6761,13 +5839,7 @@ def test_an_unhashable_run_f_source_keeps_two_checkouts_apart(tmp_path, monkeypa
 def test_an_out_of_root_input_that_cannot_be_hashed_stays_stat_free(
     tmp_path, monkeypatch
 ):
-    """The fallback is for RELOCATED paths only.
-
-    A path left absolute is outside every project root, so two checkouts
-    naming it name the same bytes and "no hash" is no collision — while
-    folding its mtime into the key would strand a cache directory every
-    time somebody touched a toolchain header.
-    """
+    """The stats fallback applies to relocated paths only; a path left absolute is outside every project root and stays out of the key."""
     cache = tmp_path / "cache"
     monkeypatch.setattr(vlog_sim_module, "_CONTENT_HASH_MAX_BYTES", 8)
     checkout = tmp_path / "wt-a"
@@ -6799,13 +5871,7 @@ def test_an_out_of_root_input_that_cannot_be_hashed_stays_stat_free(
 
 
 def test_a_path_valued_define_is_never_relativised(tmp_path, monkeypatch):
-    """A define's value is compiled INTO the model, so it is not a path
-    rtl_buddy may relocate (#542 review).
-
-    Relativised, `+define+DATA="/wt-a/data.hex"` and
-    `+define+DATA="/wt-b/data.hex"` became one token, and two checkouts
-    shared a binary that had baked in the first one's absolute path.
-    """
+    """A define's value is compiled into the model, so `+define+DATA="/wt-a/data.hex"` is not relocated and two checkouts do not share."""
     cache = tmp_path / "cache"
     for name in ("wt-a", "wt-b"):
         _write_checkout(tmp_path / name)
@@ -6828,8 +5894,7 @@ def test_a_path_valued_define_is_never_relativised(tmp_path, monkeypatch):
     assert plan_a.shared_dir.name != plan_b.shared_dir.name
     assert _define("wt-a") in plan_a.fingerprint["cmd"], plan_a.fingerprint["cmd"]
 
-    # The same for the other value-bearing spellings, and for a bare
-    # `NAME=value` that is not a path at all.
+    # The same for other value-bearing spellings and for a bare `NAME=value`.
     for opt in (
         f"-DDATA={tmp_path / 'wt-a' / 'data.hex'}",
         f"-GROM={tmp_path / 'wt-a' / 'data.hex'}",
@@ -6838,8 +5903,7 @@ def test_a_path_valued_define_is_never_relativised(tmp_path, monkeypatch):
     ):
         assert opt in _plan("wt-a", [opt]).fingerprint["cmd"], opt
 
-    # ...while a genuine path option still relativises, so identical
-    # content at two paths still shares one build.
+    # A genuine path option still relativises.
     for name in ("wt-a", "wt-b"):
         (tmp_path / name / "hdr").mkdir()
         (tmp_path / name / "hdr" / "w.svh").write_text("`define W 8\n")
@@ -6852,8 +5916,7 @@ def test_a_path_valued_define_is_never_relativised(tmp_path, monkeypatch):
 def test_an_output_option_argument_still_relativises_but_is_never_read(
     tmp_path, monkeypatch
 ):
-    """`-o <in-root path>` must not carry a checkout prefix into the key —
-    and must not be hashed either (#542 review)."""
+    """`-o <in-root path>` carries no checkout prefix into the key and is not hashed."""
     cache = tmp_path / "cache"
     for name in ("wt-a", "wt-b"):
         _write_checkout(tmp_path / name)
@@ -6885,17 +5948,7 @@ def test_an_output_option_argument_still_relativises_but_is_never_read(
 
 
 def test_a_checkout_under_a_dot_directory_is_still_content_keyed(tmp_path, monkeypatch):
-    """The output test asks only what is BELOW the project root (#542 review
-    round 3).
-
-    Asked of the absolute path, and answered by the `+incdir+` walk's prune
-    predicate, every component counted — and that predicate prunes any
-    dot-directory. A workspace at `/home/ci/.worktrees/pr` therefore had a
-    dot component in its path, so every input under it was read as build
-    output and dropped from the key: the content keying switched itself off
-    for the whole checkout, silently, on exactly the layout a CI runner and
-    a `git worktree` both use.
-    """
+    """The output test asks only what is below the project root, so a workspace under a dot-directory (such as `/home/ci/.worktrees/pr`) is still keyed."""
     cache = tmp_path / "cache"
     dotted = tmp_path / ".worktrees"
     dotted.mkdir()
@@ -6921,10 +5974,7 @@ def test_a_checkout_under_a_dot_directory_is_still_content_keyed(tmp_path, monke
         plan_a.key_cmd, plan_a.fingerprint["sources"]
     ), "a dot component in the checkout path disabled the content keying"
     assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
-    # ...while a real builder tree below the root is still refused,
-    # whatever the checkout is called — and so is an rtl_buddy output named
-    # directly, judged by its NAME rather than by the tree it sits in
-    # (#542 review round 5).
+    # A real builder tree below the root is refused, as is an rtl_buddy output named directly, judged by name.
     artefacts = dotted / "wt-a" / "verif" / "blk" / "artefacts"
     artefacts.mkdir(parents=True, exist_ok=True)
     for refused in (
@@ -6936,7 +5986,6 @@ def test_a_checkout_under_a_dot_directory_is_still_content_keyed(tmp_path, monke
         refused.parent.mkdir(parents=True, exist_ok=True)
         refused.write_text("x\n")
         assert sim_a._key_input_path(str(refused)) is None, refused
-    # A generated header beside them is an input, and is keyed.
     generated = artefacts / "t" / "gen" / "gen.svh"
     generated.parent.mkdir(parents=True, exist_ok=True)
     generated.write_text("`define G 1\n")
@@ -6944,13 +5993,7 @@ def test_a_checkout_under_a_dot_directory_is_still_content_keyed(tmp_path, monke
 
 
 def test_a_path_valued_plusdefine_in_run_f_is_never_relativised(tmp_path, monkeypatch):
-    """`tests.yaml` plusdefines reach the builder through `run.f`, so the
-    compile-line rule had to reach them too (#542 review round 3).
-
-    Relativised there, two checkouts whose models bake in different absolute
-    data paths produced one key AND one stamp — so the second reused a
-    binary compiled against the first checkout's file.
-    """
+    """`tests.yaml` plusdefines are treated like compile-line defines and are not relocated."""
     cache = tmp_path / "cache"
     for name in ("wt-a", "wt-b"):
         _write_checkout(tmp_path / name)
@@ -6982,8 +6025,7 @@ def test_a_path_valued_plusdefine_in_run_f_is_never_relativised(tmp_path, monkey
         if entry[0].startswith("+define+")
     ]
     assert define == [f"+define+DATA={tmp_path / 'wt-a' / 'data.hex'}"], define
-    # ...and the same define arriving as a `tests.yaml` plusdefine, which
-    # reaches the builder on the command line instead, is equally verbatim.
+    # A `tests.yaml` plusdefine, which reaches the builder on the command line, is equally verbatim.
     _as_a_fresh_process()
     plusdefine = _cache_sim(
         tmp_path / "wt-a",
@@ -7000,13 +6042,7 @@ def test_a_path_valued_plusdefine_in_run_f_is_never_relativised(tmp_path, monkey
 
 
 def test_an_in_root_path_embedded_in_an_option_is_content_keyed(tmp_path, monkeypatch):
-    """`-CFLAGS=-I<root>/inc` names a directory the build really reads
-    (#542 review round 3).
-
-    The token as a whole is not a path, so nothing recognised it, and its
-    content never reached the key: two checkouts whose header under that
-    `-I` differed took one persistent build directory.
-    """
+    """`-CFLAGS=-I<root>/inc` names a directory the build reads, so its content is keyed."""
     cache = tmp_path / "cache"
     for name, content in (("wt-a", "#define W 8\n"), ("wt-b", "#define W 16\n")):
         checkout = tmp_path / name
@@ -7028,16 +6064,14 @@ def test_an_in_root_path_embedded_in_an_option_is_content_keyed(tmp_path, monkey
     assert plan_a.shared_dir.name != plan_b.shared_dir.name, (
         "an embedded include directory's content is not in the key"
     )
-    # The token's TEXT is relativised too, so identical content at two
-    # paths still shares one build.
+    # The token text is relativised too, so identical content at two paths still shares.
     assert "-CFLAGS=-Iinc" in plan_a.fingerprint["cmd"], plan_a.fingerprint["cmd"]
     (tmp_path / "wt-b" / "inc" / "dut.h").write_text("#define W 8\n")
     assert _plan("wt-a").shared_dir.name == _plan("wt-b").shared_dir.name
 
 
 def test_an_embedded_path_is_keyed_by_what_it_turns_out_to_be(tmp_path, monkeypatch):
-    """A file embedded in an option is keyed by its hash, a directory by its
-    listing, and a define's value by neither (#542 review round 3)."""
+    """A file embedded in an option is keyed by its hash, a directory by its listing, and a define's value by neither."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -7060,36 +6094,25 @@ def test_an_embedded_path_is_keyed_by_what_it_turns_out_to_be(tmp_path, monkeypa
 
     assert _entries([f"-CFLAGS=-I{checkout / 'inc'}"]) == ["+incdir+inc"]
     assert _entries([f"--config={checkout / 'cfg.vlt'}"]) == ["cfg.vlt"]
-    # A define keeps its value out of the key's content half entirely.
     assert _entries([f"+define+DATA={checkout / 'cfg.vlt'}"]) == []
-    # Two paths in one token are both keyed.
     assert _entries(
         [f"-CFLAGS=-I{checkout / 'inc'} -include {checkout / 'cfg.vlt'}"]
     ) == ["+incdir+inc", "cfg.vlt"]
 
 
 def _compile_cwd_of(sim):
-    """Where the builder will run — what a `-f` list's entries anchor to."""
+    """Where the builder runs, which is what a `-f` list's entries anchor to."""
     return Path(sim._compile_plan().compile_work_dir)
 
 
 def test_a_relative_entry_in_a_dash_f_list_resolves_against_the_compile_cwd(
     tmp_path, monkeypatch
 ):
-    """`-f` is cwd-relative for verilator, VCS and Icarus alike (#542 review
-    round 4).
-
-    Anchored to the list's own directory instead, the key hashed a file the
-    simulator never opens — or none at all — so two checkouts with identical
-    list text over different cwd-relative RTL shared one persistent build,
-    with no dependency list on the VCS/Icarus side to invalidate it.
-
-    The entry climbs out of `artefacts/<test>/` because that is what a real
-    one does; a path that stayed inside it would name rtl_buddy's own output
-    tree, which the key refuses for its own reasons.
+    """`-f` entries are relative to the builder's cwd for verilator, VCS and Icarus alike.
+    The entry climbs out of `artefacts/<test>/`, since a path inside it would name rtl_buddy's own output tree.
     """
     cache = tmp_path / "cache"
-    # From `<checkout>/verif/blk/artefacts/<test>` up four to the checkout.
+    # From `<checkout>/verif/blk/artefacts/<test>`, up four levels to the checkout.
     entry = "../../../../rtl/cwd_rtl.sv"
     for name, body in (
         ("wt-a", "module cwd_rtl; endmodule\n"),
@@ -7127,8 +6150,7 @@ def test_a_relative_entry_in_a_dash_f_list_resolves_against_the_compile_cwd(
 def test_the_same_list_reached_by_dash_F_resolves_against_the_list_dir(
     tmp_path, monkeypatch
 ):
-    """The mirror of the rule above: `-F` anchors to the list (#542 review
-    round 4). One list, two options, two different answers."""
+    """`-F` anchors to the list; one list given with both options gets two different answers."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -7155,30 +6177,24 @@ def test_the_same_list_reached_by_dash_F_resolves_against_the_list_dir(
         ]
 
     assert _entries("-F") == ["-F lists/both.f", "lists/beside.sv"]
-    # Read as `-f`, the same text names `beside.sv` under the compile dir,
-    # which does not exist — so nothing is keyed beyond the list itself,
-    # rather than the file beside the list being keyed by mistake.
+    # Read as `-f`, the text names `beside.sv` under the compile dir, which does not exist, so only the list itself is keyed.
     assert _entries("-f") == ["-f lists/both.f"]
 
 
 def test_a_nested_list_switches_the_base_its_entries_anchor_to(tmp_path, monkeypatch):
-    """The rule belongs to the file's CONTENTS, so a nested option resets it
-    (#542 review round 4): a `-f` inside a `-F` list hands its own entries
-    the builder's cwd, not the directory it happens to sit in."""
+    """A nested option resets the anchor: a `-f` inside a `-F` list anchors its entries to the builder's cwd."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
     (checkout / "rtl" / "from_cwd.sv").write_text("module from_cwd; endmodule\n")
     lists = checkout / "lists"
     lists.mkdir()
-    # Outer list reached by -F: its own entries are list-relative, so the
-    # nested list is found beside it and so is `beside.sv`.
+    # Outer list reached by -F: its entries are list-relative.
     (lists / "outer.f").write_text("-f inner.f\nbeside.sv\n")
     (lists / "beside.sv").write_text("module beside; endmodule\n")
-    # Inner list reached by -f: ITS entry is cwd-relative, climbing out of
-    # the artefact dir to the checkout's rtl/.
+    # Inner list reached by -f: its entry is cwd-relative, climbing out of the artefact dir to the checkout's rtl/.
     (lists / "inner.f").write_text("../../../../rtl/from_cwd.sv\n")
-    # A decoy at the spelling the *list-relative* reading would produce.
+    # A decoy at the spelling the list-relative reading would produce.
     (lists / "from_cwd.sv").write_text("module decoy; endmodule\n")
 
     _as_a_fresh_process()
@@ -7210,9 +6226,7 @@ def test_a_nested_list_switches_the_base_its_entries_anchor_to(tmp_path, monkeyp
 def test_a_relative_dash_f_entry_is_text_only_with_no_compile_cwd(
     tmp_path, monkeypatch
 ):
-    """Never guess: with no plan yet there is no builder cwd, so a relative
-    `-f` entry is left as text rather than resolved against something the
-    build will not use (#542 review round 4)."""
+    """With no plan yet there is no builder cwd, so a relative `-f` entry is left as text."""
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
     lists = checkout / "lists"
@@ -7231,7 +6245,7 @@ def test_a_relative_dash_f_entry_is_text_only_with_no_compile_cwd(
         )
         == []
     )
-    # An ABSOLUTE entry needs no base and is keyed either way.
+    # An absolute entry needs no base and is keyed either way.
     (lists / "abs.f").write_text(f"{lists / 'somewhere.sv'}\n")
     assert [
         entry[0]
@@ -7242,20 +6256,12 @@ def test_a_relative_dash_f_entry_is_text_only_with_no_compile_cwd(
 
 
 def test_a_relative_compile_line_incdir_is_content_keyed(tmp_path, monkeypatch):
-    """The ordinary spelling, and it used to take no content into the key
-    at all (#542 review round 5).
-
-    `+incdir+inc` is resolved by the builder against its working directory,
-    which rtl_buddy now knows, so it reads the same directory the compile
-    will — and two checkouts whose header there differs stop sharing a
-    build.
-    """
+    """A relative `+incdir+inc` is resolved against the builder's cwd and its content is keyed, so two checkouts with different headers there do not share."""
     cache = tmp_path / "cache"
     for name, content in (("wt-a", "`define W 8\n"), ("wt-b", "`define W 16\n")):
         checkout = tmp_path / name
         _write_checkout(checkout)
-        # Relative to the compile dir (`<suite>/artefacts/<test>`), climbing
-        # out to a directory a testbench really shares.
+        # Relative to the compile dir (`<suite>/artefacts/<test>`), climbing out to a directory a testbench shares.
         header_dir = checkout / "inc"
         header_dir.mkdir()
         (header_dir / "w.svh").write_text(content)
@@ -7276,8 +6282,7 @@ def test_a_relative_compile_line_incdir_is_content_keyed(tmp_path, monkeypatch):
     assert plan_a.shared_dir.name != _plan("wt-b").shared_dir.name, (
         "a relative +incdir+ contributed no content to the key"
     )
-    # Recorded under what it RESOLVES to, so it cannot be confused with a
-    # run.f entry that happens to share the raw spelling.
+    # Recorded under what it resolves to, so it is not confused with a run.f entry of the same raw spelling.
     sim = _cache_sim(
         tmp_path / "wt-a",
         monkeypatch,
@@ -7295,7 +6300,7 @@ def test_a_relative_compile_line_incdir_is_content_keyed(tmp_path, monkeypatch):
 
 
 def test_relative_compile_line_inputs_of_every_shape_are_keyed(tmp_path, monkeypatch):
-    """`-y`, `-v` and a bare relative source, not just `+incdir+`."""
+    """`-y`, `-v` and a bare relative source are keyed as well as `+incdir+`."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -7317,8 +6322,7 @@ def test_relative_compile_line_inputs_of_every_shape_are_keyed(tmp_path, monkeyp
             "-v",
             os.path.join(up, "rtl", "extra.sv"),
             os.path.join(up, "rtl", "bare.sv"),
-            # ...and one the filelist already names, which the `covered`
-            # check must drop rather than key twice.
+            # A directory the filelist already names, which the `covered` check drops rather than keying twice.
             os.path.join(up, "rtl", "a.sv"),
         ],
     )
@@ -7332,14 +6336,7 @@ def test_relative_compile_line_inputs_of_every_shape_are_keyed(tmp_path, monkeyp
 
 
 def test_a_generated_header_under_an_artefact_incdir_is_keyed(tmp_path, monkeypatch):
-    """A `preproc` hook is documented to generate headers into its
-    `artifact_dir`, and `run.f` incdirs pointing there are tracked — so a
-    compile-line `+incdir+` pointing there must be too (#542 review round
-    5).
-
-    Refusing the whole directory because `artefacts` appears in its path
-    threw every generated header away with it.
-    """
+    """A compile-line `+incdir+` pointing at a `preproc` `artifact_dir` is tracked like a `run.f` incdir there."""
     cache = tmp_path / "cache"
     for name, content in (("wt-a", "`define G 1\n"), ("wt-b", "`define G 2\n")):
         checkout = tmp_path / name
@@ -7347,7 +6344,7 @@ def test_a_generated_header_under_an_artefact_incdir_is_keyed(tmp_path, monkeypa
         generated = checkout / "verif" / "blk" / "artefacts" / "t" / "gen"
         generated.mkdir(parents=True)
         (generated / "gen.svh").write_text(content)
-        # rtl_buddy's own outputs sit beside it and must NOT be keyed.
+        # rtl_buddy's own outputs sit beside it and are not keyed.
         (generated / "compile.log").write_text("noise\n")
         (generated / "simv").write_text("a binary\n")
 
@@ -7375,13 +6372,7 @@ def test_a_generated_header_under_an_artefact_incdir_is_keyed(tmp_path, monkeypa
 
 
 def test_a_filelist_chain_past_the_depth_bound_fails_closed(tmp_path, monkeypatch):
-    """What the key could not read must make it checkout-specific, not
-    silently absent (#542 review round 5).
-
-    Ten levels of `-F`, of which the last two are never visited: keyed as
-    they were, two checkouts differing only down there shared a build whose
-    deepest inputs nobody had looked at.
-    """
+    """Inputs the key could not read (nesting beyond the `-F` depth limit) make the key checkout-specific."""
     cache = tmp_path / "cache"
     for name, deep in (
         ("wt-a", "module deep; endmodule\n"),
@@ -7416,17 +6407,15 @@ def test_a_filelist_chain_past_the_depth_bound_fails_closed(tmp_path, monkeypatc
     ]
     marker = [k for k in keyed if k.startswith(vlog_sim_module._DEPTH_BOUND_MARKER)]
     assert marker, keyed
-    # The marker carries the ABSOLUTE path, which is what stops the key
-    # being shared with a checkout whose unread tail differs.
+    # The marker carries the absolute path, so the key is not shared with a checkout whose unread tail differs.
     assert str(tmp_path / "wt-a") in marker[0]
     assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name
-    # ...and it is said once, not once per level.
+    # It is reported once, not once per level.
     assert sim_a._depth_bound_logged is True
 
 
 def test_an_explicit_disable_reaches_the_dispatched_jobs(monkeypatch):
-    """`--shared-build-root ''` must disable the cache for the whole run,
-    not just for the head (#542 review round 5)."""
+    """`--shared-build-root ''` disables the cache for the whole run, including the jobs."""
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     class _Root:
@@ -7442,17 +6431,15 @@ def test_an_explicit_disable_reaches_the_dispatched_jobs(monkeypatch):
     # Configured and not overridden: forwarded as the resolved path.
     assert app.shared_build_root == "/from/config"
     assert app.shared_build_root_for_jobs == "/from/config"
-    # Explicitly disabled: the head resolves None, and the jobs are TOLD so
-    # rather than left to re-resolve the config for themselves.
+    # Explicitly disabled: the jobs are told so rather than re-resolving the config.
     app._shared_build_root_flag = ""
     assert app.shared_build_root is None
     assert app.shared_build_root_for_jobs == ""
-    # Disabled through the environment counts the same.
+    # Disabling through the environment counts the same.
     app._shared_build_root_flag = None
     monkeypatch.setenv("RTL_BUDDY_SHARED_BUILD_ROOT", "")
     assert app.shared_build_root_for_jobs == ""
-    # Nothing configured anywhere: nothing to forward, so an unconfigured
-    # project's job argv is unchanged.
+    # Nothing configured: nothing is forwarded, so the job argv is unchanged.
     monkeypatch.delenv("RTL_BUDDY_SHARED_BUILD_ROOT", raising=False)
 
     class _Bare(_Root):
@@ -7464,8 +6451,7 @@ def test_an_explicit_disable_reaches_the_dispatched_jobs(monkeypatch):
 
 
 def test_a_job_given_an_empty_shared_build_root_keeps_the_cache_off(monkeypatch):
-    """The child side of the same contract: an empty `--shared-build-root`
-    overrides the environment and the config the job re-reads."""
+    """An empty `--shared-build-root` in a job overrides the environment and the config."""
     from rtl_buddy.rtl_buddy import RtlBuddy
 
     class _Root:
@@ -7485,17 +6471,9 @@ def test_a_job_given_an_empty_shared_build_root_keeps_the_cache_off(monkeypatch)
 def test_a_relative_include_inside_a_compiler_flag_is_content_keyed(
     tmp_path, monkeypatch
 ):
-    """`-CFLAGS=-I../../inc` is identical TEXT in every checkout, so before
-    this it took the same persistent build directory whatever was in that
-    directory (#542 review).
-
-    The absolute spelling was already keyed; the relative one — the common
-    `builder-opts.compile-time` spelling — had no project-root prefix to be
-    recognised by, so only the option that introduces it can say it is a
-    path at all.
-    """
+    """`-CFLAGS=-I../../inc` is identical text in every checkout, so the option that introduces the path is what identifies it and its content is keyed."""
     cache = tmp_path / "cache"
-    # From `<checkout>/verif/blk/artefacts/<test>` up four to the checkout.
+    # From `<checkout>/verif/blk/artefacts/<test>`, up four to the checkout.
     rel = os.path.join("..", "..", "..", "..", "inc")
     for name, content in (("wt-a", "#define W 8\n"), ("wt-b", "#define W 16\n")):
         checkout = tmp_path / name
@@ -7525,7 +6503,7 @@ def test_a_relative_include_inside_a_compiler_flag_is_content_keyed(
     assert plan_a.shared_dir.name != _sim("wt-b")._compile_plan().shared_dir.name, (
         "a relative -I contributed no directory contents to the key"
     )
-    # ...and identical contents still share, which is what the cache is for.
+    # Identical contents still share.
     (tmp_path / "wt-b" / "inc" / "dut.h").write_text("#define W 8\n")
     assert _sim("wt-a")._compile_plan().shared_dir.name == (
         _sim("wt-b")._compile_plan().shared_dir.name
@@ -7535,7 +6513,7 @@ def test_a_relative_include_inside_a_compiler_flag_is_content_keyed(
 def test_the_embedded_option_scan_reads_paths_and_ignores_the_rest(
     tmp_path, monkeypatch
 ):
-    """Which embedded shapes count as a path, and which deliberately do not."""
+    """Which embedded shapes count as a path and which deliberately do not."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -7562,42 +6540,29 @@ def test_the_embedded_option_scan_reads_paths_and_ignores_the_rest(
     assert _entries([f"-CFLAGS=-I{inc}"]) == ["+incdir+inc"]
     assert _entries([f"-CFLAGS=-I {inc}"]) == ["+incdir+inc"]
     assert _entries([f"-XTRA=-y {lib}"]) == ["+incdir+lib"]
-    # Several in one token, and the absolute/relative pair de-duplicated
-    # rather than keyed twice.
+    # Several paths in one token, with the absolute/relative pair de-duplicated.
     assert _entries([f"-CFLAGS=-I{inc} -I{lib}"]) == ["+incdir+inc", "+incdir+lib"]
     assert _entries([f"-CFLAGS=-I{checkout / 'inc'} -I{inc}"]) == ["+incdir+inc"]
-    # `+libext+` is a suffix list, an output option is an output, a define's
-    # value is a value, and `--Include`/`-Wno-INCDIR` are not `-I`.
+    # `+libext+` is a suffix list, an output option is an output, a define's value is a value, and `--Include`/`-Wno-INCDIR` are not `-I`.
     assert _entries(["-CFLAGS=+libext+.svh"]) == []
     assert _entries(["-o", os.path.join(up, "inc")]) == []
     assert _entries([f"+define+DIR={inc}"]) == []
     assert _entries([f"--Include={inc}"]) == []
     assert _entries([f"-Wno-INCDIR{inc}"]) == []
-    # A relative payload that resolves to nothing stays text.
     assert _entries([f"-CFLAGS=-I{os.path.join(up, 'nope')}"]) == []
 
 
 def test_one_filelist_read_under_two_bases_contributes_both_readings(
     tmp_path, monkeypatch
 ):
-    """A list reached through both `-f` and `-F` is two different sets of
-    inputs, because every relative entry in it anchors somewhere else (#542
-    review).
-
-    One walk, one `seen`: keyed on realpath alone the second reading was
-    discarded, and whatever only that base reaches left the key entirely —
-    so two checkouts differing there shared a build, silently on VCS and
-    Icarus.
-    """
+    """A list reached through both `-f` and `-F` is two sets of inputs, since its relative entries anchor differently; both are keyed."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
     lists = checkout / "lists"
     lists.mkdir()
     child = lists / "child.f"
-    # One child list named twice by one parent, by absolute path so both
-    # namings reach the SAME file — and differ only in the base its one
-    # relative entry then anchors to.
+    # One child list named twice by one parent, by absolute path, differing only in the base its relative entry anchors to.
     (lists / "outer.f").write_text(f"-F {child}\n-f {child}\n")
     child.write_text("shared.sv\n")
     (lists / "shared.sv").write_text("module beside_the_list; endmodule\n")
@@ -7629,7 +6594,7 @@ def test_one_filelist_read_under_two_bases_contributes_both_readings(
     (compile_cwd / "shared.sv").write_text("module under_the_cwd; endmodule\n")
 
     _, _, keyed = _walk()
-    # The child list under each option, and BOTH files its one entry names.
+    # The child list under each option, and both files its one entry names.
     assert "lists/shared.sv" in keyed, keyed
     cwd_reading = [
         spelling
@@ -7637,14 +6602,12 @@ def test_one_filelist_read_under_two_bases_contributes_both_readings(
         if spelling.endswith("shared.sv") and spelling != "lists/shared.sv"
     ]
     assert cwd_reading, keyed
-    # ...while the same list under the SAME base is still entered once, so
-    # the cycle guard has not been traded away for this.
+    # The same list under the same base is entered once, so the cycle guard still holds.
     assert keyed.count("lists/shared.sv") == 1, keyed
 
 
 def test_a_filelist_cycle_under_one_base_is_still_entered_once(tmp_path, monkeypatch):
-    """The other half of the visitation identity: widening it must not cost
-    the cycle protection (#542 review)."""
+    """The visitation identity still protects against cycles."""
     cache = tmp_path / "cache"
     checkout = tmp_path / "wt-a"
     _write_checkout(checkout)
@@ -7671,26 +6634,22 @@ def test_a_filelist_cycle_under_one_base_is_still_entered_once(tmp_path, monkeyp
     assert keyed == ["-F lists/loop.f", "lists/beside.sv"], keyed
 
 
-# --- the split compile: verilate job, then build job (#593) ----------------
+# --- the split compile: verilate job, then build job ----------------
 
 _MARKER = vlog_sim_module.VERILATE_MARKER_NAME
 
 
 @pytest.fixture(autouse=True)
 def _forget_no_verilate_support():
-    """The `--help` probe is answered once per executable per PROCESS."""
+    """The `--help` probe is answered once per executable per process."""
     vlog_sim_module._NO_VERILATE_SUPPORT.clear()
     yield
     vlog_sim_module._NO_VERILATE_SUPPORT.clear()
 
 
 def _install_phase_aware_builder(monkeypatch, calls, *, returncode=0, stderr=""):
-    """A fake Verilator that only produces a binary when asked to build.
-
-    The shared `_install_fake_builder` writes a simv wherever it sees
-    `--Mdir`, which would let the build half validate a stamp over a
-    directory the verilate half never built — exactly the confusion the
-    phases exist to keep apart.
+    """A fake Verilator that produces a binary only when asked to build.
+    The shared `_install_fake_builder` writes a simv wherever it sees `--Mdir`, which would let the build half validate a directory the verilate half never built.
     """
 
     def _fake_run(cmd, capture_output, text, cwd, env=None):
@@ -7728,8 +6687,7 @@ def _shared_dir_of(sim):
 
 
 def test_the_compile_key_is_identical_in_every_phase(tmp_path, monkeypatch):
-    """The two halves must meet in ONE build directory, so nothing about the
-    phase may reach the key: the rewrite happens at argv emission."""
+    """The phase does not reach the compile key, so both halves use one build directory; the rewrite happens at argv emission."""
     _write_source(tmp_path)
     keys = []
     for phase in ("full", "verilate", "build"):
@@ -7745,9 +6703,7 @@ def test_the_compile_key_is_identical_in_every_phase(tmp_path, monkeypatch):
 
 
 def test_the_verilate_phase_emits_the_front_end_and_no_binary(tmp_path, monkeypatch):
-    """`--binary` is `--main --exe --build --timing`; this is that, less the
-    build. The marker replaces the stamp, which must NOT be written: there
-    is no executable for a gated simulation to reuse."""
+    """The verilate half is `--binary` without the build; it writes the marker, not the stamp."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(monkeypatch, calls)
@@ -7784,13 +6740,12 @@ def test_the_build_phase_runs_make_alone_and_consumes_the_marker(tmp_path, monke
     # The build exists and is stamped, so a gated simulation can reuse it.
     assert (shared / "simv").exists()
     assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
-    # ...and the marker is gone, so a later run can never consult a stale one.
+    # The marker is gone.
     assert not (shared / _MARKER).exists()
 
 
 def test_the_build_phase_reports_the_whole_compiles_duration(tmp_path, monkeypatch):
-    """The two halves are one compile to the envelope and the overlay, so the
-    build half adds the verilation it was handed (#593)."""
+    """The build half adds the verilation time it was handed, so the envelope sees one compile."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(monkeypatch, calls)
@@ -7839,8 +6794,7 @@ def test_an_unsplit_compile_records_only_the_three_keys_it_always_did(
 def test_the_build_phase_falls_back_to_a_full_compile(
     tmp_path, monkeypatch, caplog, break_marker, reason
 ):
-    """No marker for these inputs means this job has to verilate too — said
-    out loud, because the suite paid for a verilate job that did not help."""
+    """With no marker for these inputs, the build job verilates too and says so."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(monkeypatch, calls)
@@ -7869,8 +6823,7 @@ def test_the_build_phase_falls_back_to_a_full_compile(
 def test_a_verilator_without_no_verilate_falls_back_and_says_so(
     tmp_path, monkeypatch, caplog
 ):
-    """Probed, not version-gated: the flag is the whole mechanism, and the
-    reservation is what a reader has to reconsider."""
+    """The flag is probed rather than version-gated."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(monkeypatch, calls)
@@ -7911,8 +6864,7 @@ def test_the_no_verilate_probe_is_answered_once_per_process(tmp_path, monkeypatc
 def test_a_failed_verilation_is_not_re_run_under_the_build_reservation(
     tmp_path, monkeypatch, caplog
 ):
-    """It is deterministic, so the second attempt fails identically and only
-    costs the transcript holding the first one's errors (#593)."""
+    """A deterministic failure is not retried in the build half."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(
@@ -7930,7 +6882,6 @@ def test_a_failed_verilation_is_not_re_run_under_the_build_reservation(
     with caplog.at_level(logging.ERROR):
         assert build.compile() == 1
 
-    # No second builder invocation at all.
     assert len(calls) == 1
     assert build.compile_fail_desc.endswith(f"(see {transcript})")
     assert build.last_compile_failure["transcript"] == transcript
@@ -7940,9 +6891,7 @@ def test_a_failed_verilation_is_not_re_run_under_the_build_reservation(
 
 
 def test_a_sibling_on_one_key_does_not_verilate_it_twice(tmp_path, monkeypatch):
-    """Two configs sharing a compile key share a build directory, and the
-    build job's group-leader rule cannot help here — its subject is a stamp
-    this phase does not write. The marker is what short-circuits (#593)."""
+    """Configs sharing a compile key share a build directory; the marker short-circuits the second."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(monkeypatch, calls)
@@ -7958,8 +6907,7 @@ def test_a_sibling_on_one_key_does_not_verilate_it_twice(tmp_path, monkeypatch):
 def test_a_compile_line_with_no_build_step_is_run_whole_by_the_verilate_phase(
     tmp_path, monkeypatch
 ):
-    """`--cc` alone already stops after the front end, so there is nothing to
-    split: the verilate job runs it and stamps, and the build job reuses."""
+    """`--cc` alone stops after the front end: the verilate job runs it and stamps, and the build job reuses."""
     _write_source(tmp_path)
     calls = []
     _install_phase_aware_builder(monkeypatch, calls)
@@ -7977,20 +6925,13 @@ def test_a_compile_line_with_no_build_step_is_run_whole_by_the_verilate_phase(
     assert sim.compile() == 0
 
     assert "--cc" in calls[0]["cmd"]
-    # Stamped like any other whole compile, and no marker to mislead the
-    # build half.
+    # Stamped like any whole compile, with no marker.
     assert (shared / vlog_sim_module.SHARED_BUILD_STAMP_NAME).exists()
     assert not (shared / _MARKER).exists()
 
 
-# --- a Verilator build dir must not outlive its toolchain --------------------
-#
-# Verilator re-emits its C++ into the directory it finds, and its make
-# includes the `*.d` files already there — which name the headers the
-# PREVIOUS toolchain compiled against, by absolute path. A checkout shared
-# between a laptop and a cluster node (or a Verilator reinstalled elsewhere)
-# then fails with `No rule to make target '<old>/include/verilated.cpp'`,
-# and `--rebuild` did nothing about it.
+# --- a Verilator build dir must not outlive its toolchain --------
+# Verilator's make includes the `*.d` files already in the directory, which name the previous toolchain's headers by absolute path; a directory shared across machines or a reinstalled Verilator then fails to make.
 
 
 def _install_listing_builder(monkeypatch, calls):
@@ -8032,9 +6973,7 @@ _STALE = {"verilated.d", "verilated.o", "Vtop__ALL.a"}
 def test_an_upgraded_verilator_starts_its_make_clean(
     tmp_path, monkeypatch, share_build
 ):
-    """Same path, another Verilator behind it: the build dir is reused in
-    both modes, and its objects must not be. Unshared is the path that had
-    no stamp to notice anything."""
+    """With another Verilator at the same path, the build dir is reused in both modes but its objects are scrubbed."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8067,7 +7006,7 @@ def test_an_upgraded_verilator_starts_its_make_clean(
 
 
 def test_another_install_path_also_starts_clean(tmp_path, monkeypatch):
-    """The laptop/cluster case: the exe itself differs, unshared."""
+    """The unshared laptop/cluster case where the executable differs."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8088,9 +7027,7 @@ def test_another_install_path_also_starts_clean(tmp_path, monkeypatch):
 
 
 def test_one_name_for_two_installs_still_starts_clean(tmp_path, monkeypatch):
-    """A laptop and a cluster node can both call theirs
-    `/usr/local/bin/verilator` at one version; on the laptop it is a symlink
-    into a tool tree. The name matches, the install does not."""
+    """Two hosts can share a `verilator` path at one version while the install differs; the install is what counts."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8115,7 +7052,7 @@ def test_one_name_for_two_installs_still_starts_clean(tmp_path, monkeypatch):
 
 
 def test_another_platform_starts_clean(tmp_path, monkeypatch):
-    """Objects are only reusable on the machine type that compiled them."""
+    """Objects are reusable only on the machine type that compiled them."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8135,7 +7072,7 @@ def test_another_platform_starts_clean(tmp_path, monkeypatch):
 
 
 def test_an_unchanged_verilator_keeps_its_objects(tmp_path, monkeypatch):
-    """A source edit is what the incremental make is for: nothing scrubbed."""
+    """A source edit leaves the objects in place."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8156,8 +7093,7 @@ def test_an_unchanged_verilator_keeps_its_objects(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("share_build", [False, True])
 def test_rebuild_starts_the_make_clean(tmp_path, monkeypatch, share_build):
-    """`--rebuild` promises a real rebuild, and without --share-build it
-    used to do nothing at all."""
+    """`--rebuild` rebuilds for real without --share-build too."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8189,8 +7125,7 @@ def test_rebuild_starts_the_make_clean(tmp_path, monkeypatch, share_build):
 def test_a_build_dir_with_no_recorded_toolchain_starts_clean_once(
     tmp_path, monkeypatch
 ):
-    """An obj_dir from before the marker (or from a killed first compile)
-    cannot say what built it: one clean make, then incremental again."""
+    """An obj_dir without the marker (or left by a killed compile) gets one clean make, then incremental builds."""
     _write_source(tmp_path)
     calls = []
     _install_listing_builder(monkeypatch, calls)
@@ -8212,8 +7147,7 @@ def test_a_build_dir_with_no_recorded_toolchain_starts_clean_once(
 
 
 def test_the_build_half_of_a_split_compile_never_scrubs(tmp_path, monkeypatch):
-    """It makes what its verilate job just emitted; that job already
-    decided whether the directory starts clean."""
+    """The build half makes what its verilate job emitted; the verilate job decides whether the directory starts clean."""
     _write_source(tmp_path)
     exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.050 2026-09-01")
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))

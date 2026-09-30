@@ -1,12 +1,6 @@
-"""Tests for the ``rb axi-profile`` subcommand group + wrappers.
+"""Tests for the ``rb axi-profile`` subcommand group and its wrappers.
 
-Same fake-binary pattern as ``tests/test_hier.py``: the real
-``axi-profiler`` isn't on PATH in CI, so we stub it with a tiny
-shell script that records its argv. This pins the CLI shapes we
-promise the downstream:
-
-* ``axi-profiler discover --filelist ... --top ... --output ...``
-* ``axi-profiler run --filelist ... --top ... --input ... --manifest ... --output ... [--tb-prefix ...]``
+A shell-script stub stands in for ``axi-profiler`` and records its argv, which pins the CLI shapes promised downstream.
 """
 
 from __future__ import annotations
@@ -32,9 +26,7 @@ from rtl_buddy.tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileRun,
 )
 
-# The stub tools below run a here-doc Python snippet, so they need an
-# interpreter that actually exists: a bare ``python`` is absent from a
-# stock macOS PATH.
+# Stub tools need a real interpreter; a bare ``python`` is absent on stock macOS.
 _PYTHON = shlex.quote(sys.executable)
 
 
@@ -76,11 +68,6 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
     return CliRunner(), RtlBuddy(name="test_axi_profile")
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyAxiProfileDiscover (unit)
-# ---------------------------------------------------------------------------
-
-
 def test_discover_wrapper_builds_expected_argv(tmp_path: Path) -> None:
     model = _make_model(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
@@ -103,7 +90,7 @@ def test_discover_wrapper_builds_expected_argv(tmp_path: Path) -> None:
 
 
 def test_discover_default_output_falls_back_to_artefacts(tmp_path: Path) -> None:
-    """Without `axi_bundles:` set the default output lands under artefacts/."""
+    """Without `axi_bundles:` the default output lands under artefacts/."""
     model = _make_model(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
 
@@ -200,20 +187,12 @@ def test_discover_errors_when_executable_missing(tmp_path: Path) -> None:
     assert "axi-profiler" in str(info.value)
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyAxiProfileRun (unit)
-# ---------------------------------------------------------------------------
-
-
 def _write_run_fixture(
     tmp_path: Path, *, axi_bundles_present: bool = True, fst_present: bool = True
 ) -> tuple[Path, Path]:
-    """Build a self-contained suite_dir with tests.yaml + models.yaml.
+    """Build a suite_dir with tests.yaml and models.yaml; return ``(suite_dir, tests_yaml_path)``.
 
-    Returns ``(suite_dir, tests_yaml_path)``. The fixture has one test
-    ``basic`` over a testbench ``tb_basic`` over a model ``soc``. Toggles
-    let individual tests exercise the missing-manifest / missing-FST
-    branches.
+    The suite has test ``basic`` over testbench ``tb_basic`` over model ``soc``. Toggles exercise the missing-manifest and missing-FST branches.
     """
     suite_dir = tmp_path / "verif" / "soc_top"
     suite_dir.mkdir(parents=True)
@@ -290,7 +269,6 @@ def test_run_wrapper_builds_expected_argv(tmp_path: Path) -> None:
     assert argv[argv.index("--output") + 1].endswith(
         "artefacts/axi/basic/axi-perf.json"
     )
-    # tb_prefix defaults to the testbench name from tests.yaml.
     assert argv[argv.index("--tb-prefix") + 1] == "tb_basic"
 
 
@@ -312,7 +290,7 @@ def test_run_wrapper_tb_prefix_override_wins(tmp_path: Path) -> None:
 
 
 def test_run_wrapper_tb_prefix_empty_override_disables_flag(tmp_path: Path) -> None:
-    """Explicit empty string opts out of the --tb-prefix flag."""
+    """An explicit empty string drops the --tb-prefix flag."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -349,7 +327,7 @@ def test_run_wrapper_output_override(tmp_path: Path) -> None:
 
 
 def test_run_wrapper_errors_when_axi_bundles_unset(tmp_path: Path) -> None:
-    """Model without `axi_bundles:` field → hint to set it + run discover."""
+    """A model without `axi_bundles:` gets a hint to set it and run discover."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path, axi_bundles_present=False)
     script, _ = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -368,9 +346,8 @@ def test_run_wrapper_errors_when_axi_bundles_unset(tmp_path: Path) -> None:
 
 
 def test_run_wrapper_errors_when_manifest_file_missing(tmp_path: Path) -> None:
-    """`axi_bundles:` set but the file doesn't exist → hint to run discover."""
+    """A missing manifest file gets a hint to run discover."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
-    # Delete the manifest file but leave the field pointing at it.
     (suite_dir / "src" / "axi-bundles.yaml").unlink()
     script, _ = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -389,7 +366,7 @@ def test_run_wrapper_errors_when_manifest_file_missing(tmp_path: Path) -> None:
 
 
 def test_run_wrapper_errors_when_trace_missing(tmp_path: Path) -> None:
-    """No trace under artefacts/<test>/ → hint to run a debug test first."""
+    """A missing trace gets a hint to run a debug test first."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
     script, _ = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -408,19 +385,10 @@ def test_run_wrapper_errors_when_trace_missing(tmp_path: Path) -> None:
     assert "rb -M debug test basic" in msg
 
 
-# ---------------------------------------------------------------------------
-# Trace auto-detection (Verilator FST / plain VCD / VCS VPD)
-# ---------------------------------------------------------------------------
-
-
 def _make_fake_converter(tmp_path: Path, name: str, *, exit_code: int = 0) -> Path:
     """Drop a fake vpd2vcd/vcd2fst that copies input to output.
 
-    Mirrors the real CLI shapes used by the wrapper:
-    ``vpd2vcd [-full64] <in> <out>`` and ``vcd2fst <in> <out>`` — the
-    last two argv entries are always input then output. The working
-    directory of each invocation is recorded to ``<name>-cwd.txt`` so
-    tests can pin the subprocess ``cwd``.
+    The last two argv entries are always input then output. Each invocation's cwd is recorded to ``<name>-cwd.txt``.
     """
     bindir = tmp_path / "fakebin"
     bindir.mkdir(exist_ok=True)
@@ -442,7 +410,7 @@ def _set_mtime(path: Path, epoch: int) -> None:
 
 
 def test_run_newest_trace_wins(tmp_path: Path) -> None:
-    """dump.vcd newer than dump.fst → the VCD is fed to the profiler."""
+    """The newest trace is the one fed to the profiler."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -467,7 +435,7 @@ def test_run_newest_trace_wins(tmp_path: Path) -> None:
 def test_run_vpd_converts_via_vpd2vcd_and_vcd2fst(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Newest trace is a VPD → converted to vcdplus.fst, intermediate removed."""
+    """A VPD is converted to vcdplus.fst and the intermediate is removed."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -493,14 +461,13 @@ def test_run_vpd_converts_via_vpd2vcd_and_vcd2fst(
     assert argv[argv.index("--input") + 1].endswith("artefacts/basic/vcdplus.fst")
     assert (trace_dir / "vcdplus.fst").is_file()
     assert not (trace_dir / "vcdplus.tmp.vcd").exists()
-    # Both converters run with an explicit cwd at the trace dir.
     for name in ("vpd2vcd", "vcd2fst"):
         recorded = (tmp_path / f"{name}-cwd.txt").read_text().strip()
         assert Path(recorded).resolve() == trace_dir.resolve()
 
 
 def test_run_vpd_cached_fst_skips_conversion(tmp_path: Path) -> None:
-    """vcdplus.fst newer than the VPD → reused without converters on PATH."""
+    """A vcdplus.fst newer than the VPD is reused without converters."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -528,7 +495,7 @@ def test_run_vpd_cached_fst_skips_conversion(tmp_path: Path) -> None:
 def test_run_vpd_without_vcd2fst_keeps_vcd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """vpd2vcd present but vcd2fst absent → the converted VCD is ingested."""
+    """Without vcd2fst, the converted VCD is ingested."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -539,8 +506,7 @@ def test_run_vpd_without_vcd2fst_keeps_vcd(
 
     bindir = _make_fake_converter(tmp_path, "vpd2vcd")
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    # Hide any system vcd2fst from the wrapper's lookup only — the
-    # subprocesses still need a working PATH for /usr/bin/env bash.
+    # Hide system vcd2fst from the wrapper's lookup only; subprocesses still need PATH.
     import rtl_buddy.tools.axi_profile_rtl_buddy as mod
 
     real_which = shutil.which
@@ -567,7 +533,7 @@ def test_run_vpd_without_vcd2fst_keeps_vcd(
 def test_run_vpd_errors_when_vpd2vcd_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """VPD newest but no vpd2vcd anywhere → clear Synopsys-env hint."""
+    """A VPD without vpd2vcd gets a Synopsys-environment hint."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
     script, _ = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -576,7 +542,7 @@ def test_run_vpd_errors_when_vpd2vcd_missing(
     trace_dir.mkdir(parents=True)
     (trace_dir / "vcdplus.vpd").write_text("fake vpd\n")
 
-    # Hide any system vpd2vcd from the wrapper's lookup only.
+    # Hide system vpd2vcd from the wrapper's lookup only.
     import rtl_buddy.tools.axi_profile_rtl_buddy as mod
 
     real_which = shutil.which
@@ -602,9 +568,7 @@ def test_run_vpd_errors_when_vpd2vcd_missing(
 
 
 def test_run_wrapper_emits_parquet_at_artefact_default(tmp_path: Path) -> None:
-    """Empty-string `emit_txns_parquet` → wrapper picks the artefact-dir
-    default that `rb axi-profile notebook` reads (axi-txns.parquet
-    next to axi-perf.json)."""
+    """An empty `emit_txns_parquet` uses the artefact-dir default that `rb axi-profile notebook` reads."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -623,7 +587,7 @@ def test_run_wrapper_emits_parquet_at_artefact_default(tmp_path: Path) -> None:
 
 
 def test_run_wrapper_emits_parquet_at_explicit_path(tmp_path: Path) -> None:
-    """Explicit path wins over the default."""
+    """An explicit path wins over the default."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -642,7 +606,7 @@ def test_run_wrapper_emits_parquet_at_explicit_path(tmp_path: Path) -> None:
 
 
 def test_run_wrapper_omits_parquet_flag_by_default(tmp_path: Path) -> None:
-    """Legacy behaviour: no --emit-txns-parquet flag unless asked."""
+    """No --emit-txns-parquet flag unless asked."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, record = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -659,8 +623,7 @@ def test_run_wrapper_omits_parquet_flag_by_default(tmp_path: Path) -> None:
 
 
 def test_rb_axi_profile_run_emit_parquet_via_cli(minimal_project: Path) -> None:
-    """End-to-end: `rb axi-profile run --emit-txns-parquet` plumbs the
-    flag through to axi-profiler with the artefact-dir default path."""
+    """`rb axi-profile run --emit-txns-parquet` passes the artefact-dir default path to axi-profiler."""
     models_yaml = minimal_project / "models.yaml"
     models_yaml.write_text(
         models_yaml.read_text() + "    axi_bundles: src/axi-bundles.yaml\n"
@@ -707,11 +670,6 @@ def test_run_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
     assert profiler.run() == 4
 
 
-# ---------------------------------------------------------------------------
-# rb axi-profile (integration through Typer)
-# ---------------------------------------------------------------------------
-
-
 def test_rb_axi_profile_discover_invokes_stubbed_profiler(
     minimal_project: Path,
 ) -> None:
@@ -736,11 +694,9 @@ def test_rb_axi_profile_discover_invokes_stubbed_profiler(
 
 
 def test_rb_axi_profile_run_invokes_stubbed_profiler(minimal_project: Path) -> None:
-    """End-to-end: rb axi-profile run <test> through the Typer app.
+    """`rb axi-profile run <test>` end to end through the Typer app.
 
-    The minimal_project fixture's models.yaml lacks `axi_bundles:`, so
-    extend it in-place for this test and pre-create both the manifest
-    and the FST.
+    The fixture's models.yaml lacks `axi_bundles:`, so the test extends it and pre-creates the manifest and FST.
     """
     models_yaml = minimal_project / "models.yaml"
     models_yaml.write_text(
@@ -772,24 +728,17 @@ def test_rb_axi_profile_run_invokes_stubbed_profiler(minimal_project: Path) -> N
     assert argv[0] == "run"
     assert argv[argv.index("--input") + 1].endswith("artefacts/basic/dump.fst")
     assert argv[argv.index("--manifest") + 1].endswith("src/axi-bundles.yaml")
-    # tb_basic is the testbench name in the fixture's tests.yaml.
     assert argv[argv.index("--tb-prefix") + 1] == "tb_basic"
 
 
 def test_rb_axi_profile_no_subcommand_shows_help(minimal_project: Path) -> None:
-    """`rb axi-profile` with no subcommand must not run anything."""
+    """`rb axi-profile` with no subcommand runs nothing."""
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["axi-profile"])
-    # Typer's no_args_is_help convention exits non-zero and emits help text.
     assert result.exit_code != 0
     assert "discover" in result.output
     assert "run" in result.output
     assert "gen-monitor" in result.output
-
-
-# ---------------------------------------------------------------------------
-# RtlBuddyAxiProfileGenMonitor (unit)
-# ---------------------------------------------------------------------------
 
 
 def _make_gen_monitor_model(
@@ -799,7 +748,7 @@ def _make_gen_monitor_model(
     axi_monitor_out: str | None = "../verif/soc_top/gen/axi_perf_mon.sv",
     create_manifest_file: bool = True,
 ) -> ModelConfig:
-    """Build a ModelConfig + on-disk manifest for gen-monitor tests."""
+    """Build a ModelConfig and on-disk manifest for gen-monitor tests."""
     design = tmp_path / "design" / "soc"
     design.mkdir(parents=True)
     src = design / "soc.sv"
@@ -833,13 +782,11 @@ def test_gen_monitor_wrapper_builds_expected_argv(tmp_path: Path) -> None:
     assert profiler.run() == 0
 
     argv = json.loads(record.read_text())
-    # `gen-monitor <manifest> --output <out>` (manifest is positional).
     assert argv[0] == "gen-monitor"
     assert argv[1].endswith("src/axi-bundles.yaml")
     assert argv[argv.index("--output") + 1].endswith(
         "verif/soc_top/gen/axi_perf_mon.sv"
     )
-    # Both flags optional; omitted when not set.
     assert "--time-precision" not in argv
     assert "--buffer-cap" not in argv
 
@@ -917,7 +864,7 @@ def test_gen_monitor_wrapper_errors_when_manifest_file_missing(tmp_path: Path) -
 
 
 def test_gen_monitor_wrapper_errors_when_monitor_out_unset(tmp_path: Path) -> None:
-    """Model without `axi_monitor_out:` AND no --output → hint."""
+    """A model without `axi_monitor_out:` and no --output gets a hint."""
     model = _make_gen_monitor_model(tmp_path, axi_monitor_out=None)
     script, _ = _make_fake_profiler(tmp_path)
 
@@ -934,7 +881,7 @@ def test_gen_monitor_wrapper_errors_when_monitor_out_unset(tmp_path: Path) -> No
 
 
 def test_gen_monitor_wrapper_creates_parent_dirs(tmp_path: Path) -> None:
-    """The output's parent dir is created so first run doesn't fail."""
+    """The output's parent directory is created."""
     model = _make_gen_monitor_model(tmp_path)
     script, _ = _make_fake_profiler(tmp_path)
 
@@ -945,7 +892,6 @@ def test_gen_monitor_wrapper_creates_parent_dirs(tmp_path: Path) -> None:
         executable=str(script),
     )
     assert profiler.run() == 0
-    # Parent of axi_monitor_out (../verif/soc_top/gen/) should exist.
     out_parent = (tmp_path / "design" / "verif" / "soc_top" / "gen").resolve()
     assert out_parent.is_dir()
 
@@ -966,7 +912,7 @@ def test_gen_monitor_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
 def test_rb_axi_profile_gen_monitor_invokes_stubbed_profiler(
     minimal_project: Path,
 ) -> None:
-    """End-to-end: rb axi-profile gen-monitor <model> through the Typer app."""
+    """`rb axi-profile gen-monitor <model>` end to end through the Typer app."""
     models_yaml = minimal_project / "models.yaml"
     models_yaml.write_text(
         models_yaml.read_text()
@@ -998,13 +944,8 @@ def test_rb_axi_profile_gen_monitor_invokes_stubbed_profiler(
     assert argv[argv.index("--output") + 1].endswith("gen/axi_perf_mon.sv")
 
 
-# ---------------------------------------------------------------------------
-# RtlBuddyAxiProfileNotebook (unit)
-# ---------------------------------------------------------------------------
-
-
 def _make_fake_marimo(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path]:
-    """Drop a fake ``marimo`` that records argv + AXI_TXNS_PARQUET env."""
+    """Drop a fake ``marimo`` that records argv and the AXI_TXNS_PARQUET env var."""
     record = tmp_path / "marimo-invocation.json"
     script = tmp_path / "marimo"
     script.write_text(
@@ -1027,7 +968,7 @@ def _make_fake_marimo(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path
 def _write_notebook_fixture(
     tmp_path: Path, *, parquet_present: bool = True
 ) -> tuple[Path, Path]:
-    """Build a suite_dir with tests.yaml + optional parquet artefact."""
+    """Build a suite_dir with tests.yaml and an optional parquet artefact."""
     suite_dir = tmp_path / "verif" / "soc_top"
     suite_dir.mkdir(parents=True)
     src = suite_dir / "src" / "soc.sv"
@@ -1063,25 +1004,15 @@ def _write_notebook_fixture(
 
 
 def _notebook_template_or_skip():
-    """Skip the happy-path notebook tests when ``rtl_buddy_axi_profiler``
-    isn't installed in the test env.
+    """Skip when ``rtl_buddy_axi_profiler`` is not installed.
 
-    rtl_buddy uses subprocess-granularity coupling for axi-profiler
-    (we shell out to the binary, not import its Python API), so the
-    package is intentionally absent in CI. Local dev installs with
-    the sibling clone editable-installed exercise these tests.
+    rtl_buddy shells out to axi-profiler, so CI does not install the package.
     """
     return pytest.importorskip("rtl_buddy_axi_profiler.notebook")
 
 
 def test_notebook_wrapper_builds_expected_argv_and_env(tmp_path: Path) -> None:
-    """Lock the marimo argv shape + AXI_TXNS_PARQUET export.
-
-    Downstream (the marimo template) reads the parquet path from
-    ``$AXI_TXNS_PARQUET``; if either the env var name or the argv
-    shape drifts the user's notebook gets an empty cell and a
-    confusing error. Pin both here.
-    """
+    """Pin the marimo argv shape and the AXI_TXNS_PARQUET export the notebook template reads."""
     _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
@@ -1105,7 +1036,6 @@ def test_notebook_wrapper_builds_expected_argv_and_env(tmp_path: Path) -> None:
     template_path = argv[1]
     assert template_path.endswith("rtl_buddy_axi_profiler/notebook/template.py")
     assert Path(template_path).is_file()
-    # AXI_TXNS_PARQUET points at the per-test parquet, not a default.
     parquet_env = payload["env_axi_txns_parquet"]
     assert parquet_env is not None
     assert parquet_env.endswith("artefacts/axi/basic/axi-txns.parquet")
@@ -1133,11 +1063,7 @@ def test_notebook_wrapper_forwards_port_flag(tmp_path: Path) -> None:
 
 
 def test_notebook_wrapper_forwards_headless_and_no_token(tmp_path: Path) -> None:
-    """The hub-initiated flow needs both ``--headless`` (so marimo
-    doesn't auto-pop a browser tab while the SPA also tries to open
-    the URL) and ``--no-token`` (so the SPA can navigate to the
-    printed URL without threading a per-session token through the
-    hub → SPA → browser handoff). Lock both as a pair."""
+    """``--headless`` and ``--no-token`` are forwarded together for the hub-initiated flow."""
     _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
@@ -1159,8 +1085,7 @@ def test_notebook_wrapper_forwards_headless_and_no_token(tmp_path: Path) -> None
 
 
 def test_notebook_wrapper_omits_headless_by_default(tmp_path: Path) -> None:
-    """Default (CLI invocation) keeps marimo's normal token + auto-
-    open-browser behaviour — only the hub-initiated path opts in."""
+    """The CLI default keeps marimo's token and browser auto-open."""
     _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
@@ -1181,8 +1106,7 @@ def test_notebook_wrapper_omits_headless_by_default(tmp_path: Path) -> None:
 
 
 def test_notebook_wrapper_errors_when_parquet_missing(tmp_path: Path) -> None:
-    """The user has to run `rb axi-profile run` first — give them
-    that exact command in the error so they don't go hunting."""
+    """A missing parquet error names `rb axi-profile run`."""
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path, parquet_present=False)
@@ -1203,15 +1127,13 @@ def test_notebook_wrapper_errors_when_parquet_missing(tmp_path: Path) -> None:
 
 
 def test_notebook_wrapper_errors_when_marimo_missing(tmp_path: Path) -> None:
-    """When the user hasn't installed the [notebook] extra, the
-    marimo binary won't be on PATH. Hint at the install command."""
+    """A missing marimo binary gets a hint to install the [notebook] extra."""
     _notebook_template_or_skip()
     from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
 
     suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
 
-    # Point at a path that doesn't exist so the path-form branch fires.
     notebook = RtlBuddyAxiProfileNotebook(
         name="t",
         test_cfg=test_cfg,
@@ -1243,8 +1165,7 @@ def test_notebook_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
 def test_rb_axi_profile_notebook_invokes_stubbed_marimo(
     minimal_project: Path,
 ) -> None:
-    """End-to-end: ``rb axi-profile notebook <test>`` through the
-    Typer app, with the parquet pre-staged at the canonical location."""
+    """`rb axi-profile notebook <test>` end to end through the Typer app, parquet pre-staged."""
     _notebook_template_or_skip()
     parquet_dir = minimal_project / "artefacts" / "axi" / "basic"
     parquet_dir.mkdir(parents=True)
@@ -1278,8 +1199,7 @@ def test_rb_axi_profile_notebook_invokes_stubbed_marimo(
 
 
 def test_rb_axi_profile_notebook_in_subcommand_help(minimal_project: Path) -> None:
-    """notebook must appear in `rb axi-profile` --help so users
-    discover it without reading the docs."""
+    """`notebook` appears in `rb axi-profile --help`."""
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["axi-profile"])
     assert "notebook" in result.output

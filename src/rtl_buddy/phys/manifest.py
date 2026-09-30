@@ -2,48 +2,23 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""``phys-manifest.json`` — the physical artefact discovery contract (#558).
+"""``phys-manifest.json``: which physical artefacts a run produced, and where.
 
-Every run that produces physical metrics writes one manifest beside its
-artefacts. It answers the only two questions a later consumer has: *what
-did this run produce*, and *where is it*. Without it, finding last
-night's synthesis meant knowing the suite, the run name, and which of
-the two synth backends had written the log.
+The file keeps these rules:
 
-Rules the file keeps, unchanged from the coverage manifest they are
-copied from:
-
-* **Stable keys.** The blocks (``synth``, ``power``) are always present,
-  and so is every key inside them; a value is ``null`` when that
-  artefact was not produced. Absent never means "not produced" — ``null``
-  does. ``backend`` is the one to read first: it is ``null`` exactly when
-  that half did not run here.
-* **Project-relative paths.** Every path is POSIX and relative to the
-  project root, so a manifest survives being read from somewhere else,
-  archived, or attached to a CI artefact.
-* **One per artefact directory**, rewritten whole on each run.
-
-The one place it diverges from ``cov_dir/manifest.json`` is *where* it
-lives, and the divergence follows from the flows. Coverage has a
-``cov_dir`` — one directory per run, named, that discovery can walk for.
-Synthesis and power do not: each writes into the run's own
-``artefacts/<name>/``, which it shares with every other command that
-happens to carry that name. So the manifest is named
-``phys-manifest.json`` rather than ``manifest.json`` (discovery is a
-filename match, and it must not collide with a coverage manifest a user
-has pointed at the same directory), and there is no ``phys_dir``
-convention to key on.
-
-That layout also means a synth run and a power run *can* land in one
-directory when they share a name, so the manifest merges the same way
-the model does: a run rewrites its own block and carries the other's
-forward when the model kept the other half (:func:`merge_manifest`). A
-rerun that never gets as far as publishing withdraws its own block the
-same way (:func:`blank_block`), so the manifest never points at reports
-a stale-clear has since deleted.
-
-Every write carries the ``publication`` token of the model it was
-written with — see :func:`rtl_buddy.phys.model.new_publication`.
+* Stable keys. The ``synth`` and ``power`` blocks and every key in them
+  are always present. ``null`` means "not produced"; ``backend`` is
+  ``null`` exactly when that half did not run here.
+* Every path is POSIX and relative to the project root.
+* One manifest per artefact directory, rewritten whole on each run. A
+  synth run and a power run that share a directory merge: a run rewrites
+  its own block and inherits the other's when the model kept that half
+  (:func:`merge_manifest`). A rerun that fails before publishing
+  withdraws its own block (:func:`blank_block`).
+* The name differs from the coverage ``manifest.json`` so discovery, a
+  filename match, cannot collide with it.
+* Each write carries the ``publication`` token of the model written with
+  it (:func:`rtl_buddy.phys.model.new_publication`).
 
 Schema (``schema_version`` 1)::
 
@@ -68,20 +43,11 @@ Schema (``schema_version`` 1)::
                 "config": {..}|null}
     }
 
-The ``config``, ``mode`` and ``activity`` entries are the run's
-*identity* (#568), written here as well as into the model's provenance
-so a listing of every run in a project — `rb phys runs`, the pane's run
-selector — can tell partitions, power modes and optimisation
-experiments apart from the manifests alone, without opening a model
-per run. Their shapes are :mod:`rtl_buddy.phys.provenance`'s.
-Documents written before them carry neither key; every reader here
-normalises an absent block to ``null``, which is what the stable-keys
-rule promises anyway. The paths *inside* those two blocks — a
-constraints file, an activity trace — are project-relative like every
-other path in the document, but they are made so one step earlier, by
-:func:`rtl_buddy.phys.publish._publish`: the same blocks go into the
-model, and relativising each document separately is how the two would
-come to spell one path two ways.
+``config``, ``mode`` and ``activity`` identify the run (shapes in
+:mod:`rtl_buddy.phys.provenance`) and are copied from the model's
+provenance so a run listing needs no model read. A manifest without them
+reads as ``null``. Paths inside them are made project-relative by
+:func:`rtl_buddy.phys.publish._publish`, once, for both documents.
 """
 
 from __future__ import annotations
@@ -92,28 +58,17 @@ from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-# `may_follow_link` lives in `fs_walk` with the walk that asks it, and is
-# re-exported here: it was this module's own rule first, and the hub's
-# `?dir=` route reads it off `phys.manifest` (see `hub.phys_page`).
+# Re-exported: the hub's `?dir=` route reads `may_follow_link` off this module.
 from ..fs_walk import (
     artefact_layout_boundary,
-    may_follow_link,  # noqa: F401 - re-export, see above
+    may_follow_link,  # noqa: F401 - re-export
     walk_unique,
 )
 
 #: Bumped when the manifest's shape changes incompatibly.
 MANIFEST_SCHEMA_VERSION = 1
 
-#: Filename inside the producing run's artefact directory, and the path
-#: rules a manifest's contents keep.
-# All defined in `tools.artifact_paths` — the bottom of the import graph:
-# the filename because that is where the artefact-clearing helpers protect
-# it from a co-named run's suffix clear (#469), and the path helpers
-# (`project_relative`, `project_root_or_none`, `joins_back`) because the
-# coverage manifest keeps the same rules and had a resolve-both copy of
-# `project_relative` that broke on a symlinked `artefacts/`
-# (rtl-buddy/rtl_buddy#564). Re-exported here, where consumers already
-# look.
+# Defined in `tools.artifact_paths`; re-exported for consumers.
 from ..tools.artifact_paths import (  # noqa: E402
     PHYS_MANIFEST_NAME as MANIFEST_FILENAME,
     joins_back,
@@ -121,26 +76,18 @@ from ..tools.artifact_paths import (  # noqa: E402
     project_root_or_none,
 )
 
-# The model's pairing of each half with the totals it owns. Imported so
-# the two merges cannot drift apart on which numbers travel with which
-# block; see :func:`merge_manifest`.
+# The model's block-to-totals pairing, shared so both merges agree.
 from .model import _POWER_TOTALS, _SYNTH_TOTALS  # noqa: E402
 
-#: Keys of the ``synth`` block, so a power-only run still writes them all.
+#: Keys of the ``synth`` block.
 SYNTH_KEYS = ("backend", "run", "stats", "netlist", "log", "config")
 
-#: Keys of the ``power`` block, likewise.
+#: Keys of the ``power`` block.
 POWER_KEYS = (
     "backend",
     "run",
     "netlist_source",
-    # The netlist the analysis actually read: this run's own copy, the
-    # bytes `netlist_sha256` in the model's provenance identifies. Named
-    # here so an archived result can still reach them — a provenance hash
-    # with no path behind it says *that* the netlist was pinned but leaves
-    # a later reader nothing to verify it against. `null` for a
-    # `netlist-source: pnr` run, which reads a routed database and
-    # snapshots no netlist (#560).
+    # The run's own netlist copy; null for `netlist-source: pnr`.
     "netlist_path",
     "report",
     "instances",
@@ -151,17 +98,13 @@ POWER_KEYS = (
     "config",
 )
 
-#: Which block keys hold a path and so need making project-relative. The
-#: rest are plain strings a `rel()` would mangle into a filename.
+#: Block keys that hold a path and so are made project-relative.
 PATH_KEYS = frozenset(
     {"stats", "netlist", "log", "report", "instances", "cells", "netlist_path"}
 )
 
-#: Each producer block, its keys, and the totals it owns — the manifest
-#: side of the model's :data:`~rtl_buddy.phys.model._HALVES`. Named once
-#: because :func:`merge_manifest` and :func:`blank_block` both walk it,
-#: and a second spelling is how the two would come to disagree about
-#: which numbers belong to which block.
+#: Each producer block, its keys and the totals it owns; walked by
+#: :func:`merge_manifest` and :func:`blank_block`.
 _BLOCKS = (
     ("synth", SYNTH_KEYS, _SYNTH_TOTALS),
     ("power", POWER_KEYS, _POWER_TOTALS),
@@ -176,34 +119,15 @@ def _generator() -> str:
 
 
 def project_root_for_dir(artefact_dir) -> str:
-    """The project root an artefact directory's paths should hang off.
+    """The project root that an artefact directory's paths hang off.
 
-    Resolved by walking up from the artefact directory rather than taken
-    from the root config, because the backends that call this hold a
-    suite directory and, in the OpenROAD synthesis case, a ``root_cfg``
-    that may legitimately be absent.
-
-    Deliberately not :func:`rtl_buddy.config.root.discover_project_root`,
-    close as the walk is: that one logs at ERROR before falling back, and
-    a synthesis run outside a project is not an error *here* — it is a
-    manifest whose paths are bare filenames, which is still joinable and
-    still worth writing.
-
-    Walked on the logical path first, for the reason
-    :func:`project_relative` gives and to the same end: an ``artefacts/``
-    symlinked to scratch resolves out of the project entirely, and a walk
-    that started there would find no root, hand every path back absolute,
-    and break the project-relative contract for exactly the layout the
-    rest of the module supports. The resolved walk is the fallback, so a
-    directory reached through a link from outside the project still finds
-    the root it really sits under.
-
-    A directory in no project at all answers with itself, which is what
-    keeps the paths joinable: relative to a root that is the directory,
-    they are bare filenames. A caller that needs to tell that case apart
-    — one deciding whether a path *escapes* the project, which has no
-    answer when there is no project — asks
-    :func:`project_root_or_none` instead.
+    Walks up from ``artefact_dir`` on the logical path first, then on the
+    resolved one, so an ``artefacts/`` symlinked to scratch still finds
+    its project. Outside any project it answers with the directory itself,
+    which makes every path a bare filename. Unlike
+    :func:`rtl_buddy.config.root.discover_project_root` it does not log an
+    error in that case. Use :func:`project_root_or_none` to tell "no
+    project" apart.
     """
     return project_root_or_none(artefact_dir) or str(
         Path(os.path.abspath(artefact_dir))
@@ -224,11 +148,10 @@ def build_manifest(
 ) -> dict:
     """Assemble a manifest document with every path project-relative.
 
-    ``synth`` and ``power`` are the two producer blocks; pass only the
-    one this run wrote. The other is still emitted, with every key
-    ``null`` — that is the stable-keys rule, and it is what lets a
-    consumer read ``manifest["power"]["report"]`` without first asking
-    whether a power run ever happened here.
+    Pass only the producer block this run wrote. The other is emitted with
+    every key ``null``, so a consumer can read
+    ``manifest["power"]["report"]`` without checking that a power run
+    happened.
     """
 
     def rel(path):
@@ -243,9 +166,7 @@ def build_manifest(
 
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
-        # Stamped by `phys.publish._publish` with the token it also puts
-        # on the model this manifest names, so a reader can tell the two
-        # were written together; see `phys.model.new_publication`.
+        # `phys.publish._publish` stamps the token it also puts on the model.
         "publication": None,
         "generator": _generator(),
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -261,33 +182,18 @@ def build_manifest(
 
 
 def merge_manifest(existing: dict | None, new: dict, *, own_block: str | None) -> dict:
-    """Carry an ``existing`` manifest's other-half block onto ``new``.
+    """Carry the other half's block from ``existing`` onto ``new``.
 
-    The mirror of :func:`rtl_buddy.phys.model.merge_model`, and it must
-    stay in step with it: the model's merge is what makes both halves
-    describable from one directory, and a manifest that then pointed at
-    only the last run's reports would leave half the document
-    unattributable to the tool output behind it.
+    Mirrors :func:`rtl_buddy.phys.model.merge_model` and must stay in step
+    with it. ``own_block`` (``"synth"`` or ``"power"``) is the block this
+    run produced and is never inherited. The other block is inherited
+    only when ``new`` left it empty (``backend`` null) and ``existing``
+    describes the same top, with the totals that belong to it. A block
+    this run produced keeps its own totals, nulls included.
 
-    ``own_block`` names the block this run produced (``"synth"`` or
-    ``"power"``) and, exactly as in the model's merge, that block is
-    never inherited. In practice a producer always sets its own
-    ``backend``, so the ``backend is not None`` test below already
-    excludes it — ``own_block`` is what makes that a rule rather than a
-    coincidence of the callers, and keeps a run whose backend name went
-    missing from silently republishing the previous run's report paths.
-
-    Otherwise a block is inherited only when the new run left it empty
-    (``backend`` null) and the existing manifest describes the same top,
-    for the same reason the model's merge checks the top: a
-    same-directory artefact from a different design is not evidence
-    about this one. Totals travel with their half: a block this run
-    re-produced keeps the totals it wrote, nulls included — a scrape
-    that failed this time must not republish last run's number.
-
-    The merged document keeps ``new``'s ``publication`` token, for the
-    reason :func:`rtl_buddy.phys.model.merge_model` gives: the token
-    names the write in progress, not the run whose block was inherited.
+    ``existing`` is ignored when it is not a dict or differs in
+    ``schema_version`` or ``top``. The result keeps ``new``'s
+    ``publication`` token.
     """
     if not isinstance(existing, dict):
         return new
@@ -315,17 +221,10 @@ def merge_manifest(existing: dict | None, new: dict, *, own_block: str | None) -
 
 
 def blank_block(manifest: dict, own_block: str) -> dict:
-    """``manifest`` with ``own_block``'s keys and totals nulled out.
+    """``manifest`` with ``own_block``'s keys and totals set to ``null``.
 
-    The manifest side of :func:`rtl_buddy.phys.model.blank_half`, walking
-    the same :data:`_BLOCKS` pairing :func:`merge_manifest` does. Every
-    key of the block goes ``null`` — ``backend`` included, which is the
-    one a consumer reads first to tell a half that ran here from one that
-    did not, and the one :func:`merge_manifest` keys inheritance on.
-
-    The document's own header (``command``, ``run``, ``generated_at``)
-    is left as the last publication wrote it: this is not a new
-    measurement, it is the withdrawal of one.
+    The manifest side of :func:`rtl_buddy.phys.model.blank_half`. The
+    header (``command``, ``run``, ``generated_at``) is left as it was.
     """
     blanked = dict(manifest)
     blanked["totals"] = dict(manifest.get("totals") or {})
@@ -341,9 +240,8 @@ def blank_block(manifest: dict, own_block: str) -> dict:
 def write_manifest(manifest: dict, phys_dir) -> str:
     """Write ``phys-manifest.json`` into ``phys_dir`` and return its path.
 
-    Temp-then-:func:`os.replace`, for the reason
-    :func:`rtl_buddy.phys.model.write_model` gives: discovery walks for
-    this file by name, so a reader can arrive mid-rewrite.
+    Written through a temp file and :func:`os.replace`, so a reader never
+    sees a partial file.
     """
     phys_dir = Path(phys_dir)
     phys_dir.mkdir(parents=True, exist_ok=True)
@@ -361,12 +259,7 @@ def load_manifest(path) -> dict:
 
 
 def load_manifest_or_none(phys_dir) -> dict | None:
-    """The manifest already in ``phys_dir``, or ``None``.
-
-    The merge's read side; see
-    :func:`rtl_buddy.phys.model.load_model_or_none` for why a bad read is
-    "nothing to merge" rather than an error.
-    """
+    """The manifest in ``phys_dir``, or ``None`` if absent or unreadable."""
     try:
         manifest = load_manifest(Path(phys_dir) / MANIFEST_FILENAME)
     except (OSError, ValueError):
@@ -375,13 +268,11 @@ def load_manifest_or_none(phys_dir) -> dict | None:
 
 
 def resolve(manifest_path, relative_path) -> str | None:
-    """Turn a manifest-relative path into an absolute one.
+    """Turn a project-relative path from a manifest into an absolute one.
 
-    Paths are relative to the *project root*, not to the manifest, so
-    resolution walks up from ``phys_dir`` using the manifest's own
-    ``phys_dir`` value. That keeps a manifest joinable after the tree has
-    been moved, which a project-root field baked in at write time would
-    not.
+    Paths are relative to the project root, not to the manifest; the root
+    comes from :func:`project_root_for`. Absolute paths and ``None`` pass
+    through.
     """
     if relative_path is None:
         return None
@@ -394,33 +285,16 @@ def resolve(manifest_path, relative_path) -> str | None:
 
 
 def project_root_for(manifest_path) -> str | None:
-    """Infer the project root a manifest's relative paths hang off.
+    """The project root that a manifest's relative paths hang off.
 
-    Counted back up the *logical* path, not the resolved one: the
-    ``phys_dir`` the walk consumes is relative to the project root as the
-    writer saw it, and an ``artefacts/`` symlinked to scratch resolves to
-    a path with none of those components above it (see
-    :func:`project_relative`). Walking a resolved path up by
-    ``len(phys_dir.parts)`` would then climb out of scratch entirely and
-    return a root no manifest path joins onto.
-
-    The count alone is only right when the manifest is *read* through the
-    same route it was written through, and one ordinary layout breaks
-    that: an ``artefacts/`` link whose target is itself inside the
-    project. :func:`discover_manifests` admits each directory once by its
-    real path, so whichever of the two routes ``os.walk`` reaches first
-    wins — and when that is the target (``scratch_artefacts/<run>/``
-    rather than ``verif/demo/artefacts/<run>/``) the count climbs off the
-    wrong stem and every path the manifest names resolves to nothing.
-    Which route wins is directory-order luck, so the same tree answers
-    differently on two machines.
-
-    So the count is *checked*: the root it proposes has to join back onto
-    the directory the manifest actually sits in. When it does not, the
-    marker walk (:func:`project_root_for_dir`) gets the second try, and
-    it is taken only if it joins back too. Failing both, the counted root
-    stands — it is no worse than before, and a manifest read from outside
-    any project has no better answer available.
+    Counts back up the logical path by the number of components in the
+    manifest's ``phys_dir``. That count is used only if the root it gives
+    joins back onto the manifest's directory, which can fail when
+    ``artefacts/`` is a symlink to a target inside the project and the
+    manifest was reached through the target. Otherwise the marker walk
+    (:func:`project_root_for_dir`) is tried under the same test, and the
+    counted root is the last resort. ``None`` when the manifest cannot be
+    read.
     """
     manifest_path = Path(os.path.abspath(manifest_path))
     try:
@@ -444,37 +318,16 @@ def project_root_for(manifest_path) -> str | None:
 def discover_manifests(project_root) -> list[str]:
     """Every ``phys-manifest.json`` under a project, newest first.
 
-    A bounded walk rather than one fixed path, and — unlike the coverage
-    equivalent — it cannot shortcut on the directory name: a physical
-    manifest lives in whatever ``artefacts/<run>/`` the run was named
-    into, so the filename is the only marker. Version-control and build
-    directories are skipped; ties break on the path so the order is
-    deterministic on a tree with identical timestamps.
+    Ties break on path. The walk matches on the filename alone, since a
+    run can be named into any ``artefacts/<run>/``, and skips VCS, build
+    and ``obj_dir*`` directories.
 
-    **Symlinked directories are followed only inside the artefact
-    layout.** A suite whose ``artefacts/`` is a link to scratch storage
-    is an ordinary, documented setup — the same one the filelist writer
-    is pinned against — and a walk that did not follow it would report a
-    project with no physical data at all. Following *every* link is the
-    other error: a ``vendor/`` link, or a link to ``$HOME``, drags an
-    unrelated tree into the project's walk, which is slow and — worse —
-    reports someone else's ``phys-manifest.json`` as this project's own
-    run. So a link is descended into only when
-    :data:`~rtl_buddy.tools.artifact_paths.ARTIFACT_DIRNAME` is already a
-    component of its path below the project root — its own basename
-    (``<suite>/artefacts -> scratch``, the supported case) or an
-    ``artefacts`` above it (a run directory inside an ``artefacts/``
-    subtree linked out individually). Real directories are walked as
-    before; the boundary is only about links.
-
-    Two guards sit under that rule. A link whose realpath is the project
-    root or an ancestor of it is refused outright, so no admitted link
-    can circle back over the whole tree (or over ``/``). And each
-    directory is admitted once by its real path, so a run reachable by
-    two paths is listed once and any remaining cycle terminates. Both the
-    rule and the guards are :func:`~rtl_buddy.fs_walk.may_follow_link`
-    and :func:`~rtl_buddy.fs_walk.walk_unique`, shared with the coverage
-    walk, which has the same layout and the same exposure to it.
+    Symlinked directories are followed only inside the artefact layout,
+    so a linked ``artefacts/`` is walked and a linked ``vendor/`` or
+    ``$HOME`` is not. A link to the project root or an ancestor is always
+    refused, and each real directory is walked once. Both rules are
+    :func:`~rtl_buddy.fs_walk.may_follow_link` and
+    :func:`~rtl_buddy.fs_walk.walk_unique`, shared with the coverage walk.
     """
     root = Path(project_root)
     found: list[tuple[float, str]] = []

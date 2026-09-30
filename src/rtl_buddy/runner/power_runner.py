@@ -9,9 +9,6 @@ from ..tools.power_base import BasePower
 from ..tools.power_openroad import OpenRoadPower
 
 
-# Backend registry. Adding a commercial flow (PrimePower, Joules,
-# Voltus, ...) is a one-line entry here plus a BasePower subclass in
-# tools/power_<tool>.py.
 _POWER_BACKENDS: dict[str, type[BasePower]] = {
     "openroad": OpenRoadPower,
 }

@@ -1,21 +1,8 @@
-"""Tests for #338 — prevent cross-suite import collisions in regression
-hooks.
+"""Unit tests for the cross-suite preproc import collision check in
+``VlogSim._check_preproc_imports``.
 
-``VlogSim._check_preproc_imports(ns, script_path)`` inspects a preproc's
-namespace after exec for imported module objects whose ``__file__`` lives
-under the project root but in a *different* suite directory (a directory
-containing ``tests.yaml``) than the preproc script's own suite directory.
-This catches the scenario where ``suite_b``'s ``import replay_io`` returns
-``suite_a``'s cached module (a ``sys.modules`` caching collision).
-
-Constructing a full ``VlogSim`` needs a real ``TestConfig``/``RootConfig``,
-so this is exercised as a focused unit test via ``VlogSim.__new__``, with
-only the two attributes ``_check_preproc_imports``/``_find_suite_dir``
-actually touch: ``root_cfg`` and ``test_name``. The end-to-end regression
-scenario (two suites, same-named preproc helper, real sim run) is covered
-structurally by this unit test — the stub ``echo`` builder used elsewhere
-in this suite can't exercise a real preproc import at all, so there is no
-value in also attempting it end-to-end.
+A bare ``VlogSim`` is built with ``__new__`` and only the ``root_cfg`` and ``test_name``
+attributes the check reads.
 """
 
 from __future__ import annotations
@@ -95,8 +82,7 @@ def test_stdlib_import_is_not_flagged(tmp_path: Path):
 
 
 def test_import_collision_has_dedicated_human_message():
-    """The preproc.import_collision ERROR event renders a specific message,
-    not the lossy dotted-event fallback."""
+    """The preproc.import_collision ERROR event renders a dedicated message."""
     from rtl_buddy.logging_utils import _human_message
 
     msg = _human_message(

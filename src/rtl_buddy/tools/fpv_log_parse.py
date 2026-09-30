@@ -1,19 +1,10 @@
-"""Per-engine status extraction from SymbiYosys ``logfile.txt``.
+"""Per-engine status from SymbiYosys ``logfile.txt``, for the ``rb fpv`` results table.
 
-Sby's ``status`` file gives the overall verdict; the per-engine
-breakdown lives only in the prose ``logfile.txt``. The relevant lines
-share a stable ``summary:`` prefix:
+Parsed lines look like:
 
     SBY ... summary: engine_0 (smtbmc yices) returned pass
     SBY ... summary: engine_0 did not produce any traces
-    SBY ... summary: engine_1 (smtbmc z3) returned pass
     SBY ... summary: Elapsed clock time [H:MM:SS (secs)]: 0:00:00 (0)
-
-We parse those into a per-engine list so the ``rb fpv`` results table
-can show which engines ran and which won.
-
-Per-property granularity is not extractable — sby has no
-structured per-assertion output today (see #133).
 """
 
 from __future__ import annotations
@@ -37,8 +28,7 @@ _ELAPSED_RE = re.compile(
 
 @dataclass
 class EnginePartial:
-    """One engine's parsed view of the logfile. Verdict is None until
-    the corresponding ``returned X`` line is seen."""
+    """One engine's parsed log lines; ``verdict`` is None until its ``returned`` line appears."""
 
     idx: int
     spec: str | None = None
@@ -55,10 +45,7 @@ class EnginePartial:
 
 
 def parse_engine_summary(log_text: str) -> list[dict]:
-    """Return a list of engine dicts sorted by index, parsed from
-    ``logfile.txt`` text. Empty list when no engine summary lines are
-    present (failed setup, sby exited before any engine ran).
-    """
+    """Return engine dicts sorted by index; empty when the log has no engine summary lines."""
     engines: dict[int, EnginePartial] = {}
     for line in log_text.splitlines():
         m = _ENGINE_VERDICT_RE.search(line)
@@ -80,14 +67,13 @@ def parse_engine_summary(log_text: str) -> list[dict]:
 
 
 def parse_elapsed_seconds(log_text: str) -> int | None:
-    """Return the elapsed clock time in seconds from the logfile, or
-    ``None`` when the summary line is missing."""
+    """Return the elapsed seconds from the summary line, or ``None`` when it is missing."""
     m = _ELAPSED_RE.search(log_text)
     return int(m["secs"]) if m else None
 
 
 def read_workdir_log(workdir: str) -> str | None:
-    """Convenience: read ``<workdir>/logfile.txt`` if present."""
+    """Return ``<workdir>/logfile.txt`` text, or ``None`` when absent."""
     path = Path(workdir) / "logfile.txt"
     if not path.is_file():
         return None
@@ -95,15 +81,7 @@ def read_workdir_log(workdir: str) -> str | None:
 
 
 def summarize_engines(per_engine: list[dict]) -> str:
-    """Compact one-line render of a per-engine list for the results
-    table. Examples:
-
-        []                             -> "no engine data"
-        [pass]                         -> "1/1 pass (smtbmc yices)"
-        [pass, pass]                   -> "2/2 pass"
-        [pass, fail]                   -> "1/2 pass (smtbmc yices won)"
-        [fail, fail]                   -> "0/2 pass"
-    """
+    """Render a per-engine list as one line, e.g. ``1/2 pass (smtbmc yices won)``."""
     if not per_engine:
         return "no engine data"
     total = len(per_engine)
@@ -116,8 +94,6 @@ def summarize_engines(per_engine: list[dict]) -> str:
     if passed == total:
         return f"{passed}/{total} pass"
     if passed > 0:
-        # When only some engines pass, name one of the winners so the
-        # user knows which spec to keep.
         spec = winners[0].get("spec") or "?"
         return f"{passed}/{total} pass ({spec} won)"
     return f"0/{total} pass"

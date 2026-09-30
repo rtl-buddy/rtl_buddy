@@ -1,26 +1,12 @@
 """Vacuity-cover synthesis for ``rb fpv``.
 
-A SystemVerilog property of the form ``a |-> b`` (or ``a |=> b``) is
-*vacuously true* whenever the antecedent ``a`` never holds. The proof
-passes but tells us nothing: the assertion never actually constrained
-the design. Hand-writing ``cover (a)`` siblings for every implication
-is tedious and easy to forget, so this module walks the user's property
-files, extracts the antecedents of each ``|->`` / ``|=>`` operator, and
-emits a sidecar SystemVerilog file with synthetic ``cover property``
-statements for them.
+An implication ``a |-> b`` (or ``a |=> b``) is vacuously true when ``a`` never holds.
+This module extracts the antecedents from property files and writes a sidecar module of
+``cover property`` statements for them, which a secondary sby pass in ``cover`` mode
+checks. Reachability per antecedent is reported in ``FpvResults``.
 
-The sidecar is fed into a secondary sby pass in ``cover`` mode. Cover
-hits surface as a per-antecedent reachability map in ``FpvResults`` so
-the ``rb fpv`` table can flag vacuity warnings without the user
-re-writing their assertion set.
-
-Scope today:
-
-- Single-line antecedents on the left of ``|->`` / ``|=>``.
-- Clocking and ``disable iff`` clauses are preserved when they appear on
-  the same line as the implication.
-- Multi-line / sequence-valued antecedents are left to a future pass;
-  they are reported as ``skipped`` so the user knows coverage is partial.
+Only single-line antecedents are handled. Clocking and ``disable iff`` clauses are kept
+when they are on the same line as the implication.
 """
 
 from __future__ import annotations
@@ -34,16 +20,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# Regex notes:
-# - We match a single SVA `assert property (... <ant> |-> <cons>)` per
-#   line. The antecedent is the bracketed expression immediately before
-#   the implication operator. To stay readable we don't try to parse
-#   nested sequence operators; the cover wraps the antecedent verbatim
-#   as a boolean expression, which is correct for the common
-#   single-line case the issue targets.
-# - The leading optional `<label>: ` is captured so the synthesized
-#   cover can reuse the user's name (helps the user trace which
-#   antecedent vacuity check belongs to which assert).
+# Matches one single-line `assert property (... <ant> |-> <cons>);`. Nested sequence
+# operators are not parsed. The optional label is kept to name the cover.
 _PROP_LINE_RE = re.compile(
     r"""^
     \s*
@@ -56,16 +34,10 @@ _PROP_LINE_RE = re.compile(
     re.VERBOSE,
 )
 
-# Inside `body`, find the antecedent before `|->` / `|=>`. We use the
-# rightmost `|->` to avoid getting confused by `|->` inside the
-# consequent — implications are right-associative in SVA but the
-# antecedent side rarely contains a nested `|->`, so the rightmost
-# match is the safe default.
+# The rightmost implication is the outer one; a nested `|->` in the consequent is ignored.
 _IMPL_RE = re.compile(r"(?P<op>\|->|\|=>)")
 
-# Strip leading clocking / disable-iff so the antecedent is a plain
-# boolean. Surrounding parens around the clocking event are preserved
-# in `clocking` so the synthetic cover keeps the same trigger.
+# Split off the clocking event and `disable iff` so the antecedent is a plain boolean.
 _CLOCKING_RE = re.compile(
     r"""^\s*
     (?P<clocking>@\s*\([^)]*\))?
@@ -80,7 +52,7 @@ _CLOCKING_RE = re.compile(
 
 @dataclass(frozen=True)
 class VacuityCandidate:
-    """One synthesized cover derived from a user-written `|->` property."""
+    """One cover derived from a `|->` or `|=>` property."""
 
     source_file: str
     source_line: int
@@ -115,8 +87,6 @@ def extract_candidates(property_files: list[str]) -> list[VacuityCandidate]:
             impl = list(_IMPL_RE.finditer(body))
             if not impl:
                 continue
-            # Rightmost implication is the outer one; everything before
-            # it is the antecedent.
             last = impl[-1]
             antecedent_raw = body[: last.start()].strip()
             operator = last.group("op")
@@ -125,8 +95,6 @@ def extract_candidates(property_files: list[str]) -> list[VacuityCandidate]:
 
             clocking_match = _CLOCKING_RE.match(antecedent_raw)
             if clocking_match is None:
-                # The regex always matches (rest is greedy), but be
-                # defensive.
                 continue
             clocking = clocking_match.group("clocking")
             disable = clocking_match.group("disable")
@@ -150,13 +118,7 @@ def extract_candidates(property_files: list[str]) -> list[VacuityCandidate]:
 
 
 def _balance_parens(expr: str) -> str:
-    """Drop trailing unbalanced closing parens.
-
-    The body regex captures up to ``)`` of `assert property(...)`, so
-    after splitting on `|->` the antecedent may carry an outer ``(``
-    without its matching ``)``. Strip the unbalanced wrapping
-    parentheses so the synthesized cover compiles cleanly.
-    """
+    """Strip fully wrapping parentheses so the antecedent is a bare expression."""
     expr = expr.strip()
     while expr.startswith("(") and expr.endswith(")"):
         depth = 0
@@ -176,22 +138,18 @@ def _balance_parens(expr: str) -> str:
     return expr
 
 
-# SV number literal: optional size, then `'`, then base letter (b/o/d/h
-# / B/O/D/H, optional `s` prefix for signed), then digits/underscore/
-# x/z/?. Matches e.g. `1'b0`, `4'hAB`, `'sd-12`, `32'h1234_5678`.
+# SV number literal, e.g. `1'b0`, `4'hAB`, `32'h1234_5678`.
 _SV_NUM_LITERAL_RE = re.compile(r"(?:\d[\d_]*)?'[sS]?[bBoOdDhH][0-9a-fA-F_xXzZ?]+")
 
 
 def _scan_identifiers(text: str) -> list[str]:
-    """Return SV-style identifiers (in source order, deduplicated) found in
-    ``text``, skipping number literals, reserved words, and type
-    keywords. Heuristic — used only to decide which ports the
-    synthesized vacuity-cover module needs."""
-    # Erase number literals before scanning so e.g. `1'b0` doesn't
-    # leak its base suffix as a bareword like `b0`.
+    """Return the distinct identifiers in ``text`` in source order, skipping number literals and reserved words.
+
+    Heuristic; it decides which ports the vacuity-cover module declares.
+    """
+    # Blank number literals first so `1'b0` does not yield `b0`.
     cleaned = _SV_NUM_LITERAL_RE.sub(" ", text)
     seen: dict[str, None] = {}
-    # SV identifier pattern: [A-Za-z_][A-Za-z0-9_$]*
     for tok in re.finditer(r"[A-Za-z_][A-Za-z0-9_$]*", cleaned):
         name = tok.group(0)
         if name in _SV_RESERVED:
@@ -200,9 +158,7 @@ def _scan_identifiers(text: str) -> list[str]:
     return list(seen)
 
 
-# Reserved words / type keywords we never want to treat as port names
-# in the synthesized cover module. Not exhaustive — only the ones an
-# antecedent realistically contains.
+# Keywords never treated as port names; not exhaustive.
 _SV_RESERVED = frozenset(
     {
         "and",
@@ -246,19 +202,12 @@ def write_vacuity_module(
     module_name: str = "rtl_buddy_vacuity_covers",
     bind_to: str | None = None,
 ) -> str:
-    """Emit a SystemVerilog module that covers each candidate antecedent.
+    """Write a SystemVerilog module with one cover per candidate and return its path.
 
-    Returns the path written. The module declares a port for every
-    identifier referenced in any antecedent (or its clocking /
-    disable-iff clause), plus the canonical `clk` / `rst_n` pair. When
-    ``bind_to`` is given, a matching `bind <top> ... (.*);` directive
-    is appended so the synthesized covers see the DUT's signals
-    by name — required for slang elaboration, which does not infer
-    free identifiers the way yosys's native verilog frontend does.
+    The module has a port for every identifier in the antecedents, clocking and
+    disable-iff clauses, plus `clk` and `rst_n`. With ``bind_to``, a `bind` of the module
+    into that top is appended; slang needs it because it does not infer free identifiers.
     """
-    # Collect the signal names every cover references. Scan each
-    # antecedent + its clocking + disable-iff text so we declare
-    # exactly the ports the cover bodies need.
     ports: dict[str, None] = {"clk": None, "rst_n": None}
     for c in candidates:
         for blob in (c.antecedent, c.clocking or "", c.disable_iff or ""):
@@ -292,10 +241,7 @@ def write_vacuity_module(
     lines.append(f"endmodule  // {module_name}")
     if bind_to:
         lines.append("")
-        # Connect every cover-module port by name from the DUT scope.
-        # `.<port>` (port-name shorthand) requires the DUT to expose a
-        # net with the same name; for the canonical clk / rst_n /
-        # signal pattern this is always true.
+        # `.<port>` shorthand needs the DUT to have a net of the same name.
         conns = ", ".join(f".{p}" for p in port_list)
         lines.append(f"bind {bind_to} {module_name} u_rtl_buddy_vacuity ({conns});")
     lines.append("")
@@ -303,24 +249,12 @@ def write_vacuity_module(
     return output_path
 
 
-# ---------------------------------------------------------------------------
-# sby cover-mode log parsing
-# ---------------------------------------------------------------------------
-
-# sby cover-mode emits two flavours of lines for each cover:
-#
-# Engine progress (mid-run, one per cover when reached):
-#   "## 0:00:00  Reached cover statement at top.cov.foo in step 3"
-#
-# Final summary block (always emitted at end-of-run):
+# sby cover-mode lines. Mid-run: "## 0:00:00  Reached cover statement at top.cov.foo in step 3".
+# Summary block at the end of the run:
 #   "SBY <ts> [...] summary:   reached cover statement <hier> at <file>:<lines> step <N>"
 #   "SBY <ts> [...] summary: unreached cover statements:"
 #   "SBY <ts> [...] summary:   <hier> at <file>:<lines>"
-#
-# We match both: the summary block is authoritative when present
-# (covers every cover deterministically), and the mid-run lines pick
-# up the slack on configurations where sby only prints the engine
-# trace. Case-insensitive match accepts either capitalisation.
+# Both forms are matched, since some configurations print only the mid-run lines.
 _REACHED_RE = re.compile(
     r"[Rr]eached cover statement(?:\s+at)?\s+(?P<hier>\S+)",
 )
@@ -330,30 +264,20 @@ _UNREACHED_HEADER_RE = re.compile(
 _UNREACHED_INLINE_RE = re.compile(
     r"[Uu]nreached cover statement:?\s+(?P<hier>\S+)",
 )
-# Summary continuation line: "summary:   <hier> at <file>:<lines>" —
-# only valid inside an "unreached cover statements:" block (tracked
-# statefully below).
+# Only valid inside an "unreached cover statements:" block.
 _SUMMARY_HIER_RE = re.compile(
     r"summary:\s+(?P<hier>\S+)\s+at\s+\S+",
 )
 
 
 def parse_vacuity_log(log_text: str) -> dict[str, bool]:
-    """Return ``{cover_name: reachable}`` from an sby cover-mode logfile.
-
-    Cover names that appear in neither bucket are absent from the map;
-    the caller treats them as "no signal" so we don't synthesize false
-    negatives when sby's output format shifts.
-    """
+    """Return ``{cover_name: reachable}`` from an sby cover-mode logfile; covers not mentioned are absent."""
     result: dict[str, bool] = {}
     in_unreached_block = False
     for line in log_text.splitlines():
         m = _REACHED_RE.search(line)
         if m:
-            # `\u_rtl_buddy_vacuity.cover_vacuity_1_foo` → strip the
-            # last segment after `.` for the cover name. The escape
-            # `\u_...` (yosys public-name marker) is preserved by
-            # `.split('.')` but doesn't affect the suffix match.
+            # The cover name is the last dotted segment of the hierarchical name.
             result[m.group("hier").split(".")[-1]] = True
             in_unreached_block = False
             continue
@@ -373,7 +297,5 @@ def parse_vacuity_log(log_text: str) -> dict[str, bool]:
             if m:
                 result.setdefault(m.group("hier").split(".")[-1], False)
             elif "summary:" not in line:
-                # End of the summary block — anything outside the
-                # `summary:` prefix terminates it.
                 in_unreached_block = False
     return result

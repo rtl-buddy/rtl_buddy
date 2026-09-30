@@ -1,12 +1,6 @@
-"""Tests for #334 — fail loud when coverage is requested but no coverage
-data was produced by any executed test.
+"""Tests for the guard that fails when coverage is requested but no executed test produced coverage data.
 
-``RtlBuddy.do_cmd_test`` and the regression command both raise
-``FatalRtlBuddyError`` when: coverage output was requested, no executed
-test produced raw coverage data, and at least one test was not skipped.
-The ``minimal_project`` fixture's stub ``echo`` builder never produces
-real coverage data, so combining it with ``-E comp`` (compile-only early
-stop) reliably reproduces the "requested but missing" case.
+``RtlBuddy.do_cmd_test`` and the regression command raise ``FatalRtlBuddyError`` in that case unless every test was skipped. The stub ``echo`` builder with ``-E comp`` reproduces it.
 """
 
 from __future__ import annotations
@@ -44,7 +38,7 @@ def test_coverage_merge_requested_with_no_data_raises_fatal_error(
 def test_coverage_html_requested_with_no_data_raises_fatal_error(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """Same guard fires for ``--coverage-html``, not just ``--coverage-merge``."""
+    """``--coverage-html`` fires the guard too."""
     rb = RtlBuddy(name="test_coverage_guard_html")
     monkeypatch.setattr(
         "sys.argv",
@@ -61,9 +55,7 @@ def test_coverage_html_requested_with_no_data_raises_fatal_error(
 def test_coverage_source_summary_requested_with_no_data_raises_fatal_error(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """``--coverage-source-summary`` (#637) is a coverage output like the
-    rest: it is computed from the model the raw databases build, so a run
-    that produced none must fail rather than print nothing."""
+    """``--coverage-source-summary`` is a coverage output like the rest, so a run with no model fails rather than printing nothing."""
     rb = RtlBuddy(name="test_coverage_guard_source")
     monkeypatch.setattr(
         "sys.argv",
@@ -88,7 +80,7 @@ def test_coverage_source_summary_requested_with_no_data_raises_fatal_error(
 def test_regression_coverage_source_summary_requested_with_no_data_raises(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """The same flag, the same guard, on ``rb regression``."""
+    """``rb regression`` applies the same guard to ``--coverage-source-summary``."""
     rb = RtlBuddy(name="test_coverage_guard_source_regression")
     monkeypatch.setattr(
         "sys.argv",
@@ -114,9 +106,7 @@ def test_regression_coverage_source_summary_requested_with_no_data_raises(
 def _spy_on_build_metadata(monkeypatch):
     """Let a coverage flag reach the reporter on a project with no simulator.
 
-    The stub builder produces no coverage database, so the guard above
-    would fire first; pretending one exists is enough to reach the call
-    and capture what the command asked the reporter for.
+    The stub builder produces no coverage database, so the test pretends one exists to reach the reporter call and capture its arguments.
     """
     from rtl_buddy.tools.coverage import CoverageReporter
 
@@ -136,7 +126,7 @@ def _spy_on_build_metadata(monkeypatch):
 def test_test_passes_the_source_summary_flag_to_the_reporter(
     minimal_project: Path, monkeypatch
 ):
-    """`--coverage-source-summary` (#637) is wired through `rb test`."""
+    """`rb test` passes `--coverage-source-summary` to the reporter."""
     captured = _spy_on_build_metadata(monkeypatch)
     runner, rb = _runner()
 
@@ -151,7 +141,7 @@ def test_test_passes_the_source_summary_flag_to_the_reporter(
 def test_regression_passes_the_source_summary_flag_to_the_reporter(
     minimal_project: Path, monkeypatch
 ):
-    """And through `rb regression`, which has its own flag list."""
+    """`rb regression`, which has its own flag list, passes it too."""
     captured = _spy_on_build_metadata(monkeypatch)
     runner, rb = _runner()
 
@@ -167,14 +157,14 @@ def test_regression_passes_the_source_summary_flag_to_the_reporter(
 def test_coverage_requested_but_all_tests_skipped_does_not_raise(
     minimal_project: Path,
 ):
-    """If every test is skipped by the level window, the guard must not fire."""
+    """The guard does not fire when the level window skips every test."""
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["test", "--start-level", "10", "--coverage-merge"])
     assert result.exit_code == 0, result.output
 
 
 def test_no_coverage_flags_never_triggers_guard(minimal_project: Path):
-    """A normal compile-only run without any coverage flag is unaffected."""
+    """A compile-only run without coverage flags is unaffected."""
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["-E", "comp", "test", "basic"])
     assert result.exit_code == 0, result.output
@@ -183,12 +173,9 @@ def test_no_coverage_flags_never_triggers_guard(minimal_project: Path):
 def test_regression_coverage_merge_requested_with_no_data_raises_fatal_error(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """The same guard applies to ``rb regression``.
+    """``rb regression`` applies the same guard.
 
-    The fixture's "stub" builder only declares a "debug" mode, while
-    regression defaults to builder-mode "reg" — override with the global
-    ``-M debug`` so the run gets far enough to hit the coverage guard
-    instead of failing earlier on a missing builder mode.
+    The stub builder only declares "debug" while regression defaults to builder-mode "reg", so the test passes ``-M debug``.
     """
     rb = RtlBuddy(name="test_coverage_guard_regression")
     monkeypatch.setattr(

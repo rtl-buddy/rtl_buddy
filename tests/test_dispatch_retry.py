@@ -1,13 +1,7 @@
-"""Retry classification and backoff math (#405).
+"""Tests for retry classification and backoff.
 
-The rule these tests pin down is deliberately narrow: a job is retried
-only when the scheduler killed it for a *resource* reason AND its own
-fresh output shows it was *still* queueing for a license seat when it
-died. Everything else — a hung testbench that hit the same TIMEOUT with no
-banner, one that queued, got its seat and then hung, a job that FAILED on
-its own merits, one whose build job never opened the gate, a days-old log
-left behind by a previous run — keeps failing, because a vanished job must
-never score green.
+A job is retried only when the scheduler killed it for a resource reason and its
+own fresh output shows it was still queueing for a license seat.
 """
 
 from __future__ import annotations
@@ -56,9 +50,6 @@ def _write_sim_log(spec: TestJobSpec, text: str, *, name="test.log") -> Path:
     return path
 
 
-# ---- what counts as a retryable missing result ---------------------------
-
-
 def test_timeout_with_the_queue_banner_is_license_queue(tmp_path):
     spec = _spec(tmp_path)
     _write_sim_log(spec, "starting sim\n" + BANNER)
@@ -66,7 +57,7 @@ def test_timeout_with_the_queue_banner_is_license_queue(tmp_path):
 
 
 def test_timeout_without_the_banner_is_not_retried(tmp_path):
-    """The hung-testbench case: same kill, no seat contention behind it."""
+    """A hung testbench with no queue banner is not retried."""
     spec = _spec(tmp_path)
     _write_sim_log(spec, "starting sim\nrunning...\n")
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
@@ -87,7 +78,7 @@ def test_every_resource_kill_state_qualifies(tmp_path, state):
     "state", ["FAILED", "COMPLETED", "CANCELLED", "OUT_OF_MEMORY", "", None]
 )
 def test_states_that_are_the_jobs_own_outcome_are_not_retried(tmp_path, state):
-    """Banner or not, a job that decided its own fate is not resubmitted."""
+    """A job that failed on its own is not resubmitted, banner or not."""
     spec = _spec(tmp_path)
     _write_sim_log(spec, BANNER)
     assert classify_missing_result(spec, state, classifiers=ON) is None
@@ -100,7 +91,7 @@ def test_cancelled_by_user_is_not_read_as_a_resource_kill(tmp_path):
 
 
 def test_truncated_state_spelling_still_matches(tmp_path):
-    # sacct renders some states with a trailing '+' when the column is cut.
+    # sacct can append '+' to a state when the column is truncated.
     spec = _spec(tmp_path)
     _write_sim_log(spec, BANNER)
     assert classify_missing_result(spec, "timeout+", classifiers=ON) == "license-queue"
@@ -120,14 +111,14 @@ def test_banner_in_test_err_counts(tmp_path):
 
 
 def test_banner_in_the_scheduler_log_counts(tmp_path):
-    """A sim whose output never reached its artefact files still queued."""
+    """A sim whose output never reached its artefact files still counts as queued."""
     spec = _spec(tmp_path)
     Path(spec.log_path).write_text(BANNER)
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
 
 
 def test_run_fanout_reads_that_runs_own_artefacts(tmp_path):
-    """Seed 2's banner must not make seed 1 look like it queued."""
+    """One seed's banner does not make another seed look queued."""
     queued, hung = _spec(tmp_path, run_id=2), _spec(tmp_path, run_id=1)
     _write_sim_log(queued, BANNER)
     _write_sim_log(hung, "running...\n")
@@ -136,20 +127,14 @@ def test_run_fanout_reads_that_runs_own_artefacts(tmp_path):
 
 
 def test_an_unscheduled_backend_classifies_on_the_banner_alone(tmp_path):
-    """local-parallel reports no scheduler state, so requiring one is fatal.
-
-    The pool has no accounting source at all (``collect_telemetry`` is
-    empty by design), so demanding a resource kill state there would make
-    the rule unsatisfiable and retry dead code on that backend.
-    """
+    """local-parallel reports no scheduler state, so the banner alone decides."""
     spec = _spec(tmp_path)
     _write_sim_log(spec, BANNER)
     assert (
         classify_missing_result(spec, None, classifiers=ON, scheduled=False)
         == "license-queue"
     )
-    # ...and the same job under a scheduler that reported nothing is not
-    # retried, because there the missing state is missing evidence.
+    # With a scheduler that reported no state the job is not retried.
     assert classify_missing_result(spec, None, classifiers=ON, scheduled=True) is None
 
 
@@ -159,16 +144,8 @@ def test_an_unscheduled_backend_still_needs_the_banner(tmp_path):
     assert classify_missing_result(spec, None, classifiers=ON, scheduled=False) is None
 
 
-# ---- queued when it died, or queued and then running? --------------------
-
-
 def test_a_sim_that_got_its_seat_and_then_hung_is_not_retried(tmp_path):
-    """The common shape, not a corner: most queued sims do get a seat.
-
-    Banner, then real simulator output, then the reservation runs out. The
-    seat was granted; whatever went wrong after that is the test's own, and
-    a whole-file search for the banner would resubmit it.
-    """
+    """A job that got its seat and then ran real simulator output is not retried."""
     spec = _spec(tmp_path)
     _write_sim_log(spec, BANNER + "..\nVCS Simulation Report\nrunning...\n")
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
@@ -176,7 +153,7 @@ def test_a_sim_that_got_its_seat_and_then_hung_is_not_retried(tmp_path):
 
 
 def test_the_banner_as_the_last_meaningful_content_is_retried(tmp_path):
-    """Everything after the last marker is queue-banner vocabulary."""
+    """Only queue-banner vocabulary after the last marker means still queued."""
     spec = _spec(tmp_path)
     _write_sim_log(
         spec,
@@ -186,13 +163,13 @@ def test_the_banner_as_the_last_meaningful_content_is_retried(tmp_path):
         + "HIT CTRL-C to exit\n"
         + BANNER
         + "\n"
-        + "....",  # killed mid-poll: no trailing newline
+        + "....",
     )
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
 
 
 def test_output_printed_before_the_banner_is_not_a_granted_seat(tmp_path):
-    """simv's startup lines precede the queue wait; they are not sim output."""
+    """simv startup lines before the queue wait are not sim output."""
     spec = _spec(tmp_path)
     _write_sim_log(spec, "starting sim\nloading design\n" + BANNER)
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
@@ -207,32 +184,23 @@ def test_a_capture_showing_the_seat_was_granted_outranks_one_that_does_not(tmp_p
 
 
 def test_a_partial_last_line_does_not_end_the_queue(tmp_path):
-    """A killed job's last line is truncated; only a complete line decides.
-
-    Same rule as the live monitor, which enters the queued state on a
-    partial marker line and leaves it only on a complete non-banner one.
-    """
+    """Only a complete final line decides; a truncated last line does not."""
     spec = _spec(tmp_path)
-    _write_sim_log(spec, BANNER.rstrip("\n"))  # banner with no newline yet
+    _write_sim_log(spec, BANNER.rstrip("\n"))
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
 
 
 def test_sim_output_after_a_long_queue_wait_still_ends_the_queue(tmp_path, monkeypatch):
-    """The dots can outlast several read chunks; the line after them decides."""
+    """The line after a long run of dots decides, even across read chunks."""
     monkeypatch.setattr(retry_module, "_CHUNK_CHARS", 64)
     spec = _spec(tmp_path)
     _write_sim_log(spec, BANNER + "." * 300 + "\nVCS Simulation Report\n")
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
 
 
-# ---- evidence has to be this attempt's ------------------------------------
-
-
 def test_a_stale_artefact_is_not_this_attempts_evidence(tmp_path):
-    """`artefacts/<test>/test.log` is never cleaned between runs.
-
-    Without a recency check a banner printed days ago would satisfy the
-    rule forever — including for a job that never started at all.
+    """`artefacts/<test>/test.log` is never cleaned between runs, so evidence must be
+    recent.
     """
     spec = _spec(tmp_path)
     log = _write_sim_log(spec, BANNER)
@@ -265,11 +233,7 @@ def test_an_artefact_written_after_submission_is_evidence(tmp_path):
 
 
 def test_a_build_job_that_did_not_succeed_blocks_every_retry(tmp_path):
-    """A sim gated on a failed build never started, so it is not retryable.
-
-    Its artefacts cannot be this attempt's evidence, and resubmitting it
-    would run — with no gate at all — a job the head deliberately skipped.
-    """
+    """A sim gated on a failed build never started and is not retryable."""
     spec = _spec(tmp_path)
     _write_sim_log(spec, BANNER)
     assert (
@@ -287,8 +251,8 @@ def test_a_build_job_that_did_not_succeed_blocks_every_retry(tmp_path):
 def test_paths_searched_include_both_job_logs(tmp_path):
     spec = _spec(tmp_path)
     names = [p.name for p in job_output_paths(spec)]
-    # The sim's own capture first, then the job's rtl_buddy log and the
-    # scheduler's stdout log beside the envelope (#437).
+    # Candidates: the sim's own capture, then the job's rtl_buddy log and the scheduler
+    # stdout log.
     assert names == [
         "test.log",
         "test.err",
@@ -305,7 +269,7 @@ def test_marker_straddling_a_chunk_boundary_is_found(tmp_path, monkeypatch):
 
 
 def test_scan_stops_at_the_size_cap(tmp_path, monkeypatch):
-    """Collection must not read a run's whole output back off a share."""
+    """Collection scans at most a capped number of characters of a run's output."""
     monkeypatch.setattr(retry_module, "_CHUNK_CHARS", 64)
     monkeypatch.setattr(retry_module, "_MAX_SCAN_CHARS", 128)
     spec = _spec(tmp_path)
@@ -339,12 +303,8 @@ def test_state_normalisation(raw, expected):
     assert normalise_scheduler_state(raw) == expected
 
 
-# ---- the backoff schedule -----------------------------------------------
-
-
 def _retry(**kwargs):
-    # Floats, not ints: the serde dataclass is type-checked at construction
-    # (YAML coerces on the way in, a direct constructor call does not).
+    # Floats, not ints: the serde dataclass type-checks at construction.
     kwargs.setdefault("attempts", 3)
     for key in ("backoff_sec", "backoff_max_sec", "jitter"):
         if key in kwargs:
@@ -372,13 +332,13 @@ def test_jitter_spreads_the_delay_around_the_base():
     low_rng, high_rng = _Rng(0.5), _Rng(1.5)
     assert backoff_delay(1, cfg, rng=low_rng) == 50
     assert backoff_delay(1, cfg, rng=high_rng) == 150
-    # The window is exactly 1 +/- jitter, so the mean stays the base delay.
+    # The jitter window is 1 +/- jitter, so the mean stays the base delay.
     assert low_rng.seen == (0.5, 1.5)
 
 
 def test_jitter_keeps_every_sample_inside_its_window():
     cfg = _retry(backoff_sec=60, backoff_max_sec=600, jitter=0.25)
-    rng = random.Random(20250405)  # seeded: a flaky bound is worse than none
+    rng = random.Random(20250405)  # seeded
     for attempt in range(1, 5):
         base = min(600, 60 * 2 ** (attempt - 1))
         for _ in range(200):
@@ -390,7 +350,7 @@ def test_jitter_is_applied_after_the_cap_so_capped_retries_still_spread():
     cfg = _retry(backoff_sec=60, backoff_max_sec=100, jitter=0.5)
     rng = random.Random(7)
     samples = {backoff_delay(9, cfg, rng=rng) for _ in range(50)}
-    assert len(samples) > 1  # not every capped retry lands on the same second
+    assert len(samples) > 1
     assert all(50 <= s <= 150 for s in samples)
 
 
@@ -405,13 +365,9 @@ def test_zero_jitter_is_deterministic_and_touches_no_rng():
 
 
 def test_result_missing_says_retrying_when_a_classifier_fired():
-    """Human mode must not call a row a failure while it is being retried.
+    """Human mode does not call a row a failure while it is being retried.
 
-    The event carries ``attempt`` and ``retry_classifier``, but only
-    ``--machine`` renders fields; ``rtl_buddy.log`` and the console read
-    the human message, and three byte-identical "counting it as a
-    failure" lines would contradict the ``dispatch.retry`` line that
-    follows each of the first two (#405 review).
+    Only --machine renders event fields, so the human message must carry the retry.
     """
     from rtl_buddy.logging_utils import _human_message
 
@@ -442,7 +398,7 @@ def test_result_missing_says_retrying_when_a_classifier_fired():
     assert "attempt 3" in exhausted
     assert "counting it as a failure" in exhausted
 
-    # No retry configured: the message is exactly what it always was.
+    # No retry configured: the message is unchanged.
     plain = _human_message(
         "dispatch.result_missing",
         {"job_id": "1", "test": "t", "scheduler_state": None, "attempt": 1},

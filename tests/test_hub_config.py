@@ -1,4 +1,4 @@
-"""Tests for ``rtl_buddy.hub.config`` — TOML loader."""
+"""Tests for the ``rtl_buddy.hub.config`` TOML loader."""
 
 from __future__ import annotations
 

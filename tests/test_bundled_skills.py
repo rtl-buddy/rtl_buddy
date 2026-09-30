@@ -33,31 +33,21 @@ def test_bundled_skills_keep_critical_operational_guidance():
     assert "`rb docs show` is" in primary
     assert "bare JSON" in primary
     assert "strict `XPASS`" in primary
-    # #546 split the two NAs: only an intentional early stop exits 0.
     assert "unknown `NA`" in primary
     assert "including an intentional early-stop `NA`" in primary
 
     graph = _bundled_skill_text("rtl-buddy-graph")
-    # The hub-gated tool has to be described as hub-gated: an agent that
-    # reads `phys_focus` as always-available reports a missing tool as a
-    # broken install rather than as "no hub is running".
+    # The hub-gated `phys_focus` tool must be described as hub-gated.
     assert "`phys_focus` is served only when a live hub" in graph
     assert "soft miss" in graph
     assert "instance_join" in graph
-    # The POWER attribution answers Liberty-cell questions and only
-    # those. The skill used to name a flat netlist's top as a second
-    # thing it answers; flattening changes the hierarchy, not the
-    # namespace the leaves are named in, so an agent that believed it
-    # would attribute a cell type's power to the design top.
+    # POWER attribution answers Liberty-cell questions only; a flat netlist's top is not a second answer.
     assert "flat netlist" not in graph
     assert "changes the hierarchy rather than the namespace" in graph
-    # And it used to overshoot the other way: "nothing else" reads as
-    # "an RTL name gets nothing", when the synthesis row — its cells and
-    # its area — is measured for that name and stands.
+    # "Nothing else" must not imply that an RTL name gets no synthesis row.
     assert "and nothing else" not in graph
     assert "still gets its synthesis row" in graph
-    # The lists are headed by default, so the skill has to say how to
-    # ask for all of them.
+    # The skill must say how to ask for the complete list.
     assert "`limit: 0` asks for the complete one" in graph
 
     tests = _bundled_skill_text("rtl-buddy-test")

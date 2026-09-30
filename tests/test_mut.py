@@ -1,12 +1,6 @@
-"""Tests for the ``rb mut`` slice: mut.yaml config, the missing-xeno
-guard, and the MutRunner orchestration (candidate listing, mutant
-materialisation, FPV-verdict -> outcome classification, scoring).
+"""Tests for the ``rb mut`` slice: mut.yaml config, the missing-xeno guard, and MutRunner orchestration (candidate listing, mutant materialisation, FPV-verdict classification, scoring).
 
-The external ``rtl-buddy-xeno`` engine is replaced with an in-process
-stub so the orchestration is exercised without the Verible / pyslang
-toolchain. The FPV proof is faked by patching ``FpvRunner`` to read the
-spliced design file and return a verdict driven by markers in the
-mutant source.
+``rtl-buddy-xeno`` is replaced by an in-process stub, and ``FpvRunner`` is patched to read the spliced design file and return a verdict driven by markers in the mutant source.
 """
 
 from __future__ import annotations
@@ -27,10 +21,6 @@ from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.runner.mut_results import ERRORED, KILLED, SURVIVED, MutResults
 from rtl_buddy.runner.fpv_results import FpvFailResults, FpvPassResults
 
-
-# ---------------------------------------------------------------------------
-# Project fixture: a leaf design + models.yaml + fpv.yaml + mut.yaml
-# ---------------------------------------------------------------------------
 
 _DESIGN_SV = dedent(
     """\
@@ -97,11 +87,6 @@ def _write_project(root: Path) -> Path:
     return mut_path
 
 
-# ---------------------------------------------------------------------------
-# Stub rtl-buddy-xeno
-# ---------------------------------------------------------------------------
-
-
 class _MutationKind(enum.StrEnum):
     ARITH_FLIP = "arith_flip"
     BIT_OP_FLIP = "bit_op_flip"
@@ -141,8 +126,7 @@ class _Site:
     prediction: _Prediction
 
 
-# Three mutants: one killed (FAIL marker), one survived (PASS) with a
-# prediction (-> predicted-observable miss), one errored (build break).
+# Three mutants: one killed (FAIL marker), one survived (PASS) with a prediction (predicted-observable miss), one errored (build break).
 _STUB_MUTANTS = [
     _Mutant(
         sv="// KILL\n" + _DESIGN_SV,
@@ -201,9 +185,7 @@ def stub_xeno(monkeypatch):
     return mod
 
 
-# A fake FpvRunner: reads the spliced .sv next to the model and maps a
-# marker comment to a verdict. Baseline (unmutated) source has no marker
-# -> PASS.
+# Fake FpvRunner: reads the spliced .sv next to the model and maps a marker comment to a verdict. The unmutated baseline has no marker and passes.
 class _FakeFpvRunner:
     def __init__(self, name, root_cfg, fpv_cfg, suite_dir):
         self.fpv_cfg = fpv_cfg
@@ -217,11 +199,6 @@ class _FakeFpvRunner:
         if "KILL" in sv:
             return FpvFailResults(name="x", mode="bmc", depth=16)
         return FpvPassResults(name="x", mode="bmc", depth=16)
-
-
-# ---------------------------------------------------------------------------
-# Config tests
-# ---------------------------------------------------------------------------
 
 
 def test_mut_config_loads(tmp_path):
@@ -249,9 +226,7 @@ def test_mut_config_rejects_unknown_operator(tmp_path):
     ['"../../etc/leaf"', '"leaf$cfg"', "'\\leaf.top '", '"leaf\\n"'],
 )
 def test_mut_config_rejects_a_top_that_is_not_a_simple_identifier(tmp_path, scalar):
-    """The campaign `top:` wins over the model's and reaches the same
-    generated yosys / sby script lines, so it answers to the models.yaml rule.
-    """
+    """The campaign `top:` reaches the generated yosys / sby script lines, so it follows the models.yaml identifier rule."""
     mut_path = _write_project(tmp_path)
     mut_path.write_text(
         mut_path.read_text().replace(
@@ -301,11 +276,6 @@ def test_mut_config_rejects_bad_schedule(tmp_path):
         MutSuiteConfig(path=str(mut_path))
 
 
-# ---------------------------------------------------------------------------
-# Runner tests
-# ---------------------------------------------------------------------------
-
-
 def _runner(tmp_path, mut_path):
     from rtl_buddy.runner.mut_runner import MutRunner
 
@@ -319,8 +289,7 @@ def _runner(tmp_path, mut_path):
 
 
 def test_missing_xeno_raises_with_install_hint(tmp_path, monkeypatch):
-    # Force the import to fail regardless of whether rtl-buddy-xeno is
-    # installed: a None entry in sys.modules makes the import raise.
+    # Force the import to fail; a None entry in sys.modules makes the import raise.
     monkeypatch.setitem(sys.modules, "rtl_buddy_xeno", None)
     mut_path = _write_project(tmp_path)
     runner = _runner(tmp_path, mut_path)
@@ -329,10 +298,7 @@ def test_missing_xeno_raises_with_install_hint(tmp_path, monkeypatch):
 
 
 def test_too_old_xeno_raises_with_floor_hint(tmp_path, stub_xeno, monkeypatch):
-    # xeno imports fine (stub) but reports a version below the floor: the
-    # runtime guard rejects it with the same `>=` floor the pyproject
-    # `[mut]` extra enforces at resolve time, catching git/editable
-    # installs that bypass that resolve-time check.
+    # xeno imports (stub) but reports a version below the floor; the runtime guard rejects it, catching git/editable installs that bypass the `[mut]` extra's resolve-time floor.
     import importlib.metadata
 
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.0.9")
@@ -343,7 +309,7 @@ def test_too_old_xeno_raises_with_floor_hint(tmp_path, stub_xeno, monkeypatch):
 
 
 def test_recent_xeno_version_accepted(tmp_path, stub_xeno, monkeypatch):
-    # A version at or above the floor passes the runtime guard.
+    # A version at or above the floor passes.
     import importlib.metadata
 
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "1.2.0")
@@ -353,9 +319,7 @@ def test_recent_xeno_version_accepted(tmp_path, stub_xeno, monkeypatch):
 
 
 def test_missing_xeno_metadata_is_tolerated(tmp_path, stub_xeno, monkeypatch):
-    # No distribution metadata (editable/dev install, or this stub) must
-    # not block: the resolve-time floor and a successful import stand in
-    # for the runtime check.
+    # No distribution metadata (editable/dev install, or this stub) must not block.
     import importlib.metadata
 
     def _raise(_name):
@@ -425,7 +389,7 @@ def test_run_does_not_touch_original_source(tmp_path, stub_xeno):
 
 
 def _recording_fpv_runner():
-    """An `_FakeFpvRunner` that records the top of every run it is handed."""
+    """Return an `_FakeFpvRunner` that records the top of every run."""
     tops: list[str] = []
 
     class _Recorder(_FakeFpvRunner):
@@ -450,10 +414,7 @@ def test_fpv_oracle_elaborates_the_verification_top_without_an_override(
 
 
 def test_fpv_oracle_elaborates_the_campaign_top_override(tmp_path, stub_xeno):
-    """A `mut.yaml` `top:` wins over the oracle verification's for the
-    baseline and every mutant — the two verdicts are only comparable when
-    both are elaborated from the same root module.
-    """
+    """A `mut.yaml` `top:` overrides the oracle verification's top for the baseline and every mutant."""
     mut_path = _write_project(tmp_path)
     mut_path.write_text(
         mut_path.read_text().replace(
@@ -532,11 +493,6 @@ def test_design_file_outside_model_dir_errors(tmp_path, stub_xeno):
             runner.run()
 
 
-# ---------------------------------------------------------------------------
-# Report round-trip
-# ---------------------------------------------------------------------------
-
-
 def test_report_round_trip(tmp_path, stub_xeno):
     mut_path = _write_project(tmp_path)
     runner = _runner(tmp_path, mut_path)
@@ -549,10 +505,6 @@ def test_report_round_trip(tmp_path, stub_xeno):
     assert restored.errored() == results.errored()
     assert restored.score() == results.score()
 
-
-# ---------------------------------------------------------------------------
-# Sim oracle
-# ---------------------------------------------------------------------------
 
 from dataclasses import dataclass as _dataclass  # noqa: E402
 from rtl_buddy.config.model import ModelConfig as _ModelConfig  # noqa: E402
@@ -610,9 +562,7 @@ def _fake_suite_factory(model_yaml):
     return _FakeSuiteConfig
 
 
-# Marker-driven fake TestRunner, mirroring _FakeFpvRunner's convention:
-#   ERR -> compile failure (errored), KILL -> test FAIL (killed),
-#   ASSERT -> passes but an assertion fired (killed), else PASS (survived).
+# Marker-driven fake TestRunner: ERR is a compile failure (errored), KILL a test FAIL (killed), ASSERT passes with an assertion fired (killed), else PASS (survived).
 class _FakeTestRunner:
     def __init__(
         self, name, root_cfg, test_cfg, rtl_builder_mode, test_runner_mode, suite_dir
@@ -661,7 +611,7 @@ def _install_stub_xeno(monkeypatch, mutants):
     monkeypatch.setitem(sys.modules, "rtl_buddy_xeno", mod)
 
 
-# ---- config ----
+# config
 
 
 def test_mut_config_sim_only(tmp_path):
@@ -688,7 +638,7 @@ def test_mut_config_both_oracles(tmp_path):
 
 def test_mut_config_no_oracle_errors(tmp_path):
     _write_project(tmp_path)
-    # Valid verify mapping but no oracle fields -> validation must fire.
+    # Valid verify mapping but no oracle fields: validation must fire.
     body = _MUT_YAML_SIM.replace(
         '  test_config: "tests.yaml"\n', "  assertions: true\n"
     )
@@ -697,7 +647,7 @@ def test_mut_config_no_oracle_errors(tmp_path):
         MutSuiteConfig(path=str(mut_path))
 
 
-# ---- sim scoring ----
+# sim scoring
 
 
 def _sim_runner(tmp_path):
@@ -810,9 +760,7 @@ def test_run_sim_oracle_scores(tmp_path, monkeypatch):
 
 
 def test_both_oracles_union_kill(tmp_path, monkeypatch):
-    # A mutant that the FPV proof misses but the sim assertion catches:
-    # "// ASSERT" has no KILL marker (fpv -> PASS/survived) but fires an
-    # assertion in sim -> the union verdict must be killed.
+    # The FPV proof misses "// ASSERT" (no KILL marker, so PASS) but sim fires an assertion; the union verdict is killed.
     _write_project(tmp_path)
     model_yaml = str(tmp_path / "design" / "leaf" / "models.yaml")
     _install_sim_fakes(monkeypatch, model_yaml=model_yaml)
@@ -849,10 +797,6 @@ def test_both_oracles_union_kill(tmp_path, monkeypatch):
     assert "fpv=PASS" in o.verdict and "sim=FAIL" in o.verdict
 
 
-# ---------------------------------------------------------------------------
-# Scope graph-ingestion: a 2-module hierarchy (hier_top -> two leaf insts)
-# ---------------------------------------------------------------------------
-
 _HIER_TOP_SV = dedent(
     """\
     module hier_top (input logic clk, input logic en,
@@ -865,9 +809,7 @@ _HIER_TOP_SV = dedent(
 
 
 def _write_hier_project(root: Path, scope_block: str) -> Path:
-    """A two-file hierarchy: hier_top.sv instantiates two leaf instances
-    from leaf.sv. Returns the mut.yaml path. ``scope_block`` is spliced
-    into mut.yaml verbatim (already indented as a top-level YAML key)."""
+    """Write a two-file hierarchy (hier_top.sv instantiating two leaf instances from leaf.sv) and return the mut.yaml path. ``scope_block`` is spliced into mut.yaml verbatim, indented as a top-level YAML key."""
     design_dir = root / "design" / "hier"
     design_dir.mkdir(parents=True)
     (design_dir / "leaf.sv").write_text(_DESIGN_SV)
@@ -936,9 +878,7 @@ def _hier_runner(tmp_path, mut_path):
 
 @pytest.fixture
 def stub_hier(monkeypatch):
-    """Patch MutRunner._scope_graph_json with a canned 2-module graph so
-    no real rtl-buddy-view subprocess is needed. Source files are derived
-    from the configured design_file's directory (design/hier/)."""
+    """Patch MutRunner._scope_graph_json with a canned 2-module graph; source files come from the design_file's directory (design/hier/)."""
 
     def _graph(self):
         d = os.path.dirname(os.path.abspath(self.mut_cfg.get_design_file()))
@@ -971,9 +911,7 @@ def stub_hier(monkeypatch):
     )
 
 
-# A scope-aware fake FpvRunner: scans every .sv in the spliced model tree
-# for a KILL / ERR marker (the multi-file tree has more than one .sv, so we
-# can't rely on the single-glob convention _FakeFpvRunner uses).
+# Scope-aware fake FpvRunner: scans every .sv in the spliced model tree for a KILL / ERR marker, since the tree has more than one .sv.
 class _ScopeFakeFpvRunner:
     def __init__(self, name, root_cfg, fpv_cfg, suite_dir):
         self.fpv_cfg = fpv_cfg
@@ -990,10 +928,7 @@ class _ScopeFakeFpvRunner:
 
 
 def _install_scope_xeno(monkeypatch):
-    """A xeno stub whose Mutator is keyed by the file it was built from, so
-    every scoped file yields a mutant carrying a marker derived from that
-    file's basename. Lets a test prove each mutant was spliced into ITS
-    origin file."""
+    """Return a xeno stub whose Mutator is keyed by its source file, so each scoped file yields a mutant carrying a marker from that file's basename."""
 
     class _ScopeMutator:
         def __init__(self, basename, text):
@@ -1006,8 +941,7 @@ def _install_scope_xeno(monkeypatch):
             return cls(p.name, p.read_text())
 
         def generate(self, kinds, count, seed=0, schedule=None):
-            # One mutant per file. Its sv prepends a per-file marker so the
-            # materialised file is identifiable.
+            # One mutant per file, with a per-file marker prepended so the materialised file is identifiable.
             yield _Mutant(
                 sv=f"// MUT {self.basename}\n" + self.text,
                 diff_summary=f"mutate {self.basename}",
@@ -1031,7 +965,7 @@ def _install_scope_xeno(monkeypatch):
 
 
 def test_scope_empty_skips_graph(tmp_path, stub_xeno, monkeypatch):
-    # Default (no scope) project: the graph resolver must never be called.
+    # Default (no scope) project: the graph resolver is never called.
     mut_path = _write_project(tmp_path)
     runner = _runner(tmp_path, mut_path)
 
@@ -1122,9 +1056,7 @@ def test_scope_empty_selection_errors(tmp_path, stub_xeno, stub_hier):
 
 
 def test_scope_missing_view_binary(tmp_path, stub_xeno, monkeypatch):
-    # Do NOT stub _scope_graph_json; instead make RtlBuddyView.run raise as
-    # the real wrapper does when the binary is absent, and assert run()
-    # propagates it.
+    # Do not stub _scope_graph_json; make RtlBuddyView.run raise as the real wrapper does when the binary is absent, and assert run() propagates it.
     mut_path = _write_hier_project(
         tmp_path,
         dedent(
@@ -1150,9 +1082,7 @@ def test_scope_missing_view_binary(tmp_path, stub_xeno, monkeypatch):
 
 
 def test_scope_multifile_run(tmp_path, monkeypatch, stub_hier):
-    # Scope selects BOTH files; the stub yields one mutant per file, each
-    # spliced into ITS origin file. Both are scored, with a per-file
-    # breakdown in the report.
+    # Scope selects both files; each mutant is spliced into its own origin file and both are scored, with a per-file breakdown in the report.
     mut_path = _write_hier_project(
         tmp_path,
         dedent(
@@ -1167,26 +1097,21 @@ def test_scope_multifile_run(tmp_path, monkeypatch, stub_hier):
     with patch("rtl_buddy.runner.mut_runner.FpvRunner", _ScopeFakeFpvRunner):
         results = runner.run()
 
-    # One mutant per scoped file = two outcomes, both survived (no KILL/ERR
-    # marker -> the fake oracle PASSes == baseline).
+    # One mutant per scoped file gives two survived outcomes (no KILL/ERR marker, so the oracle PASSes like the baseline).
     assert len(results.outcomes) == 2
     origin_files = sorted(o.file for o in results.outcomes)
     assert origin_files == ["hier_top.sv", "leaf.sv"]
 
-    # Each mutant must have been spliced into its OWN origin file: the
-    # materialised model_src must carry the per-file marker in the matching
-    # file and leave the other file's marker absent.
+    # Each mutant's materialised model_src carries the per-file marker in its own file and not in the other.
     for o in results.outcomes:
-        # The model dir is design/hier (it holds models.yaml), so the copied
-        # tree's root IS that dir and the model-relative file sits directly
-        # under model_src.
+        # The model dir is design/hier (it holds models.yaml), so the copied tree's root is that dir.
         model_src = tmp_path / "work" / o.mutant_id / "model_src"
         spliced = (model_src / o.file).read_text()
         assert f"// MUT {o.file}" in spliced
         other = "leaf.sv" if o.file == "hier_top.sv" else "hier_top.sv"
         assert "// MUT" not in (model_src / other).read_text()
 
-    # Per-file breakdown present and summing to the scored totals.
+    # Per-file breakdown is present and sums to the scored totals.
     report = results.as_report()
     assert set(report["per_file"]) == {"hier_top.sv", "leaf.sv"}
     total = sum(
@@ -1196,9 +1121,7 @@ def test_scope_multifile_run(tmp_path, monkeypatch, stub_hier):
 
 
 def test_scope_glob_is_case_sensitive(tmp_path, stub_xeno, stub_hier):
-    # The scope globs use fnmatchcase, so matching is case-sensitive on
-    # every platform (fnmatch would case-fold on macOS). A wrong-case
-    # pattern must select NOTHING -> empty selection is a fatal error.
+    # Scope globs use fnmatchcase, so matching is case-sensitive on every platform. A wrong-case pattern selects nothing, and an empty selection is fatal.
     wrong_case = _write_hier_project(
         tmp_path / "wrong",
         dedent(

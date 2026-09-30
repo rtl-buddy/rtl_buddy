@@ -2,82 +2,11 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Coverage on the design knowledge graph (#402, #390).
+"""Joins the coverage model onto graph ids: declared `covers:` items against observed cover
+points.
 
-The graph has always known **declared** coverage intent — a
-``tests.yaml`` ``covers:`` entry becomes a
-``test:<suite>#<name> --covers--> covitem:<block>#<id>`` edge — and the
-coverage model (#399) has always known what the simulator **observed**
-— SVA cover points with hits and per-test attribution. Nothing joined
-them, so "is this spec item actually exercised, by which tests, and did
-they pass?" was answerable from data already on disk and answered by
-nothing.
-
-This module is that join. Three rules shape it:
-
-**The overlay carries it, not ``graph.json``.** Coverage is a property
-of last night's run, not of the design, so it rides in
-``results-overlay.json`` beside the statuses (#379) — the file that is
-already re-read by every consumer and already excluded from the build
-fingerprint. A sidecar was the alternative and was rejected: it would
-have been a third file with a third staleness question, and both
-readers (the query verbs and the ``/graph`` pane) already load the
-overlay through one hook.
-
-**Nothing re-runs.** The numbers come from files already on disk —
-``cov_dir/manifest.json`` and the model it names, the per-test raw
-databases the overlay's artefact scan found, or a merged LCOV ``.info``
-— never from ``verilator_coverage``. Every value written is a property
-of files on disk, so refreshing the overlay with nothing re-run
-rewrites identical bytes.
-
-Three sources feed the join (#390), most structured first:
-
-``model``
-    ``cov_dir/manifest.json`` and the coverage model it names — what a
-    coverage-mode run of ``rb test`` / ``rb regression`` writes.
-``artefacts``
-    No manifest, but the overlay's test entries recorded per-test
-    ``coverage.dat`` databases: a model is synthesized in memory from
-    those with :func:`rtl_buddy.cov.model.build_model` and joined the
-    same way. This is the ``auto`` fallback — a cleaned ``cov_dir`` or
-    an out-of-process run still gets its numbers.
-``info``
-    An explicitly named merged LCOV ``.info``
-    (``rb graph results --coverage merged.info``). LCOV carries no
-    module names, so the per-module heat is joined **by file**: an
-    ``SF:`` record is attributed to a ``module:`` node only when it
-    resolves to exactly the file that node claims. Two potholes drive
-    that rule: raw verilator ``SF:`` paths are test-workspace-relative
-    (``../../../../design/...``) and must be absolutized before any
-    matching, and a repo-scope ``--coverage-merge`` can rewrite
-    duplicate basenames against the wrong suite root — so a basename
-    match is never evidence, and an ``SF:`` set that resolves to
-    nothing the graph knows is reported instead of guessed at.
-
-**The name match is a ladder, and it is recorded.** A spec item id
-(``A-COV-1``) and an SVA cover label (``cov_a_cov_1``) are written by
-different people in different files, so the correlation is heuristic.
-Rather than hide that, each match records *which rung* it came off
-(:data:`MATCH_TIERS`), so a wrong join is visible instead of merely
-wrong. The module join has a two-rung ladder of its own
-(:func:`base_module_name`), because the model speaks the simulator's
-elaborated names and the graph speaks the source's.
-
-Per item the join emits one of three statuses:
-
-``exercised``
-    A declared item correlated with an observed cover point that fired.
-``declared-only``
-    A declared item with no observed cover point, or one that never
-    fired. The two are told apart by whether ``observed`` is empty —
-    "the RTL has no such cover" and "the cover never hit" are different
-    bugs, and collapsing them into two statuses would have needed a
-    fourth word for the same three questions.
-``observed-but-undeclared``
-    A cover point in the RTL that no ``covers:`` entry claims. These
-    have no node in the graph, so they are listed separately rather
-    than keyed by an id nothing can look up.
+The result rides in `results-overlay.json`, not `graph.json`, and is built from files
+already on disk; no coverage tool is re-run.
 """
 
 from __future__ import annotations
@@ -101,86 +30,71 @@ from .config_tier import MAPS_TO
 
 logger = logging.getLogger(__name__)
 
-#: Bumped when the overlay's ``coverage`` block changes incompatibly.
-#: Independent of :data:`~rtl_buddy.graph.results.OVERLAY_SCHEMA_VERSION`:
-#: the block is optional, so a consumer that does not read it is not
-#: broken by a change here.
+# Bumped when the overlay's `coverage` block changes incompatibly. Independent of
+# `OVERLAY_SCHEMA_VERSION` because the block is optional.
 COVERAGE_SCHEMA_VERSION = 1
 
-#: Coverage sources ``rb graph results --coverage`` accepts by name.
-#: Anything else is read as a path to a merged LCOV ``.info`` file.
+# Sources `rb graph results --coverage` accepts by name; anything else is a path to a
+# merged LCOV `.info` file.
 COVERAGE_SOURCE_AUTO = "auto"
 COVERAGE_SOURCE_MODEL = "model"
 
-#: Per-item verdicts. The vocabulary the pane, ``rb graph explain`` and
-#: the MCP ``test_status`` tool all render.
+# Per-item verdicts, rendered by the pane, `rb graph explain` and the MCP `test_status`
+# tool.
+# `exercised`: a declared item correlated with a cover point that fired.
+# `declared-only`: a declared item with no observed cover point, or one that never
+# fired; `observed` empty tells the two apart.
+# `observed-but-undeclared`: a cover point no `covers:` entry claims; it has no node, so
+# it is listed separately.
 STATUS_EXERCISED = "exercised"
 STATUS_DECLARED_ONLY = "declared-only"
 STATUS_OBSERVED_UNDECLARED = "observed-but-undeclared"
 
-#: How a declared item and an observed cover point were correlated,
-#: strongest first. Recorded per match so a suspicious join can be seen.
+# Rungs by which a declared item and an observed cover point were correlated, strongest
+# first; each match records its rung.
 MATCH_TIERS = ("exact", "nocase", "normalized", "affix")
 
-#: Metric whose ratio drives the design-column tint. Line coverage is
-#: the only metric every simulator family reports, and the only one an
-#: ``.info``-only fallback carries at all.
+# Metric driving the design-column tint; line coverage is the only one every simulator
+# family reports.
 TINT_METRIC = "line"
 
-#: Node types the module ratio is attached to directly (a ``model:``
-#: node picks it up through its ``maps_to`` stitch instead). Ports and
-#: parameters are deliberately excluded: a per-port tint says nothing a
-#: person can act on and would drown the columns it decorates.
+# Node types that carry the module ratio directly (`model:` nodes get it through
+# `maps_to`). Ports and parameters are excluded because a per-port tint is not
+# actionable.
 _DESIGN_TYPES = frozenset({"module", "instance"})
 
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 _COV_AFFIX = ("cov", "cvr", "c")
 
-#: One trailing ``__<alnum>`` group — see :func:`base_module_name`.
+# One trailing `__<alnum>` group; see `base_module_name`.
 _ELABORATION_SUFFIX = re.compile(r"__[A-Za-z0-9]+$")
 
 
 def base_module_name(name: str) -> str:
-    """The source-level module name behind an elaborated one.
+    """Return the source-level module name behind an elaborated one.
 
-    The coverage model keys modules on the name the **simulator**
-    elaborated: verilator appends a mangled parameterisation suffix, so
-    ``ip_async_fifo`` compiled once is ``ip_async_fifo__DB13`` and
-    compiled twice is ``ip_cdc_handshake__W13`` and
-    ``ip_cdc_handshake__Wc``. The design graph keys on the **source**
-    name (``module:ip_async_fifo``), which is also the name a person
-    reads in ``design/common/*.sv``. One trailing ``__<alnum>`` group is
-    the entire difference between the two vocabularies, so it is
-    stripped exactly once, and only when a non-empty base survives —
-    ``__A8`` on its own is a whole name, not a suffix.
+    Verilator appends a mangled suffix to parameterised modules (`ip_async_fifo__DB13`),
+    while the graph uses source names. One trailing `__<alnum>` group is stripped, and
+    only when a non-empty base remains. Callers must try exact equality first (see
+    `_design_entries`), because a real `axi__lite` would strip to `axi`.
 
-    A module a project really did call ``axi__lite`` strips to ``axi``,
-    which is why every caller must try exact equality first (see
-    :func:`_design_entries`); a real name then beats any stripped near
-    miss.
-
-    This is the python end of a wire whose other end is the
-    ``module-names`` marker block in ``rtl_buddy/hub/cov_page.html``
-    (``baseModuleName`` / ``resolveModuleName``). The two must agree: if
-    one changes, the other changes with it.
+    The JS counterpart is the `module-names` block in `rtl_buddy/hub/cov_page.html`
+    (`baseModuleName`, `resolveModuleName`); keep the two in step.
     """
     text = str(name)
     return _ELABORATION_SUFFIX.sub("", text) or text
 
 
 def _normalize(name: str) -> str:
-    """Casefolded, punctuation-free form: ``A-COV-1`` -> ``acov1``."""
+    """Return the casefolded, punctuation-free form: `A-COV-1` -> `acov1`."""
     return _NON_ALNUM.sub("", str(name).lower())
 
 
 def _affix_variants(name: str) -> set[str]:
-    """Normalized forms of ``name`` with a ``cov``-ish affix removed.
+    """Return normalized forms of `name` with a `cov`-like affix removed.
 
-    Applied to the **observed** label only. A declared id is what a
-    human wrote in ``specs.yaml`` and is matched verbatim; it is the SVA
-    label that conventionally wears a ``cov_``/``_cov`` decoration, and
-    stripping affixes off both sides would let ``SHARED-COV`` and
-    ``SHARED`` collide as if they were the same item.
+    Applied only to the observed label; stripping both sides would let `SHARED-COV` and
+    `SHARED` collide.
     """
     variants: set[str] = set()
     tail = str(name).rsplit(".", 1)[-1]
@@ -202,11 +116,10 @@ class CoverageJoin:
     """One coverage join, ready to be folded into the overlay.
 
     Attributes:
-      block (dict): the overlay's ``coverage`` block.
-      per_test (dict): test node id -> that test's coverage scalars.
-      problems (list[dict]): why coverage could not be joined, if it
-        could not. Empty and ``block is None`` together mean "no
-        coverage artefacts on this tree", which is not an error.
+      block: The overlay's `coverage` block.
+      per_test: Test node id -> that test's coverage scalars.
+      problems: Why coverage could not be joined. Empty problems with `block is None`
+        means the tree has no coverage artefacts, which is not an error.
     """
 
     block: dict | None = None
@@ -223,10 +136,8 @@ class CoverageJoin:
 
 
 def _declared_items(graph: dict | None) -> tuple[dict, dict]:
-    """``covitem`` nodes and the tests that declare they cover them.
-
-    Returns ``(items, declarers)``: node id -> node, and node id ->
-    sorted test node ids reached backwards along ``covers``.
+    """Return `(items, declarers)`: `covitem` nodes by id, and node id -> sorted ids of the
+    tests reaching it backwards along `covers`.
     """
     items: dict[str, dict] = {}
     declarers: dict[str, list[str]] = {}
@@ -245,14 +156,10 @@ def _declared_items(graph: dict | None) -> tuple[dict, dict]:
 
 
 def _module_nodes(graph: dict | None) -> dict[str, list[str]]:
-    """Design module name -> the graph node ids that carry its coverage.
+    """Return design module name -> the graph node ids that carry its coverage.
 
-    A module id is suite-qualified when two files claimed the same name
-    (``module:blk_a@verif/x``), every instance of a module records the
-    module it instantiates, and a ``model:`` node *is* its module under
-    another name (the ``maps_to`` stitch is an identity) — so one model
-    module can carry several nodes, and the mapping is built once here
-    rather than re-derived by each consumer.
+    One module can carry several nodes: suite-qualified ids (`module:blk_a@verif/x`),
+    instances, and its `model:` node.
     """
     by_module: dict[str, list[str]] = {}
     if not graph:
@@ -280,7 +187,7 @@ def _module_nodes(graph: dict | None) -> dict[str, list[str]]:
 
 
 def _test_node_ids(entries: dict) -> tuple[dict, dict]:
-    """Overlay entries indexed by test name and by ``(suite, name)``."""
+    """Index overlay entries by test name and by `(suite, name)`."""
     by_name: dict[str, list[str]] = {}
     by_suite: dict[tuple[str, str], str] = {}
     for node_id, entry in (entries or {}).items():
@@ -294,12 +201,10 @@ def _test_node_ids(entries: dict) -> tuple[dict, dict]:
 
 
 def _resolve_test_node(row: dict, by_name: dict, by_suite: dict) -> str | None:
-    """The overlay id for one model test row, or ``None``.
+    """Return the overlay id for one model test row, or None.
 
-    The model records the test's name and the suite *file* it ran from;
-    the overlay is keyed by the suite *directory*. A unique name settles
-    it outright — which is every project that does not run the same test
-    name in two suites — and the suite directory disambiguates the rest.
+    The model records the suite file, the overlay keys on the suite directory. A unique
+    test name settles it; otherwise the suite directory disambiguates.
     """
     name = str(row.get("name") or "")
     if not name:
@@ -310,10 +215,9 @@ def _resolve_test_node(row: dict, by_name: dict, by_suite: dict) -> str | None:
     suite = row.get("suite")
     if not suite:
         return None
-    # The model may record the suite file absolutely (a run from a
-    # scratch filesystem) while the overlay keys on the project-relative
-    # directory, so the tail is tried first and the path is peeled from
-    # the left until one of its suffixes is a suite the overlay knows.
+    # The model may record an absolute suite path while the overlay keys on the
+    # project-relative directory, so peel path segments from the left until a known
+    # suite matches.
     parts = [
         p for p in os.path.dirname(str(suite)).replace(os.sep, "/").split("/") if p
     ]
@@ -332,9 +236,8 @@ def _resolve_test_node(row: dict, by_name: dict, by_suite: dict) -> str | None:
 def _match_observed(items: dict, observed: list[dict]) -> tuple[dict, list[dict]]:
     """Correlate observed cover points with declared coverage items.
 
-    Returns ``(hits, undeclared)``: item node id -> the observed records
-    that correlate with it (each stamped with the :data:`MATCH_TIERS`
-    rung it came off), and the records that correlate with nothing.
+    Returns `(hits, undeclared)`: item node id -> matching observed records (each
+    stamped with its `MATCH_TIERS` rung), and the records matching nothing.
     """
     exact: dict[str, list[str]] = {}
     nocase: dict[str, list[str]] = {}
@@ -368,9 +271,7 @@ def _match_observed(items: dict, observed: list[dict]) -> tuple[dict, list[dict]
         if not matched:
             undeclared.append(record)
             continue
-        # A shared item id is declared by several blocks and so has
-        # several nodes; the covers edges fan out the same way, so the
-        # observation lands on all of them rather than on an arbitrary one.
+        # A shared item id has several nodes; the observation lands on all of them.
         for node_id in sorted(set(matched)):
             hits.setdefault(node_id, []).append({**record, "match": tier})
     return hits, undeclared
@@ -383,7 +284,7 @@ def _item_entry(
     declared_by: list[str],
     entries: dict,
 ) -> dict:
-    """One ``covitem:`` node's verdict."""
+    """Return one `covitem:` node's verdict."""
     total = sum(int(record.get("hits") or 0) for record in observed)
     by_test: dict[str, int] = {}
     for record in observed:
@@ -436,15 +337,12 @@ def _undeclared_entry(record: dict) -> dict:
 
 
 def _resolve_module_node(name: str, node_ids: dict, by_base: dict) -> str | None:
-    """The graph's name for one elaborated model module, or ``None``.
+    """Return the graph's name for one elaborated model module, or None.
 
-    **Exact first, stripped second** — the same order, for the same
-    reason, as ``resolveModuleName`` in the ``module-names`` block of
-    ``rtl_buddy/hub/cov_page.html``. It matters: the project template
-    has both an ``ip_cdc_sync`` and an ``ip_cdc_sync__W4`` in one model,
-    and only exact-first keeps the plain one off the parameterised one's
-    node. Ties among stripped candidates go to the first name in sorted
-    order, which is what ``by_base`` was built with.
+    Exact match first, stripped second, as `resolveModuleName` in `cov_page.html` does.
+    A model can hold both `ip_cdc_sync` and `ip_cdc_sync__W4`, and only exact-first
+    keeps the plain one off the parameterised one's node. Ties among stripped candidates
+    go to the first name in sorted order.
     """
     if name in node_ids:
         return name
@@ -452,29 +350,13 @@ def _resolve_module_node(name: str, node_ids: dict, by_base: dict) -> str | None
 
 
 def _design_entries(model: dict, graph: dict | None) -> tuple[dict, list[str]]:
-    """Node id -> module coverage, for every module the model knows.
+    """Return node id -> module coverage for every module the model knows.
 
-    The model spells a module the way the simulator elaborated it and
-    the graph spells it the way the source does; :func:`base_module_name`
-    is the whole difference, and :func:`_resolve_module_node` is the
-    ladder across it. Several elaborations of one module therefore land
-    on one node and are **aggregated** there — counts summed, ratios
-    recomputed from the sums, file and test lists unioned — because the
-    graph has one node for what the simulator compiled twice. The
-    aggregate is computed by
-    :func:`~rtl_buddy.cov.query.modules_coverage` over the whole set at
-    once rather than by adding up per-elaboration totals, which would
-    count each file's module-less line points once per elaboration.
-
-    A module the graph has no node for still gets an entry, keyed by the
-    ``module:<name>`` id the design tier would have emitted: a graph
-    built with ``--no-design`` still carries that id as a dangling
-    ``maps_to`` target, and the pane draws those. The entry is inert
-    when nothing claims the id, and the modules in that position are
-    reported under their **elaborated** name — the name that is in the
-    coverage model and so the name a person can grep for — so "the
-    design tier was never built" is visible rather than silently absent
-    coverage.
+    Several elaborations of one module land on one node and are aggregated there by
+    `cov.query.modules_coverage` over the whole set (summed counts, recomputed ratios,
+    unioned file and test lists). A module with no graph node is keyed by the
+    `module:<name>` id the design tier would have emitted, under its elaborated name, so
+    a missing design tier is visible.
     """
     node_ids = _module_nodes(graph)
     by_base: dict[str, str] = {}
@@ -519,26 +401,31 @@ def join_coverage(
 ) -> CoverageJoin:
     """Join a run's coverage onto the graph's ids.
 
+    Sources, most structured first:
+
+    - `model`: `cov_dir/manifest.json` and the coverage model it names, as written by a
+      coverage-mode run.
+    - `artefacts`: no manifest, but the overlay's test entries recorded per-test
+      `coverage.dat` databases; a model is synthesized from them. This is the `auto`
+      fallback.
+    - `info`: an explicitly named merged LCOV `.info` (`rb graph results --coverage
+      merged.info`), joined by file because LCOV has no module names.
+
     Args:
-      project_root: the project the overlay is being refreshed for.
-      entries: the overlay's ``tests`` block, so per-test scalars can be
-        keyed by test node id and an item can report whether the tests
-        declaring it passed.
-      graph: an already-loaded ``graph.json``. Without one, module
-        coverage is keyed by the ``module:<name>`` id the config tier
-        would emit and no declared items are known.
-      cov_dir / manifest: where to read coverage from. Defaults to the
-        newest ``cov_dir/manifest.json`` under the project.
-      required: when true, a missing or unreadable manifest is reported
-        in ``problems`` instead of being the ordinary "this tree has no
-        coverage" answer.
-      source: :data:`COVERAGE_SOURCE_AUTO` (the manifest's model, then
-        the per-test raw databases the overlay found),
-        :data:`COVERAGE_SOURCE_MODEL` (the manifest's model only), or a
-        path to a merged LCOV ``.info`` file (#390).
+      project_root: Project the overlay is refreshed for.
+      entries: The overlay's `tests` block, for per-test scalars keyed by test node id and
+        for item pass status.
+      graph: A loaded `graph.json`. Without one, module coverage is keyed by
+        `module:<name>` and no declared items are known.
+      cov_dir, manifest: Where to read coverage from. Default to the newest
+        `cov_dir/manifest.json` under the project.
+      required: When true, a missing or unreadable manifest is reported in `problems`
+        instead of meaning "no coverage".
+      source: `COVERAGE_SOURCE_AUTO`, `COVERAGE_SOURCE_MODEL`, or a path to a merged
+        `.info`.
 
     Returns:
-      CoverageJoin: with ``block`` set when coverage was found.
+      A `CoverageJoin` with `block` set when coverage was found.
     """
     entries = entries or {}
     if source not in (COVERAGE_SOURCE_AUTO, COVERAGE_SOURCE_MODEL):
@@ -553,10 +440,8 @@ def join_coverage(
     try:
         ctx = load_cov_context(project_root, cov_dir=cov_dir, manifest=manifest)
     except CovQueryError as exc:
-        # No manifest is where `auto` earns its name: the overlay's own
-        # artefact scan already found each test's `coverage.dat`, and a
-        # model synthesized from those answers the same questions — a
-        # cleaned cov_dir or an out-of-process run is not "no coverage".
+        # No manifest: fall back to the per-test `coverage.dat` files the overlay
+        # already found.
         if (
             source == COVERAGE_SOURCE_AUTO
             and cov_dir is None
@@ -602,19 +487,9 @@ def join_coverage(
 def _safe_join(join, *args, required: bool = False, **kwargs) -> CoverageJoin:
     """Run one join body, degrading any exception to a problems row.
 
-    Past the source load, every walk indexes into a document read off
-    disk. An unreadable manifest already degrades to a problems row; a
-    source that *loads* and is then the wrong shape — truncated writer,
-    hand edit, a schema from a future build — must degrade the same
-    way. `rb graph results` joins coverage by default, so anything
-    raising here would take the whole overlay down with it, statuses
-    included, and coverage is the optional tier.
-
-    ``required`` only annotates the degradation log line — it is never
-    forwarded to ``join``. Each source body decides for itself what a
-    missing source means, and for the ``.info`` body the answer is fixed
-    anyway: a path the user named is required by construction, so a
-    missing one is always a problems row.
+    A source that loads but has the wrong shape must not take down the whole overlay,
+    since coverage is optional. `required` only annotates the log line and is not
+    forwarded to `join`.
     """
     try:
         return join(*args, **kwargs)
@@ -633,11 +508,9 @@ def _safe_join(join, *args, required: bool = False, **kwargs) -> CoverageJoin:
 def _joined(model: dict, meta: dict, *, entries: dict, graph: dict | None):
     """The join proper, once a coverage model exists.
 
-    ``meta`` says where the model came from: the manifest's header
-    fields for the ``model`` source, or just ``{"source": "artefacts"}``
-    for one synthesized from per-test raw databases. The block keeps the
-    manifest keys either way — ``null`` there reads as "this join had no
-    manifest", which beats a shape that changes with the source.
+    `meta` says where the model came from: the manifest header fields, or `{"source":
+    "artefacts"}`. The block keeps the manifest keys either way, with `null` meaning no
+    manifest.
     """
     per_test, unjoined = _per_test_rows(model, meta, entries)
 
@@ -698,7 +571,7 @@ def _joined(model: dict, meta: dict, *, entries: dict, graph: dict | None):
 
 
 def _per_test_rows(model: dict, meta: dict, entries: dict) -> tuple[dict, list[str]]:
-    """Test node id -> that test's coverage scalars, plus the unjoined."""
+    """Return test node id -> coverage scalars, plus the unjoined rows."""
     by_name, by_suite = _test_node_ids(entries)
     per_test: dict[str, dict] = {}
     unjoined: list[str] = []
@@ -720,7 +593,7 @@ def _per_test_rows(model: dict, meta: dict, entries: dict) -> tuple[dict, list[s
 def _fold_item_nodes(
     nodes: dict, items: dict, declarers: dict, matched: dict, entries: dict
 ) -> dict:
-    """Add every ``covitem:`` verdict to ``nodes``; return the tally."""
+    """Add every `covitem:` verdict to `nodes`; return the tally."""
     counts = {STATUS_EXERCISED: 0, STATUS_DECLARED_ONLY: 0}
     for node_id in sorted(items):
         entry = _item_entry(
@@ -736,21 +609,17 @@ def _fold_item_nodes(
 
 
 # ---------------------------------------------------------------------------
-# manifest-less sources (#390)
+# manifest-less sources
 # ---------------------------------------------------------------------------
 
 
 def _artefact_tests(
     project_root: str | os.PathLike, entries: dict
 ) -> list[TestArtefacts]:
-    """Per-test raw databases the overlay's artefact scan already found.
+    """Return one `TestArtefacts` per overlay test entry that recorded a `coverage.dat`.
 
-    One :class:`TestArtefacts` per test entry that recorded a
-    ``coverage.dat`` — the input :func:`rtl_buddy.cov.model.build_model`
-    takes, with the ``[run dir, suite root]`` hint pair the source-path
-    resolver wants. ``suite`` gets a ``/tests.yaml`` tail because the
-    model's test rows record the suite *file* and the resolver peels its
-    directory back off (:func:`_resolve_test_node`).
+    `suite` gets a `/tests.yaml` tail because the model's test rows record the suite
+    file and the resolver peels the directory back off.
     """
     root = str(project_root)
     tests: list[TestArtefacts] = []
@@ -776,12 +645,10 @@ def _artefact_tests(
 
 
 def _synthesized_model(project_root, entries: dict) -> dict | None:
-    """A coverage model built in memory from per-test raw databases.
+    """Build a coverage model in memory from per-test raw databases, or None.
 
-    ``None`` when no entry recorded one, or none of them parsed into a
-    single point. Deterministic in the databases' bytes — no clock, no
-    tool version beyond what :func:`build_model` already stamps — so the
-    overlay stays byte-identical across refreshes with nothing re-run.
+    None when no entry recorded one or none parsed into a point. Output is deterministic
+    in the databases' bytes, so refreshes stay byte-identical.
     """
     tests = _artefact_tests(project_root, entries)
     if not tests:
@@ -793,7 +660,7 @@ def _synthesized_model(project_root, entries: dict) -> dict | None:
 def _join_from_artefacts(
     project_root, *, entries: dict, graph: dict | None
 ) -> CoverageJoin:
-    """The ``auto`` fallback: join a model synthesized from raw dats."""
+    """The `auto` fallback: join a model synthesized from raw databases."""
     model = _synthesized_model(project_root, entries)
     if model is None:
         return CoverageJoin()
@@ -801,32 +668,21 @@ def _join_from_artefacts(
 
 
 # ---------------------------------------------------------------------------
-# merged LCOV .info ingestion (#390)
+# merged LCOV .info ingestion
 # ---------------------------------------------------------------------------
 
 
 def _absolutized_sf(root: Path, info_dir: str, sf: str) -> tuple[str | None, int]:
-    """Project-relative path for one ``SF:`` record, and its rung.
+    """Return `(project-relative path or None, trim depth)` for one `SF:` record.
 
-    Returns ``(project-relative path or None, trim depth)``. The depth is
-    0 for a path believed as written (absolute, or relative to the
-    ``.info``'s own directory) and ``n > 0`` when ``n`` leading segments
-    had to be dropped to re-anchor it on the project root.
+    Depth is 0 for a path believed as written (absolute, or relative to the `.info`'s
+    directory) and `n` when `n` leading segments were dropped to re-anchor it on the
+    project root.
 
-    Deliberately **narrower** than the coverage model's
-    :class:`~rtl_buddy.cov.source_paths.SourcePathResolver`: there is no
-    basename rung. Repo-wide basename matching is exactly how a
-    repo-scope ``--coverage-merge`` mis-rewrote duplicate basenames
-    against the wrong suite root in the first place, so here an ``SF:``
-    is believed only when the path itself reaches a real file — either
-    absolutized against the ``.info``'s own directory (raw verilator
-    records are test-workspace-relative, ``../../../../design/...``) or
-    re-anchored on the project root by trimming leading segments **while
-    at least two segments survive**. That last bound is the rule: the
-    final trim of a full walk would leave a bare basename, and a
-    basename that happens to exist under the root is precisely the
-    silent mis-attribution pothole (a) exists to prevent. A record that
-    reaches nothing is reported, never guessed at.
+    There is deliberately no basename rung, unlike `SourcePathResolver`: repo-wide
+    basename matching mis-attributes duplicate basenames across suites. Trimming stops
+    while at least two segments survive. A record that reaches nothing is reported,
+    never guessed at.
     """
     text = str(sf).strip().replace("\\", "/")
     candidates: list[tuple[Path, int]] = []
@@ -836,8 +692,7 @@ def _absolutized_sf(root: Path, info_dir: str, sf: str) -> tuple[str | None, int
     else:
         candidates.append((Path(info_dir) / text, 0))
         parts = [part for part in text.split("/") if part not in ("", ".")]
-        # `len(parts) - 1` stops before the single-segment candidate: a
-        # bare basename under the root is never evidence.
+        # Stops before the single-segment candidate: a bare basename is never evidence.
         for idx in range(max(len(parts) - 1, 0)):
             candidates.append((root / Path(*parts[idx:]), idx))
     for candidate, depth in candidates:
@@ -847,8 +702,8 @@ def _absolutized_sf(root: Path, info_dir: str, sf: str) -> tuple[str | None, int
                 continue
             return resolved.relative_to(root).as_posix(), depth
         except (OSError, ValueError):
-            # Outside the project root (or unreadable): the graph's
-            # module files are all project-relative, so it cannot match.
+            # Outside the project root or unreadable; graph module files are
+            # project-relative, so it cannot match.
             continue
     return None, 0
 
@@ -856,22 +711,18 @@ def _absolutized_sf(root: Path, info_dir: str, sf: str) -> tuple[str | None, int
 def _parse_info(
     info_path: Path, project_root: str
 ) -> tuple[dict, list[str], list[str]]:
-    """Per-file line/branch points from a merged LCOV ``.info``.
+    """Return per-file line/branch points from a merged LCOV `.info`.
 
-    Returns ``(files, unresolved, reanchored)``: project-relative path ->
-    its ``{"line": {key: hits}, "branch": {key: hits}}`` point maps
-    (summed across duplicate ``SF:`` blocks, LCOV-merge style), the
-    ``SF:`` records no absolutization reached, and the ones that only
-    resolved after leading segments were trimmed — an inferred match, so
-    it is surfaced rather than left indistinguishable from an exact one.
-    Both lists are verbatim and sorted.
+    Returns `(files, unresolved, reanchored)`: project-relative path -> `{"line": {key:
+    hits}, "branch": {key: hits}}` (summed across duplicate `SF:` blocks), the `SF:`
+    records that resolved nowhere, and those that resolved only after trimming, which is
+    an inferred match. Both lists are verbatim and sorted.
     """
     files: dict[str, dict] = {}
     unresolved: set[str] = set()
     reanchored: set[str] = set()
-    # One `.info` repeats an `SF:` per contributing run; resolving costs
-    # up to `len(parts)` stat calls, so each distinct record is resolved
-    # once. `root` is resolved once here rather than per record.
+    # Each distinct `SF:` record is resolved once, since resolving costs several stat
+    # calls.
     root = Path(project_root).resolve()
     seen: dict[str, tuple[str | None, int]] = {}
     info_dir = str(info_path.parent)
@@ -945,18 +796,12 @@ def _sum_file_totals(files_totals: list[dict]) -> dict:
 def _info_design_entries(
     files: dict[str, dict], graph: dict | None
 ) -> tuple[dict, dict]:
-    """Node id -> module coverage joined **by file**, plus bookkeeping.
+    """Return node id -> module coverage joined by file, plus bookkeeping.
 
-    LCOV carries no module names, so the only honest key is the file: a
-    ``module:`` node is covered by exactly the ``.info`` file rows whose
-    resolved path equals the file the node claims. Where the module's
-    name is unambiguous in the graph, the entry fans out to its
-    instances and its ``model:`` alias through :func:`_module_nodes` —
-    the same fan-out the model join does; a name two files claimed
-    (``module:tb_top@verif/x``) stays on its own qualified node, because
-    fanning it out by name would tint the other suite's copy. Two
-    modules sharing one source file both wear that file's numbers — the
-    ``.info`` cannot tell them apart, and ``joined_by: "file"`` says so.
+    A `module:` node is covered by the `.info` rows whose resolved path equals the file
+    the node claims. An unambiguous module name fans out to its instances and `model:`
+    alias; a name two files claimed stays on its own qualified node. Modules sharing one
+    source file share its numbers (`joined_by: "file"`).
     """
     module_nodes: list[tuple[str, str, str]] = []  # (node id, name, file)
     name_count: dict[str, int] = {}
@@ -967,10 +812,8 @@ def _info_design_entries(
         if not node_id.startswith("module:"):
             continue
         name = node_id[len("module:") :].split(QUALIFIER_SEP)[0]
-        # The ambiguity guard counts every `module:` node, not only the
-        # ones carrying a `file`: the fan-out below is over the same
-        # whole population, so a duplicate name whose other copy happens
-        # to have no `file` must not read as unambiguous and tint it.
+        # The ambiguity guard counts every `module:` node, including those without a
+        # `file`, because the fan-out covers the same population.
         name_count[name] = name_count.get(name, 0) + 1
         if file:
             module_nodes.append((node_id, name, str(file)))
@@ -1010,19 +853,11 @@ def _info_design_entries(
 def _join_from_info(
     project_root, info_path: str, *, entries: dict, graph: dict | None
 ) -> CoverageJoin:
-    """Join one merged LCOV ``.info`` onto the graph's ids (#390).
+    """Join one merged LCOV `.info` onto the graph's ids.
 
-    The named file is authoritative for the **design-column heat**; the
-    per-test scalars and the ``covitem:`` verdicts still come from the
-    per-test raw databases when the overlay found any, because a merged
-    ``.info`` carries neither a test column nor SVA cover points. The
-    two known potholes are guarded rather than absorbed: see
-    :func:`_absolutized_sf` for why there is no basename matching, and
-    the ``problems`` rows below for how a wrong-elaboration ``SF:`` set
-    is reported instead of silently mis-attributed. An ``SF:`` that only
-    resolved after leading segments were trimmed is an *inferred* match
-    rather than an exact one, so it is listed in
-    ``summary.reanchored_files`` where a reviewer can see it.
+    The `.info` is authoritative for design-column heat. Per-test scalars and `covitem:`
+    verdicts still come from per-test raw databases when the overlay found any. Files
+    that resolved only after trimming are listed in `summary.reanchored_files`.
     """
     root = str(Path(project_root).resolve())
     info = Path(info_path)
@@ -1046,10 +881,9 @@ def _join_from_info(
         )
 
     design_nodes, bookkeeping = _info_design_entries(files, graph)
-    # A record whose basename names a design file while its path reaches
-    # somewhere (or nowhere) else is the signature of pothole (a): a
-    # repo-scope merge that rewrote duplicate basenames against another
-    # suite's root. Report it — it is one silent mis-attribution away.
+    # A record whose basename names a design file but whose path reaches elsewhere
+    # signals a repo-scope merge that rewrote duplicate basenames against another suite;
+    # report it.
     basenames = bookkeeping["module_basenames"]
     suspects = sorted(
         {
@@ -1097,9 +931,8 @@ def _join_from_info(
             }
         )
 
-    # Badges and covitem verdicts need what the .info does not carry: a
-    # per-test column and SVA cover points. The per-test raw databases
-    # the overlay found supply both, exactly as the `artefacts` source.
+    # The `.info` has no per-test column or cover points; the per-test raw databases
+    # supply them, as for the `artefacts` source.
     model = _synthesized_model(root, entries)
     per_test, unjoined = _per_test_rows(model or {}, {"source": "info"}, entries)
     items, declarers = _declared_items(graph)
@@ -1109,10 +942,9 @@ def _join_from_info(
     if model is not None:
         matched_items, undeclared = _match_observed(items, cover_points(model))
         counts = _fold_item_nodes(nodes, items, declarers, matched_items, entries)
-    # `items` counts what the graph DECLARES; `items_scored` counts what
-    # this source could reach a verdict on. With no per-test databases
-    # the two differ, and without saying so `N items, 0 exercised` reads
-    # as "the run hit none of them" rather than "nothing scored them".
+    # `items` counts declared items; `items_scored` counts those this source could reach
+    # a verdict on. Without per-test databases they differ, and `N items, 0 exercised`
+    # would misread as "none hit".
     items_scored = len(items) if model is not None else 0
 
     block = {
@@ -1183,7 +1015,7 @@ def _relative(project_root, path) -> str:
 
 
 def coverage_block(overlay: dict | None) -> dict | None:
-    """The overlay's ``coverage`` block, or ``None``."""
+    """Return the overlay's `coverage` block, or None."""
     if not overlay:
         return None
     block = overlay.get("coverage")
@@ -1191,12 +1023,10 @@ def coverage_block(overlay: dict | None) -> dict | None:
 
 
 def coverage_for_node(overlay: dict | None, node_id: str) -> dict | None:
-    """The coverage entry for one node id, or ``None``.
+    """Return the coverage entry for one node id, or None.
 
-    The counterpart of
-    :func:`~rtl_buddy.graph.results.overlay_for_node`: a module or
-    instance node gets its ratio, a ``covitem:`` node gets its verdict,
-    and everything else gets nothing.
+    Counterpart of `results.overlay_for_node`: modules and instances get a ratio,
+    `covitem:` nodes a verdict, others nothing.
     """
     block = coverage_block(overlay)
     if block is None:
@@ -1205,12 +1035,9 @@ def coverage_for_node(overlay: dict | None, node_id: str) -> dict | None:
 
 
 def annotate_coverage(graph: dict, overlay: dict | None) -> int:
-    """Attach coverage entries to a graph's nodes **in memory**.
+    """Attach coverage entries to a graph's nodes in memory; return the count.
 
-    Same contract as
-    :func:`~rtl_buddy.graph.results.annotate_graph`: the caller's dict
-    is mutated, the file is not. ``graph.json`` stays hash-stable across
-    coverage runs because coverage never enters it.
+    The caller's dict is mutated, the file is not; `graph.json` stays hash-stable.
     """
     block = coverage_block(overlay)
     if block is None:

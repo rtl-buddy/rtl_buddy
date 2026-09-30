@@ -1,25 +1,11 @@
-"""Tests for #379 — the regression-results overlay.
+"""Tests for the regression-results overlay.
 
-``graph.json`` is the static half of the design knowledge graph and must
-stay byte-stable no matter how many regressions run; everything volatile
-(status, ``run_token``, seed, artefact paths) lives in
-``artefacts/graph/results-overlay.json``, keyed by the same
-``test:<suite dir>#<name>`` node ids the config tier emits.
-
-What these tests pin:
-
-* the overlay is keyed by node id and reports what the *result envelope*
-  says, not what a log looks like;
-* the timestamp comes off the envelope file, never the wall clock, so a
-  refresh with nothing re-run rewrites identical bytes;
-* refreshing the overlay does not touch ``graph.json`` (the acceptance
-  criterion), and does not disturb the build fingerprint either;
-* the join hooks #380 will use — ``load_overlay()`` plus the node-id
-  lookup — resolve a test node to its status and artefacts.
-
-No simulator runs here: result envelopes are written with the same
-``runner.result_io`` writer the runner uses, and the artefact layout is
-fabricated exactly as ``docs/development/guidelines.md`` documents it.
+``graph.json`` stays byte-stable across regressions; volatile data (status,
+``run_token``, seed, artefact paths) lives in ``artefacts/graph/results-overlay.json``,
+keyed by the config tier's ``test:<suite dir>#<name>`` node ids. The overlay
+reports what the result envelope says, takes timestamps from the envelope file
+rather than the wall clock, and never changes ``graph.json`` or the build
+fingerprint. Envelopes are written with the runner's own ``result_io`` writer.
 """
 
 from __future__ import annotations
@@ -54,8 +40,7 @@ from rtl_buddy.runner.test_results import TestResults as _TestResults
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
-# Fixed mtimes so every timestamp in these tests is a property of the
-# files, never of when the suite happened to run.
+# Fixed mtimes make every timestamp a property of the files.
 _T_FIRST = 1_750_000_000
 _T_SECOND = 1_750_000_600
 
@@ -77,8 +62,8 @@ def results_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _results(result: str, desc: str = "ok", compile_record=None) -> _TestResults:
     payload = {"result": result, "desc": desc}
     if compile_record is not None:
-        # The block the dispatch collect folds in from the build envelope,
-        # and the in-process path records straight off the sim (#495).
+        # The compile block that the dispatch collect folds in from the build envelope,
+        # or that the in-process path records off the sim.
         payload["compile"] = compile_record
     return _TestResults(name="t", results=payload)
 
@@ -110,7 +95,7 @@ def _seed_run(
     dispatch: bool = False,
     trace: bool = True,
 ) -> Path:
-    """Fabricate one run's artefacts (and, by default, its envelope)."""
+    """Fabricate one run's artefacts and, by default, its envelope."""
     directory = _artefact_dir(project, test, run_id)
     (directory / "test.log").write_text(f"{status}\n")
     (directory / "test.err").write_text("")
@@ -147,9 +132,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# ---------------------------------------------------------------------------
 # Collection
-# ---------------------------------------------------------------------------
 
 
 def test_entry_is_keyed_by_test_node_id_and_reports_the_envelope(
@@ -178,19 +161,16 @@ def test_entry_is_keyed_by_test_node_id_and_reports_the_envelope(
     }
     assert overlay.with_results() == 1
     assert overlay.status_counts() == {"PASS": 1}
-    # No compile block on an envelope that carries none — the key is absent,
-    # not null, so an existing project's overlay is byte-identical (#495).
+    # An envelope without a compile block leaves the key absent, not null.
     assert "compile" not in entry
 
 
 def test_entry_reports_the_compile_the_envelope_recorded(results_project: Path):
-    """What the compile cost, and which builder ran it (#495).
+    """The entry reports the compile the envelope recorded.
 
-    Dispatched or not, it reaches the overlay the same way: through the
-    envelope's own results dict. `rb graph results` never sees a build job
-    — the build envelope lives under `artefacts/.dispatch/`, which the
-    scanner rejects as a dot-directory — so the collecting head folds the
-    record into each test's envelope and this reads it back.
+    The build envelope lives under the dot-directory `artefacts/.dispatch/`, which
+    the scanner rejects, so the collecting head folds the record into each test's
+    envelope and the overlay reads it from there.
     """
     _seed_run(
         results_project,
@@ -199,8 +179,7 @@ def test_entry_reports_the_compile_the_envelope_recorded(results_project: Path):
             "duration_sec": 42.5,
             "builder": "verilator",
             "reused": False,
-            # An unrecognised key must not travel: the overlay promises a
-            # fixed shape, and a build job's bookkeeping is not part of it.
+            # An unrecognised key must not travel: the overlay has a fixed shape.
             "group": "obj_dir_cafe",
         },
     )
@@ -216,7 +195,7 @@ def test_entry_reports_the_compile_the_envelope_recorded(results_project: Path):
 def test_a_reused_build_reports_zero_duration_not_a_missing_one(
     results_project: Path,
 ):
-    """A short-circuited compile is a fact, not an absence (#495)."""
+    """A reused build reports a zero duration, not a missing one."""
     _seed_run(
         results_project,
         "t_basic",
@@ -231,13 +210,10 @@ def test_a_reused_build_reports_zero_duration_not_a_missing_one(
 def test_an_all_null_compile_block_is_dropped_rather_than_published(
     results_project: Path,
 ):
-    """Three nulls are not a compile record (#495).
+    """An all-null compile block is dropped rather than published.
 
-    A config whose prepare() failed in the build job leaves an all-null
-    `builds` row; its sim job still runs (the build job exits 0) and writes
-    an envelope, so the fold can put an empty record in. The entry-level
-    None filter does not reach nested values, so the key is dropped here
-    instead — absent and "nothing known" are the same statement.
+    The entry-level None filter does not reach nested values, so the key is dropped
+    here.
     """
     _seed_run(
         results_project,
@@ -263,8 +239,7 @@ def test_timestamp_comes_from_the_envelope_not_the_wall_clock(results_project: P
     first = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
     assert first["timestamp"] == "2025-06-15T15:06:40Z"
 
-    # Nothing re-ran, so a refresh must reproduce the same stamp — the
-    # overlay is a function of the files, not of when it was refreshed.
+    # Nothing re-ran, so a refresh reproduces the same stamp.
     again = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
     assert again["timestamp"] == first["timestamp"]
 
@@ -321,8 +296,7 @@ def test_randtest_runs_are_listed_and_the_last_one_is_the_status(
         entry["runs"][0]["artefacts"]["log"]
         == "verif/blk_a/artefacts/t_basic/run-0001/test.log"
     )
-    # The bare test dir is only a container for the run dirs here; it is
-    # not reported as a phantom UNKNOWN run of its own.
+    # The bare test dir is a container, not a phantom UNKNOWN run.
     assert all(r["run_id"] is not None for r in entry["runs"])
 
 
@@ -334,7 +308,7 @@ def test_artefacts_without_an_envelope_are_reported_as_unknown(results_project: 
     assert entry["status"] == UNKNOWN
     assert entry["source"] == FROM_ARTEFACTS
     assert "run_token" not in entry
-    # Still useful: the seed and the paths are there to be replayed from.
+    # The seed and paths are still there to replay from.
     assert entry["randseed"] == 99
     assert entry["artefacts"]["log"].endswith("t_basic/test.log")
     assert entry["timestamp"] == "2025-06-15T15:06:40Z"
@@ -343,8 +317,8 @@ def test_artefacts_without_an_envelope_are_reported_as_unknown(results_project: 
 def test_sanitized_directory_maps_back_to_the_declared_test_name(
     results_project: Path, tmp_path: Path
 ):
-    # A test whose name needs sanitizing on disk, with no envelope to
-    # carry the real name: the suite config is what un-sanitizes it.
+    # A test whose on-disk name is sanitized and has no envelope: the suite config un-
+    # sanitizes it.
     tests_yaml = results_project / "verif" / "blk_a" / "tests.yaml"
     tests_yaml.write_text(
         tests_yaml.read_text()
@@ -369,13 +343,8 @@ def test_sanitized_directory_maps_back_to_the_declared_test_name(
 def test_a_gated_retry_log_is_listed_beside_the_build_s_compile_log(
     results_project: Path,
 ):
-    """Two compile transcripts, two keys (#498).
-
-    `compile.log` is the build job's; `compile.retry.log` is the recompile
-    a gated sim job ran after finding that build's stamp invalid. They fail
-    for different reasons under different reservations, so collapsing them
-    into one key would hand a reader the wrong file.
-    """
+    """`compile.log` (the build job's) and `compile.retry.log` (a gated sim job's
+    recompile) are listed under separate keys."""
     _seed_run(results_project, "t_basic")
     test_dir = _artefact_dir(results_project, "t_basic")
     (test_dir / "compile.log").write_text("the build job's compile\n")
@@ -384,7 +353,7 @@ def test_a_gated_retry_log_is_listed_beside_the_build_s_compile_log(
         "artefacts"
     ]
     assert artefacts["compile_log"] == "verif/blk_a/artefacts/t_basic/compile.log"
-    # Absent until the retry actually happened — a key that is never null.
+    # Absent until the retry happened, never null.
     assert "compile_retry_log" not in artefacts
 
     (test_dir / "compile.retry.log").write_text("the sim job's recompile\n")
@@ -401,13 +370,8 @@ def test_a_gated_retry_log_is_listed_beside_the_build_s_compile_log(
 def test_a_retry_log_is_attributed_only_to_the_run_that_wrote_it(
     results_project: Path,
 ):
-    """Run-specific existence is run-specific evidence (#498 review round 6).
-
-    The retry transcript is run-scoped: only the run whose gated retry
-    failed wrote one. A test-scoped lookup attached the same file to EVERY
-    run-NNNN entry, telling a reader that runs which never retried did.
-    `compile.log` stays test-scoped — one compile feeds every iteration.
-    """
+    """A retry log is attributed only to the run that wrote it, while `compile.log`
+    stays test-scoped."""
     _seed_run(results_project, "t_basic", run_id=1, status="FAIL", when=_T_FIRST)
     _seed_run(results_project, "t_basic", run_id=2, status="PASS", when=_T_SECOND)
     test_dir = _artefact_dir(results_project, "t_basic")
@@ -417,16 +381,15 @@ def test_a_retry_log_is_attributed_only_to_the_run_that_wrote_it(
     )
 
     entry = collect_results(results_project).entries["test:verif/blk_a#t_basic"]
-    # .get: the test-scoped compile.log also gives the bare test dir a
-    # record, whose absent run_id is dropped by the None filter.
+    # .get: the test-scoped compile.log gives the bare test dir a record whose run_id is
+    # dropped by the None filter.
     runs = {r.get("run_id"): r for r in entry["runs"]}
     assert (
         runs[1]["artefacts"]["compile_retry_log"]
         == "verif/blk_a/artefacts/t_basic/run-0001/compile.retry.log"
     )
     assert "compile_retry_log" not in runs[2]["artefacts"]
-    # The base (test-dir) scope holds no retry log either — it is not a
-    # run, and the file is not test-scoped any more.
+    # The base scope holds no retry log either.
     assert "compile_retry_log" not in runs[None]["artefacts"]
     # The test-scoped compile record is still every run's.
     assert (
@@ -446,8 +409,8 @@ def test_non_test_directories_are_not_mistaken_for_tests(results_project: Path):
 
 
 def test_a_directory_with_no_run_evidence_is_not_a_test(results_project: Path):
-    # Another command's per-suite workspace (an fpv.yaml beside the
-    # tests.yaml) holds no envelope and no recognized artefact.
+    # Another command's per-suite workspace holds no envelope and no recognized
+    # artefact.
     workspace = results_project / "verif" / "blk_a" / "artefacts" / "fpv_blk_a"
     (workspace / "sby_workdir").mkdir(parents=True)
     (workspace / "sby_workdir" / "status").write_text("PASS\n")
@@ -467,9 +430,7 @@ def test_a_malformed_envelope_is_a_problem_not_a_crash(results_project: Path):
     assert "verif/blk_a/artefacts/t_basic" in overlay.problems[0]["dir"]
 
 
-# ---------------------------------------------------------------------------
 # Cross-check against the graph
-# ---------------------------------------------------------------------------
 
 
 def _config_graph(project: Path) -> dict:
@@ -490,9 +451,7 @@ def test_cross_check_flags_missing_and_unmatched_ids(results_project: Path):
     assert overlay.missing == ["test:verif/blk_a#t_cocotb"]
 
 
-# ---------------------------------------------------------------------------
 # Writing, loading, joining
-# ---------------------------------------------------------------------------
 
 
 def test_refresh_writes_the_overlay_beside_the_graph(results_project: Path):
@@ -526,7 +485,7 @@ def test_load_overlay_and_node_id_join(results_project: Path):
     _seed_run(results_project, "t_basic", status="FAIL", seed=7)
     refresh_results_overlay(results_project)
 
-    # The three ways #380 can reach it: the file, its directory, the root.
+    # The three ways to reach it: the file, its directory, the root.
     from_file = load_overlay(results_overlay_path(results_project))
     from_dir = load_overlay(results_project / "artefacts" / "graph")
     from_root = load_overlay(results_project)
@@ -536,7 +495,7 @@ def test_load_overlay_and_node_id_join(results_project: Path):
     assert entry["status"] == "FAIL"
     assert entry["randseed"] == 7
     assert entry["artefacts"]["log"].endswith("t_basic/test.log")
-    # Non-test nodes and unknown ids simply have no results.
+    # Non-test nodes and unknown ids have no results.
     assert overlay_for_node(from_file, "module:blk_a") is None
     assert overlay_for_node(None, "test:verif/blk_a#t_basic") is None
 
@@ -569,13 +528,11 @@ def test_load_overlay_rejects_a_foreign_or_missing_file(
     assert load_overlay(broken) is None
 
 
-# ---------------------------------------------------------------------------
 # The graph stays put
-# ---------------------------------------------------------------------------
 
 
 def test_overlay_refresh_leaves_graph_json_hash_stable(results_project: Path):
-    """The acceptance criterion: results never churn the graph."""
+    """Overlay refresh leaves the graph.json hash stable."""
     runner, rb = _runner()
     built = runner.invoke(
         rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
@@ -593,8 +550,7 @@ def test_overlay_refresh_leaves_graph_json_hash_stable(results_project: Path):
     assert _sha256(graph_json) == before
     assert _sha256(meta_json) == meta_before
 
-    # And the next build is still a cache hit: results live outside the
-    # fingerprint's input set, so a regression run cannot invalidate it.
+    # The next build is still a cache hit; results are outside the fingerprint inputs.
     again = runner.invoke(
         rb.app,
         ["--machine", "graph", "build", "--no-design", "--no-extract", "--no-bind"],
@@ -603,9 +559,7 @@ def test_overlay_refresh_leaves_graph_json_hash_stable(results_project: Path):
     assert _sha256(graph_json) == before
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 
 
 def test_cli_machine_envelope(results_project: Path):
@@ -667,9 +621,7 @@ def test_cli_out_dir_and_verif_dir_overrides(results_project: Path, tmp_path: Pa
     assert not (results_project / "artefacts" / "graph" / RESULTS_OVERLAY_NAME).exists()
 
 
-# ---------------------------------------------------------------------------
-# The producer side: every run leaves an envelope behind
-# ---------------------------------------------------------------------------
+# The producer side: every run leaves an envelope
 
 
 class _StubTestCfg:

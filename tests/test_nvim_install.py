@@ -1,8 +1,6 @@
 # rtl-buddy
 #
-# Hermetic tests for tools/nvim_install.py. git is never actually invoked:
-# subprocess.run and shutil.which are stubbed, and $HOME is repointed at a
-# tmp dir so the managed setup file / pack dir land under the test sandbox.
+# Hermetic tests for tools/nvim_install.py: git is never invoked (subprocess.run and shutil.which are stubbed) and $HOME points at a tmp dir.
 import types
 
 import pytest
@@ -13,11 +11,9 @@ from rtl_buddy.tools import nvim_install
 
 @pytest.fixture
 def git_env(tmp_path, monkeypatch):
-    """Repoint $HOME, stub `git`, and record every git invocation.
+    """Repoint $HOME, stub `git`, and yield the list of recorded git commands.
 
-    Yields the list of command-arg lists passed to subprocess.run so tests can
-    assert on the constructed git commands. The stub reports success and does
-    NOT create the pack dir (so each test controls pack-dir existence itself).
+    The stub succeeds and does not create the pack dir, so each test controls its existence.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv(nvim_install._ENV_SOURCE, raising=False)
@@ -37,7 +33,7 @@ def git_env(tmp_path, monkeypatch):
 
 
 def _git_calls(calls):
-    """Map recorded commands to their git subcommand verb for easy assertions."""
+    """Map recorded commands to their git subcommand verb."""
     verbs = []
     for cmd in calls:
         # cmd == ["/usr/bin/git", "<verb>", ...]  or  [..., "-C", dir, "<verb>", ...]
@@ -193,11 +189,7 @@ def test_git_timeout_raises_fatal(tmp_path, monkeypatch):
 
 
 def test_pin_tracks_hub_protocol_version():
-    """Tripwire: the pinned rtl-buddy-nvim ref is vetted against this hub
-    PROTOCOL_VERSION. If the hub bumps the protocol, this fails in CI so the
-    maintainer re-pins (tag a compatible release + bump RTL_BUDDY_NVIM_REF and
-    _PIN_PROTOCOL_VERSION) instead of letting it surface at a user's handshake.
-    """
+    """Tripwire: the pinned rtl-buddy-nvim ref is vetted against this hub PROTOCOL_VERSION. A protocol bump fails here so the maintainer re-pins (bump RTL_BUDDY_NVIM_REF and _PIN_PROTOCOL_VERSION)."""
     from rtl_buddy.hub.protocol import PROTOCOL_VERSION
 
     assert nvim_install._PIN_PROTOCOL_VERSION == PROTOCOL_VERSION, (

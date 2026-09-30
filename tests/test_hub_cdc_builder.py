@@ -1,11 +1,7 @@
-"""Tests for the hub-side cdc → domain_map builder.
+"""Tests for the hub-side cdc -> domain_map builder.
 
-The real path invokes ``rtl-buddy-cdc lint --emit-domain-map`` which
-we don't want to require in CI; the subprocess is mocked. Tests pin:
-
-  - back-pointer resolution (no field, with fragment, by model match)
-  - error paths (file missing, multiple analyses, missing SDC)
-  - subprocess command shape (--top, --sdc, --emit-domain-map, sources)
+``rtl-buddy-cdc lint --emit-domain-map`` is mocked. The tests pin back-pointer
+resolution, error paths and the subprocess command shape.
 """
 
 from __future__ import annotations
@@ -63,12 +59,11 @@ _CDC_YAML_MULTI = dedent("""\
 def _seed_project(
     tmp_path: Path, *, cdc_field: str = "cdc.yaml", top: str | None = None
 ) -> ModelConfig:
-    """Create a project skeleton with models.yaml + cdc.yaml + SDC +
-    one source file, and return a ModelConfig pointing at it (with
-    ``.path`` set so the cdc back-pointer can resolve).
+    """Create a project skeleton (models.yaml, cdc.yaml, SDC, one source).
 
-    ``top`` writes a models.yaml ``top:`` override (#479), which the
-    analysis inherits when the suite re-loads the model."""
+    ``top`` writes a models.yaml ``top:`` override, which the analysis inherits when
+    the suite re-loads the model.
+    """
     (tmp_path / "src").mkdir(parents=True, exist_ok=True)
     (tmp_path / "src" / "a.sv").write_text("module a; endmodule\n")
     (tmp_path / "demo.sdc").write_text(
@@ -104,25 +99,23 @@ def test_domain_map_path_under_cache_dir(tmp_path):
 
 
 def test_build_domain_map_no_cdc_field_returns_none(tmp_path):
-    """A model without a ``cdc:`` back-pointer means "no overlay
-    requested" — the builder returns ``None`` and the caller skips
-    rtl-buddy-view's ``--cdc-annotations`` flag."""
+    """A model without a ``cdc:`` back-pointer requests no overlay, so the builder
+    returns ``None``."""
     model = ModelConfig(name="demo", filelist=[], path=str(tmp_path / "models.yaml"))
     assert cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model) is None
 
 
 def test_build_domain_map_missing_cdc_yaml_raises(tmp_path):
-    """``cdc: cdc.yaml`` set but no such file → fail loud at hub
-    start. Better than silently dropping the overlay."""
+    """``cdc: cdc.yaml`` with no such file fails loudly."""
     model = _seed_project(tmp_path)
-    # Don't write the cdc.yaml file
+    # Don't write the cdc.yaml file.
     with pytest.raises(FatalRtlBuddyError, match="cdc back-pointer.*does not exist"):
         cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
 
 
 def test_build_domain_map_resolves_via_model_match(tmp_path, monkeypatch):
-    """Without a ``#fragment`` the builder picks the analysis whose
-    ``model:`` field matches the model's name."""
+    """Without a ``#fragment`` the builder picks the analysis whose ``model:`` matches
+    the model's name."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -152,14 +145,13 @@ def test_build_domain_map_resolves_via_model_match(tmp_path, monkeypatch):
     assert "demo" in cmd
     assert "--sdc" in cmd
     assert "--emit-domain-map" in cmd
-    # SDC should be the absolute path resolved against cdc.yaml.
+    # The SDC path is absolute, resolved against cdc.yaml.
     sdc_idx = cmd.index("--sdc")
     assert Path(cmd[sdc_idx + 1]) == tmp_path / "demo.sdc"
 
 
 def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplog):
-    """rtl-buddy-cdc has no include-path option, so a model `+incdir+`
-    is reported rather than silently dropped (#519)."""
+    """A model `+incdir+` is reported, since rtl-buddy-cdc has no include-path option."""
     model = _seed_project(tmp_path)
     (tmp_path / "inc").mkdir()
     model.filelist.insert(0, "+incdir+inc")
@@ -190,13 +182,10 @@ def test_build_domain_map_warns_on_filelist_incdirs(tmp_path, monkeypatch, caplo
 
 
 def test_build_domain_map_resolves_a_model_with_a_top_override(tmp_path, monkeypatch):
-    """A models.yaml ``top:`` must not break back-pointer resolution.
+    """A models.yaml ``top:`` does not break back-pointer resolution.
 
-    Analyses are selected by the model they name, not by the module they
-    root at — since #479 the two differ whenever a model declares
-    ``top:``, and matching on ``get_top()`` made ``rb hub`` refuse to
-    start with "no analysis there has model: 'demo'". The lint call still
-    roots at the override.
+    Analyses are selected by the model they name, not by the module they root at.
+    The lint call still roots at the override.
     """
     model = _seed_project(tmp_path, top="axi_xbar")
     (tmp_path / "cdc.yaml").write_text(
@@ -222,8 +211,7 @@ def test_build_domain_map_resolves_a_model_with_a_top_override(tmp_path, monkeyp
 
 
 def test_build_domain_map_honours_fragment(tmp_path, monkeypatch):
-    """``cdc: cdc.yaml#slow`` pins one analysis even when there are
-    multiple candidates."""
+    """``cdc: cdc.yaml#slow`` pins one analysis among several."""
     model = _seed_project(tmp_path, cdc_field="cdc.yaml#slow")
     (tmp_path / "cdc.yaml").write_text(_CDC_YAML_MULTI)
 
@@ -239,17 +227,14 @@ def test_build_domain_map_honours_fragment(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cdc_builder.subprocess, "run", fake_run)
     cdc_builder.build_domain_map(project_root=tmp_path, model_cfg=model)
-    # ``--top`` is "demo" for both analyses, but the analysis NAME
-    # used in error messages / paths comes from the fragment. We
-    # don't expose the analysis name on the command line, so the
-    # easiest signal is that the call didn't raise the
-    # "multiple analyses" error.
+    # ``--top`` is "demo" for both analyses, so the signal is that the "multiple
+    # analyses" error was not raised.
     assert "--emit-domain-map" in captured["cmd"]
 
 
 def test_build_domain_map_ambiguous_without_fragment_raises(tmp_path):
-    """Two analyses, same model, no fragment → tell the user to
-    pick one with a #fragment in models.yaml."""
+    """Two analyses for one model without a fragment raise, telling the user to add a
+    #fragment."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(_CDC_YAML_MULTI)
     with pytest.raises(FatalRtlBuddyError, match="multiple analyses"):
@@ -257,8 +242,7 @@ def test_build_domain_map_ambiguous_without_fragment_raises(tmp_path):
 
 
 def test_build_domain_map_missing_sdc_raises(tmp_path):
-    """Analysis points at an SDC file that doesn't exist → fail loud
-    (vs. letting rtl-buddy-cdc emit a confusing error downstream)."""
+    """An analysis pointing at a missing SDC file raises."""
     model = _seed_project(tmp_path)
     (tmp_path / "demo.sdc").unlink()
     (tmp_path / "cdc.yaml").write_text(
@@ -279,7 +263,7 @@ def test_build_domain_map_missing_executable_raises(tmp_path, monkeypatch):
 
 
 def test_build_domain_map_subprocess_failure_raises(tmp_path, monkeypatch):
-    """Non-zero exit (other than 1, which is "violations") → fail."""
+    """A non-zero exit other than 1 raises."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -295,9 +279,7 @@ def test_build_domain_map_subprocess_failure_raises(tmp_path, monkeypatch):
 
 
 def test_build_domain_map_tolerates_violations_exit_1(tmp_path, monkeypatch):
-    """CDC exit-1 means rule violations were found — the elaboration
-    still succeeded and the domain map was emitted. The hub doesn't
-    care about lint violations; the overlay should work."""
+    """Exit 1 means CDC rule violations; the domain map was still emitted and is used."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -317,10 +299,8 @@ def test_build_domain_map_tolerates_violations_exit_1(tmp_path, monkeypatch):
 
 
 def test_build_domain_map_ignores_a_previous_builds_cache(tmp_path, monkeypatch):
-    """The domain map lives in the persistent `.rtl-buddy/cache/`, so a warm
-    cache outlives the build that filled it. Exit 1 is tolerated (rule
-    violations still emit a map), so a crash exiting 1 must not leave the hub
-    rendering the previous build's map (#469)."""
+    """A stale map in the persistent `.rtl-buddy/cache/` is ignored when the analyzer
+    crashes with exit 1."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -344,8 +324,7 @@ def test_build_domain_map_ignores_a_previous_builds_cache(tmp_path, monkeypatch)
 
 
 def test_build_domain_map_still_accepts_a_map_this_build_wrote(tmp_path, monkeypatch):
-    """The pre-run clear must not break the tolerated exit-1 path: a map the
-    current invocation writes is still returned (#469)."""
+    """A map the current invocation writes is still returned on the tolerated exit 1."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -377,10 +356,8 @@ def _seed_cached_map(tmp_path) -> Path:
 
 
 def test_build_domain_map_clears_the_cache_before_back_pointer_resolution(tmp_path):
-    """The cache is cleared before every step that can fail. A bad `cdc:`
-    back-pointer raises during resolution, and the hub must not go on serving
-    the previous build's overlay for a design state this build never
-    confirmed (#469)."""
+    """The cache is cleared before back-pointer resolution, so a bad `cdc:` never leaves
+    the previous overlay served."""
     model = _seed_project(tmp_path, cdc_field="does_not_exist.yaml")
     stale = _seed_cached_map(tmp_path)
 
@@ -391,7 +368,7 @@ def test_build_domain_map_clears_the_cache_before_back_pointer_resolution(tmp_pa
 
 
 def test_build_domain_map_clears_the_cache_when_the_sdc_is_missing(tmp_path):
-    """Same for SDC validation, which also raises before the analyzer runs."""
+    """The cache is cleared when the SDC is missing."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -408,10 +385,8 @@ def test_build_domain_map_clears_the_cache_when_the_sdc_is_missing(tmp_path):
 def test_build_domain_map_clears_the_cache_when_the_analyzer_is_absent(
     tmp_path, monkeypatch
 ):
-    """And for the analyzer lookup. Unlike the tool flows there is no
-    missing-tool carve-out here: this is the hub's own derived cache, not a
-    user-produced artefact, so a rebuild that cannot run must not leave stale
-    data to be served (#469)."""
+    """The cache is cleared when the analyzer is absent; there is no missing-tool carve-
+    out for this derived cache."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")
@@ -427,8 +402,7 @@ def test_build_domain_map_clears_the_cache_when_the_analyzer_is_absent(
 
 
 def test_build_domain_map_clears_the_cache_when_the_back_pointer_is_gone(tmp_path):
-    """A model that no longer requests an overlay returns None — and must not
-    leave the map an earlier configuration cached (#469)."""
+    """The cache is cleared when the model drops its overlay request."""
     model = ModelConfig(name="demo", filelist=[], path=str(tmp_path / "models.yaml"))
     stale = _seed_cached_map(tmp_path)
 
@@ -439,9 +413,8 @@ def test_build_domain_map_clears_the_cache_when_the_back_pointer_is_gone(tmp_pat
 def test_build_domain_map_clears_a_map_the_analyzer_wrote_then_rejected(
     tmp_path, monkeypatch
 ):
-    """The analyzer writes the map before it finishes, so an unsupported exit
-    code arrives with the file already recreated. Clearing only up front would
-    leave the rejected build's map as what the hub serves (#469)."""
+    """A map the analyzer wrote before an unsupported exit code is cleared afterwards
+    too."""
     model = _seed_project(tmp_path)
     (tmp_path / "cdc.yaml").write_text(
         _CDC_YAML_TEMPLATE.format(analysis_name="demo_cdc")

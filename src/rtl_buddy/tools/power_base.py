@@ -1,12 +1,6 @@
-"""Abstract contract for power-analysis backends.
+"""Abstract base class for power-analysis backends.
 
-Adding a new backend (PrimePower, Joules, Voltus) is:
-  1. Subclass `BasePower` and implement `run()` returning a `PowerResults`.
-  2. Register the class in `runner/power_runner.py::_POWER_BACKENDS`.
-
-Shared resolution logic (activity-source selection, results envelope)
-lives on `config.power.PowerConfig` so every backend agrees on what the
-user asked for and only diverges on tool-specific command emission.
+A backend subclasses `BasePower`, implements `run()` and is registered in `runner/power_runner.py::_POWER_BACKENDS`. Activity-source resolution lives on `config.power.PowerConfig`.
 """
 
 from __future__ import annotations
@@ -33,5 +27,5 @@ class BasePower(ABC):
         self.executable = executable
 
     @abstractmethod
-    def run(self) -> PowerResults:  # pragma: no cover - abstract
+    def run(self) -> PowerResults:  # pragma: no cover
         ...

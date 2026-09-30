@@ -1,10 +1,6 @@
 """CLI smoke tests that exercise the RootConfig load path.
 
-These tests use the ``minimal_project`` fixture (see ``tests/conftest.py``)
-which sets up a valid root_config.yaml + regression.yaml + tests.yaml +
-models.yaml in a temp dir and chdirs into it. They cover the slice of
-``rtl_buddy.py`` and ``config/root.py`` that runs whenever any non-skill,
-non-docs command is invoked.
+They use the ``minimal_project`` fixture (see ``tests/conftest.py``) and cover ``rtl_buddy.py`` and ``config/root.py`` for any command other than skill and docs.
 """
 
 from __future__ import annotations
@@ -29,7 +25,6 @@ def test_test_list_emits_configured_test_names(minimal_project: Path):
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["test", "--list"])
     assert result.exit_code == 0, result.output
-    # tests.yaml declares "basic" and "extra".
     assert "basic" in result.output
     assert "extra" in result.output
 
@@ -59,8 +54,7 @@ def test_test_list_rejects_the_new_filter_option(minimal_project: Path):
 def test_test_list_missing_config_errors_with_exit_2(minimal_project: Path):
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["test", "-c", "does-not-exist.yaml", "--list"])
-    # FatalRtlBuddyError is caught by run(), but CliRunner only sees the
-    # raised exception. Either way, exit code must be non-zero.
+    # CliRunner only sees the raised exception when run() catches FatalRtlBuddyError.
     assert result.exit_code != 0
 
 
@@ -89,11 +83,9 @@ def test_builder_override_validation_against_root_config(minimal_project: Path):
     """``-B <name>`` is validated against builders declared in root_config.yaml."""
     runner, rb = _runner()
 
-    # Valid builder name from root_config.yaml: "stub".
     result_ok = runner.invoke(rb.app, ["-B", "stub", "test", "--list"])
     assert result_ok.exit_code == 0, result_ok.output
 
-    # Unknown builder name should fail validation in cb_builder.
     result_bad = runner.invoke(rb.app, ["-B", "not-a-builder", "test", "--list"])
     assert result_bad.exit_code != 0
     assert (
@@ -103,7 +95,7 @@ def test_builder_override_validation_against_root_config(minimal_project: Path):
 
 
 def test_discover_rtl_builder_names_from_real_root_config(minimal_project: Path):
-    """The static discovery helper should find the builder declared in the fixture."""
+    """Static discovery finds the builder declared in the fixture."""
     from rtl_buddy.config.root import RootConfig
 
     names = RootConfig.discover_rtl_builder_names()
@@ -111,7 +103,7 @@ def test_discover_rtl_builder_names_from_real_root_config(minimal_project: Path)
 
 
 def test_filelist_with_strip_and_deduplicate(minimal_project: Path):
-    """Exercise the strip/deduplicate post-processing in VlogFilelist."""
+    """Exercise strip/deduplicate post-processing in VlogFilelist."""
     runner, rb = _runner()
     out = minimal_project / "stripped.f"
     result = runner.invoke(
@@ -128,12 +120,11 @@ def test_filelist_with_strip_and_deduplicate(minimal_project: Path):
     )
     assert result.exit_code == 0, result.output
     text = out.read_text()
-    # With --strip, leading "-y "/"+incdir+" options are removed; the bare path remains.
     assert "example.sv" in text
 
 
 def test_root_config_resolves_from_nested_cwd(minimal_project: Path, monkeypatch):
-    """RootConfig discovery should walk up from a nested working directory."""
+    """RootConfig discovery walks up from a nested working directory."""
     nested = minimal_project / "src"
     monkeypatch.chdir(nested)
     runner, rb = _runner()
@@ -145,15 +136,8 @@ def test_root_config_resolves_from_nested_cwd(minimal_project: Path, monkeypatch
 
 
 def test_test_list_skips_root_config_load(minimal_project: Path):
-    """``rb test --list`` should not require a valid root_config.yaml.
-
-    Per #67, list-only invocations are metadata-only — they should run
-    against the suite config alone and skip RootConfig, builder, and
-    CoverageReporter setup.
-    """
-    # Corrupt root_config.yaml: replace the configured builder name with
-    # one that does not exist in cfg-rtl-builder, which would normally
-    # fail platform/builder selection during RootConfig load.
+    """``rb test --list`` needs no valid root_config.yaml, builder or CoverageReporter setup."""
+    # Name a builder that does not exist in cfg-rtl-builder, which would fail platform selection on a full load.
     rc_path = minimal_project / "root_config.yaml"
     rc_path.write_text(
         rc_path.read_text().replace('builder: "stub"', 'builder: "absent"')
@@ -168,9 +152,7 @@ def test_test_list_skips_root_config_load(minimal_project: Path):
 def test_machine_mode_emits_json_envelope_on_fatal_error(
     minimal_project: Path, capsys, monkeypatch
 ):
-    """``rb --machine <cmd>`` must emit a JSON envelope on stdout even on
-    FatalRtlBuddyError. Without it, machine consumers see nothing and have
-    to scrape stderr — defeating the point of --machine."""
+    """``rb --machine <cmd>`` emits a JSON envelope on stdout even on FatalRtlBuddyError."""
     import json
 
     rb = RtlBuddy(name="test_cli_machine_err")
@@ -188,14 +170,11 @@ def test_machine_mode_emits_json_envelope_on_fatal_error(
     assert payload["exit_code"] == 2
     assert "error" in payload["payload"]
     assert "bogus_test_name" in payload["payload"]["error"]
-    # Human-readable message still rides on stderr.
     assert "bogus_test_name" in captured.err
 
 
 def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
-    """The git-rev banner is human-only — machine consumers already get
-    git status inside every JSON envelope via meta.git. Suppress the
-    stderr banner so machine output stays tight."""
+    """Machine mode suppresses the human git-rev banner on stderr; the envelope carries git status in meta.git."""
     rb = RtlBuddy(name="test_cli_machine_no_banner")
     saved_argv = sys.argv[:]
     sys.argv = ["rb", "--machine", "test", "--list", "-c", "tests.yaml"]
@@ -214,7 +193,7 @@ def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
 def test_git_metadata_follows_the_project_not_the_cwd(
     minimal_project: Path, tmp_path: Path, monkeypatch
 ):
-    """#581: a job running outside the checkout still reports the project."""
+    """Git metadata follows the project, not the cwd."""
     for args in (
         ["init", "-q", "-b", "trunk", "."],
         ["add", "-A"],
@@ -242,7 +221,7 @@ def test_git_metadata_follows_the_project_not_the_cwd(
 def test_git_metadata_anchors_list_only_commands(
     minimal_project: Path, tmp_path: Path, monkeypatch, capsys
 ):
-    """#581: --list skips root_cfg but still anchors on the command root."""
+    """--list skips root_cfg but still anchors git metadata on the command root."""
     for args in (
         ["init", "-q", "-b", "projbranch", "."],
         ["add", "-A"],
@@ -287,7 +266,7 @@ def test_git_metadata_anchors_list_only_commands(
 def test_git_banner_emitted_once_per_invocation(
     minimal_project: Path, tmp_path: Path, monkeypatch
 ):
-    """A regression loop re-entering the command context must not repeat it."""
+    """Re-entering the command context in a regression loop does not repeat the git banner."""
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
     rb = RtlBuddy(name="test_cli_git_banner_once")
     calls = []
@@ -304,12 +283,7 @@ def test_git_banner_emitted_once_per_invocation(
 
 
 def test_synth_list_skips_root_config_load(tmp_path: Path, monkeypatch):
-    """``rb synth --list`` should not require a valid root_config.yaml.
-
-    A synth.yaml is placed in a fresh directory with no root_config.yaml
-    anywhere up the tree, and ``rb synth --list`` should still emit the
-    configured synthesis names.
-    """
+    """``rb synth --list`` needs no valid root_config.yaml and still emits the configured synthesis names."""
     suite_dir = tmp_path / "synth-suite"
     suite_dir.mkdir()
     (suite_dir / "models.yaml").write_text(
@@ -345,19 +319,11 @@ def test_synth_list_skips_root_config_load(tmp_path: Path, monkeypatch):
     assert "synth_b" in result.output
 
 
-# ---------------------------------------------------------------------------
-# Flow regression manifest resolution (#389)
-#
-# `-c` wins; then ./<flow>_regression.yaml in the invocation cwd; then the
-# flow's cfg-rtl-reg path from root_config.yaml. The graph's config tier
-# discovers manifests through the same machinery, so what these commands
-# find is exactly what `rb graph build` flow-stamps.
-# ---------------------------------------------------------------------------
+# Flow regression manifest resolution: `-c`, then ./<flow>_regression.yaml in the cwd, then the flow's cfg-rtl-reg path.
 
 
 def _declare_cdc_manifest(project: Path, manifest_body: str) -> Path:
-    """Drop a cdc_regression.yaml at lint/cdc/ and declare it in
-    root_config.yaml via cfg-rtl-reg.cdc-reg-cfg-path."""
+    """Drop a cdc_regression.yaml at lint/cdc/ and declare it via cfg-rtl-reg.cdc-reg-cfg-path."""
     lint = project / "lint" / "cdc"
     lint.mkdir(parents=True)
     manifest = lint / "cdc_regression.yaml"
@@ -376,7 +342,7 @@ def _declare_cdc_manifest(project: Path, manifest_body: str) -> Path:
 def test_cdc_regression_falls_back_to_the_configured_manifest_path(
     minimal_project: Path,
 ):
-    """No ./cdc_regression.yaml at the root: the cfg-rtl-reg path is used."""
+    """With no ./cdc_regression.yaml, the cfg-rtl-reg path is used."""
     _declare_cdc_manifest(
         minimal_project, "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
     )
@@ -387,9 +353,8 @@ def test_cdc_regression_falls_back_to_the_configured_manifest_path(
 
 
 def test_a_local_manifest_beats_the_configured_path(minimal_project: Path):
-    """cfg-rtl-reg is the fallback, not an override — same precedence
-    `rb regression` gives ./regression.yaml over reg-cfg-path."""
-    # The configured manifest would fail to load if it were consulted.
+    """A local manifest beats the configured path."""
+    # The configured manifest would fail to load if consulted.
     _declare_cdc_manifest(minimal_project, "rtl-buddy-filetype: not_a_manifest\n")
     (minimal_project / "cdc_regression.yaml").write_text(
         "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
@@ -400,10 +365,7 @@ def test_a_local_manifest_beats_the_configured_path(minimal_project: Path):
 
 
 def test_a_configured_path_that_does_not_exist_is_named(minimal_project: Path):
-    """The configured path is existence-checked before it is returned — the
-    same isfile guard `graph/config_tier.py` applies — so the user sees the
-    path they typed being wrong instead of a load failure for a path they
-    never typed."""
+    """A configured path that does not exist is named in the error, not reported as a load failure."""
     _declare_cdc_manifest(
         minimal_project, "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
     )

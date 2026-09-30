@@ -1,24 +1,17 @@
-"""Tests for #378 — the post-merge binding stage of ``rb graph build``.
+"""Tests for the post-merge binding stage of ``rb graph build``, which links tests to
+the ports they drive and to their golden models.
 
-The stage answers "which tests drive this port?" and "which golden model
-does this test check against?", which is the one question neither the
-design tier (it has never heard of Python) nor the config tier (it has
-never heard of ``dut.a``) can answer alone.
+Covered layers:
 
-Three layers are covered here:
+- the scanner (:func:`~rtl_buddy.graph.binding.scan_python_source`), which needs no
+  project
+- :func:`~rtl_buddy.graph.binding.bind_python` over a hand-built merged graph:
+  confidence rules and the extractor hand-off
+- ``build_graph`` end to end on a cocotb-shaped project with ``rtl-buddy-view``
+  stubbed
 
-* the scanner (:func:`~rtl_buddy.graph.binding.scan_python_source`) —
-  pure, no project needed;
-* :func:`~rtl_buddy.graph.binding.bind_python` over a hand-built merged
-  graph, which is where the confidence rules and the extractor hand-off
-  live;
-* ``build_graph`` end to end on a real cocotb-shaped project, with
-  ``rtl-buddy-view`` stubbed, mirroring the template's
-  ``verif/demo_tiny_alu_cocotb/`` suite.
-
-The project is written into ``tmp_path`` rather than kept under
-``tests/fixtures/``: the cocotb modules have to be named ``test_*.py``
-to be realistic, and pytest would collect those.
+The project is written into ``tmp_path`` because pytest would collect cocotb
+modules named ``test_*.py`` under ``tests/fixtures/``.
 """
 
 from __future__ import annotations
@@ -49,11 +42,6 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 ALU_PORTS = ("clk", "rst", "op", "a", "b", "y", "zf")
 
 
-# ---------------------------------------------------------------------------
-# Scanner
-# ---------------------------------------------------------------------------
-
-
 def test_scan_finds_dut_accesses_with_lines_and_ignores_look_alikes(tmp_path: Path):
     src = tmp_path / "t.py"
     src.write_text(
@@ -71,9 +59,9 @@ def test_scan_finds_dut_accesses_with_lines_and_ignores_look_alikes(tmp_path: Pa
     )
     scan = scan_python_source(src)
     assert scan.parsed is True
-    # `dut.rst` on line 5, `dut.y` on line 6. The string, the attribute
-    # reached through another object, the private handle attribute and
-    # the handle API attribute are all not signals.
+    # `dut.rst` on line 5, `dut.y` on line 6. The string, the attribute reached
+    # through another object, the private handle attribute and the handle API
+    # attribute are not signals.
     assert scan.accesses == {"rst": 5, "y": 6}
     assert scan.imports == ["cocotb"]
 
@@ -126,11 +114,6 @@ def test_resolve_module_file_handles_modules_and_packages(tmp_path: Path):
     assert resolve_module_file("pkg", [tmp_path]) == tmp_path / "pkg" / "__init__.py"
     assert resolve_module_file("pkg.deep", [tmp_path]) == tmp_path / "pkg" / "deep.py"
     assert resolve_module_file("nope", [tmp_path]) is None
-
-
-# ---------------------------------------------------------------------------
-# bind_python() over a hand-built merged graph
-# ---------------------------------------------------------------------------
 
 
 def _merged(nodes: list[dict], links: list[dict]) -> dict:
@@ -254,8 +237,8 @@ def test_dut_access_that_is_no_port_is_inferred_and_flagged(tmp_path: Path):
 
     drives = {x["target"]: x for x in _links_of(stage, "drives")}
     assert drives["port:alu.a"]["confidence"] == "EXTRACTED"
-    # A bus wrapper is not a port of the toplevel; the edge survives so
-    # the access is visible, tagged so a consumer can filter it out.
+    # A bus wrapper is not a port of the toplevel; the edge survives, tagged so a
+    # consumer can filter it out.
     assert drives["port:alu.bus"]["confidence"] == "INFERRED"
     assert drives["port:alu.bus"]["resolved"] is False
     assert stage.extracted == 1 and stage.inferred == 1
@@ -286,9 +269,8 @@ def test_without_a_design_tier_every_drive_is_inferred(tmp_path: Path):
         "import cocotb\n\n@cocotb.test()\nasync def t(dut):\n    dut.a.value = 1\n",
     )
     nodes, links = _config_nodes()
-    # No `port:` nodes at all — `rb graph build --no-design`, or a model
-    # the viewer could not export. There is nothing to check the name
-    # against, so the edge cannot claim to be EXTRACTED.
+    # No `port:` nodes (`rb graph build --no-design`, or a model the viewer could not
+    # export): the name cannot be checked, so the edge cannot claim to be EXTRACTED.
     stage = bind_python(_merged(nodes, links), tmp_path)
 
     drive = _links_of(stage, "drives")[0]
@@ -319,14 +301,12 @@ def test_accesses_reached_through_a_helper_carry_via(tmp_path: Path):
     helper = PY_NODE_PREFIX + "verif/alu/_common.py"
     drives = {(x["source"], x["target"]): x for x in _links_of(stage, "drives")}
 
-    # First-hand: the helper really does say `dut.a`.
+    # First-hand: the helper itself says `dut.a`.
     assert (helper, "port:alu.a") in drives
     assert "via" not in drives[(helper, "port:alu.a")]
     # Inherited by the cocotb module through the import, and labelled so.
     assert drives[(entry, "port:alu.a")]["via"] == "verif/alu/_common.py"
-    # Its own access is not marked via anything.
     assert "via" not in drives[(entry, "port:alu.op")]
-    # And the helper is reachable, which is what `imports` is for.
     assert (entry, helper) in {
         (x["source"], x["target"]) for x in _links_of(stage, "imports")
     }
@@ -362,10 +342,9 @@ def test_golden_model_import_becomes_checks_against(tmp_path: Path):
     assert len(checks) == 1
     assert checks[0]["source"] == "test:verif/alu#t_cocotb"
     assert checks[0]["target"] == "golden:spec/alu/alu_model.py"
-    # Reached through the helper, not imported by the test itself.
+    # Reached through the helper, not imported by the test.
     assert checks[0]["via"] == "verif/alu/_common.py"
-    # A golden model is not turned into a python_module node — the config
-    # tier already owns it.
+    # A golden model does not become a python_module node; the config tier owns it.
     assert PY_NODE_PREFIX + "spec/alu/alu_model.py" not in {
         n["id"] for n in stage.graph["nodes"]
     }
@@ -404,9 +383,8 @@ def test_an_existing_python_node_id_is_reused_instead_of_synthesized(tmp_path: P
         "import cocotb\n\n@cocotb.test()\nasync def t(dut):\n    dut.a.value = 1\n",
     )
     nodes, links = _config_nodes()
-    # What the extractor contributes: its own id for the same file. The stage
-    # matches on `file`, so it must bind to that node rather than invent
-    # a second one for the same module.
+    # The stage matches the extractor's node on `file` and binds to it rather than
+    # inventing a second node.
     nodes = nodes + [
         {
             "id": "pymod:verif/alu/test_alu.py",
@@ -442,8 +420,8 @@ def test_a_missing_cocotb_module_still_binds_and_is_reported(tmp_path: Path):
             "expected": "verif/alu/test_typo.py",
         }
     ]
-    # The test is still tied to the DUT: a typo'd module name should be
-    # visible in the graph, not erase the binding.
+    # A misspelled module name stays visible in the graph and the test remains tied to
+    # the DUT.
     assert stage.tests == 1
     assert len(_links_of(stage, "binds_to")) == 2
 
@@ -494,16 +472,6 @@ def test_an_import_cycle_terminates(tmp_path: Path):
     stage = bind_python(_merged(nodes + _design_nodes(), links), tmp_path)
     assert stage.status == "built"
     assert {x["source"] for x in _links_of(stage, "imports")}
-
-
-# ---------------------------------------------------------------------------
-# DPI binding stitch (rtl-buddy-sch 127)
-#
-# The fixture graphs are handcrafted: released rtl-buddy-sch (v0.5.0)
-# emits no dpi_function nodes yet, so the norm this stage must serve is
-# both shapes — and pinning the node shape here keeps the test
-# independent of any particular extractor release.
-# ---------------------------------------------------------------------------
 
 
 def _dpi_node(c_symbol: str, *, direction: str = "import", sv_name: str | None = None):
@@ -582,9 +550,9 @@ def test_an_exact_dpi_match_suppresses_the_case_similar_one(tmp_path: Path):
 
 
 def test_the_definition_wins_over_the_header_and_the_caller(tmp_path: Path):
-    """The realistic DPI project: a header declares, a .c defines, a
-    driver calls. A whole-word scan matches all three equally, which is
-    an agent being told to read three files to find one implementation."""
+    """A header declares, a .c defines and a driver calls the symbol; only the
+    definition wins.
+    """
     _write(tmp_path, "verif/alu/dpi/alu_ref.h", "int add_ref(int a, int b);\n")
     _write(
         tmp_path,
@@ -607,8 +575,9 @@ def test_the_definition_wins_over_the_header_and_the_caller(tmp_path: Path):
 
 
 def test_a_declaration_only_match_is_inferred_and_unresolved(tmp_path: Path):
-    """Nothing defines the symbol, so a header prototype is the only
-    evidence there is — worth an edge, not worth EXTRACTED."""
+    """Nothing defines the symbol, so a header prototype is the only evidence: an
+    edge, but not EXTRACTED.
+    """
     _write(tmp_path, "verif/alu/dpi/alu_ref.h", "int add_ref(int a, int b);\n")
     stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
 
@@ -633,8 +602,9 @@ def test_a_python_definition_is_extracted_but_a_call_is_not(tmp_path: Path):
 
 
 def test_a_dpi_node_without_a_direction_binds_nothing(tmp_path: Path):
-    """The extraction half is unreleased: a looser future extractor that
-    omits `direction` must under-claim, not silently bind exports."""
+    """A DPI node without `direction` binds nothing, so a looser extractor
+    under-claims instead of binding exports.
+    """
     _write(
         tmp_path,
         "verif/alu/dpi/alu_ref.c",
@@ -660,8 +630,9 @@ def test_the_dpi_not_found_warning_has_a_human_message():
 
 
 def test_an_exported_dpi_function_is_not_bound(tmp_path: Path):
-    """An export is implemented on the SV side; a C file naming its
-    symbol is a caller, not an implementation."""
+    """An exported function is implemented on the SV side; a C file naming its symbol
+    is a caller.
+    """
     _write(tmp_path, "verif/alu/dpi/caller.c", "void sv_notify(void);\n")
     stage = bind_python(
         _merged([_dpi_node("sv_notify", direction="export")], []), tmp_path
@@ -673,9 +644,7 @@ def test_an_exported_dpi_function_is_not_bound(tmp_path: Path):
 
 
 def test_dpi_symbol_in_a_golden_model_lands_on_the_golden_node(tmp_path: Path):
-    """The loop the issue is named for: a DPI-bound reference model
-    under spec/ already has a golden_model node, so the edge reuses it
-    instead of inventing a second identity for the file."""
+    """A DPI symbol in a golden model reuses the existing golden_model node."""
     _write(
         tmp_path,
         "spec/alu/alu_model.py",
@@ -694,7 +663,7 @@ def test_dpi_symbol_in_a_golden_model_lands_on_the_golden_node(tmp_path: Path):
     assert edge["source"] == "dpi:add_ref"
     assert edge["target"] == "golden:spec/alu/alu_model.py"
     assert edge["confidence"] == "EXTRACTED"
-    # The existing node was reused: the stage synthesized nothing.
+    # The existing node was reused; the stage synthesized nothing.
     assert stage.graph["nodes"] == []
 
 
@@ -719,9 +688,9 @@ def test_an_unmatched_dpi_symbol_is_recorded_not_raised(tmp_path: Path):
 
 
 def test_a_graph_without_dpi_nodes_degrades_to_the_cocotb_pass(tmp_path: Path):
-    """Graphs from released rtl-buddy-sch (v0.5.0: no dpi_function
-    vocabulary) are the norm — the DPI pass must be a silent no-op on
-    them, not a requirement on the extractor version."""
+    """A graph without dpi_function nodes (released rtl-buddy-sch v0.5.0) gets the
+    cocotb pass only, with no error.
+    """
     _write(tmp_path, "verif/alu/dpi/alu_ref.c", "int add_ref(int a, int b);\n")
     _write_cocotb_module(
         tmp_path,
@@ -739,8 +708,9 @@ def test_a_graph_without_dpi_nodes_degrades_to_the_cocotb_pass(tmp_path: Path):
 
 
 def test_dpi_binding_runs_without_any_cocotb_test(tmp_path: Path):
-    """The DUT of a pure-SV bench with a DPI checker has no cocotb
-    entry at all; the stage must not skip past the DPI nodes."""
+    """A pure-SV bench with a DPI checker has no cocotb entry, and the DPI nodes are
+    still bound.
+    """
     _write(
         tmp_path,
         "verif/alu/dpi/alu_ref.c",
@@ -779,11 +749,6 @@ def test_dpi_binding_output_is_deterministic(tmp_path: Path):
     first = bind_python(merged, tmp_path).graph
     second = bind_python(merged, tmp_path).graph
     assert json.dumps(first) == json.dumps(second)
-
-
-# ---------------------------------------------------------------------------
-# build_graph() end to end
-# ---------------------------------------------------------------------------
 
 
 _ALU_SV = """\
@@ -939,13 +904,13 @@ def test_end_to_end_binds_the_cocotb_suite_to_the_dut(
     helper = PY_NODE_PREFIX + "verif/alu_cocotb/_alu_common.py"
     assert {entry, helper} <= node_ids
 
-    # Acceptance: the test reaches the DUT module in two hops.
+    # The test reaches the DUT module in two hops.
     binds = {(x["source"], x["target"]) for x in links if x["type"] == "binds_to"}
     assert (test_id, entry) in binds
     assert (entry, "module:alu") in binds
 
-    # Acceptance: dut.a / dut.b / dut.op resolve to real port nodes, even
-    # though only the helper touches them.
+    # dut.a, dut.b and dut.op resolve to real port nodes even though only the helper
+    # touches them.
     drives = [x for x in links if x["type"] == "drives"]
     for signal in ("a", "b", "op"):
         target = f"port:alu.{signal}"
@@ -954,8 +919,7 @@ def test_end_to_end_binds_the_cocotb_suite_to_the_dut(
         assert hits and all(x["confidence"] == "EXTRACTED" for x in hits)
         assert any(x["source"] == entry for x in hits)
 
-    # Acceptance: the golden model the suite scoreboards against, reached
-    # through the helper's sys.path insert.
+    # The golden model is reached through the helper's sys.path insert.
     checks = [x for x in links if x["type"] == "checks_against"]
     assert [(x["source"], x["target"]) for x in checks] == [
         (test_id, "golden:spec/alu/alu_model.py")
@@ -975,8 +939,8 @@ def test_binding_stage_is_recorded_in_the_meta_sidecar_and_its_own_file(
     assert meta["binding"]["status"] == "built"
     assert meta["binding"]["python_modules"] == 2
 
-    # The stage's own contribution is kept beside the merged file, apart
-    # from the extractor's `binding/graph.json`, so a surprise is traceable.
+    # The stage's output is kept beside the merged file, apart from the extractor's
+    # `binding/graph.json`.
     own = build.graph_path.parent / "bind" / "graph.json"
     assert own.is_file()
     payload = json.loads(own.read_text())
@@ -1004,8 +968,8 @@ def test_editing_a_cocotb_module_invalidates_the_cache_without_extractor(
     first = _build(cocotb_project, view)
     assert _build(cocotb_project, view).unchanged is True
 
-    # The stage reads verif Python whether or not an extractor is installed,
-    # so those files have to be in the fingerprint.
+    # The stage reads verif Python with or without an extractor, so those files are in
+    # the fingerprint.
     module = cocotb_project / "verif" / "alu_cocotb" / "test_alu.py"
     module.write_text(module.read_text() + "    dut.zf.value = 0\n")
     second = _build(cocotb_project, view)
@@ -1014,11 +978,8 @@ def test_editing_a_cocotb_module_invalidates_the_cache_without_extractor(
 
 
 def _fake_extractor(tmp_path: Path) -> Path:
-    """Stub extractor claiming the cocotb module under its own id.
-
-    The point of the stub is the ``file`` attribute: that is the only
-    thing the two tools agree on, and it is what the binding stage keys
-    the hand-off on.
+    """Stub extractor claiming the cocotb module under its own id, keyed on the
+    ``file`` attribute the two tools share.
     """
     graph = {
         "directed": True,
@@ -1081,7 +1042,7 @@ def test_extractor_and_the_binding_stage_share_one_node_per_file(
     graph = json.loads(build.graph_path.read_text())
     node_ids = {n["id"] for n in graph["nodes"]}
 
-    # The extractor's id is adopted; no second node for the same file.
+    # The extractor's id is adopted; there is no second node for the same file.
     assert "pymod:verif/alu_cocotb/test_alu.py" in node_ids
     assert PY_NODE_PREFIX + "verif/alu_cocotb/test_alu.py" not in node_ids
     assert build.binding["reused_node_ids"] == 1
@@ -1090,8 +1051,8 @@ def test_extractor_and_the_binding_stage_share_one_node_per_file(
     }
     assert ("pymod:verif/alu_cocotb/test_alu.py", "module:alu") in binds
 
-    # The binding tier has two producers but is still one tier, and the
-    # cross-check sees the stage's file too, so it must still agree.
+    # The binding tier has two producers but is one tier, and the cross-check must
+    # still agree.
     assert build.merge["tiers"].count("binding") == 1
     assert build.merge["extract_cross_check"]["status"] == "ok"
 

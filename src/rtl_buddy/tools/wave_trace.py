@@ -3,19 +3,13 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Shared waveform-trace discovery for `rb wave` and `rb axi-profile`.
+"""Waveform-trace discovery shared by `rb wave` and `rb axi-profile`.
 
-Both commands read the per-test dump produced by a debug sim, which lands
-under ``artefacts/<test>/``. The filename depends on which builder ran:
-Verilator dumps ``dump.fst``, Icarus (and other plain-VCD dumpers)
-``dump.vcd``, and VCS ``vcdplus.vpd``. Resolution picks the newest existing
-candidate so the consumer follows whichever builder ran last.
+Finds the per-test dump under ``artefacts/<test>/`` (``dump.fst``, ``dump.vcd`` or ``vcdplus.vpd``, depending on the builder) and picks the newest.
 """
 
 import os
 
-# Named in errors in this order; the actual pick is by newest mtime so the
-# consumer follows the builder that ran most recently.
 TRACE_CANDIDATES = ("dump.fst", "dump.vcd", "vcdplus.vpd")
 
 

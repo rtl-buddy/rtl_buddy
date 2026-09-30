@@ -1,13 +1,8 @@
-"""Stage checkpoints and progress for `rb pnr` runs (#653).
+"""Stage checkpoints and progress events for `rb pnr` runs with `checkpoints:` set.
 
-A routing run that hits a scheduler wall limit used to leave nothing but its
-log: the flow writes its only DEF / ODB after detailed routing. With
-`checkpoints:` set in pnr.yaml the generated flow also writes a stage-named
-database at each stage boundary and appends a JSON-lines event as every flow
-step starts and ends, so the stage a killed run was in and the physical
-state it had reached both survive it.
+The generated flow writes a stage-named database at each stage boundary and appends a JSON-lines event as each flow step starts and ends, so a killed run leaves its last stage and physical state behind.
 
-Layout, under the run's artefact directory::
+Layout under the run's artefact directory::
 
     checkpoints/
       latest -> 20260925T101500-4242      # the run that started last
@@ -20,32 +15,9 @@ Layout, under the run's artefact directory::
         04_global_route.{odb,def,sdc,guide,segments}
         export/03_cts/...                 # `rb pnr-export --checkpoint`
 
-Three rules hold it together.
-
-- **A checkpoint is never a final output.** The files carry the stage in
-  their name and live below ``checkpoints/``, which the up-front clear and
-  `rb power`'s fixed ``<top>.routed.odb`` path never reach. The routed
-  outputs keep their own lifecycle — cleared up front, cleared again on any
-  failure (#469) — untouched by this.
-- **One directory per run, never reused.** Checkpoints exist to survive a
-  failure, so a run cannot clear them the way it clears its routed outputs;
-  instead each run writes into its own run-id directory, and a later run
-  neither overwrites nor deletes an earlier one's. The ``latest`` pointer is
-  what says which run is current: it is removed first thing by every
-  `rb pnr` run (checkpointed or not) and re-pointed by a checkpointed run
-  only as it launches OpenROAD, so an older run's files can never read as the
-  current run's.
-- **Python records identity, Tcl records events.** The manifest — hashes of
-  every input and of the generated `pnr.tcl`, the OpenROAD version, the
-  requested stages — is written once before OpenROAD starts and completed
-  after it exits. The Tcl side only appends events, closing the file after
-  each, so the progress file is complete up to the moment of a kill.
-
-Resume is deliberately not implemented; the manifest is shaped for it. A
-resume from ``04_global_route`` needs the segments as well as the guides:
-`read_guides` restores the guides but explicitly not the parasitics a
-global-route estimate is made from, which only `read_global_route_segments`
-brings back.
+- Checkpoints are never final outputs. They live below `checkpoints/`, out of reach of the up-front clear and of `rb power`'s `<top>.routed.odb` path.
+- Each run writes its own run-id directory, which later runs never overwrite or delete. Every `rb pnr` run removes `latest` first; a checkpointed run re-points it when it launches OpenROAD.
+- Python writes the manifest (input hashes, `pnr.tcl` hash, OpenROAD version, requested stages) before OpenROAD starts and completes it after exit. Tcl only appends events, closing the file after each, so `progress.jsonl` is complete up to a kill.
 """
 
 import json
@@ -67,21 +39,15 @@ CHECKPOINTS_DIRNAME = "checkpoints"
 LATEST_NAME = "latest"
 MANIFEST_NAME = "manifest.json"
 PROGRESS_NAME = "progress.jsonl"
-#: Where `rb pnr-export --checkpoint` puts what it exports, inside the
-#: checkpoint's run directory — never beside the routed outputs, where a
-#: pre-route layout would sit at the path a routed one is read from.
+#: Exports go inside the run directory so a pre-route layout never lands at a routed output's path.
 EXPORT_DIRNAME = "export"
 
-#: Bumped when the manifest or the progress events change incompatibly.
+#: Bumped on an incompatible manifest or event change.
 CHECKPOINT_SCHEMA = 1
 
 _TCL_FILE = "checkpoints.tcl"
 
-#: stage -> (file index, flow command, trace edge). A stage's checkpoint is
-#: written on the way into the first command of the *next* stage, or — for
-#: global routing — on a clean exit from the router, so the database is
-#: exactly the one the stage left. Keyed on commands rather than on lines
-#: of the template so the flow's stage sequence stays the template's alone.
+#: stage -> (file index, flow command, trace edge). A stage is written on entering the next stage's first command, or for global routing on leaving the router, so the database is exactly what the stage left.
 STAGE_ANCHORS = {
     "floorplan": ("01", "global_placement", "enter"),
     "place": ("02", "clock_tree_synthesis", "enter"),
@@ -89,9 +55,7 @@ STAGE_ANCHORS = {
     "global_route": ("04", "global_route", "leave"),
 }
 
-#: The flow commands whose start and end are progress events. A command the
-#: flow does not call just produces no event; one OpenROAD does not have is
-#: skipped when the traces are armed.
+#: Flow commands whose start and end are progress events.
 PROGRESS_STEPS = (
     "link_design",
     "read_sdc",
@@ -110,16 +74,14 @@ PROGRESS_STEPS = (
     "filler_placement",
 )
 
-#: Why no checkpoint carries a congestion grid. A reader must see
-#: "unavailable", never an empty grid that reads as zero congestion.
+#: Why a checkpoint has no congestion grid; readers must see "unavailable", not an empty grid that reads as zero congestion.
 _CONGESTION_PRE_ROUTE = "no global route at this stage"
 _CONGESTION_GR = (
     "the flow's global_route writes no congestion report; the route guides "
     "and segments are the retained routing state"
 )
 
-#: A run id is a timestamp and a pid, optionally de-duplicated: one safe
-#: path segment, sortable by start time.
+#: Run id: timestamp and pid, optionally de-duplicated; one safe path segment.
 _RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-\d+(?:-\d+)?$")
 
 
@@ -132,12 +94,7 @@ def latest_pointer(artefact_dir: str) -> str:
 
 
 def allocate_run_dir(artefact_dir: str, *, now: datetime | None = None) -> str:
-    """Create and return a fresh run directory; never an existing one.
-
-    `os.mkdir` failing on an existing path is the no-overwrite guarantee:
-    a second run that lands on the same id (same second, same pid) takes a
-    suffixed one rather than writing into the first run's checkpoints.
-    """
+    """Create and return a fresh run directory, suffixing the id if it already exists."""
     root = checkpoints_root(artefact_dir)
     os.makedirs(root, exist_ok=True)
     stamp = (now or datetime.now()).strftime("%Y%m%dT%H%M%S")
@@ -154,7 +111,7 @@ def allocate_run_dir(artefact_dir: str, *, now: datetime | None = None) -> str:
 
 
 def _tcl_quote(value: str) -> str:
-    """A Tcl double-quoted word with every substitution suppressed."""
+    """Return a Tcl double-quoted word with substitutions suppressed."""
     escaped = value.replace("\\", "\\\\")
     for char in ("$", "[", "]", '"'):
         escaped = escaped.replace(char, "\\" + char)
@@ -162,11 +119,9 @@ def _tcl_quote(value: str) -> str:
 
 
 def render_tcl_block(run_dir: str, stages: tuple[str, ...]) -> str:
-    """The Tcl the flow template splices in when checkpoints are on.
+    """Return the Tcl block the flow template splices in when checkpoints are on.
 
-    Carries its own leading newline, like the other optional blocks, so the
-    substitution point is an existing blank line of the template and a run
-    without checkpoints renders byte-identically.
+    The block carries its own leading newline so a run without checkpoints renders the template byte-identically.
     """
     anchors = " ".join(
         "{" + f"{stage} {{{' '.join(STAGE_ANCHORS[stage])}}}" + "}" for stage in stages
@@ -192,15 +147,12 @@ def _append_event(run_dir: str, event: str, **fields) -> None:
 
 
 def read_progress(run_dir: str) -> list[dict]:
-    """Every complete event in the run's progress file, in order.
+    """Return the complete events in the run's progress file, in order.
 
-    A line that does not parse — the tail of a write a kill interrupted —
-    is dropped rather than failing the reader: the events before it are
-    exactly what the file exists to keep.
+    A line that does not parse, such as a write a kill interrupted, is dropped.
     """
     try:
-        # Tcl writes the file in the system encoding; a byte that is not
-        # UTF-8 must cost one event's text, not the reader (#653).
+        # Tcl writes the system encoding; errors="replace" keeps a non-UTF-8 byte from failing the read.
         text = Path(run_dir, PROGRESS_NAME).read_text(errors="replace")
     except OSError:
         return []
@@ -216,7 +168,7 @@ def read_progress(run_dir: str) -> list[dict]:
 
 
 def _written_checkpoints(events: list[dict]) -> dict[str, dict]:
-    """stage -> its `checkpoint` event, for checkpoints that completed."""
+    """Map stage to its `checkpoint` event for checkpoints that completed."""
     return {
         str(e.get("stage")): e
         for e in events
@@ -225,10 +177,9 @@ def _written_checkpoints(events: list[dict]) -> dict[str, dict]:
 
 
 def last_step(events: list[dict]) -> dict | None:
-    """The step a run was in when its events stop, and how it stood.
+    """Return `{"step", "status"}` for the step a run was in when its events stop.
 
-    ``{"step": ..., "status": "running" | "ok" | "error"}``: a begin with no
-    end is a step the run never left — the wall-limit case.
+    `status` is `running`, `ok` or `error`; a begin with no end is `running`.
     """
     open_steps: list[str] = []
     last: dict | None = None
@@ -248,7 +199,7 @@ def last_step(events: list[dict]) -> dict | None:
 
 
 def checkpoint_label(stage: str) -> dict:
-    """What a checkpoint is and is not, spelled out for every reader."""
+    """Return the flags stating a checkpoint is not final and whether it is global-routed."""
     global_routed = stage == "global_route"
     return {
         "final": False,
@@ -275,11 +226,9 @@ def begin_run(
     openroad: dict,
     inputs: dict,
 ) -> str:
-    """Write the manifest and the first event, then point ``latest`` here.
+    """Write the manifest and first event, point `latest` here, and return the manifest path.
 
-    Called once the flow script exists and just before OpenROAD starts, so
-    a manifest always describes a run that really launched, and its
-    ``inputs.script`` hash is of the exact `pnr.tcl` OpenROAD was given.
+    Call after the flow script exists and just before OpenROAD starts, so `inputs.script` hashes the exact `pnr.tcl` OpenROAD runs.
     """
     root = project_root_or_none(artefact_dir)
     document = {
@@ -300,8 +249,7 @@ def begin_run(
             for stage in stages
         },
         "inputs": _relativise(inputs, root),
-        # Filled in by `finish_run`; absent when the rb process itself was
-        # killed, in which case `progress.jsonl` is the whole account.
+        # Set by `finish_run`; stays None if rb itself is killed.
         "outcome": None,
         "checkpoints": {},
     }
@@ -312,9 +260,7 @@ def begin_run(
     try:
         _point_latest(artefact_dir, run_dir)
     except OSError as e:
-        # A filesystem without symlinks (some SMB/NFS exports, exFAT) costs
-        # the convenience pointer, not the run: the checkpoints are still
-        # written, and `<run-id>/<stage>` still names them (#653).
+        # Filesystems without symlinks lose only the pointer, not the run.
         log_event(
             logger,
             logging.WARNING,
@@ -355,7 +301,7 @@ def read_manifest(run_dir: str) -> dict | None:
 
 
 def _point_latest(artefact_dir: str, run_dir: str) -> None:
-    """Re-point ``latest`` at this run, atomically (relative link)."""
+    """Atomically re-point `latest` at this run with a relative link."""
     pointer = latest_pointer(artefact_dir)
     tmp = f"{pointer}.tmp-{os.getpid()}"
     if os.path.islink(tmp) or os.path.exists(tmp):
@@ -367,13 +313,9 @@ def _point_latest(artefact_dir: str, run_dir: str) -> None:
 def finish_run(
     run_dir: str, *, returncode: int | None, result: str, desc: str, fingerprint
 ) -> dict:
-    """Complete the manifest from the progress file; return a summary.
+    """Complete the manifest from the progress file and return a summary.
 
-    Every checkpoint the Tcl side reported written is listed with a
-    fingerprint of each file, so a later reader (or a resume) can tell the
-    database is the one this run wrote. The summary is what the result row
-    and the failure log carry: the stages written and the step the run was
-    in when it stopped.
+    Each checkpoint the Tcl side reported is listed with a fingerprint of each file. The summary carries `checkpoint_dir`, `checkpoint_stages` and `last_step`, for the result row and failure log.
     """
     events = read_progress(run_dir)
     written = _written_checkpoints(events)
@@ -441,7 +383,7 @@ class CheckpointRef:
 
 
 def _stage_of(token: str) -> str | None:
-    """`cts`, `03_cts` -> `cts`; anything else -> None."""
+    """Map `cts` or `03_cts` to `cts`; anything else to None."""
     if token in STAGE_ANCHORS:
         return token
     for stage, (index, _cmd, _edge) in STAGE_ANCHORS.items():
@@ -451,13 +393,9 @@ def _stage_of(token: str) -> str | None:
 
 
 def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
-    """Resolve a `--checkpoint` value, or return why it cannot be used.
+    """Resolve a `--checkpoint` value to a `CheckpointRef`, or return the reason it cannot be used.
 
-    Accepted spellings: a stage (``cts`` or ``03_cts``) of the ``latest``
-    run; ``<run-id>/<stage>`` for an older run; or a path to one of a
-    checkpoint's files. Whichever it is, the checkpoint must have a
-    completed `checkpoint` event in its run's progress file — a database a
-    kill interrupted mid-write is refused rather than exported.
+    Accepted: a stage (`cts` or `03_cts`) of the `latest` run, `<run-id>/<stage>`, or the path of a checkpoint file. The run's progress file must hold a completed `checkpoint` event, so a database cut off mid-write is refused.
     """
     run_dir: str | None = None
     stage: str | None = None
@@ -487,8 +425,7 @@ def resolve_checkpoint(artefact_dir: str, spec: str) -> CheckpointRef | str:
                     f"no current checkpointed run at {pointer} — run rb pnr "
                     "with checkpoints: set, or name <run-id>/<stage>"
                 )
-            # Joined, not resolved: an `artefacts/` symlinked to scratch
-            # storage keeps reading through the project's own path.
+            # Joined, not resolved, so a symlinked `artefacts/` keeps its project path.
             run_dir = os.path.join(checkpoints_root(artefact_dir), os.readlink(pointer))
     if not os.path.isdir(run_dir):
         return f"no checkpoint run directory at {run_dir}"

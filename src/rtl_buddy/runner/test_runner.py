@@ -25,9 +25,7 @@ class RunDepth(Enum):
     POST = "post"
 
 
-# Distinguishes "call pre() with its own default run_id" from "call it with
-# run_id=None on purpose" (#415) — the latter is what run_multiple() needs
-# and None is a meaningful value there, so a plain default cannot say it.
+# Separates "use pre()'s default run_id" from an explicit run_id=None, which run_multiple() needs.
 _PRE_RUN_ID_DEFAULT = object()
 
 
@@ -52,10 +50,7 @@ class TestRunner:
         build_phase=None,
         run_tag=None,
     ):
-        """
-        Run tests based on config
-        Handles Verilog compilation
-        """
+        """Run one test from its config, including Verilog compilation."""
         log_event(
             logger,
             logging.DEBUG,
@@ -75,29 +70,17 @@ class TestRunner:
         self.test_runner_mode = test_runner_mode
         self.suite_dir = suite_dir
         self.share_build = share_build
-        # Where a shared build is cached, when a persistent root is
-        # configured (#542). Threaded, not re-derived: the head resolved the
-        # CLI/env/config precedence once, and a runner that resolved it again
-        # could disagree with the build job it is gated on.
+        # Passed in, not re-resolved: the head resolved the precedence once, and a second resolution could disagree with the build job.
         self.shared_build_root = shared_build_root
         self.expect_prebuilt = expect_prebuilt
-        # `--rebuild`: compile even when the stamp says the build is warm
-        # (#494). Threaded rather than re-derived — the sim instance is
-        # what acts on it, and this is what creates the sim instance.
+        # `--rebuild`: compile even when the stamp says the build is warm.
         self.rebuild = rebuild
         self.build_result_json = build_result_json
-        # Which half of a split compile this runner's COMPILE performs
-        # (#593). ``None`` is the whole thing, which is every path but a
-        # split build job's.
+        # Which half of a split compile COMPILE performs; ``None`` means all of it.
         self.build_phase = build_phase
-        # The `--run-tag` artefact namespace this run writes into (#541).
-        # Threaded, like `shared_build_root` above: the head decided which
-        # tree the run belongs to, and the sim instance this creates is what
-        # turns that into paths.
+        # The `--run-tag` artefact namespace, decided by the head.
         self.run_tag = run_tag
-        # Set by prepare(); the phases after it all drive this one instance,
-        # because a preproc hook may mutate test_cfg and the compile key is
-        # only knowable afterwards, on the sim that saw the mutation.
+        # Set by prepare(). A preproc hook may mutate test_cfg, so the compile key exists only on the sim that ran the hook.
         self._vlog_sim = None
 
     def _create_vlog_sim(self):
@@ -135,26 +118,18 @@ class TestRunner:
         )
 
     def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
-        """Create this runner's sim instance and run PRE; error string or None."""
+        """Create the sim instance and run PRE; return an error string or None."""
         self._vlog_sim = self._create_vlog_sim()
         if pre_run_id is _PRE_RUN_ID_DEFAULT:
             return self._vlog_sim.pre()
         return self._vlog_sim.pre(run_id=pre_run_id)
 
     def prepare(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
-        """Create the sim instance and run PRE. ``SetupFailResults`` or ``None``.
+        """Create the sim instance and run PRE; return ``SetupFailResults`` or ``None``.
 
-        Split out of :meth:`run` so a dispatched build job can keep PRE
-        serial while compiling concurrently (#495): hook execution is
-        process-global-serial by contract (one ``sys.modules`` slot and a
-        process-wide ``redirect_stdout``, see ``hooks.py``), and a preproc
-        script may mutate ``test_cfg`` — so the compile key exists only
-        after this ran, on the instance it ran on.
+        A dispatched build job calls this directly so PRE hooks stay serial while compiles run concurrently.
         """
-        # The one per-test marker in a run's DEBUG log, and it belongs to
-        # the phase rather than to run(): the build job drives the phases
-        # directly, and a build-job log with no per-test line at all is
-        # unreadable when one config out of eight misbehaves.
+        # Logged here, not in run(): the build job drives the phases directly and needs a per-test log line.
         log_event(
             logger,
             logging.DEBUG,
@@ -170,27 +145,14 @@ class TestRunner:
 
     @property
     def last_compile(self):
-        """This runner's sim's compile record, or ``None`` (#495).
-
-        ``{duration_sec, builder, reused}`` — what the COMPILE phase cost,
-        for the build envelope and the results overlay. ``None`` before
-        :meth:`prepare` has built the sim: a runner whose PRE never got
-        that far has nothing to report, and telemetry must never be the
-        thing that raises.
-        """
+        """Return the sim's ``{duration_sec, builder, reused}`` compile record, or ``None`` before :meth:`prepare` built the sim."""
         return None if self._vlog_sim is None else self._vlog_sim.last_compile
 
     @property
     def last_compile_failure(self):
-        """This runner's sim's failed-compile record, or ``None`` (#498).
+        """Return the sim's ``{returncode, transcript}`` failed-compile record, or ``None``.
 
-        ``{returncode, transcript}`` — the builder's exit status and the
-        file holding its output. A dispatched build job records this in its
-        envelope so the sim jobs it gates can decline a retry that would
-        only fail the same way, and so the head can put the real error in
-        the run summary. Telemetry, and telemetry must never raise: a sim
-        that never existed, and a sim class that does not report one, both
-        read as "nothing to record".
+        The build job records it in its envelope. Telemetry: it never raises.
         """
         try:
             return getattr(self._vlog_sim, "last_compile_failure", None)
@@ -199,15 +161,9 @@ class TestRunner:
 
     @property
     def last_build_stamp(self):
-        """This runner's sim's build-stamp identity, or ``None`` (#535).
+        """Return the sim's ``{build_dir, fingerprint_sha, simv}`` build-stamp identity, or ``None``.
 
-        ``{build_dir, fingerprint_sha, simv}`` — which shared directory
-        (the compile key) the build this run simulated was stamped in,
-        which inputs that stamp recorded, and which executable it vouched
-        for. The build job records the digest in its envelope, and
-        every run carries both into its own result envelope so the head can
-        check at collect that one key produced one binary. Telemetry, and
-        telemetry must never raise.
+        The head uses it at collect time to check that one compile key produced one binary. Telemetry: it never raises.
         """
         try:
             return getattr(self._vlog_sim, "last_build_stamp", None)
@@ -216,14 +172,9 @@ class TestRunner:
 
     @property
     def stamp_write_failed(self):
-        """Did this runner's compile succeed but leave no stamp (#534)?
+        """Return whether the compile succeeded but left no stamp.
 
-        The build job records it as ``stamp_written: false`` beside the
-        config, so a gated simulation job reads "built, but no stamp"
-        rather than rediscovering it as a stamp that does not validate and
-        recompiling under the simulation reservation. Telemetry, and
-        telemetry must never raise: an absent sim, or a sim class that does
-        not report one, both read as "nothing went wrong".
+        The build job records it as ``stamp_written: false`` so a gated sim job does not recompile. Telemetry: it never raises.
         """
         try:
             return bool(getattr(self._vlog_sim, "stamp_write_failed", False))
@@ -231,12 +182,9 @@ class TestRunner:
             return False
 
     def refresh_build_stamp(self):
-        """Re-read the stamp behind :attr:`last_build_stamp` (#535).
+        """Re-read the stamp behind :attr:`last_build_stamp`.
 
-        The build job calls this once every group member is done, so the
-        digest it records is the stamp's final one — a sibling's adoption
-        rewrites the listing after the leader recorded. Telemetry, never
-        raises.
+        The build job calls this after every group member is done, because a sibling's adoption rewrites the stamp. Telemetry: it never raises.
         """
         try:
             self._vlog_sim.refresh_build_stamp()
@@ -244,26 +192,18 @@ class TestRunner:
             return
 
     def adopt_group_build(self):
-        """Adopt a same-key sibling's build on the prepared sim (#535).
+        """Adopt a same-key sibling's build on the prepared sim.
 
-        ``("adopted", None)`` / ``("drift", <path>)`` / ``(None, <reason>)``
-        — see :meth:`VlogSim.adopt_group_build`. Only the dispatched build
-        job asks, and only for the members of a group whose leader has
-        already compiled.
+        Returns ``("adopted", None)``, ``("drift", <path>)`` or ``(None, <reason>)``; see :meth:`VlogSim.adopt_group_build`.
+        Only the dispatched build job calls it, after the group leader compiled.
         """
         return self._vlog_sim.adopt_group_build()
 
     @property
     def builder_name(self):
-        """The resolved builder's name, or ``None`` (#495).
+        """Return the resolved builder's name, or ``None`` before :meth:`prepare` built the sim.
 
-        Known from the moment :meth:`prepare` built the sim — earlier than
-        :attr:`last_compile`, which only exists once the compile plan was
-        derived. That gap is a config whose PRE failed: it never reached a
-        builder, but the builder it *would* have used is settled and worth
-        recording, so a gap in the build envelope keeps meaning "the build
-        job never saw this test". Best-effort like every other value on
-        this path.
+        Unlike :attr:`last_compile` it is known even when PRE failed. Telemetry: it never raises.
         """
         if self._vlog_sim is None:
             return None
@@ -273,10 +213,9 @@ class TestRunner:
             return None
 
     def compile_group_dir(self):
-        """``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.
+        """Return ``(group_dir, None)`` or ``(None, Results)`` for the prepared sim.
 
-        The build job's grouping probe (#495). Same failure mapping the
-        compile itself gets, because it is the same ``run.f`` write.
+        The build job uses it to group configs; a filelist error maps to a failure result as in compile.
         """
         try:
             return self._vlog_sim.compile_group_dir(), None
@@ -284,13 +223,9 @@ class TestRunner:
             return None, FilelistFailResults(name=self.name + "/results", desc=str(e))
 
     def _compile_outcome(self, run_ids=None):
-        """Run COMPILE on the prepared sim; a results *factory*, or ``None``.
+        """Run COMPILE on the prepared sim and return a results factory, or ``None`` to go on to simulation.
 
-        A factory rather than an instance because :meth:`run_multiple` needs
-        one outcome as N separate objects (each run_id is recorded on its
-        own; a shared instance would make them one row wearing N names)
-        while still deriving that outcome here and only here. ``None`` means
-        the compile succeeded and the caller should go on to the simulation.
+        It returns a factory because :meth:`run_multiple` needs a separate results object per run_id.
         """
         try:
             compile_returncode = self._vlog_sim.compile()
@@ -298,12 +233,7 @@ class TestRunner:
             desc = str(e)
             return lambda: FilelistFailResults(name=self.name + "/results", desc=desc)
         if compile_returncode != 0:
-            # The sim may already know *why*, and say so in one line — a
-            # gated job whose build job's compile had failed carries that
-            # build's exit status and error there (#498). Read through
-            # getattr: the returncode is the contract, the explanation is
-            # optional, and a sim class that offers none keeps the generic
-            # "Compile failed" it always had.
+            # getattr: only some sim classes offer a specific desc.
             desc = getattr(self._vlog_sim, "compile_fail_desc", None)
             return lambda: CompileFailResults(name=self.name + "/results", desc=desc)
 
@@ -334,27 +264,16 @@ class TestRunner:
     def compile_prepared(self, run_ids=None):
         """Run COMPILE on the prepared sim.
 
-        Returns the terminal ``Results`` — ``FilelistFailResults`` /
-        ``CompileFailResults``, or ``EarlyStopResults`` when this runner
-        stops at COMP — or ``None`` when the caller should go on to the
-        simulation. ``run_ids`` only shapes the early-stop record, so
-        :meth:`run_multiple` reports the whole set it was going to run.
+        Returns ``FilelistFailResults``, ``CompileFailResults`` or, at ``-E comp``, ``EarlyStopResults``; ``None`` means go on to simulation.
+        ``run_ids`` only shapes the early-stop log record.
         """
         make_results = self._compile_outcome(run_ids=run_ids)
         return None if make_results is None else make_results()
 
     def _sim_stage_failure(self, execute_returncode, run_id):
-        """The ``-E sim`` stop's result when the simulation itself failed.
+        """Return the ``-E sim`` result for a simulation that exited nonzero.
 
-        ``-E sim`` stops before post-processing, so a nonzero exit there
-        is a failed stage, not the successful early stop it used to
-        report (#546). It is *only* the stage that is known to have
-        failed: nothing read the transcript — the user asked to skip
-        that — so the desc names the exit status and says post-processing
-        did not run, rather than claiming there is no verdict. A
-        transcript can carry one: ``execute()`` itself writes a ``FAIL``
-        banner and returns 1 when a replayed seed is missing
-        (#574 review).
+        The desc names the exit status and says the transcript was not post-processed; it does not claim a verdict is missing, because the transcript may hold one.
         """
         log_event(
             logger,
@@ -374,7 +293,6 @@ class TestRunner:
         )
 
     def run(self):
-        # run pre-proc python (which logs test_runner.start)
         setup_failure = self.prepare()
         if setup_failure is not None:
             return setup_failure
@@ -393,12 +311,10 @@ class TestRunner:
                 name=self.name + "/results", desc="Stopped early at preproc"
             )
 
-        # compile sim executable
         compile_results = self.compile_prepared()
         if compile_results is not None:
             return compile_results
 
-        # run simulation
         execute_returncode = vlog_sim.execute(
             run_id=self.run_id,
             seed_mode=self.seed_mode,
@@ -408,9 +324,7 @@ class TestRunner:
             return SimTimeoutResults(name=self.name + "/results")
 
         if self.run_depth == RunDepth.SIM:
-            # A stop before post-processing is only "successful" when the
-            # simulator itself came back clean; a crash under -E sim is a
-            # failed stage, not an outcome to hand-check (#546).
+            # A simulator crash under -E sim is a failed stage, not an early stop.
             if execute_returncode != 0:
                 return self._sim_stage_failure(execute_returncode, self.run_id)
             log_event(
@@ -425,17 +339,13 @@ class TestRunner:
                 name=self.name + "/results", desc="Stopped early at sim"
             )
 
-        # run post-proc. The simulator's exit status travels with it: an
-        # aborted run leaves no verdict in its transcript, and post() is
-        # where that becomes a FAIL rather than an unknown NA (#546).
+        # post() needs the exit status: an aborted run has no verdict in its transcript and must become a FAIL, not an NA.
         return vlog_sim.post(run_id=self.run_id, sim_returncode=execute_returncode)
 
     def run_multiple(self, run_ids):
-        """
-        Execute one pre/compile flow and run multiple simulations over run_ids.
+        """Run one pre/compile flow, then one simulation per run_id.
 
-        run_id controls output naming for each simulation. seed_mode controls whether
-        each run uses a default, fresh, replayed, or pre-resolved master seed.
+        run_id names each simulation's outputs; seed_mode selects a default, fresh, replayed or pre-resolved master seed.
         """
         log_event(
             logger,
@@ -445,19 +355,10 @@ class TestRunner:
             test=self.test_cfg.get_name(),
             run_ids=run_ids,
         )
-        # One hook execution serves every run_id here, so it is preparing no
-        # particular run — explicitly, because the runner was constructed with
-        # run_ids[0] and the default would otherwise hand the hook run 1's
-        # directory for output that runs 2..N also read (#415).
+        # pre_run_id=None: the hook serves every run_id, not just run_ids[0].
         pre_error = self._run_pre(pre_run_id=None)
         vlog_sim = self._vlog_sim
-        # Every run this invocation is about to produce results for sheds
-        # its stale retry transcript — the sim's own per-run cleanup
-        # reaches only run_ids[0], and it is skipped without a preproc
-        # hook, so a local rerun after a dispatched fan-out would pair
-        # runs 2..N's fresh results with the dispatch's old retry logs
-        # (#498 review). Before the SetupFail return, deliberately: a
-        # failed PRE must not resurrect them either.
+        # Must precede the SetupFail return; the sim's own cleanup reaches only run_ids[0].
         vlog_sim.clear_retry_transcripts(run_ids)
         if pre_error is not None:
             return [
@@ -496,8 +397,6 @@ class TestRunner:
             if execute_returncode == 4444:
                 result = SimTimeoutResults(name=self.name + "/results")
             elif self.run_depth == RunDepth.SIM and execute_returncode != 0:
-                # Same rule as run(): a crashed simulator is not a
-                # successful early stop (#546).
                 result = self._sim_stage_failure(execute_returncode, run_id)
             elif self.run_depth == RunDepth.SIM:
                 log_event(
@@ -513,9 +412,7 @@ class TestRunner:
                 )
             else:
                 result = vlog_sim.post(run_id=run_id, sim_returncode=execute_returncode)
-            # This run's own launch, taken now: the next run's `execute()`
-            # restates the executable it launches, and a shared binary
-            # replaced between two seeds is two different launches.
+            # Read now: the next run's execute() overwrites it, and a shared binary may change between seeds.
             stamp = self.last_build_stamp
             if stamp is not None:
                 result.results["build_stamp"] = dict(stamp)

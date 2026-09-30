@@ -2,108 +2,57 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The structured physical model (#558, delivering #114).
+"""The structured physical model: what a synthesis or power analysis measured.
 
-One versioned JSON document describing what a synthesis or a power
-analysis measured, built from artefacts already on disk. Its shape is
-**backend-agnostic** — a module has cells and area, an instance has
-leakage and dynamic components — even though Yosys' ``stat -json`` and
-OpenSTA's ``report_power`` are the only producers today.
+One versioned JSON document, ``<artefact dir>/phys-model.json``, built
+from artefacts already on disk and pointed at by ``phys-manifest.json``.
+The shape is backend-agnostic: a module has cells and area, an instance
+has leakage and dynamic components.
 
-Three properties are the point of the exercise:
+* **Per module and per instance.** ``modules`` holds one row per module
+  as the tool saw it; ``instances`` holds leaf instances. Hierarchical
+  roll-up is the consumer's job.
+* **Totals are a sanity block.** ``totals`` carries the numbers the flows
+  parse from their logs (Yosys chip area and cell count, the
+  ``report_power`` ``Total`` row). They come from a different scrape than
+  the rows, so a totals-versus-sum mismatch is information.
+* **A run fills only its own half.** A synthesis writes ``modules`` and
+  leaves ``instances`` null; a power analysis does the reverse. ``null``
+  means "not produced by this run".
 
-**Per module and per instance, not per design.** Both flows already
-compute the breakdown on their way to the four scalars they report;
-recording it means "which module owns the area" and "which instance owns
-the leakage" are a read rather than a re-run with a hand-written script.
+**Merging.** When a model for the same top exists in the artefact
+directory, the half the new run does not own is carried forward
+(:func:`merge_model`), so `rb synth` and `rb power` into one directory
+add up to a complete document in either order. The half a run owns is
+never inherited, even when the run failed to produce it. A different top
+or ``schema_version`` replaces the old model outright.
 
-**Leaf values only.** ``instances`` holds leaf instances and ``modules``
-holds one row per module as the tool saw it. Hierarchical roll-up is the
-consumer's job — the same rule #114 set, and the same reason: a subtree
-sum depends on which hierarchy the consumer is projecting onto, and the
-producer does not know.
+**The netlist hash gates inheritance.** The other half is inherited only
+when both sides recorded the sha256 of the netlist they measured, in
+``provenance`` (:data:`PROVENANCE_KEYS`), and the hashes are equal
+(:func:`may_inherit_other_half`). Missing provenance is not a match: an
+old document, an unreadable netlist or a ``netlist-source: pnr`` power
+run drops the half. A power run reads the synthesis output, so in the
+usual `rb synth` then `rb power` pair the hashes match; a synthesis
+overwrites the netlist under an existing power half, so it is the
+direction that usually refuses.
 
-**Totals are a sanity block, not a derivation.** ``totals`` carries the
-numbers the flows *already* parse out of their logs — Yosys' chip area
-and cell count, ``report_power``'s ``Total`` row. They come from a
-different scrape than the rows do, so a totals-versus-sum mismatch is
-information rather than a tautology.
+**Invalidation.** A rerun that fails before publishing has already
+deleted the raw artefacts behind its previous half.
+:func:`rtl_buddy.phys.publish.invalidate_half` nulls that half
+(:func:`blank_half`) at clear time and leaves the other half alone.
 
-A run fills only its own half. A synthesis writes ``modules`` and leaves
-``instances`` null; a power analysis does the reverse. ``null`` means
-"this run did not produce it" — absent never does, per the same
-stable-keys rule the coverage manifest keeps.
+**Identity.** ``provenance`` also records a config fingerprint on both
+halves and, on the power half, the mode and activity
+(:mod:`rtl_buddy.phys.provenance`). The merge does not read them; they
+tell runs of one design apart.
 
-**Merging.** When a model for the same top already exists in the
-artefact directory, the half the new run does not *own* is carried
-forward from it rather than being clobbered to null
-(:func:`merge_model`). That is what makes a `rb synth` and a `rb power`
-run configured into one artefact directory add up to a complete
-document, in either order.
-
-**One rule, in both directions.** A half is inherited only when the
-netlist it was measured on is the netlist this run measured. Both sides
-record that netlist's sha256 in ``provenance`` (:data:`PROVENANCE_KEYS`)
-and the comparison is of recorded hashes — not of timestamps, and not of
-the fact that the rows happen to be sitting in the directory
-(:func:`may_inherit_other_half`). Editing the RTL and re-running
-`rb synth` must not carry per-instance watts forward onto a netlist that
-no longer exists; and, the other way round, a `rb power` run measuring a
-netlist some other build has since replaced must not republish module
-rows that were counted off a netlist it never read. Missing provenance
-on either side is not a match — an old document, an unreadable netlist,
-or a power run whose ``netlist-source`` was the routed database rather
-than a netlist all drop the half, which is the safe direction.
-
-The two *flows* stay asymmetric even though the check no longer is, and
-that asymmetry is now an argument about how often the check passes, not
-about whether it is made. A power analysis runs *against* the synthesis
-output, so in the ordinary `rb synth` then `rb power` pair the two
-hashes are of one file and the ``modules`` half travels; a synthesis
-inherits the other way, against a netlist it has just overwritten, so
-that is the direction where the check routinely refuses. Making it
-unconditional there would have been a shortcut on the usual case: a
-power run whose recorded hash does not match the synthesis provenance
-beside it measured a *different* netlist, and republishing the local
-module rows under it would describe a design that run never saw.
-
-The half the run does own is never inherited, even when this run failed
-to produce it: a synthesis whose ``stat -json`` was unreadable writes
-``modules: null`` under its own fresh totals rather than republishing
-the previous run's rows, which would
-otherwise read as a breakdown of a design that has since changed. A
-different top means a different design, so the old model is replaced
-outright — carrying rows across would attribute one design's instances
-to another's modules.
-
-**Invalidation.** The half a run owns is republished only when that run
-gets far enough to publish. A rerun that fails earlier has already
-deleted the raw artefacts behind the previous run's half, so leaving
-that half in place would leave a measurement discoverable whose evidence
-is gone — :func:`rtl_buddy.phys.publish.invalidate_half` nulls it
-(:func:`blank_half`) at clear time instead, and the other half stays.
-
-**Identity, beside the measurement.** ``provenance`` also records what
-*shaped* the run: a config fingerprint on both halves, and on the power
-half the mode (``static``/``dynamic``) and the activity behind the
-numbers (:mod:`rtl_buddy.phys.provenance`). None of it is read by the
-merge — the netlist hash decides that, and it is the stronger test —
-but without it two experiments of one design are two documents with the
-same ``top`` and nothing to tell them apart, and a power figure is a
-number with no statement of what it is a number *of*.
-
-**Publication token.** The model and the manifest are two files written
-one after the other, so a reader can pair a fresh model with a stale
-manifest. Both carry the same ``publication`` token
-(:func:`new_publication`), which is how a reader tells a pair it caught
-mid-rewrite from one written together — and, on the *writing* side, how
-the next publish tells a directory it may merge onto from one whose last
-publish did not finish: an unpaired model and manifest are inherited
-from neither half, and the run rewrites its own half under a fresh token
+**Publication token.** The model and manifest are written one after the
+other and carry the same ``publication`` token
+(:func:`new_publication`). A reader uses it to detect a pair caught
+mid-rewrite, and the publisher uses it to merge only onto a pair that
+was written together
 (:func:`rtl_buddy.phys.publish._existing_pair`).
-
-The model is written to ``<artefact dir>/phys-model.json`` and pointed
-at by ``<artefact dir>/phys-manifest.json``.
 """
 
 from __future__ import annotations
@@ -117,23 +66,16 @@ from pathlib import Path
 #: Bumped when the document's shape changes incompatibly.
 MODEL_SCHEMA_VERSION = 1
 
-#: Filename inside the producing run's artefact directory.
-# Defined in `tools.artifact_paths` — the bottom of the import graph, and
-# where the artefact-clearing helpers protect it from a co-named run's
-# suffix clear (#469). Re-exported here, where consumers already look.
+# Defined in `tools.artifact_paths`; re-exported for consumers.
 from ..tools.artifact_paths import (  # noqa: E402
     PHYS_MODEL_NAME as MODEL_FILENAME,
 )
 
-#: The unit every value in the document is in. Recorded rather than
-#: implied because the producers disagree: Yosys reports area in whatever
-#: the Liberty's ``area`` unit is (µm² for every PDK rtl_buddy ships) and
-#: OpenSTA reports power in watts, which the readers scale to µW so a
-#: leakage figure is legible without an exponent.
+#: Units of every value in the document. Yosys area is in the Liberty
+#: unit (um2 for every shipped PDK); the readers scale OpenSTA watts to uW.
 UNITS = {"area": "um2", "power": "uW"}
 
-#: Every key of the totals block, so a half-filled run still writes them
-#: all. Stable keys, ``null`` for "not measured by this run".
+#: Every key of the totals block; ``null`` means "not measured by this run".
 TOTALS_KEYS = (
     "area_um2",
     "cell_count",
@@ -143,24 +85,15 @@ TOTALS_KEYS = (
     "total_uw",
 )
 
-#: What *both* halves record about the run behind them: the netlist it
-#: measured, and the configuration that shaped it
-#: (:func:`rtl_buddy.phys.provenance.config_block`). Named as a tuple for
-#: the same reason :data:`TOTALS_KEYS` is: a half that recorded nothing
-#: still writes them, ``null``.
+#: What both halves record about the run behind them: the netlist hash
+#: and the config fingerprint (:func:`rtl_buddy.phys.provenance.config_block`).
 PROVENANCE_KEYS = ("netlist_sha256", "config")
 
-#: What the power half records on top of those (#568): which kind of
-#: power this is, and what drove the switching behind it
-#: (:func:`rtl_buddy.phys.provenance.activity_block`). Power-only because
-#: the concepts are: a synthesis has no mode and no activity, and a block
-#: of nulls saying so would be shape for its own sake.
+#: What the power half records in addition: the kind of power and what
+#: drove the switching (:func:`rtl_buddy.phys.provenance.activity_block`).
 POWER_PROVENANCE_KEYS = ("mode", "activity")
 
-#: The two halves of the document, the totals each one owns, and the
-#: ``provenance`` block each one fills. Named once because the merge and
-#: the blanking both walk them and would otherwise re-spell the pairing
-#: at every step.
+# The two halves, the totals each owns and the provenance block each fills.
 _SYNTH_TOTALS = ("area_um2", "cell_count")
 _POWER_TOTALS = ("internal_uw", "switching_uw", "leakage_uw", "total_uw")
 _HALVES = (
@@ -168,21 +101,16 @@ _HALVES = (
     ("instances", _POWER_TOTALS, "power"),
 )
 
-#: Every provenance key each block carries, derived from the two tuples
-#: above so the shared keys cannot be re-spelled per block. A reader
-#: normalises against this (:func:`provenance_of`) and so does the
-#: blanking, which is what keeps a key added to one path from being
-#: silently absent on the other.
+#: Every provenance key each block carries; :func:`provenance_of` and
+#: :func:`blank_half` normalise against it.
 BLOCK_PROVENANCE_KEYS = {
     block: PROVENANCE_KEYS + (POWER_PROVENANCE_KEYS if block == "power" else ())
     for _half, _totals, block in _HALVES
 }
 
 
-#: The provenance block each half's producer fills, and the one the
-#: *other* producer fills — the two ends of the hash comparison
-#: :func:`may_inherit_other_half` makes. Derived from :data:`_HALVES` so
-#: the pairing cannot be re-spelled and drift.
+#: The provenance block each half's producer fills, and the block the
+#: other producer fills; the two ends of the hash comparison.
 _PROVENANCE_BLOCK = {half: block for half, _totals, block in _HALVES}
 _OTHER_PROVENANCE_BLOCK = {
     half: block
@@ -191,7 +119,7 @@ _OTHER_PROVENANCE_BLOCK = {
     if other != half
 }
 
-#: Watts in, microwatts out — see :data:`UNITS`.
+#: Watts in, microwatts out.
 _W_TO_UW = 1e6
 
 
@@ -214,25 +142,13 @@ def _empty_provenance() -> dict:
 
 
 def new_publication() -> str:
-    """A fresh publication token, identifying one model+manifest write.
+    """A fresh token identifying one model+manifest write.
 
-    The model and the manifest that names it are written as two files,
-    one after the other, so a reader can arrive between the two writes
-    and pair a new model with the old manifest — each document is
-    atomic (see :func:`write_model`) but the *pair* is not. Both halves
-    of a publication carry the same token, which is what lets
-    :func:`rtl_buddy.phys.query.load_context` notice it caught the pair
-    mid-rewrite and read again.
-
-    Opaque and never compared for order: it answers "were these two
-    written together", not "which is newer". Both readers ask exactly
-    that and act on the answer differently:
-    :func:`rtl_buddy.phys.query.load_context` re-reads and, still
-    mismatched, answers from the freshest read of each, because it holds
-    no lock and refusing would be worse; the publish path
-    (:func:`rtl_buddy.phys.publish._existing_pair`) merges onto neither
-    document, because it is about to write both and would otherwise
-    stamp its own token on a pair that was never written together.
+    Opaque and never ordered: it answers "were these two written
+    together". :func:`rtl_buddy.phys.query.load_context` re-reads on a
+    mismatch and then answers from the freshest read of each.
+    :func:`rtl_buddy.phys.publish._existing_pair` merges onto neither
+    document of a mismatched pair.
     """
     return uuid.uuid4().hex
 
@@ -240,16 +156,12 @@ def new_publication() -> str:
 def _base(top: str | None) -> dict:
     return {
         "schema_version": MODEL_SCHEMA_VERSION,
-        # Filled by `phys.publish._publish`, which stamps the same token
-        # into the manifest it writes beside this. Null in a document
-        # built but never published — the builders below do not know
-        # which publication they will end up in.
+        # Stamped by `phys.publish._publish`; null until published.
         "publication": None,
         "generator": _generator(),
         "design": {"top": top},
         "units": dict(UNITS),
-        # What each half was measured on, filled by that half's producer;
-        # see the merging note above for the one decision it drives.
+        # What each half was measured on, filled by that half's producer.
         "provenance": _empty_provenance(),
         "totals": _empty_totals(),
         "modules": None,
@@ -269,24 +181,17 @@ def build_synth_model(
     """The synthesis half: per-module rows plus the design totals.
 
     :param top: the synthesised top module.
-    :param modules: rows from :func:`rtl_buddy.phys.reports.parse_stat_json`.
-        ``None`` when the ``stat -json`` step produced nothing readable —
-        the flow still writes a model, so the totals it *did* parse are
-        recorded and the shape says plainly that the breakdown is missing.
+    :param modules: rows from :func:`rtl_buddy.phys.reports.parse_stat_json`,
+        or ``None`` when ``stat -json`` produced nothing readable. The
+        parsed totals are still recorded.
     :param area_um2: the design area the flow scraped from its log.
     :param gate_count: the design cell count the flow scraped from its log.
     :param netlist_sha256: the hash of the netlist this synthesis wrote,
-        which is what a power half already in the directory has to have
-        been measured on to be inherited — see :func:`merge_model`.
-        ``None`` when the flow wrote no netlist this could read.
-    :param config: the config fingerprint of the synthesis behind these
-        rows (:func:`rtl_buddy.phys.provenance.config_block`) — the
-        platform, the constraints and a digest of the effective tool
-        options. Recorded for *identity*, never for the merge: which
-        netlist a half measured is what decides whether it may be
-        inherited, and a config comparison is weaker than that hash in
-        both directions — one option set can produce two netlists, and
-        two can produce one (#568).
+        or ``None`` when none could be read. A power half already in the
+        directory is inherited only if it was measured on this hash.
+    :param config: the config fingerprint
+        (:func:`rtl_buddy.phys.provenance.config_block`). It identifies
+        the run and does not affect the merge.
     """
     model = _base(top)
     model["provenance"]["synth"]["netlist_sha256"] = netlist_sha256
@@ -312,30 +217,17 @@ def build_power_model(
 ) -> dict:
     """The power half: per-instance rows plus the design totals.
 
-    The totals arrive in watts because that is what ``report_power``
-    prints and what ``PowerPassResults`` already carries; they are scaled
-    to µW here so the block and the rows agree with :data:`UNITS`.
+    Totals arrive in watts and are stored in uW (:data:`UNITS`).
 
     :param instances: rows from
         :func:`rtl_buddy.phys.reports.parse_instance_power`, or ``None``
-        when the per-instance report was not produced or not readable.
-    :param netlist_sha256: the hash of the netlist this analysis read, so
-        a later synthesis into the same directory can tell whether these
-        rows still describe what it just wrote. ``None`` when the run
-        read something that is not a netlist at all — a post-PnR routed
-        database — or when the file could not be hashed.
-    :param config: the config fingerprint of this analysis; see
-        :func:`build_synth_model`.
-    :param mode: ``"static"`` or ``"dynamic"`` — which kind of power
-        these numbers are. Recorded because the rows cannot say: a
-        leakage-plus-internal total and a SAIF-driven one are different
-        measurements printed in the same column, and a run list that
-        could not tell them apart would present two answers as two
-        revisions of one (#568).
+        when the per-instance report was missing or unreadable.
+    :param netlist_sha256: the hash of the netlist this analysis read, or
+        ``None`` for a post-PnR routed database or an unhashable file.
+    :param config: the config fingerprint; see :func:`build_synth_model`.
+    :param mode: ``"static"`` or ``"dynamic"``.
     :param activity: what drove the switching
-        (:func:`rtl_buddy.phys.provenance.activity_block`) — the
-        defaults, a synthetic toggle/duty pair, or the trace and the
-        test behind it.
+        (:func:`rtl_buddy.phys.provenance.activity_block`).
     """
     model = _base(top)
     model["provenance"]["power"]["netlist_sha256"] = netlist_sha256
@@ -357,45 +249,21 @@ def _to_uw(watts: float | None) -> float | None:
 def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> dict:
     """Fold ``new`` onto an ``existing`` model for the same top.
 
-    ``own_half`` names the half the producing command owns — ``"modules"``
-    for a synthesis, ``"instances"`` for a power analysis — and that half
-    is *never* inherited. It is required rather than inferred, because
-    the thing to infer it from is exactly the thing that goes wrong: a
-    synthesis whose ``stat -json`` was unreadable produces
-    ``modules = None``, which is indistinguishable by shape from "this
-    run does not fill that half", and inheriting there would republish
-    the *previous* run's module rows underneath this run's totals. A
-    rerun of the flow that owns a half must be able to shrink it to
-    nothing — ``None`` stays ``None``, with the half's totals keys as
-    this run wrote them, and the reader sees "this run did not produce
-    it" rather than a stale breakdown.
+    ``own_half`` (``"modules"`` for a synthesis, ``"instances"`` for a
+    power analysis) is the half the producing command owns. It is never
+    inherited, so a rerun can shrink its half to ``None``. It is required
+    because an unreadable ``stat -json`` also yields ``modules = None``,
+    which by shape looks like a half the run does not fill. Pass
+    ``own_half=None`` only for a fold with no producer, where any half
+    ``new`` left null is inheritable.
 
-    Only the *other* half is carried forward, together with the totals
-    and the ``provenance`` entry that belong to it. Pass ``own_half=None``
-    only for a fold with no producer behind it (two documents being
-    combined after the fact); then any half ``new`` left null is
-    inheritable.
+    The other half is carried forward with its totals and ``provenance``
+    entry, but only if :func:`may_inherit_other_half` allows it. Otherwise
+    it is dropped and left null.
 
-    The other half has one more condition to meet, whichever half it is:
-    it must have been measured on the netlist this run measured
-    (:func:`may_inherit_other_half`). It was produced by an earlier
-    command, and nothing about its being in the same directory says the
-    two runs were looking at the same file. When the hashes do not match
-    — or either side recorded none — the half is dropped along with its
-    totals, and the document says ``instances: null`` (or
-    ``modules: null``): this publication has no such breakdown, which is
-    true, where the alternative is a breakdown of a design that is gone.
-
-    ``existing`` is ignored entirely when it is missing, unreadable, of a
-    different ``schema_version``, or describes a different top. The last
-    of those is the one that matters: an artefact directory is keyed on a
-    run's *name*, and names are not unique across designs, so a
-    same-directory model is only evidence about the same top.
-
-    The merged document keeps ``new``'s ``publication`` token — a merge
-    is part of the publication being written, not of the one that put
-    the inherited half there, and the manifest written alongside it
-    carries the same token.
+    ``existing`` is ignored when missing, unreadable, of a different
+    ``schema_version`` or of a different top. The result keeps ``new``'s
+    ``publication`` token.
     """
     if not _mergeable(existing, new):
         return new
@@ -421,36 +289,12 @@ def merge_model(existing: dict | None, new: dict, *, own_half: str | None) -> di
 def may_inherit_other_half(existing: dict | None, new: dict, *, own_half) -> bool:
     """Does ``existing``'s other half describe the netlist ``new`` measured?
 
-    The one gate both directions go through. A publication owns one half
-    and may carry the other forward; this asks whether the run that
-    produced that other half was looking at the same netlist this run
-    was. A fold with no producer behind it (``own_half`` naming neither
-    half) has no netlist of its own to compare and answers ``True``,
-    inheriting on the rules :func:`merge_model` documents.
+    True when the ``netlist_sha256`` recorded by the other half's producer
+    equals the one this run recorded. A missing hash on either side is not
+    a match. A fold with no producer (``own_half`` naming neither half)
+    answers ``True``.
 
-    The evidence is the pair of hashes in ``provenance``: the netlist the
-    *other* half's producer recorded against the netlist this run
-    recorded. Equal means the rows are still about this design, whatever
-    has happened to the RTL in between — a re-synthesis that changed
-    nothing publishes the same bytes. Anything else is not a match,
-    ``None`` included: a model written before this build, a netlist that
-    could not be hashed, and a power run whose ``netlist-source`` was a
-    routed database all leave nothing to compare, and a half whose
-    binding cannot be shown is dropped rather than assumed. That is the
-    strict direction, and the cost of being wrong the other way is a
-    breakdown attributed to a netlist that never produced it.
-
-    Symmetric because the failure is. The synthesis direction is the
-    obvious one — it overwrites the netlist under a power half it did not
-    produce — but the power direction fails too: a `rb power` run whose
-    netlist does not hash equal to the synthesis provenance in the
-    directory read something the local ``modules`` rows do not describe,
-    and inheriting them would publish per-module areas for a netlist this
-    publication did not measure. What is asymmetric is how often each
-    side refuses, not whether it is asked (see the module docstring).
-
-    Exposed rather than folded into the loop because the manifest merge
-    has to make the same call about the same publication — see
+    The manifest merge uses the same answer; see
     :func:`rtl_buddy.phys.publish._publish`.
     """
     mine = _PROVENANCE_BLOCK.get(own_half)
@@ -463,13 +307,11 @@ def may_inherit_other_half(existing: dict | None, new: dict, *, own_half) -> boo
 
 
 def provenance_of(model) -> dict:
-    """``model``'s provenance block, with every stable key present.
+    """``model``'s provenance block with every stable key present.
 
-    Normalising on read rather than trusting the document, because the
-    documents this is asked about include ones written by an rtl_buddy
-    that had no provenance block at all. A missing entry reads as
-    ``None``, which :func:`may_inherit_other_half` treats as "no evidence"
-    — the same answer it gives a hash that does not match.
+    Documents written before provenance existed read as ``None``
+    throughout, which :func:`may_inherit_other_half` treats as no
+    evidence.
     """
     recorded = model.get("provenance") if isinstance(model, dict) else None
     recorded = recorded if isinstance(recorded, dict) else {}
@@ -495,18 +337,11 @@ def _top_of(model: dict) -> str | None:
 
 
 def blank_half(model: dict, own_half: str) -> dict:
-    """``model`` with ``own_half`` and the totals it owns nulled out.
+    """``model`` with ``own_half``, its totals and its provenance nulled out.
 
-    The counterpart of :func:`merge_model`, walking the same
-    :data:`_HALVES` pairing so the two cannot disagree about which
-    totals travel with which half. Used when a rerun has cleared the raw
-    artefacts behind a half but will not republish it — see
-    :func:`rtl_buddy.phys.publish.invalidate_half` for why that is a
-    state worth writing down rather than leaving alone.
-
-    The other half is untouched, including its totals: a `rb power` run
-    that failed says nothing about the synthesis rows a `rb synth` put
-    in the same directory.
+    The counterpart of :func:`merge_model`, used by
+    :func:`rtl_buddy.phys.publish.invalidate_half`. The other half and its
+    totals are untouched.
     """
     blanked = dict(model)
     blanked["totals"] = dict(model.get("totals") or {})
@@ -526,10 +361,8 @@ def blank_half(model: dict, own_half: str) -> dict:
 def write_model(model: dict, artefact_dir) -> str:
     """Write the model into ``artefact_dir`` and return its path.
 
-    Through a sibling ``.tmp`` and :func:`os.replace`, the same way the
-    dispatch plan and the result envelopes are written: a `rb phys` read
-    racing a synthesis that is rewriting the document must see one
-    version or the other, never a truncated one.
+    Written through a temp file and :func:`os.replace`, so a reader never
+    sees a partial file.
     """
     artefact_dir = Path(artefact_dir)
     artefact_dir.mkdir(parents=True, exist_ok=True)
@@ -549,13 +382,10 @@ def load_model(path) -> dict:
 
 
 def load_model_or_none(artefact_dir) -> dict | None:
-    """The model already in ``artefact_dir``, or ``None``.
+    """The model in ``artefact_dir``, or ``None`` if absent or unreadable.
 
-    The merge's read side, and the reason it is separate from
-    :func:`load_model`: a previous model that is absent, truncated by a
-    killed run, or written by an rtl_buddy that predates the document is
-    simply "nothing to merge", never an error to propagate into a flow
-    that has otherwise succeeded.
+    Unlike :func:`load_model`, a bad previous model is "nothing to merge"
+    and never an error for the flow that is publishing.
     """
     try:
         model = load_model(Path(artefact_dir) / MODEL_FILENAME)

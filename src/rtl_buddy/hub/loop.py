@@ -1,12 +1,6 @@
 """asyncio orchestration for ``rb hub start``.
 
-This module glues the server (:mod:`rtl_buddy.hub.server`) to the
-discovery and config layers and runs the event loop until a signal,
-``rb hub stop``, or Ctrl-C asks the daemon to exit.
-
-Kept narrow: anything specific to clients (the resolver, WCP bridge,
-viewer HTTP layer) lives in its own module so this file stays an
-obviously-correct boot sequence.
+Starts the hub server and viewer listeners, writes the discovery record, and runs the event loop until a signal, ``rb hub stop`` or Ctrl-C.
 """
 
 from __future__ import annotations
@@ -36,24 +30,14 @@ from .viewer_http import ViewerServer
 logger = logging.getLogger(__name__)
 
 
-# Minimum viewer release the hub's in-env SPA bundle path targets.
-# Mirrors the `rtl-buddy-view` floor in tool_manifest.py — the two are
-# bumped together by convention (#266) so "which view does rtl_buddy
-# need" has one answer. 0.3.0 adds the `query` CLI consumed by
-# `rb hier-query` (no SPA change over 0.2.3, whose bundle is what the
-# coverage overlay rendering still guards against going stale).
-# rtl_buddy declares no view pin in pyproject.toml, so this runtime
-# guard IS the floor for the in-process viewer_bundle path — it catches
-# editable / old in-env installs that bypass any resolve-time floor.
+# Minimum rtl-buddy-sch / rtl-buddy-view release for the in-env SPA bundle.
+# Keep equal to the floor in tool_manifest.py. rtl_buddy declares no pin in
+# pyproject.toml, so this runtime check is the only floor for the in-process bundle.
 _VIEW_MIN_VERSION = "0.3.0"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
-    """Leading (major, minor, patch) ints of a PEP 440 version string.
-
-    Enough for a floor comparison; non-numeric suffixes (rc/dev/+local)
-    are dropped, so a pre-release of the floor compares equal to it.
-    """
+    """Leading (major, minor, patch) ints of a version string; suffixes are dropped."""
     parts = []
     for segment in version.split(".")[:3]:
         match = re.match(r"\d+", segment)
@@ -62,22 +46,11 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def _check_view_version() -> None:
-    """Fail fast when a too-old in-env viewer is used for the SPA.
+    """Fail fast when the in-env viewer is older than the floor.
 
-    rtl_buddy pins no version of the viewer, so nothing guards the
-    in-process ``rtl_buddy_view.viewer_bundle`` import at resolve time.
-    This repeats the floor when the bundle is actually consumed so an
-    old editable / git install surfaces as a friendly hint instead of a
-    stale SPA (or an AttributeError) later. Skipped when the installed
-    version can't be read (no distribution metadata); there a successful
-    import stands in.
-
-    The dist is probed under both its names (``viewer_dist_version()``:
-    ``rtl-buddy-sch`` first, then the pre-rename ``rtl-buddy-view``).
-    Every ``rtl-buddy-sch`` release is >= 0.7.0 and so clears this floor
-    outright — the comparison still runs on it, because one code path
-    that reads whichever dist is installed is easier to trust than a
-    branch that trusts one of them by name.
+    Runs when the in-process bundle is consumed, so an old editable or git
+    install gives a hint instead of a stale SPA. Skipped when the installed
+    version cannot be read. Both dist names are probed (``viewer_dist_version()``).
     """
     found = viewer_dist_version()
     if found is None:
@@ -98,8 +71,7 @@ def _check_view_version() -> None:
 class _PortInUseError(Exception):
     """Bind failed because the port is held by another process.
 
-    Carried from ``_run`` up to ``serve`` where it's translated into a
-    clean ``rb hub start`` error message + exit code 1 (no traceback).
+    ``serve`` turns it into a one-line error and exit code 1.
     """
 
     def __init__(self, role: str, port: int) -> None:
@@ -109,9 +81,7 @@ class _PortInUseError(Exception):
 
 
 async def _start_listener(coro, *, role: str, port: int):
-    """Run a listener-bind coroutine, translating EADDRINUSE into a
-    clean :class:`_PortInUseError` so the CLI doesn't print a raw
-    websockets/asyncio traceback when a user pins a busy port."""
+    """Run a listener-bind coroutine, translating EADDRINUSE into :class:`_PortInUseError`."""
     try:
         return await coro
     except OSError as exc:
@@ -135,29 +105,19 @@ def _print_startup_banner(
     view_json_path: Path | None,
     log_path: Path | None,
 ) -> None:
-    """Print connection info to stdout so the user isn't left guessing
-    after ``rb hub start`` blocks the terminal.
+    """Print connection info so the user is not left guessing after ``rb hub start`` blocks.
 
-    Adapter peers (nvim, ``rb wave``) auto-discover the hub via
-    ``.rtl-buddy/hub.json`` so they don't need this output — the
-    browser-bound viewer URL is the main thing we're surfacing. The
-    explicit "Press Ctrl-C" line documents that the foregrounded
-    process is by design; ``rb hub start --daemon`` re-launches this
-    same code path detached and prints its own, shorter banner.
+    Adapter peers find the hub through ``.rtl-buddy/hub.json``; the banner is
+    for the person at the terminal. ``--daemon`` prints its own, shorter banner.
     """
     lines = ["rtl-buddy-hub running."]
     if http_port is not None:
         base = f"http://127.0.0.1:{http_port}"
-        # The landing page is the URL to hand a person: it lists every
-        # app this hub can serve and says which already has a tab. The
-        # SPA keeps its own line because it is the one people paste
-        # into scripts and bookmarks.
+        # The landing page is the URL to hand a person; the SPA keeps its
+        # own line for scripts and bookmarks.
         lines.append(f"  Hub:      {base}/")
         url = f"{base}{landing_page.VIEW_PAGE_ROUTE}"
-        # Append the auto-load query string only when the view.json is
-        # actually servable — otherwise it'd 404 and the SPA would land
-        # in the empty state with a misleading URL on the user's first
-        # click.
+        # Auto-load view.json only when it exists, or the SPA opens empty.
         if view_json_path is not None and view_json_path.is_file():
             url += "?view=/view.json"
         lines.append(f"  Viewer:   {url}")
@@ -171,19 +131,14 @@ def _print_startup_banner(
 def _discover_viewer_bundle() -> Path | None:
     """Return the SPA bundle shipped by rtl-buddy-view, or ``None``.
 
-    Lets ``rb hub start --serve-viewer`` work without ``--viewer-bundle``
-    when the user has rtl-buddy-view installed alongside rtl-buddy. The
-    package is an optional runtime peer — the hub doesn't declare it as
-    a hard dep, so the import is wrapped and a missing module is just
-    "no bundle here, use the placeholder."
+    Lets ``--serve-viewer`` work without ``--viewer-bundle``. The package is an
+    optional peer, so a missing import means no bundle.
     """
     try:
         from rtl_buddy_view import viewer_bundle  # type: ignore[import-not-found]
     except ImportError:
         return None
-    # The in-env library is about to be consumed — enforce the floor here
-    # (rtl_buddy declares no view pin, so this is the only guard for the
-    # in-process bundle path; raises FatalRtlBuddyError when too old).
+    # Raises FatalRtlBuddyError when the installed viewer is below the floor.
     _check_view_version()
     try:
         return viewer_bundle.path()
@@ -203,9 +158,7 @@ async def _run(
     axi_perf_source: Path | None = None,
 ) -> int:
     if view_json_override is not None:
-        # ``rb hub start --model`` already resolved + generated the
-        # view.json before we got here. Use it as-is, ignoring
-        # hub.toml's [mapping].view_json — the CLI flag wins.
+        # --model has already generated view.json; it overrides [mapping].view_json.
         view_json_path = view_json_override
     elif config.mapping.view_json:
         view_json_path = (project_root / config.mapping.view_json).resolve()
@@ -289,7 +242,7 @@ async def _run(
         try:
             loop.add_signal_handler(sig, _request_stop, sig.name)
         except NotImplementedError:
-            # Windows or certain embedded loops don't support add_signal_handler.
+            # add_signal_handler is unsupported on Windows and some embedded loops.
             pass
 
     serve_task = asyncio.create_task(server.serve_forever(), name="hub-serve")
@@ -341,26 +294,17 @@ def serve(
     models_file_pin: Path | None = None,
     axi_perf_source: Path | None = None,
 ) -> int:
-    """Run the hub event loop until exit. Returns the process exit code.
+    """Run the hub event loop until exit; return the process exit code.
 
-    ``view_json_override`` takes precedence over ``[mapping].view_json``
-    from hub.toml — used by ``rb hub start --model NAME`` to feed in
-    the freshly-generated cache path without touching the user's
-    hub.toml.
-
-    ``initial_model`` records the start-time ``--model NAME`` selection
-    so ``GET /models`` and ``.rtl-buddy/hub.json`` know which model is
-    active before any SPA ``?model=`` switch.
-
-    ``models_file_pin`` records ``--models-file PATH``: when set, both
-    ``GET /models`` and ``GET /view.json?model=`` honour the pin and
-    refuse model names that aren't in that file.
-
-    ``axi_perf_source`` records ``--axi-perf-from PATH``: forwarded
-    to every ``view_builder.build_view_json`` call so the generated
-    view.json carries the axi-perf overlay + source metadata the
-    SPA's "Open in marimo" button reads. Phase 2.5 of the marimo
-    umbrella.
+    - ``view_json_override``: overrides ``[mapping].view_json`` from hub.toml
+      (``rb hub start --model NAME``).
+    - ``initial_model``: the start-time ``--model`` selection, reported by
+      ``GET /models`` and ``.rtl-buddy/hub.json``.
+    - ``models_file_pin``: ``--models-file PATH``; ``GET /models`` and
+      ``GET /view.json?model=`` refuse model names not in that file.
+    - ``axi_perf_source``: ``--axi-perf-from PATH``; forwarded to every
+      ``build_view_json`` call so view.json carries the axi-perf overlay and
+      source metadata.
     """
 
     try:
@@ -377,12 +321,7 @@ def serve(
             )
         )
     except _PortInUseError as exc:
-        # Clean one-line error in place of a 20-line websockets traceback.
-        # The user pinned a port that's already held; tell them which port
-        # and where to change it, then exit 1 without a stack trace.
-        #
-        # Rich parses `[hub]` as a style tag and eats the brackets. Use
-        # `\[` to escape the opening bracket so the literal hub.toml
+        # Rich parses `[hub]` as a style tag; `\[` escapes it so the hub.toml
         # section name renders.
         which_toml = (
             r"\[hub].http_port" if exc.role == "HTTP" else r"\[hub].listen_port"

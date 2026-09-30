@@ -1,16 +1,6 @@
 """Loader for ``<project_root>/.rtl-buddy/hub.toml``.
 
-The hub config is intentionally tiny (§5 of the protocol spec): a
-``[hub]`` block for transport-layer tunables and a ``[mapping]`` block
-for the testbench-prefix strip + per-instance aliases that drive
-``view ↔ wave`` resolution. Anything else (surfer flags, nvim
-keymaps, …) lives in the adapters, not here.
-
-The loader is forgiving by design — the file is optional and defaults
-are baked into :class:`HubConfig`. Unknown top-level sections raise
-:class:`HubConfigError` so typos are caught at startup, but unknown
-keys *inside* known sections are tolerated to keep forward-compat
-cheap.
+The file is optional and has a ``[hub]`` block (ports, log path) and a ``[mapping]`` block (testbench prefix, signal aliases, ``view.json`` path). Unknown top-level sections raise :class:`HubConfigError`; unknown keys inside known sections are ignored.
 """
 
 from __future__ import annotations
@@ -27,17 +17,12 @@ DEFAULT_LOG_PATH = ".rtl-buddy/hub.log"
 
 
 class HubConfigError(Exception):
-    """Raised when the on-disk ``hub.toml`` is malformed or unreadable."""
+    """``hub.toml`` is unreadable or invalid."""
 
 
 @dataclass(frozen=True, slots=True)
 class SignalAlias:
-    """Pre-strip rewrite from a legacy testbench scope to a view path.
-
-    Applied *before* :attr:`HubMappingConfig.tb_prefix` is stripped, so
-    the ``wave`` side of the alias is the literal wave path, not a
-    post-prefix-strip remnant. See §5 of the protocol spec.
-    """
+    """Rewrite of a wave path to a view path, applied before :attr:`HubMappingConfig.tb_prefix` is stripped."""
 
     wave: str
     view: str
@@ -45,7 +30,7 @@ class SignalAlias:
 
 @dataclass(frozen=True, slots=True)
 class HubServerConfig:
-    """``[hub]`` block — transport configuration."""
+    """``[hub]`` block: ports and log path."""
 
     listen_port: int = 0
     http_port: int = 0
@@ -54,18 +39,17 @@ class HubServerConfig:
 
 @dataclass(frozen=True, slots=True)
 class HubMappingConfig:
-    """``[mapping]`` block — coordinate translation configuration."""
+    """``[mapping]`` block: wave-to-view path translation."""
 
     tb_prefix: str = DEFAULT_TB_PREFIX
     signal_aliases: tuple[SignalAlias, ...] = field(default_factory=tuple)
     view_json: str | None = None
-    """Path (relative to the project root) of the ``view.json`` snapshot the
-    resolver consumes. ``None`` falls back to ``.rtl-buddy/view.json``."""
+    """``view.json`` path relative to the project root; ``None`` means ``.rtl-buddy/view.json``."""
 
 
 @dataclass(frozen=True, slots=True)
 class HubConfig:
-    """Parsed ``hub.toml`` — handed to the server loop and resolver."""
+    """Parsed ``hub.toml``."""
 
     hub: HubServerConfig = field(default_factory=HubServerConfig)
     mapping: HubMappingConfig = field(default_factory=HubMappingConfig)
@@ -84,12 +68,9 @@ _KNOWN_SECTIONS = frozenset({"hub", "mapping"})
 
 
 def load_hub_config(path: Path | None) -> HubConfig:
-    """Read ``path`` (a ``hub.toml``) and return a :class:`HubConfig`.
+    """Read a ``hub.toml`` into a :class:`HubConfig`.
 
-    When ``path`` is ``None`` or points at a non-existent file, returns
-    a default :class:`HubConfig`. The protocol's design choice is that
-    the hub runs with sensible defaults even on a freshly initialised
-    project; the file is for overrides, not gating.
+    Returns the defaults when ``path`` is ``None`` or does not exist. Raises :class:`HubConfigError` on invalid content.
     """
 
     if path is None or not path.exists():
@@ -187,7 +168,7 @@ def _parse_mapping_block(raw: dict[str, Any], path: Path) -> HubMappingConfig:
 
 
 def default_config_path(project_root: Path) -> Path:
-    """Where the hub looks for its config inside ``project_root``."""
+    """Return the ``hub.toml`` path inside ``project_root``."""
 
     return project_root / ".rtl-buddy" / HUB_CONFIG_FILENAME
 

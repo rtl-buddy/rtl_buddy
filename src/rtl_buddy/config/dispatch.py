@@ -2,123 +2,10 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Dispatch (remote test execution) configuration (#351).
+"""Dispatch (remote test execution) configuration: the ``cfg-dispatch`` section of root_config.yaml and the reservation blocks in tests.yaml.
 
-``cfg-dispatch`` in root_config.yaml selects and parameterizes the
-execution backend for regression test runs:
-
-.. code-block:: yaml
-
-    cfg-dispatch:
-      backend: slurm           # default: local (in-process, today's behavior)
-      resources:               # cluster-wide per-job defaults
-        cpus: 2
-        mem: 4G
-        time: 01:00:00
-      compile:                 # the shared compile's own reservation
-        cpus: 4
-        mem: 16G
-        time: 02:00:00
-        parallel: 4            # distinct builds compiled at once in the
-                               # build job; its cpus reservation is scaled
-                               # by this (4 x 4 = 16 above), mem/time are not
-      sbatch-args:             # passed through to sbatch verbatim
-        - --partition=verif
-      poll-interval: 10        # seconds between queue polls while collecting
-      progress-interval: 60    # seconds between console progress lines (0 = quiet)
-      max-wait: 7200           # seconds the head waits before failing loudly
-      orphans: warn            # what an interrupted run's surviving jobs get
-                               # on the next invocation: warn, cancel, adopt
-      max-jobs-per-array: 200  # %N throttle on EACH submitted Slurm array
-      max-array-size: 1001     # the cluster's Slurm MaxArraySize; omit it to
-                               # read the value from `scontrol show config`
-      max-array-tasks: 1000    # its SchedulerParameters=max_array_tasks, if the
-                               # cluster caps tasks-per-array below that
-      jobs: 4                  # local-parallel only: concurrent subprocesses
-      retry:                   # optional; entirely off unless attempts > 0
-        attempts: 2            # EXTRA attempts after the first
-        backoff-sec: 60        # first delay, doubling per attempt
-        backoff-max-sec: 600   # cap
-        jitter: 0.5            # +/- fraction, to decorrelate a batch
-        classifiers: [license-queue]   # which kills may be retried
-
-Per-test reservation overrides use the same ``resources`` shape in
-tests.yaml at testbench and test level; :func:`resolve_resources` layers
-them field-by-field (test over testbench over ``cfg-dispatch`` defaults).
-
-A reservation also depends on the builder mode the job runs under: an
-instrumented ``-M cov`` build carries per-point counters through the whole
-design and a ``-M debug`` one dumps waves, so the same simulation that fits
-in 1 GB under ``-M reg`` can need an order of magnitude more and about
-twice the wall clock. Every reservation block therefore takes a ``modes:``
-sub-block (#634):
-
-.. code-block:: yaml
-
-    resources:
-      cpus: 1
-      mem: 1G
-      time: "00:15:00"
-      modes:
-        cov: {mem: 16G, time: "00:30:00"}
-        debug: {mem: 4G}
-
-**Precedence.** The base value resolves exactly as it always has — most
-specific layer wins, field by field — and the ``modes:`` block of the run's
-mode is then layered OVER that result, least specific layer first. So for
-one field, under mode ``m``::
-
-    test.modes[m] > testbench.modes[m] > cfg-dispatch.modes[m]
-        > test > testbench > cfg-dispatch > built-in default
-
-Any mode block beats every base field, which is what makes the feature
-usable: a suite-wide ``modes.cov.mem`` is not silently undone by one test's
-base ``mem``. A run whose mode names no block resolves byte-identically to
-every release before this one, and ``modes:`` is a scheduling fact only —
-it never reaches a compile fingerprint or a shared-build key.
-
-A mode block carries the reservation fields alone (``cpus``, ``mem``,
-``time``, plus ``verilate`` inside a ``compile:`` block). ``parallel``,
-``split-verilate``, a nested ``modes:`` and any unknown key are rejected at
-load rather than dropped, because a silently dropped reservation is how
-this was missed in the first place. Mode NAMES are free text: they are the
-project's own ``cfg-rtl-builder.builder-opts`` keys, so nothing here can
-know which ones exist.
-
-The compile phase has the same escape hatch one level up, at the top of
-tests.yaml — the dispatched build job is per suite, so the suite is the
-right owner (#497):
-
-.. code-block:: yaml
-
-    rtl-buddy-filetype: test_config
-    compile:                 # THIS suite's build job only
-      mem: 48G               # a big top-level TB; cpus/time inherited
-      parallel: 1            # ...and how many builds it runs at once
-    testbenches:
-      - name: tb_chip_small   # ~6 GB, ~4 minutes
-        filelist: [...]
-      - name: tb_chip_t1      # the product geometry: ~130 GB, ~2 hours
-        filelist: [...]
-        compile:              # ...so it says so here (#551)
-          mem: 256G
-          time: "06:00:00"
-
-:func:`resolve_compile_resources` layers its reservation fields
-field-by-field over ``cfg-dispatch.compile`` over ``cfg-dispatch.resources``,
-with a testbench's own ``compile:`` block the most specific layer of all
-(#551); :func:`compile_parallel` layers ``parallel`` the same way (#547).
-Each of those layers takes its own ``modes:`` sub-block, applied over the
-resolved compile value in the same order (#634).
-The build job is per suite, so a suite that compiles one key says
-``parallel: 1`` and reserves ``cpus`` rather than ``cpus x`` the
-cluster-wide value.
-
-That one build job compiles every planned testbench, so its reservation is
-AGGREGATED over them — :func:`aggregate_compile_resources`. The two tests.yaml
-layers differ in what they describe: a suite block is whole-job and floors
-the result, a testbench block is per build and is summed (``mem``) or
-queued (``time``) with its siblings.
+Reservations resolve field by field (test, testbench, ``cfg-dispatch``), then the ``modes:`` block for the run's builder mode is layered on top.
+See docs/concepts/dispatch.md.
 """
 
 import logging
@@ -134,55 +21,27 @@ from ..logging_utils import log_event
 
 logger = logging.getLogger(__name__)
 
-# A defined time limit is load-bearing, not cosmetic: reservation
-# right-sizing computes time utilization as Elapsed/Timelimit, which is
-# undefined on partitions whose default is UNLIMITED. Every dispatched
-# job therefore gets an explicit --time, from this default if nothing
-# else sets one.
+# Every dispatched job gets an explicit --time: right-sizing computes Elapsed/Timelimit, which is undefined on partitions defaulting to UNLIMITED.
 DEFAULT_JOB_TIME = "01:00:00"
 DEFAULT_JOB_CPUS = 1
 
-# Cores the verilate job reserves per build when nothing says otherwise
-# (#593). Verilation is single-threaded, so the figure is not a guess at
-# how wide the phase can run: it is one core for the compiler and one for
-# the I/O and the process tree around it. `compile.cpus` stays the C++
-# build's number, which is the phase that actually scales.
+# Verilation is single-threaded: one core for the compiler, one for I/O and child processes. `compile.cpus` sizes the C++ build.
 DEFAULT_VERILATE_CPUS = 2
 
-# What an interrupted run's surviving jobs get on the next invocation
-# (#521). `warn` keeps every release before this one's behaviour: the
-# orphans are named and a fresh fleet goes out beside them. It is the
-# default because the other two act on jobs the user has not looked at
-# yet — `cancel` destroys a fleet that may be minutes from finishing,
-# and `adopt` binds this run's verdict to results it did not submit.
+# `warn` names orphaned jobs and submits a fresh fleet beside them. `cancel` and `adopt` act on jobs the user has not inspected, so they are opt-in.
 ORPHANS_POLICIES = ("warn", "cancel", "adopt")
 ORPHANS_DEFAULT = "warn"
 
-# Accept the Slurm --time spellings we pass through verbatim:
-# minutes, MM:SS, HH:MM:SS, DD-HH, DD-HH:MM, DD-HH:MM:SS.
+# Slurm --time spellings passed through verbatim.
 _TIME_RE = re.compile(r"^\d+(-\d{1,2}(:\d{2}){0,2}|(:\d{2}){1,2})?$")
 
 
 @serde
 class DispatchResourcesFile:
-    """Per-job resource reservation fields; ``None`` means "inherit".
+    """Per-job resource reservation fields; ``None`` means inherit.
 
-    Scheduler-agnostic on purpose: the Slurm backend maps them to
-    ``--cpus-per-task`` / ``--mem`` / ``--time``, and any later backend
-    reuses the same schema.
-
-    ``time`` and ``mem`` accept ``int`` as well as ``str`` so YAML 1.1's
-    sexagesimal resolver — which turns an unquoted ``4:00:00`` into the
-    integer ``14400`` — is caught at validation with a clear message
-    rather than silently sent to Slurm as 14400 minutes (10 days).
-
-    ``modes`` holds the per-builder-mode overrides (#634), kept as the raw
-    mapping the file wrote rather than a typed sub-class: the keys are the
-    project's own builder modes, and a plain dict is what keeps this block
-    JSON-safe for the dispatch plan manifest. It is validated — mapping
-    shape, mode names, field names, and the same ``mem``/``time`` rules the
-    base fields obey — by :func:`validate_modes_block` at load, and read
-    back by :func:`mode_override` where a reservation is resolved.
+    ``time`` and ``mem`` accept ``int`` so that YAML 1.1's sexagesimal reading of an unquoted ``4:00:00`` (integer 14400) is rejected at validation instead of reaching Slurm.
+    ``modes`` is the raw per-builder-mode override mapping, validated by :func:`validate_modes_block` and read by :func:`mode_override`.
     """
 
     cpus: int | None = None
@@ -193,30 +52,11 @@ class DispatchResourcesFile:
 
 @serde
 class CompileVerilateFile:
-    """``compile.verilate`` — the verilate job's own reservation (#593).
+    """``compile.verilate``: the verilate job's own reservation.
 
-    Under Slurm the per-suite compile is two chained jobs: a verilate job
-    that runs Verilator's single-threaded front end, and a build job that
-    runs the ``make`` over the sources it emitted. They want opposite
-    shapes — the first is one core at peak memory, the second is
-    ``compile.cpus`` cores at a fraction of it — so they take separate
-    reservations, and this is the first one's.
-
-    ``cpus`` defaults to :data:`DEFAULT_VERILATE_CPUS`; ``mem`` and
-    ``time`` inherit the fully resolved compile values, because those are
-    the figures a project already sized for the verilation.
-
-    Its own class rather than :class:`DispatchResourcesFile` for the same
-    reason the compile block has one: the fields are identical, and
-    keeping the shapes apart is what stops ``parallel`` or
-    ``split-verilate`` from being documented onto a block that cannot
-    honour them.
-
-    ``modes`` is accepted by the schema only to be REFUSED (#634): the
-    per-mode override of a verilate reservation is
-    ``compile.modes.<mode>.verilate``, so a ``modes:`` written inside
-    ``verilate:`` would be dropped silently and reserve the base figure for
-    an instrumented build.
+    Under Slurm the per-suite compile is a single-threaded verilate job chained to a build job.
+    ``cpus`` defaults to :data:`DEFAULT_VERILATE_CPUS`; ``mem`` and ``time`` inherit the resolved compile values.
+    ``modes`` is accepted only so it can be refused: write the per-mode override as ``compile.modes.<mode>.verilate``.
     """
 
     cpus: int | None = None
@@ -227,54 +67,26 @@ class CompileVerilateFile:
 
 @serde
 class DispatchCompileFile:
-    """``cfg-dispatch.compile`` — the compile's reservation *and* its concurrency.
+    """``cfg-dispatch.compile``: the compile's reservation and its concurrency.
 
-    A separate class from :class:`DispatchResourcesFile` even though the
-    three reservation fields are identical, because that class is also the
-    serde type behind every ``resources:`` block in tests.yaml (testbench
-    and test level). ``parallel`` there would mean nothing: a per-test
-    reservation sizes one sim job, and "compile N builds at once" is a
-    property of the one build job per suite.
-
-    Keeping the shapes apart is schema hygiene, not a guard rail — serde
-    drops unknown keys, so ``resources: {parallel: 2}`` is silently
-    discarded wherever it is written rather than rejected. What the split
-    buys is that the field cannot be *documented* onto a per-test block by
-    accident, and that a later strict-key pass has one class to make
-    strict. A project that writes it in the wrong place is told by the
-    docs, not by an error.
-
-    The suite-level ``compile:`` block has its own class again
-    (:class:`SuiteCompileFile`) for the same reason and one more: there
-    ``parallel`` must be optional, so that a suite overriding only ``mem``
-    does not also pin the concurrency to this class's default of 1 (#547).
+    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. Unknown keys such as ``parallel`` in a per-test ``resources:`` block are silently dropped by serde, not rejected.
     """
 
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
-    # Per-builder-mode reservation overrides (#634), layered over the
-    # resolved compile value. A mode block here may carry `verilate:`, and
-    # may not carry `parallel` or `split-verilate` — those size the one
-    # build job per suite whatever mode it compiles in.
+    # Per-builder-mode overrides layered over the resolved compile value. A mode block may carry `verilate:` but not `parallel` or `split-verilate`.
     modes: dict | None = None
-    # Distinct builds (unique compile keys) the dispatched build job may
-    # Verilate concurrently (#495). A suite with 8 plusdefines sets held
-    # its whole sim fan-out behind 8 serial ~1.1-core compiles inside one
-    # 16-CPU reservation; this is what spends that reservation. 1 is
-    # today's serial loop, and the default.
+    # Distinct builds the build job compiles concurrently; 1 is serial.
     parallel: int = 1
-    # The verilate job's own reservation, when the compile is split (#593).
+    # The verilate job's reservation when the compile is split.
     verilate: CompileVerilateFile | None = None
-    # Whether to split it at all. True chains a verilate job and a build
-    # job with `afterok`; False keeps the single `verilator --binary` job
-    # every release before this one submitted. Only a backend that can
-    # chain jobs acts on it, so it is inert off Slurm.
+    # True chains a verilate job and a build job with `afterok`; False keeps one `verilator --binary` job. Inert off Slurm.
     split_verilate: bool = field(rename="split-verilate", default=True)
 
 
 def _validate_time(value):
-    """Coerce/validate a ``--time`` value; reject the sexagesimal trap."""
+    """Validate a ``--time`` value and reject the sexagesimal trap."""
     if value is None:
         return None
     if isinstance(value, int):
@@ -298,25 +110,16 @@ def _validate_mem(value):
     return str(value)
 
 
-# The keys a `modes.<mode>` block may carry (#634). The reservation and
-# nothing else: `parallel` and `split-verilate` describe the one build job
-# per suite, which is one job whatever mode it compiles in, and a nested
-# `modes:` would be a mode of a mode. All three are rejected rather than
-# ignored — the whole point of the block is that a dropped reservation is
-# not noticed until a job is OOM-killed.
+# Keys a `modes.<mode>` block may carry. Job-wide keys and a nested `modes:` are rejected because a dropped reservation goes unnoticed until an OOM kill.
 _MODE_FIELDS = ("cpus", "mem", "time")
 _MODE_JOB_WIDE_KEYS = ("parallel", "split-verilate", "split_verilate")
 
 
 @dataclass
 class ModeOverride:
-    """One validated ``modes.<mode>`` block, ready to layer (#634).
+    """One validated ``modes.<mode>`` block, shaped like the reservation blocks it overrides.
 
-    Shaped like the reservation blocks it overrides — ``cpus``/``mem``/
-    ``time``, plus ``verilate`` where it came from a ``compile:`` block —
-    so the layering loops treat it as one more layer rather than as a
-    special case. ``None`` in a field means "this mode said nothing", which
-    leaves the resolved base value standing.
+    ``None`` in a field means the mode said nothing and the base value stands.
     """
 
     cpus: int | None = None
@@ -326,17 +129,10 @@ class ModeOverride:
 
 
 def _validate_mode_entry(block, *, where, compile_block, allow_verilate):
-    """Validate one ``modes.<mode>`` block; return a normalised raw dict.
+    """Validate one ``modes.<mode>`` block; return a normalised dict.
 
-    A plain dict out, not a dataclass: the validated block is stored back
-    onto its owner and travels through the dispatch plan manifest, which is
-    JSON.
-
-    Strict about its keys, unlike the base reservation fields around it.
-    That is not an inconsistency to be tidied away later: the base shape has
-    been loaded leniently by every release so far and tightening it would
-    reject configs that work, while a ``modes:`` block has no such history —
-    and a typo in one is a reservation that silently keeps the base figure.
+    Keys are strict, unlike the base reservation fields, because a typo would silently keep the base figure.
+    The result is stored back on its owner and travels through the JSON dispatch plan manifest.
     """
     if not isinstance(block, dict):
         allowed = ", ".join(_MODE_FIELDS + (("verilate",) if allow_verilate else ()))
@@ -387,36 +183,22 @@ def _validate_mode_entry(block, *, where, compile_block, allow_verilate):
                 allow_verilate=False,
             )
     except FatalRtlBuddyError as e:
-        # Prefixed with the mode, so the message names the block to edit as
-        # well as the trap it fell into (the field validators word the trap).
+        # Prefix the mode so the message names the block to edit.
         raise FatalRtlBuddyError(f"{where}: {e}") from e
-    # Stated keys only: an absent field and an explicit null both mean
-    # "inherit", and dropping them keeps the round trip small and the
-    # provenance honest about what the block actually says.
+    # Keep stated keys only: absent and null both mean inherit.
     return {key: value for key, value in validated.items() if value is not None}
 
 
 def _passthrough_cpus(value):
-    """``cpus`` for a non-compile block: unvalidated, exactly as today."""
+    """``cpus`` for a non-compile block, unvalidated."""
     return value
 
 
 def validate_modes_block(modes, *, where="", compile_block=False, allow_verilate=False):
-    """Validate a raw ``modes:`` mapping; return a normalised copy (#634).
+    """Validate a raw ``modes:`` mapping; return a normalised copy, or ``None`` for ``None``.
 
-    The single home for the ``modes:`` shape, called wherever a reservation
-    block is validated at load. ``compile_block`` holds the fields to the
-    stricter compile rules (an addable ``mem``, a non-zero ``time``) that
-    the build job's aggregation depends on, and ``allow_verilate`` permits
-    the ``verilate:`` sub-block a ``compile:`` layer may carry.
-
-    Mode names are accepted as free text — they are the project's own
-    ``cfg-rtl-builder.builder-opts`` keys, so no list here could be right —
-    but they must be strings: PyYAML is a YAML 1.1 parser, so an unquoted
-    mode called ``on`` or ``no`` arrives as a boolean and would never match
-    the ``-M`` value the run carries.
-
-    ``None`` in, ``None`` out.
+    ``compile_block`` applies the stricter compile ``mem`` and ``time`` rules; ``allow_verilate`` permits a ``verilate:`` sub-block.
+    Mode names are free text but must be strings, because YAML 1.1 reads an unquoted ``on`` or ``no`` as a boolean.
     """
     if modes is None:
         return None
@@ -444,19 +226,9 @@ def validate_modes_block(modes, *, where="", compile_block=False, allow_verilate
 
 
 def mode_override(block, builder_mode, *, compile_block=False) -> ModeOverride | None:
-    """One block's ``modes.<builder_mode>`` override, or ``None`` (#634).
+    """One block's ``modes.<builder_mode>`` override, or ``None`` when there is nothing to layer.
 
-    ``None`` whenever there is nothing to layer: no block, no ``modes:``, no
-    builder mode in hand, or no entry for this mode — which is why a run in
-    a mode nothing mentions resolves exactly as it did before #634.
-
-    Validated here as well as at load, and deliberately so: the per-test and
-    per-testbench ``resources:`` blocks are raw serde by design (see
-    :func:`resolve_resources`), and a block rebuilt from a dispatch plan or
-    handed in by a caller of this module must not be able to smuggle an
-    unreadable ``mem`` into a reservation. Validation is idempotent, so a
-    block that came through :func:`validate_modes_block` pays only the
-    re-check.
+    Validates on every call because per-test and per-testbench ``resources:`` blocks are raw serde.
     """
     if builder_mode is None or block is None:
         return None
@@ -491,12 +263,8 @@ def mode_override(block, builder_mode, *, compile_block=False) -> ModeOverride |
 def effective_compile_block(block, builder_mode=None):
     """One ``compile:`` block with its ``modes.<mode>`` overrides folded in.
 
-    The PER-BUILD shape :func:`aggregate_compile_resources` and
-    :func:`verilate_build_block` combine, so the aggregation arithmetic
-    never has to know about modes: what it is handed is what this build
-    reserves in the mode the run is in (#634). The block itself where there
-    is nothing to fold, so an unmoded suite aggregates the very same object
-    it always did.
+    Gives :func:`aggregate_compile_resources` and :func:`verilate_build_block` the per-build shape for the run's mode.
+    Returns ``block`` itself when there is nothing to fold.
     """
     override = mode_override(block, builder_mode, compile_block=True)
     if override is None:
@@ -523,22 +291,10 @@ def effective_compile_block(block, builder_mode=None):
 
 
 def validate_resources_block(res, *, allow_modes=False, where=""):
-    """Validate a raw ``{cpus, mem, time}`` block; return a fresh copy.
+    """Validate a raw ``{cpus, mem, time}`` block; return a fresh copy, or ``None`` for ``None``.
 
-    The public entry point for any *other* config file that carries a
-    reservation block — today the suite-level ``compile:`` in tests.yaml
-    (#497). It exists so the YAML 1.1 sexagesimal trap (``4:00:00`` read as
-    the integer 14400) is rejected in exactly one place, at load, rather
-    than being re-derived by every loader that grows a reservation.
-
-    ``allow_modes`` says whether the owning config resolves this block
-    through a builder mode at all (#634). The default is ``False``, and an
-    elaboration profile is why: ``rb elab`` has its own resolver and no
-    builder mode, so a ``modes:`` written there could only ever be a block
-    that does nothing — which is precisely the silent drop #634 is about.
-    Rejected with a message saying so rather than accepted and ignored.
-
-    ``None`` in, ``None`` out.
+    The entry point for other config files that carry a reservation block; it rejects the YAML 1.1 sexagesimal trap at load.
+    ``modes:`` is refused unless ``allow_modes`` is true, because an owner with no builder mode (an elaboration profile) would ignore it.
     """
     if res is None:
         return None
@@ -558,17 +314,9 @@ def validate_resources_block(res, *, allow_modes=False, where=""):
 
 
 def _validate_compile_mem(value):
-    """:func:`_validate_mem`, plus the parse the build job depends on.
+    """:func:`_validate_mem`, plus a check that the build job can sum it.
 
-    A compile reservation is not only passed to sbatch: the build job's is
-    AGGREGATED — summed across the testbench blocks that can compile at the
-    same time and floored at the whole-job value — so every one of them has
-    to be a number rtl_buddy can add up (#551 review). A spelling
-    :func:`mem_to_bytes` cannot read would otherwise drop silently out of
-    that sum and shrink the reservation, which is the one outcome the
-    aggregation exists to prevent. Rejected at load instead, with the same
-    parser the aggregation uses so the two can never disagree about what a
-    legal value is.
+    The value must be readable by :func:`mem_to_bytes` and positive.
     """
     text = _validate_mem(value)
     if text is None:
@@ -581,9 +329,7 @@ def _validate_compile_mem(value):
             "such as 512M or 16G)."
         )
     if parsed <= 0:
-        # `-8G` parses cleanly and would be SUBTRACTED from the build job's
-        # sum, quietly shrinking a reservation the rest of the suite needs;
-        # `0` reserves nothing at all (#551 review round 3).
+        # A negative value would be subtracted from the sum; zero reserves nothing.
         raise FatalRtlBuddyError(
             f"dispatch resources: mem {value!r} must be greater than zero; a "
             "compile reservation is summed across the builds that run at "
@@ -593,13 +339,7 @@ def _validate_compile_mem(value):
 
 
 def _validate_compile_time(value):
-    """:func:`_validate_time`, plus the "greater than zero" the sum needs.
-
-    ``_TIME_RE`` already refuses a leading ``-``, so the case this adds is
-    ``"0"`` (and ``"00:00:00"``): a build allowed no wall clock at all
-    contributes nothing to the schedule and is killed the moment it starts
-    (#551 review round 3).
-    """
+    """:func:`_validate_time`, plus a check that the time is greater than zero."""
     text = _validate_time(value)
     if text is None:
         return None
@@ -620,18 +360,9 @@ def _validate_compile_cpus(value):
 
 
 def _validate_verilate_block(res):
-    """Validate a raw ``compile.verilate`` sub-block; return a fresh copy.
+    """Validate a raw ``compile.verilate`` sub-block; return a fresh copy, or ``None`` for ``None``.
 
-    The compile validators, unchanged: the verilate job's reservation is
-    aggregated over the planned builds exactly as the build job's is, so a
-    ``mem`` the sum cannot read or a zero ``time`` is as wrong here as
-    there (#593).
-
-    A ``modes:`` here is refused (#634): the per-mode override of a verilate
-    reservation is ``compile.modes.<mode>.verilate``, one level up, so a
-    block written inside ``verilate:`` would be dropped in silence.
-
-    ``None`` in, ``None`` out.
+    Uses the compile validators. A ``modes:`` inside it is refused; write ``compile.modes.<mode>.verilate``.
     """
     if res is None:
         return None
@@ -650,48 +381,29 @@ def _validate_verilate_block(res):
 
 @serde
 class TestbenchCompileFile:
-    """A testbench's own ``compile:`` block in tests.yaml (#551).
+    """A testbench's own ``compile:`` block in tests.yaml.
 
-    The same three reservation fields as :class:`DispatchResourcesFile`,
-    and a ``parallel`` that exists only to be REJECTED. Unknown keys are
-    dropped silently by serde, so a project writing ``parallel:`` on a
-    testbench would otherwise get no reservation change and no error — and
-    the key reads as if it meant something here, because it does one level
-    up. There is exactly one build job per suite and it compiles every
-    testbench, so "how many builds at once" cannot be a property of one of
-    them; :func:`validate_testbench_compile_block` says so at load.
-
-    These three fields are PER BUILD, unlike the suite-level block's, which
-    stay whole-job — see :func:`aggregate_compile_resources`.
+    ``cpus``, ``mem`` and ``time`` are per build, unlike the whole-job suite block (see :func:`aggregate_compile_resources`).
+    ``parallel`` and ``split-verilate`` exist only so :func:`validate_testbench_compile_block` can refuse them; serde would drop them silently.
     """
 
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
-    # This build's per-builder-mode overrides (#634), layered over the
-    # resolved compile value after every base layer.
+    # Per-builder-mode overrides layered over the resolved compile value.
     modes: dict | None = None
-    # This build's verilate reservation (#593), layered the same way the
-    # three fields above are.
+    # This build's verilate reservation.
     verilate: CompileVerilateFile | None = None
-    # Accepted by the schema, refused by the validator. See the class
-    # docstring: silence here would be worse than an error.
+    # Refused by the validator.
     parallel: int | None = None
-    # Refused for the same reason `parallel` is: there is one compile per
-    # suite, split or not, so whether to split it cannot be a property of
-    # one testbench.
+    # Refused by the validator: whether to split is a per-suite property.
     split_verilate: bool | None = field(rename="split-verilate", default=None)
 
 
 def validate_testbench_compile_block(res):
-    """Validate a raw testbench ``compile:`` block; return a fresh copy.
+    """Validate a raw testbench ``compile:`` block; return a fresh copy, or ``None`` for ``None``.
 
-    :func:`validate_resources_block`'s rules, with ``mem`` held to the
-    stricter parse the build job's aggregation needs, plus the refusal of
-    ``parallel`` (#551). The caller prefixes the testbench name, matching
-    the other errors ``TestbenchConfig`` raises.
-
-    ``None`` in, ``None`` out.
+    Applies the compile ``mem`` and ``time`` rules and refuses ``parallel`` and ``split-verilate``. The caller prefixes the testbench name.
     """
     if res is None:
         return None
@@ -722,54 +434,26 @@ def validate_testbench_compile_block(res):
 
 @serde
 class SuiteCompileFile:
-    """A suite's own top-level ``compile:`` block in tests.yaml (#497, #547).
+    """A suite's own top-level ``compile:`` block in tests.yaml.
 
-    :class:`DispatchResourcesFile`'s three reservation fields plus
-    ``parallel``, which layers over ``cfg-dispatch.compile.parallel``
-    exactly as the other three layer over their root counterparts. The
-    build job is per suite — there is no allocation two suites' compiles
-    share — so the suite is entitled to say how many builds its own job
-    runs at once, and a one-key suite that says ``parallel: 1`` reserves
-    ``cpus`` instead of ``cpus x`` the cluster-wide value (#547).
-
-    Its own class, deliberately, and not either of the two neighbours:
-
-    * not :class:`DispatchResourcesFile`, which is also the serde type
-      behind every per-test and per-testbench ``resources:`` block, where
-      "compile N builds at once" means nothing (#495);
-    * not :class:`DispatchCompileFile`, whose ``parallel`` defaults to 1
-      rather than to ``None``. Here the two have to stay distinguishable:
-      a suite that overrides only ``mem`` must keep inheriting the root
-      concurrency, and a class defaulting to 1 would silently pin every
-      such suite's build job to one build at a time.
+    Its own class because ``parallel`` and ``split-verilate`` default to ``None`` (inherit from ``cfg-dispatch.compile``), so a suite overriding only ``mem`` does not pin them.
     """
 
     cpus: int | None = None
     mem: str | int | None = None
     time: str | int | None = None
-    # ``None`` means "inherit cfg-dispatch.compile.parallel", which is the
-    # whole difference from DispatchCompileFile — see the class docstring.
+    # ``None`` inherits ``cfg-dispatch.compile.parallel``.
     parallel: int | None = None
-    # This suite's per-builder-mode overrides (#634).
     modes: dict | None = None
-    # This suite's verilate reservation (#593).
     verilate: CompileVerilateFile | None = None
-    # ``None`` means "inherit cfg-dispatch.compile.split-verilate", for the
-    # same reason ``parallel`` does: a suite overriding only ``mem`` must
-    # not also pin whether its compile is split.
+    # ``None`` inherits ``cfg-dispatch.compile.split-verilate``.
     split_verilate: bool | None = field(rename="split-verilate", default=None)
 
 
 def validate_compile_block(res):
-    """Validate a raw suite-level ``compile:`` block; return a fresh copy.
+    """Validate a raw suite-level ``compile:`` block; return a fresh copy, or ``None`` for ``None``.
 
-    :func:`validate_resources_block` plus ``parallel`` (#547): the same
-    single home for the YAML 1.1 sexagesimal trap, and the same ``>= 1``
-    rule ``cfg-dispatch.compile.parallel`` is held to, so the two layers
-    cannot disagree about what a legal value is. The caller prefixes the
-    suite path, matching the root key's message otherwise word for word.
-
-    ``None`` in, ``None`` out.
+    Applies :func:`validate_resources_block`'s rules plus ``parallel >= 1``. The caller prefixes the suite path.
     """
     if res is None:
         return None
@@ -797,11 +481,10 @@ def validate_compile_block(res):
 
 @serde
 class RightsizeConfigFile:
-    """``rightsize:`` sub-block — reservation right-sizing thresholds (#351 P3).
+    """``rightsize:`` sub-block: reservation right-sizing thresholds.
 
-    Utilization below ``over-threshold`` flags a resource over-reserved;
-    above ``near-limit`` (or a TIMEOUT/OOM kill) flags it under-reserved.
-    Suggested reservation = observed peak × ``margin``.
+    Utilization below ``over-threshold`` marks a resource over-reserved; above ``near-limit`` (or after a TIMEOUT/OOM kill) it is under-reserved.
+    The suggestion is the observed peak times ``margin``.
     """
 
     report: bool = True
@@ -810,48 +493,31 @@ class RightsizeConfigFile:
     margin: float = field(rename="margin", default=1.5)
 
 
-# The classifiers ``retry.classifiers`` accepts. Only one exists today: a job the
-# scheduler killed while its simulation was still sitting in the VCS
-# license queue (#405). Retrying anything else — a hung testbench, an
-# undersized reservation — would re-run work that failed on its own merits
-# and burn the reservation twice, so the list is closed rather than free
-# text: an unknown entry is a config error, not a silently inert one.
+# The list is closed: retrying anything else (a hung testbench, an undersized reservation) would re-run work that failed on its own merits.
+# The one classifier is a job killed while its simulation waited in the VCS license queue.
 RETRY_CLASSIFIER_LICENSE_QUEUE = "license-queue"
 RETRY_CLASSIFIERS = (RETRY_CLASSIFIER_LICENSE_QUEUE,)
 
 
 @serde
 class RetryConfigFile:
-    """``retry:`` sub-block — a retry budget for resource-condition kills (#405).
+    """``retry:`` sub-block: a retry budget for resource-condition kills.
 
-    Default-inert: ``attempts`` is 0, so a project that never writes the
-    block (or writes it without ``attempts``) keeps exactly today's
-    behaviour — a job that left no result envelope is a failure, first and
-    only try.
-
-    ``attempts`` counts EXTRA attempts after the first, so ``attempts: 2``
-    means at most three submissions of the same job. The delay before
-    attempt *n* is ``min(backoff-max-sec, backoff-sec * 2 ** (n - 1))``,
-    multiplied by ``uniform(1 - jitter, 1 + jitter)``. The jitter is not
-    decoration: the jobs that lose a license-seat race lose it together,
-    and a fixed delay would put the whole batch back in front of the same
-    exhausted pool in lockstep.
+    Inert by default (``attempts`` is 0). ``attempts`` counts extra attempts after the first.
+    The delay before attempt *n* is ``min(backoff-max-sec, backoff-sec * 2 ** (n - 1))`` times ``uniform(1 - jitter, 1 + jitter)``; the jitter keeps jobs that lost the same license race from retrying in lockstep.
     """
 
     attempts: int = 0
     backoff_sec: float = field(rename="backoff-sec", default=60.0)
     backoff_max_sec: float = field(rename="backoff-max-sec", default=600.0)
     jitter: float = 0.5
-    # Not spelled ``on:``: PyYAML is a YAML 1.1 parser, so an unquoted
-    # ``on`` key deserialises as the *boolean* ``True`` and never reaches
-    # this field — the pin would silently do nothing and the
-    # unknown-classifier check below could never fire (#405 review).
+    # Not named ``on:``: PyYAML (YAML 1.1) reads an unquoted ``on`` key as boolean ``True``.
     classifiers: list[str] = field(
         default_factory=lambda: [RETRY_CLASSIFIER_LICENSE_QUEUE]
     )
 
     def validated(self) -> "RetryConfigFile":
-        """Reject a budget that cannot mean what it says."""
+        """Raise on an invalid budget; return a normalised copy."""
         if self.attempts < 0:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch retry attempts must be >= 0 (got {self.attempts}); "
@@ -881,9 +547,7 @@ class RetryConfigFile:
             )
         return RetryConfigFile(
             attempts=self.attempts,
-            # float(), because the runtime object is arithmetic input: YAML
-            # coerces on the way in, but nothing else does, and an int here
-            # would trip the type-checked constructor.
+            # float(): the runtime object does arithmetic on these.
             backoff_sec=float(self.backoff_sec),
             backoff_max_sec=float(self.backoff_max_sec),
             jitter=float(self.jitter),
@@ -892,12 +556,7 @@ class RetryConfigFile:
 
     @property
     def enabled(self) -> bool:
-        """Would this budget ever retry anything?
-
-        An ``attempts`` with an empty ``classifiers:`` retries nothing:
-        there is no classifier left that could match, and treating that as
-        "on" would make the head re-submit jobs no rule selected.
-        """
+        """Whether this budget would retry anything. An empty ``classifiers`` list retries nothing."""
         return self.attempts > 0 and bool(self.classifiers)
 
 
@@ -907,79 +566,40 @@ class DispatchConfigFile:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
-    # Reservation for the compile, wherever it runs. Normally that is the
-    # head-dispatched build job (the compile runs on a compute node, never
-    # the submit host); for a builder that cannot share a build the compile
-    # happens inside each sim job instead, and this block is folded into
-    # that job's reservation (see combine_for_in_job_compile). Defaults to
-    # `resources` when unset; give it its own cpus/mem/time when the compile
-    # is heavier than the sims — a large Verilation or a VCS elaboration
-    # usually is. It also carries `parallel` (#495), which no per-job
-    # `resources:` block has — hence its own serde class.
+    # Compile reservation; defaults to `resources`. Normally sizes the head-dispatched build job.
+    # For a builder that cannot share a build it is folded into each sim job (see combine_for_in_job_compile).
+    # Also carries `parallel`, which per-job `resources:` blocks lack.
     compile: DispatchCompileFile | None = None
     sbatch_args: list[str] = field(rename="sbatch-args", default_factory=list)
     poll_interval: float = field(rename="poll-interval", default=10.0)
-    # Cadence of the console progress/heartbeat line while the fleet drains
-    # (#435). Deliberately NOT `poll-interval`: that paces the scheduler
-    # query (10 s, so ~180 identical lines in a half-hour regression), while
-    # this paces what a reader sees. 0 keeps a developer's terminal quiet;
-    # the log file still records every change at INFO.
+    # Cadence of the console progress line while the fleet drains, separate from `poll-interval` (the scheduler query pace).
+    # 0 silences the console; the log file still records every change at INFO.
     progress_interval: float = field(rename="progress-interval", default=60.0)
-    # Wall-clock bound on the collect wait. `None` (the default) is
-    # unbounded — today's behaviour. Set it and a fleet that never leaves the
-    # queue becomes a diagnosable failure naming the outstanding job ids,
-    # instead of a head that blocks forever and silently.
+    # Wall-clock bound on the collect wait; `None` waits indefinitely.
+    # On expiry the failure names the outstanding job ids.
     max_wait: float | None = field(rename="max-wait", default=None)
-    # What the next invocation does about a previous run's jobs that
-    # outlived their head — a Ctrl-C too late to cancel, a killed session
-    # (#521). `warn` (the default) names them and submits a fresh fleet,
-    # exactly as every release before this one did; `cancel` scancels them
-    # first; `adopt` collects them instead of submitting anything. Only
-    # ever consulted for a scheduler-backed backend: a local-parallel
-    # pool's jobs are the head's own children and die with it.
+    # What the next invocation does about a previous run's surviving jobs: `warn` names them and submits a fresh fleet,
+    # `cancel` scancels them first, `adopt` collects them instead of submitting.
+    # Only consulted for scheduler-backed backends.
     orphans: str = ORPHANS_DEFAULT
-    # Cap on concurrently *running* elements PER submitted array
-    # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
-    # this times the number of arrays (resource groups x suites).
+    # Cap on concurrently running elements per submitted array (sbatch --array=1-N%cap).
     max_jobs_per_array: int = field(rename="max-jobs-per-array", default=200)
-    # The cluster's Slurm ``MaxArraySize`` (slurm.conf), which bounds how
-    # many elements ONE array may hold. Slurm documents it as an exclusive
-    # bound on the task index — "the maximum job array task index value
-    # will be one less than MaxArraySize" — and rtl_buddy's manifests are
-    # 1-based, so 1001 permits ``--array=1-1000``. A resource group larger
-    # than that is split across several arrays rather than being refused by
-    # sbatch (#509). ``None`` (the default) reads the value from ``scontrol
-    # show config``; set it where the submit host cannot run scontrol, or to
-    # split groups more finely than the cluster requires.
+    # The cluster's Slurm ``MaxArraySize`` (slurm.conf), an exclusive bound on the task index.
+    # Manifests are 1-based, so 1001 permits ``--array=1-1000``. Larger resource groups are split across arrays.
+    # ``None`` reads it from ``scontrol show config``.
     max_array_size: int | None = field(rename="max-array-size", default=None)
-    # The cluster's ``SchedulerParameters=max_array_tasks``, the SECOND
-    # ceiling on one array: slurm.conf calls it "the maximum number of
-    # tasks that be included in a job array", an inclusive COUNT rather
-    # than ``MaxArraySize``'s exclusive index bound, and a cluster may set
-    # it well below. It has its own field because it is its own limit —
-    # pinning a smaller ``max-array-size`` to stand in for it would state
-    # the wrong MaxArraySize and mislead every message derived from it.
-    # ``None`` (the default) reads it from ``scontrol show config``
-    # alongside MaxArraySize; the effective slice is the smaller of the two
-    # ceilings, whichever layer each came from (#509).
+    # The cluster's ``SchedulerParameters=max_array_tasks``, an inclusive count of tasks per array.
+    # It is a separate field because it is a different limit from ``MaxArraySize``.
+    # ``None`` reads it from ``scontrol show config``; the smaller of the two ceilings applies.
     max_array_tasks: int | None = field(rename="max-array-tasks", default=None)
-    # Concurrent subprocesses for the `local-parallel` backend — one global
-    # pool, not a per-array throttle (there are no arrays off a scheduler).
-    # `None` means the backend's own default, min(4, cpu_count); `--jobs`
-    # overrides this per invocation.
+    # Concurrent subprocesses for the `local-parallel` backend (one global pool). `None` means min(4, cpu_count); `--jobs` overrides.
     jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None
-    # Retry budget for jobs the scheduler killed under a resource condition
-    # while they were queueing for a license seat (#405). Absent = off.
+    # Retry budget for jobs killed under a resource condition while queueing for a license seat. Absent means off.
     retry: RetryConfigFile | None = None
 
     def initialise(self) -> "DispatchConfig":
-        """Validate and freeze into the runtime :class:`DispatchConfig`.
-
-        This is where cross-field validation lives, mirroring every other
-        ``*File.initialise()`` on ``RootConfig`` — so consumers never see
-        the raw serde dataclass or an unvalidated ``poll-interval: 0``.
-        """
+        """Validate and freeze into the runtime :class:`DispatchConfig`."""
         if self.poll_interval <= 0:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch poll-interval must be > 0 (got {self.poll_interval}); "
@@ -993,10 +613,7 @@ class DispatchConfigFile:
                 cpus=res.cpus,
                 mem=_validate_mem(res.mem),
                 time=_validate_time(res.time),
-                # Per-builder-mode overrides, held to the same rules the
-                # base fields above are (#634). cfg-dispatch.resources is
-                # the least specific layer of both the sim and the compile
-                # reservation, so its mode block reaches both.
+                # Held to the same rules as the base fields; this is the least specific layer of both the sim and compile reservations.
                 modes=validate_modes_block(
                     getattr(res, "modes", None), where="cfg-dispatch.resources."
                 ),
@@ -1112,7 +729,7 @@ class DispatchConfig:
         return self.rightsize if self.rightsize is not None else RightsizeConfigFile()
 
     def effective_retry(self) -> RetryConfigFile:
-        """The retry budget, present or not — the absent one retries nothing."""
+        """The retry budget, or an empty one that retries nothing."""
         return self.retry if self.retry is not None else RetryConfigFile()
 
 
@@ -1120,9 +737,7 @@ class DispatchConfig:
 class JobResources:
     """Fully resolved reservation for one dispatched job.
 
-    ``mem`` stays optional: on clusters where memory is not a schedulable
-    resource an unconditional ``--mem`` would be rejected, so the flag is
-    only emitted when a reservation was configured somewhere.
+    ``mem`` stays optional because clusters where memory is not schedulable reject an unconditional ``--mem``.
     """
 
     cpus: int = DEFAULT_JOB_CPUS
@@ -1135,25 +750,13 @@ def resolve_resources(
 ) -> JobResources:
     """Resolve a test's effective job reservation.
 
-    Field-wise layering, most specific wins:
-    test ``resources:`` > testbench ``resources:`` >
-    ``cfg-dispatch.resources`` > built-in defaults.
-
-    ``builder_mode`` is the mode this job will run in — the ``-M`` value
-    after the command's own default has been applied, which is what travels
-    to the compute node as ``JobSpec.builder_mode``. Each layer's
-    ``modes.<builder_mode>`` block is then applied OVER that resolved
-    value, least specific first, so the full order per field is (#634)::
+    Layers apply field by field, most specific first: test ``resources:``, testbench ``resources:``, ``cfg-dispatch.resources``, built-in defaults.
+    ``builder_mode`` is the job's ``-M`` value after command defaults. Each layer's ``modes.<builder_mode>`` block is then applied over the resolved value, least specific layer first::
 
         test.modes[m] > testbench.modes[m] > cfg-dispatch.modes[m]
             > test > testbench > cfg-dispatch > default
 
-    Any mode block therefore beats every base field, not only the one on
-    its own layer: a coverage build is a different job from the same test
-    under ``-M reg``, and a suite-wide ``modes.cov.mem`` that one test's
-    base ``mem`` could undo would not be a reservation anyone could rely
-    on. ``None`` (or a mode no block names) resolves exactly as it did
-    before the key existed.
+    A mode block therefore beats every base field, not only the one on its own layer.
     """
     blocks = [dispatch_cfg.resources if dispatch_cfg is not None else None]
     if test_cfg is not None:
@@ -1167,8 +770,7 @@ def resolve_resources(
         if layer.cpus is not None:
             resolved.cpus = layer.cpus
         if layer.mem is not None:
-            # Per-test/testbench resources: are raw serde and may carry the
-            # YAML sexagesimal/int trap; validate as they are applied.
+            # Raw serde may carry the YAML sexagesimal/int trap; validate as applied.
             resolved.mem = _validate_mem(layer.mem)
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
@@ -1176,23 +778,9 @@ def resolve_resources(
 
 
 def mode_governed_fields(dispatch_cfg, test_cfg=None, *, builder_mode=None) -> dict:
-    """Which sim reservation fields a ``modes:`` block won, and whose (#634).
+    """Which sim reservation fields a ``modes:`` block won, as ``{field: builder_mode}``.
 
-    ``{field: builder_mode}`` for every field some layer's
-    ``modes.<builder_mode>`` block states, and ``{}`` for a run with no
-    mode block in play — so a suite that never writes the key produces no
-    entries at all.
-
-    Reservation advice reads it for the same reason
-    :func:`compile_resource_origins` exists: under ``-M cov`` a hint
-    naming ``resources.mem`` sends a reader to a value the mode block
-    overrides, the finding survives the edit, and it comes back every run.
-    The mode's own key is the one place an edit always lands, since a mode
-    layer beats every base field.
-
-    Only which field, not which LAYER: the advised key is the test's own,
-    which is the most specific mode layer there is, so it wins wherever
-    the current value came from.
+    Empty when no mode block is in play. Reservation advice uses it to name the mode's own key, since a mode layer beats every base field.
     """
     blocks = [dispatch_cfg.resources if dispatch_cfg is not None else None]
     if test_cfg is not None:
@@ -1209,57 +797,23 @@ def mode_governed_fields(dispatch_cfg, test_cfg=None, *, builder_mode=None) -> d
     return governed
 
 
-# sbatch options that change what a job REQUESTS in cpus, i.e. that can make
-# `ReqCPUS` differ from the cpus-per-task the head resolved. Two families:
-# the cpu count itself, and the task/node counts `ReqCPUS` multiplies it by
-# (`ReqCPUS` = tasks x cpus-per-task).
+# sbatch options that change what a job requests in cpus, so `ReqCPUS` (tasks x cpus-per-task) can differ from the resolved cpus-per-task.
+# The set is narrow on purpose: a false positive discards a request the head knows and retargets the edit hint.
+# Excluded on purpose:
+# - `--exclusive`, `--overcommit`: change the allocation, not the request.
+# - `--threads-per-core`, `-B`/`--extra-node-info`: node-selection constraints; `--cpus-per-task` still states the request.
+# - `--cpus-per-gpu`: mutually exclusive with the `--cpus-per-task` every job carries, so it can never take effect.
+# - `--ntasks-per-core`, `--ntasks-per-socket`: placement maxima that request nothing alone.
+#   `--ntasks-per-gpu` is also excluded here; see `_gpu_derived_task_count`.
 #
-# The set is deliberately NARROW, because a false positive is not free: it
-# discards a request the head knows, retargets the edit hint away from the
-# YAML field that really governs, and disables the compile cpus floor. Only
-# options that Slurm documents as changing the cpu REQUEST belong here.
-# Three near misses, all excluded:
-#
-# - `--exclusive` and `--overcommit` change what is *allocated*, not what is
-#   requested, so `ReqCPUS` — the fallback — still describes the reservation.
-# - `--threads-per-core` and `-B`/`--extra-node-info` are node-SELECTION
-#   constraints: they restrict which nodes and hardware threads may be used,
-#   while the generated `--cpus-per-task` still states the request. The head
-#   therefore still knows it, and must not throw it away (#505 review).
-# - `--cpus-per-gpu` is documented as mutually exclusive with
-#   `--cpus-per-task`, which `SlurmDispatchBackend._reservation_argv` emits
-#   unconditionally on every job — so sbatch rejects the pair and the
-#   "override" can never take effect. Detecting it would only degrade the
-#   advice for a submission that never runs.
-# - `--ntasks-per-core` and `--ntasks-per-socket` are documented as placement
-#   MAXIMA ("request the maximum ntasks be invoked on each core/socket ...
-#   meant to be used with the --ntasks option"): they cap where the tasks
-#   `--ntasks` asked for may land, and a lone one requests nothing. The
-#   `--ntasks` they accompany is in this set, so a real task-count change is
-#   still caught. `--ntasks-per-gpu` is left out of THIS table on the same
-#   footing — on its own it moves no cpu request — but it is not simply
-#   ignored: paired with a GPU count and no `--ntasks` it derives the task
-#   count, which `_gpu_derived_task_count` below picks up (#505 review).
-#
-# Keyed by the long form, valued by the short one, because the two are the
-# SAME option: `[-c 4, --cpus-per-task=8]` is one option written twice (the
-# last wins), not two multiplying each other.
-#
-# Split in two, because the difference decides whether advice can name one
-# of them: a DIRECT cpu count states the request outright, so a whole-job
-# suggestion can be written straight into it. A task or node count only
-# *scales* it, so the suggested number is not a value that argument takes.
+# Keyed by long form, valued by short form: `-c 4 --cpus-per-task=8` is one option written twice, and the last wins.
+# The direct count is split out because a whole-job suggestion can be written into it; a task or node count only scales the request.
 _DIRECT_CPU_COUNT_OPTS = {
     "--cpus-per-task": "-c",
 }
 _CPU_SCALING_OPTS = {
-    # The task and node counts that raise the cpu request above one
-    # cpus-per-task. `--ntasks-per-node` earns its place because sbatch
-    # documents it as a REQUEST when `--ntasks` is absent ("request that
-    # ntasks be invoked on each node ... meant to be used with the --nodes
-    # option"), so `--nodes=2 --ntasks-per-node=4` asks for eight tasks; it
-    # degrades to a maximum only when `--ntasks` is also given, and that
-    # option is in this set too, so the pair is caught either way.
+    # Task and node counts that raise the request above one cpus-per-task.
+    # `--ntasks-per-node` counts because it is a request when `--ntasks` is absent (`--nodes=2 --ntasks-per-node=4` asks for eight tasks).
     "--ntasks": "-n",
     "--ntasks-per-node": None,
     "--nodes": "-N",
@@ -1271,42 +825,23 @@ _CPU_REQUEST_SHORT_TO_LONG = {
 
 
 def sbatch_arg_sets_cpu_count_directly(arg: str) -> bool:
-    """Does this rendered ``sbatch-args`` entry state the cpu count itself?
+    """Whether this ``sbatch-args`` entry states the cpu count itself (``-c`` or ``--cpus-per-task``).
 
-    ``-c``/``--cpus-per-task`` names a number of cpus, so a whole-job
-    suggestion can be written straight into it. ``--ntasks``,
-    ``--ntasks-per-node`` and ``-N``/``--nodes`` are task and node counts:
-    they raise the request rather than stating it, and telling a reader to
-    put a cpu count into one of them would be advice that cannot be
-    applied (#505 review).
-
-    Takes an entry as :func:`sbatch_args_cpu_request_options` renders it —
-    ``--cpus-per-task=4``, ``--cpus-per-task 4``, ``-c 4``, ``-c4``,
-    ``-c=4`` — so the caller never has to re-parse sbatch syntax.
+    Task and node counts (``--ntasks``, ``--ntasks-per-node``, ``-N``/``--nodes``) only scale the request, so a cpu count cannot be written into them.
+    Takes an entry as :func:`sbatch_args_cpu_request_options` renders it: ``--cpus-per-task=4``, ``--cpus-per-task 4``, ``-c 4``, ``-c4`` or ``-c=4``.
     """
-    # Whichever separator came first, the option token is what precedes it.
+    # The option token precedes the first `=` or space.
     token = arg.split("=", 1)[0].split(" ", 1)[0]
     if token in _DIRECT_CPU_COUNT_OPTS:
         return True
     short = _DIRECT_CPU_COUNT_OPTS["--cpus-per-task"]
-    # `-c`, `-c 4` and `-c=4` reduce to the bare short form; `-c4` keeps its
-    # value, which must be numeric or this is some other option entirely.
+    # `-c4` keeps its value, which must be numeric, or this is a different option.
     return token == short or (token.startswith(short) and token[len(short) :].isdigit())
 
 
-# The `SBATCH_*` input environment variables that sbatch documents as "same
-# as" one of the options above. They reach sbatch through `subprocess.run`,
-# which inherits the head's environment, and rtl-buddy deliberately does NOT
-# sanitize it — a site that exports these means them.
-#
-# `SBATCH_CPUS_PER_TASK` is absent for the same reason `--cpus-per-gpu` is:
-# sbatch's documented precedence is command line > environment > script, and
-# both submit paths emit `--cpus-per-task` unconditionally
-# (`_reservation_argv` and the array submit), so the variable is always
-# beaten by the flag rtl-buddy itself passes. It changes nothing, and
-# treating it as an override would discard a request the head knows
-# (#505 review). `tests/test_dispatch_slurm.py` pins that both paths still
-# emit the flag, so this stays true.
+# `SBATCH_*` input variables equivalent to the options above. They are inherited by the sbatch subprocess and deliberately not sanitized.
+# `SBATCH_CPUS_PER_TASK` is absent: the command line beats the environment and every submit path emits `--cpus-per-task`
+# (tests/test_dispatch_slurm.py pins this).
 _CPU_REQUEST_ENV_VARS = {
     "SBATCH_NTASKS": "--ntasks",
     "SBATCH_NTASKS_PER_NODE": "--ntasks-per-node",
@@ -1314,22 +849,13 @@ _CPU_REQUEST_ENV_VARS = {
 }
 
 
-# `--ntasks-per-gpu` is a placement cap on its own (see above), but sbatch
-# documents a second mode for it: "specify the GPUs wanted (e.g. via --gpus
-# or --gres) without specifying --ntasks, and the total task count will be
-# automatically determined". So a GPU count and `--ntasks-per-gpu` in the
-# same verbatim `sbatch-args` list, with no `--ntasks` anywhere, derives
-# tasks = gpus x ntasks-per-gpu — a task-count override exactly like
-# `--ntasks`, and one the generated `--cpus-per-task` is then multiplied by
-# (#505 review).
-#
-# `--gpus-per-task` is absent deliberately: sbatch documents it as mutually
-# exclusive with `--ntasks-per-gpu`, so that pair never runs.
+# With a GPU count and no `--ntasks`, `--ntasks-per-gpu` derives tasks = gpus x ntasks-per-gpu, which multiplies the generated `--cpus-per-task`.
+# `--gpus-per-task` is absent because sbatch makes it mutually exclusive with `--ntasks-per-gpu`.
 _GPU_COUNT_OPTS = {
     "--gpus": "-G",
     "--gpus-per-node": None,
     "--gpus-per-socket": None,
-    # Only when it actually asks for gpus — `--gres=gpu:2`, not `--gres=fs:1`.
+    # Counts only when it asks for gpus (`--gres=gpu:2`, not `--gres=fs:1`).
     "--gres": None,
 }
 _GPU_COUNT_ENV_VARS = {
@@ -1343,12 +869,9 @@ _NTASKS_PER_GPU_ENV_VAR = "SBATCH_NTASKS_PER_GPU"
 
 
 def _gpu_derived_task_count(sbatch_args, env) -> dict[str, str]:
-    """The ``--gpus`` + ``--ntasks-per-gpu`` pair, when it sets the tasks.
+    """The ``--gpus`` + ``--ntasks-per-gpu`` pair, when it sets the task count.
 
-    Both halves may come from either source, since sbatch reads both.
-    Returns them together — the note has to name the pair, because neither
-    argument alone did this and pointing at one of them would send a reader
-    to a setting that is only half the cause.
+    Either half may come from ``sbatch-args`` or the environment. Returns both, since neither alone causes the override.
     """
     per_gpu = _scan_options(sbatch_args, _NTASKS_PER_GPU_OPT)
     if not per_gpu:
@@ -1369,8 +892,7 @@ def _gpu_derived_task_count(sbatch_args, env) -> dict[str, str]:
             continue
         gpus[option] = f"{var}={value}"
     if not gpus:
-        # A lone `--ntasks-per-gpu` requests nothing: it caps placement of
-        # tasks something else asked for. Round 10's exclusion stands.
+        # A lone `--ntasks-per-gpu` only caps placement and requests nothing.
         return {}
     return {**gpus, **per_gpu}
 
@@ -1378,21 +900,9 @@ def _gpu_derived_task_count(sbatch_args, env) -> dict[str, str]:
 def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
     """Everything that supersedes the cpus reservation the head resolved.
 
-    The union of :func:`sbatch_args_cpu_request_options` and the
-    ``SBATCH_*`` input environment variables that mean the same thing.
-    Both reach sbatch — ``sbatch-args`` because it is appended after the
-    generated flags, the environment because ``subprocess.run`` inherits
-    it — so both can make ``ReqCPUS`` differ from what rtl-buddy resolved,
-    and neither may be taken for the request (#505 review).
-
-    Command line beats environment, which is sbatch's own precedence: a
-    variable whose option is already written in ``sbatch-args`` is not
-    reported, because it is not what the job ran with. An unset or blank
-    variable is not an override at all.
-
-    Environment entries are rendered ``NAME=value`` and argument entries
-    keep their leading dash, so a caller can tell them apart by their first
-    character.
+    The union of :func:`sbatch_args_cpu_request_options` and the equivalent ``SBATCH_*`` variables.
+    Command line beats environment, so a variable whose option is also in ``sbatch-args`` is not reported; blank variables are ignored.
+    Environment entries are rendered ``NAME=value`` and argument entries keep their leading dash.
     """
     found = _scan_cpu_request_args(sbatch_args)
     env = os.environ if env is None else env
@@ -1401,10 +911,7 @@ def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
         if not value or option in found:
             continue
         found[option] = f"{var}={value}"
-    # ...and the one combination that derives a task count rather than
-    # stating it. Only when nothing states one: with `--ntasks` present
-    # sbatch reads `--ntasks-per-gpu` the other way round, as the GPU count
-    # to satisfy, and `--ntasks` is already in `found` (#505 review).
+    # With `--ntasks` present, sbatch reads `--ntasks-per-gpu` as the GPU count to satisfy instead.
     if "--ntasks" not in found:
         found.update(_gpu_derived_task_count(sbatch_args, env))
     return list(found.values())
@@ -1413,64 +920,29 @@ def cpu_request_overrides(sbatch_args, env=None) -> list[str]:
 def sbatch_args_cpu_request_options(sbatch_args) -> list[str]:
     """The ``sbatch-args`` entries that decide the job's cpu request.
 
-    ``cfg-dispatch.sbatch-args`` is appended verbatim *after* the generated
-    reservation flags, so an entry there wins — which is the documented
-    contract, and the reason right-sizing cannot always trust the
-    reservation it resolved. A non-empty result means the resolved ``cpus``
-    is not what the job was submitted with, so it must not be recorded as
-    the request: the analysis falls back to the scheduler's own ``ReqCPUS``,
-    and the ``cpus`` finding's edit hint names this key rather than the YAML
-    field it masks (#505 review).
+    ``sbatch-args`` is appended after the generated reservation flags, so an entry there wins.
+    A non-empty result means the resolved ``cpus`` is not what the job was submitted with: right-sizing falls back to the scheduler's ``ReqCPUS`` and the ``cpus`` edit hint names ``sbatch-args`` instead of the masked field.
 
-    Two families of option qualify, because ``ReqCPUS`` is *tasks x
-    cpus-per-task*: the cpu count (``-c``/``--cpus-per-task``) and the
-    task/node counts that raise it (``-n``/``--ntasks``,
-    ``--ntasks-per-node``, ``-N``/``--nodes``). Placement maxima
-    (``--ntasks-per-core``/``-socket``/``-gpu``), node-selection constraints
-    (``--threads-per-core``, ``-B``/``--extra-node-info``), allocation
-    modifiers (``--exclusive``, ``--overcommit``) and ``--cpus-per-gpu``
-    (which sbatch rejects alongside the ``--cpus-per-task`` every job
-    carries) are deliberately excluded — see the comment on
-    ``_CPU_REQUEST_OPTS``.
-
-    Returns one entry per DISTINCT option, in order of first appearance,
-    each rendered as written. Within an option the LAST occurrence wins,
-    because that is the one sbatch obeys — ``[-c, 4, --cpus-per-task=8]``
-    runs with 8, and is one option, not two. Across options there is no
-    "winner" at all: ``--ntasks`` and ``--cpus-per-task`` multiply, so a
-    caller holding two entries knows the request is their product and that
-    no single argument can be named as the one to edit.
-
-    Only ``cpus`` needs this. ``mem`` and ``time`` advice is already
-    measured against ``ReqMem``/``TimelimitRaw``, which sacct reports from
-    the allocation any override actually produced.
+    Qualifying options are the cpu count (``-c``/``--cpus-per-task``) and the task and node counts that raise it (``-n``/``--ntasks``, ``--ntasks-per-node``, ``-N``/``--nodes``); the comment on ``_CPU_REQUEST_OPTS`` lists what is excluded.
+    Returns one entry per distinct option in order of first appearance, as written; the last occurrence of an option wins. Several entries mean the request is their product.
+    Only ``cpus`` needs this: ``mem`` and ``time`` advice uses ``ReqMem`` and ``TimelimitRaw``, which reflect any override.
     """
     return list(_scan_cpu_request_args(sbatch_args).values())
 
 
 def _scan_cpu_request_args(sbatch_args) -> dict[str, str]:
-    """Canonical long option -> the entry that set it, as written.
-
-    Keyed so the environment layer in :func:`cpu_request_overrides` can
-    apply sbatch's command-line-beats-environment precedence per option
-    without re-parsing what this already worked out.
-    """
+    """Canonical long option to the entry that set it, as written."""
     return _scan_options(sbatch_args, _CPU_REQUEST_OPTS)
 
 
 def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
-    """Match one table of sbatch options against a verbatim argument list.
+    """Match a table of sbatch options against a verbatim argument list.
 
-    Handles every spelling sbatch's getopt takes: ``--long=value``,
-    ``--long value``, ``-x value`` and ``-x4``. ``value_must_contain``
-    narrows a match to values mentioning a substring, which is how
-    ``--gres`` is counted only when it asks for gpus.
+    Handles ``--long=value``, ``--long value``, ``-x value`` and ``-x4``. ``value_must_contain`` limits matches to values containing a substring (used to count ``--gres`` only for gpus).
     """
     args = list(sbatch_args or [])
     short_to_long = {short: long for long, short in long_to_short.items() if short}
-    # Insertion-ordered by first appearance; re-assignment keeps that
-    # position, so a repeated option stays where it was first written and
-    # carries its last value.
+    # Insertion-ordered: a repeated option keeps its first position and takes its last value.
     found: dict[str, str] = {}
 
     def keep(value):
@@ -1478,10 +950,7 @@ def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
 
     for index, arg in enumerate(args):
         if arg in long_to_short or arg in short_to_long:
-            # Value-in-the-next-argument form. A trailing flag with no value
-            # is malformed sbatch input, but it is still an override of
-            # intent, and sbatch — not right-sizing — is where it should be
-            # reported.
+            # Value in the next argument. A trailing flag with no value is still reported as an override.
             following = args[index + 1 : index + 2]
             if following and not keep(following[0]):
                 continue
@@ -1494,8 +963,7 @@ def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
                 break
         else:
             for short, long in short_to_long.items():
-                # `-c4`/`-n4`, and `-c=4` defensively. A numeric value is
-                # required, so an unrelated `-cfoo` is not matched.
+                # A numeric value is required so an unrelated `-cfoo` does not match.
                 value = arg[len(short) :].lstrip("=") if arg.startswith(short) else ""
                 if value and value[0].isdigit() and keep(value):
                     found[long] = arg
@@ -1504,22 +972,10 @@ def _scan_options(sbatch_args, long_to_short, *, value_must_contain=None):
 
 
 def compile_parallel(dispatch_cfg, suite_compile=None) -> int:
-    """How many distinct builds one build job may compile concurrently (#495).
+    """How many distinct builds one build job compiles concurrently.
 
-    Deliberately NOT a field of :class:`JobResources`: the resolved compile
-    reservation is also what sizes an in-job compile's sim job and the
-    right-sizing compile floor, and both of those are one serial build. The
-    concurrency belongs to the build job alone, so it is read separately —
-    and only by the code that builds that job's spec.
-
-    ``suite_compile`` is the suite's own ``compile:`` block (a
-    :class:`SuiteCompileFile`, from ``SuiteConfig.get_compile()``), and its
-    ``parallel`` wins outright where it is set — the same "most specific
-    layer" rule :func:`resolve_compile_resources` applies to the
-    reservation fields, and for the same reason: the build job is per suite
-    (#547). ``getattr``, so a caller still holding an older
-    ``DispatchResourcesFile``-shaped block reads as "inherit" rather than
-    raising.
+    Not a field of :class:`JobResources`: the resolved compile reservation also sizes an in-job compile's sim job and the right-sizing floor, both of which are one serial build.
+    ``suite_compile``'s ``parallel`` wins where set, as in :func:`resolve_compile_resources`; a block without the attribute reads as inherit.
     """
     suite_parallel = getattr(suite_compile, "parallel", None)
     if suite_parallel is not None:
@@ -1530,22 +986,9 @@ def compile_parallel(dispatch_cfg, suite_compile=None) -> int:
 
 
 def compile_split_verilate(dispatch_cfg, suite_compile=None) -> bool:
-    """Is this suite's compile submitted as two chained jobs (#593)?
+    """Whether this suite's compile is submitted as a verilate job chained to a build job.
 
-    ``verilator --binary`` is a single-threaded verilation followed by a
-    ``make -j N``, and the whole thing is reserved at ``compile.cpus x
-    parallel`` — so the cores idle through the phase that holds the peak
-    memory. True splits it: a verilate job sized from
-    ``compile.verilate``, then a build job sized from ``compile`` and
-    gated on it with ``afterok``.
-
-    Layered exactly as :func:`compile_parallel` is, and for the same
-    reason: the compile is per suite, so the suite is entitled to say
-    whether its own is split. ``getattr``, so a caller holding a block
-    from before this key reads as "inherit".
-
-    Only a backend that can chain jobs acts on the answer; the head asks
-    it for Slurm alone.
+    Layered like :func:`compile_parallel`: the suite's ``split_verilate`` wins where set. Only Slurm acts on the answer.
     """
     suite_split = getattr(suite_compile, "split_verilate", None)
     if suite_split is not None:
@@ -1578,17 +1021,9 @@ def mem_to_bytes(value) -> int | None:
 
 
 def _compile_mem_bytes(value, *, testbench=None):
-    """Parse a compile reservation's ``mem`` to bytes, or fail loudly (#551).
+    """Parse a compile reservation's ``mem`` to bytes; raise on an unreadable or non-positive value.
 
-    :func:`aggregate_compile_resources` ADDS these up, so a spelling
-    :func:`mem_to_bytes` cannot read has no safe fallback: dropping it from
-    the sum shrinks the reservation and the build is OOM-killed with
-    nothing in the log to say why. The same parser
-    :func:`_validate_compile_mem` holds a testbench block to at load, so a
-    value that loads always aggregates and this can only fire for a layer
-    validated before that rule existed.
-
-    ``None`` in, ``None`` out.
+    An unreadable value cannot be dropped from :func:`aggregate_compile_resources`'s sum without shrinking the reservation. ``None`` in, ``None`` out.
     """
     if value is None:
         return None
@@ -1602,9 +1037,7 @@ def _compile_mem_bytes(value, *, testbench=None):
             "unparseable one cannot be sized around."
         )
     if parsed <= 0:
-        # Belt and braces beside the load-time rule: a value that reached
-        # the sum negative would be SUBTRACTED from it, so the build job
-        # would reserve less than the suite that has nothing wrong with it.
+        # Backstop for the load-time rule: a negative value would be subtracted from the sum.
         raise FatalRtlBuddyError(
             f"{whose}compile mem {value!r} must be greater than zero; the "
             "build job's reservation is summed from these, and a negative "
@@ -1614,13 +1047,7 @@ def _compile_mem_bytes(value, *, testbench=None):
 
 
 def format_mem(bytes_val: int) -> str:
-    """Bytes → sbatch-friendly integer ``M``/``G`` string (rounded up).
-
-    The inverse of :func:`mem_to_bytes`, and beside it (#551): the build
-    job's reservation is now summed in bytes and has to be written back as
-    an sbatch spelling, so the pair belongs in one place rather than one
-    here and one in the right-sizing module that also imports it.
-    """
+    """Bytes to an sbatch ``M``/``G`` string, rounded up. The inverse of :func:`mem_to_bytes`."""
     mb = math.ceil(bytes_val / 2**20)
     if mb >= 4096:
         return f"{math.ceil(mb / 1024)}G"
@@ -1636,9 +1063,7 @@ def format_time(seconds: float) -> str:
 def time_to_seconds(value) -> int | None:
     """Parse an sbatch ``--time`` spelling to seconds; ``None`` if unparseable.
 
-    Handles every form :data:`_TIME_RE` accepts. The ambiguity that matters
-    is colon count: two colons is ``HH:MM:SS`` but one is ``MM:SS``, and a
-    bare number is MINUTES.
+    Two colons is ``HH:MM:SS``, one is ``MM:SS``, and a bare number is minutes.
     """
     if value is None:
         return None
@@ -1667,18 +1092,10 @@ def time_to_seconds(value) -> int | None:
 def combine_for_in_job_compile(
     sim: JobResources, compile_: JobResources
 ) -> tuple[JobResources, dict]:
-    """Reservation for a sim job that also compiles, and what governs it (#358).
+    """Reservation for a sim job that also compiles, and which layer governs each field.
 
-    Compile and sim run inside the **same** scheduler job when the builder
-    cannot share a build, and one allocation cannot carry two different
-    reservations. The only safe combination is the element-wise maximum: a
-    compile-sized ``mem`` paired with a sim-sized ``time`` still gets killed
-    during a long elaboration, and the reverse OOMs during it.
-
-    The second return value maps each field to the layer that supplied it
-    (``"compile"`` where the compile reservation won, ``"test"`` otherwise),
-    so reservation advice can name the field that actually governs rather
-    than one the max has masked.
+    The two share one allocation when the builder cannot share a build, so the reservation is the element-wise maximum.
+    The second return value maps each field to ``"compile"`` or ``"test"`` so advice can name the field that governs.
     """
     combined = JobResources(cpus=sim.cpus, mem=sim.mem, time=sim.time)
     governed_by = {"cpus": "test", "mem": "test", "time": "test"}
@@ -1687,13 +1104,10 @@ def combine_for_in_job_compile(
         combined.cpus = compile_.cpus
         governed_by["cpus"] = "compile"
 
-    # An absent sim mem means "no --mem reservation"; a compile mem must
-    # still take effect, since the compile is the phase that needs it.
+    # An absent sim mem means no --mem; a compile mem must still take effect.
     sim_mem, compile_mem = mem_to_bytes(sim.mem), mem_to_bytes(compile_.mem)
     if compile_.mem is not None and compile_mem is None:
-        # Dropping the compile reservation from the max is the one outcome
-        # this function exists to prevent, so an unparseable spelling must not
-        # do it quietly. sbatch would reject the value at submit anyway.
+        # An unparseable compile mem must not silently drop out of the max.
         log_event(
             logger,
             logging.WARNING,
@@ -1715,50 +1129,17 @@ def combine_for_in_job_compile(
 def resolve_compile_resources(
     dispatch_cfg, suite_compile=None, tb_compile=None, *, builder_mode=None
 ) -> JobResources:
-    """Resolve the compile reservation for ONE testbench.
+    """Resolve the compile reservation for one testbench.
 
-    The testbench's own ``compile:`` block over the suite's over
-    ``cfg-dispatch.compile`` over ``cfg-dispatch.resources`` over the
-    built-in defaults, field by field — so the build inherits the sim
-    defaults unless the compile is called out separately, and a suite whose
-    verilation is nothing like the rest of the repo's sizes only the fields
-    it actually needs (#497).
+    Layers apply field by field, most specific first: the testbench's ``compile:`` block (``tb_compile``), the suite's (``suite_compile``, a :class:`SuiteCompileFile`), ``cfg-dispatch.compile``, ``cfg-dispatch.resources``, built-in defaults.
+    Either block is ``None`` when absent.
 
-    ``suite_compile`` is the suite-level block (a
-    :class:`SuiteCompileFile`, from ``SuiteConfig.get_compile()``);
-    ``None`` where there is no suite in hand or the suite declared none.
-
-    ``tb_compile`` is a testbench's own ``compile:`` block (a
-    :class:`DispatchResourcesFile`, from ``TestbenchConfig.compile``) and is
-    the MOST specific layer (#551): one suite can hold two entries whose
-    verilations differ by an order of magnitude — the same top level at two
-    geometries — and forcing the suite block to state the larger one fences
-    that reservation off for every build in the suite. ``None`` for a
-    testbench that declared none, and for every caller that resolves a
-    suite-wide figure rather than one build's.
-
-    ``parallel`` is not resolved here and never reaches the returned
-    :class:`JobResources`: this reservation also sizes an in-job compile's
-    sim job and the right-sizing compile floor, and both of those are one
-    serial build. :func:`compile_parallel` layers that key instead (#547).
-
-    ``builder_mode`` layers each block's ``modes.<builder_mode>`` over the
-    resolved value, least specific first, exactly as
-    :func:`resolve_resources` does (#634) — an instrumented build's
-    verilation peaks higher than the same sources under ``-M reg``, and it
-    is a distinct compile key, so it is entitled to its own figure. The
-    mode layers include ``cfg-dispatch.resources.modes``, because that
-    block is the least specific layer of the compile reservation too.
-
-    Note this is a *scheduling* fact only: nothing here reaches the compile
-    fingerprint or the shared-build key, so writing a ``compile:`` block
-    never invalidates a stamp.
+    ``parallel`` is not resolved here; see :func:`compile_parallel`.
+    ``builder_mode`` layers each block's ``modes.<builder_mode>`` over the result, least specific first, as :func:`resolve_resources` does; ``cfg-dispatch.resources.modes`` is included.
+    The result is a scheduling fact and does not reach the compile fingerprint or shared-build key.
     """
     resolved = JobResources()
-    # (block, is a compile block): the mode entries of a `compile:` layer
-    # are held to the stricter compile rules its base fields are, and
-    # `cfg-dispatch.resources` — which is a sim block that happens to be
-    # the compile's least specific layer — to its own lenient ones.
+    # (block, is a compile block): compile layers' mode entries get the stricter compile rules.
     blocks = []
     if dispatch_cfg is not None:
         blocks += [(dispatch_cfg.resources, False), (dispatch_cfg.compile, True)]
@@ -1784,31 +1165,9 @@ def compile_resource_origins(
 ) -> dict:
     """Which tests.yaml layer won each resolved compile field.
 
-    ``{field: "suite"}`` for every field the suite block set and
-    ``{field: "testbench"}`` for every field the testbench block set — the
-    latter last, because it is the more specific layer and
-    :func:`resolve_compile_resources` applies it last too. Fields neither
-    set are simply absent, meaning cfg-dispatch (or the built-in default)
-    still governs them. Reservation advice reads this to point an edit hint
-    at the file *and the key* that actually hold the winning value (#497,
-    #551) — computed here, beside the layering it mirrors, so the two can
-    never drift apart.
-
-    ``parallel`` is in the map too (#547), even though nothing suggests a
-    value for it: the `cpus` advice names the key in prose as the other
-    lever, and saying ``cfg-dispatch.compile.parallel`` where the suite's
-    own block governs would send a reader to a value editing which moves
-    this job's reservation not at all. It has no testbench layer — one
-    build job per suite runs every testbench's builds, so the concurrency
-    cannot be a property of one of them.
-
-    A field won by a ``modes.<mode>`` block records the richer
-    ``{"origin", "key"}`` entry instead of the bare layer name, with the
-    key spelled ``modes.<mode>.<field>`` (#634) — advice naming
-    ``compile.mem`` where ``compile.modes.cov.mem`` governs this run would
-    send a reader to a value that moves the reservation not at all. Every
-    consumer already reads both shapes, and a suite with no mode block
-    produces the flat map byte for byte.
+    Returns ``{field: "suite"}`` or ``{field: "testbench"}``, the latter winning as in :func:`resolve_compile_resources`; absent fields are governed by cfg-dispatch or defaults.
+    ``parallel`` is included for the suite layer only, since it has no testbench layer.
+    A field won by a ``modes.<mode>`` block records ``{"origin", "key"}`` with the key spelled ``modes.<mode>.<field>``, so advice names the key that governs.
     """
     origins = {}
     for name in ("cpus", "mem", "time", "parallel"):
@@ -1817,8 +1176,7 @@ def compile_resource_origins(
     for name in ("cpus", "mem", "time"):
         if getattr(tb_compile, name, None) is not None:
             origins[name] = "testbench"
-    # ...then the mode blocks, in the order resolve_compile_resources
-    # applies them: every mode layer beats every base field.
+    # Mode blocks apply after every base field, as in resolve_compile_resources.
     for block, origin in ((suite_compile, "suite"), (tb_compile, "testbench")):
         override = mode_override(block, builder_mode, compile_block=True)
         for name in ("cpus", "mem", "time"):
@@ -1831,7 +1189,7 @@ def compile_resource_origins(
 
 
 def _verilate_layers(dispatch_cfg, suite_compile=None, tb_compile=None):
-    """The ``compile.verilate`` blocks, least specific first (#593)."""
+    """The ``compile.verilate`` blocks, least specific first."""
     layers = [getattr(getattr(dispatch_cfg, "compile", None), "verilate", None)]
     layers += [
         getattr(layer, "verilate", None) for layer in (suite_compile, tb_compile)
@@ -1842,12 +1200,7 @@ def _verilate_layers(dispatch_cfg, suite_compile=None, tb_compile=None):
 def _verilate_mode_layers(
     dispatch_cfg, suite_compile=None, tb_compile=None, builder_mode=None
 ):
-    """The ``modes.<mode>.verilate`` blocks, least specific first (#634).
-
-    Applied after :func:`_verilate_layers`, so a per-mode verilate key
-    beats every base one — the same "mode over base" rule the compile and
-    sim reservations follow.
-    """
+    """The ``modes.<mode>.verilate`` blocks, least specific first; applied after :func:`_verilate_layers` so a mode key beats every base key."""
     blocks = [getattr(dispatch_cfg, "compile", None), suite_compile, tb_compile]
     return [
         getattr(
@@ -1860,34 +1213,13 @@ def _verilate_mode_layers(
 def resolve_verilate_resources(
     dispatch_cfg, suite_compile=None, tb_compile=None, *, builder_mode=None
 ) -> JobResources:
-    """Resolve the verilate reservation for ONE testbench (#593).
+    """Resolve the verilate reservation for one testbench.
 
-    Two stages, because the block is an override of the compile
-    reservation rather than a replacement for it:
+    Two stages: the fully resolved compile reservation supplies ``mem`` and ``time``, then every ``compile.verilate`` block (testbench, suite, ``cfg-dispatch.compile``) layers over them field by field.
+    ``cpus`` does not inherit, because verilation is single-threaded; it starts at :data:`DEFAULT_VERILATE_CPUS`.
 
-    1. the fully resolved compile reservation supplies ``mem`` and
-       ``time``. Those are the figures a project sized for the
-       verilation in the first place — it is the phase that holds the
-       peak — so a suite that splits its compile and writes nothing new
-       keeps the reservation it already had.
-    2. every ``compile.verilate`` block then layers over them field by
-       field, testbench over suite over ``cfg-dispatch.compile``, so any
-       ``verilate:`` key beats any ``compile:`` key.
-
-    ``cpus`` does not inherit: verilation is single-threaded, so
-    ``compile.cpus`` describes the ``make`` and would reserve cores this
-    job cannot use. It starts at :data:`DEFAULT_VERILATE_CPUS` instead.
-
-    ``builder_mode`` reaches both stages (#634): stage 1 inherits a
-    mode-resolved ``compile`` reservation, which is what a suite that sizes
-    only ``compile.modes.cov.mem`` wants, and stage 2 then layers each
-    ``modes.<mode>.verilate`` block over the base ``verilate:`` ones. The
-    full order per field is therefore any ``verilate`` key over any
-    ``compile`` key, and within each of those any mode block over any base
-    field.
-
-    A scheduling fact only, like the compile reservation: nothing here
-    reaches the compile fingerprint or the shared-build key.
+    ``builder_mode`` applies to both stages, so within each a mode block beats a base field, and any ``verilate`` key beats any ``compile`` key.
+    The result is a scheduling fact and does not reach the compile fingerprint or shared-build key.
     """
     compile_resources = resolve_compile_resources(
         dispatch_cfg, suite_compile, tb_compile, builder_mode=builder_mode
@@ -1916,26 +1248,13 @@ def resolve_verilate_resources(
 def verilate_resource_origins(
     suite_compile, tb_compile=None, *, builder_mode=None
 ) -> dict:
-    """Which tests.yaml layer and which KEY won each verilate field (#593).
+    """Which tests.yaml layer and which key won each verilate field.
 
-    :func:`compile_resource_origins`, with the key spelled out beside the
-    layer: a verilate field can be won by ``compile.verilate.mem`` or by
-    the ``compile.mem`` it falls back to, and advice naming the wrong one
-    of those two is advice that does not retire. ``{field: {"origin":
-    "suite"|"testbench", "key": "mem"|"verilate.mem"}}``, with fields no
-    tests.yaml layer won simply absent — ``cfg-dispatch`` governs them,
-    and the key to write there is always the ``verilate`` one, since it
-    beats every ``compile`` layer.
+    Like :func:`compile_resource_origins`, but each entry is ``{"origin": "suite"|"testbench", "key": ...}``, because a field can be won by ``verilate.mem`` or by the ``compile.mem`` it falls back to.
+    Fields no tests.yaml layer won are absent; ``cfg-dispatch`` governs them, and the key to write there is the ``verilate`` one. ``cpus`` has no ``compile:`` fallback.
 
-    ``cpus`` has no ``compile:`` fallback, so only a ``verilate:`` block
-    can appear for it.
-
-    Four stages under a ``builder_mode`` (#634), in the order
-    :func:`resolve_verilate_resources` applies them: the base ``compile``
-    fields, their mode blocks, the base ``verilate`` blocks, then their
-    mode blocks — so a key is spelled ``mem``, ``modes.cov.mem``,
-    ``verilate.mem`` or ``modes.cov.verilate.mem``, whichever actually
-    holds the winning value.
+    Under a ``builder_mode`` the stages follow :func:`resolve_verilate_resources`: base compile fields, their mode blocks, base ``verilate`` blocks, their mode blocks.
+    The key is spelled ``mem``, ``modes.cov.mem``, ``verilate.mem`` or ``modes.cov.verilate.mem`` accordingly.
     """
     origins = {}
     layers = ((suite_compile, "suite"), (tb_compile, "testbench"))
@@ -1975,20 +1294,9 @@ def verilate_resource_origins(
 
 
 def verilate_build_block(tb_compile, *, builder_mode=None) -> DispatchResourcesFile:
-    """One testbench's PER-BUILD verilate reservation, as it is stated (#593).
+    """One testbench's per-build verilate reservation, with this run's ``modes.<mode>`` folded in.
 
-    The block :func:`aggregate_verilate_resources` combines, which is not
-    simply ``tb_compile.verilate``: ``mem`` and ``time`` fall back to the
-    testbench's own ``compile:`` block, because a build sized there was
-    sized for its verilation — dropping the fallback would let a 256 GB
-    entry's verilate job be reserved from the suite-wide figure and be
-    OOM-killed in the one phase that needs the memory.
-
-    ``cpus`` has no such fallback; see :func:`resolve_verilate_resources`.
-
-    Read off the block with this run's ``modes.<mode>`` folded in (#634),
-    so an instrumented build is summed at its own figure and not at the
-    base one it would be OOM-killed on.
+    The block :func:`aggregate_verilate_resources` combines. ``mem`` and ``time`` fall back to the testbench's own ``compile:`` block, since a build sized there was sized for its verilation. ``cpus`` has no fallback.
     """
     tb_compile = effective_compile_block(tb_compile, builder_mode)
     verilate = getattr(tb_compile, "verilate", None)
@@ -2007,18 +1315,9 @@ def verilate_build_block(tb_compile, *, builder_mode=None) -> DispatchResourcesF
 def aggregate_verilate_resources(
     dispatch_cfg, suite_compile=None, testbenches=(), parallel=1, *, builder_mode=None
 ) -> tuple[JobResources, dict]:
-    """:func:`aggregate_compile_resources` for the verilate job (#593).
+    """:func:`aggregate_compile_resources` for the verilate job.
 
-    Same arithmetic over the same planned builds — ``cpus`` is the widest,
-    ``mem`` the sum of the widest ``min(parallel, n)``, ``time`` the
-    makespan — read off :func:`verilate_build_block` instead of the
-    ``compile:`` blocks and floored at
-    :func:`resolve_verilate_resources`. Shared rather than restated so
-    the two jobs of one compile can never disagree about how wide the
-    suite is.
-
-    ``builder_mode`` reaches every part of that (#634): the per-build
-    blocks, the floor, and the key each source's value is spelled with.
+    Same arithmetic over the same builds, read from :func:`verilate_build_block` and floored at :func:`resolve_verilate_resources`. ``builder_mode`` applies to the blocks, the floor and the source keys.
     """
     blocks = [
         (name, verilate_build_block(block, builder_mode=builder_mode))
@@ -2029,16 +1328,13 @@ def aggregate_verilate_resources(
         tb_blocks.setdefault(name, block)
 
     def source_key(name, field_name):
-        # Which of the four spellings holds this source's value. Keyed on
-        # the testbench NAME, which is enough: two planned builds of one
-        # testbench read one block, so they carry one label.
+        # Which of four spellings holds this source's value, keyed by testbench name (two builds of one testbench read one block).
         if name is None:
             return f"verilate.{field_name}"
         block = tb_blocks.get(name)
         override = mode_override(block, builder_mode, compile_block=True)
         prefix = f"modes.{builder_mode}."
-        # The order verilate_build_block resolves them in: a mode verilate
-        # key, a base verilate key, a mode compile key, the base field.
+        # Same order as verilate_build_block: mode verilate, base verilate, mode compile, base field.
         if getattr(getattr(override, "verilate", None), field_name, None) is not None:
             return f"{prefix}verilate.{field_name}"
         if getattr(getattr(block, "verilate", None), field_name, None) is not None:
@@ -2064,21 +1360,10 @@ def aggregate_verilate_resources(
 
 
 def compile_parallel_origin(suite_owned: bool, suite_path=None) -> str:
-    """How to spell the key that governs ``compile.parallel`` (#547).
+    """How to spell the key that governs ``compile.parallel``.
 
-    One home for the spelling, because four things say it and they must
-    agree: the build job's pool line, the ``cpus`` advice's "other lever"
-    sentence, the withheld-advice line, and the advice table's footer. A
-    reader told to size ``cfg-dispatch.compile.parallel`` when their own
-    tests.yaml sets the key would edit a value that moves that job not at
-    all — the same unappliable-advice failure the per-field ``edit_hint``
-    origins exist to prevent (#497).
-
-    ``suite_owned`` is whether the suite's ``compile:`` block set
-    ``parallel``; ``suite_path`` is that suite's config path, named by its
-    basename so the line says which file to open even where several suites
-    are in one report. Without a path there is nothing honest to name, so
-    the root key stands — it is what governs whenever the suite does not.
+    ``suite_owned`` is whether the suite's ``compile:`` block set ``parallel``; ``suite_path`` is then named by basename. Without a path the root key ``cfg-dispatch.compile.parallel`` is returned.
+    The build job's pool line and the advice text all use it so they agree.
     """
     if suite_owned and suite_path:
         return f"{os.path.basename(str(suite_path))} compile.parallel"
@@ -2086,18 +1371,10 @@ def compile_parallel_origin(suite_owned: bool, suite_path=None) -> str:
 
 
 def greedy_schedule(durations, parallel):
-    """Schedule ``durations`` over ``parallel`` workers, in list order (#551).
+    """Schedule ``durations`` over ``parallel`` workers in list order, each build going to the first free worker.
 
-    The build job hands its groups to a ThreadPool in plan order, so each
-    build goes to whichever worker frees up first and the job ends when the
-    last worker does. Returns ``(makespan, workers, finish)`` — the worker
-    lists hold indices into ``durations``, and ``finish`` is each worker's
-    end time, so a caller can ask which workers the job is waiting on.
-
-    Shared with right-sizing, which re-runs it on a PROPOSED edit: raising
-    one repeated build can push a later copy of it behind a neighbour and
-    move less wall clock than the arithmetic predicted, so the only honest
-    check is to schedule the change and look (#551 review round 6).
+    Returns ``(makespan, workers, finish)``: the worker lists hold indices into ``durations`` and ``finish`` is each worker's end time.
+    Right-sizing re-runs it on a proposed edit, because raising one repeated build can move less wall clock than the arithmetic predicts.
     """
     durations = list(durations)
     if not durations:
@@ -2115,72 +1392,19 @@ def greedy_schedule(durations, parallel):
 def aggregate_compile_resources(
     dispatch_cfg, suite_compile=None, testbenches=(), parallel=1, *, builder_mode=None
 ) -> tuple[JobResources, dict]:
-    """The build job's reservation over the testbenches it will compile (#551).
+    """The build job's reservation over the testbenches it will compile.
 
-    Named for what it does: the fields are combined, not compared. `mem`
-    adds up and `time` queues; only `cpus` is a maximum.
+    One build job per suite compiles every planned config. The suite-level ``compile:`` block is whole-job and floors the result; testbench ``compile:`` blocks are per build. Per field:
 
-    One build job per suite compiles every planned config, so its single
-    allocation has to cover all of them at once. The two tests.yaml layers
-    mean different things here, and the aggregation is what keeps them
-    honest (#551 review):
+    - ``cpus``: the largest per-build value; the head multiplies it by ``parallel`` afterwards.
+    - ``mem``: the sum of the largest ``min(parallel, n)`` per-build values. Once any build states a ``mem``, builds that state none count as the figure the whole-job value implies for one build.
+    - ``time``: the makespan of the work queue over ``parallel`` workers (see :func:`greedy_schedule`).
 
-    * the suite-level ``compile:`` block is WHOLE-JOB, exactly as it has
-      been since #497 — a project sizes it for the job it watches in
-      ``squeue``, and nothing below may take the reservation under it;
-    * a testbench ``compile:`` block is PER BUILD — it describes one
-      verilation, so several of them have to be combined rather than
-      compared.
+    Builds with no block of their own add no ``cpus`` or ``time``.
+    ``testbenches`` is ``(name, tb_compile)`` once per planned build, not per testbench in the file or per selected test; ``()`` resolves the whole-job figure alone.
+    ``builder_mode`` resolves each block's ``modes.<mode>`` first. Raises :class:`FatalRtlBuddyError` for an unparseable ``mem``.
 
-    Per field, therefore, over the testbenches that state a block of their
-    own, floored at the suite-resolved (whole-job) value:
-
-    ``cpus``
-        the largest block's, because the head multiplies this by
-        ``parallel`` afterwards; a build needing 8 cores needs 8 whether or
-        not its neighbour needs 2.
-    ``mem``
-        the sum of the largest ``min(parallel, n)`` per-build figures.
-        Memory is additive: the builds in flight together each hold their
-        own peak, and the widest such set is the one to survive. Once ANY
-        planned build states its own, the builds that state none take the
-        figure the whole-job value implies for one build, so an annotated
-        testbench sharing a slot with an unannotated one is sized for both
-        (#551 review round 5).
-    ``time``
-        the makespan of the build job's own work queue: each build goes to
-        whichever of the ``parallel`` workers frees up first, in plan
-        order, which is the schedule its ThreadPool actually runs. At
-        ``parallel: 1`` that is the serial total, and with a worker per
-        build it is the longest one. ``ceil(sum / parallel)`` is only a
-        LOWER bound in between — 30, 30 and 20 minutes over two workers
-        finish in 50, not 40 — and a lower bound is the wrong side to
-        reserve from (#551 review round 2).
-
-    A build with no block of its own contributes to neither the ``cpus``
-    nor the ``time`` figure: it is covered by the suite-level whole-job
-    value, and adding an inherited wall clock per build would make a suite
-    of five plain benches with ``time: 30m`` reserve two and a half hours.
-    ``mem`` is the exception above, and only once some build has stated
-    one: memory is the field where two builds genuinely need their peaks
-    at the same instant, while an unannotated build's wall clock is
-    unknown and the whole-job figure already describes the queue it runs
-    in. A suite that states no per-testbench ``mem`` at all is untouched,
-    so ``compile.mem`` keeps the whole-job meaning #497 gave it.
-
-    ``testbenches`` is ``(name, tb_compile)`` once per planned BUILD — not
-    once per testbench in the file, and not once per selected test. Two
-    tests on one testbench that differ in plusdefines, builder, model or
-    assertions compile separately and each hold their own peak, so the
-    caller keys the list on those ingredients; two that share them are one
-    compile however many tests they are, unless the caller cannot know
-    that (a `preproc:` hook, or a builder that compiles per test). A testbench nobody selected contributes no build,
-    and letting it inflate the reservation is exactly the fencing-off this
-    issue removes. ``()`` resolves the suite-wide figure alone, which is
-    what a caller with no plan in hand (and every suite whose testbenches
-    declare nothing) gets today.
-
-    Returns the reservation and, beside it, the provenance of each field::
+    Returns the reservation and the provenance of each field::
 
         {field: {"origin": "testbench"|"suite"|"cfg-dispatch",
                  "testbench": name|None,
@@ -2188,21 +1412,7 @@ def aggregate_compile_resources(
                  "aggregated": bool,
                  "contributors": [{"origin": ..., "testbench": ...}, ...]}}
 
-    ``origin``/``testbench`` name the one place to edit. ``sources`` lists
-    EVERY source that independently produces the winning value, and
-    ``contributors``/``aggregated`` say whether it is a SUM of several
-    builds at all. Right-sizing withholds a ``reduce`` for either — no
-    single edit lowers a tied value, and a whole-job suggestion written
-    into one contributor of a sum leaves the total where it was (#551
-    review).
-
-    ``builder_mode`` resolves each block's ``modes.<mode>`` before the
-    arithmetic (#634), so a suite compiling for coverage sums the coverage
-    figures and an unmoded run sums the objects it always did.
-
-    Raises :class:`FatalRtlBuddyError` for a ``mem`` it cannot parse: the
-    sum is taken in bytes, and a value silently dropped out of it would
-    shrink the reservation.
+    ``sources`` lists every source that independently produces the winning value and ``aggregated`` marks a sum of several builds; right-sizing withholds a ``reduce`` for either.
     """
     return _aggregate_resources(
         resolve_compile_resources(
@@ -2222,28 +1432,15 @@ def aggregate_compile_resources(
 def _aggregate_resources(
     floor, testbenches, parallel, *, floor_origins=None, source_key=None
 ):
-    """Combine one reservation field-wise over the builds one job runs (#593).
+    """Combine one reservation field-wise over the builds one job runs.
 
-    The body :func:`aggregate_compile_resources` documents, with the floor
-    and the provenance labels handed in — because the verilate job
-    aggregates the same way over a different set of keys
-    (:func:`aggregate_verilate_resources`), and two copies of this
-    arithmetic would be two chances for the two jobs to disagree about how
-    wide a suite is.
+    The body of :func:`aggregate_compile_resources`, with the floor and provenance labels passed in so the verilate job (:func:`aggregate_verilate_resources`) shares the arithmetic.
 
-    ``floor_origins`` is the flat ``{field: origin}`` map of the whole-job
-    layer, as :func:`compile_resource_origins` produces it, or the richer
-    ``{field: {"origin", "key"}}`` :func:`verilate_resource_origins` does.
-    ``source_key(name, field)`` spells the key inside a ``compile:`` block
-    that holds one source's value — ``None`` (the default) for the compile
-    fields, whose key IS the field name; ``name`` is ``None`` for the
-    whole-job layer. Reservation advice renders it, so a hint about the
-    verilate job names ``compile.verilate.mem`` rather than the
-    ``compile.mem`` it would not be moved by.
+    ``floor_origins`` is the ``{field: origin}`` map of the whole-job layer from :func:`compile_resource_origins`, or the ``{field: {"origin", "key"}}`` form from :func:`verilate_resource_origins`.
+    ``source_key(name, field)`` spells the key inside a ``compile:`` block that holds a source's value (``name`` is ``None`` for the whole-job layer); the default is the field name.
     """
     parallel = max(1, int(parallel or 1))
-    # Only planned builds that state a block of their own take part in the
-    # aggregation; the rest ride on the whole-job floor below.
+    # Builds without a block of their own ride on the whole-job floor.
     blocks = [
         (name, block)
         for name, block in testbenches
@@ -2257,8 +1454,7 @@ def _aggregate_resources(
         source = {"origin": origin, "testbench": name}
         key = key or (source_key(name, field_name) if source_key else None)
         if key is not None:
-            # Only where there is one, so a compile source stays the
-            # two-key dict every consumer of it already compares.
+            # Only where there is one, so compile sources keep their two-key shape.
             source["key"] = key
         return source
 
@@ -2285,45 +1481,29 @@ def _aggregate_resources(
         return out
 
     def _record(field_name, winners, contributors=(), primary_value=None, **extra):
-        """Record what produced this field's value, and how.
+        """Record what produced this field's value.
 
-        ``winners`` are the sources that INDEPENDENTLY produce it — more
-        than one and no single edit can lower it. ``contributors`` are the
-        builds whose values were ADDED to reach it; more than one and the
-        number cannot be decomposed back into an edit at all (#551 review).
+        ``winners`` independently produce it (several means no single edit lowers it). ``contributors`` were added to reach it (several means it cannot be decomposed into one edit).
         """
         winners = _dedupe(winners) or [_floor_source(field_name)]
-        # NOT deduplicated: two planned builds can share one YAML key, and
-        # their values still add up twice. The count is the whole point.
+        # Not deduplicated: two builds sharing a YAML key still add up twice.
         contributors = list(contributors)
         origins[field_name] = {
             "origin": winners[0]["origin"],
             "testbench": winners[0]["testbench"],
-            # The key inside the `compile:` block that holds the winning
-            # value, where it is not simply the field's own name (#593).
+            # The key inside the `compile:` block, where it is not the field name.
             **({"key": winners[0]["key"]} if "key" in winners[0] else {}),
-            # Every source that produces the same number, so a `reduce` no
-            # single edit could apply is withheld rather than aimed at one
-            # of several tied sources.
+            # Every source producing the same number, so an unappliable `reduce` is withheld.
             "sources": winners,
-            # ...and, separately, whether the number is a sum at all: a
-            # whole-job suggestion written into one contributor's key
-            # leaves the aggregate where it was.
+            # Whether the number is a sum: a whole-job suggestion written into one contributor would leave the total unchanged.
             "aggregated": len(contributors) > 1,
             "contributors": contributors,
-            # The primary contributor's OWN value, in the field's native
-            # units (bytes for mem, seconds for time). Right-sizing needs
-            # it to turn a whole-job suggestion into the number to write:
-            # a `raise` naming one contributor of a sum has to say what
-            # THAT key becomes, or applying it re-aggregates over the
-            # target (#551 review round 3).
+            # The primary contributor's own value in native units (bytes, seconds), so a whole-job suggestion can be translated into the number to write.
             "contributor_value": primary_value,
             **extra,
         }
 
     # --- cpus: the widest single build, never below the whole-job value ---
-    # Not summed: the head multiplies this by `parallel` afterwards, so a
-    # build needing 8 cores needs 8 whether or not its neighbour needs 2.
     cpus_bids = [(block.cpus, name) for name, block in blocks if block.cpus is not None]
     resolved.cpus = max([value for value, _ in cpus_bids] + [floor.cpus])
     cpus_winners = [_tb_source(n, "cpus") for v, n in cpus_bids if v == resolved.cpus]
@@ -2331,25 +1511,15 @@ def _aggregate_resources(
         cpus_winners.append(_floor_source("cpus"))
     _record("cpus", cpus_winners)
 
-    # --- mem: the builds that can overlap each hold their own peak -------
+    # --- mem: the builds that can overlap each hold their own peak ------
     floor_mem = _compile_mem_bytes(floor.mem)
     stated_mem = [
         (_compile_mem_bytes(block.mem, testbench=name), name, str(block.mem))
         for name, block in testbenches
         if getattr(block, "mem", None) is not None
     ]
-    # Once ANY planned build states its own mem, the suite has moved to
-    # per-build sizing — and a build that states none still occupies a slot
-    # beside it. Sizing only the stated ones would let a 256G testbench
-    # overlap an unannotated build and request 256G for both (#551 review
-    # round 5), so every other planned build contributes the figure the
-    # whole-job value implies for one build.
-    #
-    # Gated on there being a stated one, deliberately. A suite that names
-    # no per-testbench mem is a pure #497 suite, where `compile.mem` means
-    # what the docs have always asked projects to write — the whole job at
-    # `parallel` concurrent builds — and multiplying it here would
-    # double-size every such suite that ever set `parallel`.
+    # Once any planned build states a mem, builds that state none take the figure the whole-job value implies for one build.
+    # Gated on a stated one: a suite with no per-testbench mem keeps `compile.mem` as the whole-job figure, and multiplying it would double-size it.
     implicit_mem = (
         [(floor_mem, None, floor.mem)]
         * sum(1 for _, block in testbenches if getattr(block, "mem", None) is None)
@@ -2361,8 +1531,7 @@ def _aggregate_resources(
         key=lambda bid: bid[0],
         reverse=True,
     )
-    # Only `parallel` of them are ever in flight together, so only the
-    # widest that many add up; the rest wait for a slot.
+    # Only `parallel` builds are in flight together, so only the widest that many add up.
     overlapping = mem_bids[:parallel]
     summed_mem = sum(value for value, _, _ in overlapping)
     winning_mem = max(summed_mem, floor_mem or 0)
@@ -2370,8 +1539,7 @@ def _aggregate_resources(
     mem_contributors = []
     mem_primary = None
     if overlapping and summed_mem == winning_mem:
-        # The largest contributor is named as the lever, but the whole set
-        # is recorded: a sum of several cannot be decomposed into one edit.
+        # The largest contributor is the lever, but the whole set is recorded.
         top = overlapping[0][0]
         mem_winners = [
             _tb_source(n, "mem") if n else _floor_source("mem")
@@ -2386,8 +1554,7 @@ def _aggregate_resources(
     floor_binds_mem = floor_mem is not None and floor_mem == winning_mem
     if floor_binds_mem:
         mem_winners.append(_floor_source("mem"))
-        # Keep the spelling the config already uses where the whole-job
-        # value binds — the common case, which must stay byte-identical.
+        # Keep the config's own spelling where the whole-job value binds.
         resolved.mem = floor.mem
     elif len(overlapping) == 1:
         resolved.mem = overlapping[0][2]
@@ -2395,7 +1562,7 @@ def _aggregate_resources(
         resolved.mem = format_mem(winning_mem)
     _record("mem", mem_winners, mem_contributors, mem_primary)
 
-    # --- time: the makespan of the build job's own work queue ------------
+    # --- time: the makespan of the build job's own work queue -----------
     time_bids = [
         (time_to_seconds(block.time), name, str(block.time))
         for name, block in blocks
@@ -2403,34 +1570,18 @@ def _aggregate_resources(
     ]
     time_bids = [bid for bid in time_bids if bid[0] is not None]
     floor_time = time_to_seconds(floor.time)
-    # The build job hands its groups to a ThreadPool in plan order, so the
-    # schedule is a greedy list schedule: each build goes to whichever
-    # worker frees up first, and the job ends when the last worker does.
-    # `ceil(sum / parallel)` is only a LOWER bound on that — 30, 30 and 20
-    # minutes over two workers finish in 50, not 40 — and a lower bound is
-    # exactly the wrong side to reserve from (#551 review).
+    # The build job hands groups to a ThreadPool in plan order: a greedy list schedule.
     makespan, workers, finish = greedy_schedule(
         [value for value, _, _ in time_bids], parallel
     )
-    # No separate "longest single build" floor: a greedy schedule never
-    # finishes before its longest element, so the makespan already contains
-    # it — and at `parallel: 1` it is the serial total.
+    # No separate longest-build floor: the makespan already contains it.
     winning_time = max(makespan, floor_time or 0)
     time_winners = []
     time_contributors = []
     time_primary = None
     if time_bids and makespan == winning_time:
-        # The builds on the worker that finishes last are what the job is
-        # waiting for: one of them is a lever, several are a sum.
-        #
-        # ...and SEVERAL workers can finish at the makespan at once — two
-        # 60-minute builds over two workers, say. Each of them holds the
-        # job there on its own, so shortening the builds on one leaves the
-        # wall clock exactly where it was: every critical worker's longest
-        # build is a tied source, and the `reduce` is withheld rather than
-        # aimed at one of them (#551 review round 4). Sources that resolve
-        # to the same testbench collapse in `_record`, which is right —
-        # one edit does move every worker running that build.
+        # The builds on the last-finishing worker are what the job waits for.
+        # Several workers can tie at the makespan; each one's longest build is a tied source, so `reduce` is withheld.
         critical_workers = [
             group for group, done in zip(workers, finish) if done == makespan
         ]
@@ -2446,25 +1597,20 @@ def _aggregate_resources(
             ]
         time_primary = longest
         if len(critical) == 1:
-            # One build decides the wall clock: its own spelling is the
-            # answer, and no reformatting can drift from the config.
+            # One build decides the wall clock: keep its own spelling.
             resolved.time = time_bids[critical[0]][2]
         else:
             resolved.time = format_time(winning_time)
     if floor_time is not None and floor_time == winning_time:
         time_winners.append(_floor_source("time"))
-        # The whole-job value binds: keep the spelling the config uses.
+        # The whole-job value binds: keep its spelling.
         resolved.time = floor.time
     _record(
         "time",
         time_winners,
         time_contributors,
         time_primary,
-        # The queue itself, in plan order, so right-sizing can re-run the
-        # schedule on a proposed edit instead of assuming the assignment
-        # survives it (#551 review round 6). Names, because the edit is to
-        # a testbench's key and every build of that testbench moves with
-        # it. Internal to the provenance map — no machine-output surface.
+        # The queue in plan order, so right-sizing can re-run the schedule on a proposed edit. Internal to provenance.
         schedule=[(name, value) for value, name, _ in time_bids],
         parallel=parallel,
     )

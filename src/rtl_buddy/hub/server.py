@@ -1,30 +1,6 @@
-"""asyncio TCP server for rtl-buddy-hub.
+"""asyncio TCP server for the hub: line-delimited JSON, one UTF-8 envelope per line (§2 of the protocol spec).
 
-Transport: line-delimited JSON over TCP, one envelope per line, UTF-8
-(§2 of the protocol spec). The browser-facing WebSocket layer lives in
-the viewer-integration PR and reuses this server's dispatch surface.
-
-Responsibilities of this module:
-
-* Accept client connections, run the ``hello``/``welcome`` handshake,
-  and maintain a registry keyed by :class:`Origin`. The spec allows at
-  most one client per origin in v1 — a second ``hello`` for an already
-  registered origin is refused with ``not_connected``.
-* Dispatch incoming envelopes:
-    - **state events** (selection_changed, signal_selected, …) are
-      broadcast to every connected client *except* the one whose
-      origin matches the event's ``origin`` (§6 rule 1).
-    - **requests** are routed to the client whose origin owns the
-      target coordinate system; if no such client is registered, the
-      hub replies with ``error{code: "not_connected"}``.
-    - **responses / errors** are routed back to the original requester
-      by ``id``.
-* Maintain a bounded LRU of recently seen request IDs so duplicate
-  requests (§6 rule 2) are silently dropped.
-
-The resolver (view ↔ wave ↔ src) is a PR 3 follow-up; this module
-returns ``error{code: "unresolvable"}`` for ``resolve_*`` requests so
-the wire surface is real even before the resolver lands.
+It runs the ``hello``/``welcome`` handshake and keeps one client per :class:`Origin`; a second ``hello`` for a registered origin is refused with ``not_connected`` unless it asks for takeover. State events are broadcast to every client except the sender's origin and cached in :class:`HubState` (§6). Requests are routed to the client that owns the target origin (``not_connected`` if none is registered), or answered by the hub itself (``resolve_*``, ``state_snapshot``), and responses are routed back by ``id``. Duplicate request ids within a bounded window are dropped.
 """
 
 from __future__ import annotations
@@ -80,11 +56,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "phys_focus",
     }
 )
-"""Event ``type`` strings that broadcast to all clients except origin.
-
-``bye`` is technically also broadcast, but the connection close handler
-emits it explicitly; it's not a payload-bearing event the application
-emits, so it's tracked separately."""
+"""Event types broadcast to every client except the sender's origin and cached where :class:`HubState` has a slot."""
 
 
 REQUEST_ROUTING: dict[str, Origin] = {
@@ -103,10 +75,7 @@ REQUEST_ROUTING: dict[str, Origin] = {
     "view_capture": Origin.VIEW,
     "view_overlay_set": Origin.VIEW,
 }
-"""Request ``type`` → ``origin`` of the client that handles it.
-
-``resolve_*`` requests are hub-handled and not in this table; ``hello``
-is intercepted upfront by the handshake stage."""
+"""Request type to the origin of the client that handles it. Hub-handled requests are not listed."""
 
 
 HUB_HANDLED_REQUESTS: frozenset[str] = frozenset(
@@ -124,7 +93,7 @@ DEFAULT_DEDUPE_TTL_SECONDS = 60.0
 
 
 class HubServerError(Exception):
-    """Server-side error not routed back over the wire."""
+    """Server-side error that is not sent to clients."""
 
 
 @dataclass
@@ -139,7 +108,7 @@ class ClientConnection:
     client_version: str = ""
 
     async def send(self, env: Envelope) -> None:
-        """Serialise + write one envelope; flush via ``drain``."""
+        """Write one envelope as a line and wait for the write buffer to drain."""
 
         line = encode(env).encode("utf-8") + b"\n"
         self.writer.write(line)
@@ -151,21 +120,14 @@ class ClientConnection:
 
 @dataclass
 class _PendingRequest:
-    """In-flight request awaiting a response or error."""
+    """A request awaiting a response or error."""
 
     requester_origin: Origin
     seen_at: float
 
 
 class _LruIdSet:
-    """Bounded LRU of request IDs with a TTL.
-
-    Used both as a dedupe filter for incoming requests (§6 rule 2) and
-    as the table of currently-pending request IDs for response routing.
-    Two different concerns mapped onto the same data structure is
-    intentional: dedupe and routing both want "have we recently seen
-    this id, and what was it for?"
-    """
+    """Bounded LRU of request ids with a TTL, used for request dedupe (§6) and for routing responses."""
 
     def __init__(
         self,
@@ -209,14 +171,7 @@ class _LruIdSet:
 class HubServer:
     """The hub's asyncio TCP server.
 
-    Lifecycle:
-
-    1. :meth:`start` binds the listening socket on the configured
-       interface and returns the resolved ``(host, port)`` pair.
-    2. The caller then writes the discovery record and arranges for
-       :meth:`serve_forever` to be awaited.
-    3. :meth:`shutdown` triggers a clean tear-down: broadcasts ``bye``,
-       closes connections, stops accepting new ones.
+    Call :meth:`start` (returns the bound ``(host, port)``), then await :meth:`serve_forever`, and finish with :meth:`shutdown`.
     """
 
     def __init__(
@@ -244,10 +199,6 @@ class HubServer:
         self._asyncio_server: asyncio.base_events.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
-
-    # ------------------------------------------------------------------
-    # lifecycle
-    # ------------------------------------------------------------------
 
     async def start(self) -> tuple[str, int]:
         self._asyncio_server = await asyncio.start_server(
@@ -280,11 +231,7 @@ class HubServer:
             self._stopped.set()
 
     async def shutdown(self) -> None:
-        """Broadcast ``bye``, close connections, stop the listener.
-
-        Idempotent; multiple calls (e.g. signal handler + finally
-        block) are safe.
-        """
+        """Send ``bye`` to every client, close the connections and stop the listener. Safe to call repeatedly."""
 
         if self._asyncio_server is None or not self._asyncio_server.is_serving():
             self._asyncio_server = None
@@ -308,10 +255,6 @@ class HubServer:
     @property
     def registered_origins(self) -> list[Origin]:
         return list(self._registry.keys())
-
-    # ------------------------------------------------------------------
-    # per-connection handler
-    # ------------------------------------------------------------------
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -378,12 +321,7 @@ class HubServer:
                     ),
                 )
                 return False
-            # Takeover path: the incoming hello asked to replace any
-            # existing registration for this client slot (e.g. a fresh
-            # browser tab supersedes a stale one). Bye-broadcast the
-            # outgoing peer to everyone else so listeners refresh
-            # their peer indicators, close its socket, and drop it
-            # from the registry before the new connection registers.
+            # Takeover: drop the old registration and tell the other peers it left.
             existing = self._registry.pop(client)
             self.state.registered_clients = set(self._registry.keys())
             log_event(
@@ -426,14 +364,6 @@ class HubServer:
             )
         )
 
-        # Replay cached state to the just-welcomed peer so a fresh
-        # client (new browser tab, restarted nvim, rb hub send drop-in)
-        # immediately knows what the user is looking at, without having
-        # to wait for the next user action. Each event is unicast to
-        # this peer only — existing peers don't see duplicated state.
-        # Each replayed envelope carries the original `origin` that
-        # produced the cached event so loop-prevention semantics match
-        # the live broadcast.
         await self._replay_cached_state(conn)
 
         log_event(
@@ -446,11 +376,6 @@ class HubServer:
             capabilities=list(conn.capabilities),
         )
 
-        # Tell already-registered peers that a new peer is online.
-        # The new peer learnt the current snapshot from `welcome`;
-        # this is the delta for the rest. ``suppress_origin=client``
-        # keeps the joining peer from receiving a peer_joined event
-        # about itself.
         await self._broadcast(
             self._peer_joined_envelope(origin=client),
             suppress_origin=client,
@@ -488,10 +413,6 @@ class HubServer:
         elif env.kind in (Kind.RESPONSE, Kind.ERROR):
             await self._handle_response_or_error(env)
 
-    # ------------------------------------------------------------------
-    # events
-    # ------------------------------------------------------------------
-
     async def _handle_event(self, env: Envelope, conn: ClientConnection) -> None:
         if env.type == "bye":
             await self._cleanup_connection(conn)
@@ -504,24 +425,13 @@ class HubServer:
                 await self._augment_source_focused(env)
             return
 
-        # Unknown event types are silently dropped per §11.
+        # Unknown event types are dropped (§11).
         log_event(logger, logging.DEBUG, "hub.event.dropped_unknown", type=env.type)
 
     async def _augment_source_focused(self, env: Envelope) -> None:
-        """Derive a ``selection_changed`` from ``source_focused`` and
-        broadcast it.
+        """Broadcast a ``selection_changed`` for the instances matching a ``source_focused`` position.
 
-        Without this, the SPA receives ``source_focused {file, line, col}``
-        and silently drops it (its switch statement has no case). The
-        schematic SPA already handles ``selection_changed`` — pan/highlight
-        the matching instance — so resolving file/line/col → instance_path
-        on the hub side lets ``:RtlBuddyShow`` from nvim light up the
-        schematic with no SPA-side protocol changes.
-
-        Multiple matches can occur (nested instances); the resolver returns
-        them smallest-range-first, and we forward the full list so the SPA
-        picks the most-specific (per its existing ``Array.isArray ? [0] : ip``
-        logic in ``useHub.applyEnvelope``).
+        A single match is sent as a string. Several (nested instances) are sent as a list, smallest range first.
         """
         if self.resolver is None:
             return
@@ -537,7 +447,7 @@ class HubServer:
                 line=line,
                 col=col if isinstance(col, int) else None,
             )
-        except Exception:  # noqa: BLE001 — resolver errors mustn't abort the loop
+        except Exception:  # noqa: BLE001 - resolver errors must not abort the loop
             log_event(
                 logger,
                 logging.WARNING,
@@ -639,20 +549,9 @@ class HubServer:
     async def broadcast_event(
         self, env: Envelope, *, suppress_origin: Origin | None = None
     ) -> None:
-        """Public broadcast hook for hub-internal events.
-
-        Used by the viewer HTTP layer to push ``view_changed`` events
-        to connected WS peers (and any TCP adapters) without having to
-        reach into ``_broadcast``. ``suppress_origin=None`` means every
-        connected client receives the envelope — the appropriate
-        default for hub-originated events.
-        """
+        """Broadcast a hub-originated event; with ``suppress_origin=None`` every client receives it."""
 
         await self._broadcast(env, suppress_origin=suppress_origin)
-
-    # ------------------------------------------------------------------
-    # requests
-    # ------------------------------------------------------------------
 
     async def _handle_request(self, env: Envelope, conn: ClientConnection) -> None:
         if env.type == "hello":
@@ -708,14 +607,12 @@ class HubServer:
             )
             return
 
-        # Track the pending request so responses route back correctly.
         self._pending.put(env.id, requester_origin=env.origin)
         await self._safe_send(target_conn, env)
 
     async def _handle_hub_request(self, env: Envelope, conn: ClientConnection) -> None:
         """Run a hub-side request and reply on the same socket."""
 
-        # state_snapshot is pure HubState read; no resolver needed.
         if env.type == "state_snapshot":
             await self._handle_state_snapshot(env, conn)
             return
@@ -733,7 +630,6 @@ class HubServer:
         elif env.type == "resolve_signal_to_view":
             await self._handle_resolve_signal_to_view(env, conn)
         else:
-            # Shouldn't happen — HUB_HANDLED_REQUESTS gates this dispatch.
             await self._reply_unresolvable(
                 env, conn, f"unhandled hub request {env.type}"
             )
@@ -816,10 +712,7 @@ class HubServer:
             )
             return
 
-        # §7: payload.instance_path is the list of driver paths; "port"
-        # is the driven port. When drivers disagree on port name (rare)
-        # we surface the first one and log; downstream surfacing is the
-        # client's call.
+        # §7: the response reports the first driver's port when drivers disagree.
         ports = {d.port for d in drivers}
         if len(ports) > 1:
             log_event(
@@ -848,7 +741,7 @@ class HubServer:
     async def _handle_resolve_wave_to_view(
         self, env: Envelope, conn: ClientConnection
     ) -> None:
-        """Reverse of ``resolve_view_to_wave`` — wave_scope → instance_path."""
+        """Answer ``resolve_wave_to_view``: wave_scope to instance_path."""
 
         assert self.resolver is not None
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -893,22 +786,12 @@ class HubServer:
     async def _handle_state_snapshot(
         self, env: Envelope, conn: ClientConnection
     ) -> None:
-        """Return a snapshot of every coordinate cached on ``HubState``.
-
-        Pure HubState read — no resolver required, no events emitted.
-        Lets a fresh client (a sidebar SPA, an agent dropping in
-        mid-session, a CI guardrail) know "where is the user looking
-        right now" without scraping the event stream.
-        """
+        """Answer ``state_snapshot`` with the cached active model, selection, cursor, scope, peers and diagnostic sources."""
 
         s = self.state
         selection_payload: dict[str, Any] | None = None
         if s.selection is not None:
-            # On-wire selection_changed payload uses a string for the
-            # single-driver case and a list for the multi-driver collapse
-            # (§7). state_snapshot always emits a string and picks the
-            # first path when collapsed — multi-driver collapse is a
-            # semantic the snapshot doesn't model.
+            # The snapshot reports only the first path of a multi-driver selection.
             paths = s.selection.instance_path
             selection_payload = {
                 "instance_path": paths[0] if paths else "",
@@ -948,27 +831,15 @@ class HubServer:
         )
 
     async def _replay_cached_state(self, conn: ClientConnection) -> None:
-        """Unicast the hub's cached state events to one client.
+        """Send the cached state events to one newly welcomed client.
 
-        Called from :meth:`_register` after ``welcome`` has been sent.
-        Skips any cache slot that's still empty (e.g. a freshly-started
-        hub). The cached ``origin`` is preserved on each replayed
-        envelope so the receiving client can apply the same
-        loop-prevention rules it would for a live broadcast.
-
-        diagnostics_set bundles ship even when ``items`` is empty so a
-        producer that cleared its findings before this peer connected
-        still reaches the peer as a "cleared" record (matches the
-        behaviour added in #128).
+        Each event keeps its original ``origin``. Empty ``diagnostics_set`` bundles are sent too, so the client learns the source was cleared.
         """
         s = self.state
 
         if s.selection is not None:
             paths = s.selection.instance_path
             payload: dict[str, Any] = {
-                # On-wire selection_changed accepts string or list (§7
-                # collapse case is list-valued). Replay matches whatever
-                # we cached: tuple of length 1 → string, longer → list.
                 "instance_path": paths[0] if len(paths) == 1 else list(paths),
             }
             await self._safe_send(
@@ -1088,10 +959,6 @@ class HubServer:
             ),
         )
 
-    # ------------------------------------------------------------------
-    # responses / errors
-    # ------------------------------------------------------------------
-
     async def _handle_response_or_error(self, env: Envelope) -> None:
         pending = self._pending.pop(env.id)
         if pending is None:
@@ -1118,10 +985,6 @@ class HubServer:
 
         await self._safe_send(requester, env)
 
-    # ------------------------------------------------------------------
-    # bookkeeping
-    # ------------------------------------------------------------------
-
     async def _cleanup_connection(self, conn: ClientConnection) -> None:
         if conn.origin is None:
             conn.close()
@@ -1129,14 +992,7 @@ class HubServer:
 
         registered = self._registry.get(conn.origin)
         if registered is not conn:
-            # This connection no longer owns its origin slot — either a
-            # prior bye/disconnect cleaned it up, or a takeover replaced
-            # it and the slot now belongs to the NEWER connection. Leave
-            # the registry alone: the old pop-first-check-later shape
-            # deregistered the takeover winner as collateral (the evicted
-            # socket's close always lands after the winner registers), so
-            # every takeover left the surviving tab a silent zombie —
-            # off the broadcast list, invisible to later takeover hellos.
+            # A takeover may have given the slot to a newer connection; do not deregister it.
             conn.close()
             return
         self._registry.pop(conn.origin, None)
@@ -1150,7 +1006,6 @@ class HubServer:
             peer=conn.peer,
         )
 
-        # Broadcast bye to remaining clients carrying the leaving origin.
         await self._broadcast(
             self._bye_envelope(origin=conn.origin), suppress_origin=None
         )
@@ -1175,15 +1030,7 @@ class HubServer:
         )
 
     def _peer_joined_envelope(self, *, origin: Origin) -> Envelope:
-        """Build a ``peer_joined`` event for the named origin.
-
-        Symmetric to :meth:`_bye_envelope` — the joining peer is in the
-        envelope's ``origin`` field, payload is empty. Consumers (the
-        SPA's useHub, the nvim plugin's hub.lua) treat this as the
-        join half of the lifecycle pair: ``welcome`` carries the
-        current snapshot, ``peer_joined`` is the delta for joiners
-        that arrive after.
-        """
+        """Build a ``peer_joined`` event whose ``origin`` is the joining peer."""
         return Envelope(
             origin=origin,
             kind=Kind.EVENT,
@@ -1194,7 +1041,7 @@ class HubServer:
 
 
 def _peer_repr(writer: asyncio.StreamWriter) -> str:
-    """Stable string for log lines: ``host:port`` or ``<unknown>``."""
+    """Return ``host:port`` for log lines, or ``<unknown>``."""
 
     info: Any = writer.get_extra_info("peername")
     if info is None:

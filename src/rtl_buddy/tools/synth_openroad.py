@@ -49,8 +49,7 @@ from ..phys.publish import (
 )
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
-# ABC script used by the Yosys stage — area-focused, no timing window
-# OpenROAD handles timing analysis with native multi-clock SDC support
+# Area-focused ABC script for the Yosys stage; OpenROAD does the timing analysis.
 _ABC_SCRIPT_AREA = (
     "strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; strash; "
     "&get -n; &dch -f; &nf {D}; &put"
@@ -58,12 +57,7 @@ _ABC_SCRIPT_AREA = (
 
 
 class OpenRoadSynth:
-    """Two-stage synthesis backend: Yosys (RTL→netlist) + OpenROAD (timing analysis).
-
-    Stage 1 — Yosys maps RTL to a technology-specific gate-level netlist.
-    Stage 2 — OpenROAD reads the netlist, applies the SDC with native
-    multi-clock support, and reports area, WNS, and TNS.
-    """
+    """Two-stage synthesis: Yosys maps RTL to a gate-level netlist, then OpenROAD applies the SDC and reports area, WNS and TNS."""
 
     def __init__(
         self,
@@ -87,22 +81,14 @@ class OpenRoadSynth:
         self.artefact_dir = str(artefact_root)
         self._yosys_opts: SynthToolOpts | None = None
         self._or_opts: SynthToolOpts | None = None
-        # The `-D` table `_write_yosys_script` actually fed the frontend;
-        # see the Yosys backend's field of the same name (#570).
+        # The `-D` table `_write_yosys_script` fed the frontend.
         self._script_defines: dict[str, str | None] | None = None
-        # The SDC's identity, taken as stage 1's script is generated and
-        # confirmed when the run ends; see the Yosys backend's twin of
-        # `_hash_constraints`. `None` before the run and with no SDC.
+        # SDC hash taken at stage 1 script generation and confirmed at run end; None before the run or with no SDC.
         self._constraints_sha256: str | None = None
         self.static_function_findings = 0
         self.unresolved_interfaces = 0
-        # The OpenROAD thread plan `_write_or_script` resolved; `None`
-        # until stage 2 is scripted (#654).
+        # Thread plan resolved by `_write_or_script`; None until stage 2 is scripted.
         self._thread_plan: ThreadPlan | None = None
-
-    # ------------------------------------------------------------------
-    # Artefact paths
-    # ------------------------------------------------------------------
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -117,7 +103,7 @@ class OpenRoadSynth:
         return os.path.join(self.artefact_dir, "synth_netlist.v")
 
     def _stats_path(self) -> str:
-        """Yosys' machine-readable per-module `stat -json` dump (#558)."""
+        """Yosys' per-module `stat -json` dump."""
         return os.path.join(self.artefact_dir, "synth_stat.json")
 
     def _or_script_path(self) -> str:
@@ -125,10 +111,6 @@ class OpenRoadSynth:
 
     def _or_log_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.log")
-
-    # ------------------------------------------------------------------
-    # Helpers (shared with Yosys flow)
-    # ------------------------------------------------------------------
 
     def _source_files_from_filelist(self, fl_path: str) -> list[str]:
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
@@ -162,19 +144,12 @@ class OpenRoadSynth:
         platform_lefs = self.root_cfg.get_synth_platform_cfg(platform).get_lef_paths()
         return list(platform_lefs) + extras
 
-    # ------------------------------------------------------------------
-    # Stage 1: Yosys — RTL to technology-mapped gate-level netlist
-    # ------------------------------------------------------------------
-
     def _resolve_yosys_opts(self) -> SynthToolOpts:
-        """Options for the Yosys elaboration stage.
+        """Return the options for the Yosys elaboration stage.
 
-        The elaboration stage uses Yosys regardless of `tool:`, so its opts
-        (frontend, plugin_path, the correctness gates) come from the yosys tool
-        config plus any `tool_overrides.yosys` block — not from this backend's
-        openroad tool config. Fall back to the openroad opts only when no yosys
-        tool config exists. Memoised because resolving the overrides emits
-        validation warnings.
+        Elaboration always uses Yosys, so its opts come from the yosys tool config plus any
+        `tool_overrides.yosys`, falling back to the openroad opts only when no yosys tool config
+        exists. Memoised because resolving overrides emits validation warnings.
         """
         if self._yosys_opts is not None:
             return self._yosys_opts
@@ -185,12 +160,8 @@ class OpenRoadSynth:
             try:
                 yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
             except FatalRtlBuddyError:
-                # No `yosys` entry under cfg-synth-tools — fall back to
-                # the active tool_cfg's opts. Only the *lookup* is guarded:
-                # a config error raised while resolving the opts themselves
-                # (a wrongly-typed tool_overrides value, say) must surface
-                # rather than being swallowed into a silent downgrade of
-                # the frontend selection to "verilog".
+                # No `yosys` entry under cfg-synth-tools. Only the lookup is guarded: a config error while
+                # resolving the opts must surface, not silently downgrade the frontend to "verilog".
                 yosys_tool_cfg = None
             if yosys_tool_cfg is not None:
                 opts = yosys_tool_cfg.get_opts(
@@ -202,7 +173,7 @@ class OpenRoadSynth:
     def _scan_static_lifetimes(
         self, fl_path: str, opts: SynthToolOpts
     ) -> list[LifetimeFinding]:
-        """Same pre-elaboration gate as the Yosys backend; see YosysSynth."""
+        """Run the pre-elaboration static-lifetime gate; see YosysSynth."""
         incdirs, defines = lifetime_scan_inputs(
             fl_path,
             self.synth_cfg.get_name(),
@@ -215,22 +186,17 @@ class OpenRoadSynth:
             self._source_files_from_filelist(fl_path),
             incdirs=incdirs,
             defines=defines,
-            # Only slang honours --single-unit; with the verilog frontend the
-            # flag is ignored (with a warning), so each file is its own
-            # compilation unit either way.
+            # Only slang honours --single-unit; the verilog frontend ignores it with a warning.
             single_unit=opts.single_unit and opts.frontend == "slang",
-            # slang's `undefineall` re-applies the -D macros; Yosys's own
-            # read_verilog drops them along with everything else.
+            # slang's `undefineall` keeps the -D macros; Yosys read_verilog drops them.
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
     def _stat_json_cmd(self, liberty: str | None) -> str:
-        """The `stat -json` line that feeds the phys model's module rows (#558).
+        """Return the `stat -json` line that feeds the phys model's module rows.
 
-        Identical to the Yosys backend's, and for the same reasons: `-json`
-        prints to the console so it needs `tee -o`, and `-q` keeps the
-        document out of `synth_yosys.log`, which stage 1 scrapes for its
-        cell count and for `ERROR:` lines.
+        `tee -o` writes the JSON to a file and `-q` keeps it out of `synth_yosys.log`, which stage 1
+        scrapes for its cell count and `ERROR:` lines.
         """
         liberty_arg = f" -liberty {liberty}" if liberty else ""
         return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
@@ -271,11 +237,7 @@ class OpenRoadSynth:
         if eff_synth:
             synth_cmd += f" {eff_synth}"
         lines.append(synth_cmd)
-        # Same rationale as YosysSynth: $assert/$assume/$cover cells from
-        # unguarded immediate assertions would be emitted into the netlist,
-        # which OpenROAD's structural `read_verilog` (stage 2 here, and
-        # pnr/power downstream) rejects. Formal cells are not gates — strip
-        # them; a no-op when the design carries none.
+        # Strip formal cells ($assert/$assume/$cover from unguarded immediate assertions): OpenROAD's structural `read_verilog` rejects them.
         lines.append("chformal -remove")
 
         if lib_paths:
@@ -310,12 +272,11 @@ class OpenRoadSynth:
         return parse_gate_count(log_text, top)
 
     def _run_yosys_stage(self, fl_path: str) -> tuple[int | None, bool, str | None]:
-        """Run Yosys stage. Returns (gate_count, success, failure description).
+        """Run the Yosys stage and return (gate_count, success, failure description).
 
-        The description is None when the failure has no detail beyond the log;
-        the correctness gates supply one, since their finding is not in the
-        Yosys log at all (the lifetime scan) or is a warning the log buries
-        (the conflicting-driver gate).
+        The description is None when the log holds all the detail. The correctness gates supply one
+        because their finding is absent from the Yosys log (lifetime scan) or buried in it
+        (conflicting drivers).
         """
         lib_paths = self._resolve_lib_paths()
         if not lib_paths:
@@ -327,8 +288,7 @@ class OpenRoadSynth:
             )
             return None, False, None
 
-        # Same gates as the Yosys backend: stage 1 elaborates with the same
-        # frontend, so it carries the same hazards.
+        # Same gates as YosysSynth: stage 1 elaborates with the same frontend.
         opts = self._resolve_yosys_opts()
         static_mode = resolve_static_functions_mode(opts)
         conflicting_mode = resolve_conflicting_drivers_mode(opts)
@@ -412,11 +372,8 @@ class OpenRoadSynth:
                 count=len(conflicting),
                 log=log_path,
             )
-            # Stage 1 already wrote its netlist; the start-of-run cleanup only
-            # removed the previous run's. Drop this one too, so stage 2 and
-            # `rb pnr` / `rb power` cannot read a design that folded to x.
-            # `_fail_after_yosys` clears again on the way out and is what
-            # reports a withdrawal this could not make (#560).
+            # Drop this run's netlist too, so stage 2 and `rb pnr` / `rb power` cannot read a design that
+            # folded to x. `_fail_after_yosys` clears again and reports a withdrawal this could not make.
             self._clear_stale_netlists()
             return (
                 None,
@@ -445,9 +402,7 @@ class OpenRoadSynth:
                     truncated=max(0, len(unbound) - MAX_EVENT_FINDINGS),
                     log=log_path,
                 )
-                # Same reason as the conflicting-driver gate above: stage 1 has
-                # already written a netlist, and this one is missing the
-                # interface instances' own port connections.
+                # Stage 1 has written a netlist that lacks the interface instances' port connections; drop it.
                 self._clear_stale_netlists()
                 return (
                     None,
@@ -471,32 +426,20 @@ class OpenRoadSynth:
 
         return self._parse_gate_count(log_text, self.synth_cfg.get_top()), True, None
 
-    # ------------------------------------------------------------------
-    # Stage 2: OpenROAD — timing analysis with native multi-clock SDC
-    # ------------------------------------------------------------------
-
     def _masters_from_lef_and_liberty(
         self, lef_paths: list[str], lib_paths: list[str]
     ) -> set[str]:
-        """Names OpenROAD already has a master for, from the LEFs and Liberties.
+        """Return the names OpenROAD already has a master for, from the LEFs and Liberties.
 
-        A `MACRO` in a LEF or a `cell` in a Liberty is a complete master as far
-        as link_design is concerned: physical extent from the former, timing
-        from the latter. Modules in this set must not also be declared in
-        Verilog — see _write_or_blackbox_stubs.
-
-        Scanned line by line rather than parsed: these files run to tens of MB
-        (a standard-cell Liberty is ~13 MB) and only the declaration lines
-        matter. A `cell` whose name is on the following line is handled, since
-        both spellings occur in generated Liberty. The LEF is the load-bearing
-        half in practice — the OpenROAD backend refuses a platform with no LEF,
-        so a macro always has a `MACRO` line even if its Liberty is spelled in a
-        way this misses.
+        A LEF `MACRO` or Liberty `cell` is a complete master for link_design, so these modules must
+        not also be declared in Verilog (see `_write_or_blackbox_stubs`). The files are scanned line
+        by line, not parsed, because they can be tens of MB. The LEF is the reliable source: the
+        OpenROAD backend refuses a platform with no LEF.
         """
         names: set[str] = set()
         macro_re = re.compile(r"^\s*MACRO\s+(\S+)")
         cell_re = re.compile(r'^\s*cell\s*\(\s*"?([^"\s()]+)"?\s*\)')
-        # `cell` and its parenthesised name split across two lines
+        # `cell` and its parenthesised name split across two lines.
         cell_open_re = re.compile(r"^\s*cell\s*$")
         name_only_re = re.compile(r'^\s*\(\s*"?([^"\s()]+)"?\s*\)')
         for path, is_lef in [(p, True) for p in lef_paths] + [
@@ -527,41 +470,24 @@ class OpenRoadSynth:
         return names
 
     def _write_or_blackbox_stubs(self, known_masters: set[str]) -> list[str]:
-        """Write OpenROAD-compatible copies of Yosys blackbox stub files.
+        """Write OpenROAD-compatible port-only copies of Yosys blackbox stub files and return their paths.
 
-        Yosys omits blackbox module definitions from write_verilog output.
-        OpenROAD link_design fails if it encounters an instance whose module is
-        undefined. We find source files containing (* blackbox *), generate a
-        port-only stub (header + endmodule, no body), and write it into the
-        artefact directory for use in the OR Tcl script. The body is stripped
-        because OpenSTA's gate-level reader only accepts a tiny subset of
-        Verilog — `reg` arrays, `always` blocks, `initial`, attributes other
-        than `keep` etc. all break parsing, and the body has no semantic role
-        for STA (cell timing comes from the Liberty). Returns the list of
-        cleaned stub paths.
+        Yosys omits blackbox definitions from write_verilog output, and link_design fails on an
+        instance of an undefined module. Files containing (* blackbox *) are reduced to module
+        headers with no body, because OpenSTA's gate-level reader accepts only a small Verilog
+        subset and takes cell timing from the Liberty.
 
-        A blackbox named in `known_masters` is dropped rather than stubbed. That
-        is a macro whose LEF and Liberty this same script reads, which is what
-        `lef-paths` / `lib-paths` on a synth.yaml exist to supply. Declaring it
-        in Verilog as well can displace that master, and link_design then binds
-        every instance to the zero-area Verilog module: the macros are absent
-        from the OpenROAD database, `report_design_area` omits their area, their
-        arcs are missing from the timing graph, and the run still exits 0. The
-        WNS that comes back is optimistic rather than merely wrong, because the
-        paths those arcs dominate are not reported.
-
-        Whether the master is displaced turns on the port shapes -- an
-        all-scalar macro survives, one with a bus does not -- so in practice
-        every real macro is exposed. Measured on the project template's
-        demo_synth_macro: 54 um^2 against a real 8054, both runs PASS (#470).
+        A blackbox named in `known_masters` is dropped rather than stubbed. Such a macro's LEF and
+        Liberty are read by the same script (`lef-paths` / `lib-paths` in synth.yaml), and also
+        declaring it in Verilog can displace that master. link_design then binds every instance to
+        a zero-area module, so the macros vanish from the area report and the timing graph, the run
+        still exits 0, and WNS is optimistic.
         """
         try:
             candidates = self._source_files_from_filelist(self._filelist_path())
         except OSError:
             return []
-        # Match a module header (with its port list, possibly multi-line),
-        # capture from the (* blackbox *) attribute through the closing );
-        # of the port list, then everything up to endmodule is dropped.
+        # Match a module header through the closing `);` of its port list from the (* blackbox *) attribute; the body up to endmodule is dropped.
         bb_re = re.compile(
             r"\(\*\s*blackbox\s*\*\)\s*"
             r"(module\s+(\w+)\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
@@ -588,11 +514,9 @@ class OpenRoadSynth:
                     continue
                 cleaned = bb_re.sub(_stub_or_drop, content)
                 if not module_re.search(cleaned):
-                    # Every blackbox in this file has a LEF/Liberty master, so
-                    # there is nothing left worth reading.
+                    # Every blackbox in this file has a LEF/Liberty master; nothing left to read.
                     continue
-                # OpenROAD's gate-level reader does not accept SV `logic`;
-                # replace with `wire` for port declarations.
+                # OpenROAD's gate-level reader rejects SV `logic`; use `wire` for ports.
                 cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
                 cleaned = cleaned.replace("  output logic ", "  output wire  ")
                 stub_name = os.path.basename(src)
@@ -613,15 +537,10 @@ class OpenRoadSynth:
         return result
 
     def _resolve_or_opts(self) -> SynthToolOpts:
-        """Options for the mapping stage -- this backend's own tool config.
+        """Return the options for the mapping stage, from this backend's own tool config.
 
-        Separate from `_resolve_yosys_opts`, which answers for the
-        elaboration stage: `strategy` (AREA, TIMING, TIMING_GENETIC ...)
-        is read here and is the knob an optimisation experiment turns.
-        Memoised for the reason its sibling is -- resolving the overrides
-        emits validation warnings, and the script writer and the phys
-        model's config fingerprint (#568) must not each pay for a second
-        copy of them.
+        Unlike `_resolve_yosys_opts`, this supplies `strategy` (AREA, TIMING, TIMING_GENETIC ...).
+        Memoised because resolving overrides emits validation warnings.
         """
         if self._or_opts is None:
             self._or_opts = self.tool_cfg.get_opts(
@@ -630,16 +549,11 @@ class OpenRoadSynth:
         return self._or_opts
 
     def _resynth_cmd(self) -> str | None:
-        """The stage-2 command `strategy` selects, or None for no resynthesis.
+        """Return the stage-2 command that `strategy` selects, or None for no resynthesis.
 
-        The *mapping*, named once, because two callers need the same answer:
-        `_write_or_script`, which emits the line, and the phys model's config
-        fingerprint (#568), which records what the script consumed. Strategy
-        reaches the script only through this table -- three spellings collapse
-        to two commands and everything else to nothing at all -- so the
-        fingerprint records the command and not the string. `TIMING` and
-        `TIMING_ANNEAL` are one run and digest as one; `AREA` and a typo are
-        both "no resynthesis", which is what the netlist will show.
+        Shared by `_write_or_script` and the phys model's config fingerprint, which records the
+        command rather than the strategy string: `TIMING` and `TIMING_ANNEAL` map to one command,
+        and `AREA` and unknown values both mean no resynthesis.
         """
         strategy = self._resolve_or_opts().strategy.upper()
         if strategy in ("TIMING", "TIMING_ANNEAL"):
@@ -653,9 +567,7 @@ class OpenRoadSynth:
         constraints = self.synth_cfg.get_constraints()
 
         lines = []
-        # First, and absent when `threads:` is unset, so such a script is
-        # the one this stage has always emitted (#654). Matters most for
-        # an effort whose `pre-sta-tcl` runs global placement.
+        # First, and absent when `threads:` is unset.
         self._thread_plan = plan_threads(
             self.synth_cfg.get_threads(), flow="synth", run=self.synth_cfg.get_name()
         )
@@ -666,16 +578,13 @@ class OpenRoadSynth:
         for lib in lib_paths:
             lines.append(f"read_liberty {lib}")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
-        # Read cleaned blackbox stubs so OpenROAD link_design can resolve them
+        # Read the cleaned blackbox stubs so link_design can resolve them.
         known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
         for bb_stub in self._write_or_blackbox_stubs(known_masters):
             lines.append(f"read_verilog {bb_stub}")
         lines.append(f"link_design {top}")
-        # The resynthesis strategies below pick library cells of their own,
-        # so the PDK's exclusions have to hold here too. After `link_design`,
-        # as the P&R flow does it: OpenROAD 26Q2's `set_dont_use` stops at
-        # "no network has been linked" before one, and every command after
-        # it then fails the same way.
+        # The resynthesis strategies pick library cells, so the PDK's exclusions must hold. Runs after
+        # `link_design`: OpenROAD 26Q2's `set_dont_use` fails with "no network has been linked" before it.
         or_dont_use = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
         if or_dont_use:
             lines.append(f"set_dont_use [list {' '.join(or_dont_use)}]")
@@ -683,8 +592,7 @@ class OpenRoadSynth:
         if constraints:
             lines.append(f"read_sdc {constraints}")
 
-        # Effort-defined pre-STA Tcl snippet (e.g. floorplan + global_placement
-        # + estimate_parasitics for more realistic pre-layout RC numbers).
+        # Effort-defined pre-STA Tcl (e.g. floorplan, global_placement, estimate_parasitics).
         pre_sta_tcl = self.effort_cfg.get_openroad_pre_sta_tcl()
         if pre_sta_tcl:
             lines.append(pre_sta_tcl.rstrip())
@@ -695,10 +603,7 @@ class OpenRoadSynth:
 
         lines.append("report_design_area")
         if constraints:
-            # report_checks emits per-group path reports for readability;
-            # report_worst_slack -max emits the single authoritative WNS
-            # across all path groups so the summary table reflects the
-            # true worst, not just whichever group OpenROAD printed first.
+            # report_checks prints per-group reports; report_worst_slack -max gives the single WNS across all groups.
             lines.append("report_checks -path_delay max -digits 3")
             lines.append("report_worst_slack -max -digits 3")
             lines.append("report_tns")
@@ -714,18 +619,12 @@ class OpenRoadSynth:
         return float(m.group(1)) if m else None
 
     def _parse_or_wns_ns(self, log_text: str) -> float | None:
-        # Prefer the single authoritative line from `report_worst_slack -max`:
-        #     "worst slack max -0.431"
-        # That's the true WNS across every path group OpenROAD checked.
+        # Prefer the single line from `report_worst_slack -max`: "worst slack max -0.431".
         m = re.search(r"^worst slack\s+max\s+([-\d.]+)", log_text, re.MULTILINE)
         if m:
             return float(m.group(1))
-        # Fallback for legacy logs without report_worst_slack: scan every
-        # path-report summary line and take the minimum.
-        # `report_checks -path_delay max` emits one timing report per group,
-        # each ending with "   6.754   slack (MET)" or "  -0.123   slack (VIOLATED)".
-        # `re.search` would only grab the first; the summary needs the worst,
-        # so collect them all and return the min.
+        # Fallback: `report_checks` prints one report per group, each ending with a "slack (MET)" or
+        # "slack (VIOLATED)" line; take the minimum over all of them.
         matches = re.findall(
             r"^\s+([-\d.]+)\s+slack\s+\((?:MET|VIOLATED)\)", log_text, re.MULTILINE
         )
@@ -827,59 +726,20 @@ class OpenRoadSynth:
         )
 
     def _phys_options(self) -> dict:
-        """The effective options the config fingerprint is digested over.
+        """Return the effective options the config fingerprint is digested over.
 
-        What the two generated scripts actually consume, not the two
-        resolved `SynthToolOpts` dataclasses. A digest over those told two
-        runs apart by fields no script line reads, which reports a
-        difference the netlist cannot have, and at the same time missed
-        the two inputs that do shape this backend's netlist and live
-        nowhere in them (#568).
+        These are the inputs the two generated scripts consume, not the resolved `SynthToolOpts`:
 
-        Stage by stage, read off the script writers:
-
-        - `elaborate`: the shared frontend subset
-          (:func:`elaboration_fingerprint`), plus `synth_args` taken from
-          `effort_cfg.get_yosys_synth_args()` -- **not** from the resolved
-          opts. `_write_yosys_script` appends the effort's value to
-          `synth -top` and never looks at `opts.synth_args`, so a
-          `tool_overrides.<tool>.synth_args` on an openroad run changes
-          nothing and must not change the digest. `abc_args` is fed by
-          neither source: the ABC line is `_ABC_SCRIPT_AREA`, hard-coded,
-          and the effort's `yosys.abc-args` is ignored on this backend too.
-        - `map`: `resynth`, the command `strategy` maps to
-          (`_resynth_cmd`), the sha256 of the pre-STA Tcl the effort
-          supplies, and `lefs`, the resolved LEF set `_write_or_script`
-          reads. The rest of the stage-2 opts is inert on this path, so
-          the dataclass is not digested.
-        - `params` and `defines`: the elaboration values, which shape the
-          netlist as surely as an ABC script does. `defines` is the
-          **merged** table `_write_yosys_script` hands the frontend --
-          the filelist's `+define+` entries with the run's `defines:` on
-          top (:func:`elaboration_defines`) -- and not `synth.yaml`'s
-          field alone, which digested a `+define+WIDTH=8` change in the
-          generated filelist as no change at all (#570).
-        - `libs`: the resolved Liberty set (:func:`library_fingerprint`),
-          at the top because both stages read it -- stage 1 for
-          `read_liberty`, `abc -liberty` and `stat -liberty`, stage 2 for
-          the timing it maps and reports against.
-
-        The libraries are not determined by `platform` alone, so recording
-        the platform name is not enough (#570): `_resolve_lib_paths` and
-        `_resolve_lef_paths` append the config's own `lib-paths` /
-        `lef-paths` to the platform's, and with no platform at all those
-        lists are the whole of it. Two corners named that way digested
-        identically while producing two netlists with two areas.
-
-        The Tcl is hashed rather than embedded because it is content and
-        not a path: an effort carries the snippet inline, so there is no
-        file to record, and a floorplan sequence is pages long. It is
-        `rstrip`ped exactly as the script writer strips it, so trailing
-        whitespace that never reaches OpenROAD does not read as a
-        different experiment.
-
-        Both opts accessors are memoised, so asking them here costs
-        nothing and re-emits no override warning.
+        - `elaborate`: the shared frontend subset (:func:`elaboration_fingerprint`) plus `synth_args`
+          from `effort_cfg.get_yosys_synth_args()`. `opts.synth_args` and the effort's `abc-args`
+          are ignored on this backend (the ABC script is fixed), so they are not digested.
+        - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
+          the script writer strips it), and the resolved `lefs`.
+        - `params` and `defines`: the elaboration values. `defines` is the merged table given to the
+          frontend (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
+        - `libs`: the resolved Liberty set (:func:`library_fingerprint`), which both stages read. It
+          includes the config's own `lib-paths` / `lef-paths` on top of the platform's, so the
+          platform name alone is not enough.
         """
         return {
             "tool": self.tool_cfg.get_name(),
@@ -895,19 +755,16 @@ class OpenRoadSynth:
                 "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
             },
             "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
-            # Both stages read the PDK's excluded cells, and two runs that
-            # exclude different cells are two experiments.
+            # Both stages read the PDK's excluded cells; different exclusions are different experiments.
             "dont_use": resolve_dont_use_cells(self.synth_cfg, self.root_cfg),
             "params": self.synth_cfg.get_params(),
             "defines": self._digested_defines(),
         }
 
     def _digested_defines(self) -> dict:
-        """The macro table the generated script fed the frontend (#570).
+        """Return the macro table the generated script fed the frontend.
 
-        Recorded by `_write_yosys_script` rather than re-derived, for the
-        reason the Yosys backend's twin gives: it is the table that was
-        passed, and `synth.f` may have been rewritten since.
+        Recorded by `_write_yosys_script`, because `synth.f` may have been rewritten since.
         """
         if self._script_defines is not None:
             return dict(self._script_defines)
@@ -916,21 +773,11 @@ class OpenRoadSynth:
     def _publish_phys_model(
         self, *, area_um2: float | None, gate_count: int | None
     ) -> str | None:
-        """Write `phys-model.json` + its manifest for a run that passed (#558).
+        """Write `phys-model.json` and its manifest for a passing run.
 
-        Stage 1 owns the per-module breakdown -- the cell counts and areas are
-        Yosys' -- while the design totals recorded alongside them are stage
-        2's, which is the pairing this backend already reports. Never fails
-        the synthesis: see the Yosys backend's copy for why a by-product does
-        not get to veto a product.
-
-        The identity fields (#568) name BOTH stages, because both shape the
-        netlist: the elaboration frontend and its gates on one side, the
-        mapping strategy and the pre-STA Tcl on the other, and an
-        experiment may vary either. See `_phys_options` for what each
-        stage contributes and why. The SDC's hash is `_hash_constraints`',
-        taken as stage 1's script was written and confirmed here rather
-        than computed here (#570).
+        Stage 1 supplies the per-module breakdown and stage 2 the design totals. Never fails the
+        synthesis. The identity fields cover both stages (see `_phys_options`); the SDC hash is the
+        one taken at stage 1 script generation and confirmed here.
         """
         self._confirm_constraints_unchanged()
         published = publish_synth(
@@ -960,36 +807,20 @@ class OpenRoadSynth:
             )
         return published["model"]
 
-    # ------------------------------------------------------------------
-    # Entry point
-    # ------------------------------------------------------------------
-
     def _hash_constraints(self) -> None:
-        """Identify the SDC by its bytes, as the script is written (#570).
+        """Hash the SDC bytes as of stage 1 script generation.
 
-        See the Yosys backend's twin for why the publish is the wrong
-        place: it runs minutes after stage 2's `read_sdc`, so a file
-        edited or replaced in between would be hashed as the constraints
-        this netlist was timed against. Taken at stage 1's script
-        generation — the earliest point in a run that has one — and
-        confirmed by `_confirm_constraints_unchanged` when the run ends.
+        Hashing at publish time would be wrong: a file edited during the run would be recorded as
+        the constraints the netlist was timed against. `_confirm_constraints_unchanged` checks it
+        at run end.
         """
         self._constraints_sha256 = sha256_of(self.synth_cfg.get_constraints())
 
     def _confirm_constraints_unchanged(self) -> None:
-        """Withdraw the SDC hash if the file moved under the run (#570).
+        """Withdraw the SDC hash if the file changed during the run.
 
-        The other end of `_hash_constraints`. A digest computed here,
-        after a synthesis that runs for minutes, identifies whatever is
-        at the path now — an SDC a person edited while the run worked, or
-        one a `rb pnr` rewrote — and records it as the constraints this
-        netlist was built under, which is the substitution the digest
-        exists to catch.
-        :func:`~rtl_buddy.phys.publish.confirm_digest` says whether the
-        bytes hashed at script generation are still there; a mismatch
-        records ``null`` rather than a digest nothing can vouch for, and
-        the warning keeps that null from reading as "this run had no
-        constraints".
+        Uses :func:`~rtl_buddy.phys.publish.confirm_digest`. A mismatch records ``null`` and
+        warns, so a null does not read as "this run had no constraints".
         """
         self._constraints_sha256, changed = confirm_digest(
             self.synth_cfg.get_constraints(), self._constraints_sha256
@@ -1004,32 +835,14 @@ class OpenRoadSynth:
             )
 
     def _clear_stale_netlists(self) -> str | None:
-        """Remove the previous run's stage-1 netlists, before anything returns.
+        """Remove the previous run's stage-1 netlists and `synth_stat.json` before anything returns.
 
-        Stage 2 reads stage 1's netlist back off a fixed path, having judged
-        stage 1 by exit code and ERROR lines alone — and the same netlist is
-        the input `rb pnr` / `rb power` resolve. A failed rerun would leave the
-        previous successful run's netlist for all three to consume (#469).
+        Called first in `run()` so no early return leaves a stale netlist for stage 2, `rb pnr` or
+        `rb power` to read. This flow's half of the phys model is nulled out, but the model and
+        manifest stay because the other flow's half may be in them.
 
-        This is the first action of `run()` so that every early return — a
-        missing Liberty or LEF, a filelist error, and the static-lifetime and
-        conflicting-driver gates, which fail before or without reading the
-        netlist — leaves no stale product behind.
-
-        `synth_stat.json` goes with them: it is read back inside this same
-        `run()` to build the phys model, so a stage 1 that exits 0 without
-        reaching its trailing `tee ... stat -json` must not have the previous
-        run's per-module areas published as this one's (#558). The model and
-        its manifest survive -- the other flow's half may be in them -- but
-        this flow's half is nulled out, since publication happens only on a
-        pass and a failed rerun would otherwise leave module rows standing
-        over a `synth_stat.json` that has just been deleted (#558).
-
-        :returns: ``None``, or the reason the withdrawal did not happen —
-            which every caller turns into a failed run, because the
-            `synth_stat.json` behind the still-published half has just been
-            deleted here. See
-            :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
+        :returns: ``None``, or the reason the withdrawal failed; every caller turns that into a
+            failed run. See :func:`~rtl_buddy.phys.publish.withdrawal_failure_desc`.
         """
         stale = clear_stale_artefacts(
             [
@@ -1050,13 +863,7 @@ class OpenRoadSynth:
         return self._invalidate_phys_half()
 
     def _invalidate_phys_half(self) -> str | None:
-        """Null this flow's half of any model + manifest already here (#558).
-
-        See the Yosys backend's copy: publication only happens on a pass, so
-        the clear is where a run that will not publish has to withdraw the
-        previous one's module rows, and a withdrawal that failed stops the
-        run rather than leave them over a deleted `synth_stat.json` (#560).
-        The power half is untouched.
+        """Null this flow's half of any model and manifest already present; the power half is untouched.
 
         :returns: ``None`` on success, else `invalidate_half`'s ``error``.
         """
@@ -1082,21 +889,12 @@ class OpenRoadSynth:
         return None
 
     def _fail_after_yosys(self, desc: str) -> SynthFailResults:
-        """Fail a run that has already invoked Yosys, publishing no netlist.
+        """Fail a run that has already invoked Yosys, leaving no netlist published.
 
-        Stage 1's script writes the netlist before its trailing `stat`, so a
-        Yosys that then crashes or logs an `ERROR:` line leaves it on disk —
-        as does a stage 1 that fully succeeds before stage 2 dies on
-        `link_design` or the SDC. Either way `rb synth` reports FAIL while
-        the netlist sits at the fixed path `rb pnr` and `rb power` resolve
-        (#469). Every post-Yosys failure return goes through here, so a new
-        failure gate added to this method inherits the cleanup by using it.
-
-        The clear withdraws this flow's published half as it goes, and a
-        withdrawal it could not make is said out loud in the description this
-        run already fails with: the run was over either way, but the user has
-        to know the artefact directory still publishes module rows over the
-        `synth_stat.json` just deleted (#560).
+        Stage 1 writes the netlist before its trailing `stat`, so a later Yosys error or a stage 2
+        failure would otherwise leave a netlist where `rb pnr` and `rb power` read it. Every
+        post-Yosys failure return goes through here. A withdrawal that could not be made is added
+        to the failure description.
         """
         stale_error = self._clear_stale_netlists()
         if stale_error is not None:
@@ -1104,11 +902,7 @@ class OpenRoadSynth:
         return SynthFailResults(name=self.name + "/results", desc=desc)
 
     def run(self) -> SynthResults:
-        # The clear withdraws whatever this flow published here last time,
-        # and nothing else starts if it could not: the `synth_stat.json`
-        # behind those rows has just been deleted, so a run that went ahead
-        # and then failed would leave a breakdown of a design this directory
-        # no longer holds discoverable as a current one (#560).
+        # If the withdrawal failed, stop: the rows it could not clear would describe a design this directory no longer holds.
         stale_error = self._clear_stale_netlists()
         if stale_error is not None:
             return SynthFailResults(
@@ -1125,15 +919,11 @@ class OpenRoadSynth:
             top=self.synth_cfg.get_top(),
         )
 
-        # Both gate modes are resolved up front, ahead of the Liberty, LEF and
-        # filelist returns, so a misspelled value is fatal on every run rather
-        # than only on the runs that reach stage 1. Matches YosysSynth.run().
+        # Resolve both gate modes before the Liberty, LEF and filelist returns so a misspelled value is fatal on every run, as in YosysSynth.run().
         opts = self._resolve_yosys_opts()
         resolve_static_functions_mode(opts)
         resolve_conflicting_drivers_mode(opts)
-        # An unknown frontend or a missing slang plugin is a config error too,
-        # and stage 1's gates return before _write_yosys_script() would have
-        # reached the same check inside emit_frontend_read_cmds().
+        # An unknown frontend or missing slang plugin is a config error too; stage 1's gates return before _write_yosys_script() would check.
         validate_frontend(opts, self.root_cfg)
 
         lib_paths = self._resolve_lib_paths()
@@ -1201,23 +991,21 @@ class OpenRoadSynth:
                 returncode=-1,
                 log=self._yosys_log_path(),
             )
-            # Stage 1 writes the netlist before its trailing `stat`, so a
-            # crash or an ERROR line here can still leave one behind.
+            # Stage 1 writes the netlist before its trailing `stat`; a crash or ERROR can leave one behind.
             return self._fail_after_yosys(
                 yosys_desc or "Yosys stage failed; see synth_yosys.log"
             )
 
         result = self._run_or_stage(gate_count, lef_paths, lib_paths)
         if isinstance(result, SynthFailResults):
-            # Stage 1 succeeded and published a netlist; stage 2 then failed.
+            # Stage 1 published a netlist; stage 2 then failed.
             return self._with_threads(self._fail_after_yosys(result.results["desc"]))
         return self._with_threads(result)
 
     def _with_threads(self, res: SynthResults) -> SynthResults:
-        """Record stage 2's OpenROAD thread provenance on ``res`` (#654).
+        """Record stage 2's OpenROAD thread provenance on ``res``, once stage 2 was scripted.
 
-        Only once stage 2 was scripted; the count OpenROAD itself logged
-        wins over the one asked for.
+        The thread count OpenROAD logged wins over the one requested.
         """
         if self._thread_plan is not None:
             try:

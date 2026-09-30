@@ -1,8 +1,7 @@
-"""Tests for rb saif (FST/VCD → SAIF v2.0).
+"""Tests for rb saif (FST/VCD to SAIF v2.0).
 
-Unit coverage of the per-bit accumulator, then a golden end-to-end pass over
-a real VCD read by the real pywellen — the converter walks live pywellen
-objects, so a mocked waveform could not catch an API break (#263, #267).
+Unit tests for the per-bit accumulator, then a golden end-to-end pass over a real VCD
+read by the real pywellen.
 """
 
 import re
@@ -19,7 +18,9 @@ from rtl_buddy.tools.saif_from_trace import _bit_stats, convert
 
 
 def test_bit_stats_single_clock_cycle():
-    """1-bit clock: 0 → 1 at t=10 → 0 at t=20; end at t=30 → T0=20, T1=10, TC=2."""
+    """1-bit clock: 0 to 1 at t=10, back to 0 at t=20, end at t=30 gives T0=20, T1=10,
+    TC=2.
+    """
     changes = [(0, 0), (10, 1), (20, 0)]
     stats = _bit_stats(changes, bit=0, end_t=30)
     assert stats["T0"] == 20
@@ -54,7 +55,7 @@ def test_bit_stats_string_x_handled():
     assert stats["TX"] == 10
     assert stats["T0"] == 10
     assert stats["T1"] == 10
-    # 0↔1 transition once (10→20). x→0 does not count.
+    # One 0<->1 transition (10 to 20); x to 0 does not count.
     assert stats["TC"] == 1
 
 
@@ -66,12 +67,8 @@ def test_convert_missing_input_raises(tmp_path):
 def test_convert_out_of_range_pywellen_raises_before_any_api_touch(
     tmp_path, monkeypatch
 ):
-    """A pywellen without the surface this converter drives must fail with a
-    named version and the supported range, not an AttributeError traceback
-    from whichever getter vanished first (#263).
-
-    The fake stands in for a real out-of-range install: a stale ``<0.25``
-    tool venv, or the next pre-1.0 rewrite.
+    """A pywellen without the required API raises a FatalRtlBuddyError naming the
+    version and supported range.
     """
     trace = tmp_path / "dump.vcd"
     trace.write_text(_VCD)
@@ -87,24 +84,11 @@ def test_convert_out_of_range_pywellen_raises_before_any_api_touch(
     assert "rb saif" in message
 
 
-# ---------------------------------------------------------------------------
-# Golden end-to-end: real VCD -> real pywellen -> exact SAIF.
-#
-# The converter walks live pywellen objects, so only a real trace proves the
-# port; a mocked waveform would model an API pywellen may no longer have,
-# which is the failure #263 was. Every emitted number below is hand-derived
-# from this stimulus, so a silent change in either the converter or pywellen's
-# value encoding fails here.
-#
-#   top.clk      1-bit, four edges -> TC 3 (only 0<->1 transitions count)
-#   top.bus      4-bit, per-bit toggles + a z on the MSB from t=20 -> TZ
-#   top.WIDTH    a Parameter -> skipped, not a net
-#   top.mem.[0]  memory-array element -> skipped by name
-#   top.sub.rst  1-bit, x -> 0 -> 1 in a nested scope -> TX, and x->0 not a TC
-#
-# Timescale is 10 ps (not the 1 ns default) and the last change is at t=30, so
-# TIMESCALE and DURATION are both load-bearing.
-# ---------------------------------------------------------------------------
+# Golden pass: real VCD, real pywellen, hand-derived SAIF numbers. top.clk: 1-bit, four
+# edges. top.bus: 4-bit with z on the MSB from t=20. top.WIDTH: parameter, skipped.
+# top.mem.[0]: memory element, skipped by name. top.sub.rst: x, 0, 1 in a nested scope.
+# The timescale is 10 ps and the last change is at t=30, so TIMESCALE and DURATION are
+# checked.
 
 _VCD = """\
 $timescale 10ps $end
@@ -139,15 +123,15 @@ bz101 #
 """
 
 _EXPECTED_NETS = {
-    # 0@0 1@10 0@20 1@30, end 30: three 0<->1 transitions, 20 low / 10 high.
+    # 0@0 1@10 0@20 1@30, end 30: three 0<->1 transitions, 20 low, 10 high.
     "top/clk": {"T0": 20, "T1": 10, "TX": 0, "TZ": 0, "TC": 3, "IG": 0},
     # bus: 0b0000@0 0b0011@10 "z101"@20, held to end 30.
     "top/bus\\[0\\]": {"T0": 10, "T1": 20, "TX": 0, "TZ": 0, "TC": 1, "IG": 0},
     "top/bus\\[1\\]": {"T0": 20, "T1": 10, "TX": 0, "TZ": 0, "TC": 2, "IG": 0},
     "top/bus\\[2\\]": {"T0": 20, "T1": 10, "TX": 0, "TZ": 0, "TC": 1, "IG": 0},
-    # MSB goes z at t=20 and stays there: 10 ticks of TZ, and 0->z is no toggle.
+    # MSB goes z at t=20 and stays: 10 ticks of TZ, and 0->z is no toggle.
     "top/bus\\[3\\]": {"T0": 20, "T1": 0, "TX": 0, "TZ": 10, "TC": 0, "IG": 0},
-    # x@0 0@10 1@20, end 30: 10 ticks each, and x->0 does not count as a toggle.
+    # x@0 0@10 1@20, end 30: 10 ticks each, and x->0 is no toggle.
     "top/sub/rst": {"T0": 10, "T1": 10, "TX": 10, "TZ": 0, "TC": 1, "IG": 0},
 }
 
@@ -159,16 +143,12 @@ def _write_vcd(tmp_path):
 
 
 def _parse_saif(text: str) -> tuple[dict, dict, list]:
-    """Return (header fields, {net path: stats}, instance paths).
-
-    Parsing beats substring matching here: it pins each number to the net it
-    belongs to, so a value landing under the wrong signal cannot pass.
-    """
+    """Return (header fields, {net path: stats}, instance paths)."""
     header: dict[str, str] = {}
     nets: dict[str, dict[str, int]] = {}
     instances: list[str] = []
     path: list[str] = []
-    kinds: list[str] = []  # one entry per open block
+    kinds: list[str] = []
     net: str | None = None
 
     for raw in text.splitlines():
@@ -183,7 +163,6 @@ def _parse_saif(text: str) -> tuple[dict, dict, list]:
         if not line.startswith("("):
             continue
         if line.endswith(")"):
-            # A leaf line: a header field, or one of a net's stat pairs.
             for key, value in re.findall(r"\((\w+) ([^()]*)\)", line):
                 if net is None:
                     header[key] = value.strip()
@@ -214,38 +193,33 @@ def test_convert_emits_the_golden_saif(tmp_path):
     assert header["SAIFVERSION"] == '"2.0"'
     assert header["DIRECTION"] == '"backward"'
     assert header["PROGRAM_NAME"] == '"rb saif"'
-    # Native trace timescale, not a normalised one, so values stay integral.
+    # Native trace timescale, so values stay integral.
     assert header["TIMESCALE"] == "10 ps"
-    # Duration is the last change time across every signal.
     assert header["DURATION"] == "30"
 
     assert nets == _EXPECTED_NETS
 
-    # Hierarchy mirrors the trace's scopes, nested under the top instance.
     assert instances[:1] == ["top"]
     assert "top/sub" in instances
     assert "top/mem" in instances
 
 
 def test_convert_skips_parameters_and_memory_elements(tmp_path):
-    """Parameters are not nets, and FST memory-array elements (``name`` starting
-    with ``[``) confuse the SAIF parser when nested under INSTANCE."""
+    """Parameters and memory-array elements are not emitted as nets."""
     saif = tmp_path / "out.saif"
     convert(_write_vcd(tmp_path), saif)
     _, nets, _ = _parse_saif(saif.read_text())
 
     assert "top/WIDTH" not in nets
     assert not [n for n in nets if "[0]" in n]
-    # pywellen models the VCD array element as an unnamed child scope of
-    # `mem`; it is emitted as an empty INSTANCE, which carries no nets.
+    # pywellen models a VCD array element as an unnamed child scope of `mem`, emitted as
+    # an empty INSTANCE.
     assert not [n for n in nets if n.startswith("top/mem")]
 
 
 def test_saif_cli_writes_the_same_file(minimal_project, tmp_path):
-    """Same conversion through the real CLI entry point.
-
-    ``rb saif`` resolves both paths against the command context, so this also
-    covers the wiring the direct ``convert()`` calls above bypass.
+    """The real CLI entry point writes the same file, resolving paths against the
+    command context.
     """
     vcd = _write_vcd(minimal_project)
     runner = CliRunner()
@@ -267,8 +241,5 @@ def test_saif_cli_reports_a_missing_trace(minimal_project):
     assert "trace file not found" in str(result.exception)
 
 
-# FST is not covered end-to-end: writing one needs a real dumper (gtkwave's
-# vcd2fst or a simulator), neither of which CI installs, and hand-rolling the
-# container format would test our encoder rather than pywellen's. The VCD and
-# FST readers converge on the same pywellen Waveform surface, which is what
-# these gates pin.
+# FST is not covered end-to-end: no FST writer is available in CI.
+# The VCD and FST readers share the same pywellen Waveform surface.

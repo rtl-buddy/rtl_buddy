@@ -1,14 +1,7 @@
-"""Convert an FST or VCD waveform trace to SAIF v2.0 (backward direction).
+"""Convert an FST or VCD trace to SAIF v2.0 (backward) using pywellen.
 
-Uses pywellen to read the trace, walks the hierarchy, computes per-bit
-T0/T1/TX/TZ time-in-state and TC toggle counters, and emits SAIF in the
-trace's native timescale so values are exact integers (no fractional
-rounding). The resulting file can be consumed directly by OpenROAD's
-`read_saif` (and any other STA tool that takes SAIF v2 backward).
-
-The converter is intentionally minimal — it doesn't try to model glitch
-power, X-propagation, or per-cell pin activity. It's adequate for
-gate-level `report_power` driven by realistic simulation stimulus.
+Emits per-bit T0/T1/TX/TZ/TC in the trace's own timescale. Glitch power, X-propagation and per-pin
+activity are not modelled.
 """
 
 from __future__ import annotations
@@ -26,13 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _iter_vars(scope):
-    """Yield non-parameter, non-memory-element vars in this scope.
-
-    FST exposes memory array elements as vars whose `name` starts
-    with `[` (the bracketed index, parent scope is the array name).
-    These don't correspond to gate-level nets in the synth netlist and
-    confuse the SAIF parser when nested under INSTANCE, so we skip them.
-    """
+    """Yield the scope's vars, skipping parameters and memory array elements (names starting with ``[``)."""
     for v in scope.vars():
         if v.var_type == "Parameter":
             continue
@@ -47,8 +34,7 @@ def _max_time(w: pywellen.Waveform) -> int:
     def walk(scope):
         nonlocal mx
         for v in _iter_vars(scope):
-            # Changes are time-ordered, so the last one carries the max time;
-            # index the materialised list (Signal itself rejects negative idx).
+            # Index the materialised list: Signal itself rejects negative indices.
             changes = v.signal[:]
             if changes and changes[-1][0] > mx:
                 mx = changes[-1][0]
@@ -61,11 +47,9 @@ def _max_time(w: pywellen.Waveform) -> int:
 
 
 def _bit_stats(changes: list, bit: int, end_t: int) -> dict:
-    """Compute T0/T1/TX/TZ time-in-state + TC toggle count for a single bit.
+    """Return T0/T1/TX/TZ time-in-state and the TC toggle count for one bit.
 
-    Values from pywellen are ints for binary or strings for 4-state x/z.
-    For ints we shift; strings are scanned character-by-character. TC
-    counts only 0↔1 transitions (the standard SAIF convention).
+    TC counts only 0<->1 transitions. Values are ints (binary) or strings (4-state).
     """
     t0 = t1 = tx = tz = 0
     tc = 0
@@ -151,10 +135,10 @@ def _emit_scope(out, scope, indent: int, end_t: int) -> None:
 
 
 def convert(trace_path: Path, saif_path: Path) -> None:
-    """Convert FST/VCD at `trace_path` to SAIF v2.0 at `saif_path`.
+    """Convert the FST/VCD at `trace_path` to SAIF v2.0 at `saif_path`.
 
-    Raises FatalRtlBuddyError on input-not-found, pywellen open failure, or a
-    pywellen whose Waveform API this converter cannot drive (#263).
+    Raises FatalRtlBuddyError if the trace is missing or unreadable, or if pywellen lacks the
+    required Waveform API.
     """
     if not trace_path.is_file():
         log_event(
@@ -165,9 +149,6 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         )
         raise FatalRtlBuddyError(f"trace file not found: {trace_path}")
 
-    # Guard before any Waveform API touch, so an out-of-range pywellen names
-    # itself and the supported range instead of dying mid-walk on whichever
-    # getter vanished first.
     require_random_access_api("rb saif")
 
     try:
@@ -182,10 +163,6 @@ def convert(trace_path: Path, saif_path: Path) -> None:
         )
         raise FatalRtlBuddyError(f"could not open {trace_path}: {e}") from e
 
-    # pywellen >=0.25 flattened the hierarchy onto Waveform (no more
-    # ``w.hierarchy``): timescale, scope walking and signal reads all happen via
-    # the trace-reader API. Keep these touches under one guard so a reader/API
-    # break surfaces as a clear FatalRtlBuddyError, not a raw AttributeError.
     try:
         ts = w.timescale
         ts_value = int(ts.factor)

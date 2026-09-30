@@ -1,32 +1,6 @@
-"""Experiment-record contract for ``rb xplr`` — schema + typed accessors.
+"""Experiment-record contract for ``rb xplr``: the vendored JSON Schema, strict validation, typed dataclasses and canonical (de)serialization.
 
-The canonical contract is the vendored JSON Schema
-``xplr-experiment-1.0.json`` (draft 2020-12), packaged next to this
-module so it can also be published as-is. An experiment record is the
-tool-agnostic unit of design-space exploration::
-
-    (git-pinned source + agent-declared knob manifest) -> outcome
-
-This module exposes:
-
-* :func:`schema` — a deep copy of the vendored JSON Schema.
-* :func:`validate_record` — strict validation (``additionalProperties:
-  false`` everywhere, ``format: date-time`` actually checked) raising
-  :class:`~rtl_buddy.errors.FatalRtlBuddyError` with a JSON pointer.
-* :class:`ExperimentRecord` and its nested dataclasses — a typed view
-  with ``from_dict`` / ``to_dict`` that round-trips byte-identically
-  for valid records.
-* :func:`dumps_record` / :func:`loads_record` — the single canonical
-  serialization convention (``json.dumps(..., indent=2)``, trailing
-  newline, keys in schema declaration order).
-
-Design notes:
-
-* Knob ``from`` / ``to`` values and ``config_snapshot`` are stored
-  untyped — rb xplr is a bookkeeper, not a knob taxonomy owner.
-* JSON distinguishes an absent ``parent`` from an explicit ``null``;
-  the :data:`ABSENT` sentinel preserves that distinction so the
-  round-trip stays byte-identical either way.
+Knob values and ``config_snapshot`` are untyped. :data:`ABSENT` marks a missing key, as distinct from an explicit ``null``.
 """
 
 from __future__ import annotations
@@ -48,11 +22,7 @@ SCHEMA_RESOURCE = f"xplr-experiment-{SCHEMA_VERSION}.json"
 
 
 class _Absent:
-    """Sentinel type for "key not present in the JSON document".
-
-    Distinct from ``None``, which maps to an explicit JSON ``null``
-    (the schema allows ``"parent": null``).
-    """
+    """Sentinel type for a key absent from the JSON document (``None`` is an explicit ``null``)."""
 
     _instance: "_Absent | None" = None
 
@@ -83,11 +53,7 @@ def schema() -> dict[str, Any]:
     return json.loads(json.dumps(_SCHEMA))
 
 
-# ``format`` is annotation-only in draft 2020-12 unless a FormatChecker is
-# supplied. jsonschema's stock "date-time" checker additionally requires the
-# optional rfc3339-validator package, which is not a dependency — so register
-# an explicit checker backed by datetime.fromisoformat (Python 3.11+ accepts
-# the full RFC 3339 profile, including a trailing "Z").
+# The stock "date-time" checker needs the optional rfc3339-validator package; use fromisoformat instead.
 _FORMAT_CHECKER = FormatChecker()
 
 
@@ -106,10 +72,9 @@ _VALIDATOR = Draft202012Validator(_SCHEMA, format_checker=_FORMAT_CHECKER)
 
 
 def validate_record(record: Any) -> None:
-    """Validate ``record`` against the experiment schema.
+    """Validate ``record`` against the schema.
 
-    Raises :class:`FatalRtlBuddyError` with the JSON pointer of the
-    first (path-ordered) violation; returns ``None`` when valid.
+    Raises :class:`FatalRtlBuddyError` naming the JSON pointer of the first violation.
     """
 
     if not isinstance(record, dict):
@@ -133,7 +98,7 @@ def validate_record(record: Any) -> None:
 
 @dataclass
 class SourceRef:
-    """``source`` block — the git-pinned design state of an experiment."""
+    """The ``source`` block: the git-pinned design state."""
 
     git_sha: str
     branch: str | _Absent = ABSENT
@@ -159,7 +124,7 @@ class SourceRef:
 
 @dataclass
 class Knob:
-    """One agent-declared knob delta. ``from``/``to`` values are untyped."""
+    """One agent-declared knob change."""
 
     name: str
     from_: Any
@@ -186,7 +151,7 @@ class Knob:
 
 @dataclass
 class MetricMeta:
-    """Self-describing metadata for one outcome metric."""
+    """Direction and unit of one outcome metric."""
 
     direction: str | _Absent = ABSENT
     unit: str | _Absent = ABSENT
@@ -207,7 +172,7 @@ class MetricMeta:
 
 @dataclass
 class Outcome:
-    """``outcome`` block — flow-declared status + open metric map."""
+    """The ``outcome`` block: status, metrics and artifacts."""
 
     status: str
     metrics: dict[str, float | bool] | _Absent = ABSENT
@@ -244,7 +209,7 @@ class Outcome:
 
 @dataclass
 class ToolVersion:
-    """One ``provenance.tools`` entry — opaque tool name + version strings."""
+    """One ``provenance.tools`` entry."""
 
     name: str
     version: str
@@ -259,7 +224,7 @@ class ToolVersion:
 
 @dataclass
 class Provenance:
-    """``provenance`` block — who/what/when produced the record."""
+    """The ``provenance`` block: who and what produced the record, and when."""
 
     created: str
     tools: list[ToolVersion] | _Absent = ABSENT
@@ -289,12 +254,9 @@ class Provenance:
 
 @dataclass
 class ExperimentRecord:
-    """Typed view of one validated experiment record.
+    """Typed view of one experiment record.
 
-    ``from_dict`` validates first, so an instance built that way is
-    guaranteed schema-conformant; ``to_dict`` emits keys in the schema's
-    canonical declaration order so ``loads_record``/``dumps_record``
-    round-trip byte-identically.
+    ``to_dict`` emits keys in schema order, so load and dump round-trip byte-identically.
     """
 
     id: str
@@ -309,10 +271,7 @@ class ExperimentRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExperimentRecord":
-        """Validate ``data`` and build the typed record.
-
-        Raises :class:`FatalRtlBuddyError` on any schema violation.
-        """
+        """Validate ``data`` and build the record; raises :class:`FatalRtlBuddyError` on a schema violation."""
 
         validate_record(data)
         config_snapshot: dict[str, Any] | _Absent = ABSENT
@@ -331,7 +290,7 @@ class ExperimentRecord:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the JSON-compatible dict in canonical key order."""
+        """Return the JSON-compatible dict in schema key order."""
 
         out: dict[str, Any] = {
             "schema_version": self.schema_version,
@@ -349,7 +308,7 @@ class ExperimentRecord:
 
 
 def _put(out: dict[str, Any], key: str, value: Any) -> None:
-    """Set ``out[key] = value`` unless the value is the ABSENT sentinel."""
+    """Set ``out[key]`` unless ``value`` is ABSENT."""
 
     if not isinstance(value, _Absent):
         out[key] = value
@@ -361,23 +320,13 @@ def _put(out: dict[str, Any], key: str, value: Any) -> None:
 
 
 def dumps_record(record: ExperimentRecord) -> str:
-    """Serialize a record with the canonical convention.
-
-    ``json.dumps(..., indent=2, ensure_ascii=False)`` plus a trailing
-    newline; keys in schema declaration order. Every ``record.json`` in
-    the ledger and every fixture uses exactly this shape, which is what
-    makes the round-trip byte-identical.
-    """
+    """Serialize a record as indented JSON with a trailing newline, keys in schema order."""
 
     return json.dumps(record.to_dict(), indent=2, ensure_ascii=False) + "\n"
 
 
 def loads_record(text: str | bytes) -> ExperimentRecord:
-    """Parse + validate a JSON document into an :class:`ExperimentRecord`.
-
-    Raises :class:`FatalRtlBuddyError` for malformed JSON or any schema
-    violation.
-    """
+    """Parse and validate a JSON document; raises :class:`FatalRtlBuddyError` on malformed JSON or a schema violation."""
 
     try:
         data = json.loads(text)

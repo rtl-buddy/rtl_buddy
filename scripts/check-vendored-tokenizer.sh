@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# Check the vendored Tcl tokenizer against its upstream source (#642).
-#
-# src/rtl_buddy/constraints/tcl_tokenizer.py holds a verbatim copy of
-# `_tokenize` and `_extract_names` from rtl-buddy-cdc at a pinned commit.
-# This script fetches the upstream file at that commit, extracts the two
-# functions from both files, and diffs them. Drift exits non-zero.
-#
-# It is advisory, not a gate: the CI job runs it with continue-on-error so a
-# GitHub outage or a rate-limited token never blocks a PR. Fix drift by
-# re-copying from upstream (never by editing the vendored bodies), then bump
-# UPSTREAM_REF here and in the vendored file's header.
+# Diff `_tokenize` and `_extract_names` in src/rtl_buddy/constraints/tcl_tokenizer.py
+# against rtl-buddy-cdc at UPSTREAM_REF. Exits non-zero on drift.
+# Fix drift by re-copying from upstream, then bump UPSTREAM_REF here and in the
+# vendored file's header. CI runs this as advisory (continue-on-error).
 #
 # Usage:  bash scripts/check-vendored-tokenizer.sh
 # Needs:  gh (authenticated), python3

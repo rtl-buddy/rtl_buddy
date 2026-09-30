@@ -1,9 +1,6 @@
-"""
-Unit tests for the `rb cov` payload builders (#399).
+"""Unit tests for the `rb cov` payload builders.
 
-These are the dicts the CLI prints under `--machine` and the MCP tools
-(phase 3) wrap verbatim, so they are asserted on directly rather than
-through the CLI.
+They build the dicts printed under `--machine` and wrapped by the MCP tools, so tests assert on them directly.
 """
 
 import pytest
@@ -38,7 +35,7 @@ def _dat_record(*, file, line, type_, name, module, col=1, hits=1):
 
 @pytest.fixture
 def project(tmp_path):
-    """A project with one run's coverage artefacts already on disk."""
+    """A project with one run's coverage artefacts on disk."""
     root = tmp_path / "repo"
     suite = root / "verif" / "blk"
     run_dir = suite / "artefacts" / "basic"
@@ -141,10 +138,10 @@ def test_summary_reports_totals_tests_and_artefact_paths(project):
 
 
 def test_summary_carries_both_figures_at_every_scope(project):
-    """`source_totals` rides beside `totals` on the run, each test and each
-    file (#637), so a consumer picking the "covered by the suite" reading
-    needs no second request. This run elaborates each module once, so the
-    two figures agree — which is the property that makes them comparable."""
+    """`source_totals` rides beside `totals` on the run, each test and each file.
+
+    This run elaborates each module once, so the two figures agree.
+    """
     payload = summary_payload(load_context(project))
 
     assert payload["source_totals"]["line"] == payload["totals"]["line"]
@@ -158,9 +155,7 @@ def test_summary_carries_both_figures_at_every_scope(project):
 
 
 def test_source_totals_are_omitted_for_a_model_that_has_none(project):
-    """A model written before #637 cannot have the figure recomputed from
-    it — the module is gone from its line points — so the key is absent
-    rather than a copy of the other figure."""
+    """A model without the figure cannot recompute it, so the key is absent rather than a copy of the other figure."""
     ctx = load_context(project)
     ctx.model.pop("source_totals")
     for row in ctx.model["tests"] + ctx.model["files"]:
@@ -175,10 +170,7 @@ def test_source_totals_are_omitted_for_a_model_that_has_none(project):
 
 
 def test_coldest_order_is_the_same_under_either_figure(project):
-    """A file's line points are keyed on the line alone, so collapsing the
-    elaborations cannot change a line count — and the coldest-first ranking
-    is a line ratio. `--by-source` therefore reports the same files in the
-    same order, with collapsed numbers in the cells."""
+    """Coldest-first order is the same under either figure, because line points are keyed on the line alone."""
     rows = load_context(project).model["files"]
 
     assert [row["path"] for row in coldest_first(rows)] == [
@@ -198,8 +190,7 @@ def test_summary_lists_the_coldest_files_first(project):
 
 
 def test_coldest_first_ranks_by_ratio_then_misses_then_path():
-    """The one ordering the CLI and the ``/cov`` pane share, so it is
-    pinned here rather than inferred from a payload."""
+    """Coldest-first ranks by ratio, then misses, then path; the CLI and the ``/cov`` pane share this order."""
 
     def row(path, found, hit):
         ratio = hit / found if found else None
@@ -217,11 +208,11 @@ def test_coldest_first_ranks_by_ratio_then_misses_then_path():
     ]
 
     assert [r["path"] for r in coldest_first(rows)] == [
-        # 20% twice: the one missing 80 points outranks the one missing 8.
+        # Equal ratios: the file missing 80 points outranks the one missing 8.
         "design/big_cold.sv",
         "design/cold.sv",
         "design/warm.sv",
-        # Fully covered, and path decides between them.
+        # Fully covered files are ordered by path.
         "design/a_full.sv",
         "design/full.sv",
     ]
@@ -232,13 +223,7 @@ def test_coldest_first_ranks_by_ratio_then_misses_then_path():
 
 
 def test_coldest_first_sinks_files_with_no_line_points():
-    """A file the database recorded no lines for is silent, not covered.
-
-    Its ``null`` ratio used to read as 1.0, which filed it among the
-    fully covered files — and ``a_silent.sv`` then sorted *above* a
-    file that really was 100%, which is the wrong end of the list for
-    something carrying no information at all.
-    """
+    """A file with no recorded lines is silent, not covered, and sorts below fully covered files."""
 
     def row(path, found, hit):
         ratio = hit / found if found else None
@@ -257,7 +242,7 @@ def test_coldest_first_sinks_files_with_no_line_points():
     assert [r["path"] for r in coldest_first(rows)] == [
         "design/cold.sv",
         "design/full.sv",
-        # Both silent, and path decides between them.
+        # Both silent; path decides.
         "design/a_silent.sv",
         "design/z_silent.sv",
     ]
@@ -271,8 +256,7 @@ def test_summary_limit_truncates_the_file_list(project):
 
 
 def test_detail_payload_keeps_the_points_the_summary_folds_away(project):
-    """What the ``/cov`` pane reads: same run block, same ordering, same
-    ``artefacts`` — the only difference is the depth of ``files``."""
+    """The detail payload matches the summary except for the depth of ``files``, which keeps the points."""
 
     ctx = load_context(project)
     summary = summary_payload(ctx, limit=0)
@@ -283,8 +267,6 @@ def test_detail_payload_keeps_the_points_the_summary_folds_away(project):
     ]
     assert detail["artefacts"] == summary["artefacts"]
     assert detail["totals"] == summary["totals"]
-    # The summary reports each file's totals; the detail reports the
-    # points behind them, with their per-test attribution.
     assert "line" not in summary["files"][0]
     assert detail["files"][0]["line"][0]["tests"] == {"basic": 1}
 

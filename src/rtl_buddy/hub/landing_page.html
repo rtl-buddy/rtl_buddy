@@ -4,21 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>rtl-buddy hub</title>
-  <!--
-    Served by rtl_buddy.hub.landing_page at GET / (rtl-buddy/rtl_buddy#398).
-
-    No build step and no route off localhost: the only external
-    references are same-origin hub routes (/hub/theme.css, /hub/assets/*,
-    /hub/state.json). The first inline <style> is a fallback for the
-    handful of tokens this page cannot render without, so a sheet that
-    fails to load degrades to a plain page instead of an unreadable one.
-
-    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
-    select :root, so they tie on specificity and document order decides
-    — a fallback placed after the link would permanently shadow the
-    sheet, including its @media (prefers-color-scheme: dark) block, and
-    every later palette edit would silently stop reaching this page.
-  -->
+  <!-- Served by rtl_buddy.hub.landing_page at GET /. -->
+  <!-- Offline: the only external references are same-origin hub routes (/hub/theme.css, /hub/assets/*, /hub/state.json). -->
+  <!-- The first inline <style> holds the few tokens the page cannot render without, so a failed sheet load leaves a plain readable page. -->
+  <!-- Keep that fallback BEFORE the sheet link: both select :root, so a later fallback would shadow the sheet, including its dark-mode block. -->
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
   <style>
@@ -101,9 +90,7 @@
     .card .app {
       font: var(--fs-small)/1.5 var(--font-mono); color: var(--fg-muted);
     }
-    /* The short name a person then navigates by: it is what every
-       switcher, peer strip and `send →` button in the family says,
-       so the card that introduces the long name shows it too. */
+    /* Short name: what every switcher, peer strip and `send →` button says. */
     .card .short {
       border: 1px solid var(--line-strong); border-radius: var(--radius-1);
       padding: 0 .3rem; margin-right: .4rem; color: var(--fg);
@@ -214,10 +201,9 @@
 (function () {
   'use strict';
 
-  // The landing page is deliberately NOT a hub peer. One client per
-  // origin is the hub's rule, and a tab that merely lists the apps must
-  // not be the thing that evicts the app you had open — so live state
-  // arrives by polling this JSON instead of over /ws.
+  // The landing page is not a hub peer: a tab that only lists the apps must not
+  // take an origin and evict the app you had open. State arrives by polling
+  // /hub/state.json, not over /ws.
   var STATE_URL = '/hub/state.json';
   var POLL_MS = 4000;
 
@@ -239,27 +225,16 @@
   };
 
   // >>> origin-labels
-  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
-  // WIRE vocabulary and it does not move for a rebrand: the schematic
-  // app registers as `view`, the graph pane as `graph` and the phys
-  // pane as `phys`, and all three keep doing so until protocol v2.
-  // Their DISPLAY names are `sch`, `gph` and `phy`, so this map is the
-  // seam wherever a raw origin reaches a user — here that is the peer
-  // list, in both strips. An origin with no
-  // entry is shown verbatim, which keeps `wave`, `src` and a peer from
-  // a newer hub legible instead of blank.
+  // Wire origin -> displayed name. Wire values (`view`, `graph`, `phys`) stay
+  // until protocol v2; display names are `sch`, `gph` and `phy`. Used for the
+  // peer list in both strips; an origin with no entry is shown verbatim.
   //
-  // The app cards and the switcher do NOT read this map: they are built
-  // from /hub/state.json, whose `name`/`short` come from
-  // hub/landing_page.py's APPS table. That table and this map are the
-  // two places a family rename touches on this page.
+  // The app cards and switcher do not read this map: they use `name` and
+  // `short` from /hub/state.json (APPS in hub/landing_page.py).
   //
-  // Hand-duplicated into graph_page.html, cov_page.html and
-  // phys_page.html beside this file (a pane is a self-contained single
-  // file by design), and the SPA keeps its own copy under the same
-  // contract (rtl-buddy-sch, viewer/src/displayNames.js). Change the
-  // map in one and change it in all five. The cross-repo checklist is
-  // rtl-buddy-sch docs/hub-protocol.md section 13.
+  // Hand-duplicated into graph_page.html, cov_page.html, phys_page.html and the
+  // SPA (rtl-buddy-sch viewer/src/displayNames.js); change all five together
+  // (rtl-buddy-sch docs/hub-protocol.md section 13).
   var ORIGIN_LABELS = { view: 'sch', graph: 'gph', phys: 'phy' };
 
   function originLabel(origin) {
@@ -270,14 +245,10 @@
   // <<< origin-labels
 
   // >>> version-label
-  // One version label, said the same way by all four hub surfaces: the
-  // graph pane, the coverage pane, the schematic SPA (rtl-buddy-view,
-  // viewer/src/buildInfo.js) and this landing page. Hand-duplicated per
-  // the panes' self-contained-file convention — change the rule in one
-  // and change it everywhere, or the tabs start disagreeing about which
-  // build is running. The landing is not a hub peer, so it reads the
-  // version from /hub/state.json's hub.server_version instead of a
-  // welcome envelope; the parse and the rendered form are identical.
+  // Version label shared by all hub surfaces (graph pane, coverage pane, SPA
+  // buildInfo.js, this page); change the rule in every copy together. This page
+  // reads the version from `hub.server_version` in /hub/state.json instead of a
+  // welcome envelope.
   function versionLabel(raw) {
     var text = String(raw == null ? '' : raw);
     var plus = text.indexOf('+');
@@ -325,9 +296,8 @@
   }
 
   function renderCard(app) {
-    // A shipped app stays clickable even with no data: its own empty
-    // state names the command that fixes that, which is a better
-    // teacher than a dead card. Only a planned app is not a link.
+    // A shipped app stays clickable without data: its own empty state names the
+    // command that fixes it.
     var routable = app.status !== 'planned' && app.route;
     var node = routable ? el('a', 'card') : el('div', 'card off');
     if (routable) {
@@ -335,8 +305,7 @@
       if (!app.available) { node.className = 'card off'; }
     }
     node.appendChild(el('div', 'task', app.task));
-    // The card is where the LONG name is introduced (`rtl-buddy-schematic`);
-    // the chip beside it is the short one every other surface uses.
+    // The card introduces the long name; the chip beside it is the short one.
     var appLine = el('div', 'app');
     if (app.short) { appLine.appendChild(el('span', 'short', app.short)); }
     appLine.appendChild(document.createTextNode(
@@ -345,8 +314,8 @@
     node.appendChild(el('div', 'why', app.why));
     var badges = el('div', 'badges');
     if (app.open) {
-      // One client per origin: a second tab supersedes the first, so the
-      // warning belongs before the click, not in the evicted tab.
+      // A second tab supersedes the first, so the warning belongs before the
+      // click.
       badges.appendChild(el('span', 'badge open', 'already open — this replaces it'));
     }
     if (app.status === 'planned') {
@@ -400,14 +369,12 @@
       'not built — run `rb graph build`'
     );
 
-    // Empty state: this hub has nothing built for any app yet. Not "no
-    // card is clickable" — /view always answers, so that test would
-    // never fire and the panel would be decoration.
+    // Empty state: nothing built for any app. Not "no card is clickable": /sch
+    // always answers.
     //
-    // Every data-presence half the state carries has to be in this test,
-    // or a project that HAS built something is told it has not: a run of
-    // `rb synth` alone lights the phys card and used to sit directly
-    // under "Nothing built for this project yet".
+    // Every data-presence flag in the state must be in this test, or a project
+    // with only `rb synth` output (which lights the phys card) is told it has
+    // built nothing.
     var phys = state.phys || {};
     var nothingBuilt = !hub.active_model && !graph.present && !phys.present;
     els.empty.hidden = !nothingBuilt;

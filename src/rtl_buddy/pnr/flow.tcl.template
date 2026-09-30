@@ -1,7 +1,6 @@
 # OpenROAD P&R flow — templated by rb pnr.
 #
-# Placeholders are substituted by Python before invoking openroad; no
-# user-edits should be required. Stage order:
+# Placeholders are substituted by Python before openroad runs. Stage order:
 #   read -> floorplan -> tie cells -> macros -> PDN -> pins ->
 #   global place -> resize -> legalize -> CTS -> detail place -> route ->
 #   fill -> reports.
@@ -62,10 +61,8 @@ if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
 {{ macro_pack_procs }}
 puts ">>> Macro placement"
 set block [ord::get_db_block]
-# Macro origins snap to the standard-cell site grid from the core corner:
-# the detailed placer's padding check rounds a macro to its nearest row,
-# so a bottom edge between two rows can fail DPL-0011 after legalization
-# (#639). Every row initialize_floorplan made shares one site.
+# Macro origins snap to the site grid from the core corner; a bottom edge
+# between two rows can fail DPL-0011 after legalization.
 set site_obj [[lindex [$block getRows] 0] getSite]
 set site_grid_dbu [list [$site_obj getWidth] [$site_obj getHeight]]
 set dbu_per_micron [expr {int([ord::microns_to_dbu 1.0])}]
@@ -75,13 +72,9 @@ foreach inst [$block getInsts] {
 }
 if {[llength $macros] > 0} {
 {{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, so
-  # no standard cell abuts a macro edge (#673). An abutting cell has its pins
-  # inside met1 spacing of a hardened block's bloated obstruction, and the router
-  # can only reach them with a Metal Spacing violation. A blockage, not
-  # `cut_rows`: cutting the rows breaks the followpins the PDN lays along
-  # them, and the via stacks it adds at every rail end congest the channels.
-  # Through the ODB API, which every supported OpenROAD has; its Tcl wrapper
-  # first shipped in 26Q1.
+  # no standard cell abuts a macro edge; the router reaches such a cell's pins
+  # only with a Metal Spacing violation. Not `cut_rows`: that breaks the PDN
+  # followpins. Uses the ODB API because the Tcl wrapper needs OpenROAD 26Q1.
   if {$MACRO_CELL_HALO > 0} {
     set cell_halo_dbu [expr {int(round([ord::microns_to_dbu $MACRO_CELL_HALO]))}]
     foreach inst $macros {
@@ -94,13 +87,10 @@ if {[llength $macros] > 0} {
   }
 }
 {{ pdn_block }}
-# Pins go in after the macros and the power grid, as OpenROAD's reference
-# flow places them (#105). Before, every macro was still unplaced: each one
-# drew a PPL-0015 warning, and the pin placer's wirelength-driven assignment
-# saw it at the origin rather than where its pins really are. Note that
-# `place_pins` only excludes a boundary stretch a placed macro actually
-# touches; the packer keeps macros a halo inside the core, so keeping pins
-# clear of them is `floorplan.macro-anchor`'s job, not this ordering's.
+# Pins are placed after the macros and power grid so the pin placer sees placed
+# macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
+# stretches a placed macro touches; keeping pins clear of macros kept a halo
+# inside the core is `floorplan.macro-anchor`'s job.
 puts ">>> IO pin placement"
 {{ pin_constraints_tcl }}
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
@@ -129,13 +119,11 @@ puts ">>> Post-CTS timing repair"
 estimate_parasitics -placement
 repair_timing -hold
 
-# repair_timing -hold inserts buffers at unlegalized locations; without a
-# legalization pass here the detailed router has no access points for them
-# and dies with DRT-0073 (#591).
+# repair_timing -hold inserts unlegalized buffers; without this pass the
+# detailed router fails with DRT-0073.
 puts ">>> Detail placement (legalize repair cells)"
 detailed_placement
-# -verbose names every failing instance; the count alone (DPL-0011 and
-# friends) leaves nothing to act on (#639).
+# -verbose names each failing instance.
 check_placement -verbose
 
 puts ">>> Global route"
@@ -163,19 +151,14 @@ puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
 write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
-# OpenROAD binary DB. Captures placement + routing + parasitic
-# annotations so downstream tools (rb power with netlist-source: pnr)
-# can re-enter at the post-route state without re-running PnR.
+# OpenROAD binary DB: placement, routing and parasitic annotations, so
+# downstream tools (rb power with netlist-source: pnr) can re-enter at the
+# post-route state.
 #
-# Note on SPEF: a real SPEF needs OpenRCX and a PDK-specific rules
-# file, so it is written only when the PDK declares `rcx-rules` (#101):
-# extraction then runs after fill, `${DESIGN}.routed.spef` is written
-# and read back, and the final reports above are timed on it, as ORFS
-# does. Without rules (the Nangate45 demo sets none) there is
-# nothing to write — the estimate_parasitics annotations are not
-# extractable ("[INFO RCX-0134] no extraction data.") — and the ODB
-# handoff carries the same routing-derived cap to rb power instead,
-# which re-estimates it from the global routes.
+# SPEF needs OpenRCX and PDK rules, so it is written only when the PDK declares
+# `rcx-rules`: extraction runs after fill, `${DESIGN}.routed.spef` is written,
+# and the final reports are timed on it. Without rules, rb power re-estimates
+# parasitics from the ODB's global routes.
 write_db      $OUT_DIR/${DESIGN}.routed.odb
 {{ harden_block }}
 puts ">>> DONE"

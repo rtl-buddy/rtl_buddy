@@ -1,10 +1,6 @@
-"""Result records for an ``rb mut`` mutation campaign.
+"""Result records for an ``rb mut`` campaign: one ``MutantOutcome`` per mutant and an aggregate ``MutResults``.
 
-A campaign produces one :class:`MutantOutcome` per mutant plus an
-aggregate :class:`MutResults`. The mutation score is the standard
-``killed / (killed + survived)`` — ``errored`` mutants (those that
-broke elaboration) are dropped from the denominator so a buggy mutant
-never inflates or deflates the score.
+The mutation score is ``killed / (killed + survived)``; ``errored`` mutants (those that broke elaboration) are excluded.
 """
 
 from __future__ import annotations
@@ -24,14 +20,9 @@ class MutantOutcome:
     outcome: str  # one of KILLED / SURVIVED / ERRORED
     diff_summary: str
     verdict: str  # the FPV verdict string for this mutant (PASS/FAIL/NA)
-    # Signals the operator predicted it would perturb (xeno
-    # Prediction.perturbs_signals). A SURVIVED mutant with a non-empty
-    # prediction is the highest-signal "your property set is too weak"
-    # finding, so we keep it for the summary.
+    # Signals the operator predicted it would perturb (xeno Prediction.perturbs_signals).
     predicted_signals: list[str] = field(default_factory=list)
-    # Model-relative origin file this mutant was spliced into. Populated
-    # only for scoped (multi-file) campaigns; empty for the single-file
-    # default path.
+    # Model-relative file the mutant was spliced into; set only for scoped (multi-file) campaigns.
     file: str = ""
 
     def is_predicted_observable_miss(self) -> bool:
@@ -49,8 +40,7 @@ class MutResults:
         self.name = name
         self.outcomes = outcomes
         self.baseline_verdict = baseline_verdict
-        # Per-file (per-module) killed/survived/errored breakdown, recorded
-        # only for scoped multi-file campaigns. None for single-file runs.
+        # Per-file killed/survived/errored counts; None for single-file campaigns.
         self.per_file = per_file
 
     def killed(self) -> int:
@@ -66,8 +56,7 @@ class MutResults:
         return self.killed() + self.survived()
 
     def score(self) -> float | None:
-        """Mutation score = killed / (killed + survived), or None when
-        nothing was scorable (every mutant errored / no mutants)."""
+        """Return ``killed / (killed + survived)``, or None when no mutant was scorable."""
         total = self.scored_total()
         if total == 0:
             return None
@@ -77,9 +66,7 @@ class MutResults:
         return [o for o in self.outcomes if o.is_predicted_observable_miss()]
 
     def is_pass(self) -> bool:
-        # A campaign "passes" when it produced a scorable result. Score
-        # gating (e.g. fail under a threshold) is a separate concern; the
-        # command exits non-zero only on fatal errors.
+        # A campaign passes when it produced a scorable result; score thresholds are not applied here.
         return self.score() is not None
 
     def as_report(self) -> dict:
@@ -104,8 +91,6 @@ class MutResults:
                 for o in self.outcomes
             ],
         }
-        # Per-file breakdown is emitted only when a scope was active, so a
-        # single-file report stays shaped exactly as before.
         if self.per_file:
             report["per_file"] = self.per_file
         return report
@@ -120,7 +105,7 @@ class MutResults:
                 diff_summary=m.get("diff_summary", ""),
                 verdict=m.get("verdict", "NA"),
                 predicted_signals=m.get("predicted_signals", []),
-                # Tolerant of pre-scope reports that have no "file" key.
+                # "file" is absent in reports from single-file campaigns.
                 file=m.get("file", ""),
             )
             for m in report.get("mutants", [])
@@ -129,7 +114,6 @@ class MutResults:
             name=report.get("name", "mut"),
             outcomes=outcomes,
             baseline_verdict=report.get("baseline_verdict", "NA"),
-            # Optional; absent in single-file / pre-scope reports.
             per_file=report.get("per_file"),
         )
 

@@ -3,20 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""SystemC + Verilator cosim runner.
-
-Extends VlogSim with Verilator's --sc cosim build path:
-  - drops --binary (use --exe + --build like cocotb)
-  - adds --sc + sc_main/sc_extra positional sources
-  - resolves SYSTEMC_HOME from cfg-systemc (or $SYSTEMC_HOME fallback)
-  - injects -CFLAGS / -LDFLAGS to find headers and libsystemc.{a,dylib,so}
-  - pins CXX at compile time when cfg-systemc.cxx is set (ABI parity with
-    libsystemc.a)
-
-Runtime contract: the Verilator-generated binary's main() is the user's
-sc_main(). Verilator::commandArgs(argc, argv) reads +KEY=VAL plusargs from
-argv, so the existing VlogSim plusarg forwarding works unchanged.
-"""
+"""SystemC cosim runner: a VlogSim that builds with Verilator's --sc flow and runs the user's sc_main()."""
 
 import logging
 import os
@@ -33,21 +20,16 @@ from ..logging_utils import log_event
 _PIN_STYLE_FLAGS = {
     "uint": "--pins-sc-uint",
     "biguint": "--pins-sc-biguint",
-    # "bv" → no flag; Verilator's default emits sc_bv for >32-bit ports
+    # "bv" has no flag: it is Verilator's default for >32-bit ports.
     "bv": None,
 }
 
 
 class SystemCSim(VlogSim):
-    """SystemC cosim — Verilator --sc + user sc_main()."""
+    """Verilator --sc build with a user-supplied sc_main()."""
 
     def _systemc_cfg(self):
-        """Return the resolved cfg-systemc block or fail with a clear error.
-
-        cfg-systemc is optional at the root_config level (projects with no
-        SystemC tests do not need it), so absence is fatal only when reached
-        from a SystemC testbench.
-        """
+        """Return the cfg-systemc block; raise if root_config.yaml has none."""
         cfg = self.root_cfg.get_systemc_cfg()
         if cfg is None:
             log_event(
@@ -79,7 +61,7 @@ class SystemCSim(VlogSim):
         return home
 
     def _resolve_suite_path(self, rel_path: str) -> str:
-        """Resolve a testbench-relative path against the suite directory."""
+        """Resolve a path relative to the suite directory."""
         if os.path.isabs(rel_path):
             return rel_path
         return str(Path(self.suite_work_dir) / rel_path)
@@ -96,7 +78,7 @@ class SystemCSim(VlogSim):
         return _PIN_STYLE_FLAGS[style]
 
     def _filter_builder_opts(self, opts: list) -> list:
-        # SystemC uses --exe + --build; the builder's --binary would conflict.
+        # --binary conflicts with --exe/--build.
         return [o for o in opts if o != "--binary"]
 
     def _get_extra_compile_flags(self) -> list:
@@ -106,9 +88,7 @@ class SystemCSim(VlogSim):
         include_dir = str(Path(home) / "include")
         lib_dir = str(Path(home) / "lib")
 
-        # SystemC include + libsystemc are always auto-emitted; root-level
-        # cflags/ldflags are project-wide defaults; per-testbench tokens
-        # append on top so testbench-specific defines layer above the default.
+        # Order is root cfg, then testbench, so testbench flags come last.
         cflag_tokens = [
             f"-I{include_dir}",
             *root_sc_cfg.get_cflags(),
@@ -128,13 +108,8 @@ class SystemCSim(VlogSim):
             "-j",
             "0",
         ]
-        # The cosim top, unless the builder's own compile-time opts already
-        # pin one. Generating it unconditionally put it AFTER the user's on
-        # the command line, where Verilator's last-wins precedence handed it
-        # the victory over an explicitly configured `--top` — and, because
-        # the base plumbing then saw our flag rather than theirs, no
-        # conflict warning was emitted either (#511 review). The configured
-        # top wins here like everywhere else; the base logs the WARNING.
+        # Skip our --top-module when the user configured one: Verilator takes
+        # the last, and the base class only warns about conflicts it can see.
         configured_top = self._user_configured_top()
         if configured_top is None:
             flags += ["--top-module", self.testbench.toplevel]
@@ -178,11 +153,9 @@ class SystemCSim(VlogSim):
         return env
 
     def _get_extra_sim_env(self, run_id=None) -> dict:
-        """Add SystemC libdir to the dynamic-linker search path.
+        """Prepend the SystemC libdir to the dynamic-linker search path.
 
-        No-op for static libsystemc.a (the binary is self-contained), but
-        required when libsystemc is built as a shared object — checking the
-        link form here would be brittle, so we always add the path.
+        Always added, since a shared libsystemc needs it and a static one ignores it.
         """
         home = self._systemc_home()
         lib_dir = str(Path(home) / "lib")

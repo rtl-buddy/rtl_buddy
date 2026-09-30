@@ -3,9 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""
-coverview module handles packaging LCOV outputs into Coverview archives
-"""
+"""Package LCOV outputs into Coverview archives."""
 
 import json
 import logging
@@ -36,33 +34,25 @@ class CoverviewArtifacts:
 
 
 class CoverviewPacker:
-    """
-    Package LCOV `.info` coverage into a Coverview-compatible zip archive.
-    """
+    """Package LCOV `.info` coverage into a Coverview zip archive."""
 
     def __init__(self, cfg, project_root: str):
         self.cfg = cfg
         self.project_root = project_root
 
     def is_supported(self) -> bool:
-        """
-        Return whether Coverview packaging is configured for this simulator family.
-        """
+        """Return whether Coverview packaging is configured for this simulator family."""
         return self.cfg is not None
 
     def _sanitize_dataset_name(self, dataset_name: str) -> str:
-        """
-        Return a Coverview-compatible dataset identifier matching `\\w+`.
-        """
+        """Return a Coverview-compatible dataset identifier matching `\\w+`."""
         sanitized = "".join(
             ch if (ch.isalnum() or ch == "_") else "_" for ch in dataset_name
         )
         return sanitized
 
     def _write_config_json(self, outdir: str, config_name: str, config: dict) -> str:
-        """
-        Materialize the configured inline Coverview values into a JSON file for info-process.
-        """
+        """Materialize the configured inline Coverview values into a JSON file for info-process."""
         config_path = os.path.join(outdir, f"{config_name}.config.json")
         with open(config_path, "w", encoding="utf-8") as fh:
             json.dump(config, fh, indent=2)
@@ -70,9 +60,7 @@ class CoverviewPacker:
         return config_path
 
     def _get_git_metadata(self) -> tuple[str | None, str | None]:
-        """
-        Return the current git branch and commit hash for the project root, if available.
-        """
+        """Return the current git branch and commit hash for the project root, if available."""
         try:
             branch = subprocess.run(
                 ["git", "-C", self.project_root, "rev-parse", "--abbrev-ref", "HEAD"],
@@ -91,9 +79,7 @@ class CoverviewPacker:
             return None, None
 
     def _build_config(self, dataset_name: str, metadata: dict | None) -> dict:
-        """
-        Merge configured Coverview values with runtime metadata fields supported by Coverview.
-        """
+        """Merge configured Coverview values with runtime metadata fields supported by Coverview."""
         config = dict(self.cfg.get_config())
         branch, commit = self._get_git_metadata()
         config.setdefault("repo", os.path.basename(self.project_root))
@@ -121,9 +107,7 @@ class CoverviewPacker:
         return config
 
     def _run_info_process(self, run_cmd, event_prefix: str, **event_fields):
-        """
-        Run an info-process command and emit structured logs.
-        """
+        """Run an info-process command and emit structured logs."""
         log_event(
             logger,
             logging.INFO,
@@ -147,11 +131,10 @@ class CoverviewPacker:
 
     def _metric_source_roots_from_raw_path(self, raw_path: str) -> list[str]:
         """
-        Build preferred source roots for raw coverage-derived `.info` rewriting.
+        Return source roots for rewriting `.info` paths derived from a raw coverage database.
 
-        The raw database may live directly under `artefacts/` or under nested
-        per-test/per-run directories such as `artefacts/<test>/run-0001/`.
-        Also handles the legacy `logs/` layout for backward compatibility.
+        The database may sit under `artefacts/` (or `logs/`) directly or in a nested
+        per-test or per-run directory.
         """
         raw_dir = Path(os.path.dirname(raw_path)).resolve()
         roots: list[Path] = [raw_dir]
@@ -168,9 +151,7 @@ class CoverviewPacker:
         return [str(root) for root in roots]
 
     def _get_info_process(self):
-        """
-        Resolve the info-process executable from PATH or the active virtual environment.
-        """
+        """Resolve the info-process executable from PATH or the active virtual environment."""
         info_process = shutil.which("info-process")
         if info_process is None:
             candidate = os.path.join(os.path.dirname(sys.executable), "info-process")
@@ -192,9 +173,7 @@ class CoverviewPacker:
         output_path: str,
         test_list_path: str | None = None,
     ) -> str | None:
-        """
-        Merge multiple `.info` files with `info-process merge`.
-        """
+        """Merge multiple `.info` files with `info-process merge`."""
         if len(input_paths) == 0:
             return None
 
@@ -228,9 +207,7 @@ class CoverviewPacker:
         return output_path
 
     def _rewrite_desc_relative_to_project_root(self, desc_path: str) -> None:
-        """
-        Rewrite `.desc` `SN:` entries from absolute project-root paths to project-relative paths.
-        """
+        """Rewrite `.desc` `SN:` entries from absolute project-root paths to project-relative paths."""
         self._source_resolver().rewrite_desc(desc_path, relative=True)
 
     def _write_single_test_desc(
@@ -287,9 +264,7 @@ class CoverviewPacker:
     def _build_covrby_coverview_metadata(
         self, rby_description_files: dict[str, str | None] | None
     ) -> dict | None:
-        """
-        Build local Coverview extension metadata for extra per-type provenance files.
-        """
+        """Build local Coverview extension metadata for extra per-type provenance files."""
         if not rby_description_files:
             return None
 
@@ -303,9 +278,7 @@ class CoverviewPacker:
     def _extract_typed_info(
         self, info_process: str, info_path: str, output_path: str, coverage_type: str
     ):
-        """
-        Extract a single typed LCOV file from a combined LCOV input.
-        """
+        """Extract a single typed LCOV file from a combined LCOV input."""
         run_cmd = [
             info_process,
             "extract",
@@ -330,9 +303,7 @@ class CoverviewPacker:
     def _write_filtered_dat(
         self, raw_path: str, output_path: str, *, record_type: str, output_name: str
     ) -> str | None:
-        """
-        Filter a raw Verilator coverage database down to the header plus records of one type.
-        """
+        """Filter a raw Verilator coverage database down to the header plus records of one type."""
         record_markers = [f"\x01t\x02{record_type}"]
         if record_type == "expression":
             record_markers.append("\x01t\x02expr")
@@ -403,9 +374,7 @@ class CoverviewPacker:
     def _write_toggle_info(
         self, raw_path: str, outdir: str, dataset_name: str
     ) -> str | None:
-        """
-        Convert raw Verilator toggle coverage into an LCOV-like `.info` file.
-        """
+        """Convert raw Verilator toggle coverage into an LCOV-like `.info` file."""
         return self._write_raw_metric_info(
             raw_path,
             outdir,
@@ -417,18 +386,14 @@ class CoverviewPacker:
     def write_toggle_info(
         self, raw_path: str, outdir: str, dataset_name: str
     ) -> str | None:
-        """
-        Public wrapper for generating toggle `.info` from a raw coverage database.
-        """
+        """Public wrapper for generating toggle `.info` from a raw coverage database."""
         dataset_name = self._sanitize_dataset_name(dataset_name)
         return self._write_toggle_info(raw_path, outdir, dataset_name)
 
     def _write_expression_info(
         self, raw_path: str, outdir: str, dataset_name: str
     ) -> str | None:
-        """
-        Convert raw Verilator expression coverage into an LCOV-like `.info` file.
-        """
+        """Convert raw Verilator expression coverage into an LCOV-like `.info` file."""
         return self._write_raw_metric_info(
             raw_path,
             outdir,
@@ -440,19 +405,12 @@ class CoverviewPacker:
     def write_expression_info(
         self, raw_path: str, outdir: str, dataset_name: str
     ) -> str | None:
-        """
-        Public wrapper for generating expression `.info` from a raw coverage database.
-        """
+        """Public wrapper for generating expression `.info` from a raw coverage database."""
         dataset_name = self._sanitize_dataset_name(dataset_name)
         return self._write_expression_info(raw_path, outdir, dataset_name)
 
     def _source_resolver(self, base_dir=None, source_roots=None):
-        """
-        Build the shared source-path resolver for this project (#399).
-
-        One resolver, one contract: ``source_roots`` are the
-        ``[run dir, suite root]`` hints, most specific first.
-        """
+        """Build the source-path resolver; ``source_roots`` are ``[run dir, suite root]`` hints, most specific first."""
         return SourcePathResolver(
             self.project_root,
             base_dir=base_dir,
@@ -465,9 +423,7 @@ class CoverviewPacker:
         base_dir: str | None = None,
         source_roots: list[str] | None = None,
     ) -> None:
-        """
-        Rewrite LCOV `SF:` entries from absolute project-root paths to project-relative paths.
-        """
+        """Rewrite LCOV `SF:` entries from absolute project-root paths to project-relative paths."""
         self._source_resolver(base_dir, source_roots).rewrite_info(
             info_path, relative=True
         )
@@ -482,9 +438,7 @@ class CoverviewPacker:
         raw_path: str | None = None,
         zip_outdir: str | None = None,
     ):
-        """
-        Split a combined LCOV file into typed inputs and pack them into a Coverview archive.
-        """
+        """Split a combined LCOV file into typed inputs and pack them into a Coverview archive."""
         if not self.is_supported() or not os.path.exists(info_path):
             return None
 
@@ -573,9 +527,7 @@ class CoverviewPacker:
         rby_description_files: dict[str, str | None] | None = None,
         zip_outdir: str | None = None,
     ):
-        """
-        Package an explicit set of typed coverage files into one Coverview archive.
-        """
+        """Package an explicit set of typed coverage files into one Coverview archive."""
         if not self.is_supported():
             return None
 
@@ -666,9 +618,7 @@ class CoverviewPacker:
         metadata: dict | None = None,
         zip_outdir: str | None = None,
     ):
-        """
-        Package multiple combined LCOV inputs into one Coverview archive with one dataset per input.
-        """
+        """Package multiple combined LCOV inputs into one Coverview archive with one dataset per input."""
         if not self.is_supported() or len(info_inputs) == 0:
             return None
 

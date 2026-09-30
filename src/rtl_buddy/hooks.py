@@ -3,43 +3,10 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Shared helpers for executing hook scripts (`sweep` / `preproc`).
+"""Helpers for executing `sweep` and `preproc` hook scripts.
 
-Hook scripts are exec()'d rather than imported as real modules. Contract:
-the exec namespace always carries `__name__` set to `HOOK_MODULE_NAME`,
-never `"__main__"`, so a hook body guarded by `if __name__ == "__main__":`
-is deterministically skipped. Hook logic belongs at module top level (see
-docs/concepts/plugins.md).
-
-`exec_hook_script()` additionally registers a real module object under
-`HOOK_MODULE_NAME` in `sys.modules` for the duration of the exec. Classes
-defined by the hook get `__module__ = HOOK_MODULE_NAME`, and stdlib
-machinery resolves that back through `sys.modules` — CPython 3.11's
-`dataclasses._is_type` does `sys.modules.get(cls.__module__).__dict__`
-unguarded, so a `@dataclass` in a hook using string annotations (any hook
-with `from __future__ import annotations`) crashes with
-`'NoneType' object has no attribute '__dict__'` if the sentinel is not
-registered. Hooks execute sequentially in-process, so a single shared
-registration slot is safe; the previous binding (if any) is restored on
-exit, success or raise.
-
-It also captures the hook's `sys.stdout` (issue #371): hooks run in-process,
-so a `print()` in a hook would otherwise land on `rtl_buddy`'s own stdout —
-under `--machine` the stream reserved for the JSON envelope, which the extra
-text makes unparseable. Captured lines are re-emitted as `hook.stdout` log
-events, which reach stderr and `rtl_buddy.log` but never stdout.
-
-The capture is Python-level (`contextlib.redirect_stdout` rebinds
-`sys.stdout`), so the guarantee is precisely "anything the hook *prints* is
-captured" — not "fd 1 is closed to the hook". A hook that shells out
-(`subprocess.run(["gen", ...])` — a documented pattern, see
-`docs/concepts/plugins.md`) hands the child rtl_buddy's own fd 1, and that
-child's output still lands on stdout. Delivering the stronger guarantee
-needs an os-level `dup2` of fd 1 into a pipe; it is deliberately not done
-here, because redirecting a descriptor the whole process shares would also
-capture output from anything else holding it. Redirect the child instead:
-`subprocess.run(cmd, stdout=subprocess.DEVNULL)`, or capture and `print()`
-the result so it goes through this path.
+Hooks are exec()'d with `__name__` set to `HOOK_MODULE_NAME`, never `"__main__"`, and
+their stdout is captured as `hook.stdout` log events. See docs/concepts/plugins.md.
 """
 
 import contextlib
@@ -57,27 +24,13 @@ HOOK_MODULE_NAME = "__rtl_buddy_hook__"
 
 
 class _HookStdout(io.TextIOBase):
-    """Stands in for ``sys.stdout`` while a hook script runs (issue #371).
+    """Stands in for ``sys.stdout`` while a hook runs.
 
-    Hooks are exec()'d in-process, so a plain `print()` in a hook lands on
-    `rtl_buddy`'s own stdout — the stream `--machine` reserves for the single
-    JSON envelope, which the leading hook text then makes unparseable. Every
-    complete line written here is re-emitted as a structured ``hook.stdout``
-    event instead: it reaches the console on stderr (both modes, regardless
-    of verbosity — hook progress is a liveness signal) and `rtl_buddy.log`,
-    and never stdout.
-
-    Line-buffered rather than accumulated so a long-running hook still
-    reports as it goes; the trailing partial line is flushed by the caller.
-
-    This is a text sink, not a file: inheriting ``io.TextIOBase`` means
-    ``fileno()`` raises ``io.UnsupportedOperation`` and there is no
-    ``.buffer``, so a hook doing ``subprocess.run(cmd, stdout=sys.stdout)``
-    or ``sys.stdout.buffer.write(...)`` now raises where it previously
-    worked. That is the intended trade: both are ways of writing bytes
-    straight to fd 1, i.e. exactly what would corrupt the envelope, and an
-    exception naming the unsupported operation beats a silently unparseable
-    run. ``docs/known-issues.md`` records it.
+    Each complete line becomes a ``hook.stdout`` log event. Output goes to stderr and
+    `rtl_buddy.log`, never to stdout, which `--machine` reserves for the JSON envelope.
+    It has no ``fileno()`` or ``.buffer``, so writes that bypass Python-level printing
+    raise instead of corrupting the envelope. Output from child processes bypasses the
+    capture.
     """
 
     def __init__(self, script_path, stage=None):
@@ -89,8 +42,7 @@ class _HookStdout(io.TextIOBase):
         return True
 
     def isatty(self):
-        # A hook asking "am I on a terminal?" must not be told yes: its
-        # output is going to the log, not to a screen it can address.
+        # A hook must not be told it is on a terminal; its output goes to the log.
         return False
 
     def write(self, text):
@@ -108,9 +60,6 @@ class _HookStdout(io.TextIOBase):
             self._emit(line)
 
     def _emit(self, line):
-        # Blank lines carry no information once the text is re-framed with a
-        # per-line prefix, and a hook that prints a banner would otherwise
-        # emit empty log records.
         if not line.strip():
             return
         log_console_event(
@@ -124,10 +73,8 @@ class _HookStdout(io.TextIOBase):
 
 
 def build_hook_namespace(script_path, **variables):
-    """Build the exec() namespace for a hook script.
-
-    Returns `variables` plus `__file__` (absolute path to `script_path`)
-    and `__name__` set to the `HOOK_MODULE_NAME` sentinel.
+    """Return the exec namespace: `variables`, `__file__` (absolute `script_path`) and
+    `__name__` set to `HOOK_MODULE_NAME`.
     """
     return {
         **variables,
@@ -137,20 +84,13 @@ def build_hook_namespace(script_path, **variables):
 
 
 def exec_hook_script(script_path, code, *, stage=None, **variables):
-    """Exec a hook script under the documented namespace contract and return
-    the resulting namespace dict.
+    """Exec a hook script and return its namespace dict.
 
-    The namespace is a real module's `__dict__`, and the module is registered
-    in `sys.modules[HOOK_MODULE_NAME]` while the script runs (see module
-    docstring for why). Exceptions from the script propagate to the caller
-    unchanged; the previous `sys.modules` binding is always restored.
-
-    `sys.stdout` is replaced by :class:`_HookStdout` for the duration of the
-    exec, so anything the hook prints becomes a `hook.stdout` log event
-    instead of raw text on `rtl_buddy`'s stdout (issue #371). `stage` is a
-    reserved keyword naming the hook stage (`"preproc"` / `"sweep"`) for
-    those events; it is not injected into the hook namespace. Hook `stderr`
-    is left alone: it is not the envelope stream, so it is already safe.
+    The namespace is a real module's `__dict__`, registered as
+    `sys.modules[HOOK_MODULE_NAME]` during the exec so `@dataclass` with string
+    annotations works; the previous binding is restored afterwards. Exceptions propagate
+    unchanged. `stage` (`"preproc"` or `"sweep"`) labels the `hook.stdout` events and is
+    not injected into the namespace. Hook stderr is not captured.
     """
     mod = types.ModuleType(HOOK_MODULE_NAME)
     mod.__dict__.update(build_hook_namespace(script_path, **variables))
@@ -159,10 +99,8 @@ def exec_hook_script(script_path, code, *, stage=None, **variables):
     sys.modules[HOOK_MODULE_NAME] = mod
     hook_stdout = _HookStdout(script_path, stage=stage)
     try:
-        # A hook that rebinds sys.stdout itself is out of scope but must not
-        # break anything: redirect_stdout restores the outer stream on exit
-        # either way, and the trailing partial line is flushed off our own
-        # object rather than off whatever sys.stdout ended up being.
+        # The trailing partial line is flushed from our own object, even if the hook
+        # rebinds sys.stdout.
         with contextlib.redirect_stdout(hook_stdout):
             exec(code, mod.__dict__)
     finally:

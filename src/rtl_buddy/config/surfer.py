@@ -17,22 +17,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SurferConfig:
-    """
-    Configuration for launching Surfer and its WCP client.
+    """Settings for launching Surfer and its WCP client.
 
-    Attributes:
-      name (str): Unique identifier.
-      path (str): Surfer executable path or bare name (resolved via PATH).
-        Already expanded and candidate-resolved by
-        :func:`~rtl_buddy.config.toolpath.resolve_tool_path`, so the YAML
-        may spell it as a ``${VAR}``-bearing string or a candidate list.
-      wcp_port (int): TCP port rtl-buddy listens on; Surfer connects with --wcp-initiate.
-      editor_cmd (str): Editor command template; %f = file path, %l = line number.
-      editor_terminal (str): Terminal emulator for terminal editors ("iterm2", "terminal", or "").
-      editor_sock (str): Unix socket path for nvim --listen reuse. Empty string disables.
-      ctrl_sock (str): Unix socket path for the wave control server (nvim → Surfer). Empty disables.
-      root_cfg_path (str): Path of root_config.yaml, used for relative path resolution.
-      available (bool): True when the Surfer executable was found at initialise time.
+    `path` is already resolved by `resolve_tool_path`. `wcp_port` is the TCP port rtl-buddy listens on (Surfer connects with `--wcp-initiate`). `editor_cmd` substitutes `%f` (file) and `%l` (line). `editor_terminal` is "iterm2", "terminal" or "". `editor_sock` and `ctrl_sock` are Unix socket paths; empty disables. Relative paths resolve against `root_cfg_path`. `available` is set at initialise time.
     """
 
     name: str
@@ -52,7 +39,7 @@ class SurferConfig:
         return shutil.which(self.path) or self.path
 
     def _resolve_sock(self, sock: str) -> str:
-        """Resolve a socket path: expand ~, and resolve relative paths from root_config.yaml."""
+        """Expand `~` and resolve a relative socket path against root_config.yaml."""
         if not sock:
             return sock
         sock = os.path.expanduser(sock)

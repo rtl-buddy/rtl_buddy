@@ -2,34 +2,12 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""The tools ``rb mcp`` serves, and their handlers (#380).
+"""The tools ``rb mcp`` serves, and their handlers.
 
-Deliberately SDK-free. Everything here is plain Python — dataclasses,
-dicts and JSON Schema literals — so the tool set can be built, listed and
-called on a machine that has never installed the ``mcp`` package.
-:mod:`rtl_buddy.mcp.server` is the only module that imports the SDK, and
-all it does is transcribe these specs onto the wire.
+SDK-free: dataclasses, dicts and JSON Schema literals, so the tool set can be built and called without the ``mcp`` package. Every handler returns the payload of its ``rb --machine`` counterpart.
 
-Two groups of tools:
-
-* **stateless** — always present. They read
-  ``artefacts/graph/graph.json`` plus the results overlay, read
-  ``cov_dir/manifest.json`` and its model for the coverage verbs, read
-  ``phys-manifest.json`` and its model for the physical verbs, and
-  shell out to ``rtl-buddy-view`` for the hierarchy verbs. No hub, no
-  daemon, no session: identical behaviour in an IDE, on a CI runner, or
-  on a dispatch node.
-* **hub** — present only when a live hub is discovered. These drive the
-  schematic/waveform session the user is looking at, which is the one
-  thing no stateless server can offer. Discovery is
-  ``.rtl-buddy/hub.json``, exactly what ``rb hub send`` reads, and the
-  client is the same :class:`~rtl_buddy.hub.client.HubClient`, so there
-  is no second protocol implementation to keep in step.
-
-Every handler returns the payload its ``rb --machine`` counterpart
-returns. That is not a convenience: two agent-facing surfaces that
-describe the same graph in two shapes would drift within one release,
-and the payload is the contract both are versioned against.
+- Stateless tools are always present. They read ``artefacts/graph/graph.json`` and the results overlay, the coverage and physical manifests and their models, and call ``rtl-buddy-view`` for hierarchy queries.
+- Hub tools are present only when a live hub is discovered through ``.rtl-buddy/hub.json``, as ``rb hub send`` does. They drive the session the user is looking at.
 """
 
 from __future__ import annotations
@@ -81,15 +59,11 @@ HUB_TOOL_NAMES = (
 
 _SEVERITIES = ("error", "warning", "info", "hint")
 
-#: ``cov_focus.metric`` enum, mirroring the wire schema — the same
-#: literal ``rb hub send cov-focus`` spells, and for the same reason:
-#: the contract is the hub's schema, not this process's coverage model.
+#: ``cov_focus.metric`` enum; mirrors the hub wire schema and ``rb hub send cov-focus``.
 _COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
 
-#: ``phys_focus.metric`` enum, mirroring the wire schema — the same
-#: literal ``rb hub send phys-focus`` spells, and for the same reason.
-#: ``dynamic`` is in the list although no model column carries it: it is
-#: internal + switching, summed by the pane.
+#: ``phys_focus.metric`` enum; mirrors the hub wire schema and ``rb hub send phys-focus``.
+#: ``dynamic`` is internal + switching, summed by the pane; no model column has it.
 _PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
 
 
@@ -103,10 +77,7 @@ def _tool_version() -> str:
 class ToolError(Exception):
     """A tool call that could not be answered.
 
-    Surfaces to the agent as ``ok: false`` plus a message, never as a
-    transport error: an agent that asked about a module that does not
-    exist has received an answer, and a protocol-level failure would
-    teach it to stop asking.
+    Reported to the agent as ``ok: false`` plus a message, not as a transport error.
     """
 
     def __init__(self, message: str, *, details: dict | None = None) -> None:
@@ -123,12 +94,11 @@ class ToolSpec:
     description: str
     input_schema: dict
     handler: Callable[[dict], dict]
-    #: Human-mode command this tool mirrors, reported in every result so
-    #: an agent can reproduce the answer in a terminal.
+    #: Human-mode command this tool mirrors, reported in every result.
     command: str = ""
 
     def to_mcp_dict(self) -> dict:
-        """The wire form, camelCase, as the MCP tool listing wants it."""
+        """The wire form, with camelCase keys."""
         return {
             "name": self.name,
             "title": self.title,
@@ -139,14 +109,9 @@ class ToolSpec:
 
 @dataclass
 class HubHandle:
-    """What was discovered about a hub, and how to talk to it.
+    """What was discovered about a hub.
 
-    Discovery happens once, at server start: an MCP client reads the tool
-    list at session start and a tool set that changed mid-session would
-    not be seen anyway. Each *call* opens and closes its own connection,
-    the way ``rb hub send`` does — a long-lived socket would make the
-    server a stateful peer, which is exactly what the stdio design is
-    avoiding.
+    Discovery runs once at server start. Each call opens and closes its own connection, as ``rb hub send`` does.
     """
 
     present: bool
@@ -168,15 +133,9 @@ class HubHandle:
 
 
 def discover_hub(project_root: Path) -> HubHandle:
-    """Decide whether the hub tools light up, exactly as ``rb hub send`` would.
+    """Decide whether the hub tools are offered, using the resolver ``rb hub send`` uses.
 
-    The decision is delegated to the client's own resolver — env
-    override, then ``.rtl-buddy/hub.json`` walking up, then a PID
-    liveness check — rather than re-deriving it here. A second opinion
-    would eventually disagree, and the disagreement would show up as
-    tools that are advertised and cannot connect. The record is read
-    afterwards only for the metadata a caller likes to see (pid, hub
-    version, active model).
+    The hub record is read afterwards only for pid, hub version and active model.
     """
     from ..hub import client as hub_client
     from ..hub import discovery as hub_discovery
@@ -211,11 +170,7 @@ def discover_hub(project_root: Path) -> HubHandle:
 class Toolset:
     """The tools one ``rb mcp`` process serves.
 
-    Stateless by construction: the graph and the overlay are re-read on
-    every call rather than cached, so an agent that runs ``rb graph
-    build`` in one tool-using turn sees the new graph in the next without
-    restarting the server. The files are small and local; the alternative
-    is an agent reasoning over a graph that no longer exists.
+    The graph and overlay are re-read on every call, so a rebuilt graph is visible without restarting the server.
     """
 
     project_root: Path
@@ -249,9 +204,7 @@ class Toolset:
     def call(self, name: str, arguments: dict | None = None) -> dict:
         """Invoke a tool and wrap its payload in the result envelope.
 
-        Never raises for a bad question: an unknown module, a missing
-        graph or a hub that went away all come back as ``ok: false`` with
-        a message the agent can act on.
+        Bad questions (unknown module, missing graph, vanished hub) return ``ok: false`` with a message, never raise.
         """
         args = dict(arguments or {})
         try:
@@ -270,10 +223,7 @@ class Toolset:
             cov_query.CovQueryError,
             phys_query.PhysQueryError,
         ) as exc:
-            # All three carry near misses for a name that does not exist,
-            # and all three must be caught above FatalRtlBuddyError (both
-            # the coverage and the physical error are one) or the
-            # candidates would be dropped.
+            # Must precede FatalRtlBuddyError (the cov and phys errors subclass it) or 'candidates' is lost.
             details = {"candidates": exc.candidates} if exc.candidates else {}
             return self._envelope(
                 name, spec.command, ok=False, error=str(exc), **details
@@ -292,12 +242,9 @@ class Toolset:
         error: str | None = None,
         **extra,
     ) -> dict:
-        """The MCP result envelope — machine mode's, minus argv and git.
+        """The MCP result envelope: machine mode's, without argv and git.
 
-        ``rtl_buddy_version`` is here for the same reason it is in the
-        ``--machine`` envelope: it is what both surfaces are versioned
-        against, and an agent holding a payload it does not recognise
-        needs to know which rtl_buddy produced it.
+        ``meta.rtl_buddy_version`` identifies which rtl_buddy produced the payload.
         """
         envelope: dict[str, Any] = {
             "tool": tool,
@@ -328,7 +275,7 @@ class Toolset:
         )
 
     def _h_graph_status(self, args: dict) -> dict:
-        """What this server can answer, before anything is asked of it."""
+        """What this server can answer before anything is asked of it."""
         graph_file = graph_query.resolve_graph_path(self.project_root, self.graph_path)
         status: dict[str, Any] = {
             "project_root": str(self.project_root),
@@ -409,30 +356,14 @@ class Toolset:
     # ------------------------------------------------------------------
 
     def _rooted(self, value: str | None) -> str | None:
-        """Anchor a discovery override on the project root, not the cwd.
-
-        An MCP client has no invocation directory to speak from — the
-        host spawns ``rb mcp`` wherever it happens to sit, and the agent
-        never sees where that is — while the paths the payloads hand
-        back are repo-relative (``artefacts.manifest`` is
-        ``verif/blk_a/cov_dir/manifest.json``). Reading a relative
-        argument against the server's cwd would answer a path the agent
-        never named.
-        """
+        """Anchor a relative path override on the project root, not the server's cwd."""
         if value is None:
             return None
         path = Path(value)
         return str(path if path.is_absolute() else self.project_root / path)
 
     def _cov_context(self, args: dict) -> cov_query.CovContext:
-        """Load the manifest and model a coverage tool answers from.
-
-        Re-read per call, like the graph: an agent that runs a coverage
-        regression in one turn asks about it in the next, and the
-        alternative is answering from a run that no longer exists. A
-        relative ``cov_dir``/``manifest`` is rooted by :meth:`_rooted`,
-        and refused by :meth:`_path_arg` if it is not a path at all.
-        """
+        """Load the manifest and model a coverage tool answers from, re-read per call."""
         return cov_query.load_context(
             self.project_root,
             cov_dir=self._rooted(self._path_arg(args, "cov_dir")),
@@ -442,11 +373,6 @@ class Toolset:
     def _h_cov_summary(self, args: dict) -> dict:
         return cov_query.summary_payload(
             self._cov_context(args),
-            # Validated by the shared helper, with this tool's own
-            # default: a bare `int()` here read `false` as 0 and let
-            # `limit: -1` through `coldest_first`'s "no cap at all"
-            # reading, answering a request for a head with every file in
-            # the run -- the very failure the helper exists to refuse.
             limit=self._limit_arg(args, cov_query.DEFAULT_FILE_LIMIT),
         )
 
@@ -460,15 +386,9 @@ class Toolset:
     # ------------------------------------------------------------------
 
     def _phys_context(self, args: dict) -> phys_query.PhysContext:
-        """Load the manifest and model a physical tool answers from.
+        """Load the manifest and model a physical tool answers from, re-read per call.
 
-        Re-read per call, exactly as the coverage tools do: an agent that
-        runs ``rb synth`` or ``rb power`` in one turn asks what it
-        measured in the next, and a cached context would answer from a
-        run that no longer exists. Lock-free, like the CLI verbs — these
-        read artefacts and write nothing, and taking the artefact lock
-        would fail the question precisely while a flow is producing the
-        answer to it.
+        Takes no artefact lock, so a question can be answered while a flow is running.
         """
         return phys_query.load_context(
             self.project_root,
@@ -479,17 +399,10 @@ class Toolset:
     def _h_phys_runs(self, args: dict) -> dict:
         """Every run with physical artefacts under the project.
 
-        Takes no ``phys_dir``: its subject is the set of runs rather than
-        one of them, and it is what an agent calls to find the argument
-        the other three take.
+        Takes no ``phys_dir``: it lists the runs the other tools take one from.
         """
         return phys_query.runs_payload(
             self.project_root,
-            # Validated by the same helper the detail tools use, with this
-            # tool's own default: a bare `int()` here would have let
-            # `limit: -1` through `truncate`'s "no head at all" reading and
-            # answered a listing request with every run in the project --
-            # the very failure the helper exists to refuse.
             limit=self._limit_arg(args, phys_query.DEFAULT_RUNS_LIMIT),
         )
 
@@ -517,29 +430,9 @@ class Toolset:
 
     @staticmethod
     def _path_arg(args: dict, key: str) -> str | None:
-        """A discovery override, read as a path or refused as one.
+        """A discovery override as a path string, ``None`` if absent, else a ``ToolError``.
 
-        Shared by every tool that takes one — ``cov_dir``/``manifest``
-        on the coverage tools, ``phys_dir``/``manifest`` on the physical
-        ones — because the hole is the same on all of them. It is the
-        path half of what :meth:`_limit_arg` does for the row cap, and
-        it exists for the same reason: the server forwards a host's
-        arguments to the handler exactly as they arrived, so an
-        ``inputSchema`` saying ``"type": "string"`` is documentation
-        until a handler checks it. ``{"cov_dir": 3}`` or
-        ``{"manifest": []}`` reached :meth:`_rooted` and died inside
-        :class:`~pathlib.Path` with a ``TypeError`` that
-        :meth:`Toolset.call` does not catch -- a protocol-level failure
-        for a bad argument, where every other bad question gets the
-        ``ok: false`` envelope, and no sentence anywhere telling the
-        agent which constraint it broke.
-
-        Absent stays absent: these overrides are optional, and ``None``
-        is how :meth:`_rooted` and the ``resolve_manifest_path`` of
-        either query module already spell "no override, discover the
-        newest run". A host that sends an explicit ``null`` means the
-        same thing and is read the same way. Everything that is not a
-        string is the mistake.
+        The schema's ``"type": "string"`` is not enforced on forwarded arguments, and a non-string would otherwise raise ``TypeError`` past the envelope.
         """
         value = args.get(key)
         if value is None:
@@ -553,70 +446,9 @@ class Toolset:
 
     @staticmethod
     def _limit_arg(args: dict, default: int, key: str = "limit") -> int:
-        """The row cap a read tool applies, defaulting like its CLI verb.
+        """The row cap a read tool applies, or a ``ToolError``.
 
-        Shared by every tool that takes a ``limit`` — the coverage
-        summary as well as the physical ones — because the input means
-        the same thing on all of them and so do the mistakes.
-
-        ``default`` is the caller's, because the tools do not share one:
-        a ranking of instances heads at
-        :data:`~rtl_buddy.phys.query.DEFAULT_RANK_LIMIT`, a listing of
-        runs at :data:`~rtl_buddy.phys.query.DEFAULT_RUNS_LIMIT` and the
-        coldest files at
-        :data:`~rtl_buddy.cov.query.DEFAULT_FILE_LIMIT`. Only the default
-        differs — every tool that takes a ``limit`` comes through here,
-        so the refusals below hold for all of them.
-
-        A HEAD by default, not the complete list. These lists are as long
-        as the design: every instance of a Liberty cell on a mapped run
-        is six figures of rows, and a tool that returns all of them by
-        default spends a context window on the tail of a ranking nobody
-        asked for. The payloads say what happened — the applied ``limit``
-        rides on every physical one next to the untruncated
-        ``instance_count``/``child_count``, the sums (``power``,
-        ``rollup``) cover every matching row, listed or not, and the
-        coverage summary's ``totals``/``counts`` are the run's rather
-        than the listed files' — so a truncated answer is never mistaken
-        for the whole one, and an agent that wants the whole one passes
-        ``0``.
-
-        **A limit that is not a number is refused, not raised past the
-        envelope.** The server forwards a host's arguments to the handler
-        as they arrived, so ``limit`` can be ``null``, ``"ten"`` or a
-        list, and :func:`int` answers those with ``TypeError`` or
-        ``ValueError`` -- neither of which :meth:`Toolset.call` catches.
-        The caller would get a protocol-level failure for a bad argument
-        instead of the ``ok: false`` envelope every other bad question
-        gets, and an agent cannot read a traceback for the constraint it
-        broke. A conversion failure is the same class of mistake as a
-        negative limit and is reported the same way.
-
-        **A value that is not integral is refused before it is
-        converted**, because :func:`int` is not a validator: it is a
-        coercion that answers every one of these with a number the caller
-        did not ask for. ``false`` is an ``int`` subclass and comes back
-        as ``0`` -- this input's spelling of *every row in the design*,
-        which is the one answer the default exists to avoid. ``2.7``
-        comes back as ``2`` and ``-0.5`` as ``0``, the second of those
-        being the same accident again from a value that plainly asked for
-        a head. So a bool is refused outright, a float is refused unless
-        it is integral, and only then is the value converted. Integral
-        floats are accepted because JSON has one number type and ``2.0``
-        is how some hosts spell ``2``; a decimal string still converts,
-        as it always has.
-
-        **A negative limit is refused, not obeyed.** The schema says
-        ``minimum: 0`` and nothing enforces it: the server hands the
-        arguments an MCP host sent straight to the handler, so a schema
-        constraint is documentation until a handler checks it. Below the
-        floor the cap does not merely clamp -- :func:`truncate` and
-        :func:`~rtl_buddy.cov.query.coldest_first` both read anything
-        ``<= 0`` as "no head at all" -- so ``limit: -1`` asks for one row
-        fewer than none and is answered with every row in the design,
-        which is both the opposite of what the caller wrote and the one
-        answer this default exists to prevent. ``0`` still means all of
-        them, because that is what the input's description promises.
+        ``default`` is the calling tool's; by default a list is headed, and ``0`` means every row. Non-integers, booleans, non-integral floats and negative values are refused, because ``int()`` would coerce them to a number the caller did not ask for (``false`` to 0, ``-0.5`` to 0, and negatives are read as "no cap" downstream). Integral floats such as ``2.0`` and decimal strings are accepted.
         """
         raw = args.get(key, default)
 
@@ -626,17 +458,10 @@ class Toolset:
                 "0 lists every row and a positive number heads the list"
             )
 
-        # `bool` is a subclass of `int`, so `int(False)` is 0 -- which is
-        # precisely this input's spelling of "every row in the design".
-        # A host that sent `false` meant something by it, and that was
-        # not it.
+        # `int(False)` is 0, which means every row.
         if isinstance(raw, bool):
             raise not_an_integer()
-        # JSON has one number type, so a whole count may legitimately
-        # arrive as `2.0`; `2.7` may not. `int()` would take both and
-        # truncate toward zero, which turns `-0.5` into 0 -- the "all of
-        # them" answer again, from a value that asked for a head.
-        # `is_integer()` is also what rejects nan and inf.
+        # `int()` truncates 2.7 to 2 and -0.5 to 0; `is_integer()` also rejects nan and inf.
         if isinstance(raw, float):
             if not raw.is_integer():
                 raise not_an_integer()
@@ -654,19 +479,9 @@ class Toolset:
         return limit
 
     def _rank_limit_arg(self, args: dict, key: str) -> phys_query.RankLimit:
-        """A ``phys_summary`` per-ranking override, or ``None`` for none given.
+        """A ``phys_summary`` per-ranking override, or ``None`` when not given.
 
-        The optional half of :meth:`_limit_arg`, for the two inputs that
-        override ``limit`` for one ranking each (#606). Absent means
-        *not overridden*, which is ``None`` — the payload builder then
-        heads that ranking at ``limit``, so a host that sends neither
-        gets exactly the payload it always got. Present, the value is
-        either :data:`~rtl_buddy.phys.query.RANK_NONE` — the one
-        spelling of "no rows", because ``0`` is taken and means all —
-        or a number validated by :meth:`_limit_arg` under this key's
-        own name, so ``modules_limit: -1`` is refused in the same words
-        and for the same reason ``limit: -1`` is. The ``default`` there
-        is unreachable: the key is present by the time it is called.
+        ``RANK_NONE`` means no rows; other values are validated by :meth:`_limit_arg` under this key's name.
         """
         if key not in args:
             return None
@@ -680,13 +495,7 @@ class Toolset:
     # ------------------------------------------------------------------
 
     def _model_cfg(self, name: str):
-        """Resolve a model by name the way ``rb graph build`` does.
-
-        The whole design tree is searched rather than one ``models.yaml``
-        in a cwd, because an MCP server has no cwd worth speaking of —
-        it is spawned by an agent host from wherever that host happens to
-        sit.
-        """
+        """Resolve a model by name across the design tree, as ``rb graph build`` does."""
         from ..graph.build import models_from_design_tree
 
         design_dir = self.design_dir or (self.project_root / "design")
@@ -726,8 +535,7 @@ class Toolset:
             "exit_code": returncode,
         }
         if returncode != 0:
-            # A lookup miss is the answer, not a crash — the viewer says
-            # so on stderr and exits non-zero. Hand it back verbatim.
+            # A lookup miss exits non-zero with the answer on stderr.
             raise ToolError(
                 stderr or f"rtl-buddy-view query {verb} failed with {returncode}",
                 details={"payload": payload},
@@ -774,10 +582,7 @@ class Toolset:
         from ..hub.protocol import Origin
 
         try:
-            # Origin stays ``cli``: it is the origin the hub's schema and
-            # every existing peer already accept, and adding an ``mcp``
-            # value would be a protocol change for no behavioural gain —
-            # this server IS a one-shot CLI-shaped peer.
+            # ``cli`` is the only origin the hub schema accepts for this peer.
             return HubClient.connect(project_root=self.project_root, origin=Origin.CLI)
         except HubUnavailable as exc:
             raise ToolError(f"no hub: {exc}")
@@ -877,9 +682,7 @@ class Toolset:
         return self._hub_emit("diagnostics_set", {"source": source, "items": items})
 
     def _h_cov_focus(self, args: dict) -> dict:
-        # Optional keys are omitted rather than sent as null: the wire
-        # schema is additionalProperties:false with no nullable hints,
-        # so a null would be rejected by the hub, not ignored by it.
+        # Omit optional keys: the wire schema rejects null.
         payload: dict[str, Any] = {"target": _focus_target("cov_focus", args)}
         metric = args.get("metric")
         if metric is not None:
@@ -897,9 +700,7 @@ class Toolset:
             payload["line"] = line
         item = args.get("item")
         if item is not None:
-            # Emit what was validated: the pane matches these strings, so
-            # a trailing space is a miss, not a near miss. Mirrors
-            # ``rb hub send cov-focus``.
+            # Send the stripped value; the pane matches exactly.
             item = str(item).strip()
             if not item:
                 raise ToolError("cov_focus: 'item' must be non-empty")
@@ -907,11 +708,7 @@ class Toolset:
         return self._hub_emit("cov_focus", payload)
 
     def _h_phys_focus(self, args: dict) -> dict:
-        # Emit what was validated, stripped, with the optional key
-        # omitted rather than sent as null — the same three rules
-        # ``rb hub send phys-focus`` follows, because the pane matches
-        # ``target`` as a string and the wire schema is
-        # additionalProperties:false with no nullable hints.
+        # Stripped target; optional key omitted, not null (as ``rb hub send phys-focus``).
         payload: dict[str, Any] = {"target": _focus_target("phys_focus", args)}
         metric = args.get("metric")
         if metric is not None:
@@ -925,32 +722,9 @@ class Toolset:
 
 
 def _focus_target(tool: str, args: dict) -> str:
-    """The ``target`` a focus verb points a pane at, or a refusal.
+    """The ``target`` of a focus tool: a non-blank string, stripped.
 
-    ``target`` is the whole of what these two tools do, and the server
-    forwards a host's arguments to the handler exactly as they arrived —
-    so an ``inputSchema`` saying ``"type": "string"`` is documentation
-    until a handler checks it, the same gap :meth:`_path_arg` and
-    :meth:`_limit_arg` close on the reads.
-
-    :func:`str` is a renderer, not a validator: it answers ``false`` with
-    ``"False"``, ``[]`` with ``"[]"`` and ``{}`` with ``"{}"``. Each of
-    those used to reach the hub as a target, be cached there as the
-    latest focus, and come back ``ok: true`` — and the hub replays the
-    latest focus to every pane that registers, so one malformed call went
-    on being delivered to tabs opened long after it. A pane cannot report
-    it either: a target that matches no row is what a miss looks like.
-
-    So the value has to *be* a string. ``bool`` is not one and is not
-    coerced into one; a number is not one either, since a target is a
-    module name or an instance path and neither is a number.
-
-    An absent target, and a string that is nothing but whitespace, stay
-    :func:`_req`'s to refuse — the pane matches these strings exactly, so
-    a trailing space is a miss rather than a near miss, and a value that
-    strips to nothing is the missing argument it looks like. What is new
-    is the type, and the value is quoted back so the caller can see what
-    it sent.
+    Non-strings are refused, because ``str()`` would turn ``false`` or ``[]`` into a target the hub caches and replays to every later pane.
     """
     value = _req(args, "target")
     if not isinstance(value, str):
@@ -969,11 +743,9 @@ def _req(args: dict, key: str):
 
 
 def _maybe_json(text: str):
-    """Parse the viewer's stdout as JSON, or keep it as text.
+    """Parse the viewer's stdout as JSON, or return ``None`` so it is kept as text.
 
-    ``source-snippet`` answers with line-numbered source, every other
-    verb with JSON. Sniffing beats hard-coding the verb list: the viewer
-    owns that choice, and a new verb should not need a change here.
+    ``source-snippet`` prints numbered source; other verbs print JSON.
     """
     import json
 
@@ -1012,8 +784,7 @@ _EXPAND_PROP = {
     "description": (
         "Embed a full node summary (attributes, cite, joins) for every "
         "peer instead of the lean id/label/type reference (default false). "
-        "Costs roughly the pre-expansion payload per peer; prefer a second "
-        "lean call on the one peer you actually need."
+        "Large; prefer a second lean call on the one peer you need."
     ),
 }
 
@@ -1022,8 +793,7 @@ _COV_DIR_PROP = {
     "description": (
         "Coverage artefact directory to read; a relative path resolves "
         "against the project root, e.g. verif/blk_a/cov_dir. Default: the "
-        "newest cov_dir/manifest.json under the project root, which is the "
-        "run that finished last."
+        "newest cov_dir/manifest.json under the project root."
     ),
 }
 
@@ -1042,8 +812,7 @@ _PHYS_DIR_PROP = {
         "Artefact directory holding phys-manifest.json; a relative path "
         "resolves against the project root, e.g. "
         "verif/blk/artefacts/nightly. Default: the newest "
-        "phys-manifest.json under the project root, which is the run that "
-        "finished last."
+        "phys-manifest.json under the project root."
     ),
 }
 
@@ -1058,32 +827,20 @@ _PHYS_MANIFEST_PROP = {
 
 
 def _phys_limit_prop(rows: str) -> dict:
-    """The ``limit`` input a physical tool takes, worded for its own list.
-
-    One shape for all three, and the same semantics as ``--limit`` on the
-    CLI verb each one wraps, default included: the head of a ranking,
-    ``0`` for the complete list.
-    """
+    """The ``limit`` input of a physical tool, worded for its own list; same semantics as the CLI ``--limit``."""
     return {
         "type": "integer",
         "description": (
             f"{rows}, heaviest/hottest first (default "
             f"{phys_query.DEFAULT_RANK_LIMIT}; 0 for all). The payload "
-            "carries the limit it applied and the untruncated count "
-            "beside it, so a headed list says that it is one."
+            "reports the applied limit and the untruncated count."
         ),
         "minimum": 0,
     }
 
 
 def _phys_rank_limit_prop(rows: str) -> dict:
-    """A ``phys_summary`` per-ranking override input.
-
-    Same semantics as the CLI flag it mirrors: it overrides ``limit``
-    for one ranking, ``0`` is still all of it, and the word
-    ``"none"`` — the only non-numeric value — asks for an empty list,
-    which ``0`` cannot say. Omitted, the ranking follows ``limit``.
-    """
+    """A ``phys_summary`` per-ranking limit override; ``"none"`` asks for an empty list, which ``0`` (all) cannot say."""
     return {
         "anyOf": [
             {"type": "integer", "minimum": 0},
@@ -1092,10 +849,9 @@ def _phys_rank_limit_prop(rows: str) -> dict:
         "description": (
             f"{rows}, overriding 'limit' for this ranking only (0 for all, "
             f"'{phys_query.RANK_NONE}' for no rows at all; omit to follow "
-            "'limit'). Ask for 'none' when you do not need the ranking: a "
-            "mapped design's instance list is six figures of rows, and the "
-            "payload's 'counts' still reports how many there are. The "
-            "applied values ride on the payload's 'limits' block."
+            "'limit'). 'none' skips a mapped design's six-figure instance "
+            "list; the payload's 'counts' still reports its size and "
+            "'limits' the applied values."
         ),
     }
 
@@ -1112,10 +868,7 @@ def build_toolset(
 ) -> Toolset:
     """Assemble the tool set for one project root.
 
-    ``hub`` is discovered here unless one is supplied (tests supply one).
-    The hub tools are registered only when a hub is live, so an agent
-    reading the listing on a CI node is never offered a tool that can
-    only fail.
+    ``hub`` is discovered unless supplied. Hub tools are registered only when a hub is live.
     """
     root = Path(os.path.realpath(str(project_root)))
     handle = hub if hub is not None else discover_hub(root)
@@ -1153,19 +906,15 @@ def build_toolset(
             title="Query the design knowledge graph",
             command="rb graph query",
             description=(
-                "Keyword search over the design knowledge graph, with a "
-                "neighbourhood expansion around every match. This is the "
-                "cheapest way to locate anything in the project: modules, "
-                "instances, ports, tests, testbenches, models, spec blocks and "
-                "coverage items all live in one graph. Matching is "
-                "deterministic keyword scoring, not a model, so phrase the "
-                "question around the identifier you care about "
-                "('which tests cover A-COV-1'). Each match arrives with its "
-                "own attributes, a 'cite' hint naming the file (and, for "
-                "instances, the exact hier-query command) that quotes it, and "
-                "its neighbours as lean id/label/type references with their "
-                "last regression status joined on — set 'expand' for full "
-                "neighbour summaries."
+                "Keyword search over the design knowledge graph, expanding the "
+                "neighbourhood of each match. Use it first to locate anything: modules, "
+                "instances, ports, tests, testbenches, models, spec blocks and coverage "
+                "items share one graph. Scoring is deterministic keyword matching, so "
+                "phrase the question around an identifier ('which tests cover A-COV-1'). "
+                "Each match carries its attributes, a 'cite' hint naming the file (for "
+                "instances, the hier-query command) that quotes it, and its neighbours as "
+                "lean id/label/type references with last regression status; set "
+                "'expand' for full neighbour summaries."
             ),
             input_schema=_obj(
                 {
@@ -1227,11 +976,10 @@ def build_toolset(
             title="Path between two graph nodes",
             command="rb graph path",
             description=(
-                "The shortest chain of edges connecting two nodes — how a test "
-                "reaches a module, how a coverage item reaches its spec doc. "
-                "Accepts full node ids ('test:verif/blk_a#t_cocotb') or bare "
-                "names when they are unambiguous. Undirected by default, "
-                "because edge direction encodes role rather than reachability."
+                "The shortest chain of edges between two nodes, e.g. how a test reaches "
+                "a module or a coverage item reaches its spec doc. Accepts full node ids "
+                "('test:verif/blk_a#t_cocotb') or unambiguous bare names. Undirected by "
+                "default, since edge direction encodes role, not reachability."
             ),
             input_schema=_obj(
                 {
@@ -1262,15 +1010,14 @@ def build_toolset(
             title="Explain one graph node",
             command="rb graph explain",
             description=(
-                "Everything the graph knows about one node: its attributes, "
-                "every incoming and outgoing edge with the far endpoint named "
-                "(peer id/label/type; set 'expand' for full peer summaries), "
-                "and — for a test node — its last regression status, "
-                "seed and artefact paths from the results overlay. When the "
-                "overlay carries a coverage join, a module or instance node "
-                "also returns its coverage ratio and a coverage_item node "
-                "returns whether the run exercised it, which cover points it "
-                "correlated with, and how the tests declaring it fared."
+                "Everything the graph knows about one node: its attributes and every "
+                "incoming and outgoing edge with the far endpoint named (peer "
+                "id/label/type; set 'expand' for full peer summaries). A test node adds "
+                "its last regression status, seed and artefact paths from the results "
+                "overlay. When the overlay has a coverage join, a module or instance "
+                "node also returns its coverage ratio, and a coverage_item node returns "
+                "whether the run exercised it, the cover points it correlated with, and "
+                "how the tests declaring it fared."
             ),
             input_schema=_obj(
                 {
@@ -1292,12 +1039,11 @@ def build_toolset(
             title="Regression results overlay",
             command="rb graph results",
             description=(
-                "Last recorded status, seed, run token, artefact paths and — "
-                "when the run wrote coverage — the per-test line/branch/"
-                "toggle/expression scalars, straight from "
-                "artefacts/graph/results-overlay.json. Use when the question "
-                "is only about results; graph_query already joins the same "
-                "data onto the nodes it returns."
+                "Last recorded status, seed, run token and artefact paths per test, plus "
+                "per-test line/branch/toggle/expression scalars when the run wrote "
+                "coverage, from artefacts/graph/results-overlay.json. Use when the "
+                "question is only about results; graph_query already joins this data "
+                "onto its nodes."
             ),
             input_schema=_obj(
                 {
@@ -1322,18 +1068,15 @@ def build_toolset(
             title="Coverage of the last run",
             command="rb cov summary",
             description=(
-                "How covered the last coverage run is, read from artefacts "
-                "already on disk — no simulator runs. Returns run-level and "
-                "per-test line/branch/toggle/expression scalars, the coldest "
-                "files first, the module names the model knows, any SVA cover "
-                "points, and where every coverage artefact landed. 'totals' "
-                "scores a point per elaborated module, so one source point "
-                "parameterised twice counts twice; 'source_totals' scores it "
-                "once, covered when any elaboration hit it — a closure target "
-                "is normally stated against that one. Stateless: "
-                "a CI node answers this with no hub and no daemon. Start here "
-                "when the question is 'what is under-covered', then call "
-                "cov_module for the points."
+                "How covered the last coverage run is, read from artefacts on disk; no "
+                "simulator runs. Returns run-level and per-test line/branch/toggle/"
+                "expression scalars, the coldest files first, the module names the model "
+                "knows, any SVA cover points, and where each coverage artefact landed. "
+                "'totals' scores a point per elaborated module, so a source point "
+                "parameterised twice counts twice; 'source_totals' scores it once, "
+                "covered when any elaboration hit it, and is what closure targets are "
+                "normally stated against. Needs no hub. Start here for 'what is "
+                "under-covered', then call cov_module."
             ),
             input_schema=_obj(
                 {
@@ -1358,13 +1101,12 @@ def build_toolset(
             title="Coverage of one module",
             command="rb cov module",
             description=(
-                "Per-file, per-point coverage for one module's sources: every "
-                "line, branch, toggle and expression point with its hit count "
-                "and the tests behind it. A file included into several modules "
-                "reports only the points belonging to the module asked for. An "
-                "unknown name comes back as ok: false with 'candidates' — the "
-                "module vocabulary is the coverage model's (Verilator's "
-                "containing module), so check it against cov_summary.modules."
+                "Per-file, per-point coverage for one module's sources: every line, "
+                "branch, toggle and expression point with its hit count and the tests "
+                "behind it. A file included into several modules reports only the "
+                "points of the module asked for. An unknown name returns ok: false with "
+                "'candidates'; module names are the coverage model's (Verilator's "
+                "containing module), so check them against cov_summary.modules."
             ),
             input_schema=_obj(
                 {
@@ -1389,20 +1131,17 @@ def build_toolset(
             title="Physical runs in this project",
             command="rb phys runs",
             description=(
-                "Every run that left physical artefacts under this project, "
-                "newest first — the menu the other physical tools take their "
-                "'phys_dir' from. Each entry carries the artefact directory to "
-                "pass back, the run name and top, which backends produced it, "
-                "the power mode and what drove the switching (defaults, a "
-                "synthetic toggle/duty pair, or a SAIF/VCD trace and the test "
-                "behind it), a fingerprint of the configuration that shaped the "
-                "netlist (platform, effort, constraints, a digest of the "
-                "effective tool options), the rb xplr experiment id when the "
-                "run sits under one, and when it was generated. Reads only the "
-                "manifests, runs no EDA tool, and needs no hub. Call this when "
-                "a project has more than one synthesis or power run — two runs "
-                "of one design differ by their configuration and their power "
-                "mode, not by their top."
+                "Every run that left physical artefacts under this project, newest "
+                "first; the source of the 'phys_dir' the other physical tools take. Each "
+                "entry has the artefact directory to pass back, run name and top, "
+                "producing backends, power mode and switching drive (defaults, a "
+                "synthetic toggle/duty pair, or a SAIF/VCD trace and its test), a "
+                "fingerprint of the netlist-shaping configuration (platform, effort, "
+                "constraints, digest of the effective tool options), the rb xplr "
+                "experiment id if any, and the generation time. Reads manifests only; no "
+                "EDA tool, no hub. Call it when a project has more than one synthesis or "
+                "power run: runs of one design differ by configuration and power mode, "
+                "not by top."
             ),
             input_schema=_obj(
                 {
@@ -1411,9 +1150,8 @@ def build_toolset(
                         "description": (
                             "Runs to list, newest first (default "
                             f"{phys_query.DEFAULT_RUNS_LIMIT}; 0 for all). The "
-                            "payload carries the limit it applied beside the "
-                            "untruncated count, so a headed list says that it "
-                            "is one."
+                            "payload reports the applied limit and the "
+                            "untruncated count."
                         ),
                         "minimum": 0,
                     },
@@ -1428,21 +1166,16 @@ def build_toolset(
             title="Physical metrics of the last run",
             command="rb phys summary",
             description=(
-                "What the last synthesis or power run measured, read from "
-                "artefacts already on disk — no synthesis, no power analysis, "
-                "no EDA tool runs. Returns the run header and backends, the "
-                "design totals (cells, area, the four power columns), the "
-                "heaviest modules by cell count, the hottest instances by "
-                "total power, which halves of the model are filled and which "
-                "command fills a missing one, and where every physical "
-                "artefact landed. Stateless: a CI node answers this with no "
-                "hub and no daemon. Start here when the question is 'what is "
-                "big or hot', then call phys_module or phys_instance. "
-                "'limit' heads both rankings; 'modules_limit' and "
-                "'instances_limit' override it one ranking at a time, and "
-                "take 'none' for a ranking you do not want at all — ask for "
-                "the whole module table without six figures of leaf instance "
-                "rows behind it."
+                "What the last synthesis or power run measured, read from artefacts on "
+                "disk; no EDA tool runs. Returns the run header and backends, design "
+                "totals (cells, area, the four power columns), the heaviest modules by "
+                "cell count, the hottest instances by total power, which halves of the "
+                "model are filled and the command that fills a missing one, and where "
+                "each physical artefact landed. Needs no hub. Start here for 'what is "
+                "big or hot', then call phys_module or phys_instance. 'limit' heads both "
+                "rankings; 'modules_limit' and 'instances_limit' override it per "
+                "ranking, and take 'none' for a ranking you do not want at all, e.g. the "
+                "whole module table without six figures of leaf instance rows."
             ),
             input_schema=_obj(
                 {
@@ -1462,37 +1195,27 @@ def build_toolset(
             title="Physical metrics of one module",
             command="rb phys module",
             description=(
-                "What one module costs: its synthesis row (cell count and "
-                "area), and the instance rows whose module column matches, "
-                "with the power they sum to. Reads artefacts already on disk "
-                "— no EDA tool runs. The two halves spell 'module' in two "
-                "namespaces: RTL module names in the synthesis half, Liberty "
-                "cell names on the power half's leaves. An RTL module name "
-                "still gets its synthesis row — its cells and its area are "
-                "measured for it — but the POWER is attributed by that join, "
-                "so power and instances answer "
-                "Liberty-cell questions ('how much do the DFFs burn') and "
-                "only those — NOT 'how much power does u_cpu burn', and a "
-                "flat netlist is no exception: the join matches the power "
-                "half's 'module' field as it stands, so no leaf row carries "
-                "an RTL module name, the top's included, and flattening the "
-                "design changes the hierarchy rather than the namespace. When "
-                "that is what happened the payload's 'instance_join' says so; "
-                "do not report the empty instance list as 'this block burns "
-                "no power', and do not read it back onto the cells and area, "
-                "which stand. 'namespaces' says which "
-                "of the two the name was found in, and when it is found in "
-                "BOTH the payload's row and its instances are measurements of "
-                "two different things under one word — 'instance_join' says "
-                "that too; report them separately, never as one module's "
-                "totals. Either half may be "
-                "absent: the payload reports what it has and names the "
-                "command that would supply the rest. 'instances' is headed at "
-                "'limit' (default "
-                f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while "
-                "'instance_count' and the 'power' sum cover every matching "
-                "row. An unknown name comes "
-                "back as ok: false with 'candidates'."
+                "One module's cost: its synthesis row (cell count and area) and the "
+                "instance rows whose module column matches, with the power they sum to. "
+                "Reads artefacts on disk; no EDA tool runs. 'module' has two "
+                "namespaces: RTL module names on the synthesis half, Liberty cell names "
+                "on the power half's leaves. An RTL module name still gets its synthesis "
+                "row, but the POWER is attributed by that join, so power and instances "
+                "answer Liberty-cell questions ('how much do the DFFs burn') and only "
+                "those, not 'how much power does u_cpu burn'. That holds for a flat "
+                "netlist too: flattening the design changes the hierarchy rather than the "
+                "namespace, so no leaf row carries an RTL module name, the top's "
+                "included. 'instance_join' says when this happened; do not report the "
+                "empty instance list as 'this block burns no power', and do not read it "
+                "back onto the cells and area, which stand. 'namespaces' says where the "
+                "name was found. When it is found in both, the row and the instances "
+                "measure different things and 'instance_join' says so; report them "
+                "separately, never as one module's totals. Either half may be absent; the "
+                "payload names the command that supplies the rest. 'instances' is headed "
+                "at 'limit' (default "
+                f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while 'instance_count' and "
+                "the 'power' sum cover every matching row. An unknown name returns "
+                "ok: false with 'candidates'."
             ),
             input_schema=_obj(
                 {
@@ -1519,31 +1242,23 @@ def build_toolset(
             title="Physical metrics of one instance or subtree",
             command="rb phys instance",
             description=(
-                "Power for one instance path, or — when the path names a "
-                "subtree rather than a leaf — the leaves under it and their "
-                "rolled-up total. Reads artefacts already on disk; no EDA "
-                "tool runs. The model stores leaf values only, so this is "
-                "where a hierarchy question is actually answered. "
-                "POWER ONLY: the rollup carries the four power columns and a "
-                "leaf count, and no area — the model has no per-cell area, so "
-                "there is nothing to sum, and area per instance or per "
-                "subtree is not a question this can answer yet. 'children' "
-                "is ranked by total power, hottest first, and headed at "
-                "'limit' (default "
-                f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while "
-                "'child_count' covers every leaf under the path, listed or "
-                "not. 'match' says how the path landed, and 'rollup' answers "
-                "that question and no other: 'prefix' is a subtree with no row "
-                "of its own and rolls up every leaf under it, 'exact' is a leaf "
-                "row and rolls up that row alone — where a path is both, the "
-                "rows below it are listed for navigation and are not in the "
-                "total; only an exact row is a row, so pass phys_focus an "
-                "'exact' path or one of the 'children', never a subtree "
-                "prefix. "
-                "Instance rows "
-                "come from the power half alone: a synthesis-only model comes "
-                "back as ok: false naming `rb power`, and an unknown path "
-                "comes back with 'candidates'."
+                "Power for one instance path or, for a subtree, the leaves under it and "
+                "their rolled-up total. Reads artefacts on disk; no EDA tool runs. The "
+                "model stores leaf values only, so hierarchy questions are answered "
+                "here. POWER ONLY: the rollup carries the four power columns and a leaf "
+                "count; the model has no per-cell area, so area per instance or subtree "
+                "cannot be answered. 'children' is ranked by total power, hottest "
+                "first, and headed at 'limit' (default "
+                f"{phys_query.DEFAULT_RANK_LIMIT}, 0 for all) while 'child_count' covers "
+                "every leaf under the path. 'match' says how the path landed, and "
+                "'rollup' follows it: 'prefix' is a subtree with no row of its own and "
+                "rolls up every leaf under it; 'exact' is a leaf row and rolls up that "
+                "row alone. Where a path is both, the rows below it are listed for "
+                "navigation and are not in the total; only an exact row is a row"
+                ", so pass phys_focus an 'exact' path or one of the 'children', never "
+                "a subtree prefix. Instance rows come from the power half alone: a "
+                "synthesis-only model returns ok: false naming `rb power`, and an "
+                "unknown path returns 'candidates'."
             ),
             input_schema=_obj(
                 {
@@ -1572,11 +1287,10 @@ def build_toolset(
             title="Find a module in the hierarchy",
             command="rb hier-query <model> find-module",
             description=(
-                "Locate a module in an elaborated hierarchy via rtl-buddy-view: "
-                "its declaration file and line, and where it is instantiated. "
-                "Needs rtl-buddy-view on PATH; unlike the graph tools it "
-                "re-elaborates the sources, so prefer graph_query when the "
-                "graph already holds the answer."
+                "Locate a module in an elaborated hierarchy via rtl-buddy-view: its "
+                "declaration file and line, and where it is instantiated. Needs "
+                "rtl-buddy-view on PATH. Unlike the graph tools it re-elaborates the "
+                "sources, so prefer graph_query when the graph already has the answer."
             ),
             input_schema=_obj(
                 {
@@ -1829,17 +1543,15 @@ def build_toolset(
                 title="Point the live coverage pane at a target",
                 command="rb hub send cov-focus",
                 description=(
-                    "Broadcast a coverage focus so the hub's /cov pane shows "
-                    "what you are talking about. Target is prefixed: "
-                    "'file:design/blk.sv', 'module:blk' or "
-                    "'test:verif/blk#basic' (an unprefixed string is read as a "
-                    "file path); metric foregrounds one coverage kind, line "
-                    "scrolls a file target, item names a branch/toggle/"
-                    "expression bin or an SVA cover point. Use the names "
-                    "cov_summary and cov_module return. A target the pane's "
-                    "model does not contain is a soft miss, and the hub "
-                    "replays the latest focus to a pane that connects later, "
-                    "so sending this before the tab is open works."
+                    "Broadcast a coverage focus so the hub's /cov pane shows what you are "
+                    "talking about. Target is prefixed: 'file:design/blk.sv', 'module:blk' "
+                    "or 'test:verif/blk#basic' (an unprefixed string is read as a file "
+                    "path). 'metric' foregrounds one coverage kind, 'line' scrolls a file "
+                    "target, 'item' names a branch/toggle/expression bin or an SVA cover "
+                    "point. Use the names cov_summary and cov_module return. A target missing "
+                    "from the pane's model is a soft miss, and the hub replays the latest "
+                    "focus to a pane that connects later, so sending before the tab opens "
+                    "works."
                 ),
                 input_schema=_obj(
                     {
@@ -1879,21 +1591,17 @@ def build_toolset(
                 title="Point the live synth+power pane at a target",
                 command="rb hub send phys-focus",
                 description=(
-                    "Broadcast a physical focus so the hub's /phy pane shows "
-                    "what you are talking about. Target is prefixed: "
-                    "'module:alu' or 'instance:u_cpu/u_alu' (an unprefixed "
-                    "string is read as an instance path); metric foregrounds "
-                    "one physical metric. Use the names phys_summary, "
-                    "phys_module and phys_instance return, and for an "
-                    "instance use one that names a ROW: the pane resolves "
-                    "exact leaf rows only. phys_instance's echoed "
-                    "'instance_path' is focusable when its 'match' is "
-                    "'exact'; when it is 'prefix' that path is a subtree with "
-                    "no row of its own, so focus one of the 'children' "
-                    "instead. A target the "
-                    "pane's model does not contain is a soft miss, and the "
-                    "hub replays the latest focus to a pane that connects "
-                    "later, so sending this before the tab is open works."
+                    "Broadcast a physical focus so the hub's /phy pane shows what you are "
+                    "talking about. Target is prefixed: 'module:alu' or "
+                    "'instance:u_cpu/u_alu' (an unprefixed string is read as an instance "
+                    "path); 'metric' foregrounds one physical metric. Use the names "
+                    "phys_summary, phys_module and phys_instance return, and for an instance "
+                    "use one that names a ROW: the pane resolves exact leaf rows only. "
+                    "phys_instance's echoed 'instance_path' is focusable when its 'match' "
+                    "is 'exact'; when it is 'prefix' the path is a subtree with no row of "
+                    "its own, so focus one of the 'children' instead. A target missing from "
+                    "the pane's model is a soft miss, and the hub replays the latest focus "
+                    "to a pane that connects later, so sending before the tab opens works."
                 ),
                 input_schema=_obj(
                     {

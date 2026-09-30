@@ -14,37 +14,19 @@ from ..logging_utils import log_event
 
 @serde
 class RegConfigFile:
-    """
-    Representation of a "reg_config' file.
-
-    Attributes
-      rtl_buddy_filetype (Literal['reg_config']): Config file type. Must be 'reg_config'.
-      test_configs (list[str]): List of paths to test configurations.
-    """
+    """Parsed `reg_config` YAML file."""
 
     rtl_buddy_filetype: Literal["reg_config"] = field(rename="rtl-buddy-filetype")
     test_configs: list[str] = field(rename="test-configs", default_factory=list)
 
 
 class RegConfig:
-    """
-    Configuration for a set of regression tests.
-
-    Attributes:
-      name (str): Unique regression test identifier.
-      path (str): Path to the regression test file.
-      test_configs (list[str]): List of paths to test suite files defining tests in the regression test.
-    """
+    """A named regression: the suites listed in one `reg_config` file."""
 
     def __init__(self, name: str, path: str) -> None:
-        """
-        Initialise a RegConfig given a path to a YAML configuration file.
+        """Load the regression config at `path`; suite paths resolve relative to it.
 
-        Args:
-          name (str): Unique regression test identifier.
-          path (str): Path to the regression test configuration file.
-        Raises:
-          SystemExitError: If there was an error parsing the file.
+        Raises FatalRtlBuddyError if the file or any suite fails to load.
         """
         self.name = name
         self.path = path
@@ -57,8 +39,7 @@ class RegConfig:
                     for suite_path in data.test_configs
                 ]
         except FatalRtlBuddyError:
-            # SuiteConfig already logged and named the failing suite file;
-            # re-wrapping here would blame the (valid) regression config.
+            # SuiteConfig already named the failing file; do not re-wrap.
             raise
         except Exception as e:
             log_event(
@@ -72,30 +53,12 @@ class RegConfig:
             raise FatalRtlBuddyError(f'{self.name}: failed to load "{path}"') from e
 
     def get_name(self):
-        """
-        Retrieve the value of name
-
-        Returns:
-        name (str): The name of the regression test
-        """
         return self.name
 
     def get_path(self):
-        """
-        Retrieve the value of path
-
-        Returns
-        path (str): The value of path in the regression test
-        """
         return self.path
 
     def get_suite_configs(self):
-        """
-        Retrieve the value of suite_configs
-
-        Returns
-        test_configs (list[SuiteConfig]): The value of suite_configs in the regression test
-        """
         return self.suite_configs
 
     def __str__(self):

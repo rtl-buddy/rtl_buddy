@@ -1,11 +1,8 @@
-"""
-Unit tests for the `rb phys` payload builders (#558).
+"""Unit tests for the `rb phys` payload builders.
 
-These are the dicts the CLI prints under `--machine` and a later MCP tool
-wraps verbatim, so they are asserted on directly rather than through the
-CLI. The artefacts are written with the phase-1 producers rather than by
-hand: a payload test that invented its own document shape would keep
-passing after the producers stopped writing that shape.
+The builders return the dicts the CLI prints under `--machine` and MCP tools wrap
+verbatim, so they are asserted directly. Artefacts are written with the real producers
+so the tests track the producers' document shape.
 """
 
 import json
@@ -48,10 +45,9 @@ from rtl_buddy.phys.query import (
     summary_payload,
 )
 
-# The two halves' `module` columns are two namespaces: RTL module names
-# on the synthesis rows, Liberty cell names on the leaves. The fixtures
-# keep them apart, as a real mapped design does, so the collision case
-# below is a case rather than the baseline.
+# The two halves' `module` columns are separate namespaces: RTL module names on
+# synthesis rows, Liberty cell names on leaves. The fixtures keep them apart so the
+# collision case is a case, not the baseline.
 MODULE_ROWS = [
     {"module": "blk", "cell_count": 120, "area_um2": 480.5},
     {"module": "sub", "cell_count": 40, "area_um2": 96.0},
@@ -86,18 +82,16 @@ INSTANCE_ROWS = [
 ]
 
 
-#: The pathological but perfectly legal design: a Liberty cell named
-#: exactly like one of the RTL modules. Both halves then have rows under
-#: `sub`, measuring two different things.
+# A Liberty cell named exactly like an RTL module: both halves have rows under `sub`,
+# measuring different things.
 COLLIDING_INSTANCE_ROWS = [
     {**row, "module": "sub"} for row in INSTANCE_ROWS if row["module"] == "DFF_X1"
 ]
 
 
-#: Both halves of a fixture run record the same netlist hash, because
-#: that is what a `rb synth` then `rb power` pair records and what the
-#: merge requires before either half inherits the other (see
-#: :func:`rtl_buddy.phys.model.may_inherit_other_half`).
+# Both halves of a fixture run record the same netlist hash, as an `rb synth` then `rb
+# power` pair does; the merge requires it before either half inherits the other (see
+# :func:`rtl_buddy.phys.model.may_inherit_other_half`).
 _FIXTURE_NETLIST_SHA256 = "0" * 64
 
 
@@ -221,9 +215,6 @@ def _collision_context(project):
     )
 
 
-# --- discovery --------------------------------------------------------------
-
-
 def test_discovery_picks_the_newest_manifest(project):
     """No override means the last run that measured anything."""
     ctx = load_context(project)
@@ -268,7 +259,7 @@ def _stamp(path, token):
 
 
 def test_a_matched_pair_is_read_once(project, monkeypatch):
-    """The ordinary case: the two documents agree, so nothing re-reads."""
+    """Agreeing documents are read once."""
     for run in ("old_synth", "both"):
         phys_dir = project / "verif" / "blk" / "artefacts" / run
         _stamp(phys_dir / "phys-model.json", "pub-1")
@@ -283,9 +274,9 @@ def test_a_matched_pair_is_read_once(project, monkeypatch):
 
 
 def test_a_pair_caught_mid_publication_is_read_again(project, monkeypatch):
-    """A publish replaces the model and then the manifest, so a read can land
-    between the two and pair a new manifest with the old model. The tokens
-    make that visible; the retry is what resolves it."""
+    """A read can pair a new manifest with the old model between the two writes of a
+    publish; mismatched tokens trigger a re-read.
+    """
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     model_path = phys_dir / "phys-model.json"
     manifest_path = phys_dir / MANIFEST_FILENAME
@@ -304,14 +295,14 @@ def test_a_pair_caught_mid_publication_is_read_again(project, monkeypatch):
 
     assert len(slept) == 1
     assert ctx.model["publication"] == ctx.manifest["publication"] == "pub-2"
-    # And the answer is a real one, not a half-loaded document.
+    # The answer is a real one, not a half-loaded document.
     assert len(ctx.model["instances"]) == 3
 
 
 def test_a_pair_that_never_matches_is_still_answered(project, monkeypatch):
-    """An advisory read: nothing here holds a lock, so two documents that
-    genuinely disagree are answered from the freshest read of each rather
-    than refused."""
+    """Documents that never agree are answered from the freshest read of each, since the
+    read is advisory and takes no lock.
+    """
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _stamp(phys_dir / "phys-model.json", "pub-1")
     _stamp(phys_dir / MANIFEST_FILENAME, "pub-2")
@@ -373,9 +364,7 @@ def _restamp(path, schema_version):
 
 
 def test_a_manifest_from_a_future_rtl_buddy_is_refused(project):
-    """Every payload reads the manifest's blocks by name, so a document whose
-    shape this build does not know would be answered from whatever keys
-    happened to survive the change — wrong rather than absent."""
+    """A manifest from a newer schema version is refused."""
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _restamp(phys_dir / MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION + 1)
 
@@ -389,8 +378,9 @@ def test_a_manifest_from_a_future_rtl_buddy_is_refused(project):
 
 
 def test_a_model_from_a_future_rtl_buddy_is_refused(project):
-    """The manifest is only half the read; the model carries its own version
-    and the payloads index into its blocks just as directly."""
+    """A model from a newer schema version is refused, since the model carries its own
+    version.
+    """
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _restamp(phys_dir / "phys-model.json", MODEL_SCHEMA_VERSION + 1)
 
@@ -404,9 +394,7 @@ def test_a_model_from_a_future_rtl_buddy_is_refused(project):
 
 
 def test_a_document_older_than_this_build_is_refused_too(project):
-    """Not only the newer direction: an older document is missing keys this
-    build treats as guaranteed, and the message names both versions so the
-    user can tell which way to move."""
+    """A document older than this build is refused, and the message names both versions."""
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _restamp(phys_dir / MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION - 1)
 
@@ -417,8 +405,7 @@ def test_a_document_older_than_this_build_is_refused_too(project):
 
 
 def test_a_document_with_no_schema_version_is_refused(project):
-    """Both producers have written the key since version 1, so its absence
-    says this is not one of these documents rather than that it is early."""
+    """A document with no schema version is refused as not one of these documents."""
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _restamp(phys_dir / "phys-model.json", None)
 
@@ -441,10 +428,9 @@ def test_a_document_with_no_schema_version_is_refused(project):
 def test_a_document_whose_json_root_is_not_an_object_is_refused(
     project, document, root_json, described
 ):
-    """The finding (#561 review, Codex P2). Every payload indexes the root by
-    key, so a list or a `null` would raise `AttributeError` straight past
-    `PhysQueryError` — and past the machine envelope that is the only thing
-    an agent sees. Both documents, every non-object root."""
+    """A JSON root that is not an object (list, `null`) is refused as a
+    `PhysQueryError`, for both documents.
+    """
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     (phys_dir / document).write_text(root_json, encoding="utf-8")
 
@@ -467,19 +453,16 @@ def _rewrite_field(path, field, value):
 @pytest.mark.parametrize(
     "document, field, malformed, described",
     [
-        # The manifest's producer blocks. `[]` is the shape an emptied
-        # block is most likely to be hand-edited into, and it is the one
-        # `document.get("synth") or {}` silently survives while a
+        # The manifest's producer blocks. `[]` is the likeliest hand-edit of an emptied
+        # block and the shape `document.get("synth") or {}` silently survives, while a
         # non-empty list does not.
         (MANIFEST_FILENAME, "synth", [], "an array"),
         (MANIFEST_FILENAME, "power", ["openroad"], "an array"),
         (MANIFEST_FILENAME, "power", "openroad", "a string"),
         (MANIFEST_FILENAME, "totals", 7, "a number"),
         (MANIFEST_FILENAME, "model", ["phys-model.json"], "an array"),
-        # `phys_dir` is not indexed by any payload — it is dereferenced
-        # one level down, by `project_root_for`, which calls
-        # `os.path.isabs` on it and then walks its `parts`. A list
-        # reached both and raised `TypeError` past the envelope.
+        # `phys_dir` is dereferenced by `project_root_for` (`os.path.isabs`, then
+        # `parts`); a list must be refused rather than raise `TypeError`.
         (MANIFEST_FILENAME, "phys_dir", ["artefacts"], "an array"),
         (MANIFEST_FILENAME, "phys_dir", 7, "a number"),
         # The model's two halves and the totals beside them.
@@ -499,12 +482,10 @@ def _rewrite_field(path, field, value):
 def test_a_document_whose_blocks_are_the_wrong_shape_is_refused(
     project, document, field, malformed, described
 ):
-    """The finding (#561 review, Codex P2). A mapping root and a supported
-    `schema_version` say the document is one of these; neither says its
-    blocks are the shapes the builders index them as. Each of these used to
-    reach a `len()` on a number or a `.get` on a string deep inside a
-    payload — a `TypeError` or an `AttributeError` past `PhysQueryError`
-    and past the machine envelope."""
+    """A mapping root with a supported `schema_version` but wrongly shaped blocks is
+    refused as a `PhysQueryError`, not a `TypeError` or `AttributeError` from inside
+    a payload.
+    """
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _rewrite_field(phys_dir / document, field, malformed)
 
@@ -518,8 +499,7 @@ def test_a_document_whose_blocks_are_the_wrong_shape_is_refused(
 
 
 def test_a_half_that_is_null_is_not_a_malformed_half(project):
-    """The refusal is about shape, not about absence: a model half is `null`
-    on every one-sided run, and that is a state the payloads report."""
+    """A `null` model half is a valid state on one-sided runs, not a malformed half."""
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _rewrite_field(phys_dir / "phys-model.json", "instances", None)
     _rewrite_field(phys_dir / MANIFEST_FILENAME, "power", None)
@@ -530,8 +510,9 @@ def test_a_half_that_is_null_is_not_a_malformed_half(project):
 
 
 def test_an_empty_half_is_not_a_malformed_half_either(project):
-    """`[]` is a design with no rows measured, which is an answer; only a
-    list whose rows are not objects is unreadable."""
+    """An empty half `[]` is a design with no rows measured; only a list of non-object
+    rows is unreadable.
+    """
     phys_dir = project / "verif" / "blk" / "artefacts" / "both"
     _rewrite_field(phys_dir / "phys-model.json", "instances", [])
 
@@ -539,9 +520,6 @@ def test_an_empty_half_is_not_a_malformed_half_either(project):
 
     assert payload["counts"]["instances"] == 0
     assert payload["missing_halves"] == []
-
-
-# --- summary ----------------------------------------------------------------
 
 
 def test_summary_reports_the_header_totals_and_both_rankings(project):
@@ -555,8 +533,8 @@ def test_summary_reports_the_header_totals_and_both_rankings(project):
     assert payload["manifest"] == "verif/blk/artefacts/both/phys-manifest.json"
     assert payload["model"] == "verif/blk/artefacts/both/phys-model.json"
     assert payload["units"] == {"area": "um2", "power": "uW"}
-    # The synth totals are the log scrape, the power totals the watts the
-    # flow reported, scaled. Neither is a sum of the rows.
+    # The synth totals are the log scrape and the power totals the reported watts,
+    # scaled. Neither is a sum of the rows.
     assert payload["totals"]["cell_count"] == 162
     assert payload["totals"]["total_uw"] == pytest.approx(13.171)
     assert payload["counts"] == {"modules": 3, "instances": 3}
@@ -595,9 +573,8 @@ def test_summary_of_a_synth_only_model_names_the_missing_half(project):
         "rows": None,
         "produced_by": "rb power",
         "netlist_hash": False,
-        # Present and null on a half that did not run, and on the
-        # synthesis half whichever way (#568): the block is walked half
-        # by half, so both halves keep one shape.
+        # Present and null on a half that did not run, and on the synthesis half either
+        # way, so both halves keep one shape.
         "mode": None,
         "activity": None,
     }
@@ -608,10 +585,9 @@ def test_summary_of_a_synth_only_model_names_the_missing_half(project):
 
 
 def test_the_halves_block_echoes_whether_each_half_has_a_netlist_hash(tmp_path):
-    """The finding (#561 round-10 review, Codex P2). The merge is gated on
-    the netlist hash both producers record, so a surface telling a reader
-    how to fill the missing half has to know whether the half in hand can
-    be paired with at all."""
+    """The halves block echoes whether each half has a netlist hash, since the merge is
+    gated on it.
+    """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     _write_run(root, "from_synth", instances=INSTANCE_ROWS, mtime=1_000_000)
@@ -638,9 +614,9 @@ def test_the_halves_block_echoes_whether_each_half_has_a_netlist_hash(tmp_path):
 
 
 def test_each_half_is_paired_with_the_provenance_block_the_model_fills():
-    """`HALF_PROVENANCE` is the read side of the model's own `_HALVES`
-    table, spelled twice; a third half added to one alone would echo the
-    wrong provenance rather than fail."""
+    """`HALF_PROVENANCE` mirrors the model's `_HALVES` table; a half added to only one
+    would echo the wrong provenance rather than fail.
+    """
     from rtl_buddy.phys import model as model_mod
 
     assert query_mod.HALF_PROVENANCE == {
@@ -650,7 +626,7 @@ def test_each_half_is_paired_with_the_provenance_block_the_model_fills():
 
 
 def test_rankings_sink_the_rows_nobody_measured():
-    """A `null` metric is unmeasured, not smallest — it goes last."""
+    """A `null` metric is unmeasured, not smallest, and ranks last."""
     model = {
         "modules": [
             {"module": "unmapped", "cell_count": None, "area_um2": None},
@@ -666,13 +642,10 @@ def test_rankings_sink_the_rows_nobody_measured():
     assert [row["instance_path"] for row in hottest_instances(model)] == ["a", "b"]
 
 
-# --- module -----------------------------------------------------------------
-
-
 def test_module_payload_sums_the_power_of_a_liberty_cells_instances(project):
-    """A cell type's question — "what do all the DFFs burn" — is the one
-    the power half can answer on its own, and the synthesis half has no
-    row to add to it."""
+    """A cell type's power ("what do all the DFFs burn") is answered by the power half
+    alone; the synthesis half has no row for it.
+    """
     payload = module_payload(load_context(project), "DFF_X1")
 
     assert payload["module"] == "DFF_X1"
@@ -688,11 +661,9 @@ def test_module_payload_sums_the_power_of_a_liberty_cells_instances(project):
 
 
 def test_module_payload_sums_a_hard_macros_power(tmp_path):
-    """The roll-up is name-based, so a hard macro reaches a module total
-    exactly when its instance row carries the macro's Liberty cell in the
-    module column — which is what supplying that Liberty to `rb power`
-    buys (rtl-buddy/rtl_buddy#627). Before it, the macro was in the report
-    with four zero columns and the total said so.
+    """A hard macro's power reaches a module total when its instance row carries the
+    macro's Liberty cell in the module column, which supplying that Liberty to `rb
+    power` provides.
     """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -716,16 +687,16 @@ def test_module_payload_sums_a_hard_macros_power(tmp_path):
 
     assert payload["instance_count"] == 1
     assert payload["power"]["total_uw"] == pytest.approx(41.5)
-    # And the whole-design ranking puts it where its watts belong.
+    # The whole-design ranking places it by its watts.
     assert hottest_instances(load_context(root).model, 1)[0]["instance_path"] == (
         "u_mem/u_sram"
     )
 
 
 def test_module_payload_lists_every_instance_by_default(project):
-    """The finding (#561 review, Codex P2). No limit means the complete
-    list, which is what the MCP tools -- who pass none -- were registered
-    with, and `limit` says so rather than leaving it to be inferred."""
+    """With no limit the payload lists every instance, as the MCP tools (which pass
+    none) expect, and `limit` says so.
+    """
     payload = module_payload(load_context(project), "DFF_X1")
 
     assert payload["limit"] is None
@@ -733,22 +704,19 @@ def test_module_payload_lists_every_instance_by_default(project):
 
 
 def test_module_payload_heads_its_instances_at_the_limit(project):
-    """The finding (#561 review, Codex P2). `--limit 1` used to head the
-    console table while the machine payload carried every row, so the flag
-    was silently ignored by the only surface that cannot re-count."""
+    """`--limit 1` heads the machine payload as well as the console table."""
     payload = module_payload(load_context(project), "DFF_X1", limit=1)
 
     assert [row["instance_path"] for row in payload["instances"]] == ["u_other/_9_"]
     assert payload["limit"] == 1
-    # Self-describing: the count is how many there are, not how many are
-    # listed, and the power is still the whole cell type's.
+    # Self-describing: the count is how many there are, not how many are listed, and the
+    # power is the whole cell type's.
     assert payload["instance_count"] == 2
     assert payload["power"]["total_uw"] == pytest.approx(12.42)
 
 
 def test_a_zero_module_limit_means_every_instance(project):
-    """`0` is what the flag documents as "all", so the builder reads it
-    the way the rankings already do rather than as an empty list."""
+    """A limit of `0` means every instance, as it does for the rankings."""
     payload = module_payload(load_context(project), "DFF_X1", limit=0)
 
     assert len(payload["instances"]) == 2
@@ -763,26 +731,26 @@ def test_module_payload_reports_an_rtl_modules_own_row(project):
 
 
 def test_a_name_in_both_namespaces_is_reported_as_a_collision(project):
-    """The finding (#561 review, Codex P2). `sub` is an RTL module *and* a
-    Liberty cell here, so the payload holds a module's cells and area beside
-    an unrelated cell type's power. Both are real; what would be false is
-    presenting them as one module's totals, so the payload names both
-    namespaces and the join note says what happened."""
+    """A name that is both an RTL module and a Liberty cell is reported as a collision.
+
+    The payload names both namespaces and the join note explains, rather than presenting
+    them as one module's totals.
+    """
     payload = module_payload(_collision_context(project), "sub")
 
     assert payload["namespaces"] == ["rtl", "liberty"]
     assert payload["instance_join"] == query_mod.INSTANCE_JOIN_NAME_COLLISION
     assert "name collision" in payload["instance_join"]
-    # Neither half is dropped or folded into the other — the note is what
-    # keeps the pairing from being read as one measurement.
+    # Neither half is dropped or folded into the other; the note keeps the pairing from
+    # reading as one measurement.
     assert payload["row"] == {"module": "sub", "cell_count": 40, "area_um2": 96.0}
     assert payload["instance_count"] == 2
 
 
 def test_a_collision_note_outranks_the_liberty_only_note(project):
-    """Both conditions can be true of one name only in the collision case,
-    and it is the one the reader would not otherwise suspect: that payload
-    looks complete."""
+    """The collision note outranks the Liberty-only note, since a collision payload
+    looks complete.
+    """
     ctx = _collision_context(project)
 
     payload = module_payload(ctx, "blk")
@@ -791,7 +759,7 @@ def test_a_collision_note_outranks_the_liberty_only_note(project):
 
 
 def test_module_names_span_both_halves(project):
-    """A liberty cell only the power half knows is still askable."""
+    """A Liberty cell only the power half knows is still askable."""
     ctx = load_context(project)
     ctx.model["modules"] = [{"module": "blk", "cell_count": 1, "area_um2": None}]
 
@@ -807,10 +775,8 @@ def test_module_name_matching_is_case_insensitive(project):
 def _two_case_variants() -> dict:
     """A model that spells one word two ways.
 
-    Verilog is case-sensitive and a Liberty library need not agree with
-    the RTL about case, so an RTL module `CPU` and a cell `cpu` are both
-    ordinary names — here one in each namespace, which is the shape that
-    hides the collision best.
+    Verilog is case-sensitive and a Liberty library need not match the RTL, so RTL
+    module `CPU` and cell `cpu` are both ordinary names, one in each namespace.
     """
     return {
         "modules": [{"module": "CPU", "cell_count": 120, "area_um2": 480.5}],
@@ -820,15 +786,16 @@ def _two_case_variants() -> dict:
 
 @pytest.mark.parametrize("asked", ["CPU", "cpu"])
 def test_an_exact_module_name_beats_a_case_variant(asked):
-    """Exact first, always: the case fallback exists for the name the user
-    mistyped the case of, not to reinterpret one they spelled correctly."""
+    """An exact module name beats a case variant; the case fallback is for mistyped
+    case.
+    """
     assert resolve_module_name(_two_case_variants(), asked) == asked
 
 
 def test_an_ambiguous_case_insensitive_module_name_is_refused():
-    """The finding (#561 review, Codex P2). The variants collapsed into one
-    lowercase key and the lookup answered with whichever the dict had kept
-    — one block's cells and area reported under another's name, silently."""
+    """An ambiguous case-insensitive module name is refused, not answered with one
+    block's numbers under another's name.
+    """
     with pytest.raises(PhysQueryError) as excinfo:
         resolve_module_name(_two_case_variants(), "Cpu")
 
@@ -837,8 +804,7 @@ def test_an_ambiguous_case_insensitive_module_name_is_refused():
 
 
 def test_case_variants_within_one_half_are_refused_too(project):
-    """Nothing about the split across namespaces is load-bearing: two RTL
-    modules differing only in case collapse the same way."""
+    """Two RTL modules differing only in case are refused the same way."""
     model = {
         "modules": [{"module": "Blk", "cell_count": 1}, {"module": "blk"}],
         "instances": None,
@@ -852,7 +818,7 @@ def test_case_variants_within_one_half_are_refused_too(project):
 
 
 def test_an_ambiguous_name_is_refused_through_the_payload(project):
-    """And it reaches the surfaces as a query error, not as an answer."""
+    """An ambiguous name reaches the surfaces as a query error."""
     phys_dir = _write_run(
         project,
         "case_clash",
@@ -882,9 +848,8 @@ def test_module_payload_over_a_synth_only_model_has_no_instances(project):
 def test_a_module_only_the_synth_half_knows_says_the_join_cannot_see_it(project):
     """ "No instances" and "the join misses" are different answers.
 
-    `blk` is the top: the synthesis half has a row for it, and the power
-    half — which is populated — names Liberty cells on its leaves, so
-    nothing can ever match. Without the note the empty table reads as
+    `blk` is the top: the synthesis half has a row for it, and the power half names only
+    Liberty cells, so nothing can match. The note prevents the empty table reading as
     "the top burns no power".
     """
     payload = module_payload(load_context(project), "blk")
@@ -901,8 +866,9 @@ def test_a_module_the_join_does_reach_carries_no_note(project):
 
 
 def test_a_synth_only_model_carries_no_join_note(project):
-    """With no power half at all, `missing_halves` is the honest signal
-    and a join note would only compete with it."""
+    """With no power half, `missing_halves` is the signal and a join note would compete
+    with it.
+    """
     ctx = load_context(
         project, phys_dir=project / "verif" / "blk" / "artefacts" / "old_synth"
     )
@@ -928,9 +894,6 @@ def test_an_unknown_module_on_a_half_model_names_the_missing_command(project):
     assert "run `rb power`" in str(excinfo.value)
 
 
-# --- instance ---------------------------------------------------------------
-
-
 def test_instance_payload_answers_an_exact_leaf(project):
     payload = instance_payload(load_context(project), "u_sub/_64_")
 
@@ -954,9 +917,8 @@ def test_instance_payload_rolls_up_a_subtree_prefix(project):
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
 
 
-#: A path that is both a row and a prefix of other rows: `u_blk` is a
-#: measured leaf and two more rows hang off it. The model's docstring
-#: allows the shape, so the payload has to have an answer for it.
+# A path that is both a row and a prefix of other rows: `u_blk` is a measured leaf with
+# two more rows below it.
 _LEAF_WITH_DESCENDANTS = [
     {"instance_path": "u_blk", "module": "DFF_X1", "total_uw": 4.0},
     {"instance_path": "u_blk/_1_", "module": "INV_X1", "total_uw": 1.0},
@@ -974,18 +936,16 @@ def _leaf_with_descendants_context(project):
 
 
 def test_an_exact_match_rolls_up_the_named_row_alone(project):
-    """The finding (#561 round-16, Codex P2). The exact branch took the row
-    *and* every descendant, so the payload said `match: "exact"` with an
-    `instance` that was one leaf while the rollup beside it described the
-    whole subtree — three parts of one document answering two questions."""
+    """An exact match rolls up the named row alone, so `match`, `instance` and the
+    rollup agree.
+    """
     payload = instance_payload(_leaf_with_descendants_context(project), "u_blk")
 
     assert payload["match"] == "exact"
     assert payload["instance"]["instance_path"] == "u_blk"
     assert payload["rollup"]["instances"] == 1
     assert payload["rollup"]["total_uw"] == pytest.approx(4.0)
-    # The descendants are still on the table — they exist, and the caller
-    # asked about the path they hang off — just not in the total.
+    # The descendants stay on the table but are not in the total.
     assert [row["instance_path"] for row in payload["children"]] == [
         "u_blk/u_deep/_2_",
         "u_blk/_1_",
@@ -994,8 +954,9 @@ def test_an_exact_match_rolls_up_the_named_row_alone(project):
 
 
 def test_a_prefix_match_still_rolls_up_the_whole_subtree(project):
-    """The other half of the branch: descendants are summands exactly when
-    the path resolved to no row of its own."""
+    """A prefix match sums the whole subtree: descendants are summands exactly when the
+    path resolved to no row of its own.
+    """
     ctx = _leaf_with_descendants_context(project)
     ctx.model["instances"] = _LEAF_WITH_DESCENDANTS[1:]
 
@@ -1008,7 +969,7 @@ def test_a_prefix_match_still_rolls_up_the_whole_subtree(project):
 
 
 def test_instance_payload_lists_every_child_by_default(project):
-    """The finding (#561 review, Codex P2), the subtree half of it."""
+    """Without a limit the instance payload lists every child."""
     payload = instance_payload(load_context(project), "u_sub")
 
     assert payload["limit"] is None
@@ -1016,9 +977,9 @@ def test_instance_payload_lists_every_child_by_default(project):
 
 
 def test_instance_payload_heads_its_children_at_the_limit(project):
-    """The finding (#561 review, Codex P2). The rollup is the subtree's,
-    not the listed rows': a total that changed with `--limit` would be a
-    different number for the same question."""
+    """The rollup is the subtree's, not the listed rows', so it does not change with
+    `--limit`.
+    """
     payload = instance_payload(load_context(project), "u_sub", limit=1)
 
     assert [row["instance_path"] for row in payload["children"]] == ["u_sub/_64_"]
@@ -1028,9 +989,8 @@ def test_instance_payload_heads_its_children_at_the_limit(project):
     assert payload["rollup"]["total_uw"] == pytest.approx(3.171)
 
 
-#: A subtree whose hottest leaf is last alphabetically, so the two
-#: orderings disagree — which is the only way to tell them apart, and why
-#: the fixture above could not.
+# A subtree whose hottest leaf is last alphabetically, so power order and path order
+# disagree.
 _UNORDERED_CHILDREN = [
     {"instance_path": "u_top/a_cold", "module": "INV_X1", "total_uw": 0.1},
     {"instance_path": "u_top/m_unmeasured", "module": "INV_X1", "total_uw": None},
@@ -1048,11 +1008,9 @@ def _unordered_children_context(project):
 
 
 def test_children_are_ranked_by_power_not_by_path(project):
-    """The finding (#563 review, Codex P2). The children were sorted
-    lexicographically while every surface that heads the list — the console
-    note, the `--limit` help, the MCP tool's description — calls them the
-    hottest, so a truncated list was a head of the wrong ranking. Nulls sink
-    for the reason they do everywhere else: unmeasured is not small."""
+    """Children are ranked by power, not by path; nulls sink because unmeasured is not
+    small.
+    """
     payload = instance_payload(_unordered_children_context(project), "u_top")
 
     assert [row["instance_path"] for row in payload["children"]] == [
@@ -1063,8 +1021,7 @@ def test_children_are_ranked_by_power_not_by_path(project):
 
 
 def test_a_headed_child_list_keeps_the_hottest(project):
-    """Which is the whole point of the order: `--limit 1` answers with the
-    leaf that dominates the subtree, not with whichever sorts first."""
+    """`--limit 1` answers with the leaf that dominates the subtree."""
     payload = instance_payload(_unordered_children_context(project), "u_top", limit=1)
 
     assert [row["instance_path"] for row in payload["children"]] == ["u_top/z_hot"]
@@ -1080,7 +1037,7 @@ def test_a_zero_instance_limit_means_every_child(project):
 
 
 def test_a_prefix_must_end_on_a_separator(project):
-    """`u_sub` must not claim `u_subsystem` — a different block."""
+    """`u_sub` must not claim `u_subsystem`."""
     assert is_descendant("u_sub/_64_", "u_sub")
     assert is_descendant("u_sub.x", "u_sub")
     assert not is_descendant("u_subsystem/_1_", "u_sub")
@@ -1088,8 +1045,9 @@ def test_a_prefix_must_end_on_a_separator(project):
 
 
 def test_descendancy_is_decided_on_levelled_paths():
-    """Which separator a path is spelled with is the tool's choice, so it
-    cannot be allowed to decide whether two paths are the same instance."""
+    """Descendancy is decided on levelled paths, independent of the path separator
+    spelling.
+    """
     assert level_path("u_top.u_sub/_64_") == "u_top/u_sub/_64_"
     assert is_descendant("u_top/u_sub/_64_", "u_top.u_sub")
     assert is_descendant("u_top.u_sub._64_", "u_top/u_sub")
@@ -1098,13 +1056,11 @@ def test_descendancy_is_decided_on_levelled_paths():
 
 
 def test_the_readers_store_an_escaped_leaf_without_its_terminator():
-    r"""The premise the levelling rule above is built on, pinned (#561).
+    """The readers store an escaped leaf as a backslash-led name without its Verilog
+    terminator.
 
-    Neither reader can keep a space, so what lands in a row is the
-    backslash-led name with its Verilog terminator gone -- and an escape
-    that is *not* the last segment loses its whole row rather than
-    arriving half-levelled. Asserted here, next to the rule it justifies,
-    so a reader-side change that broke the premise fails on the rule.
+    An escape that is not the last segment loses its whole row. The levelling rule below
+    relies on this.
     """
     from rtl_buddy.phys.reports import parse_instance_cells, parse_instance_power
 
@@ -1122,18 +1078,18 @@ def test_the_readers_store_an_escaped_leaf_without_its_terminator():
 
 
 def test_levelling_keeps_an_escaped_identifier_whole():
-    r"""`\gen[0].u_x` is one leaf's *name*: the `.` in it names no level.
+    r"""`\gen[0].u_x` is one leaf's name: the `.` in it names no level.
 
-    The two readers behind the model both drop the escape's terminating
-    space (#561), so this is the spelling that actually reaches a row.
+    Both readers drop the escape's terminating space, so this is the spelling that
+    reaches a row.
     """
     assert level_path(r"u_top/\gen[0].u_x") == r"u_top/\gen[0].u_x"
     assert level_path(r"u_top.\gen[0].u_x") == r"u_top/\gen[0].u_x"
-    # Terminated as Verilog spells it: the terminator ends the escape and
-    # is dropped, so a user typing that form matches the stored row.
+    # Terminated as Verilog spells it: the terminator ends the escape and is dropped, so
+    # a user typing that form matches the stored row.
     assert level_path("u_top/\\gen[0].u_x /u_ff") == r"u_top/\gen[0].u_x/u_ff"
-    # A backslash that does not open a segment is not an escape lead, so
-    # it cannot swallow the levels after it.
+    # A backslash that does not open a segment is not an escape lead and cannot swallow
+    # later levels.
     assert level_path(r"u_top/x\a.b") == r"u_top/x\a/b"
 
 
@@ -1158,8 +1114,7 @@ def test_an_escaped_leaf_is_found_and_stays_under_its_real_parent(project):
 
 
 def test_a_dotted_query_finds_slash_stored_rows(project):
-    """The model stores OpenSTA's `/`; the pane and the RTL side spell the
-    same path with `.`, and a user pasting one must still get the row."""
+    """The model stores OpenSTA's `/`; a dotted query for the same path finds the row."""
     ctx = load_context(project)
 
     exact = instance_payload(ctx, "u_sub._64_")
@@ -1205,9 +1160,6 @@ def test_instance_over_a_synth_only_model_names_the_power_command(project):
     assert "run `rb power`" in str(excinfo.value)
 
 
-# --- identity: mode, activity, config, experiment (#568) --------------------
-
-
 _SAIF_ACTIVITY = activity_block(
     source="saif",
     trace="verif/blk/artefacts/csr_smoke/dump.saif",
@@ -1249,8 +1201,9 @@ def _identified_project(tmp_path):
 
 
 def test_the_run_header_says_which_kind_of_power_these_numbers_are(tmp_path):
-    """Without it a µW total is a quantity with no statement of what it
-    measures — leakage plus internal, or a trace-driven dynamic figure."""
+    """The run header states which kind of power the numbers are (leakage plus internal,
+    or trace-driven dynamic).
+    """
     root = _identified_project(tmp_path)
     ctx = load_context(
         root, phys_dir=root / "verif" / "blk" / "artefacts" / "saif_power"
@@ -1261,8 +1214,7 @@ def test_the_run_header_says_which_kind_of_power_these_numbers_are(tmp_path):
     assert payload["power_mode"] == "dynamic"
     assert payload["power_activity"]["source"] == "saif"
     assert payload["power_activity"]["test"] == "csr_smoke"
-    # Derived on read, so the wording can improve without rewriting a
-    # document already on disk.
+    # Derived on read, so the wording can change without rewriting documents on disk.
     assert payload["power_activity"]["label"] == "saif csr_smoke"
 
 
@@ -1281,8 +1233,9 @@ def test_the_halves_block_echoes_the_mode_and_the_activity(tmp_path):
 
 
 def test_the_run_header_carries_a_config_fingerprint_per_half(tmp_path):
-    """Two experiments of one design share a top; this is what reads them
-    apart when their run names are generated."""
+    """The run header carries a config fingerprint per half, which tells apart
+    experiments of one design that share a top.
+    """
     root = _identified_project(tmp_path)
     ctx = load_context(
         root, phys_dir=root / "verif" / "blk" / "artefacts" / "saif_power"
@@ -1295,14 +1248,14 @@ def test_the_run_header_carries_a_config_fingerprint_per_half(tmp_path):
     assert config["power"]["summary"].startswith(
         "nangate45 · timing-opt · sdc aaaaaaaa"
     )
-    # The half that did not run here recorded nothing, and says so with a
-    # null rather than with a block of empty strings.
+    # The half that did not run reports null, not a block of empty strings.
     assert config["synth"] is None
 
 
 def test_a_document_written_before_the_identity_keys_reads_as_null(tmp_path):
-    """Additive means readable-absent: the fixtures that record nothing are
-    older documents, and every field answers "not recorded"."""
+    """A document without the identity keys reads as null: every field answers "not
+    recorded".
+    """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     _write_run(root, "both", modules=MODULE_ROWS, instances=INSTANCE_ROWS)
@@ -1331,12 +1284,10 @@ def test_a_manifest_under_the_xplr_ledger_names_its_experiment(tmp_path):
 
 
 def test_a_run_inside_a_materialized_worktree_still_names_its_experiment(tmp_path):
-    """The finding (#570 round-17, Codex P2). The DEFAULT `rb xplr
-    materialize` checkout lands at `artefacts/xplr/worktrees/<exp-id>/`, so a
-    flow run inside it writes its manifest under the ledger's reserved
-    worktree root — and refusing everything under that root lost the id and
-    the hypothesis on exactly the reproducible runs, the ones pinned to a
-    sha."""
+    """A run inside a materialized `rb xplr` worktree
+    (`artefacts/xplr/worktrees/<exp-id>/`) still names its experiment id and
+    hypothesis.
+    """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     ledger = root / "artefacts" / "xplr"
@@ -1356,12 +1307,9 @@ def test_a_run_inside_a_materialized_worktree_still_names_its_experiment(tmp_pat
 
     assert entry["run"] == "sweep"
     assert entry["xplr"] == {"id": "exp-0021", "label": "abc9 buys 5% area"}
-    # And the same answer through the run the other verbs read.
+    # The same answer through the run the other verbs read.
     ctx = load_context(root, phys_dir=root / entry["phys_dir"])
     assert summary_payload(ctx)["xplr"] == entry["xplr"]
-
-
-# --- rb phys runs -----------------------------------------------------------
 
 
 def test_runs_lists_every_manifest_newest_first(project):
@@ -1374,8 +1322,7 @@ def test_runs_lists_every_manifest_newest_first(project):
         "collision",
         "old_synth",
     ]
-    # The order is the one that decides the default run, so the listing
-    # says which entry that is rather than leaving it to be inferred.
+    # The listing marks which entry is the default run.
     assert [entry["newest"] for entry in payload["runs"]] == [True, False, False]
 
 
@@ -1397,9 +1344,9 @@ def test_a_run_entry_carries_what_a_menu_needs(tmp_path):
 
 
 def test_the_listed_phys_dir_is_the_key_that_selects_the_run(tmp_path):
-    """Every entry's ``phys_dir`` is handed straight back to ``--phys-dir``,
-    so it is derived from where the manifest was found rather than from the
-    document, which was written under whatever root its producer saw."""
+    """Each entry's ``phys_dir`` is passed to ``--phys-dir``, so it is derived from
+    where the manifest was found, not from the document.
+    """
     root = _identified_project(tmp_path)
 
     for entry in runs_payload(root)["runs"]:
@@ -1412,14 +1359,12 @@ def test_runs_heads_the_list_at_the_limit_and_says_so(project):
 
     assert [entry["run"] for entry in payload["runs"]] == ["both"]
     assert payload["count"] == 3 and payload["limit"] == 1
-    # `0` is the CLI flag's way of asking for all of them, as it is on
-    # every other list here.
+    # `0` asks for all entries, as on every other list.
     assert len(runs_payload(project, limit=0)["runs"]) == 3
 
 
 def test_an_unreadable_manifest_is_listed_with_its_error(project):
-    """Discovery found the file. A menu that dropped the row would report
-    a project as having fewer runs than it has."""
+    """An unreadable manifest is listed with its error rather than dropped."""
     (project / "verif" / "blk" / "artefacts" / "both" / MANIFEST_FILENAME).write_text(
         "{ truncated"
     )
@@ -1451,8 +1396,7 @@ def test_a_manifest_from_another_rtl_buddy_costs_its_row_and_no_other(project):
 
 
 def test_a_project_with_no_artefacts_lists_nothing_rather_than_failing(tmp_path):
-    """The other verbs refuse — they were asked about a run. A menu of no
-    runs is an answer."""
+    """A project with no artefacts lists nothing and exits 0; the other verbs refuse."""
     assert runs_payload(tmp_path) == {
         "schema_version": PHYS_QUERY_SCHEMA_VERSION,
         "count": 0,

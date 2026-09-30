@@ -37,18 +37,12 @@ def _cocotb_config(*args) -> str:
 
 
 class CocotbSim(VlogSim):
-    """
-    cocotb simulation — RTL simulator + Python testbench via VPI.
+    """cocotb simulation: an RTL simulator driven by a Python testbench over VPI.
 
-    Extends VlogSim with cocotb VPI compile flags, runtime env vars, and
-    JUnit XML result parsing. Verilator, Synopsys VCS, and Icarus Verilog
-    are supported; the simulator-specific wiring is dispatched on the
-    builder's simulator family. Verilator and VCS link/load the VPI shim at
-    compile time; Icarus loads it at run time via `vvp -M/-m`. The runtime
-    env and result parsing are simulator agnostic.
+    Supports Verilator, VCS and Icarus, selected by the builder's simulator family.
+    Results come from cocotb's JUnit XML.
     """
 
-    # Simulator families that cocotb can drive via its VPI shims.
     _SUPPORTED_FAMILIES = ("verilator", "vcs", "icarus")
 
     def _cocotb_family(self) -> str:
@@ -76,16 +70,10 @@ class CocotbSim(VlogSim):
         if self._cocotb_family() == "verilator":
             # cocotb uses --exe + verilator.cpp, not --binary's built-in main
             return [o for o in opts if o != "--binary"]
-        # VCS and Icarus produce a `simv` executable either way; keep builder
-        # opts intact.
         return opts
 
     def _icarus_vvp_extra_args(self) -> list:
-        """Load the cocotb VPI module into `vvp` at run time.
-
-        Mirrors cocotb's own Icarus invocation:
-        `vvp -M $(cocotb-config --lib-dir) -m libcocotbvpi_icarus sim.vvp`.
-        """
+        """`vvp` arguments that load the cocotb VPI module at run time."""
         lib_dir = _cocotb_config("--lib-dir")
         return ["-M", lib_dir, "-m", "libcocotbvpi_icarus"]
 
@@ -108,10 +96,7 @@ class CocotbSim(VlogSim):
         return flags
 
     def _icarus_compile_flags(self) -> list:
-        # iverilog needs no cocotb-specific compile flags: the DUT/TB compile
-        # exactly as for a plain Icarus run, and the VPI module is loaded at
-        # run time by the vvp wrapper (_icarus_vvp_extra_args). Language-level
-        # flags like -g2012 come from the builder's compile-time opts.
+        # The VPI module is loaded at run time (_icarus_vvp_extra_args).
         return []
 
     def _verilator_compile_flags(self) -> list:
@@ -136,21 +121,11 @@ class CocotbSim(VlogSim):
         ]
 
     def _vcs_compile_flags(self) -> list:
-        """VCS elaboration flags that wire in cocotb's VPI shim.
+        """VCS flags that load cocotb's VPI shim and enable VPI access.
 
-        Mirrors cocotb's own VCS runner: load libcocotbvpi_vcs.so, enable VPI
-        write access (-debug_access+all / +acc), and link with --no-as-needed
-        so the cocotb/libpython dependencies survive the link.
-
-        Flags already present in the builder's configured opts are not
-        duplicated. The de-dup is token-level (not substring): any
-        ``-debug_access*`` or ``+acc*`` token the user configured is taken as
-        "already enables VPI access" so we don't inject our own — see
-        docs/known-issues.md. The top is asked of
-        :meth:`VlogSim._user_configured_top`, which knows every spelling the
-        family accepts; generating one next to a configured ``-top`` would
-        place ours later on the command line and override the user's choice
-        without warning (#511 review).
+        Any configured ``-debug_access*`` or ``+acc*`` token suppresses ours, and a
+        top from :meth:`VlogSim._user_configured_top` suppresses ``-top``, so the
+        user's choice is never overridden.
         """
         vpi_lib = _cocotb_config("--lib-name-path", "vpi", "vcs")
         opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -173,7 +148,6 @@ class CocotbSim(VlogSim):
         libpython = _cocotb_config("--libpython")
         libpython_dir = str(Path(libpython).parent)
 
-        # suite_work_dir so cocotb can import the test module
         existing_pythonpath = os.environ.get("PYTHONPATH", "")
         pythonpath_parts = [self.suite_work_dir] + (
             [existing_pythonpath] if existing_pythonpath else []
@@ -189,7 +163,6 @@ class CocotbSim(VlogSim):
             "PYGPI_PYTHON_BIN": _cocotb_config("--python-bin"),
         }
 
-        # help the dynamic linker find libpython and cocotb libs
         if sys.platform == "darwin":
             existing_dyld = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
             dyld_parts = [libpython_dir, lib_dir] + (
@@ -213,9 +186,7 @@ class CocotbSim(VlogSim):
         return env
 
     def post(self, run_id=None, sim_returncode=None):
-        # `sim_returncode` is accepted for the base class's signature and
-        # ignored: a cocotb verdict comes from `cocotb_results.xml` and is
-        # never the unknown NA that an exit status would re-grade (#546).
+        # sim_returncode is ignored: the verdict comes from cocotb_results.xml.
         run_id = self.run_id if run_id is None else run_id
         results_path = self._get_cocotb_results_path(run_id=run_id)
 

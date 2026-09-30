@@ -1,25 +1,6 @@
-"""macOS LaunchAgent integration for ``rtl-buddy-hub`` (issue #122).
+"""macOS LaunchAgent integration for ``rtl-buddy-hub``.
 
-A LaunchAgent plist tells ``launchd`` to keep the hub running across
-logouts and to restart it on crash. The agent runs under the user's
-session (``~/Library/LaunchAgents/com.rtl-buddy.hub.plist``); a
-system-wide ``/Library/LaunchAgents`` install isn't supported in v1
-because the hub binds an ephemeral TCP port and writes
-project-relative discovery files — neither of those generalises
-across user sessions.
-
-Three operations are exposed:
-
-* :func:`render_plist` — produce the on-disk XML text. Pure
-  function; tests can call it without touching launchd.
-* :func:`install` — write the plist into
-  ``~/Library/LaunchAgents/`` and run ``launchctl load``.
-* :func:`uninstall` — symmetric ``launchctl unload`` + file
-  removal.
-
-Non-macOS callers get :class:`LaunchAgentUnsupportedError`. This is
-deliberately a hard error rather than a no-op so the user knows the
-flag did nothing on their platform.
+A per-user LaunchAgent plist (``~/Library/LaunchAgents/com.rtl-buddy.hub.plist``) makes ``launchd`` keep the hub running across logouts and restart it on a crash. :func:`render_plist` builds the XML, :func:`install` writes it and runs ``launchctl load``, and :func:`uninstall` unloads and removes it. System-wide ``/Library/LaunchAgents`` installs are not supported, because the hub binds an ephemeral port and writes project-relative discovery files.
 """
 
 from __future__ import annotations
@@ -39,12 +20,7 @@ class LaunchAgentError(Exception):
 
 
 class LaunchAgentUnsupportedError(LaunchAgentError):
-    """Raised on non-macOS platforms.
-
-    The Linux systemd unit and the Windows scheduled task are
-    deliberately out of scope (see #122); the user-facing error
-    points there for context.
-    """
+    """Raised on non-macOS platforms; there is no systemd or scheduled-task equivalent."""
 
 
 def is_supported() -> bool:
@@ -65,11 +41,8 @@ def render_plist(
 ) -> str:
     """Build the LaunchAgent plist XML.
 
-    Arguments default to the most-common case (sys.executable, the
-    current working directory, the project's
-    ``.rtl-buddy/hub.log``). Tests use the override surface to
-    exercise the rendering without picking up the test harness'
-    Python interpreter.
+    Arguments default to ``sys.executable``, the current directory and
+    ``<root>/.rtl-buddy/hub.log``; tests override them.
     """
     py = python or sys.executable
     root = (project_root or Path.cwd()).resolve()
@@ -77,9 +50,6 @@ def render_plist(
     program_args = [py, "-m", "rtl_buddy", "hub", "start", "--foreground"]
     items = "\n".join(f"      <string>{_xml_escape(a)}</string>" for a in program_args)
 
-    # Indented for readability; whitespace inside <string> is
-    # significant but the surrounding ``<array>`` / ``<dict>``
-    # whitespace is fine.
     return f"""\
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -120,15 +90,11 @@ def install(
     plist_path: Path | None = None,
     launchctl: str = "launchctl",
 ) -> Path:
-    """Write the plist and ``launchctl load`` it.
+    """Write the plist and ``launchctl load`` it; return the plist path.
 
-    Returns the on-disk plist path. Raises
-    :class:`LaunchAgentUnsupportedError` on non-macOS,
-    :class:`LaunchAgentError` on filesystem or ``launchctl`` errors.
-
-    A previous install at the same path is replaced atomically; if
-    the agent is already loaded, the loader first runs an
-    ``unload`` so the new contents take effect.
+    Raises :class:`LaunchAgentUnsupportedError` off macOS and
+    :class:`LaunchAgentError` on filesystem or ``launchctl`` failures. An
+    existing agent is unloaded first so the new contents take effect.
     """
     if not is_supported():
         raise LaunchAgentUnsupportedError(
@@ -140,10 +106,7 @@ def install(
     target.parent.mkdir(parents=True, exist_ok=True)
     xml = render_plist(python=python, project_root=project_root, log_path=log_path)
 
-    # Best-effort unload of any prior agent so re-loading picks up
-    # changes. ``launchctl unload`` exits non-zero when the agent
-    # isn't currently loaded, which is the normal first-install
-    # case; silence those.
+    # unload exits non-zero when the agent is not loaded (normal on first install).
     if target.exists() and shutil.which(launchctl) is not None:
         subprocess.run(
             [launchctl, "unload", str(target)],
@@ -179,9 +142,8 @@ def uninstall(
 ) -> bool:
     """``launchctl unload`` and delete the plist.
 
-    Returns ``True`` if the plist existed and was removed; ``False``
-    if nothing was installed. Raises
-    :class:`LaunchAgentUnsupportedError` on non-macOS.
+    Returns whether a plist was removed. Raises
+    :class:`LaunchAgentUnsupportedError` off macOS.
     """
     if not is_supported():
         raise LaunchAgentUnsupportedError(
@@ -206,8 +168,7 @@ def uninstall(
 
 
 def _xml_escape(value: str) -> str:
-    """Minimal XML attribute / text escaper for the small set of
-    characters that can appear in absolute paths and shell arg lists."""
+    """Escape the five XML special characters."""
     return (
         value.replace("&", "&amp;")
         .replace("<", "&lt;")

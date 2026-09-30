@@ -1,17 +1,7 @@
-"""Tests for #337 — a suite that fails to load must not silently read as
-"clean, uncovered, exit 0".
+"""Tests that ``rb spec check-coverage`` exits nonzero and reports ``suite_load_failures`` when a suite fails to load.
 
-``discover_suite_tests(root)`` now returns ``(results, failures)``. In
-``rb spec check-coverage``, any suite load failure forces a nonzero exit
-and surfaces ``suite_load_failures`` in the machine payload — an item is
-only truly "uncovered" if no loadable suite covers it.
-
-Fixture (``tests/fixtures/spec_trace_broken/``):
-  spec/demo/specs.yaml       -- one block "demo" with coverage item DEMO-1
-  verif_mixed/good_suite/    -- loads fine, does not cover DEMO-1
-  verif_mixed/broken_suite/  -- covers DEMO-1 but references a model_path
-                                that does not exist, so SuiteConfig raises
-  verif_clean/good_suite/    -- loads fine and covers DEMO-1 (contrast case)
+Fixture ``tests/fixtures/spec_trace_broken/``: ``verif_mixed`` holds a loadable suite and a broken one
+that covers DEMO-1; ``verif_clean`` holds a loadable suite that covers DEMO-1.
 """
 
 from __future__ import annotations
@@ -28,11 +18,7 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "spec_trace_broken"
 
 
 def _last_json(output: str) -> dict:
-    """Parse the last non-empty stdout line as the machine-mode JSON envelope.
-
-    ``CliRunner`` interleaves stdout and stderr into ``result.output``, and
-    the load-failure warning logs precede the JSON envelope on the wire.
-    """
+    """Parse the last non-empty output line as the machine-mode JSON envelope."""
     lines = [line for line in output.splitlines() if line.strip()]
     return json.loads(lines[-1])
 
@@ -70,8 +56,6 @@ def test_check_coverage_machine_reports_load_failures_and_nonzero_exit():
     assert payload["payload"]["suite_load_failures"], (
         "a broken suite must be surfaced, not silently dropped"
     )
-    # The declared item must not be reported as a clean "uncovered" result
-    # riding on an exit_code of 0.
     items = payload["payload"]["items"]
     assert any(item["id"] == "DEMO-1" for item in items)
 

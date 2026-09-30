@@ -1,10 +1,10 @@
 ---
-description: Define and run tests from tests.yaml, control timeouts and seeds, interpret verdicts, and reuse compiled builds.
+description: Define and run tests from tests.yaml, control timeouts and seeds, read verdicts, and reuse compiled builds.
 ---
 
 # Tests
 
-Each verification suite has a `tests.yaml` containing reusable testbench definitions and runnable tests.
+A `tests.yaml` holds testbench definitions and the runnable tests that use them. `rb test` compiles and simulates the selected tests and reports one verdict per test. This page covers defining and selecting tests, reading verdicts, seeding, and reusing compiled builds.
 
 ## Define a suite
 
@@ -32,9 +32,11 @@ tests:
     sim_timeout: 120
 ```
 
-`model_path`, testbench filelists, and hook paths resolve from the directory containing `tests.yaml`, and a model's filelist entries resolve from the directory containing its own filelist — a `+incdir+` inside a filelist pulled in with `-F` names a directory beside that filelist, not beside the suite that consumes it, so a design filelist can carry its own include path. `plusargs` affect simulation; `plusdefines` affect compilation. See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
+- `plusargs` are runtime arguments. `plusdefines` are compile-time defines.
+- `model_path`, testbench filelists and hook paths resolve from the directory containing `tests.yaml`. A model's filelist entries resolve from the directory containing that filelist.
+- `toplevel` names the module to elaborate: Verilator `--top-module`, VCS `-top`, Icarus `-s`. Declare it on every testbench, naming the bench and not the DUT. Without it the simulator picks a top from filelist order, and recomposing a filelist can rename the model or raise a `MULTITOP` error. A top pinned in the builder's `compile-time` opts wins; see [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
 
-`toplevel:` names the module the compile elaborates from and reaches the builder as Verilator `--top-module`, VCS `-top`, or Icarus `-s`. Declare it on every testbench: without it the simulator elects a top from filelist order, so recomposing a model filelist renames the Verilator model and an uninstantiated module in an ordinary (non-`-v`) input turns the build into a `MULTITOP` error. For a SystemVerilog bench it names the bench, not the DUT. It is not inferred from `name`, and a top pinned in the builder's `compile-time` opts still wins. See [Pinning the elaboration top](../reference/yaml.md#pinning-the-elaboration-top).
+See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for all fields and [cocotb Testbenches](cocotb.md) for Python-driven tests.
 
 ## Run tests
 
@@ -48,35 +50,36 @@ rb test --filter '^smoke_|_error$'
 rb test
 ```
 
-With no selection, `rb test` runs the suite. Explicit names run in command-line order and produce one combined results table. `--filter` uses a case-sensitive Python regex search against configured names; matches retain their `tests.yaml` order. Anchor the expression with `^` or `$` when position matters.
+- With no selection, `rb test` runs the whole suite.
+- Named tests run in command-line order and produce one table.
+- `--filter` is a case-sensitive Python regex search over test names. Matches keep their `tests.yaml` order.
+- Names and `--filter` are mutually exclusive. Duplicate or unknown names, an invalid regex, or a regex matching nothing exits 2 before any test runs.
+- Selection applies to configured names, before sweep expansion.
 
-Explicit names and `--filter` are mutually exclusive. Duplicate or unknown names, an invalid regex, or a regex with no matches exits 2 before any test runs. Selection applies to configured base names before sweep expansion.
-
-From another directory:
+From another directory, pass the suite explicitly. Outputs still land beside `tests.yaml` (see [Execution Context](execution-context.md)):
 
 ```bash
 rb test smoke --test-config path/to/tests.yaml
 ```
 
-Outputs remain beside `tests.yaml`; see [Execution Context](execution-context.md).
-
 ## Override a plusarg for one run
 
-Add or replace a runtime plusarg for a single invocation instead of editing `tests.yaml`:
+`--plusarg KEY=VALUE` adds or replaces a runtime plusarg for one invocation:
 
 ```bash
 rb test e2e --plusarg mutate=1 --dispatch slurm
 ```
 
-`--plusarg KEY=VALUE` merges over each selected test's `plusargs:`, and a bare `--plusarg KEY` is the valueless `+KEY`. Repeat the flag for several plusargs; the last value given wins over both the YAML and an earlier `--plusarg`. The override applies to every test the invocation selects, reaches the `preproc` hook (`test_cfg.get_plusarg("mutate")`) as well as the simulator command line, and travels through `--dispatch` to every job. It cannot be combined with `--list`, which runs nothing.
+- `--plusarg KEY` alone is the valueless `+KEY`. Repeat the flag for several; the last value wins over the YAML and earlier flags.
+- The override applies to every selected test, reaches the `preproc` hook (`test_cfg.get_plusarg("mutate")`) and the simulator, and is forwarded to `--dispatch` jobs. It never invalidates a shared build.
+- A `sweep` hook does not see the override, and a `preproc` hook that sets the same key wins.
+- It cannot be combined with `--list`. Overriding the plusarg named by `sim-rand-seed-plusarg` exits 2; use `--master-seed` or `sim-rand-seed`.
 
-Use it for a throwaway variation: a deliberate-fault ("negative control") pass proving each bench can fail, a bumped `+timeout_us` while debugging, or a `+prog_dir` pointing at a hand-built binary. Plusargs are runtime-only, so an override never invalidates a shared build. There is no compile-time counterpart, because overriding a plusdefine would change the compile key and force a rebuild.
-
-Each run records its own overrides as `plusarg_overrides` in `result.json` and in the summary footer and `--machine` results, so a one-off run stays distinguishable from the configured entry. A `sweep` hook does not see the override — it is merged after expansion — and a `preproc` hook that sets the same key still wins. Overriding the plusarg a test's `sim-rand-seed-plusarg` names exits 2: rtl_buddy rewrites that plusarg from the resolved seed, so choose the seed with `--master-seed` or `sim-rand-seed` instead.
+Overrides are recorded as `plusarg_overrides` in `result.json`, the summary footer and `--machine` results.
 
 ## Filter by regression level
 
-A test's `reglvl` may be one integer or a builder-specific mapping:
+A test's `reglvl` is one integer or a per-builder mapping:
 
 ```yaml
 reglvl:
@@ -84,18 +87,16 @@ reglvl:
   vcs: 3500
 ```
 
-Filter a single suite with:
-
 ```bash
 rb test --reg-level 2000
 rb test --start-level 1000 --reg-level 3000
 ```
 
-The range is inclusive. Tests outside it report `SKIP`. With `rb test`, omitting both flags runs every test regardless of level. An unqualified [regression](regressions.md#filter-by-regression-level) instead defaults to level 0.
+The range is inclusive, and tests outside it report `SKIP`. Without either flag `rb test` runs every test. An unqualified [regression](regressions.md#filter-by-regression-level) defaults to level 0.
 
 ## Set simulation timeouts
 
-`sim_timeout` defaults to 60 seconds. Add a builder-wide allowance for licensed simulators that may wait before running:
+`sim_timeout` is a wall-clock limit in seconds and defaults to 60. For licensed simulators that may queue before running, add a builder-wide allowance to every test's timeout:
 
 ```yaml
 cfg-rtl-builder:
@@ -103,24 +104,24 @@ cfg-rtl-builder:
     extra-sim-timeout: 900
 ```
 
-The allowance is added to each test's timeout. Override it for one command with `--extra-sim-timeout N`; use 0 to disable a configured allowance. Negative values are rejected. The setting affects simulation only, not compilation, and is forwarded to local-parallel and Slurm jobs.
+- `--extra-sim-timeout N` overrides it for one command. 0 disables a configured allowance; negative values are rejected.
+- It applies to simulation only, not compilation, and is forwarded to dispatch jobs.
+- With VCS `-licqueue`, the timeout pauses while the license-queue banner is printing, for at most one hour.
 
-For VCS runs using `-licqueue`, RTL Buddy pauses the test timeout while recognized license-queue banner output is active, for at most one hour. The timer resumes on other simulation output or after the cap. This avoids false timeouts without allowing an indefinite queue wait. Builder allowance remains useful for unrecognized or silent license managers.
+### Triaging `Sim hit timeout`
 
-## Triaging `Sim hit timeout`
+`Sim hit timeout` means the wall-clock `sim_timeout` expired. It does not show the test is merely slow. Before raising the limit:
 
-`Sim hit timeout` means the wall-clock limit expired; it does not identify a simulated-time watchdog or prove the test is merely slow. Before raising the limit:
-
-1. Compare sibling tests under the same builder. If they also stall, inspect the shared build, tool, or environment.
-2. Check whether timestamps or progress in `test.log` advance. Progress suggests a slow test; repeated activity suggests a functional wedge.
-3. Identify the last completed phase or transaction and inspect its RTL or testbench condition.
+1. Compare sibling tests under the same builder. If they also stall, inspect the shared build, tool or environment.
+2. Check whether `test.log` keeps advancing. Steady progress suggests a slow test; repeated activity suggests a functional wedge.
+3. Find the last completed phase or transaction and inspect its RTL or testbench condition.
 4. Confirm the resolved timeout, including builder and CLI allowances.
 
-A killed simulator may not flush its output, so `test.log` can end mid-line or at a power-of-two byte count. Do not treat its final bytes as the exact stop location.
+A killed simulator may not flush its output, so `test.log` can end mid-line and its last bytes are not the exact stop location.
 
 ## Produce a verdict
 
-For a non-UVM, non-cocotb test, print exactly one terminal marker to simulator stdout at the start of a line:
+A plain (non-UVM, non-cocotb) test prints exactly one terminal marker at the start of a line on stdout:
 
 ```systemverilog
 if (test_passed) begin
@@ -131,9 +132,11 @@ end else begin
 end
 ```
 
-Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the outcome is unknown: the result is `NA` and the run exits 1. A simulator exit code alone is not a non-UVM verdict, but a simulator that exits nonzero *and* prints no marker has aborted, and that combination is reported as `FAIL`.
-
-For UVM, configure thresholds and let RTL Buddy parse the UVM Report Summary:
+- `ERR:` or `FAT:` lines after `FAIL` put the reason in the summary.
+- If both markers appear, `FAIL` wins and a warning is logged.
+- If neither appears, the result is `NA` and the run exits 1. A nonzero simulator exit with no marker is an abort and reports `FAIL`.
+- UVM tests are judged by thresholds on the UVM Report Summary; a missing or malformed summary fails the test.
+- cocotb tests are judged from `cocotb_results.xml`. Do not print markers.
 
 ```yaml
 uvm:
@@ -141,73 +144,79 @@ uvm:
   max_errors: 0
 ```
 
-A missing or malformed UVM summary fails the test. cocotb tests use `cocotb_results.xml` instead; do not print transcript markers for them.
-
-Setup hooks, filelist validation, compilation, and simulation timeout can also produce `FAIL` before transcript parsing.
+Setup hooks, filelist validation, compilation and timeouts can also produce `FAIL` before any transcript is parsed.
 
 ## Interpret results
 
 | Status | Meaning |
 | --- | --- |
-| `PASS` | Simulation completed with a passing transcript, UVM, or cocotb verdict |
-| `FAIL` | The verdict failed, or setup, filelist, compile, or simulation failed |
-| `XFAIL`, `XPASS` | Remapped by an expected-failure marker |
+| `PASS` | Simulation completed with a passing transcript, UVM or cocotb verdict |
+| `FAIL` | The verdict failed, or setup, filelist, compile or simulation failed |
+| `XFAIL`, `XPASS` | Remapped by an [expected-failure](expected-failures.md) marker |
 | `SKIP` | Excluded by regression-level or flow filtering |
-| `NA` | No verdict was produced: either a successful early stop (exits 0) or an unknown outcome (exits 1) |
+| `NA` | No verdict: a successful early stop (exits 0) or an unknown outcome (exits 1) |
 
-The shell exit code is a coarse run status. Parse `payload.results` under `--machine` for per-test verdicts.
-
-| Code | Meaning |
+| Exit code | Meaning |
 | --- | --- |
-| 0 | No real `FAIL`; may include `PASS`, `XFAIL`, `SKIP`, or an early-stop `NA` |
-| 1 | At least one real test/tool-flow failure, an unknown `NA`, a strict `XPASS`, or a failed coverage merge |
+| 0 | No real `FAIL`; may include `PASS`, `XFAIL`, `SKIP` or an early-stop `NA` |
+| 1 | A test or tool-flow failure, an unknown `NA`, a strict `XPASS`, or a failed coverage merge |
 | 2 | Fatal configuration or environment error |
 
-A strict unexpected pass counts as a failure, and a marker never covers a failure that happened instead of a verdict — a setup or compile failure, a sim killed at `sim_timeout`, a dispatched job the scheduler lost — so those still exit 1. See [Expected Failures](expected-failures.md).
-
-A requested coverage merge that produced nothing also exits 1, even when every test passed, because the run reported an incomplete measurement. Artefacts and results are written first; see [Read a failed merge](coverage.md#read-a-failed-merge).
+The exit code is coarse. Under `--machine`, read `payload.results` for per-test verdicts. A setup or compile failure, a sim killed at `sim_timeout` and a job the scheduler lost all exit 1. A requested coverage merge that produced nothing also exits 1 even when every test passed; see [Read a failed merge](coverage.md#read-a-failed-merge).
 
 ## Stop after a stage
 
-Use the global `-E` or `--early-stop` option with `pre`, `comp`, `sim`, or `post`:
+`-E` / `--early-stop` stops after `pre`, `comp`, `sim` or `post`:
 
 ```bash
 rb -E comp test smoke
 ```
 
-A successful stop before a terminal verdict reports `NA` and exits 0; its result row carries `early_stop: true` (in `--machine` output too) so tooling can tell it apart. A stage failure still reports `FAIL` and exits 1. An `NA` that was not asked for — no verdict in the transcript — is an unknown outcome, carries no marker, and exits 1. Treat `NA` as requiring inspection, not evidence that the DUT passed.
+A successful early stop reports `NA` with `early_stop: true` in its result row and exits 0. A stage failure still reports `FAIL` and exits 1. An `NA` without that marker is an unknown outcome and exits 1. `NA` is never evidence the DUT passed.
 
 ## Sharing compiled builds across tests
 
-Use `--share-build` when tests differ only at runtime:
+`--share-build` reuses one compiled build across tests that differ only at runtime:
 
 ```bash
 rb test --share-build
 rb regression --share-build
 ```
 
-RTL Buddy stores shared builds under `artefacts/.shared-builds/obj_dir_<hash>/`. The key includes the resolved simulator executable, compile options, plusdefines, compile environment, and resolved filelist. Plusargs, seeds, and simulation timeouts do not affect it.
+`--dispatch` implies it. Verilator, VCS and Icarus support it; with another builder, or an absolute `builder-simv`, the test uses its own build directory and logs why sharing was declined.
 
-A compile stamp records the content hash of every tracked input under the project root, plus toolchain identity. Reuse occurs only while the stamp matches, and content is what decides: regenerating a source byte-for-byte reuses the build; any real edit rebuilds it, including one a node's cached `stat` still describes as the old file. Verilator also reports consumed dependencies, so included headers, `-y` library files, standard includes, and the underlying Verilator binary invalidate the build. VCS and Icarus report none, so the stamp additionally lists each `+incdir+` and `-y` directory the filelist names: without a dependency file, editing, adding, or removing a file in one rebuilds; with one, the listing is compared by name alone, because the dependency file already decides the content of everything the build read and an added `-y` file is the case it cannot report. Listings are unfiltered by suffix; an `+incdir+` is walked recursively and a `-y` directory listed flat, following what each option's search can reach. The walk skips dot-directories, `__pycache__`, and RTL Buddy's own `artefacts/`, `.shared-builds/` and `obj_dir*` trees, plus editor and VCS bookkeeping files and RTL Buddy's own outputs by name (`run.f`, `compile.log`, `test.log`, `result.json`, `rtl_buddy.log`, the stamp, and the rest) — all of those are written after the fingerprint that would list them, so stamping one would make every later run recompile. A header a `preproc` hook generates into its `artifact_dir` **is** tracked, and other dot-files are too, since `` `include ".config.svh" `` resolves. After a change outside what the listing and a dependency file cover — a hidden toolchain change, an include reached by a path no `+incdir+` names — force compilation with `--rebuild`.
+- Builds live in `artefacts/.shared-builds/obj_dir_<hash>/`. Plusargs, seeds and simulation timeouts do not affect the build; compile options, plusdefines, the simulator and the resolved filelist do.
+- Reuse requires that no tracked input under the project root changed by content. Regenerating a file byte-for-byte reuses the build; any real edit rebuilds it.
+- Verilator reports the files it read, so headers, `-y` library files and the Verilator binary itself invalidate the build.
+- VCS and Icarus report none, so every file under each `+incdir+` directory (recursively) and `-y` directory (flat) is tracked. Editing, adding or removing any of them rebuilds.
+- After a change rtl_buddy cannot see, such as a toolchain change or an include reached through a path no `+incdir+` names, force a compile with `--rebuild`.
 
-Reuse is announced rather than inferred from a missing log:
+### See whether a build was reused
+
+Reuse is announced once per build directory:
 
 ```bash
 rb test smoke --share-build
 # smoke: reused shared build obj_dir_b21cded073f27c1c (built 2m14s ago, Verilator 5.026 2024-11-05 rev v5.026); nothing compiled
 
-rb test smoke --share-build --rebuild   # compile it again anyway
+rb test smoke --share-build --rebuild
 ```
 
-The test's `compile.log` records the same breadcrumb, with the command a rebuild would run. `--rebuild` forces one rebuild per build directory per invocation and says nothing about whether builds are shared; dropping `--share-build` does not force one under `--dispatch`, which implies it.
+The test's `compile.log` records the same message with the command a rebuild would run. A compile that ran leaves its transcript there. `--rebuild` forces one rebuild per build directory per invocation, and dropping `--share-build` under `--dispatch` does not stop reuse.
 
-A Verilator build directory also records which Verilator compiled into it (`rb-toolchain.json`: the resolved executable, its version, and the host platform), whether or not builds are shared. When the next compile would run under a different one — an upgrade, another install, or the same checkout built on a laptop and then on a cluster node — or under `--rebuild`, RTL Buddy deletes the directory's `*.o`, `*.d` and `*.a` first, so the C++ build starts clean instead of make following dependency files that name the old toolchain's headers (`No rule to make target '.../include/verilated.cpp'`). The console says so: `basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean`. An ordinary source edit keeps the objects and stays incremental. A directory from before this record starts clean once.
+### Changed Verilator toolchain
 
-Verilator, VCS, and Icarus support shared builds. An unsupported builder or an absolute `builder-simv` uses the test's own build directory and logs why cross-test sharing was declined. RTL Buddy overrides relative output-location options so the shared directory owns `simv`.
+If a Verilator build directory was compiled by a different Verilator (an upgrade, another install, or the same checkout built on a laptop and a cluster node) or runs under `--rebuild`, rtl_buddy deletes its `*.o`, `*.d` and `*.a` files first. This prevents make errors such as `No rule to make target '.../include/verilated.cpp'`. The console reports it:
 
-### Persistent build cache
+```text
+basic: dropped 12 stale object/dependency files from … (built by …, now …); the C++ build starts clean
+```
 
-`artefacts/.shared-builds/` lives inside the workspace, so a CI job that wipes the workspace after every run (`deleteDir()`, `git clean -ffdx`) throws the cache away and recompiles inputs that never changed. Point `shared-build-root` at a directory outside the workspace and the cache outlives the run:
+An ordinary source edit keeps the objects and stays incremental.
+
+## Persistent build cache
+
+`artefacts/.shared-builds/` lives in the workspace, so a CI job that wipes the workspace recompiles unchanged inputs. Set `shared-build-root` to a directory outside the workspace to keep builds across runs:
 
 ```yaml
 cfg-rtl-reg:
@@ -219,25 +228,25 @@ cfg-rtl-reg:
 rb regression --share-build --shared-build-root /shared/nfs/rb-build-cache
 ```
 
-`--shared-build-root` beats `RTL_BUDDY_SHARED_BUILD_ROOT`, which beats the config key; an empty value at either of the first two turns the cache off for that run, and under `--dispatch` that disable is forwarded to the build and simulation jobs so they do not re-enable it from the config. A relative root resolves against the project root — the directory holding `root_config.yaml` — not the working directory, so a dispatched build job and its simulation jobs resolve one path. The root is created on demand and only applies with `--share-build` (which `--dispatch` implies).
-
-Builds land in `<root>/<suite-namespace>/obj_dir_<key>/`, where the namespace is the suite directory relative to the project root with `/` replaced by `__` (`verif/demo_tiny_alu` → `verif__demo_tiny_alu`); a suite outside the project root gets a digest of its absolute path instead. Nothing in the layout names the checkout, which is the point: every checkout on the host shares the cache.
-
-In this mode the compile key changes shape. It is spelled relative to the project root — `run.f` entries and any absolute in-root path in the compile line alike — and it **includes the content hash** of every tracked input. That covers what the compile *line* names as well as what `run.f` does: an absolute in-root `+incdir+` or `-y` directory, a `-v` file, or a bare source path reaching the builder through `builder-opts.compile-time` contributes the same content identity a filelist entry does (a file its hash, a directory the hashes of the files inside it, pruned and filtered by the same rules). A `-f`/`-F` filelist contributes what it *names*, not just its own bytes: the chain is expanded recursively (bounded depth, cycle-safe) and every in-root source, include directory and further list in it is keyed. A chain deeper than the bound fails closed — what was not read enters the key as an absolute path, which makes that suite's key checkout-specific rather than promising inputs nobody looked at, and `compile.cache_key_depth_bound` says so once. The two options are read the way the simulators read them — a relative entry inside a `-f` list resolves against the builder's working directory, one inside a `-F` list against the directory holding that list, and a nested `-f`/`-F` resets the rule for the file it names — so the key hashes the files the build actually opens. One list reached under two bases is therefore read under each, since its relative entries name different files each time, while the same list under the same base is read once. A relative entry whose base is unknown is left as text rather than guessed at. Otherwise two checkouts whose `run.f` matched but whose header under such an `+incdir+` — or whose RTL behind byte-identical nested lists — differed would take one directory and rebuild over each other. (`run.f` itself has no nested lists: RTL Buddy unrolls every `-F` chain when it writes one.)
-
-Only tokens RTL Buddy resolves as a path are relativised. A `+define+NAME=<path>` — on the compile line or in `tests.yaml` `plusdefines`, which reach `run.f` — a `-D`/`-G`/`-pvalue+`, a `+libext+`, or any other `key=value` token keeps its value exactly as written, because a define's value is compiled *into* the model: two checkouts whose builds bake in different absolute paths must get different keys, not one shared binary. An in-root path *embedded* in a larger option is the other way round — it names a directory the build really reads, so it is relativised **and** keyed by its listing. Both spellings count: an absolute one (`-CFLAGS=-I<root>/inc`) is found by its project-root prefix under any option, and a relative one (`-CFLAGS=-I../../inc`, the usual `builder-opts.compile-time` spelling) by the option that introduces it — `-I`, `+incdir+` or `-y` — then resolved against the builder's working directory. A payload that resolves to nothing under the project root stays text, and one directory named twice in the command line is keyed once. A compile-line path *outside* the project root stays part of the key as text; a relative one is resolved against the directory the builder will run in, so `+incdir+inc` is keyed by its contents like any other, and it falls back to text only where that directory is not yet known. An output location such as `-o` is relativised so the key carries no checkout prefix, but is never read. Only `.shared-builds/` and `obj_dir*` *below the project root* are refused outright, so a workspace that itself sits under a dot-directory (`/home/ci/.worktrees/pr`) is keyed like any other; an `+incdir+` into an artefact tree is listed with RTL Buddy's own outputs excluded by name, which is how a `preproc` hook's generated headers are tracked, and a file named directly there is refused only when its own name is one of those outputs.
-
-An input RTL Buddy cannot hash — one above the 64 MB cap, typically a ROM or memory-init image — falls back to its size and modification time rather than to nothing, so two checkouts with different images cannot collide on one directory. Mtimes differ per checkout, so a suite with such an input stops sharing builds across checkouts; it still reuses its own. Inputs outside the project root are unaffected: two checkouts naming one absolute path name the same bytes.
-
-Two checkouts with byte-identical inputs therefore get the same directory and reuse each other's build wherever they sit; two checkouts on different commits get different directories, instead of rebuilding over one another. That makes the directory content-addressed, so a run keeps one directory per distinct input set rather than one per key — a cache to prune rather than a build to rebuild. The stamp is checked on top of the key as usual, and records the project root it was written from so another checkout can re-anchor its entries.
-
-Switching the cache on or off changes every key, so the first run after either compiles once. Nothing prunes the cache; do it between runs, never during one (the build lock lives inside the directory it guards — see [Known issues](../known-issues.md)):
+- Precedence: `--shared-build-root`, then `RTL_BUDDY_SHARED_BUILD_ROOT`, then the config key. An empty flag or variable turns the cache off for that run.
+- A relative root resolves against the project root (the directory holding `root_config.yaml`). The root is created on demand and applies only with `--share-build`.
+- Builds land in `<root>/<suite-namespace>/obj_dir_<key>/`, where the namespace is the suite directory relative to the project root with `/` replaced by `__`.
+- Every checkout on the host shares the cache. Checkouts with identical inputs reuse each other's build.
+- Switching the cache on or off recompiles once.
+- Nothing prunes the cache. Prune between runs, never during one (see [Known issues](../known-issues.md)):
 
 ```bash
 find /shared/nfs/rb-build-cache -mindepth 2 -maxdepth 2 -name 'obj_dir_*' -mtime +14 -exec rm -rf {} +
 ```
 
-A generated input that is not reproducible byte-for-byte — a `preproc` hook that stamps a timestamp into a header — moves the key rather than only the stamp here, so it strands a directory per run instead of rebuilding in place.
+### What keys an entry
+
+The key is built from input contents and project-relative paths, so the same inputs give the same key in any checkout. It covers filelists (expanded recursively), include and library directories, sources, and the values of defines and parameters.
+
+- A generated input that is not byte-reproducible, such as a `preproc` hook stamping a timestamp into a header, changes the key every run and leaves one directory per run behind.
+- A path outside the project root is keyed as written, so checkouts that name the same absolute path still share a key.
+- A `-f`/`-F` filelist chain nested deeper than the depth bound is only partly read, and the unread entries enter the key as absolute paths. That suite's key becomes checkout-specific, and the console reports `compile.cache_key_depth_bound`.
+- An input over 64 MB, such as a ROM image, is keyed by size and modification time. Checkouts with different mtimes stop sharing that suite's builds.
 
 ## Run with randomized seeds
 
@@ -247,75 +256,65 @@ rb test smoke --rnd-last
 rb randtest smoke 20
 ```
 
-`--rnd-new` records a generated seed; `--rnd-last` reuses it. `randtest` runs repeated seeded iterations. See the [CLI reference](../reference/cli.md#randtest) for replay and selection options.
+`--rnd-new` records a generated seed and `--rnd-last` reuses it. `randtest` runs repeated seeded iterations; see the [CLI reference](../reference/cli.md#randtest) for replay and selection options.
 
-Use one explicit master seed when a test or regression must replay without
-depending on old artefacts:
+To replay a test or regression without old artefacts, pass one master seed:
 
 ```bash
 rb test smoke --master-seed 20260914
 rb regression --master-seed 20260914 --dispatch slurm
 ```
 
-RTL Buddy derives each runtime seed from the master seed, the
-project-root-relative `tests.yaml` path, the sweep-expanded test name, and the
-run ID when present. Test selection, ordering, checkout location, and dispatch
-timing do not change it. Repeating the command with the same master seed
-replays the same seeds. Master seeds are nonnegative integers and may exceed
-the simulator's seed range; derived simulator seeds are from 1 through
-2147483647.
+- Each runtime seed is derived from the master seed, the `tests.yaml` path relative to the project root, the sweep-expanded test name and the run ID. Selection, ordering, checkout location and dispatch timing do not change it.
+- A master seed is a nonnegative integer. Derived seeds, and a fixed `sim-rand-seed`, are 1 through 2147483647.
 
-Configure `sim-rand-seed-plusarg` when a preprocessor generates randomized
-stimulus:
+### Seed a preprocessor
+
+For a `preproc` hook that generates random stimulus, name the plusarg that carries the seed:
 
 ```yaml
 tests:
   - name: smoke
-    # ...
     sim-rand-seed-plusarg: stimulus_seed
 ```
 
-The resolved value is available through
-`test_cfg.get_resolved_seed()` and
-`test_cfg.get_plusarg("stimulus_seed")` before `preproc` runs. RTL Buddy then
-passes that value to the simulator, restores the configured plusarg if the
-hook changed it, writes it to `test.randseed` and `result.json`, and includes
-it in structured logs and machine results. Runtime seed values and plusargs do
-not change the compile key.
+- Before `preproc` runs, `test_cfg.get_resolved_seed()` and `test_cfg.get_plusarg("stimulus_seed")` return the resolved seed. The simulator gets that value even if the hook changed the plusarg.
+- The seed is written to `test.randseed`, `result.json` and machine results.
+- With no master or fixed seed, the plusarg gets the builder's default integer, including `0`.
+- `--rnd-new` and `--rnd-last` are rejected for such a test. `randtest` needs a fixed `sim-rand-seed`.
 
-Without a master or fixed test seed, the plusarg receives the builder's default
-integer unchanged, including `0`; the positive 31-bit limit applies only to
-fixed test seeds and master-derived seeds. `--rnd-new` and `--rnd-last` are
-rejected for a test that configures this plusarg because those modes select their value too late for preprocessing.
-`randtest` therefore requires a fixed `sim-rand-seed` for such a test; its one
-shared preprocessor run and every iteration receive that fixed value.
-
-Set `sim-rand-seed` on a test whose timing or command-cycle stimulus must stay
-fixed:
+Set `sim-rand-seed` to keep stimulus fixed:
 
 ```yaml
 tests:
   - name: command_timing
-    # ...
     sim-rand-seed: 41
     sim-rand-seed-plusarg: stimulus_seed
 ```
 
-The fixed value overrides the invocation's master, new, or replay seed policy.
-Mutation simulation oracles also resolve fixed seeds and exposed builder defaults
-before preprocessing, for both the baseline and every mutant.
-See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for the field
-contract.
+A fixed seed overrides the invocation's master, new or replay policy, including for mutation baselines and mutants.
 
 ## Inspect artefacts
 
-Single runs write under `artefacts/<test>/`; repeated runs use `run-NNNN/` subdirectories. Common files are:
+A run writes to `artefacts/<test>/`; repeated runs use `run-NNNN/` subdirectories.
 
-- `test.log` and `test.err` — simulator output;
-- `test.randseed` — resolved seed;
-- `compile.log` — compile output;
-- `compile.retry.log` — output of a dispatched simulation job's recompile, written only when that job was gated on a build job whose stamp did not validate. Run-scoped: it lives in the run's own directory (`run-NNNN/` for a fanned-out test), because only the run that retried wrote it. It never replaces `compile.log`, so a build job's own compile record survives its simulation jobs' recompiles;
-- `run.f` — generated non-portable filelist;
-- `coverage.dat` — raw coverage when enabled.
+- `test.log`, `test.err`: simulator output.
+- `test.randseed`: resolved seed.
+- `compile.log`: compile output, or the reuse message when nothing compiled.
+- `compile.retry.log`: the recompile of a dispatched simulation job whose shared build was stale.
+- `run.f`: generated, non-portable filelist.
+- `coverage.dat`: raw coverage, when enabled.
 
-Latest-run symlinks for the test log, error log, and seed remain at the test artefact root. `rtl_buddy.log` beside `tests.yaml` contains orchestration events; `--machine` makes it JSON Lines and returns structured stdout. See [Agent Use](../agents.md#machine-mode).
+Symlinks to the latest test log, error log and seed stay at the test's artefact root. `rtl_buddy.log` beside `tests.yaml` holds orchestration events; `--machine` makes it JSON Lines and returns structured stdout. See [Agent Use](../agents.md#machine-mode).
+
+## Troubleshooting
+
+| Symptom | Action |
+| --- | --- |
+| `rb test` exits 2 before running | Fix the selection: duplicate or unknown name, invalid regex, no `--filter` match, or names combined with `--filter` |
+| `Sim hit timeout` | Follow [Triaging `Sim hit timeout`](#triaging-sim-hit-timeout) |
+| Result `NA`, exit 1 | The test printed neither `PASS` nor `FAIL`; add a terminal marker |
+| Warning that both markers appeared | Print one marker. `FAIL` was used |
+| `MULTITOP` error | Declare `toplevel` on the testbench |
+| `No rule to make target '.../verilated.cpp'` | Rerun with `--rebuild` to clear objects from another Verilator |
+| Stale build reused | Rerun with `--rebuild` after changes rtl_buddy cannot see |

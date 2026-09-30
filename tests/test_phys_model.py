@@ -1,11 +1,6 @@
-"""
-Unit tests for the structured physical model and its manifest (#558).
+"""Unit tests for the structured physical model and its manifest.
 
-The fixtures are captured tool output written inline rather than files on
-disk: both formats are text, so the exact bytes a test needs are readable
-in the test that needs them. The `stat -json` dump is trimmed to the keys
-the reader looks at, with Yosys' RTLIL backslash prefix and its
-inconsistent spacing preserved — those are the parts that break.
+Fixtures are captured tool output written inline. The `stat -json` dump is trimmed to the keys the reader uses, keeping Yosys' RTLIL backslash prefix and inconsistent spacing.
 """
 
 import contextlib
@@ -57,11 +52,6 @@ from rtl_buddy.phys.reports import (
     parse_instance_power,
     parse_stat_json,
 )
-
-
-# ---------------------------------------------------------------------------
-# Fixtures — captured from yosys 0.64 / OpenROAD 26Q2 on a two-module design
-# ---------------------------------------------------------------------------
 
 
 STAT_JSON = """{
@@ -117,8 +107,7 @@ endmodule
 
 NETLIST_AFTER_AN_RTL_EDIT = NETLIST.replace("DFF_X1", "DFF_X2")
 
-#: What a flow that measured `NETLIST` records in its provenance. Both
-#: halves have to record it for either to inherit the other's rows.
+# What a flow that measured `NETLIST` records in its provenance; both halves must record it for either to inherit the other's rows.
 NETLIST_SHA256 = hashlib.sha256(NETLIST.encode()).hexdigest()
 
 INSTANCE_CELLS = """_18_ XOR2_X1
@@ -128,17 +117,12 @@ u_sub/_64_ DFF_X1
 
 
 def _project(tmp_path):
-    """A project tree with a synth run's artefact directory in it."""
+    """Return a project tree with a synth run's artefact directory."""
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     artefacts = root / "verif" / "demo" / "artefacts" / "demo_synth"
     artefacts.mkdir(parents=True)
     return root, artefacts
-
-
-# ---------------------------------------------------------------------------
-# reports — the tool-output readers
-# ---------------------------------------------------------------------------
 
 
 def test_stat_json_rows_strip_the_rtlil_name_prefix():
@@ -149,8 +133,7 @@ def test_stat_json_rows_strip_the_rtlil_name_prefix():
 
 
 def test_stat_json_without_a_liberty_still_yields_cell_counts():
-    """`stat -json` drops the `area` field when it was given no Liberty; the
-    rows are still worth having, with a null area."""
+    """`stat -json` drops `area` when given no Liberty; rows are kept with a null area."""
     assert parse_stat_json(STAT_JSON_NO_LIBERTY) == [
         {"module": "sub", "cell_count": 1, "area_um2": None},
         {"module": "top", "cell_count": 4, "area_um2": None},
@@ -158,9 +141,7 @@ def test_stat_json_without_a_liberty_still_yields_cell_counts():
 
 
 def test_stat_json_the_design_rollup_is_not_a_module_row():
-    """The sibling `design` block is the whole-design total, and the model
-    takes its totals from the log scrape instead — precisely so the two can
-    be compared."""
+    """The sibling `design` block is the whole-design total; the model takes totals from the log scrape so the two can be compared."""
     assert "design" not in [row["module"] for row in parse_stat_json(STAT_JSON)]
 
 
@@ -191,8 +172,7 @@ def test_instance_power_rows_convert_watts_to_microwatts():
 
 
 def test_instance_power_without_the_cell_sidecar_keeps_the_numbers():
-    """The sidecar is the half more likely to be missing, and the powers are
-    the point; a row without it loses its module column and nothing else."""
+    """Without the cell sidecar a row loses only its module column."""
     rows = parse_instance_power(INSTANCE_RPT)
 
     assert [row["module"] for row in rows] == [None, None, None]
@@ -205,11 +185,6 @@ def test_instance_power_skips_the_header_and_rule_lines():
 
 def test_instance_cells_ignores_malformed_lines():
     assert parse_instance_cells("a A\nnot-a-pair\nb B C\n") == {"a": "A"}
-
-
-# ---------------------------------------------------------------------------
-# model — construction, the stable-keys rule, and the merge
-# ---------------------------------------------------------------------------
 
 
 def test_a_synth_only_model_leaves_the_power_half_null():
@@ -252,8 +227,7 @@ def test_a_power_only_model_leaves_the_synth_half_null():
 
 
 def test_an_unreadable_breakdown_is_null_rather_than_absent():
-    """Stable keys: a run that produced no rows still writes the key, so a
-    consumer can tell "not produced" from "produced and empty"."""
+    """A run that produced no rows still writes the key, so "not produced" (null) differs from "produced and empty"."""
     model = build_synth_model(top="demo_top", modules=None, gate_count=7)
 
     assert "modules" in model and model["modules"] is None
@@ -284,9 +258,7 @@ def test_merging_a_power_run_onto_a_synth_model_keeps_both_halves():
 
 
 def test_merging_is_order_independent():
-    """For a matched pair — the power run read the netlist the synthesis
-    wrote, which is what the recorded hash says and what the synthesis
-    direction requires before it will inherit anything."""
+    """A matched pair (the power run read the netlist the synthesis wrote, per the recorded hash) merges in either order."""
     synth = build_synth_model(
         top="demo_top", modules=[], area_um2=1.0, gate_count=2, netlist_sha256="abc"
     )
@@ -303,8 +275,7 @@ def test_merging_is_order_independent():
 
 
 def test_a_rerun_of_the_same_half_replaces_its_rows():
-    """The merge must not make a half grow-only: a module the design no
-    longer has must disappear on the next synthesis."""
+    """A rerun replaces its own half's rows, so a module the design no longer has disappears."""
     first = build_synth_model(
         top="demo_top", modules=[{"module": "gone", "cell_count": 1, "area_um2": 1.0}]
     )
@@ -318,12 +289,9 @@ def test_a_rerun_of_the_same_half_replaces_its_rows():
 
 
 def test_a_rerun_that_lost_its_own_breakdown_does_not_inherit_the_old_rows():
-    """The half a command owns is never carried forward.
+    """A command never inherits its own half.
 
-    A synthesis whose `stat -json` was unreadable produces
-    `modules = None`, which by shape alone is indistinguishable from a
-    power run's empty synth half — inheriting there would publish the
-    *previous* run's module rows underneath this run's fresh totals.
+    A synthesis with an unreadable `stat -json` has `modules = None`; inheriting would publish the previous run's module rows under fresh totals.
     """
     good = build_synth_model(
         top="demo_top",
@@ -341,7 +309,7 @@ def test_a_rerun_that_lost_its_own_breakdown_does_not_inherit_the_old_rows():
 
 
 def test_a_power_rerun_that_lost_its_breakdown_keeps_the_synth_half():
-    """The mirror, and the half the rerun does *not* own still travels."""
+    """The mirror case: the half the rerun does not own is kept."""
     existing = build_synth_model(
         top="demo_top",
         modules=[{"module": "top", "cell_count": 2, "area_um2": 5.586}],
@@ -364,9 +332,7 @@ def test_a_power_rerun_that_lost_its_breakdown_keeps_the_synth_half():
 
 
 def test_a_synthesis_inherits_the_power_half_it_measured_the_netlist_of():
-    """The bind (#560 review, Codex P1). A re-synthesis that produced the
-    very netlist the power run read carries its rows forward — that is the
-    ordinary two-command directory, and nothing about it has changed."""
+    """A re-synthesis that produced the netlist the power run read keeps the power rows."""
     power = build_power_model(
         top="demo_top",
         instances=parse_instance_power(INSTANCE_RPT),
@@ -388,9 +354,7 @@ def test_a_synthesis_inherits_the_power_half_it_measured_the_netlist_of():
 
 
 def test_a_synthesis_that_replaced_the_netlist_drops_the_power_half():
-    """Editing the RTL and re-running `rb synth` writes a different netlist,
-    and the watts measured on the old one are not a breakdown of it. They go,
-    with their totals — `instances: null` is true where the rows are not."""
+    """A re-synthesis with a different netlist drops the power half and its totals; `instances: null` is then true."""
     power = build_power_model(
         top="demo_top",
         instances=parse_instance_power(INSTANCE_RPT),
@@ -425,9 +389,7 @@ def test_a_synthesis_that_replaced_the_netlist_drops_the_power_half():
 def test_a_synthesis_without_the_provenance_to_bind_them_drops_the_rows(
     measured_on, just_written
 ):
-    """Strict: a half whose binding cannot be *shown* is not inherited. The
-    alternative reading — absent provenance means "probably still fine" —
-    is the one that publishes watts against a netlist nothing measured."""
+    """A synthesis without provenance to bind the halves drops the rows; absent provenance is not a match."""
     power = build_power_model(
         top="demo_top",
         instances=parse_instance_power(INSTANCE_RPT),
@@ -442,10 +404,7 @@ def test_a_synthesis_without_the_provenance_to_bind_them_drops_the_rows(
 
 
 def test_a_power_run_inherits_the_synth_half_of_the_netlist_it_read():
-    """The other direction of the same rule, and the case that makes it
-    usually pass: a power analysis runs *against* the synthesis output, so
-    the netlist it read is the one those module rows were counted off, and
-    the recorded hashes say so."""
+    """A power run inherits the synth half of the netlist it read; the recorded hashes match."""
     synth = build_synth_model(
         top="demo_top",
         modules=parse_stat_json(STAT_JSON),
@@ -467,12 +426,7 @@ def test_a_power_run_inherits_the_synth_half_of_the_netlist_it_read():
 
 
 def test_a_power_run_that_read_another_netlist_drops_the_synth_half():
-    """The finding (#560 round-9 review, Codex P1). The gate is symmetric
-    because the failure is: a power run whose netlist is not the one the
-    synthesis provenance records measured a different design, and carrying
-    the local module rows forward would describe cells this publication
-    never saw — a re-synthesis between the two runs, or a power run pointed
-    at another suite's netlist."""
+    """A power run whose netlist differs from the one in the synthesis provenance drops the synth half, so module rows never describe cells the power run did not see."""
     synth = build_synth_model(
         top="demo_top",
         modules=parse_stat_json(STAT_JSON),
@@ -507,9 +461,7 @@ def test_a_power_run_that_read_another_netlist_drops_the_synth_half():
 def test_a_power_run_without_the_provenance_to_bind_them_drops_the_rows(
     synthesised, measured_on
 ):
-    """Missing evidence is not a match in this direction either — including
-    the `netlist-source: pnr` run, which reads a routed database and can say
-    nothing about which netlist the module rows beside it came from."""
+    """Missing provenance is not a match here either, including a `netlist-source: pnr` run, which reads a routed database."""
     synth = build_synth_model(
         top="demo_top",
         modules=parse_stat_json(STAT_JSON),
@@ -527,8 +479,7 @@ def test_a_power_run_without_the_provenance_to_bind_them_drops_the_rows(
 
 
 def test_a_model_for_a_different_top_is_replaced_not_merged():
-    """Artefact directories are keyed on a run's *name*, and names are not
-    unique across designs."""
+    """A model for a different top is replaced, not merged; artefact directory names are not unique across designs."""
     other = build_synth_model(top="other_top", modules=[], area_um2=99.0)
     power = build_power_model(top="demo_top", instances=[], total_w=1.0e-06)
 
@@ -563,18 +514,12 @@ def test_model_round_trips_through_disk(tmp_path):
 
 
 def test_load_model_or_none_swallows_a_truncated_document(tmp_path):
-    """A model half-written by a killed run is "nothing to merge", never an
-    error propagated into a flow that has otherwise succeeded."""
+    """A truncated model document counts as nothing to merge, never an error in a successful flow."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "phys-model.json").write_text('{"schema_version": 1')
 
     assert load_model_or_none(artefacts) is None
     assert load_model_or_none(tmp_path / "nowhere") is None
-
-
-# ---------------------------------------------------------------------------
-# manifest — paths, stable keys, discovery
-# ---------------------------------------------------------------------------
 
 
 def _synth_manifest(root, artefacts, model_path, totals=None):
@@ -610,10 +555,7 @@ def test_manifest_paths_are_project_relative_and_keys_stable(tmp_path):
         "stats": "verif/demo/artefacts/demo_synth/synth_stat.json",
         "netlist": "verif/demo/artefacts/demo_synth/synth_netlist.v",
         "log": "verif/demo/artefacts/demo_synth/synth.log",
-        # The identity block a caller that recorded none still writes
-        # (#568): `null` is "this run said nothing about its
-        # configuration", and absent would be indistinguishable from a
-        # key this build does not know.
+        # The identity block a caller that recorded none still writes: `null` means "said nothing about its configuration", distinct from an unknown key.
         "config": None,
     }
     # The half this run did not produce: present, and null throughout.
@@ -666,19 +608,14 @@ def test_manifest_merge_keeps_a_reproduced_halfs_totals_as_written(tmp_path):
 
     merged = merge_manifest(old, rerun, own_block="synth")
 
-    # The rerun re-produced the synth half, so its totals stand as
-    # written: a scrape that failed this time is null, not last run's
-    # number — the manifest mirror of the model's shrinking rerun rule.
+    # The rerun re-produced the synth half, so its totals stand as written; a scrape that failed this time is null, not last run's number.
     assert merged["totals"] == {"area_um2": None, "cell_count": 9}
 
 
 def test_manifest_merge_never_inherits_the_producing_commands_own_block(tmp_path):
-    """`own_block` is the rule, not the `backend` test's side effect.
+    """`own_block` is the rule, not a side effect of the `backend` test.
 
-    A producer always names its own backend today, so the null-backend
-    test already excludes its block; this pins the behaviour for a caller
-    whose backend name went missing, which must not resurrect the
-    previous run's report paths under this run's totals.
+    A caller whose backend name went missing must not resurrect the previous run's report paths under this run's totals.
     """
     root, artefacts = _project(tmp_path)
     old = _synth_manifest(root, artefacts, None, totals={"area_um2": 5.586})
@@ -730,9 +667,7 @@ def test_manifest_discovery_and_project_root_inference(tmp_path):
 
 
 def test_discovery_does_not_pick_up_a_coverage_manifest(tmp_path):
-    """The physical manifest carries its own filename precisely because it
-    has no `cov_dir` to be found by; a coverage manifest in the same tree
-    must not be mistaken for one."""
+    """A coverage manifest in the same tree is not mistaken for a physical manifest, which has its own filename."""
     root, artefacts = _project(tmp_path)
     cov_dir = root / "artefacts" / "cov_dir"
     cov_dir.mkdir(parents=True)
@@ -743,9 +678,7 @@ def test_discovery_does_not_pick_up_a_coverage_manifest(tmp_path):
 
 
 def test_discovery_reaches_a_manifest_behind_a_symlinked_artefact_dir(tmp_path):
-    """`artefacts/` linked onto scratch storage is an ordinary setup — the
-    same one the filelist writer is pinned against — and `os.walk`'s default
-    would report a project with no physical data at all."""
+    """Discovery reaches a manifest behind a symlinked `artefacts/` (scratch storage); the default `os.walk` would find nothing."""
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     suite = root / "verif" / "demo"
@@ -762,12 +695,7 @@ def test_discovery_reaches_a_manifest_behind_a_symlinked_artefact_dir(tmp_path):
 
 
 def _project_with_symlinked_artefacts(tmp_path):
-    """A project whose ``artefacts/`` is a link onto scratch storage.
-
-    Returns the root and the artefact directory *as the project reaches
-    it* — the path every producer holds, and the one the manifest's paths
-    have to be expressed in.
-    """
+    """Return a project whose ``artefacts/`` links to scratch storage, with the root and the artefact directory as the project reaches it."""
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
     suite = root / "verif" / "demo"
@@ -781,10 +709,7 @@ def _project_with_symlinked_artefacts(tmp_path):
 def test_manifest_paths_stay_project_relative_through_a_symlinked_artefacts_dir(
     tmp_path,
 ):
-    """The finding (#560 round-9 review, Codex P2). Resolving both operands
-    put the scratch path on both sides of the comparison, so every path came
-    out absolute and host-specific — breaking the project-relative contract
-    for exactly the layout discovery goes out of its way to support."""
+    """Manifest paths stay project-relative through a symlinked artefacts dir instead of coming out absolute and host-specific."""
     root, artefacts = _project_with_symlinked_artefacts(tmp_path)
     (artefacts / "synth.log").write_text("Chip area: 5.586\n")
     model_path = write_model(build_synth_model(top="demo_top"), artefacts)
@@ -803,10 +728,7 @@ def test_manifest_paths_stay_project_relative_through_a_symlinked_artefacts_dir(
 
 
 def test_a_symlinked_artefacts_dir_still_round_trips_back_to_the_files(tmp_path):
-    """The other end of the same contract: the root a written manifest is
-    read back through is the one its paths were written against, so
-    `resolve` lands on the file through the link rather than counting parts
-    off a scratch path that has none of them."""
+    """A manifest read back through the same root resolves to the files through the link."""
     root, artefacts = _project_with_symlinked_artefacts(tmp_path)
     model_path = write_model(build_synth_model(top="demo_top"), artefacts)
     manifest_path = write_manifest(
@@ -827,11 +749,9 @@ def test_a_symlinked_artefacts_dir_still_round_trips_back_to_the_files(tmp_path)
 
 
 def _project_with_in_project_artefact_link(tmp_path):
-    """A project whose ``artefacts/`` links to storage *inside* the project.
+    """Return a project whose ``artefacts/`` links to storage inside the project.
 
-    The awkward middle case: both routes to the same run are under the
-    project root, so discovery can legitimately report either, and the
-    manifest's ``phys_dir`` only describes one of them.
+    Both routes to a run are under the project root, so discovery can report either while the manifest's ``phys_dir`` describes one.
     """
     root = tmp_path / "repo"
     (root / ".git").mkdir(parents=True)
@@ -844,13 +764,10 @@ def _project_with_in_project_artefact_link(tmp_path):
 
 
 def test_project_root_survives_a_manifest_read_through_the_link_target(tmp_path):
-    """The finding (#561 round-15 review, Codex P2). Discovery admits a
-    directory once by its real path, so when `os.walk` reaches
-    `scratch_artefacts/` before the `artefacts` link the run is reported
-    through the target. Counting `phys_dir`'s components back off *that*
-    path climbed two levels above the project, and every artefact the
-    manifest named resolved to nothing — `rb phys` reporting a missing model
-    that was sitting right there, on nothing but directory-order luck."""
+    """The project root survives a manifest read through the link target.
+
+    When `os.walk` reaches `scratch_artefacts/` before the link, counting `phys_dir` components off that path would climb above the project.
+    """
     root, target_route, logical_route = _project_with_in_project_artefact_link(tmp_path)
     model_path = write_model(build_synth_model(top="demo_top"), logical_route)
     write_manifest(_synth_manifest(root, logical_route, model_path), logical_route)
@@ -864,10 +781,7 @@ def test_project_root_survives_a_manifest_read_through_the_link_target(tmp_path)
 
 
 def test_discovery_of_an_in_project_artefact_link_lands_on_the_files(tmp_path):
-    """Whichever of the two routes the walk happens to report, the manifest
-    it hands back has to resolve onto its own artefacts — that is the
-    invariant, and it must not depend on the order `os.walk` reads a
-    directory in."""
+    """Whichever route the walk reports, the manifest resolves onto its own artefacts, independent of `os.walk` order."""
     root, _target, logical_route = _project_with_in_project_artefact_link(tmp_path)
     model_path = write_model(build_synth_model(top="demo_top"), logical_route)
     write_manifest(_synth_manifest(root, logical_route, model_path), logical_route)
@@ -882,9 +796,7 @@ def test_discovery_of_an_in_project_artefact_link_lands_on_the_files(tmp_path):
 
 
 def test_discovery_terminates_on_a_symlink_loop(tmp_path):
-    """Following links costs a loop risk, so a directory is admitted once by
-    its real path: the link back to an ancestor is not descended into, and
-    the run it circles is still reported exactly once."""
+    """Discovery admits a directory once by its real path, so a link back to an ancestor is not descended and the run is reported once."""
     root, artefacts = _project(tmp_path)
     write_manifest(_synth_manifest(root, artefacts, None), artefacts)
     (artefacts / "loop").symlink_to(root, target_is_directory=True)
@@ -893,10 +805,7 @@ def test_discovery_terminates_on_a_symlink_loop(tmp_path):
 
 
 def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path):
-    """The finding (#560 round-10 review, Codex P2). Following *every*
-    directory link made a `vendor/` link — or one to `$HOME` — part of the
-    project's walk, so an unrelated tree was scanned and its
-    `phys-manifest.json` reported as this project's own run."""
+    """Discovery does not follow a symlink outside the artefact layout, such as `vendor/` or a link to `$HOME`."""
     root, artefacts = _project(tmp_path)
     write_manifest(_synth_manifest(root, artefacts, None), artefacts)
     unrelated = tmp_path / "elsewhere"
@@ -911,15 +820,12 @@ def test_discovery_does_not_enter_a_symlink_outside_the_artefact_layout(tmp_path
     )
     (root / "vendor").symlink_to(unrelated, target_is_directory=True)
 
-    # Neither the manifest at the link's top nor the one buried inside it:
-    # the link is not entered at all, so nothing under it is even scanned.
+    # Neither the manifest at the link's top nor the one inside it is found; the link is not entered.
     assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
 
 
 def test_discovery_follows_a_link_from_inside_an_artefacts_subtree(tmp_path):
-    """The other half of the boundary: a single run directory linked out of
-    an `artefacts/` tree is still the documented layout, so it is followed
-    even though the link's own name is not `artefacts`."""
+    """A run directory linked from inside an `artefacts/` tree is followed even though the link's name is not `artefacts`."""
     root, artefacts = _project(tmp_path)
     scratch = tmp_path / "scratch" / "big_run"
     scratch.mkdir(parents=True)
@@ -932,9 +838,7 @@ def test_discovery_follows_a_link_from_inside_an_artefacts_subtree(tmp_path):
 
 
 def test_discovery_refuses_a_link_onto_an_ancestor_of_the_project(tmp_path):
-    """Inside the artefact layout a link is followed, so the loop guard has
-    to stand on its own: a link to the directory the project itself lives in
-    would otherwise pull every sibling project into the walk."""
+    """A link onto an ancestor of the project is refused, so sibling projects are not pulled into the walk."""
     root, artefacts = _project(tmp_path)
     write_manifest(_synth_manifest(root, artefacts, None), artefacts)
     sibling = tmp_path / "other_project"
@@ -943,11 +847,6 @@ def test_discovery_refuses_a_link_onto_an_ancestor_of_the_project(tmp_path):
     (artefacts / "up").symlink_to(tmp_path, target_is_directory=True)
 
     assert discover_manifests(root) == [str(artefacts / MANIFEST_FILENAME)]
-
-
-# ---------------------------------------------------------------------------
-# publish — the entry point the backends call
-# ---------------------------------------------------------------------------
 
 
 def test_publish_writes_both_documents_and_reports_the_row_count(tmp_path):
@@ -971,8 +870,7 @@ def test_publish_writes_both_documents_and_reports_the_row_count(tmp_path):
 
 
 def test_publish_without_the_stats_file_still_writes_the_totals(tmp_path):
-    """The resilience rule: a synthesis whose `stat -json` never landed has
-    still succeeded, and the numbers it did parse are still worth recording."""
+    """A synthesis whose `stat -json` never landed still writes the totals it parsed."""
     _root, artefacts = _project(tmp_path)
 
     published = publish_synth(
@@ -992,8 +890,7 @@ def test_publish_without_the_stats_file_still_writes_the_totals(tmp_path):
 
 
 def test_publish_reports_an_unwritable_directory_rather_than_raising(tmp_path):
-    """Nothing in the publish path may raise into a flow that has already
-    produced its product."""
+    """The publish path never raises into a flow that has produced its product."""
     _root, artefacts = _project(tmp_path)
     blocked = artefacts / "synth_netlist.v"  # a file where a directory must be
     blocked.write_text("module demo_top(); endmodule\n")
@@ -1005,8 +902,7 @@ def test_publish_reports_an_unwritable_directory_rather_than_raising(tmp_path):
 
 
 def test_publishing_a_power_run_over_a_synth_run_merges_on_disk(tmp_path):
-    """The end-to-end merge: two commands into one artefact directory add up
-    to one document describing both halves."""
+    """Two commands into one artefact directory give one document describing both halves."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1053,14 +949,7 @@ def test_publishing_a_power_run_over_a_synth_run_merges_on_disk(tmp_path):
 
 
 def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp_path):
-    """The on-disk shape of the own-half rule (#560 review).
-
-    A first synthesis records its modules; a power run lands beside it;
-    then a synthesis rerun whose `stat -json` never appeared must publish
-    `modules: null` rather than the first run's rows — while the power
-    half, which it does not own and whose netlist the rerun reproduced
-    unchanged, is still carried forward.
-    """
+    """A synth rerun that cannot read its stats publishes `modules: null`, not the first run's rows, while the power half (same netlist) is still carried forward."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1108,17 +997,14 @@ def test_a_synth_rerun_that_cannot_read_its_stats_publishes_a_null_breakdown(tmp
 
 
 def _sha256_of(path):
-    """What a flow that read ``path`` records in its provenance."""
+    """Return what a flow that read ``path`` records in its provenance."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _publish_the_pair_against(artefacts, netlist):
-    """A synthesis and then a power run, both bound to ``netlist``.
+    """Publish a synthesis and then a power run, both bound to ``netlist``.
 
-    The power half is handed the hash of the bytes on disk *now*, which is
-    what the real flow captures at the moment it gives the netlist to
-    OpenROAD — a test that rewrites the file afterwards is standing in for
-    a build that replaced it mid-run.
+    The power half gets the hash of the bytes on disk now, as the real flow captures it; a test that rewrites the file afterwards stands in for a build that replaced it mid-run.
     """
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
@@ -1147,8 +1033,7 @@ def _publish_the_pair_against(artefacts, netlist):
 
 
 def test_a_resynthesis_of_the_same_netlist_keeps_the_power_half(tmp_path):
-    """On disk, the ordinary case: `rb synth` re-run over an unchanged design
-    writes the same netlist, so the watts beside it still describe it."""
+    """Re-running `rb synth` over an unchanged design writes the same netlist, so the power half is kept."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1173,11 +1058,7 @@ def test_a_resynthesis_of_the_same_netlist_keeps_the_power_half(tmp_path):
 
 
 def test_a_resynthesis_of_a_changed_netlist_drops_the_power_half(tmp_path):
-    """The finding (#560 review, Codex P1). The RTL was edited and `rb synth`
-    re-run into the same directory: the per-instance watts were measured on
-    the netlist that run has just replaced, so they are withdrawn — from the
-    model, from the totals, and from the manifest that would otherwise go on
-    naming the reports behind them."""
+    """A re-synthesis with changed RTL withdraws the per-instance watts from the model, totals and manifest."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1200,8 +1081,7 @@ def test_a_resynthesis_of_a_changed_netlist_drops_the_power_half(tmp_path):
     assert model["totals"]["total_uw"] is None
     assert model["totals"]["leakage_uw"] is None
     assert len(model["modules"]) == 2 and model["totals"]["area_um2"] == 7.0
-    # The manifest is told the same thing, so the publication does not
-    # contradict itself about whether a power measurement is here.
+    # The manifest agrees, so the publication does not contradict itself about a power measurement.
     manifest = load_manifest(published["manifest"])
     assert all(manifest["power"][key] is None for key in POWER_KEYS)
     assert manifest["totals"]["total_uw"] is None
@@ -1209,12 +1089,7 @@ def test_a_resynthesis_of_a_changed_netlist_drops_the_power_half(tmp_path):
 
 
 def test_a_power_run_over_a_regenerated_netlist_drops_the_synth_half(tmp_path):
-    """The finding on disk (#560 round-9 review, Codex P1). A synthesis
-    published its module rows; the netlist was rebuilt; the power run
-    measured the new one. The rows in the directory are a breakdown of the
-    netlist this analysis did *not* read, so they go — from the model, from
-    the totals, and from the manifest that would otherwise go on naming the
-    synthesis reports behind them."""
+    """A power run over a regenerated netlist drops the synth half from the model, totals and manifest."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1253,9 +1128,7 @@ def test_a_power_run_over_a_regenerated_netlist_drops_the_synth_half(tmp_path):
 
 
 def test_a_power_run_over_the_netlist_it_read_keeps_the_synth_half(tmp_path):
-    """The ordinary pair on disk, and the reason the check above is
-    affordable: `rb power` reads what `rb synth` wrote, so the hashes match
-    and the two commands still add up to one complete document."""
+    """`rb power` reads what `rb synth` wrote, so the hashes match and the two commands add up to one document."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1267,10 +1140,7 @@ def test_a_power_run_over_the_netlist_it_read_keeps_the_synth_half(tmp_path):
 
 
 def test_a_resynthesis_drops_a_power_half_that_recorded_no_netlist(tmp_path):
-    """A `netlist-source: pnr` run reads the routed database, not a netlist,
-    and records no hash — as does any model written before provenance
-    existed. Nothing binds those rows to what this synthesis wrote, so they
-    are dropped rather than assumed."""
+    """A `netlist-source: pnr` run, or a model written before provenance, records no hash; such rows are dropped, not assumed to match."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1305,7 +1175,7 @@ def test_a_resynthesis_drops_a_power_half_that_recorded_no_netlist(tmp_path):
 
 
 def test_a_publish_records_the_hash_of_the_netlist_it_touched(tmp_path):
-    """Both halves record it, and they agree when they are about one file."""
+    """Both halves record the hash and agree when about one file."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -1362,8 +1232,7 @@ def test_a_power_rerun_that_cannot_read_its_report_publishes_a_null_breakdown(tm
 
 
 def test_the_manifest_does_not_name_an_artefact_that_was_never_written(tmp_path):
-    """`null` means "not produced" — so a filename the flow intended but
-    the tool skipped must not appear as though it were on disk."""
+    """`null` means "not produced"; a filename the tool skipped does not appear in the manifest."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "synth.log").write_text("Chip area: 5.586\n")
 
@@ -1409,12 +1278,7 @@ def test_the_power_manifest_nulls_the_reports_the_tcl_catch_skipped(tmp_path):
 
 
 def test_the_model_and_manifest_are_replaced_atomically(tmp_path, monkeypatch):
-    """A `rb phys` read racing a rerun must never see a torn document.
-
-    Both writers go temp-then-`os.replace`, so an overwrite is one
-    rename: a concurrent reader gets the old bytes or the new ones, and
-    no `.tmp` is left behind for discovery to trip over.
-    """
+    """A model and manifest overwrite is one atomic rename (temp then `os.replace`): a concurrent `rb phys` read sees old or new bytes, and no `.tmp` remains."""
     root, artefacts = _project(tmp_path)
     renamed = []
     real_replace = os.replace
@@ -1439,8 +1303,7 @@ def test_the_model_and_manifest_are_replaced_atomically(tmp_path, monkeypatch):
 
 
 def test_the_incomplete_model_warnings_have_dedicated_human_messages():
-    """Both events are logged at WARNING, so neither may fall through to
-    the "foo bar" fallback."""
+    """Both events are logged at WARNING, so each needs a dedicated human message."""
     from rtl_buddy.logging_utils import _human_message
 
     synth = _human_message(
@@ -1450,9 +1313,7 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
     assert "demo_synth" in synth
     assert "artefacts/demo_synth/synth_stat.json" in synth
     assert "per-module breakdown" in synth
-    # The verbs exist as of this branch, so the message names the one that
-    # would have reported the missing rows — and names *what* is missing,
-    # since a power half in the same model still has rows to answer from.
+    # The message names the verb that would have reported the missing rows and what is missing; a power half may still have rows.
     assert "`rb phys module`" in synth
     assert "per-module synthesis rows" in synth
     assert "per-instance power rows in the same model still answer" in synth
@@ -1482,11 +1343,10 @@ def test_the_incomplete_model_warnings_have_dedicated_human_messages():
 def test_a_publication_that_failed_is_not_reported_as_a_partial_model(
     event, run_key, run
 ):
-    """The finding (#560 round-16, Codex P2). One event carries two opposite
-    outcomes. With `error` set nothing was published at all — `_publish`
-    returns a null model path — so the message must not go on describing what
-    phys-model.json records: there is no phys-model.json from this run, and
-    the one that may be sitting in the directory is another run's."""
+    """A failed publication is not reported as a partial model.
+
+    With `error` set nothing was published and `_publish` returns a null model path, so the message must not describe what phys-model.json records; any file there is another run's.
+    """
     from rtl_buddy.logging_utils import _human_message
 
     rendered = _human_message(
@@ -1502,20 +1362,14 @@ def test_a_publication_that_failed_is_not_reported_as_a_partial_model(
     assert run in rendered
     assert "timed out waiting for phys-publish.lock" in rendered
     assert "was not written" in rendered
-    # The claims the published-but-incomplete wording makes, none of which
-    # hold when nothing was written.
+    # The published-but-incomplete wording makes claims that fail when nothing was written.
     assert "are still recorded" not in rendered
     assert "half null" not in rendered
     assert "breakdown" not in rendered
 
 
-# ---------------------------------------------------------------------------
-# The failing rerun — a half whose artefacts have gone must not stay published
-# ---------------------------------------------------------------------------
-
-
 def _project_with_both_inputs(tmp_path):
-    """A project whose artefact directory holds both flows' raw output."""
+    """Return a project whose artefact directory holds both flows' raw output."""
     root, artefacts = _project(tmp_path)
     (artefacts / "synth_netlist.v").write_text(NETLIST)
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
@@ -1525,7 +1379,7 @@ def _project_with_both_inputs(tmp_path):
 
 
 def _publish_synth_half(artefacts, **overrides):
-    """A synthesis publication into ``artefacts``, rows and totals filled."""
+    """Publish a synthesis into ``artefacts`` with rows and totals filled."""
     return publish_synth(
         **{
             "artefact_dir": artefacts,
@@ -1542,7 +1396,7 @@ def _publish_synth_half(artefacts, **overrides):
 
 
 def _publish_power_half(artefacts, **overrides):
-    """A power publication into ``artefacts``, rows and totals filled."""
+    """Publish a power run into ``artefacts`` with rows and totals filled."""
     return publish_power(
         **{
             "artefact_dir": artefacts,
@@ -1560,7 +1414,7 @@ def _publish_power_half(artefacts, **overrides):
 
 
 def _publish_both_halves_dir(tmp_path):
-    """A project whose artefact directory already holds a complete model."""
+    """Return a project whose artefact directory holds a complete model."""
     root, artefacts = _project_with_both_inputs(tmp_path)
     _publish_synth_half(artefacts)
     _publish_power_half(artefacts)
@@ -1570,9 +1424,7 @@ def _publish_both_halves_dir(tmp_path):
 def test_a_failed_power_rerun_withdraws_its_own_half_and_keeps_the_synth_one(
     tmp_path,
 ):
-    """The rerun cleared `power_instances.rpt` and then failed before it could
-    publish. Leaving the previous run's watts in the model would leave a
-    measurement discoverable whose evidence has just been deleted."""
+    """A failed power rerun withdraws its own half and keeps the synth one; a measurement whose evidence was deleted must not stay discoverable."""
     _root, artefacts = _publish_both_halves_dir(tmp_path)
 
     result = invalidate_half(artefacts, "instances")
@@ -1581,12 +1433,10 @@ def test_a_failed_power_rerun_withdraws_its_own_half_and_keeps_the_synth_one(
     model = load_model(result["model"])
     assert model["instances"] is None
     assert model["totals"]["total_uw"] is None and model["totals"]["leakage_uw"] is None
-    # Including what the withdrawn half was measured on: there is no half
-    # left for that hash to bind, and a synthesis must not read it as one.
+    # The withdrawn half's netlist hash goes too; a synthesis must not read it as a binding.
     assert model["provenance"]["power"]["netlist_sha256"] is None
     assert model["provenance"]["synth"]["netlist_sha256"] is not None
-    # The other half is another command's measurement, still backed by its
-    # own artefacts on disk.
+    # The other half is another command's measurement, still backed by its own artefacts.
     assert [row["module"] for row in model["modules"]] == ["sub", "top"]
     assert model["totals"]["area_um2"] == 5.586
     assert model["totals"]["cell_count"] == 2
@@ -1618,9 +1468,7 @@ def test_a_failed_synth_rerun_withdraws_its_own_half_and_keeps_the_power_one(
 
 
 def test_invalidation_survives_the_crash_that_never_reached_publish(tmp_path):
-    """The crash case: the clear ran, the tool died, `_publish_phys_model` was
-    never called. Same outcome as the orderly failure above — invalidation
-    happens where the clear happens, not where the publish would have."""
+    """Invalidation happens where the clear happens, so a crash before `_publish_phys_model` gives the same outcome as an orderly failure."""
     _root, artefacts = _publish_both_halves_dir(tmp_path)
     (artefacts / "power_instances.rpt").unlink()
     (artefacts / "power_instances.cells").unlink()
@@ -1642,8 +1490,7 @@ def test_invalidating_a_directory_with_nothing_published_is_a_no_op(tmp_path):
 
 
 def test_invalidation_never_raises_out_of_a_flow(tmp_path):
-    """Same resilience rule as the publish path: the caller has already
-    decided whether the run passed, and a by-product may not change that."""
+    """Invalidation never raises out of a flow; a by-product cannot change whether the run passed."""
     _root, artefacts = _project(tmp_path)
     blocked = artefacts / "not_a_dir"
     blocked.write_text("")
@@ -1674,11 +1521,6 @@ def test_a_successful_publish_after_an_invalidation_restores_the_half(tmp_path):
     assert load_manifest(published["manifest"])["power"]["backend"] == "openroad"
 
 
-# ---------------------------------------------------------------------------
-# The publication token — the model and its manifest are two files
-# ---------------------------------------------------------------------------
-
-
 def test_a_publish_stamps_one_publication_token_into_both_documents(tmp_path):
     _root, artefacts = _project(tmp_path)
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
@@ -1698,8 +1540,7 @@ def test_a_publish_stamps_one_publication_token_into_both_documents(tmp_path):
 
 
 def test_each_publication_mints_a_new_token(tmp_path):
-    """The token identifies one write of the pair, so a reader that saw the
-    old model and the new manifest can tell."""
+    """Each publication mints a new token, so a reader can detect an old model beside a new manifest."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "synth_stat.json").write_text(STAT_JSON)
     args = dict(
@@ -1717,8 +1558,7 @@ def test_each_publication_mints_a_new_token(tmp_path):
 
 
 def test_an_invalidation_republishes_the_pair_under_one_token(tmp_path):
-    """Invalidation rewrites both documents, so it is a publication too and
-    must not leave the two disagreeing about which write they came from."""
+    """Invalidation rewrites both documents under one token."""
     _root, artefacts = _publish_both_halves_dir(tmp_path)
     before = load_model(artefacts / "phys-model.json")["publication"]
 
@@ -1730,8 +1570,7 @@ def test_an_invalidation_republishes_the_pair_under_one_token(tmp_path):
 
 
 def test_a_publish_merges_onto_a_pair_that_was_written_together(tmp_path):
-    """The control for the two tests below: an intact publication is merged
-    onto exactly as before, both halves and both blocks."""
+    """Control: an intact publication is merged onto, both halves and both blocks."""
     _root, artefacts = _project_with_both_inputs(tmp_path)
     _publish_synth_half(artefacts)
 
@@ -1745,14 +1584,10 @@ def test_a_publish_merges_onto_a_pair_that_was_written_together(tmp_path):
 
 
 def test_a_publish_inherits_nothing_from_an_unpaired_model_and_manifest(tmp_path):
-    """The interrupted publish (#560 review, Codex P1).
+    """A publish inherits nothing from an unpaired model and manifest.
 
-    A publish writes the model and then the manifest, so a kill between the
-    two leaves the pair disagreeing about which write it came from. Merging
-    each document onto its own fresh half would re-stamp both with this
-    write's token and hand every later reader an inconsistency that looks
-    exactly like a pair written together. Neither half is inherited — the
-    directory holds no publication to merge onto."""
+    A publish writes the model then the manifest, so a kill between them leaves mismatched tokens. Merging onto each would re-stamp both and hide the inconsistency.
+    """
     _root, artefacts = _project_with_both_inputs(tmp_path)
     _publish_synth_half(artefacts)
     # The manifest is the second write, so it is the one left behind.
@@ -1768,16 +1603,14 @@ def test_a_publish_inherits_nothing_from_an_unpaired_model_and_manifest(tmp_path
     assert model["totals"]["area_um2"] is None and model["totals"]["cell_count"] is None
     assert manifest["synth"]["backend"] is None
     assert all(manifest["synth"][key] is None for key in SYNTH_KEYS)
-    # This run's own half is published in full, under a token the pair shares.
+    # This run's own half is published in full under a token the pair shares.
     assert len(model["instances"]) == 3
     assert model["publication"] == manifest["publication"]
     assert model["publication"] not in (None, "a token from a write that finished")
 
 
 def test_a_publish_inherits_nothing_when_only_one_document_is_there(tmp_path):
-    """Same rule, one document short: a model with no manifest beside it (the
-    kill landed before the second write ever ran) is not half a publication
-    to inherit from either."""
+    """A model with no manifest beside it is not a publication to inherit from."""
     _root, artefacts = _project_with_both_inputs(tmp_path)
     _publish_synth_half(artefacts)
     (artefacts / MANIFEST_FILENAME).unlink()
@@ -1791,9 +1624,7 @@ def test_a_publish_inherits_nothing_when_only_one_document_is_there(tmp_path):
 
 
 def test_a_publish_inherits_nothing_from_a_model_that_carries_no_token(tmp_path):
-    """A missing token is not a match with another missing token: nothing
-    stamped either document, so there is no evidence they were written
-    together and no basis for putting this write's token on them."""
+    """A missing token does not match another missing token; there is no evidence the documents were written together."""
     _root, artefacts = _project_with_both_inputs(tmp_path)
     _publish_synth_half(artefacts)
     for path, load, write in (
@@ -1810,9 +1641,7 @@ def test_a_publish_inherits_nothing_from_a_model_that_carries_no_token(tmp_path)
 
 
 def test_an_invalidation_leaves_an_unpaired_pair_unpaired(tmp_path):
-    """Withdrawal still happens — the artefacts behind the half really have
-    gone — but it is not a publication of the two documents, so it must not
-    be what makes a mismatched pair start claiming it was written together."""
+    """Withdrawal still happens, but an invalidation leaves a mismatched pair mismatched."""
     _root, artefacts = _project_with_both_inputs(tmp_path)
     _publish_synth_half(artefacts)
     _publish_power_half(artefacts)
@@ -1831,8 +1660,7 @@ def test_an_invalidation_leaves_an_unpaired_pair_unpaired(tmp_path):
 
 
 def test_a_merge_keeps_the_new_documents_token(tmp_path):
-    """The token names the write in progress, not the run whose half was
-    inherited into it."""
+    """The merged document keeps the new write's token, not the inherited run's."""
     synth = build_synth_model(
         top="demo_top", modules=parse_stat_json(STAT_JSON), netlist_sha256="deadbeef"
     )
@@ -1850,15 +1678,8 @@ def test_a_merge_keeps_the_new_documents_token(tmp_path):
     assert len(merged["modules"]) == 2
 
 
-# ---------------------------------------------------------------------------
-# An empty parse is an unreadable report, not a design without cells
-# ---------------------------------------------------------------------------
-
-
 def test_publish_power_reads_an_unparsable_report_as_no_breakdown(tmp_path):
-    """The generated Tcl writes `power_instances.rpt` only once `get_cells`
-    has come back non-empty, so a report that parses to zero rows is garbled
-    — the same reading `publish_synth` makes of an empty `stat -json`."""
+    """An unparsable power report reads as no breakdown; the generated Tcl writes `power_instances.rpt` only once `get_cells` is non-empty, as `publish_synth` reads an empty `stat -json`."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "power_instances.rpt").write_text("garbled output, no rows here\n")
 
@@ -1877,20 +1698,10 @@ def test_publish_power_reads_an_unparsable_report_as_no_breakdown(tmp_path):
     assert model["totals"]["total_uw"] == pytest.approx(28.3)
 
 
-# ---------------------------------------------------------------------------
-# Two publishers, one artefact directory (#560)
-# ---------------------------------------------------------------------------
-
-
 def _serialisation_probe(monkeypatch, *, dwell=0.15):
-    """Widen the critical section and record whether two ever share it.
+    """Widen the critical section and record whether two writers ever share it.
 
-    ``write_model`` is called from inside the lock by both writers here —
-    the publish path and the withdrawal — and from nowhere else, so a
-    counter around it sees exactly the critical sections. The dwell is what
-    makes an unserialised pair actually collide: without the lock the second
-    thread reads the pair while the first is between its two writes, which
-    is the interleaving the finding is about.
+    ``write_model`` is called only inside the lock, by the publish path and the withdrawal, so a counter around it sees the critical sections. The dwell makes an unserialised pair collide.
     """
     from rtl_buddy.phys import model as model_mod
 
@@ -1914,7 +1725,7 @@ def _serialisation_probe(monkeypatch, *, dwell=0.15):
 
 
 def _run_together(*calls):
-    """Run each callable in its own thread; return their results in order."""
+    """Run each callable in its own thread and return the results in order."""
     results = [None] * len(calls)
 
     def _capture(index, call):
@@ -1934,13 +1745,7 @@ def _run_together(*calls):
 
 @pytest.mark.parametrize("power_first", [False, True])
 def test_two_concurrent_publishes_keep_both_halves(tmp_path, monkeypatch, power_first):
-    """The finding (#560 round-11 review, Codex P1). A co-named `rb synth`
-    and `rb power` publish into one artefact directory and each writes both
-    documents. Unserialised, the two read the same pair and write in an
-    interleaved order: crossed tokens, or a token-consistent pair from
-    whichever finished last that silently drops the other's just-published
-    half. Whichever order they arrive in, the directory must end up holding
-    one pair carrying both halves."""
+    """Concurrent co-named `rb synth` and `rb power` publishes into one directory end with one pair carrying both halves, in either order."""
     _root, artefacts = _project_with_both_inputs(tmp_path)
     seen = _serialisation_probe(monkeypatch)
     calls = [
@@ -1964,9 +1769,7 @@ def test_two_concurrent_publishes_keep_both_halves(tmp_path, monkeypatch, power_
 
 
 def test_a_withdrawal_and_a_publish_do_not_interleave(tmp_path, monkeypatch):
-    """`invalidate_half` rewrites the same two documents, so it takes the same
-    lock: a publish landing inside it would read a pair one of whose halves is
-    already withdrawn and the other not."""
+    """`invalidate_half` takes the same lock as publish, so a publish never reads a half-withdrawn pair."""
     _root, artefacts = _publish_both_halves_dir(tmp_path)
     seen = _serialisation_probe(monkeypatch)
 
@@ -1979,21 +1782,17 @@ def test_a_withdrawal_and_a_publish_do_not_interleave(tmp_path, monkeypatch):
     model = load_model(artefacts / MODEL_FILENAME)
     manifest = load_manifest(artefacts / MANIFEST_FILENAME)
     assert seen["max"] == 1
-    # Whoever wrote last wrote a whole pair, and the synthesis half it
-    # carries is this run's own — never a half-withdrawn document.
+    # Whoever wrote last wrote a whole pair with this run's own synthesis half.
     assert model["publication"] == manifest["publication"]
     assert len(model["modules"]) == 2
     assert manifest["synth"]["backend"] == "yosys"
-    # The withdrawal is not lost either way round: either it ran first and
-    # the publish inherited nothing to carry the power half forward, or it
-    # ran second and blanked what the publish had just written.
+    # The withdrawal is kept either way: it ran first and the publish inherited nothing, or it ran second and blanked the publish.
     assert model["instances"] is None
     assert all(manifest["power"][key] is None for key in POWER_KEYS)
 
 
 def test_a_lock_that_cannot_be_taken_is_a_publish_error(tmp_path, monkeypatch):
-    """The resilience rule reaches the lock too: a mutex this publisher
-    cannot take costs the run its by-product and a warning, never the run."""
+    """A lock that cannot be taken costs the run its by-product and a warning, never the run."""
     from rtl_buddy.phys import publish as publish_mod
 
     _root, artefacts = _publish_both_halves_dir(tmp_path)
@@ -2014,8 +1813,7 @@ def test_a_lock_that_cannot_be_taken_is_a_publish_error(tmp_path, monkeypatch):
 
 
 def test_the_lock_file_is_not_mistaken_for_a_published_document(tmp_path):
-    """It lives beside the pair it guards and outlives the publish that made
-    it, so the readers must ignore it and a suffix clear must spare it."""
+    """The lock file lives beside the pair, so readers ignore it and a suffix clear spares it."""
     from rtl_buddy.tools.artifact_paths import (
         PHYS_PUBLISH_LOCK_NAME,
         PROTECTED_OUTPUT_PATTERNS,
@@ -2028,15 +1826,8 @@ def test_the_lock_file_is_not_mistaken_for_a_published_document(tmp_path):
     assert discover_manifests(artefacts) == [str(artefacts / MANIFEST_FILENAME)]
 
 
-# ---------------------------------------------------------------------------
-# identity — what shaped the run, beside what it measured (#568)
-# ---------------------------------------------------------------------------
-
-
 def test_a_power_publish_records_its_mode_and_the_activity_behind_it(tmp_path):
-    """The whole point of the block: two runs of one netlist that differ
-    only in stimulus are two measurements, and a µW figure with no mode
-    beside it does not say which of the two it is."""
+    """A power publish records its mode and activity; two runs of one netlist that differ in stimulus are different measurements."""
     root, artefacts = _project(tmp_path)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
     trace = root / "verif" / "demo" / "artefacts" / "csr_smoke" / "dump.saif"
@@ -2059,20 +1850,16 @@ def test_a_power_publish_records_its_mode_and_the_activity_behind_it(tmp_path):
     assert recorded["mode"] == "dynamic"
     assert recorded["activity"]["source"] == "saif"
     assert recorded["activity"]["scope"] == "tb/u_dut"
-    # Derived from the artefact layout, not passed in: the producer holds
-    # a path, and the test that wrote it finished in another command.
+    # Derived from the artefact layout, not passed in, since the producer holds a path and the test ran in another command.
     assert recorded["activity"]["test"] == "csr_smoke"
-    # And echoed into the manifest, so a listing of every run in a project
-    # reads one small file each rather than a model apiece.
+    # Echoed into the manifest so a run listing reads one small file per run.
     block = load_manifest(published["manifest"])["power"]
     assert block["mode"] == "dynamic"
     assert block["activity"] == recorded["activity"]
 
 
 def test_a_static_run_records_defaults_rather_than_a_toggle_rate(tmp_path):
-    """A static analysis emits no activity command at all, so recording the
-    config's toggle/duty pair beside it would claim a stimulus that never
-    drove anything."""
+    """A static run records defaults, not a toggle rate; no activity command drove any stimulus."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
 
@@ -2099,13 +1886,10 @@ def test_a_synthetic_run_records_the_toggle_and_duty_that_drove_it():
 
 
 def test_a_run_that_reads_no_trace_records_none_even_when_the_config_keeps_one():
-    """`activity.saif` and `activity.scope` survive the edit that makes a
-    run static -- a commented-out `mode: dynamic`, a variant generated from
-    a base that had a trace -- and `get_activity_source()` then answers
-    `default`. No `read_saif` is emitted on that run, so the trace was not
-    read and the test behind it drove nothing; recording all three anyway
-    put a named test beside a leakage number, and told two static runs
-    apart by a file neither of them opened."""
+    """A run that reads no trace records no activity source, test or scope, even when the config keeps `activity.saif` and `activity.scope`.
+
+    `get_activity_source()` answers `default`, no `read_saif` is emitted, and recording the fields would put a named test beside a leakage number.
+    """
     retained = dict(trace="verif/demo/artefacts/csr_smoke/dump.saif", scope="tb/u_dut")
 
     for source in ("default", "synthetic"):
@@ -2115,8 +1899,7 @@ def test_a_run_that_reads_no_trace_records_none_even_when_the_config_keeps_one()
         assert block["test"] is None, source
         assert block["scope"] is None, source
 
-    # And the run that did read it records all three -- the gate is on the
-    # source, not on the fields being absent.
+    # A run that did read the trace records all three; the gate is on the source.
     read = activity_block(source="saif", **retained)
     assert read["trace"] == retained["trace"]
     assert read["test"] == "csr_smoke"
@@ -2124,11 +1907,7 @@ def test_a_run_that_reads_no_trace_records_none_even_when_the_config_keeps_one()
 
 
 def test_a_trace_is_identified_by_its_bytes_and_not_only_by_its_path():
-    """`rb test` rewrites `dump.saif` in place every time the test behind
-    it runs, so a power analysis against a re-captured trace measures
-    different switching under a path that has not moved. Without the hash
-    the two runs' activity blocks are identical, which is the one thing a
-    fingerprint must not say about two different measurements."""
+    """A trace is identified by its bytes as well as its path: `rb test` rewrites `dump.saif` in place, so the hash tells re-captured traces apart."""
     path = "verif/demo/artefacts/csr_smoke/dump.saif"
 
     first = normalise_activity(
@@ -2140,21 +1919,17 @@ def test_a_trace_is_identified_by_its_bytes_and_not_only_by_its_path():
 
     assert first["trace_sha256"] == "a" * 64
     assert first != second
-    # But the label is unchanged: it is a table cell, and twelve hex
-    # characters of a SAIF are not what a reader scans a listing for.
+    # The label is unchanged; it is a table cell and not a place for a hash.
     assert first["label"] == second["label"] == "saif csr_smoke"
 
-    # Absent evidence stays absent rather than becoming a key that is not
-    # there -- a trace that could not be read, and a document written
-    # before the field existed, both answer null.
+    # Absent evidence stays null: an unreadable trace and a document written before the field both answer null.
     assert (
         normalise_activity(activity_block(source="saif", trace=path))["trace_sha256"]
         is None
     )
     assert normalise_activity({"source": "saif"})["trace_sha256"] is None
 
-    # And a run that read no trace records no hash of one, for the same
-    # reason it records no trace.
+    # A run that read no trace records no hash of one.
     assert (
         activity_block(source="default", trace=path, trace_sha256="a" * 64)[
             "trace_sha256"
@@ -2164,9 +1939,7 @@ def test_a_trace_is_identified_by_its_bytes_and_not_only_by_its_path():
 
 
 def test_a_trace_outside_an_artefact_directory_names_no_test():
-    """The derivation is from rtl_buddy's own layout. A checked-in golden
-    trace sits in a directory that is not a test, and reporting its name as
-    one would be an invention."""
+    """A trace outside an artefact directory names no test; a checked-in golden trace is not a test."""
     assert trace_test("verif/demo/artefacts/csr_smoke/dump.saif") == "csr_smoke"
     assert trace_test("golden/traces/dump.saif") is None
     assert trace_test("dump.saif") is None
@@ -2174,9 +1947,7 @@ def test_a_trace_outside_an_artefact_directory_names_no_test():
 
 
 def test_a_synth_publish_records_the_configuration_that_shaped_it(tmp_path):
-    """Platform, effort and constraints spelled out; the option set as a
-    digest. Enough to read two experiments of one design apart without
-    decoding their run names."""
+    """A synth publish records platform, effort and constraints, and the option set as a digest, enough to tell two experiments of one design apart."""
     root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -2194,8 +1965,7 @@ def test_a_synth_publish_records_the_configuration_that_shaped_it(tmp_path):
         platform="nangate45",
         effort="timing-opt",
         constraints=sdc,
-        # Taken by the caller before its tool ran, not computed here: this
-        # function runs minutes after the tool did (#570 round-17).
+        # Taken by the caller before its tool ran, not computed here, since this function runs minutes after the tool.
         constraints_sha256=hashlib.sha256(sdc.read_bytes()).hexdigest(),
         options={"strategy": "TIMING"},
     )
@@ -2203,9 +1973,7 @@ def test_a_synth_publish_records_the_configuration_that_shaped_it(tmp_path):
     config = load_manifest(published["manifest"])["synth"]["config"]
     assert config["platform"] == "nangate45"
     assert config["effort"] == "timing-opt"
-    # Project-relative, like every other path in the document — and the
-    # SAME spelling in the model, because both blocks are relativised once
-    # by the publish rather than by each writer.
+    # Project-relative like every other path, and spelled the same in the model, because the publish relativises both blocks once.
     assert config["constraints"] == "verif/demo/demo.sdc"
     assert load_model(published["model"])["provenance"]["synth"]["config"] == config
     assert config["constraints_sha256"] == hashlib.sha256(sdc.read_bytes()).hexdigest()
@@ -2213,24 +1981,17 @@ def test_a_synth_publish_records_the_configuration_that_shaped_it(tmp_path):
 
 
 def test_two_option_sets_that_resolve_the_same_digest_the_same():
-    """The digest is over the effective values, canonically rendered, so
-    key order is not an experiment and two spellings of one configuration
-    are one."""
+    """The digest is over the effective values in canonical form, so key order and equivalent spellings do not change it."""
     assert options_digest({"a": 1, "b": 2}) == options_digest({"b": 2, "a": 1})
     assert options_digest({"strategy": "AREA"}) != options_digest(
         {"strategy": "TIMING"}
     )
-    # Nothing recorded is `None`, not a digest of the empty mapping: a
-    # backend that fingerprinted nothing must not look like one that did.
+    # Nothing recorded is `None`, not a digest of the empty mapping.
     assert options_digest(None) is None and options_digest({}) is None
 
 
 def test_an_undigestible_option_set_is_absent_rather_than_unstable(caplog):
-    """The docstring promises the same options digest the same everywhere,
-    and the old `default=repr` fallback quietly voided it: `repr` of most
-    objects carries the address it happens to live at, so one run would
-    fingerprint differently on every invocation with nothing in the digest
-    to say so. Strict rendering, `None`, and a DEBUG line naming who."""
+    """An option set that cannot be rendered strictly digests to `None` with a DEBUG line naming the option, instead of a `repr` digest that changes per invocation."""
 
     class _Opaque:
         pass
@@ -2246,19 +2007,15 @@ def test_an_undigestible_option_set_is_absent_rather_than_unstable(caplog):
     )
     assert record.levelno == logging.DEBUG
     assert record.rtl_fields["producer"] == "synth/blk"
-    # The offending key, so the producer can be fixed rather than guessed
-    # at -- and only the offending one.
+    # The offending key only, so the producer can be fixed.
     assert record.rtl_fields["keys"] == ["hook"]
 
-    # Unstable is what it would otherwise have been: two `repr`s of two
-    # instances of the same class differ, so the digest was never the
-    # fingerprint of the option set at all.
+    # Two `repr`s of two instances of one class differ, so a `repr` digest never fingerprinted the option set.
     assert repr(_Opaque()) != repr(_Opaque())
 
 
 def test_the_strict_rendering_still_digests_every_option_set_in_use(caplog):
-    """The invariant is checked, not merely hoped for: nothing a producer
-    passes today goes through the fallback, so nothing changes for them."""
+    """Nothing a producer passes today goes through the fallback."""
 
     with caplog.at_level(logging.DEBUG):
         digest = options_digest(
@@ -2275,9 +2032,7 @@ def test_the_strict_rendering_still_digests_every_option_set_in_use(caplog):
 
 
 def test_a_config_that_differs_does_not_stop_the_halves_from_merging(tmp_path):
-    """Identity is for telling runs apart, never for gating the merge. The
-    netlist hash decides that, and it is the stronger test — the same
-    options can produce two netlists and two option sets can produce one."""
+    """A differing config does not stop the halves from merging; the netlist hash decides that."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST)
@@ -2308,16 +2063,13 @@ def test_a_config_that_differs_does_not_stop_the_halves_from_merging(tmp_path):
 
     model = load_model(published["model"])
     assert model["modules"] is not None and model["instances"] is not None
-    # Each half keeps its OWN identity: the inherited block travels with
-    # the rows it describes.
+    # Each half keeps its own identity; the inherited block travels with its rows.
     assert model["provenance"]["synth"]["config"]["platform"] == "nangate45"
     assert model["provenance"]["power"]["config"]["platform"] == "sky130hd"
 
 
 def test_withdrawing_a_half_withdraws_the_identity_that_went_with_it(tmp_path):
-    """A failed rerun has deleted the artefacts behind its half, so the
-    mode and activity that described them go too — leaving them would say
-    this directory holds a dynamic-power measurement it no longer has."""
+    """Withdrawing a half withdraws its mode and activity, since the artefacts behind them are gone."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
     publish_power(
@@ -2341,8 +2093,7 @@ def test_withdrawing_a_half_withdraws_the_identity_that_went_with_it(tmp_path):
 
 
 def test_the_power_block_carries_the_two_keys_the_synth_block_does_not():
-    """`mode` and `activity` are power concepts. A synthesis has neither,
-    and a block of nulls saying so would be shape for its own sake."""
+    """The power block carries `mode` and `activity`; a synthesis has neither, so its block has no null placeholders for them."""
     assert set(BLOCK_PROVENANCE_KEYS["synth"]) == {"netlist_sha256", "config"}
     assert set(BLOCK_PROVENANCE_KEYS["power"]) == {
         "netlist_sha256",
@@ -2353,8 +2104,7 @@ def test_the_power_block_carries_the_two_keys_the_synth_block_does_not():
 
 
 def test_an_older_document_reads_back_as_nulls_not_as_a_missing_key(tmp_path):
-    """Every reader normalises against the key table, so a model written
-    before #568 answers "not recorded" rather than raising."""
+    """A model written before the identity block reads back as nulls, not a missing key or an error."""
     _root, artefacts = _project(tmp_path)
     model = build_power_model(top="demo_top", instances=[])
     del model["provenance"]["power"]["mode"]
@@ -2367,13 +2117,8 @@ def test_an_older_document_reads_back_as_nulls_not_as_a_missing_key(tmp_path):
     assert normalise_activity(recorded["power"]["activity"]) is None
 
 
-# --- the xplr experiment a manifest sits under ------------------------------
-
-
 def test_an_experiment_id_is_derived_from_the_ledger_path(tmp_path):
-    """No read at all for the id: the ledger is one directory per
-    experiment, so the path already says which one, and it says so for an
-    experiment whose record has not been written yet."""
+    """The experiment id comes from the ledger path (one directory per experiment) without reading a record, even one not yet written."""
     manifest = tmp_path / "artefacts" / "xplr" / "exp-0007" / "artefacts" / "s"
     manifest.mkdir(parents=True)
     found = experiment_for(manifest / MANIFEST_FILENAME)
@@ -2391,8 +2136,7 @@ def test_an_experiment_label_comes_from_the_record_when_there_is_one(tmp_path):
 
 
 def test_a_record_that_cannot_be_read_costs_the_label_and_nothing_else(tmp_path):
-    """A malformed record is `rb xplr`'s to report; it is not a reason to
-    stop identifying the experiment."""
+    """A record that cannot be read costs the label only; `rb xplr` reports the malformed record."""
     experiment = tmp_path / "artefacts" / "xplr" / "exp-0009"
     (experiment / "artefacts" / "s").mkdir(parents=True)
     (experiment / "record.json").write_text("{not json")
@@ -2401,9 +2145,7 @@ def test_a_record_that_cannot_be_read_costs_the_label_and_nothing_else(tmp_path)
 
 
 def test_the_ledgers_reserved_directories_are_not_experiments(tmp_path):
-    """`artefacts/xplr/worktrees/` is the default worktree root, not an
-    experiment called `worktrees` — and a directory under it that the ledger
-    has no entry for is not one either."""
+    """The ledger's reserved directories are not experiments: `artefacts/xplr/worktrees/` itself, and a directory under it with no ledger entry."""
     worktree = tmp_path / "artefacts" / "xplr" / "worktrees" / "wt"
     worktree.mkdir(parents=True)
     assert experiment_for(worktree / MANIFEST_FILENAME) is None
@@ -2414,11 +2156,7 @@ def test_the_ledgers_reserved_directories_are_not_experiments(tmp_path):
 
 
 def test_a_run_inside_a_materialized_worktree_keeps_its_experiment(tmp_path):
-    """The finding (#570 round-17, Codex P2). `rb xplr materialize` checks an
-    experiment out at `artefacts/xplr/worktrees/<exp-id>/` by default, and a
-    flow run inside that checkout writes its manifest below it — so refusing
-    everything under the reserved root lost the id and the hypothesis on
-    exactly the reproducible runs, the ones pinned to a sha."""
+    """A run inside a materialized worktree (`artefacts/xplr/worktrees/<exp-id>/`, the default for `rb xplr materialize`) keeps its experiment id and hypothesis."""
     ledger = tmp_path / "artefacts" / "xplr"
     (ledger / "exp-0011").mkdir(parents=True)
     (ledger / "exp-0011" / "record.json").write_text(
@@ -2434,9 +2172,7 @@ def test_a_run_inside_a_materialized_worktree_keeps_its_experiment(tmp_path):
 
 
 def test_a_worktree_sidecar_naming_somewhere_else_refutes_the_checkout(tmp_path):
-    """`worktree.json` records where the checkout was made. One pointing at
-    another path says this directory is not that experiment's worktree — the
-    one thing the layout alone cannot tell."""
+    """A `worktree.json` naming another path refutes the checkout; the layout alone cannot show that."""
     ledger = tmp_path / "artefacts" / "xplr"
     (ledger / "exp-0012").mkdir(parents=True)
     checkout = ledger / "worktrees" / "exp-0012"
@@ -2458,8 +2194,7 @@ def test_a_worktree_sidecar_naming_somewhere_else_refutes_the_checkout(tmp_path)
     )
     assert experiment_for(manifest_dir / MANIFEST_FILENAME) is None
 
-    # Malformed, or deleted by `rb xplr release`: refutes nothing, because a
-    # listing may not drop a row over a missing bookkeeping file.
+    # Malformed, or deleted by `rb xplr release`: refutes nothing, since a listing may not drop a row over a missing bookkeeping file.
     (ledger / "exp-0012" / "worktree.json").write_text("{not json")
     assert experiment_for(manifest_dir / MANIFEST_FILENAME) is not None
     (ledger / "exp-0012" / "worktree.json").unlink()
@@ -2472,15 +2207,8 @@ def test_a_manifest_outside_a_ledger_has_no_experiment(tmp_path):
     assert experiment_for(plain / MANIFEST_FILENAME) is None
 
 
-# ---------------------------------------------------------------------------
-# What a publish reports about the half that was already there (#589)
-# ---------------------------------------------------------------------------
-
-
 def test_a_publish_into_an_empty_directory_reports_nothing_to_pair_with(tmp_path):
-    """`None`, not `False`: a directory whose other producer has not run
-    yet says nothing about this run's netlist, and a caller must not read
-    it as a refusal."""
+    """A publish into an empty directory reports `None`, not `False`: it says nothing about this run's netlist and is not a refusal."""
     _root, artefacts = _project(tmp_path)
     (artefacts / "power_instances.rpt").write_text(INSTANCE_RPT)
     published = publish_power(
@@ -2522,8 +2250,7 @@ def test_a_publish_reports_pairing_with_a_half_measured_on_its_netlist(tmp_path)
 
 
 def test_a_publish_reports_a_half_the_gate_dropped(tmp_path):
-    """The answer worth having: the rows were here and were *discarded*,
-    which is what a run told to publish beside a named synthesis warns on."""
+    """A publish reports a half the gate discarded, which is what a run told to publish beside a named synthesis warns on."""
     _root, artefacts = _project(tmp_path)
     netlist = artefacts / "synth_netlist.v"
     netlist.write_text(NETLIST_AFTER_AN_RTL_EDIT)

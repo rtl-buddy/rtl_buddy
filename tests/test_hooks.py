@@ -3,17 +3,12 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Hook exec() namespace: __name__ sentinel contract (issue #328).
+"""Tests for the hook ``exec()`` namespace and hook stdout capture.
 
-Hook scripts (`preproc`, `sweep`) are exec()'d into a hand-built namespace.
-Without an explicit `__name__` key, `if __name__ == "__main__":` guards in
-a hook body silently no-op. `build_hook_namespace()` fixes this by always
-setting `__name__` to the `HOOK_MODULE_NAME` sentinel, never `"__main__"`.
-These tests exercise both exec() sites (VlogSim.pre() for preproc,
-RtlBuddy._expand_tests_with_sweep() for sweep) plus the helper directly.
-
-The last section covers issue #371: a hook's own `print()` used to land on
-`rtl_buddy`'s stdout, which under `--machine` is the envelope stream.
+Hook scripts (`preproc`, `sweep`) run in a hand-built namespace whose ``__name__``
+is the ``HOOK_MODULE_NAME`` sentinel, never ``"__main__"``. The tests cover both
+exec sites and the helper, then a hook's own ``print()``, which must stay off
+stdout because under ``--machine`` stdout is the envelope stream.
 """
 
 import json
@@ -39,7 +34,7 @@ def test_build_hook_namespace_sets_sentinel_and_file(tmp_path):
     assert ns["__file__"] == str(script.resolve())
 
 
-# --- preproc (VlogSim.pre()) -------------------------------------------------
+# preproc (VlogSim.pre())
 
 
 class DummyBuilderCfg:
@@ -187,7 +182,7 @@ def test_preproc_plain_module_level_logic_still_runs(tmp_path):
     assert marker.read_text() == "plain-ran"
 
 
-# --- preproc namespace: run scoping (issue #415) -----------------------------
+# preproc namespace: run scoping
 
 _DUMP_NS = (
     "import json, pathlib\n"
@@ -214,7 +209,7 @@ def _preproc_namespace(tmp_path, *, run_id, script_name="preproc.py"):
 
 
 def test_preproc_namespace_carries_run_id_and_a_run_scoped_dir(tmp_path):
-    """A hook can scope its own output to the run it is preparing (#415)."""
+    """A hook can scope its output to the run it is preparing."""
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
 
     ns = _preproc_namespace(tmp_path, run_id=7)
@@ -238,10 +233,9 @@ def test_preproc_run_artifact_dir_is_the_test_dir_without_a_run_id(tmp_path):
 
 
 def test_preproc_run_artifact_dirs_do_not_collide_across_runs(tmp_path):
-    """The reported failure: every seed of a randtest shared one output dir.
+    """Run-scoped artifact dirs do not collide across runs.
 
-    `artifact_dir` is test-keyed and stays that way for compatibility, so the
-    separation has to come from the run-scoped directory.
+    `artifact_dir` stays test-keyed, so the separation comes from the run-scoped directory.
     """
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
 
@@ -253,12 +247,8 @@ def test_preproc_run_artifact_dirs_do_not_collide_across_runs(tmp_path):
 
 
 def test_preproc_run_artifact_dir_is_where_the_simulation_runs(tmp_path, monkeypatch):
-    """The hook's per-run dir must be the sim's cwd, or the sim cannot read it.
-
-    Asserted against the cwd `execute()` actually hands the simulator, not
-    against the helper both sides call — otherwise the docs claim "Also the
-    simulation's working directory" is not what is being tested.
-    """
+    """The hook's per-run dir is the sim's cwd, asserted against the cwd `execute()`
+    hands the simulator."""
     from contextlib import nullcontext
 
     from rtl_buddy.process_utils import ManagedProcessResult
@@ -289,13 +279,11 @@ def test_preproc_run_artifact_dir_is_where_the_simulation_runs(tmp_path, monkeyp
 
 
 def test_run_multiple_tells_the_hook_it_serves_no_particular_run(tmp_path):
-    """One pre() for N runs must not claim to be preparing run 1 (#415).
+    """`run_multiple` tells the hook it serves no particular run.
 
-    `_run_test_cfg_for_run_ids` builds the runner with `run_ids[0]`, so a
-    hook defaulting to `self.run_id` would be handed `run-0001` while runs
-    2..N simulate elsewhere and never see what it generated. Driven through
-    the real `run_multiple`, with the hook raising after it records the
-    namespace so the flow stops at PRE.
+    `_run_test_cfg_for_run_ids` builds the runner with `run_ids[0]`, so a hook
+    defaulting to `self.run_id` would get `run-0001` for all N runs. The hook raises
+    after recording the namespace so the flow stops at PRE.
     """
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
 
@@ -323,8 +311,7 @@ def test_run_multiple_tells_the_hook_it_serves_no_particular_run(tmp_path):
 
 
 def test_a_single_run_still_gets_its_own_run_id(tmp_path):
-    """The `run()` path — plain `test`, or one dispatched element — is the
-    case where the hook really is preparing one specific run."""
+    """A single `run()` gives the hook its own run id."""
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
 
     ns = _preproc_namespace(tmp_path, run_id=4)
@@ -333,7 +320,7 @@ def test_a_single_run_still_gets_its_own_run_id(tmp_path):
     assert ns["run_artifact_dir"].endswith("run-0004")
 
 
-# --- sweep (RtlBuddy._expand_tests_with_sweep()) -----------------------------
+# sweep (RtlBuddy._expand_tests_with_sweep())
 
 
 class DummySweepTest:
@@ -418,14 +405,12 @@ def test_sweep_plain_module_level_logic_still_runs(tmp_path):
     assert test_cfgs[0].get_name() == "basic"
 
 
-# --- exec_hook_script: sys.modules registration (issue #343) -----------------
+# exec_hook_script: sys.modules registration
 
 
 def test_exec_hook_script_registers_module_for_dataclass_hooks(tmp_path):
-    """A hook using `from __future__ import annotations` + @dataclass crashes
-    with 'NoneType' object has no attribute '__dict__' unless the sentinel
-    module is registered in sys.modules during exec — CPython 3.11's
-    dataclasses._is_type resolves sys.modules.get(cls.__module__) unguarded."""
+    """The sentinel module is registered in sys.modules during exec, or `from __future__
+    import annotations` + @dataclass hooks crash in `dataclasses._is_type`."""
     script = tmp_path / "hook.py"
     code = (
         "from __future__ import annotations\n"
@@ -476,10 +461,10 @@ def test_exec_hook_script_restores_previous_sys_modules_binding(tmp_path):
         del sys.modules[HOOK_MODULE_NAME]
 
 
-# --- hook stdout capture (issue #371) ----------------------------------------
+# hook stdout capture
 
-# The reproducer from the issue: the template's example_preproc.py prints a
-# progress line, which used to arrive on stdout ahead of the envelope.
+# The template's example_preproc.py prints a progress line that must not precede the
+# envelope.
 _PRINTING_PREPROC = (
     "print(f'Running example_preproc.py for test: {test_cfg.get_name()}')\n"
 )
@@ -490,7 +475,7 @@ _PRINTING_SWEEP = (
 
 
 def test_machine_envelope_parses_with_a_printing_preproc_hook(tmp_path, capsys):
-    """The #371 repro: json.loads(stdout) failed at 'line 1 column 1'."""
+    """The machine envelope parses with a printing preproc hook."""
     setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
     sim = _make_preproc_sim(tmp_path, _PRINTING_PREPROC)
 
@@ -502,7 +487,7 @@ def test_machine_envelope_parses_with_a_printing_preproc_hook(tmp_path, capsys):
     assert envelope["command"] == "test"
     assert envelope["exit_code"] == 0
     assert "Running example_preproc.py" not in captured.out
-    # Not dropped — still on stderr, where it cannot corrupt the envelope.
+    # Not dropped: still on stderr.
     assert "Running example_preproc.py for test: basic" in captured.err
 
 
@@ -521,10 +506,10 @@ def test_machine_envelope_parses_with_a_printing_sweep_hook(tmp_path, capsys):
 
 
 def test_human_mode_still_shows_the_hook_print(tmp_path, capsys):
-    """Human mode must lose no information — the line is re-framed, not hidden.
+    """Human mode still shows the hook print, re-framed.
 
-    The console handler sits at WARNING, so this only holds because the
-    capture routes through log_console_event rather than a plain INFO record.
+    The console handler sits at WARNING, so this holds only because the capture uses
+    log_console_event.
     """
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
     sim = _make_preproc_sim(tmp_path, _PRINTING_PREPROC)
@@ -538,7 +523,7 @@ def test_human_mode_still_shows_the_hook_print(tmp_path, capsys):
 
 
 def test_hook_stdout_is_logged_with_stage_and_script(tmp_path):
-    """The text stays recoverable from rtl_buddy.log as structured events."""
+    """Hook stdout is logged as structured events with stage and script."""
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, machine=True, log_path=log_path)
     script = tmp_path / "hook.py"
@@ -559,7 +544,7 @@ def test_hook_stdout_is_logged_with_stage_and_script(tmp_path):
 
 
 def test_hook_rebinding_sys_stdout_does_not_crash_and_is_restored(tmp_path):
-    """Hooks that manage sys.stdout themselves are out of scope, not fatal."""
+    """A hook rebinding sys.stdout does not crash and stdout is restored."""
     import sys
 
     setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
@@ -595,14 +580,8 @@ def test_hook_stdout_is_restored_when_the_hook_raises(tmp_path):
 
 
 def test_hook_stdout_is_a_text_sink_not_a_file(tmp_path):
-    """The capture is Python-level, and the boundary is deliberate (#371).
-
-    `_HookStdout` is an `io.TextIOBase`, so the two byte-level routes to
-    fd 1 — `sys.stdout.fileno()` (as in `subprocess.run(..., stdout=
-    sys.stdout)`) and `sys.stdout.buffer` — raise rather than reaching the
-    envelope stream. Pinned because it is a behaviour change for hooks that
-    used either, and `docs/known-issues.md` promises exactly this shape.
-    """
+    """Hook stdout is a text sink: `sys.stdout.fileno()` and `sys.stdout.buffer` raise
+    (`docs/known-issues.md`)."""
     import io
 
     setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
