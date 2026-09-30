@@ -1,9 +1,9 @@
 ## Run randomized tests
 
 ```bash
-uv run rb test basic --rnd-new
-uv run rb randtest basic 5
-uv run rb randtest basic 5 --rnd-rpt 3
+uv run rb test basic --rnd-new         # one run with a new seed
+uv run rb randtest basic 5             # five distinct iterations
+uv run rb randtest basic 5 --rnd-rpt 3 # replay iteration 3
 ```
 
-These commands run once with a new seed, run five distinct iterations, and replay iteration 3 respectively. Seeds are recorded with the test artefacts.
+Seeds are recorded with the test artefacts.

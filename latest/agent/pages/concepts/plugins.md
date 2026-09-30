@@ -6,7 +6,7 @@ description: Configure sweep and preprocessing hooks in tests.yaml, including th
 
 <a id="hooks"></a>
 
-Tests can run Python hooks without changing `rtl_buddy`. Configure hooks per test in `tests.yaml`; hook scripts execute at module scope and receive predefined variables rather than function arguments.
+Hooks are Python scripts that customize tests without changing `rtl_buddy`. Configure them per test in `tests.yaml`. A hook runs at module scope and receives predefined variables, not function arguments.
 
 ## Expand tests with `sweep`
 
@@ -33,19 +33,19 @@ for i in range(4):
 
 | Variable | Value |
 |---|---|
-| `test_cfg` | Original immutable `TestConfig`; copied variants may change any field except `reglvl` |
-| `root_cfg` | Mutable `RootConfig` |
-| `suite_dir` | Absolute directory containing `tests.yaml` |
-| `artifact_dir` | Artefact root for the incoming test name |
-| `out_test_cfgs` | Output list the script must assign |
-| `logger` | rtl_buddy logger |
-| `__file__` | Absolute hook path |
+| `test_cfg` | The original, immutable `TestConfig`. A copy may change any field except `reglvl`. |
+| `root_cfg` | The mutable `RootConfig`. |
+| `suite_dir` | Absolute directory containing `tests.yaml`. |
+| `artifact_dir` | Artefact root for the incoming test name. |
+| `out_test_cfgs` | Output list the script must assign. |
+| `logger` | The rtl_buddy logger. |
+| `__file__` | Absolute path of the hook. |
 
-A script exception marks the source test as a setup failure; remaining tests continue.
+If the script raises, the source test is a setup failure and the remaining tests continue.
 
 ## Modify a test with `preproc`
 
-Preprocessing runs after sweep expansion and before compile. Modify `test_cfg` directly:
+Preprocessing runs after sweep expansion and before compile. Modify `test_cfg` in place:
 
 ```yaml
 - name: basic
@@ -66,21 +66,21 @@ test_cfg.plusargs["stimulus"] = str(
 )
 ```
 
-The script receives `test_cfg`, `root_cfg`, `suite_dir`, `artifact_dir`, `logger`, and `__file__`, plus:
+A `preproc` script receives the sweep variables except `out_test_cfgs`, plus:
 
 | Variable | Value |
 |---|---|
-| `run_id` | Run index for a dispatched element or single test; `None` when one hook invocation serves several local `randtest` runs |
-| `run_artifact_dir` | `artifact_dir/run-NNNN` when `run_id` is set; otherwise `artifact_dir`. This is also the simulation working directory |
+| `run_id` | Run index for a dispatched element or a single test. `None` when one invocation serves several local `randtest` runs. |
+| `run_artifact_dir` | `artifact_dir/run-NNNN` when `run_id` is set, otherwise `artifact_dir`. Also the simulation working directory. |
 
-Both artefact directories exist before the hook runs. A script exception marks the affected test as a setup failure; remaining tests continue.
+Both directories exist before the hook runs. If the script raises, the test is a setup failure and the remaining tests continue.
 
 ## Write generated files safely
 
-Choose the output directory from the data's lifetime:
+Pick the output directory by how the data varies:
 
-- Write test-invariant output to `artifact_dir`. Concurrent dispatched runs share this directory, so publish files atomically with a temporary file and `os.replace()`.
-- Write run- or seed-specific output to `run_artifact_dir`. It is unique only when `run_id` is set. Local `randtest` invokes preproc once for all seeds, so use dispatch or sweep when generation must vary per seed.
+- Test-invariant output goes in `artifact_dir`. Concurrent dispatched runs share it, so write to a temporary file and publish it with `os.replace()`.
+- Run- or seed-specific output goes in `run_artifact_dir`. It is unique only when `run_id` is set. Local `randtest` calls `preproc` once for all seeds, so use dispatch or `sweep` when generated data must differ per seed.
 
 ```python
 import os
@@ -95,25 +95,25 @@ else:
     os.replace(tmp, out)
 ```
 
-Resolve suite inputs from `suite_dir`; do not use `os.getcwd()`. Plusargs are passed verbatim, so make suite-local input paths explicit. Relative output paths may target `run_artifact_dir` because simulation runs there.
+Resolve suite inputs from `suite_dir`, never `os.getcwd()`. Plusargs pass through verbatim, so give suite-local input paths explicitly. A relative output path lands in `run_artifact_dir` because simulation runs there.
 
 ## Handle hook execution context
 
-Hooks run through `exec()` in the invocation working directory, not the suite directory. `__name__` is `"__rtl_buddy_hook__"`, so place hook logic at module scope; an `if __name__ == "__main__":` branch is skipped.
+Hooks run through `exec()` in the invocation working directory, not the suite directory. `__name__` is `"__rtl_buddy_hook__"`, so an `if __name__ == "__main__":` block never runs; put hook logic at module scope.
 
-Hook `print()` output is captured as `hook.stdout`, appears on stderr and in `rtl_buddy.log`, and cannot corrupt `--machine` JSON on stdout. Prefer `logger` when a message needs a level.
+`print()` output is captured as `hook.stdout`, shown on stderr, and written to `rtl_buddy.log`. It cannot corrupt `--machine` JSON on stdout. Use `logger` when a message needs a level.
 
-Child-process output is not captured automatically. Capture it and print it through the hook:
+Child-process output is not captured automatically. Capture it and print it from the hook:
 
 ```python
 res = subprocess.run(cmd, capture_output=True, text=True, check=True)
 print(res.stdout, end="")
 ```
 
-The captured `sys.stdout` has no usable `fileno()` or `.buffer`. If a third-party generator can only write relative to its working directory, change to `suite_dir` temporarily and restore the prior directory in `finally`.
+The captured `sys.stdout` has no usable `fileno()` or `.buffer`. If a third-party generator can only write relative to its working directory, `os.chdir(suite_dir)` for the call and restore the previous directory in `finally`.
 
-See [Execution Context](execution-context.md) for path ownership rules.
+See [Execution Context](execution-context.md) for path ownership.
 
 ## Post-processing
 
-`postproc` is accepted by the configuration loader, but custom post-processing hooks are not executed. Use the built-in post-processing flow.
+The config loader accepts `postproc`, but custom post-processing hooks do not run. Results come from the built-in post-processing flow.

@@ -1,6 +1,6 @@
 ## Configure `fpv.yaml`
 
-Each entry names a model, proof mode, and property inputs:
+Each entry names a model, a proof mode and the property inputs:
 
 ```yaml
 rtl-buddy-filetype: fpv_config
@@ -19,15 +19,25 @@ verifications:
     reglvl: 1000
 ```
 
-Paths are relative to `fpv.yaml`. `top` defaults to the model's root module (its `top:` in `models.yaml`, itself defaulting to the model name), `depth` to 20, and `engines` to `smtbmc yices`. `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Modes are `bmc`, `prove`, `cover`, and `live`.
+- Paths are relative to `fpv.yaml`.
+- Modes are `bmc`, `prove`, `cover` and `live`.
+- `top` defaults to the model's root module, `depth` to 20 and `engines` to `smtbmc yices`.
+- `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Both frontends define `FORMAL`.
 
-Optional run controls include:
+Other fields: `params` (parameter overrides), `tool_overrides` (`timeout`, `extra_args`), `frontend`, `coi` and `vacuity` toggles, `covers` for [spec traceability](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/spec-traceability/), and `xfail` / `xfail_strict` for [expected failures](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/). See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/) for the schema.
 
-- `params` for top-level parameter overrides;
-- `tool_overrides` for `timeout` or `extra_args`;
-- `frontend: verilog|slang`;
-- `coi` and `vacuity` analysis toggles;
-- `covers` for [spec traceability](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/spec-traceability/);
-- `xfail` or `xfail_strict` for [expected failures](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/).
+Project-wide tool settings go in `root_config.yaml`:
 
-See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/) for the complete schema.
+```yaml
+cfg-fpv-tools:
+  - name: sby
+    tool: sby
+    opts:
+      timeout: 600
+      extra-args: ""
+      solver-versions:
+        yices: "2.6.4"
+        z3: "4.13.0"
+```
+
+`solver-versions` pins exact versions for `yices`, `z3`, `boolector`, `bitwuzla`, `btormc` and `abc`. A run fails before starting if any pin does not match, and lists every mismatch.

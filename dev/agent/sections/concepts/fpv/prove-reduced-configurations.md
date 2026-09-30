@@ -1,6 +1,6 @@
 ## Prove reduced configurations
 
-Use `params` to reduce a width or depth when the full state space is impractical:
+When the full state space is impractical, use `params` to shrink a width or depth:
 
 ```yaml
 verifications:
@@ -14,8 +14,7 @@ verifications:
     depth: 24
 ```
 
-Names must be identifiers. Values may be integers, booleans, or strings containing verbatim SystemVerilog literal text. String-valued parameters need embedded quotes, for example `MODE: '"small"'`. Whitespace in values is rejected, as are YAML 1.1 boolean-like keys such as unquoted `on` or `off`.
+- Names must be identifiers. Values are integers, booleans, or strings holding verbatim SystemVerilog text, so a string parameter needs embedded quotes: `MODE: '"small"'`.
+- Whitespace in values is rejected, as are YAML 1.1 boolean-like keys such as unquoted `on` or `off`.
 
-The verilog frontend applies overrides with `chparam`; slang applies them during `read_slang` with `-G`. The same values apply to the primary proof, vacuity, and COI passes.
-
-A reduced proof establishes only that configuration. Keep a full-size run at a feasible depth when the shipping configuration also needs coverage.
+A reduced proof covers only that configuration. Keep a full-size run at a feasible depth if the shipping configuration also needs it.

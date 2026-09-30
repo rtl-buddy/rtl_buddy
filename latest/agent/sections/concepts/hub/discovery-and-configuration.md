@@ -1,10 +1,8 @@
 ## Discovery and configuration
 
-The hub writes `.rtl-buddy/hub.json` after binding. It contains the PID, TCP address, project root, server version, and optional HTTP port and active model. Peers discover this file by walking upward from their current directory.
+The running hub writes `.rtl-buddy/hub.json` with its PID, TCP address and HTTP port. Peers find it by walking up from their current directory. A peer outside the project tree sets `RTL_BUDDY_HUB=<host>:<port>` to the `tcp` value from `hub.json`; it is an address, not a file path.
 
-Set `RTL_BUDDY_HUB=<host>:<port>` when a peer runs outside the project tree. Use the `tcp` value from `hub.json`; the variable is not a file path.
-
-Optional `.rtl-buddy/hub.toml` settings include:
+Optional `.rtl-buddy/hub.toml`:
 
 ```toml
 [hub]
@@ -21,10 +19,4 @@ wave = "tb.legacy_dut.clk"
 view = "tb.dut.clk"
 ```
 
-Port `0` lets the OS choose. Relative paths resolve from the project root. Signal aliases are applied before `tb_prefix` is removed. Validate edits with:
-
-```bash
-rb hub config validate
-```
-
-Only `[hub]` and `[mapping]` are valid top-level sections. Unknown keys inside those sections are tolerated for forward compatibility.
+Port `0` lets the OS choose. Relative paths resolve from the project root. Signal aliases apply before `tb_prefix` is removed. Only `[hub]` and `[mapping]` are accepted: an unknown top-level section is an error, and unknown keys inside them are ignored. Check edits with `rb hub config validate`.

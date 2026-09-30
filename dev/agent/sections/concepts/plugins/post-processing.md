@@ -1,3 +1,3 @@
 ## Post-processing
 
-`postproc` is accepted by the configuration loader, but custom post-processing hooks are not executed. Use the built-in post-processing flow.
+The config loader accepts `postproc`, but custom post-processing hooks do not run. Results come from the built-in post-processing flow.

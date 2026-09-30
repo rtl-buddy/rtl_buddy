@@ -26,23 +26,23 @@ verifications:
 | `tool` | Required | Backend and `cfg-fpv-tools` entry; only `sby` is supported |
 | `model` | Required | Model name |
 | `model_path` | Required | `models.yaml` relative to `fpv.yaml` |
-| `top` | Default model | Elaboration top; letters, digits and underscore only (no `$`), same rule as a `models.yaml` `top` |
-| `properties` | Optional | Property files relative to `fpv.yaml`; may be omitted for in-RTL FORMAL properties |
+| `top` | Default model | Elaboration top. Wins over the model's `top` and follows the [same rule](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#model-top) |
+| `properties` | Optional | Property files relative to `fpv.yaml`. May be omitted for in-RTL FORMAL properties |
 | `constraints` | Optional | One environment-assumption file, read before properties |
 | `mode` | Default `bmc` | `bmc`, `prove`, `cover`, or `live` |
 | `depth` | Default 20 | Proof depth |
 | `engines` | Default `[smtbmc yices]` | SymbiYosys engine specifications |
-| `params` | Optional map | Top-level parameter overrides applied to proof, vacuity, and COI elaboration |
+| `params` | Optional map | Top-level parameter overrides, applied to proof, vacuity, and COI elaboration |
 | `reglvl` | Optional | Regression level |
 | `covers` | Optional list | Specification coverage IDs; no proof effect |
 | `tool_overrides` | Optional map | Per-tool `timeout` and `extra_args` |
-| `vacuity` | Default true for bmc/prove | Derive antecedent reachability covers; default false for cover/live |
-| `coi` | Default true | Run cone-of-influence and dead-assume analysis |
-| `frontend` | Default `verilog` | `verilog` or `slang`; slang requires the configured plugin |
+| `vacuity` | Default true for bmc/prove, false for cover/live | Derives antecedent reachability covers |
+| `coi` | Default true | Runs cone-of-influence and dead-assume analysis |
+| `frontend` | Default `verilog` | `verilog` or `slang`. Slang requires the configured plugin |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 
-A verification's own `top` wins over the model's, and it is checked at load time against the [same rule](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#modelsyaml) a `models.yaml` `top` is: it reaches the generated yosys script (`prep -top <top>`), the `chparam` lines and the `bind_to` construction unquoted, so a path separator, a newline, a `$` or an escaped identifier is refused rather than escaped per generator. A `mut.yaml` `top` is checked the same way.
+Design sources, constraints, and properties are read in that order.
 
-Parameter names must be identifiers. Values may be integers, booleans, or strings containing whitespace-free SystemVerilog literal text; string parameters need embedded quotes, for example `MODE: '"small"'`. YAML boolean-like keys such as unquoted `on` and invalid values are rejected. The verilog frontend uses `chparam`; slang applies `-G` during elaboration.
+Parameter names must be identifiers. Values are integers, booleans, or strings of whitespace-free SystemVerilog literal text. A string parameter needs embedded quotes, for example `MODE: '"small"'`. Boolean-like keys such as an unquoted `on`, and invalid values, are rejected. The verilog frontend applies parameters with `chparam`, and slang applies `-G` during elaboration.
 
-Design sources, constraints, and properties are read in that order. See [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpv/) for frontend behavior, proof-quality checks, artefacts, and counterexamples.
+An `fpv.yaml` `top` and a `mut.yaml` `top` are checked at load time by the same rule as a model `top`. See [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpv/) for frontend behavior, proof-quality checks, artefacts, and counterexamples.

@@ -1,6 +1,6 @@
 ## Declare verification coverage
 
-Add coverage item IDs to simulation tests:
+List coverage item IDs under `covers` on simulation tests:
 
 ```yaml
 tests:
@@ -23,4 +23,4 @@ verifications:
     covers: [MYBLK-COV-03]
 ```
 
-Multiple verifications may cover one item, and one verification may cover several items. Formal suites are discovered through the project-root `fpv_regression.yaml`.
+Several verifications may cover one item, and one verification may cover several items. Formal suites are found through the project-root `fpv_regression.yaml`.

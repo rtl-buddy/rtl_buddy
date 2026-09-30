@@ -3,10 +3,8 @@
 ```text
 Usage: rtl-buddy hub send overlay [OPTIONS] NAME
 
- Flip an overlay's enabled state on the SPA. Built-in NAMES are 'clock', 'reset',
- 'axi-perf', 'wave'; an unknown name is a no-op. Use --on / --off (default --on).
- Useful for agents or scripted demos that want to direct the user's attention to a
- specific overlay layer without a UI click.
+ Enable or disable an overlay on the schematic. NAME is 'clock', 'reset', 'axi-perf' or
+ 'wave'; an unknown name does nothing.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  overlay name [required]                                         │

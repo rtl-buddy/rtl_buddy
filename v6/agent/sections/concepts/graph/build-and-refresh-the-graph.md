@@ -1,27 +1,10 @@
 ## Build and refresh the graph
 
-Build structural data first, then refresh the independent results overlay after tests or coverage runs:
+`rb graph build` covers every model under the design directory and writes `artefacts/graph/graph.json`. `rb graph results` then adds current test and coverage state in a separate overlay file; rerun it after tests or coverage runs.
 
-```bash
-rb graph build
-rb graph results
-```
+- Narrow a build with a repeatable `--model NAME` or with `-c/--regression FILE`. The two are mutually exclusive.
+- `--no-design`, `--no-tb`, `--no-flow-tops`, `--no-bind` and `--no-extract` skip individual parts; `--force` ignores the cache. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#graph).
 
-By default, `graph build` finds every model under the design directory. Select a smaller scope with a repeatable `--model NAME` or with `-c/--regression FILE`; those two selectors are mutually exclusive.
+A build has three tiers: the design hierarchy from `rtl-buddy-view`, the declarations in rtl_buddy configs, and bindings (cocotb, Python imports, signal access, golden models, DPI). An optional external binding tier is added when `rtl-buddy-graph-extract` is installed; without it that tier is `skipped` and the graph stays usable.
 
-The normal build includes:
-
-- DUT, testbench, and non-simulation run hierarchies from `rtl-buddy-view`.
-- Test, model, regression, specification, and coverage declarations from rtl_buddy configs.
-- cocotb, Python import, signal-access, golden-model, and DPI bindings.
-- An optional external binding tier when `rtl-buddy-graph-extract` is installed.
-
-Useful reductions are `--no-design`, `--no-tb`, `--no-flow-tops`, `--no-bind`, and `--no-extract`. Use `--force` to ignore a valid cache. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/#graph) for the complete option list.
-
-The design tier requires a compatible `rtl-buddy-view`:
-
-```bash
-rb tool-check --explain rtl-buddy-view
-```
-
-The external extractor is optional. If absent, its tier is `skipped` and the graph remains usable. A requested tier that breaks is `failed`; per-model failures become non-zero only with `--strict`. Inspect `graph-meta.json` for tier status and failure details.
+The design tier needs a compatible `rtl-buddy-view`; check it with `rb tool-check --explain rtl-buddy-view`. A missing or incompatible `rtl-buddy-view` makes the design tier `failed`. Per-model failures make the command exit non-zero only with `--strict`. `graph-meta.json` records each tier's status and failures.

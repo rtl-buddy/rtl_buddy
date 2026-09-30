@@ -1,8 +1,6 @@
 ## Run a regression
 
-An elaboration regression deliberately selects `models.yaml` files through a
-small manifest. It runs only named profiles, so adding an ordinary model does
-not silently expand a project-wide gate.
+An elaboration regression takes a small manifest that lists `models.yaml` files. It runs only named profiles, so adding an ordinary model does not widen a project-wide gate.
 
 ```yaml
 rtl-buddy-filetype: elab_reg_config
@@ -15,6 +13,6 @@ model-configs:
 rb --machine elab-regression -c elab_regression.yaml --reg-level 1
 ```
 
-Profiles above the requested level produce `SKIP`. A manifest with no named
-profiles is an error instead of an empty passing regression. Set
-`cfg-rtl-reg.elab-reg-cfg-path` when the manifest is not at the project root.
+- Profiles above the requested level report `SKIP`.
+- A manifest with no named profiles is an error, not an empty pass.
+- If the manifest is not at the project root, set `cfg-rtl-reg.elab-reg-cfg-path`.

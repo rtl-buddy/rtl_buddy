@@ -19,7 +19,7 @@ Use the catalog for page and section-level retrieval:
 - [Execution Context](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/execution-context.md): Resolve RTL Buddy command roots, configuration paths, logs, artefacts, hook paths, and concurrent-run conflicts.
 - [Expected Failures](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/expected-failures.md): Mark known failures, choose whether an unexpected pass should fail a run, and know which failures a marker never covers.
 - [FPGA Implementation](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/fpga.md): Configure and run FPGA synthesis, placement, routing, reports, and optional bitstream generation with Vivado or openXC7.
-- [Formal property verification](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/fpv.md): Configure and run SymbiYosys formal verification, choose a SystemVerilog frontend, inspect proof quality, and debug failures.
+- [Formal property verification](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/fpv.md): Configure and run SymbiYosys formal verification, choose a SystemVerilog frontend, check proof quality, and debug failures.
 - [Design Knowledge Graph](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/graph.md): Build and query rtl_buddy's design knowledge graph, join test and coverage results, and use its CLI, MCP, and browser interfaces.
 - [Hierarchy Rendering](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/hier.md): Render or query a model or testbench hierarchy with `rb hier`, `rb hier-query`, and the external `rtl-buddy-view` renderer.
 - [Hub (`rb hub`)](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/hub.md): Start and operate the rtl_buddy hub, connect browser and editor peers, switch designs, send commands, and diagnose connection or view failures.
@@ -32,8 +32,8 @@ Use the catalog for page and section-level retrieval:
 - [Root Config](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/root-config.md): Configure project-wide platforms, simulation builders, tool paths, regression defaults, and machine-local environment values in root_config.yaml.
 - [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/simulators.md): Choose between Verilator and Icarus Verilog simulation backends and understand their coverage and waveform differences.
 - [Spec traceability](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/spec-traceability.md): Link specification items to design models, simulation tests, and formal verifications, then check traceability with rb spec.
-- [Synthesis](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/synthesis.md): Configure and run Yosys synthesis with optional OpenROAD timing analysis, PDK mapping, slang parsing, and effort levels.
-- [Tests](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/tests.md): Define and run tests from tests.yaml, control timeouts and seeds, interpret verdicts, and reuse compiled builds.
+- [Synthesis](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/synthesis.md): Configure and run Yosys synthesis with optional OpenROAD timing analysis, PDK mapping, the slang frontend, correctness gates, and effort levels.
+- [Tests](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/tests.md): Define and run tests from tests.yaml, control timeouts and seeds, read verdicts, and reuse compiled builds.
 - [Tool dependency check](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/tool-check.md): Check external-tool availability and versions, diagnose blocked subcommands, and gate CI with rb tool-check.
 - [Waveform Viewer](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/wave.md): Open simulation and formal waveforms in Surfer, configure editor navigation, and use live signal annotation safely.
 - [Design-Space Exploration (`rb xplr`)](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/xplr.md): Record, compare, reproduce, and prune design-space experiments with the `rb xplr` ledger.
@@ -45,7 +45,7 @@ Use the catalog for page and section-level retrieval:
 - [Development Environment Setup](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/development/setup.md): Set up rtl_buddy for local development and run its lint, test, docs, and package checks.
 - [RTL Buddy](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/index.md): RTL Buddy is a config-driven CLI for Verilog and SystemVerilog simulation, regressions, synthesis, formal verification, physical design, and debug workflows.
 - [Installation](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/install.md): Install RTL Buddy with uv, verify it, and add the external tools required by each workflow.
-- [Quirks & Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/known-issues.md): Current rtl_buddy limitations, surprising behavior, and required workarounds by workflow.
+- [Quirks & Known Issues](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/known-issues.md): Current rtl_buddy limitations, surprising behavior, and required workarounds, grouped by workflow.
 - [Migrations](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/migrations.md): Required project changes for rtl_buddy major-version upgrades and the legacy submodule-to-uv migration.
 - [Quick Start](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/quickstart.md): Run tests, regressions, synthesis, and randomized simulation in an existing RTL Buddy project.
 - [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/reference/cli.md): Auto-generated CLI reference for documented rtl-buddy commands and their options.

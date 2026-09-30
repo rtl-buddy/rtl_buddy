@@ -1,8 +1,8 @@
 ## Inspect results
 
-Each suite writes orchestration output to `rtl_buddy.log` and per-test output under `artefacts/<test>/`. A `randtest` iteration uses `artefacts/<test>/run-NNNN/`; latest-run symlinks remain at the test artefact root.
+Each suite writes orchestration output to `rtl_buddy.log` and per-test output to `artefacts/<test>/`. A `randtest` iteration writes to `artefacts/<test>/run-NNNN/`, and latest-run symlinks stay at the test artefact root.
 
-For programmatic output:
+For JSON output:
 
 ```bash
 uv run rb --machine test basic

@@ -1,9 +1,9 @@
 ## Render a testbench hierarchy
 
-Use TB view when you need the hierarchy above and around the DUT:
+`--view tb` shows the hierarchy above and around the DUT:
 
 ```bash
 rb hier basic_traffic --view tb
 ```
 
-In this mode the positional name selects a test from `tests.yaml`, not a model. The test identifies the DUT model and testbench top. Tests that share the same `(model, testbench)` reuse the generated hierarchy artefact.
+Here the positional name is a test from `tests.yaml`, not a model. The test supplies the DUT model and testbench top. Tests with the same `(model, testbench)` reuse one generated hierarchy artefact.

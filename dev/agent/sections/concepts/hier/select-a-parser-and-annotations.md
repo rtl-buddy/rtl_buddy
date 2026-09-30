@@ -1,6 +1,6 @@
 ## Select a parser and annotations
 
-Pass `--frontend slang` for SystemVerilog that the default parser cannot elaborate. Frontend names are validated by the renderer.
+Pass `--frontend slang` for SystemVerilog the default parser cannot elaborate. The renderer validates frontend names.
 
 Domain overlays are JSON maps keyed by hierarchical instance path:
 

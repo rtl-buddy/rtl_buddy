@@ -1,7 +1,5 @@
 ## Find artefacts and logs
 
-Outputs are under `artefacts/axi/`:
-
 ```text
 artefacts/axi/
 ├── <model>/
@@ -17,6 +15,6 @@ artefacts/axi/
     └── axi-profile-notebook.log
 ```
 
-Files appear only for stages that produce them; a custom `-o` path replaces the corresponding default output.
+Files exist only for stages that ran, and a custom `-o` path replaces the matching default.
 
-Each subcommand returns the external profiler's exit code. For elaboration, ingest, or write failures, inspect the matching log. Configuration, missing manifest, missing trace, and missing notebook prerequisites are reported before invoking the tool.
+Each subcommand returns the profiler's exit code. For elaboration, ingest or write failures, read the matching log. Configuration errors and missing manifest, trace or notebook prerequisites are reported before the tool is invoked.

@@ -68,6 +68,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/agents/machine-mode.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/agents/#know-which-commands-write-a-log",
+          "slug": "know-which-commands-write-a-log",
+          "title": "Know which commands write a log",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/agents/know-which-commands-write-a-log.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/agents/#parse-command-results",
           "slug": "parse-command-results",
           "title": "Parse command results",
@@ -168,12 +174,6 @@
           "slug": "hub-integration",
           "title": "Hub integration",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/axi-profile/hub-integration.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/axi-profile/#current-constraints",
-          "slug": "current-constraints",
-          "title": "Current constraints",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/axi-profile/current-constraints.md"
         }
       ],
       "slug": "concepts/axi-profile",
@@ -224,6 +224,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/merge-and-export-results.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#add-directory-and-source-point-summaries",
+          "slug": "add-directory-and-source-point-summaries",
+          "title": "Add directory and source-point summaries",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/add-directory-and-source-point-summaries.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#read-a-failed-merge",
+          "slug": "read-a-failed-merge",
+          "title": "Read a failed merge",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/read-a-failed-merge.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#per-elaboration-vs-source-point-figures",
           "slug": "per-elaboration-vs-source-point-figures",
           "title": "Per-elaboration vs source-point figures",
@@ -242,6 +254,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/use-saved-coverage-artefacts.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#skip-the-model-when-nothing-will-read-it",
+          "slug": "skip-the-model-when-nothing-will-read-it",
+          "title": "Skip the model when nothing will read it",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/skip-the-model-when-nothing-will-read-it.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#query-saved-coverage-with-rb-cov",
           "slug": "query-saved-coverage-with-rb-cov",
           "title": "Query saved coverage with `rb cov`",
@@ -252,6 +270,12 @@
           "slug": "inspect-coverage-in-the-hub",
           "title": "Inspect coverage in the hub",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/inspect-coverage-in-the-hub.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/coverage/troubleshooting.md"
         }
       ],
       "slug": "concepts/coverage",
@@ -262,6 +286,12 @@
       "description": "Run tests concurrently on one host or Slurm, configure resources and retries, and diagnose dispatched builds and jobs.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/",
       "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#choose-a-backend",
+          "slug": "choose-a-backend",
+          "title": "Choose a backend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/choose-a-backend.md"
+        },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#run-on-one-host",
           "slug": "run-on-one-host",
@@ -275,10 +305,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/meet-the-slurm-requirements.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#understand-build-and-simulation-jobs",
-          "slug": "understand-build-and-simulation-jobs",
-          "title": "Understand build and simulation jobs",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/understand-build-and-simulation-jobs.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#follow-a-slurm-run",
+          "slug": "follow-a-slurm-run",
+          "title": "Follow a Slurm run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/follow-a-slurm-run.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#configure-dispatch",
@@ -305,6 +335,60 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/set-compile-resources-per-suite-and-testbench.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#compile-several-builds-at-once",
+          "slug": "compile-several-builds-at-once",
+          "title": "Compile several builds at once",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/compile-several-builds-at-once.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#split-verilation-from-the-c-build",
+          "slug": "split-verilation-from-the-c-build",
+          "title": "Split verilation from the C++ build",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/split-verilation-from-the-c-build.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#split-large-groups-into-several-arrays",
+          "slug": "split-large-groups-into-several-arrays",
+          "title": "Split large groups into several arrays",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/split-large-groups-into-several-arrays.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#use-a-non-default-or-several-slurm-clusters",
+          "slug": "use-a-non-default-or-several-slurm-clusters",
+          "title": "Use a non-default or several Slurm clusters",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/use-a-non-default-or-several-slurm-clusters.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#tag-job-names-for-one-caller",
+          "slug": "tag-job-names-for-one-caller",
+          "title": "Tag job names for one caller",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/tag-job-names-for-one-caller.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#reuse-shared-builds-and-force-a-rebuild",
+          "slug": "reuse-shared-builds-and-force-a-rebuild",
+          "title": "Reuse shared builds and force a rebuild",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/reuse-shared-builds-and-force-a-rebuild.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#start-simulations-as-each-build-finishes",
+          "slug": "start-simulations-as-each-build-finishes",
+          "title": "Start simulations as each build finishes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/start-simulations-as-each-build-finishes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#recover-when-a-gated-job-cannot-use-the-build",
+          "slug": "recover-when-a-gated-job-cannot-use-the-build",
+          "title": "Recover when a gated job cannot use the build",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/recover-when-a-gated-job-cannot-use-the-build.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#interrupted-runs-warn-cancel-adopt",
+          "slug": "interrupted-runs-warn-cancel-adopt",
+          "title": "Interrupted runs: warn, cancel, adopt",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/interrupted-runs-warn-cancel-adopt.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#retry-license-queue-timeouts",
           "slug": "retry-license-queue-timeouts",
           "title": "Retry license-queue timeouts",
@@ -317,16 +401,46 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/monitor-and-stop-a-run.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#tag-job-names-for-one-caller",
-          "slug": "tag-job-names-for-one-caller",
-          "title": "Tag job names for one caller",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/tag-job-names-for-one-caller.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#apply-reservation-advice",
           "slug": "apply-reservation-advice",
           "title": "Apply reservation advice",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/apply-reservation-advice.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#read-advice-for-the-build-and-verilate-jobs",
+          "slug": "read-advice-for-the-build-and-verilate-jobs",
+          "title": "Read advice for the build and verilate jobs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/read-advice-for-the-build-and-verilate-jobs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#judge-cpu-advice-against-requested-cpus",
+          "slug": "judge-cpu-advice-against-requested-cpus",
+          "title": "Judge cpu advice against requested cpus",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/judge-cpu-advice-against-requested-cpus.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#handle-cpu-overrides-in-sbatch-args",
+          "slug": "handle-cpu-overrides-in-sbatch-args",
+          "title": "Handle cpu overrides in sbatch-args",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/handle-cpu-overrides-in-sbatch-args.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#troubleshoot-reservations-arrays-and-waits",
+          "slug": "troubleshoot-reservations-arrays-and-waits",
+          "title": "Troubleshoot reservations, arrays, and waits",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/troubleshoot-reservations-arrays-and-waits.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#troubleshoot-builds",
+          "slug": "troubleshoot-builds",
+          "title": "Troubleshoot builds",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/troubleshoot-builds.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#troubleshoot-early-release",
+          "slug": "troubleshoot-early-release",
+          "title": "Troubleshoot early release",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/troubleshoot-early-release.md"
         }
       ],
       "slug": "concepts/dispatch",
@@ -356,10 +470,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/elaboration/run-a-regression.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/elaboration/#outputs-and-dispatch",
-          "slug": "outputs-and-dispatch",
-          "title": "Outputs and dispatch",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/elaboration/outputs-and-dispatch.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/elaboration/#outputs",
+          "slug": "outputs",
+          "title": "Outputs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/elaboration/outputs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/elaboration/#dispatch-elaboration",
+          "slug": "dispatch-elaboration",
+          "title": "Dispatch elaboration",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/elaboration/dispatch-elaboration.md"
         }
       ],
       "slug": "concepts/elaboration",
@@ -432,6 +552,12 @@
           "slug": "what-the-marker-covers",
           "title": "What the marker covers",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/expected-failures/what-the-marker-covers.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/expected-failures/#read-a-marker-that-was-not-applied",
+          "slug": "read-a-marker-that-was-not-applied",
+          "title": "Read a marker that was not applied",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/expected-failures/read-a-marker-that-was-not-applied.md"
         }
       ],
       "slug": "concepts/expected-failures",
@@ -455,10 +581,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpga/configure-fpgayaml.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/#platforms-cfg-fpga-platforms",
-          "slug": "platforms-cfg-fpga-platforms",
-          "title": "Platforms: `cfg-fpga-platforms`",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpga/platforms-cfg-fpga-platforms.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/#share-parts-with-platforms",
+          "slug": "share-parts-with-platforms",
+          "title": "Share parts with platforms",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpga/share-parts-with-platforms.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/#run-one-suite-or-a-regression",
@@ -473,10 +599,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpga/read-timing-and-quality-results.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/#power",
-          "slug": "power",
-          "title": "Power",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpga/power.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/#read-power-results",
+          "slug": "read-power-results",
+          "title": "Read power results",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpga/read-power-results.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/#generate-or-audit-cdc-constraints",
@@ -502,7 +628,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/fpga.md"
     },
     {
-      "description": "Configure and run SymbiYosys formal verification, choose a SystemVerilog frontend, inspect proof quality, and debug failures.",
+      "description": "Configure and run SymbiYosys formal verification, choose a SystemVerilog frontend, check proof quality, and debug failures.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/",
       "sections": [
         {
@@ -518,22 +644,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/configure-fpvyaml.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#configure-symbiyosys-and-solvers",
-          "slug": "configure-symbiyosys-and-solvers",
-          "title": "Configure SymbiYosys and solvers",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/configure-symbiyosys-and-solvers.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#choose-the-systemverilog-frontend",
           "slug": "choose-the-systemverilog-frontend",
           "title": "Choose the SystemVerilog frontend",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/choose-the-systemverilog-frontend.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#understand-input-processing",
-          "slug": "understand-input-processing",
-          "title": "Understand input processing",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/understand-input-processing.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#run-formal-verification",
@@ -548,10 +662,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/check-proof-quality.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#write-properties-that-prove",
-          "slug": "write-properties-that-prove",
-          "title": "Write properties that prove",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/write-properties-that-prove.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#debug-unknown-from-prove",
+          "slug": "debug-unknown-from-prove",
+          "title": "Debug `UNKNOWN` from `prove`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/debug-unknown-from-prove.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#constrain-reset-and-keep-covers-reachable",
+          "slug": "constrain-reset-and-keep-covers-reachable",
+          "title": "Constrain reset and keep covers reachable",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/constrain-reset-and-keep-covers-reachable.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#avoid-frontend-specific-property-failures",
@@ -570,6 +690,12 @@
           "slug": "inspect-artefacts-and-counterexamples",
           "title": "Inspect artefacts and counterexamples",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/inspect-artefacts-and-counterexamples.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/fpv/troubleshooting.md"
         }
       ],
       "slug": "concepts/fpv",
@@ -581,10 +707,22 @@
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/",
       "sections": [
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#choose-graph-or-source-lookup",
+          "slug": "choose-graph-or-source-lookup",
+          "title": "Choose graph or source lookup",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/choose-graph-or-source-lookup.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#build-and-refresh-the-graph",
           "slug": "build-and-refresh-the-graph",
           "title": "Build and refresh the graph",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/build-and-refresh-the-graph.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#cached-builds",
+          "slug": "cached-builds",
+          "title": "Cached builds",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/cached-builds.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#models-with-no-elaborable-root",
@@ -593,16 +731,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/models-with-no-elaborable-root.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#model-names-and-tops-must-be-distinct",
+          "slug": "model-names-and-tops-must-be-distinct",
+          "title": "Model names and tops must be distinct",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/model-names-and-tops-must-be-distinct.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#query-the-graph",
           "slug": "query-the-graph",
           "title": "Query the graph",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/query-the-graph.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#choose-graph-or-source-lookup",
-          "slug": "choose-graph-or-source-lookup",
-          "title": "Choose graph or source lookup",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/choose-graph-or-source-lookup.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#results-overlay",
@@ -623,36 +761,6 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/physical-heat-on-the-graph.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#graph-data-model",
-          "slug": "graph-data-model",
-          "title": "Graph data model",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/graph-data-model.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#node-types",
-          "slug": "node-types",
-          "title": "Node Types",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/node-types.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#edge-types",
-          "slug": "edge-types",
-          "title": "Edge Types",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/edge-types.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#flow-provenance",
-          "slug": "flow-provenance",
-          "title": "Flow provenance",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/flow-provenance.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#output-paths",
-          "slug": "output-paths",
-          "title": "Output Paths",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/output-paths.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#looking-at-the-graph",
           "slug": "looking-at-the-graph",
           "title": "Looking at the Graph",
@@ -665,10 +773,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/the-mcp-server.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#load-graphjson-directly",
-          "slug": "load-graphjson-directly",
-          "title": "Load graph.json directly",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/load-graphjson-directly.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#graph-data-model",
+          "slug": "graph-data-model",
+          "title": "Graph data model",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/graph-data-model.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/graph/troubleshooting.md"
         }
       ],
       "slug": "concepts/graph",
@@ -761,10 +875,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/hub/connect-peers.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/#driving-the-hub-from-the-cli",
-          "slug": "driving-the-hub-from-the-cli",
-          "title": "Driving the hub from the CLI",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/hub/driving-the-hub-from-the-cli.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/#drive-the-hub-from-the-cli",
+          "slug": "drive-the-hub-from-the-cli",
+          "title": "Drive the hub from the CLI",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/hub/drive-the-hub-from-the-cli.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/#design-knowledge-graph-pane",
@@ -824,6 +938,18 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/configure-a-campaign.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/#choose-kill-oracles",
+          "slug": "choose-kill-oracles",
+          "title": "Choose kill oracles",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/choose-kill-oracles.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/#choose-operators",
+          "slug": "choose-operators",
+          "title": "Choose operators",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/choose-operators.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/#scope-a-hierarchical-campaign",
           "slug": "scope-a-hierarchical-campaign",
           "title": "Scope a hierarchical campaign",
@@ -840,6 +966,12 @@
           "slug": "interpret-results",
           "title": "Interpret results",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/interpret-results.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/#exit-codes",
+          "slug": "exit-codes",
+          "title": "Exit codes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/mut/exit-codes.md"
         }
       ],
       "slug": "concepts/mut",
@@ -893,10 +1025,34 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/browse-the-model-in-the-hub.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#machine-payloads",
-          "slug": "machine-payloads",
-          "title": "Machine payloads",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/machine-payloads.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#focus-the-pane-from-another-app",
+          "slug": "focus-the-pane-from-another-app",
+          "title": "Focus the pane from another app",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/focus-the-pane-from-another-app.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#paint-the-graph-with-physical-heat",
+          "slug": "paint-the-graph-with-physical-heat",
+          "title": "Paint the graph with physical heat",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/paint-the-graph-with-physical-heat.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#machine-output",
+          "slug": "machine-output",
+          "title": "Machine output",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/machine-output.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#use-phys-from-mcp",
+          "slug": "use-phys-from-mcp",
+          "title": "Use phys from MCP",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/use-phys-from-mcp.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/phys/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/phys/troubleshooting.md"
         }
       ],
       "slug": "concepts/phys",
@@ -959,58 +1115,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/define-a-pr-run.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#configure-the-physical-platform",
-          "slug": "configure-the-physical-platform",
-          "title": "Configure the physical platform",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/configure-the-physical-platform.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps",
-          "slug": "tune-the-process-dependent-steps",
-          "title": "Tune the process-dependent steps",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#pdk-setup-notes",
-          "slug": "pdk-setup-notes",
-          "title": "PDK setup notes",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/pdk-setup-notes.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#constrain-boundary-pins",
-          "slug": "constrain-boundary-pins",
-          "title": "Constrain boundary pins",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/constrain-boundary-pins.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints",
-          "slug": "keep-stage-checkpoints",
-          "title": "Keep stage checkpoints",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#harden-a-block",
-          "slug": "harden-a-block",
-          "title": "Harden a block",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/harden-a-block.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#assemble-hardened-blocks",
-          "slug": "assemble-hardened-blocks",
-          "title": "Assemble hardened blocks",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/assemble-hardened-blocks.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-pr",
           "slug": "run-pr",
           "title": "Run P&R",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-pr.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#export-a-saved-result",
-          "slug": "export-a-saved-result",
-          "title": "Export a saved result",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/export-a-saved-result.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#interpret-results",
@@ -1023,6 +1131,132 @@
           "slug": "inspect-artefacts",
           "title": "Inspect artefacts",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/inspect-artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#configure-the-physical-platform",
+          "slug": "configure-the-physical-platform",
+          "title": "Configure the physical platform",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/configure-the-physical-platform.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners",
+          "slug": "sign-off-at-several-corners",
+          "title": "Sign off at several corners",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/sign-off-at-several-corners.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps",
+          "slug": "tune-the-process-dependent-steps",
+          "title": "Tune the process-dependent steps",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/tune-the-process-dependent-steps.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#exclude-cells-with-dont-use-cells",
+          "slug": "exclude-cells-with-dont-use-cells",
+          "title": "Exclude cells with dont-use-cells",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/exclude-cells-with-dont-use-cells.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#extract-parasitics-with-rcx-rules",
+          "slug": "extract-parasitics-with-rcx-rules",
+          "title": "Extract parasitics with rcx-rules",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/extract-parasitics-with-rcx-rules.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#macro-placement",
+          "slug": "macro-placement",
+          "title": "Macro placement",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/macro-placement.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#rtl-mp-macro-placement",
+          "slug": "rtl-mp-macro-placement",
+          "title": "RTL-MP macro placement",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/rtl-mp-macro-placement.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#floorplan-controls",
+          "slug": "floorplan-controls",
+          "title": "Floorplan controls",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/floorplan-controls.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#constrain-boundary-pins",
+          "slug": "constrain-boundary-pins",
+          "title": "Constrain boundary pins",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/constrain-boundary-pins.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#pdk-setup-notes",
+          "slug": "pdk-setup-notes",
+          "title": "PDK setup notes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/pdk-setup-notes.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#openroad-threads",
+          "slug": "openroad-threads",
+          "title": "OpenROAD threads",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/openroad-threads.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#keep-stage-checkpoints",
+          "slug": "keep-stage-checkpoints",
+          "title": "Keep stage checkpoints",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/keep-stage-checkpoints.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-inputs",
+          "slug": "stream-out-inputs",
+          "title": "Stream-out inputs",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/stream-out-inputs.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#stream-out-completeness",
+          "slug": "stream-out-completeness",
+          "title": "Stream-out completeness",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/stream-out-completeness.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#export-a-saved-result",
+          "slug": "export-a-saved-result",
+          "title": "Export a saved result",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/export-a-saved-result.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#harden-a-block",
+          "slug": "harden-a-block",
+          "title": "Harden a block",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/harden-a-block.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#block-power-grid-convention",
+          "slug": "block-power-grid-convention",
+          "title": "Block power-grid convention",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/block-power-grid-convention.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#assemble-hardened-blocks",
+          "slug": "assemble-hardened-blocks",
+          "title": "Assemble hardened blocks",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/assemble-hardened-blocks.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-a-whole-hierarchy",
+          "slug": "run-a-whole-hierarchy",
+          "title": "Run a whole hierarchy",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/run-a-whole-hierarchy.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#build-a-hierarchy-from-a-clean-tree",
+          "slug": "build-a-hierarchy-from-a-clean-tree",
+          "title": "Build a hierarchy from a clean tree",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/build-a-hierarchy-from-a-clean-tree.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/troubleshooting.md"
         }
       ],
       "slug": "concepts/pnr",
@@ -1034,34 +1268,28 @@
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/",
       "sections": [
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#choose-the-design-source",
-          "slug": "choose-the-design-source",
-          "title": "Choose the design source",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/choose-the-design-source.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#install-openroad",
           "slug": "install-openroad",
           "title": "Install OpenROAD",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/install-openroad.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#choose-the-design-source",
+          "slug": "choose-the-design-source",
+          "title": "Choose the design source",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/choose-the-design-source.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#extracted-parasitics",
+          "slug": "extracted-parasitics",
+          "title": "Extracted parasitics",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/extracted-parasitics.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#define-power-runs",
           "slug": "define-power-runs",
           "title": "Define power runs",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/define-power-runs.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#give-hard-macros-a-library",
-          "slug": "give-hard-macros-a-library",
-          "title": "Give hard macros a library",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/give-hard-macros-a-library.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#read-the-unpowered-cell-warning",
-          "slug": "read-the-unpowered-cell-warning",
-          "title": "Read the unpowered-cell warning",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/read-the-unpowered-cell-warning.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#select-activity",
@@ -1074,6 +1302,18 @@
           "slug": "capture-saif-activity",
           "title": "Capture SAIF activity",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/capture-saif-activity.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#give-hard-macros-a-library",
+          "slug": "give-hard-macros-a-library",
+          "title": "Give hard macros a library",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/give-hard-macros-a-library.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#read-the-unpowered-cell-warning",
+          "slug": "read-the-unpowered-cell-warning",
+          "title": "Read the unpowered-cell warning",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/read-the-unpowered-cell-warning.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#run-power-analysis",
@@ -1098,6 +1338,12 @@
           "slug": "inspect-artefacts",
           "title": "Inspect artefacts",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/inspect-artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/power/troubleshooting.md"
         }
       ],
       "slug": "concepts/power",
@@ -1285,7 +1531,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/spec-traceability.md"
     },
     {
-      "description": "Configure and run Yosys synthesis with optional OpenROAD timing analysis, PDK mapping, slang parsing, and effort levels.",
+      "description": "Configure and run Yosys synthesis with optional OpenROAD timing analysis, PDK mapping, the slang frontend, correctness gates, and effort levels.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/",
       "sections": [
         {
@@ -1313,10 +1559,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/configure-tools-and-the-pdk.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#use-sdc-constraints",
-          "slug": "use-sdc-constraints",
-          "title": "Use SDC constraints",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/use-sdc-constraints.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#how-the-sdc-is-read",
+          "slug": "how-the-sdc-is-read",
+          "title": "How the SDC is read",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/how-the-sdc-is-read.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#systemverilog-frontend",
@@ -1325,10 +1571,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/systemverilog-frontend.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#correctness-gates",
+          "slug": "correctness-gates",
+          "title": "Correctness gates",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/correctness-gates.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-static-lifetime-subroutines",
           "slug": "gate-static-lifetime-subroutines",
           "title": "Gate static-lifetime subroutines",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/gate-static-lifetime-subroutines.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#preprocessor-definitions",
+          "slug": "preprocessor-definitions",
+          "title": "Preprocessor definitions",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/preprocessor-definitions.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#gate-conflicting-drivers",
@@ -1371,6 +1629,12 @@
           "slug": "inspect-artefacts",
           "title": "Inspect artefacts",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/inspect-artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/synthesis/troubleshooting.md"
         }
       ],
       "slug": "concepts/synthesis",
@@ -1378,7 +1642,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/synthesis.md"
     },
     {
-      "description": "Define and run tests from tests.yaml, control timeouts and seeds, interpret verdicts, and reuse compiled builds.",
+      "description": "Define and run tests from tests.yaml, control timeouts and seeds, read verdicts, and reuse compiled builds.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/",
       "sections": [
         {
@@ -1412,12 +1676,6 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/set-simulation-timeouts.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#triaging-sim-hit-timeout",
-          "slug": "triaging-sim-hit-timeout",
-          "title": "Triaging `Sim hit timeout`",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/triaging-sim-hit-timeout.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#produce-a-verdict",
           "slug": "produce-a-verdict",
           "title": "Produce a verdict",
@@ -1442,6 +1700,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/sharing-compiled-builds-across-tests.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#persistent-build-cache",
+          "slug": "persistent-build-cache",
+          "title": "Persistent build cache",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/persistent-build-cache.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#run-with-randomized-seeds",
           "slug": "run-with-randomized-seeds",
           "title": "Run with randomized seeds",
@@ -1452,6 +1716,12 @@
           "slug": "inspect-artefacts",
           "title": "Inspect artefacts",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/inspect-artefacts.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tests/troubleshooting.md"
         }
       ],
       "slug": "concepts/tests",
@@ -1469,10 +1739,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/check-the-environment.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#check-in-process-readers",
-          "slug": "check-in-process-readers",
-          "title": "Check in-process readers",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/check-in-process-readers.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#optional-binaries",
+          "slug": "optional-binaries",
+          "title": "Optional binaries",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/optional-binaries.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#in-process-readers",
+          "slug": "in-process-readers",
+          "title": "In-process readers",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/in-process-readers.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#gate-scripts-and-ci",
@@ -1481,16 +1757,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/gate-scripts-and-ci.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#read-the-json-payload",
+          "slug": "read-the-json-payload",
+          "title": "Read the JSON payload",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/read-the-json-payload.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#apply-project-configuration",
           "slug": "apply-project-configuration",
           "title": "Apply project configuration",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/apply-project-configuration.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#understand-the-manifest",
-          "slug": "understand-the-manifest",
-          "title": "Understand the manifest",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/understand-the-manifest.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/#troubleshooting",
+          "slug": "troubleshooting",
+          "title": "Troubleshooting",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/tool-check/troubleshooting.md"
         }
       ],
       "slug": "concepts/tool-check",
@@ -1583,10 +1865,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/xplr/attach-an-outcome.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/#read-the-ledger-frontier-diff-knob-effect",
-          "slug": "read-the-ledger-frontier-diff-knob-effect",
-          "title": "Read the ledger: frontier, diff, knob-effect",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/xplr/read-the-ledger-frontier-diff-knob-effect.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/#read-the-ledger",
+          "slug": "read-the-ledger",
+          "title": "Read the ledger",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/xplr/read-the-ledger.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/#use-the-exploration-loop",
@@ -1601,10 +1883,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/xplr/materialize-revisions-and-reclaim-disk.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/#mockflow-a-synthetic-benchmark-with-known-answers",
-          "slug": "mockflow-a-synthetic-benchmark-with-known-answers",
-          "title": "Mockflow: a synthetic benchmark with known answers",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/xplr/mockflow-a-synthetic-benchmark-with-known-answers.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/#test-a-policy-with-the-mock-flow",
+          "slug": "test-a-policy-with-the-mock-flow",
+          "title": "Test a policy with the mock flow",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/xplr/test-a-policy-with-the-mock-flow.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/#configure-xplr",
@@ -1979,6 +2261,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/install/external-tools-by-feature.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/install/#slurm-dispatch-tools",
+          "slug": "slurm-dispatch-tools",
+          "title": "Slurm dispatch tools",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/install/slurm-dispatch-tools.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/install/#update-rtl-buddy",
           "slug": "update-rtl-buddy",
           "title": "Update RTL Buddy",
@@ -2002,7 +2290,7 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/install.md"
     },
     {
-      "description": "Current rtl_buddy limitations, surprising behavior, and required workarounds by workflow.",
+      "description": "Current rtl_buddy limitations, surprising behavior, and required workarounds, grouped by workflow.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/",
       "sections": [
         {
@@ -2054,22 +2342,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/hook-scripts-are-not-normal-standalone-scripts.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
-          "slug": "deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
-          "title": "Deeply nested expressions can exhaust the elaboration stack on macOS",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#compilation-unit-bind-requires-the-slang-frontend",
-          "slug": "compilation-unit-bind-requires-the-slang-frontend",
-          "title": "Compilation-unit bind requires the slang frontend",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/compilation-unit-bind-requires-the-slang-frontend.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#verify-that-anyconst-elaborates",
-          "slug": "verify-that-anyconst-elaborates",
-          "title": "Verify that `anyconst` elaborates",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/verify-that-anyconst-elaborates.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#toplevel-must-name-the-testbench-in-a-plain-systemverilog-test",
+          "slug": "toplevel-must-name-the-testbench-in-a-plain-systemverilog-test",
+          "title": "`toplevel:` must name the testbench in a plain SystemVerilog test",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/toplevel-must-name-the-testbench-in-a-plain-systemverilog-test.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#narrow-vcs-access-flags-suppress-cocotb-defaults",
@@ -2084,22 +2360,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/vcs-license-waits-pause-the-simulation-timeout.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#axi-profiling-converts-vcs-vpd-traces",
-          "slug": "axi-profiling-converts-vcs-vpd-traces",
-          "title": "AXI profiling converts VCS VPD traces",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/axi-profiling-converts-vcs-vpd-traces.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-timeout-kill-can-leave-testlog-with-an-unflushed-tail",
           "slug": "a-timeout-kill-can-leave-testlog-with-an-unflushed-tail",
           "title": "A timeout kill can leave `test.log` with an unflushed tail",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-timeout-kill-can-leave-testlog-with-an-unflushed-tail.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#pywellen-must-stay-within-025x",
-          "slug": "pywellen-must-stay-within-025x",
-          "title": "pywellen must stay within 0.25.x",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/pywellen-must-stay-within-025x.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
+          "slug": "deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos",
+          "title": "Deeply nested expressions can exhaust the elaboration stack on macOS",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/deeply-nested-expressions-can-exhaust-the-elaboration-stack-on-macos.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#artifact-locking-is-per-tree-and-per-host",
@@ -2118,12 +2388,6 @@
           "slug": "tool-flows-delete-their-previous-outputs-before-running",
           "title": "Tool flows delete their previous outputs before running",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/tool-flows-delete-their-previous-outputs-before-running.md"
-        },
-        {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#dispatch-changes-build-behavior",
-          "slug": "dispatch-changes-build-behavior",
-          "title": "Dispatch changes build behavior",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/dispatch-changes-build-behavior.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#local-parallel-enforces-only-the-job-count",
@@ -2156,6 +2420,24 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/dispatch-build-jobs-cover-the-whole-suite.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#preprocessors-run-in-every-dispatched-job",
+          "slug": "preprocessors-run-in-every-dispatched-job",
+          "title": "Preprocessors run in every dispatched job",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/preprocessors-run-in-every-dispatched-job.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#simulation-jobs-reuse-the-build-stamp",
+          "slug": "simulation-jobs-reuse-the-build-stamp",
+          "title": "Simulation jobs reuse the build stamp",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/simulation-jobs-reuse-the-build-stamp.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#design-compile-errors-under-dispatch-are-compilefail",
+          "slug": "design-compile-errors-under-dispatch-are-compilefail",
+          "title": "Design compile errors under dispatch are CompileFail",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/design-compile-errors-under-dispatch-are-compilefail.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#slurm-retry-reuses-artifact-paths",
           "slug": "slurm-retry-reuses-artifact-paths",
           "title": "Slurm retry reuses artifact paths",
@@ -2168,34 +2450,40 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/slurm-memory-advice-depends-on-accounting-samples.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-nvim-install-requires-git-and-network-access",
-          "slug": "rb-nvim-install-requires-git-and-network-access",
-          "title": "`rb nvim-install` requires git and network access",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-nvim-install-requires-git-and-network-access.md"
-        },
-        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#generated-runf-files-are-checkout-specific",
           "slug": "generated-runf-files-are-checkout-specific",
           "title": "Generated `run.f` files are checkout-specific",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/generated-runf-files-are-checkout-specific.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#shared-build-dependency-tracking-varies-by-simulator",
-          "slug": "shared-build-dependency-tracking-varies-by-simulator",
-          "title": "Shared-build dependency tracking varies by simulator",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/shared-build-dependency-tracking-varies-by-simulator.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#mount-paths-must-match-across-cluster-nodes",
+          "slug": "mount-paths-must-match-across-cluster-nodes",
+          "title": "Mount paths must match across cluster nodes",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/mount-paths-must-match-across-cluster-nodes.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#the-first-run-after-upgrading-recompiles-every-shared-build",
-          "slug": "the-first-run-after-upgrading-recompiles-every-shared-build",
-          "title": "The first run after upgrading recompiles every shared build",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/the-first-run-after-upgrading-recompiles-every-shared-build.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#shared-build-stamps-track-dependencies-differently-per-simulator",
+          "slug": "shared-build-stamps-track-dependencies-differently-per-simulator",
+          "title": "Shared-build stamps track dependencies differently per simulator",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/shared-build-stamps-track-dependencies-differently-per-simulator.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#check-every-toplevel-before-upgrading-it-now-roots-the-compile",
-          "slug": "check-every-toplevel-before-upgrading-it-now-roots-the-compile",
-          "title": "Check every `toplevel:` before upgrading: it now roots the compile",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/check-every-toplevel-before-upgrading-it-now-roots-the-compile.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#shared-build-locking",
+          "slug": "shared-build-locking",
+          "title": "Shared-build locking",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/shared-build-locking.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#slurm-serialises-build-jobs-of-the-same-suite",
+          "slug": "slurm-serialises-build-jobs-of-the-same-suite",
+          "title": "Slurm serialises build jobs of the same suite",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/slurm-serialises-build-jobs-of-the-same-suite.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-different-rtlbuddy-version-does-not-reuse-shared-builds",
+          "slug": "a-different-rtlbuddy-version-does-not-reuse-shared-builds",
+          "title": "A different rtl_buddy version does not reuse shared builds",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-different-rtlbuddy-version-does-not-reuse-shared-builds.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#yosys-backed-flows-do-not-support-whitespace-in-paths",
@@ -2240,6 +2528,30 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/graph-pane-heat-attributes-a-leaf-to-the-nearest-instance-the-graph-knows.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#graph-coverage-source-changes-attribution",
+          "slug": "graph-coverage-source-changes-attribution",
+          "title": "Graph coverage source changes attribution",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/graph-coverage-source-changes-attribution.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge",
+          "slug": "a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge",
+          "title": "A cocotb test over an opted-out model keeps a dangling DUT edge",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#compilation-unit-bind-requires-the-slang-frontend",
+          "slug": "compilation-unit-bind-requires-the-slang-frontend",
+          "title": "Compilation-unit bind requires the slang frontend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/compilation-unit-bind-requires-the-slang-frontend.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#verify-that-anyconst-elaborates",
+          "slug": "verify-that-anyconst-elaborates",
+          "title": "Verify that `anyconst` elaborates",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/verify-that-anyconst-elaborates.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#fpv-coi-analysis-is-best-effort",
           "slug": "fpv-coi-analysis-is-best-effort",
           "title": "FPV COI analysis is best-effort",
@@ -2264,16 +2576,16 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/fpga-timing-is-optional-unless-gated.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#graph-coverage-source-changes-attribution",
-          "slug": "graph-coverage-source-changes-attribution",
-          "title": "Graph coverage source changes attribution",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/graph-coverage-source-changes-attribution.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#pywellen-must-stay-within-025x",
+          "slug": "pywellen-must-stay-within-025x",
+          "title": "pywellen must stay within 0.25.x",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/pywellen-must-stay-within-025x.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge",
-          "slug": "a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge",
-          "title": "A cocotb test over an opted-out model keeps a dangling DUT edge",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/a-cocotb-test-over-an-opted-out-model-keeps-a-dangling-dut-edge.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-nvim-install-requires-git-and-network-access",
+          "slug": "rb-nvim-install-requires-git-and-network-access",
+          "title": "`rb nvim-install` requires git and network access",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-nvim-install-requires-git-and-network-access.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#the-viewer-distribution-and-executable-have-different-names",

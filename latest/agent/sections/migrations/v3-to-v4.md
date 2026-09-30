@@ -1,6 +1,6 @@
 ## v3 to v4
 
-Replace `cfg-synth-libs` with reusable PDK data plus flow-specific platform selectors:
+`cfg-synth-libs` is replaced by reusable PDK data plus flow-specific platform selectors:
 
 ```yaml
 # v3
@@ -19,4 +19,8 @@ cfg-synth-platforms:
   - { name: nangate45_typ, pdk: nangate45, corner: typ }
 ```
 
-In `synth.yaml`, replace `libraries: [name]` with `platform: name`. Add `cfg-pnr-platforms` only for `rb pnr`. API users must replace `get_synth_lib_cfg` with `get_synth_platform_cfg`; use `get_pdk_cfg` and `get_pnr_platform_cfg` for the new layers. See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/) and [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/).
+- In `synth.yaml`, replace `libraries: [name]` with `platform: name`.
+- Add `cfg-pnr-platforms` only if you run `rb pnr`.
+- API users: replace `get_synth_lib_cfg` with `get_synth_platform_cfg`, and use `get_pdk_cfg` and `get_pnr_platform_cfg` for the new layers.
+
+See [Synthesis](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/) and [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/).

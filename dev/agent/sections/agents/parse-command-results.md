@@ -1,6 +1,6 @@
 ## Parse command results
 
-Structured commands emit this top-level shape:
+Structured commands print this top-level shape:
 
 ```json
 {
@@ -18,16 +18,16 @@ Structured commands emit this top-level shape:
 }
 ```
 
-`meta.cwd` is the invocation directory; `meta.git` describes the project root, so the two differ when rb is invoked from outside the checkout.
+`meta.cwd` is the invocation directory and `meta.git` describes the project root, so they differ when `rb` runs from outside the checkout.
 
-Parse the whole stdout value with `json.loads()`. The stable top-level fields are `command`, `exit_code`, `meta`, and command-specific `payload`. Optional fields may be added under `meta` or `payload`; incompatible changes require a major version change.
+Parse the whole stdout with `json.loads()`. `command`, `exit_code`, `meta`, and the command-specific `payload` are stable. Optional fields may be added under `meta` or `payload`; an incompatible change needs a major version.
 
-Common payload conventions:
+Payload conventions:
 
-- listing commands use `payload.names`;
-- regression results use `payload.results` and include `suite`;
-- elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`;
-- `docs list` uses `payload.pages`;
-- coverage and formal commands attach structured metrics and artefact paths to their results.
+- Listing commands use `payload.names`.
+- Regression results use `payload.results` and include `suite`.
+- Elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`.
+- `docs list` uses `payload.pages`.
+- Coverage and formal results carry structured metrics and artefact paths.
 
-Use [Coverage](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/) and [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/) for their payload-specific contracts. Use [Tests](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#interpret-results) for status and exit-code semantics.
+See [Coverage](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/) and [Formal Property Verification](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/) for their payloads, and [Tests](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#interpret-results) for statuses and exit codes.

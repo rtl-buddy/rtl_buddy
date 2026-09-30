@@ -25,8 +25,8 @@ analyses:
 | `constraints` | Required | SDC path relative to `cdc.yaml` |
 | `desc` | Required | Human-readable description |
 | `waivers` | Optional | Waiver path relative to `cdc.yaml` |
-| `frontend` | Optional | Forwarded analyzer frontend |
-| `single_unit` | Default false | Forward `--single-unit` for one preprocessor compilation unit |
+| `frontend` | Optional | Analyzer frontend, forwarded as given |
+| `single_unit` | Default false | Forwards `--single-unit` for one preprocessor compilation unit |
 | `blackbox` | Optional list | Module names forwarded with `--blackbox` |
 | `recognized-syncs` | Optional list | Instance regular expressions accepted as synchronizers |
 | `reglvl` | Optional | Regression level |

@@ -7,10 +7,6 @@ rb fpv -c fpv/demo_fifo/fpv.yaml --list
 rb fpv-regression -c fpv_regression.yaml -l 1000
 ```
 
-The summary reports the overall verdict, mode, depth, engines, engine result mix, runtime, and counterexample path. SymbiYosys does not provide structured per-assertion verdicts, so rtl_buddy reports per-engine status as the finest granularity.
+The summary shows the verdict, mode, depth, engines, engine result mix, runtime and counterexample path. sby gives no per-assertion verdicts; per-engine status is the finest detail.
 
-A run is PASS when `sby_workdir/status` contains `PASS`, or when sby exits 0 without a status file. `FAIL`, `UNKNOWN`, `ERROR`, or a nonzero process exit is a failed run. A regression entry above the selected level is SKIP.
-
-<a id="cone-of-influence-coverage"></a>
-<a id="dead-assume-detection"></a>
-<a id="vacuity-covers"></a>
+A run passes when sby reports `PASS`. `FAIL`, `UNKNOWN`, `ERROR` or a nonzero exit fails it. In a regression, an entry above the selected level is `SKIP`.

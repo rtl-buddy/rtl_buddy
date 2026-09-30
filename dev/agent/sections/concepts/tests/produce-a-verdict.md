@@ -1,6 +1,6 @@
 ## Produce a verdict
 
-For a non-UVM, non-cocotb test, print exactly one terminal marker to simulator stdout at the start of a line:
+A plain (non-UVM, non-cocotb) test prints exactly one terminal marker at the start of a line on stdout:
 
 ```systemverilog
 if (test_passed) begin
@@ -11,9 +11,11 @@ end else begin
 end
 ```
 
-Use `ERR:` or `FAT:` after `FAIL` to include the reason in the summary. If both terminal markers appear, `FAIL` wins and RTL Buddy logs a warning. If neither appears, the outcome is unknown: the result is `NA` and the run exits 1. A simulator exit code alone is not a non-UVM verdict, but a simulator that exits nonzero *and* prints no marker has aborted, and that combination is reported as `FAIL`.
-
-For UVM, configure thresholds and let RTL Buddy parse the UVM Report Summary:
+- `ERR:` or `FAT:` lines after `FAIL` put the reason in the summary.
+- If both markers appear, `FAIL` wins and a warning is logged.
+- If neither appears, the result is `NA` and the run exits 1. A nonzero simulator exit with no marker is an abort and reports `FAIL`.
+- UVM tests are judged by thresholds on the UVM Report Summary; a missing or malformed summary fails the test.
+- cocotb tests are judged from `cocotb_results.xml`. Do not print markers.
 
 ```yaml
 uvm:
@@ -21,6 +23,4 @@ uvm:
   max_errors: 0
 ```
 
-A missing or malformed UVM summary fails the test. cocotb tests use `cocotb_results.xml` instead; do not print transcript markers for them.
-
-Setup hooks, filelist validation, compilation, and simulation timeout can also produce `FAIL` before transcript parsing.
+Setup hooks, filelist validation, compilation and timeouts can also produce `FAIL` before any transcript is parsed.

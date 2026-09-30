@@ -1,6 +1,6 @@
 ## Enable coverage
 
-Coverage instrumentation must be present at compile time. Add a builder mode in `root_config.yaml` and select it when running tests:
+Coverage must be compiled in. Add a builder mode and a `cfg-coverage` entry to `root_config.yaml`, then select the mode with `-M`:
 
 ```yaml
 cfg-rtl-builder:
@@ -22,6 +22,4 @@ rb -M cov test basic
 rb -M cov regression
 ```
 
-`cfg-coverage.name` must match the simulator family. `use-lcov: true` enables LCOV conversion and HTML generation. Configure optional Coverview packaging under `cfg-coverview`; see [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#root_configyaml).
-
-Any coverage output flag asserts that executed tests will produce raw coverage. If no non-skipped test does, the command exits 2 with a configuration error. A selection containing only skipped tests does not error.
+`cfg-coverage.name` must match the simulator family. `use-lcov: true` enables LCOV conversion and HTML generation. Coverview packaging is configured under `cfg-coverview`; see [YAML formats](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#root_configyaml).

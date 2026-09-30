@@ -4,7 +4,7 @@
 uv run rb regression
 ```
 
-This uses `./regression.yaml` when present, then the path configured in `root_config.yaml`. To choose another manifest:
+The manifest is `./regression.yaml` when present, otherwise the path set in `root_config.yaml`. To choose one:
 
 ```bash
 uv run rb regression --reg-config path/to/regression.yaml

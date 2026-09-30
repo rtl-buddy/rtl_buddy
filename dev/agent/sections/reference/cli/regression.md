@@ -89,13 +89,12 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                          [default: (cfg-dispatch     │
 │                                                          orphans, else warn)]        │
 │ --run-tag                            TEXT                namespace this run's        │
-│                                                          artefact tree under         │
-│                                                          artefacts/.runs/<tag>/ so a │
-│                                                          concurrent run of the same  │
-│                                                          suites gets its own trees,  │
-│                                                          its own tree locks and its  │
-│                                                          own logs; shared builds     │
-│                                                          stay shared                 │
+│                                                          artefact trees under        │
+│                                                          artefacts/.runs/<tag>/ with │
+│                                                          their own tree locks and    │
+│                                                          logs, so concurrent runs of │
+│                                                          the suites do not collide;  │
+│                                                          shared builds stay shared   │
 │ --help                                                   Show this message and exit. │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

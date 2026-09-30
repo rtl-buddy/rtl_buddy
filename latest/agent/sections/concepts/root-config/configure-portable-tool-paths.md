@@ -11,8 +11,8 @@ cfg-surfer:
       - surfer
 ```
 
-RTL Buddy expands `~` and environment variables, then chooses the first executable candidate that exists. Relative paths resolve from `root_config.yaml`; a bare name falls back to `PATH`. A candidate containing an unset variable is skipped.
+RTL Buddy expands `~` and environment variables and picks the first candidate that exists and is executable. Relative paths resolve from `root_config.yaml`, and a bare name falls back to `PATH`. A candidate containing an unset variable is skipped. A candidate list lets you combine a machine override, a committed shared-tool path, and a `PATH` fallback without editing tracked YAML.
 
-This applies to `cfg-rtl-builder[].builder`, `cfg-surfer[].path`, tool fields in `cfg-*-tools`, and `cfg-verible[].path`. The Verible field names a directory rather than a binary, so a bare value is a root-config-relative directory, not a `PATH` lookup. If the configured directory cannot supply a requested Verible executable, RTL Buddy warns and may use the executable found on `PATH`.
+This applies to `cfg-rtl-builder[].builder`, `cfg-surfer[].path`, the tool fields in `cfg-*-tools`, and `cfg-verible[].path`.
 
-Use candidate lists to combine a machine override, a committed shared-tool path, and a `PATH` fallback without editing tracked YAML.
+`cfg-verible[].path` names a directory, not a binary. A bare value is a directory relative to the root config, not a `PATH` lookup. If that directory lacks a requested Verible executable, RTL Buddy warns and may use the one on `PATH`.

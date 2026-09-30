@@ -1,7 +1,7 @@
 ## Coverage pane
 
-Open `/cov` after a coverage-producing run. `GET /cov.json` uses the same coverage-model builder as `rb cov summary`, so CLI and browser totals agree. `GET /cov/source?path=...` serves only files named by that coverage model and only from under the project root.
+Open `/cov` after a coverage-producing run. `GET /cov.json` uses the same builder as `rb cov summary`, so CLI and browser totals agree. `GET /cov/source?path=...` serves only files named by the coverage model, from under the project root.
 
-The pane supports metric filtering, coldest-file ordering, a per-test lens, annotated source, and per-point attribution. Its numbers are per elaboration throughout; the run's source-point percentages ride in the header tooltip. Clicking source can send `source_focused` and `open_source`; clicking a module can send `graph_focus`. The hub resolves source locations into schematic selections where possible.
+The pane offers metric filtering, coldest-file ordering, a per-test view, annotated source, and per-point attribution. Its numbers are per elaboration; the run's source-point percentages are in the header tooltip. Clicking source opens the editor peer, and clicking a module focuses the graph pane.
 
-Coverage discovery is cached briefly. Reload after a run finishes if the landing page has not yet updated. See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/) for collection and metric definitions.
+Reload after a run finishes if the landing page has not updated. Collection and metric definitions are in [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/).

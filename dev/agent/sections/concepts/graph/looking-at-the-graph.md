@@ -1,6 +1,6 @@
 ## Looking at the Graph
 
-Serve the interactive graph pane through the hub:
+Serve the pane through the hub and open `http://127.0.0.1:<http_port>/gph`:
 
 ```bash
 rb graph build
@@ -8,12 +8,10 @@ rb graph results
 rb hub start --serve-viewer
 ```
 
-Open `http://127.0.0.1:<http_port>/gph`. The pane reads the graph and overlay on reload, groups nodes by specification, design, and verification flow, and can tint design nodes with joined coverage or module nodes with the physical model's area and power (see [Physical Heat on the Graph](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/#physical-heat-on-the-graph)).
-
-Node clicks can focus the schematic or open source in a connected editor. Drive the pane from a script with:
+The pane rereads the graph and overlay on reload. It can tint design nodes with joined coverage, or module nodes with physical heat. Clicking a node focuses the schematic or opens the source in a connected editor. Focus a node from a script with:
 
 ```bash
 rb hub send graph-focus module:dma_engine
 ```
 
-The hub caches the focus so it is delivered when the pane connects. See [Hub](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/#design-knowledge-graph-pane) for browser behavior.
+See [Hub](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/#design-knowledge-graph-pane) for pane behavior.

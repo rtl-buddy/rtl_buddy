@@ -1,17 +1,15 @@
 ## Connect peers
 
-The hub accepts inbound connections only; every adapter is responsible for connecting and reconnecting.
+Each adapter connects and reconnects itself; the hub only accepts connections.
 
 | Peer | Origin | Transport |
 | --- | --- | --- |
-| Schematic SPA | `view` | WebSocket `/ws`. |
-| Graph pane | `graph` | WebSocket `/ws`. |
-| Coverage pane | `cov` | WebSocket `/ws`. |
-| Synth+power pane | `phys` | WebSocket `/ws`. |
-| `rb wave` bridge | `wave` | Line-delimited JSON over TCP. |
-| Editor adapter | `src` | Line-delimited JSON over TCP. |
-| `rb hub send` | `cli` | One-shot TCP client. |
+| Schematic SPA | `view` | WebSocket `/ws` |
+| Graph pane | `graph` | WebSocket `/ws` |
+| Coverage pane | `cov` | WebSocket `/ws` |
+| Synth+power pane | `phys` | WebSocket `/ws` |
+| `rb wave` bridge | `wave` | Line-delimited JSON over TCP |
+| Editor adapter | `src` | Line-delimited JSON over TCP |
+| `rb hub send` | `cli` | One-shot TCP client |
 
-The hub permits one client per origin. A second browser tab can take over and disconnect the prior tab; the prior tab stops reconnecting until the user explicitly takes the connection back. The landing page does not register an origin and therefore cannot evict an app.
-
-`rb hub status` shows the live origins. It intentionally reports protocol origin names such as `view`, `graph`, and `phys`, while the browser labels those apps `sch`, `gph`, and `phy`.
+The hub allows one client per origin. A second browser tab takes over and disconnects the first, which stays disconnected until the user takes the connection back. `rb hub status` lists origins by protocol name (`view`, `graph`, `phys`), while the browser labels the same apps `sch`, `gph` and `phy`.

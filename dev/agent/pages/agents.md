@@ -4,11 +4,11 @@ description: Install the bundled agent skills, query version-matched local docs,
 
 # Agent use of rtl-buddy
 
-Agents should prefer RTL Buddy's local docs and structured command surfaces over parsing terminal formatting or searching the repository without context.
+Agents should use RTL Buddy's local docs and structured command output rather than parsing terminal formatting or searching the repository blind.
 
 ## Find design context
 
-Build the [design knowledge graph](concepts/graph.md) after source or config changes, refresh its results after a regression, and use it for relationships that require elaboration or cross config boundaries:
+Use the [design knowledge graph](concepts/graph.md) for relationships that need elaboration or cross config boundaries. Rebuild it after source or config changes, and refresh results after a regression:
 
 ```bash
 rb --machine graph build
@@ -18,43 +18,46 @@ rb --machine graph explain test:verif/demo_tiny_alu#flags
 rb --machine graph path cocotb_random module:demo_tiny_alu
 ```
 
-Use the graph to locate a source, then cite the exact implementation with the returned `cite` information or:
+Use the graph to locate a source, then cite it with the returned `cite` information or:
 
 ```bash
 rb hier-query <model> source-snippet <instance-path>
 ```
 
-A query exits 1 when nothing matches and 2 when no graph exists. Full node expansion costs more; request `--expand` only when the lean peer summaries are insufficient. Read files directly for single-file questions or when the relevant config is smaller than a graph response.
+- A query exits 1 when nothing matches and 2 when no graph exists.
+- Request `--expand` only when the lean peer summaries are not enough; full node expansion costs more.
+- For a single-file question, or when the relevant config is smaller than a graph response, read the file directly.
 
 ## Use the MCP server
 
-`rb mcp` exposes graph, coverage, physical-metrics, hierarchy, and available live-hub operations as MCP tools over stdio:
-
-```json
-{"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
-```
-
-Install the optional SDK first:
+`rb mcp` exposes graph, coverage, physical-metrics, hierarchy, and live-hub operations as MCP tools over stdio. Install the optional SDK, then register the server:
 
 ```bash
 uv add "rtl_buddy[mcp]"
 ```
 
-Each response wraps the corresponding `--machine` payload in `{tool, ok, meta, payload}`. Command-level failures return `ok: false` and an `error`; they do not become transport failures. The CLI provides the same operations when MCP is unavailable.
+```json
+{"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
+```
 
-The physical-metrics tools are `phys_runs`, `phys_summary`, `phys_module`, and `phys_instance`, reading the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write; they run no EDA tool and need no hub. `phys_runs` lists every run under the project with the power mode, the activity and the configuration fingerprint each recorded, and is where the `phys_dir` the other three take comes from. `phys_summary` heads both its rankings at `limit`, and takes `modules_limit`/`instances_limit` to override it one ranking at a time — each accepting `"none"` for a ranking you do not want, so the complete module table need not carry every leaf instance row. `phys_focus` joins them when a live hub is discovered. `phys_module` joins on the model's `module` column, which holds RTL module names in the synthesis half and Liberty cell names in the power half — see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
+Each response wraps the matching `--machine` payload as `{tool, ok, meta, payload}`. A command-level failure returns `ok: false` with an `error`; it is not a transport failure. The CLI offers the same operations when MCP is unavailable.
+
+The physical-metrics tools read the `phys-model.json` and `phys-manifest.json` that `rb synth` and `rb power` write. They run no EDA tool and need no hub.
+
+- `phys_runs` lists every run under the project with its power mode, activity, and configuration fingerprint. It supplies the `phys_dir` the other three tools take.
+- `phys_summary` limits both rankings to `limit`. `modules_limit` and `instances_limit` override it per ranking, and `"none"` omits a ranking.
+- `phys_module` and `phys_instance` return one module or instance. The model's `module` column holds RTL module names on the synthesis side and Liberty cell names on the power side; see [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer) before attributing power to an RTL block.
+- `phys_focus` is available when a live hub is discovered.
 
 ## Bundled agent skills
 
-The wheel includes a version-matched skill family for Claude Code and Codex. The primary `rtl-buddy` skill routes advanced work to focused test, dispatch, graph, formal, and implementation skills.
+The wheel ships a version-matched skill family for Claude Code and Codex. The primary `rtl-buddy` skill routes advanced work to focused test, dispatch, graph, formal, and implementation skills.
 
 ```bash
 rb skill install
 rb skill status
 rb skill uninstall
 ```
-
-Install scope determines the target:
 
 | Scope | Claude Code | Codex |
 | --- | --- | --- |
@@ -64,13 +67,14 @@ Install scope determines the target:
 
 `<member>` is `rtl-buddy`, `rtl-buddy-test`, `rtl-buddy-dispatch`, `rtl-buddy-graph`, `rtl-buddy-fpv`, or `rtl-buddy-implementation`.
 
-Use project scope only to override user-level skills for a project pinned to a different major. Project discovery walks up for `root_config.yaml`, then `.git/`. Use `--dir PATH` for a flat family outside the normal layout; it cannot be combined with `--project` or `--root`.
-
-Re-run installation after upgrading. It refreshes every member and removes obsolete skill directories at the selected scope. Install or uninstall once at every scope you use. Project installation updates `.gitignore`; pass `--no-gitignore` to suppress that edit.
+- Use project scope only to override user-level skills in a project pinned to a different major version. The project root is found by walking up for `root_config.yaml`, then `.git/`.
+- Use `--dir PATH` for a flat family outside the normal layout. It cannot be combined with `--project` or `--root`.
+- Installing refreshes every member and removes obsolete skill directories at that scope. Install or uninstall once per scope you use. Re-run it after upgrading.
+- Project installation updates `.gitignore`. Pass `--no-gitignore` to skip that.
 
 ## Local docs access
 
-The wheel includes the docs for its installed version:
+The wheel includes the docs for its installed version, so they work offline and match the running release:
 
 ```bash
 rb docs list
@@ -80,18 +84,14 @@ rb --machine docs list
 rb --machine docs show reference/yaml
 ```
 
-`docs list` returns each page's slug, title, and frontmatter description. `docs show` accepts a slug and optional section anchor.
+`docs list` returns each page's slug, title, and frontmatter description. `docs show` takes a slug and an optional section anchor. In machine mode `docs list` uses the standard command envelope, while `docs show` prints the page payload as a bare JSON object.
 
-In machine mode, `docs list` uses the standard command envelope. `docs show` is the exception: it prints the page payload as a bare JSON object so consumers can use the content directly.
+Each published documentation version also has a static network mirror under `dev/` or `v<major>/`:
 
-Every published Docusaurus version also exposes a static agent surface. Use
-`llms.txt` for discovery, `agent/catalog.json` for structured page and section
-metadata, `agent/pages/<slug>.md` for a raw page, or
-`agent/sections/<slug>/<anchor>.md` for one bounded section. These URLs are
-versioned under `dev/` or `v<major>/`; they are the network-accessible mirror,
-not a replacement for the installed-version and offline guarantees above.
-Relative links in bounded sections are rebased to version-pinned human pages so
-they retain the same targets after extraction.
+- `llms.txt` for discovery.
+- `agent/catalog.json` for page and section metadata.
+- `agent/pages/<slug>.md` for a raw page.
+- `agent/sections/<slug>/<anchor>.md` for one section, with relative links rebased to version-pinned pages.
 
 ## Machine mode
 
@@ -102,29 +102,29 @@ rb --machine test basic
 rb --machine regression -c regression.yaml
 ```
 
-Machine mode:
+In machine mode:
 
-- writes `rtl_buddy.log` as JSON Lines for the commands that write one at all;
-- disables Rich formatting, colors, and spinners;
-- prints one structured JSON result to stdout for supported commands;
-- captures Python hook stdout as `hook.stdout` events so it cannot corrupt the result;
-- for `test`, `regression`, and `fpv`, renders the result summary as plain text on stderr and records it as a `summary` event carrying `rows` and `counts`.
+- Commands that write `rtl_buddy.log` write it as JSON Lines.
+- Rich formatting, colors, and spinners are off.
+- Supported commands print one structured JSON result to stdout.
+- Python hook stdout is captured as `hook.stdout` events so it cannot corrupt the result.
+- `test`, `regression`, and `fpv` render their result summary as plain text on stderr and record it as a `summary` event with `rows` and `counts`.
 
-Add `--print-failures-only` to drop `PASS`, `SKIP`, and `XFAIL` rows from that stderr render on a long run; the `summary` event still carries every row.
+Add `--print-failures-only` to omit `PASS`, `SKIP`, and `XFAIL` rows from the stderr summary of a long run. The `summary` event still carries every row.
 
-A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process explicitly; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
+A hook that starts an external process inheriting file descriptor 1 can still write to stdout. Redirect that process; see [Hook execution context](concepts/plugins.md#handle-hook-execution-context).
 
-### Know which commands write a log
+## Know which commands write a log
 
-Every command that runs a flow — `test`, `regression`, `synth`, `power` and the rest — attaches `<command_root>/rtl_buddy.log` and writes its events there. The file is opened for writing, and a process's first open of it truncates it: a flow's log is that run's log, not an accumulation of every run before it.
+Commands that run a flow (`test`, `regression`, `synth`, `power`, and so on) write events to `<command_root>/rtl_buddy.log`. A process's first open truncates the file, so the log holds only the latest run.
 
-Read commands attach no file log. Those are `rb phys`, `rb cov`, the `rb graph` read verbs (`query`, `path`, `explain`), `rb xplr`, and `--list` on any flow command. They answer from artefacts and configs already on disk, so the log would be the only file they wrote — and writing it would truncate the log of the flow being asked about, which is the file to read next. Their events reach the console on stderr, and their result reaches stdout as JSON like any other structured command.
+Read commands write no file log: `rb phys`, `rb cov`, the `rb graph` read verbs (`query`, `path`, `explain`), `rb xplr`, and `--list` on any flow command. Writing one would truncate the log of the flow they report on. Their events go to stderr and their result goes to stdout as JSON.
 
-Read the log of the flow that produced the artefacts, not of the read verb that reported them.
+To debug a run, read the log of the flow that produced the artefacts, not of the read command that reported them.
 
 ## Parse command results
 
-Structured commands emit this top-level shape:
+Structured commands print this top-level shape:
 
 ```json
 {
@@ -142,27 +142,27 @@ Structured commands emit this top-level shape:
 }
 ```
 
-`meta.cwd` is the invocation directory; `meta.git` describes the project root, so the two differ when rb is invoked from outside the checkout.
+`meta.cwd` is the invocation directory and `meta.git` describes the project root, so they differ when `rb` runs from outside the checkout.
 
-Parse the whole stdout value with `json.loads()`. The stable top-level fields are `command`, `exit_code`, `meta`, and command-specific `payload`. Optional fields may be added under `meta` or `payload`; incompatible changes require a major version change.
+Parse the whole stdout with `json.loads()`. `command`, `exit_code`, `meta`, and the command-specific `payload` are stable. Optional fields may be added under `meta` or `payload`; an incompatible change needs a major version.
 
-Common payload conventions:
+Payload conventions:
 
-- listing commands use `payload.names`;
-- regression results use `payload.results` and include `suite`;
-- elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`;
-- `docs list` uses `payload.pages`;
-- coverage and formal commands attach structured metrics and artefact paths to their results.
+- Listing commands use `payload.names`.
+- Regression results use `payload.results` and include `suite`.
+- Elaboration results include top, source and diagnostic counts, elapsed time, peak memory, and `result_json`.
+- `docs list` uses `payload.pages`.
+- Coverage and formal results carry structured metrics and artefact paths.
 
-Use [Coverage](concepts/coverage.md) and [Formal Property Verification](concepts/fpv.md) for their payload-specific contracts. Use [Tests](concepts/tests.md#interpret-results) for status and exit-code semantics.
+See [Coverage](concepts/coverage.md) and [Formal Property Verification](concepts/fpv.md) for their payloads, and [Tests](concepts/tests.md#interpret-results) for statuses and exit codes.
 
 ## Read event logs
 
-Each line in a machine-mode `rtl_buddy.log` is one JSON event:
+Each line of a machine-mode `rtl_buddy.log` is one JSON event:
 
 ```json
 {"event":"sim.completed","test":"smoke","duration_sec":4.2,"message":"smoke: simulation completed in 4.20s"}
 {"event":"postproc.completed","test":"smoke","result":"PASS","desc":"smoke completed","message":"smoke: post-processing completed with result PASS"}
 ```
 
-Use `event` as the discriminator and consume event-specific fields rather than parsing `message`. For a test, `postproc.completed.result` and `.desc` are authoritative. Multi-suite runs also write a log in each suite directory.
+Switch on `event` and read its fields; do not parse `message`. For a test, `postproc.completed.result` and `.desc` are the verdict. A multi-suite run also writes a log in each suite directory.

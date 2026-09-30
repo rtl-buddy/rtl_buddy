@@ -5,4 +5,4 @@ uv add rtl_buddy@latest
 uv sync
 ```
 
-Commit the resulting `pyproject.toml` and lockfile changes with the project.
+Commit the changed `pyproject.toml` and lockfile.

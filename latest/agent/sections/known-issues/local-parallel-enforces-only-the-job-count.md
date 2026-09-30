@@ -1,7 +1,3 @@
 ## local-parallel enforces only the job count
 
-The `local-parallel` backend ignores CPU, memory, time, array-throttle, array-size, and right-sizing settings. `max-jobs-per-array` and `max-array-size` describe Slurm job arrays, of which this backend submits none, so neither throttles nor splits anything here. `-j` or `cfg-dispatch.jobs` is the only limit, so size concurrency for the heaviest test's memory use.
-
-The resolved `compile.parallel` (a suite's own `compile:` block where it sets one, otherwise `cfg-dispatch.compile.parallel`) is the exception: it is not a reservation but concurrency the build job itself honours, and that job occupies one pool slot while fanning out inside it. The real ceiling on the host is therefore `jobs` multiplied by `compile.parallel`, and nothing clamps it. Size the two together.
-
-Normal interruption terminates the worker process groups. `SIGKILL` of the head process cannot run cleanup and can orphan `rb _test-job` children; inspect and stop them after a hard CI timeout or `kill -9`.
+The `local-parallel` backend ignores CPU, memory, time and array settings. `-j` or `cfg-dispatch.jobs` is the only limit, so size it for the heaviest test's memory. `SIGKILL` of the head can orphan `rb _test-job` children; find and stop them. See [Run on one host](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#run-on-one-host).

@@ -1,15 +1,15 @@
 ## Install the renderer
 
-`rb hier` shells out to the `rtl-buddy-view` executable. Install the current `rtl-buddy-sch` distribution:
+`rb hier` runs the `rtl-buddy-view` executable, which the `rtl-buddy-sch` distribution provides:
 
 ```bash
 uv tool install rtl-buddy-sch
 rb tool-check --explain rtl-buddy-view
 ```
 
-Use `--tool /absolute/path/to/rtl-buddy-view` to pin a development build. Optional dependencies are:
+Use `--tool /absolute/path/to/rtl-buddy-view` to pin a development build. Optional dependencies:
 
-- Graphviz `dot` to convert DOT into SVG or PNG.
-- `pyslang` when using `--frontend slang`.
+- Graphviz `dot`, to convert DOT to SVG or PNG.
+- `pyslang`, for `--frontend slang`.
 
-See [Installation](https://rtl-buddy.github.io/rtl_buddy/v6/install/#external-tools-by-feature) for tool setup and [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#the-viewer-distribution-and-executable-have-different-names) if an older `rtl-buddy-view` package conflicts with `rtl-buddy-sch`.
+See [Installation](https://rtl-buddy.github.io/rtl_buddy/v6/install/#external-tools-by-feature) for tool setup. If an older `rtl-buddy-view` package conflicts with `rtl-buddy-sch`, see [Known Issues](https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#the-viewer-distribution-and-executable-have-different-names).

@@ -1,26 +1,20 @@
 ## Inspect artefacts and counterexamples
 
-Per-run output is anchored to the selected config at `<fpv.yaml dir>/artefacts/<run>/`:
+Output goes to `<fpv.yaml dir>/artefacts/<run>/` (see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/)):
 
 | File | Contents |
 |---|---|
 | `fpv.log` | Full sby output |
-| `fpv.f` | Generated stripped and deduplicated filelist |
 | `fpv.sby` | Generated SymbiYosys configuration |
 | `sby_workdir/status` | Overall verdict |
 | `sby_workdir/engine_<N>/logfile.txt` | Engine log |
-| `sby_workdir/engine_<N>/trace.vcd` | Counterexample when produced |
-| `vacuity_covers.sv`, `vacuity.sby`, `vacuity.log`, `vacuity_workdir/` | Vacuity pass outputs |
-| `coi.ys`, `coi.log` | COI and dead-assume analysis |
+| `sby_workdir/engine_<N>/trace.vcd` | Counterexample, when produced |
+| `vacuity.log`, `coi.log` | Vacuity and COI analyses |
 
-See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/) for artefact anchoring.
-
-Open the first available counterexample in the configured Surfer instance:
+Open the first counterexample in the configured Surfer:
 
 ```bash
 rb wave-fpv demo_fpv_fifo
 ```
 
-Use `-c` to select another `fpv.yaml` and `--surfer <name>` to override platform routing. The command errors when the verification has not run or produced no trace.
-
-For SymbiYosys modes and engines, see the [SymbiYosys reference](https://symbiyosys.readthedocs.io/en/latest/reference.html).
+`-c` selects another `fpv.yaml` and `--surfer <name>` overrides platform routing. For sby modes and engines, see the [SymbiYosys reference](https://symbiyosys.readthedocs.io/en/latest/reference.html).

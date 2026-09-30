@@ -25,15 +25,20 @@ budget:
 | `verify.fpv_config` / `.verification` | Pair | FPV oracle config and entry |
 | `verify.test_config` | Optional | Simulation oracle suite |
 | `verify.tests` | Default all | Selected simulation tests |
-| `verify.assertions` | Default true | Enable Verilator assertions for simulation oracle |
+| `verify.assertions` | Default true | Enables Verilator assertions for the simulation oracle |
 | `name` | Default model | Campaign and artefact name |
-| `top` | Default model | Top module the FPV oracle elaborates; letters, digits and underscore only (no `$`), same rule as a `models.yaml` `top` |
+| `top` | Default model | Top module the FPV oracle elaborates. Follows the [same rule](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#model-top) as a model `top` |
 | `budget.max_mutants` | Default 100 | Global campaign cap |
 | `budget.per_file_cap` | Default null | Per-scoped-file cap |
 | `budget.time_budget_minutes` | Default null | Wall-clock cap |
 | `budget.schedule` | Default `sequential` | `sequential` or `round_robin` |
 | `scope.include` / `.exclude` | Default empty | Case-sensitive `fnmatch` globs over instance and source paths; `**` is not recursive |
 
-A campaign's own `top` wins over both the model's and the oracle verification's, and it is applied to the baseline proof and to every mutant proof alike — the two verdicts are only comparable when elaborated from the same root module. Only the FPV oracle elaborates a top: the simulation oracle runs the suite's own testbenches, so a campaign that configures only that oracle logs `mut_config.top_override_unused` and ignores the value.
+At least one oracle is required, and `fpv_config` requires `verification`. `design_file` and every scoped file must stay within the model directory.
 
-At least one oracle is required; `fpv_config` requires `verification`. Empty scope mutates `design_file` without the viewer. Non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match. `design_file` and every scoped file must remain within the model directory. See [Mutation Testing](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/).
+- An empty scope mutates `design_file` without the viewer.
+- A non-empty scope requires `rtl-buddy-view`, selects hierarchy source files, and fails if none match.
+- A campaign's `top` wins over the model's and the oracle verification's. It applies to the baseline proof and every mutant proof, since their verdicts are comparable only when elaborated from the same root.
+- Only the FPV oracle elaborates a top. A campaign that configures only the simulation oracle logs `mut_config.top_override_unused` and ignores `top`.
+
+See [Mutation Testing](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/).

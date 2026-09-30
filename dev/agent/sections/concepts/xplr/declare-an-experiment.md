@@ -1,6 +1,6 @@
 ## Declare an experiment
 
-A useful manifest records both the delta from its parent and the complete resolved state:
+The manifest records the delta from its parent and the complete resolved state:
 
 ```json
 {
@@ -27,8 +27,9 @@ A useful manifest records both the delta from its parent and the complete resolv
 }
 ```
 
-`knobs` is the change from `parent`; `config_snapshot` is the absolute state needed to reproduce or branch from the experiment. Knob values are arbitrary JSON scalars. The optional layer is `source`, `flow`, or `impl`.
-
-Write one falsifiable sentence in `hypothesis`: what should move, in which direction, and why. Give every changed knob a rationale tied to an earlier experiment, report, or observation. Set `parent` to the experiment actually used as the starting point.
-
-Input keys are strict. Unknown fields or schema violations exit 2 and name the invalid key and allowed alternatives.
+- `knobs` is the change from `parent`; `config_snapshot` is the absolute state needed to reproduce or branch from the experiment.
+- Knob values are arbitrary JSON scalars. The optional `layer` is `source`, `flow` or `impl`.
+- Write `hypothesis` as one falsifiable sentence: what should move, in which direction, and why.
+- Give every changed knob a rationale tied to an earlier experiment, report or observation.
+- Set `parent` to the experiment you actually started from.
+- Keys are strict. An unknown field or schema violation exits 2 and names the invalid key and the allowed alternatives.

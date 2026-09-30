@@ -1,6 +1,6 @@
 ## Configure a simulation platform
 
-A minimal simulation configuration maps the host `uname` to a builder:
+A minimal configuration maps the host `uname` to a builder:
 
 ```yaml
 rtl-buddy-filetype: project_root_config
@@ -38,8 +38,6 @@ cfg-rtl-reg:
   reg-cfg-path: regression.yaml
 ```
 
-If multiple platform entries match `uname`, the last match wins. RTL Buddy validates routing names on every platform entry at load time, including entries for other hosts.
-
-A platform may route simulation builders, Verible, and Surfer. It cannot route `cfg-synth-tools`, `cfg-pnr-tools`, `cfg-power-tools`, `cfg-cdc-tools`, `cfg-fpv-tools`, or `cfg-fpga-tools`; each flow's `tool:` field selects those entries directly.
-
-Override the platform defaults for one command with `--builder`, `--builder-mode`, or the flow-specific CLI option. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/).
+- If several platform entries match `uname`, the last match wins. Routing names are validated on every platform entry at load time, including entries for other hosts.
+- A platform routes simulation builders, Verible, and Surfer. It cannot route `cfg-synth-tools`, `cfg-pnr-tools`, `cfg-power-tools`, `cfg-cdc-tools`, `cfg-fpv-tools`, or `cfg-fpga-tools`; each flow's `tool:` field selects those entries directly.
+- `--builder`, `--builder-mode`, or a flow-specific option overrides the platform default for one command. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/).

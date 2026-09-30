@@ -1,6 +1,6 @@
 ## Submodule to uv
 
-Replace the legacy `tools/rtl_buddy` submodule and editable pip install with a `uv`-managed dependency:
+Replace the `tools/rtl_buddy` submodule and editable pip install with a `uv` dependency:
 
 ```bash
 uv init --bare        # only if there is no pyproject.toml yet
@@ -9,8 +9,8 @@ uv run rb --version
 ```
 
 1. Remove the `tools/rtl_buddy` submodule.
-2. Fold any `requirements.txt` entries into `pyproject.toml` under `dependencies`, then delete `requirements.txt`.
-3. Update local scripts and CI from `tools/rtl_buddy/…` / `python -m rtl_buddy` to `uv run rb …`.
+2. Move any `requirements.txt` entries into `dependencies` in `pyproject.toml`, then delete `requirements.txt`.
+3. Change local scripts and CI from `tools/rtl_buddy/…` or `python -m rtl_buddy` to `uv run rb …`.
 4. Commit `pyproject.toml` and `uv.lock` so other users and CI resolve the same environment.
 
-Use `uv add "rtl_buddy==<version>"` when the project needs an exact pin.
+For an exact pin, use `uv add "rtl_buddy==<version>"`.

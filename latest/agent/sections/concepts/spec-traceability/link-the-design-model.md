@@ -9,4 +9,4 @@ models:
     spec: ../../spec/my_block/specs.yaml
 ```
 
-For a multi-block spec, the model name selects the block with the same name. A single-block spec is matched unconditionally.
+With a multi-block spec, the model name selects the block of the same name. A single-block spec matches unconditionally.

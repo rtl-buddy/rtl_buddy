@@ -6,4 +6,4 @@ Install cocotb in the same environment as RTL Buddy:
 uv add cocotb
 ```
 
-RTL Buddy calls `cocotb-config` during compilation and reports an installation error if it is unavailable.
+RTL Buddy calls `cocotb-config` at compile time and reports an installation error if it is missing.

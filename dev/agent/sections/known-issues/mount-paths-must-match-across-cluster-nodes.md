@@ -1,0 +1,3 @@
+## Mount paths must match across cluster nodes
+
+On a cluster with different mount paths per node, a build stamp from one node may not validate on another. Outside `--dispatch` the result is a recompile. Under `--dispatch` the simulation job fails with `compile.build_stamp_rejected` naming the path that differed (see [Simulation jobs reuse the build stamp](https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#simulation-jobs-reuse-the-build-stamp)). Spell the project root the same way on every node. `shared-build-root` removes the dependence on the root's spelling, but paths outside it, such as the toolchain, must still match.

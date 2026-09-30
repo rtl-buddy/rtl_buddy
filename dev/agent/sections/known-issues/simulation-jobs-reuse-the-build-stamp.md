@@ -1,0 +1,3 @@
+## Simulation jobs reuse the build stamp
+
+A simulation job whose build stamp does not validate, against a build the build job recorded as built, fails with `compile.build_stamp_rejected` instead of recompiling. The usual cause is a `preproc` that writes different bytes on the simulation node. `build_job.group_leader_unstamped` means the first config of a build wrote no stamp, so the others compiled again; fix the directory as for `compile.stamp_write_failed`. There is no per-test opt-out of the shared directory under `--dispatch`. See [Recover when a gated job cannot use the build](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#recover-when-a-gated-job-cannot-use-the-build).

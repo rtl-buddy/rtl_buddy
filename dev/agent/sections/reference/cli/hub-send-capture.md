@@ -4,8 +4,7 @@
 Usage: rtl-buddy hub send capture [OPTIONS]
 
  Ask the schematic (rtl-buddy-sch) to snapshot the current graph and write it to --out.
- Graph-only — surrounding panels are not captured. Useful for agents that want to look
- at what the user is seeing without a browser screenshot tool.
+ Only the graph is captured, not the surrounding panels.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ *  --out      -o      PATH                         Destination file. Extension       │

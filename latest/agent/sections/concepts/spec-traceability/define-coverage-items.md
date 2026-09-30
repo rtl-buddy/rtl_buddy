@@ -16,4 +16,4 @@ blocks:
         desc: Error recovery
 ```
 
-IDs are arbitrary strings. Use a block prefix to keep them unique across the project. One file may define several blocks.
+IDs are arbitrary strings; a block prefix keeps them unique across the project. One file may define several blocks.

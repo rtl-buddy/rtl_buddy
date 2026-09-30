@@ -20,7 +20,7 @@ checks:
 | `model_path` | Required | `models.yaml` relative to `lint.yaml` |
 | `desc` | Required | Human-readable description |
 | `exclude` | Optional list | Additional `fnmatch` globs; `*` may cross `/` |
-| `extra_args` | Optional list | Appended after `cfg-verible.extra_args.lint`; later duplicate flags win |
+| `extra_args` | Optional list | Appended after `cfg-verible.extra_args.lint`. Later duplicate flags win |
 | `reglvl` | Optional | Regression level |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
 

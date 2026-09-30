@@ -4,9 +4,7 @@ description: RTL Buddy is a config-driven CLI for Verilog and SystemVerilog simu
 
 # RTL Buddy
 
-RTL Buddy gives RTL projects one command surface for simulation, regressions, synthesis, formal verification, physical design, coverage, and debug tooling.
-
-Projects describe models, tests, and flows in YAML. RTL Buddy resolves filelists, invokes external tools, records artefacts, and reports consistent results for local, CI, and agent-driven runs.
+RTL Buddy gives an RTL project one command surface for simulation, regressions, synthesis, formal verification, physical design, coverage, and debug tooling. The project describes models, tests, and flows in YAML; RTL Buddy resolves filelists, runs the external tools, records artefacts, and reports results the same way for local, CI, and agent runs.
 
 ## Supported workflows
 
@@ -19,12 +17,12 @@ Projects describe models, tests, and flows in YAML. RTL Buddy resolves filelists
 - Verible linting, spec traceability, FPGA implementation, and AXI profiling
 - Machine-readable output, a design knowledge graph, and an MCP server for agents
 
-External tools are installed per workflow. See [Installation](install.md#external-tools-by-feature) for the supported integrations.
+Each workflow needs its own external tools. See [Installation](install.md#external-tools-by-feature).
 
 ## Start here
 
 - [Installation](install.md) — install RTL Buddy and the tools your workflow needs
-- [Quick Start](quickstart.md) — run an existing test, regression, or synthesis entry
+- [Quick Start](quickstart.md) — run a test, regression, or synthesis entry in an existing project
 - [Root Config](concepts/root-config.md) — configure platforms and tools
 - [Tests](concepts/tests.md) — define and run a verification suite
 

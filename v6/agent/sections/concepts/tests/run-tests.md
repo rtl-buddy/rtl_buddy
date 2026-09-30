@@ -10,14 +10,14 @@ rb test --filter '^smoke_|_error$'
 rb test
 ```
 
-With no selection, `rb test` runs the suite. Explicit names run in command-line order and produce one combined results table. `--filter` uses a case-sensitive Python regex search against configured names; matches retain their `tests.yaml` order. Anchor the expression with `^` or `$` when position matters.
+- With no selection, `rb test` runs the whole suite.
+- Named tests run in command-line order and produce one table.
+- `--filter` is a case-sensitive Python regex search over test names. Matches keep their `tests.yaml` order.
+- Names and `--filter` are mutually exclusive. Duplicate or unknown names, an invalid regex, or a regex matching nothing exits 2 before any test runs.
+- Selection applies to configured names, before sweep expansion.
 
-Explicit names and `--filter` are mutually exclusive. Duplicate or unknown names, an invalid regex, or a regex with no matches exits 2 before any test runs. Selection applies to configured base names before sweep expansion.
-
-From another directory:
+From another directory, pass the suite explicitly. Outputs still land beside `tests.yaml` (see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/)):
 
 ```bash
 rb test smoke --test-config path/to/tests.yaml
 ```
-
-Outputs remain beside `tests.yaml`; see [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/).

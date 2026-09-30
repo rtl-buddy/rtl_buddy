@@ -4,24 +4,20 @@
 Usage: rtl-buddy hub send diagnose [OPTIONS] SOURCE [ITEMS]...
 
  Push a diagnostics_set bundle for SOURCE. Each ITEM is
- <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set (clears any
- cached diagnostics from SOURCE). Use --instance to attach a view.json instance_path
- hint that consumers (the SPA's on-canvas badge layer in particular) use as a fast path
- instead of the file+line resolver.
+ <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set, clearing
+ SOURCE's diagnostics. --instance attaches a view.json instance_path so consumers skip
+ file-and-line resolution.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│ *    source      TEXT        producer key (e.g. 'analysis-tool', 'claude-analysis'); │
-│                              latest-writer-wins per source on the hub's cache        │
+│ *    source      TEXT        producer key, e.g. 'analysis-tool'; a new push replaces │
+│                              the previous one for the same key                       │
 │                              [required]                                              │
 │      items       [ITEMS]...  <file>:<line>:<sev>:<code>:<msg> ...                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --clear                 Send an empty items list (clears SOURCE).                    │
-│ --instance        TEXT  Optional view.json instance_path to attach to every ITEM in  │
-│                         this push. Use when the producer knows which instance a      │
-│                         finding pertains to (most one-shot agent calls do); skip for │
-│                         batch lint output where each item lives at a different       │
-│                         file:line.                                                   │
+│ --instance        TEXT  view.json instance_path to attach to every ITEM in this      │
+│                         push.                                                        │
 │ --help                  Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

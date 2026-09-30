@@ -9,6 +9,6 @@
 | cocotb through VPI | Yes | Yes |
 | Default waveform | FST | VCD |
 
-Verilator compiles a cycle-based `simv` binary and provides RTL Buddy's coverage path. Icarus compiles a `.vvp` snapshot and runs it through `vvp`; RTL Buddy generates a `simv` wrapper so the surrounding flow stays the same.
+Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
 
-Gate unsupported constructs when a suite must run on Icarus. Use [expected failures](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/) only when the failure mode is understood.
+If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/) only when the failure mode is understood.

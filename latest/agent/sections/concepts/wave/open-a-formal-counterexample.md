@@ -4,6 +4,6 @@
 uv run rb wave-fpv demo_fpv_counter_safety
 ```
 
-`rb wave-fpv` reads `fpv.yaml`, finds the first counterexample trace under the verification's artefacts, and opens it in the configured Surfer entry. Use `-c` for another config or `--surfer <name>` to override routing.
+`rb wave-fpv` reads `fpv.yaml`, finds the first counterexample trace under the verification's artefacts, and opens it in the configured Surfer entry. Use `-c` for another config and `--surfer <name>` to override the routing. There is no editor annotation, so mainline Surfer works.
 
-This command does not enable the editor annotation round trip, so mainline Surfer is sufficient. It fails with a clear message when the verification has not run, passed without a counterexample, or produced no trace.
+It fails with a message if the verification has not run, passed without a counterexample, or produced no trace.

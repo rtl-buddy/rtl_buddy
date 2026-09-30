@@ -4,17 +4,17 @@ Each `fpga.yaml` run selects one backend:
 
 | Tool | Supports | Required setup |
 | --- | --- | --- |
-| `vivado` | All parts supported by installed Vivado; default. | Vivado executable and any required license. |
-| `openxc7` | Xilinx 7-series parts whose names start with `xc7`. | Yosys, nextpnr-xilinx, chip database, and prjxray for bitstreams. |
+| `vivado` (default) | All parts supported by the installed Vivado | Vivado executable and any required license |
+| `openxc7` | Xilinx 7-series parts whose names start with `xc7` | Yosys, nextpnr-xilinx, chip database, and prjxray for bitstreams |
 
-For Vivado, source the vendor settings before running:
+For Vivado, source the vendor settings, or set an absolute executable in `cfg-fpga-tools` in `root_config.yaml`:
 
 ```bash
 source /opt/Xilinx/Vivado/<version>/settings64.sh
 rb tool-check --explain vivado
 ```
 
-Alternatively, set an absolute executable in `cfg-fpga-tools` in `root_config.yaml`. Vivado generally belongs on local or licensed lab runners, not public CI.
+Vivado generally belongs on local or licensed lab runners, not public CI.
 
 For openXC7, install the [openXC7 toolchain](https://github.com/openXC7/toolchain-installer) and provide its data paths:
 
@@ -32,6 +32,6 @@ runs:
         prjxray_db: /opt/prjxray/database
 ```
 
-`CHIPDB` may instead point to a directory containing `<part>.bin`; `PRJXRAY_DB_DIR` may provide the prjxray database. The latter is required only for bitstream generation.
+`CHIPDB` may instead point to a directory containing `<part>.bin`, and `PRJXRAY_DB_DIR` may supply the prjxray database, which only bitstream generation needs.
 
-A non-7-series part with `tool: openxc7` is a configuration error. Missing tools or databases return SKIP with a `rb tool-check` hint. openXC7 reports utilization, per-clock Fmax, WNS, timing status, and failing paths; power, DRC, methodology, TNS, and hold metrics are absent. Machine consumers must treat metrics as optional.
+A non-7-series part with `tool: openxc7` is a configuration error. Missing tools or databases return SKIP with a `rb tool-check` hint. openXC7 reports utilization, per-clock Fmax, WNS, timing status and failing paths. It reports no power, DRC, methodology, TNS or hold metrics, so machine consumers must treat metrics as optional.

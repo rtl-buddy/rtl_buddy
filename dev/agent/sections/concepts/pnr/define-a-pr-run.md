@@ -18,6 +18,4 @@ runs:
     reglvl: 1000
 ```
 
-Paths resolve from `pnr.yaml`. The named synthesis must already have produced `artefacts/<synth>/synth_netlist.v`. RTL Buddy takes the top module from that synthesis entry and takes Liberty and LEF assets from the selected physical platform.
-
-Only `tool: openroad` is supported. Other tool names report `SKIP`. See [YAML Formats: pnr.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#pnryaml) for all fields.
+Paths resolve from `pnr.yaml`. The named synthesis must already have produced `artefacts/<synth>/synth_netlist.v`. The top module comes from that synthesis entry, and Liberty and LEF assets come from the platform. Only `tool: openroad` is supported; any other value reports `SKIP`. All fields are in [YAML Formats: pnr.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#pnryaml).

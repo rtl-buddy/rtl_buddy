@@ -7,4 +7,4 @@ rtl-buddy-filetype: cdc_reg_config
 cdc-configs: [lint/cdc/demo/cdc.yaml]
 ```
 
-Paths resolve from the manifest. Each suite retains the command root of its `cdc.yaml`; `rb cdc-regression` filters analyses by `--reg-level`. Discovery checks `./cdc_regression.yaml` before `cfg-rtl-reg.cdc-reg-cfg-path`.
+Paths resolve from the manifest. Each suite keeps the command root of its `cdc.yaml`. `rb cdc-regression` filters analyses by `--reg-level`. Discovery checks `./cdc_regression.yaml` before `cfg-rtl-reg.cdc-reg-cfg-path`.

@@ -1,7 +1,9 @@
 ## Use correct time units
 
-Signal reads through pywellen use waveform timescale ticks. Convert them with `Waveform.timescale`.
+Three interfaces use three units. Convert between them; never pass a value across unchanged.
 
-Hub and WCP navigation commands use femtoseconds. For example, with a 10 ps waveform tick, 95 ns is 9,500 ticks but 95,000,000 fs. Pass femtoseconds to `rb hub send wave-cursor` and `wave-zoom`.
+- pywellen signal reads use waveform timescale ticks. Convert with `Waveform.timescale`.
+- Hub and WCP navigation, including `rb hub send wave-cursor` and `wave-zoom`, use femtoseconds.
+- Surfer command files use waveform ticks.
 
-Surfer command files use waveform ticks, not femtoseconds. Do not pass values between these interfaces without conversion.
+With a 10 ps waveform tick, 95 ns is 9,500 ticks and 95,000,000 fs.

@@ -1,9 +1,9 @@
 ## Write generated files safely
 
-Choose the output directory from the data's lifetime:
+Pick the output directory by how the data varies:
 
-- Write test-invariant output to `artifact_dir`. Concurrent dispatched runs share this directory, so publish files atomically with a temporary file and `os.replace()`.
-- Write run- or seed-specific output to `run_artifact_dir`. It is unique only when `run_id` is set. Local `randtest` invokes preproc once for all seeds, so use dispatch or sweep when generation must vary per seed.
+- Test-invariant output goes in `artifact_dir`. Concurrent dispatched runs share it, so write to a temporary file and publish it with `os.replace()`.
+- Run- or seed-specific output goes in `run_artifact_dir`. It is unique only when `run_id` is set. Local `randtest` calls `preproc` once for all seeds, so use dispatch or `sweep` when generated data must differ per seed.
 
 ```python
 import os
@@ -18,4 +18,4 @@ else:
     os.replace(tmp, out)
 ```
 
-Resolve suite inputs from `suite_dir`; do not use `os.getcwd()`. Plusargs are passed verbatim, so make suite-local input paths explicit. Relative output paths may target `run_artifact_dir` because simulation runs there.
+Resolve suite inputs from `suite_dir`, never `os.getcwd()`. Plusargs pass through verbatim, so give suite-local input paths explicitly. A relative output path lands in `run_artifact_dir` because simulation runs there.

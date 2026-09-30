@@ -1,13 +1,5 @@
 ## Install the tools
 
-OpenROAD 25Q1 or newer must be on `PATH` or configured in `cfg-pnr-tools`. RTL Buddy warns and continues with an older version, but that combination is not validated.
+OpenROAD 25Q1 or newer must be on `PATH` or set in `cfg-pnr-tools`. An older version logs a warning and the run continues, but that combination is not validated. On macOS, build from source with the template's `tools/openroad/BUILD_OSX.md`.
 
-On macOS, use the project template's `tools/openroad/BUILD_OSX.md` source-build instructions.
-
-KLayout is optional and used only for `--gds` and `--png`:
-
-```bash
-brew install --cask klayout
-```
-
-A missing KLayout skips GDS or PNG generation without failing the OpenROAD run. Install it later and [export the saved result](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#export-a-saved-result) rather than rerunning P&R.
+KLayout (`brew install --cask klayout`) is optional and only needed for `--gds` and `--png`. Without it those steps are skipped and the run does not fail. Install it later and [export the saved result](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#export-a-saved-result) instead of rerunning P&R.

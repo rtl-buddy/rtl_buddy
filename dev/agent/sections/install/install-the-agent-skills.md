@@ -6,10 +6,10 @@ Install the bundled Claude Code and Codex skill family at user scope:
 uv run rb skill install
 ```
 
-For a project pinned to a different RTL Buddy major, install a project-local override:
+For a project pinned to a different RTL Buddy major version, install a project-local override:
 
 ```bash
 uv run rb skill install --project
 ```
 
-Re-run installation after upgrading to refresh every family member. See [Agent Use](https://rtl-buddy.github.io/rtl_buddy/dev/agents/#bundled-agent-skills) for members, paths, status checks, and project `.gitignore` guidance.
+Re-run installation after each upgrade to refresh every family member. See [Agent Use](https://rtl-buddy.github.io/rtl_buddy/dev/agents/#bundled-agent-skills) for members, paths, status checks, and `.gitignore` handling.

@@ -1,0 +1,9 @@
+## Follow a Slurm run
+
+For each suite, dispatch submits one build job that compiles each distinct build once, then groups simulations with identical resolved resources into Slurm arrays that start after the build succeeds. Where [verilation is split off](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#split-verilation-from-the-c-build), the build is two chained jobs. Results come back into the normal summary and exit status.
+
+A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
+
+`max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/dispatch/#split-large-groups-into-several-arrays)).
+
+Verilator, VCS, and Icarus can share a build. Other builders, and builders with an absolute `builder-simv`, compile inside each simulation job, which then reserves the field-wise maximum of its simulation and compile reservations. If no planned test can share a build and none is fanned out over seeds, no build job is submitted (`dispatch.build_job_skipped`).

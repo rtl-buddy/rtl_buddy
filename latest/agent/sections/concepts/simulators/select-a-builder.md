@@ -1,5 +1,5 @@
 ## Select a builder
 
-Builder precedence is `--builder <name>`, per-test `builder:`, suite-level `builder:`, then the platform default.
+The builder comes from, in order: `--builder <name>`, the test's `builder:`, the suite's `builder:`, the platform default.
 
-The selected `cfg-rtl-builder` entry should set `simulator-family`, or use an executable name from which RTL Buddy can infer it. See [Selecting the simulator builder](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#selecting-the-simulator-builder).
+Set `simulator-family` on the `cfg-rtl-builder` entry, or use an executable name RTL Buddy can infer it from. See [Selecting the simulator builder](https://rtl-buddy.github.io/rtl_buddy/v6/reference/yaml/#selecting-the-simulator-builder).

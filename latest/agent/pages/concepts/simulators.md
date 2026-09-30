@@ -4,7 +4,7 @@ description: Choose between Verilator and Icarus Verilog simulation backends and
 
 # Simulation Backends
 
-Use Verilator by default. Use Icarus Verilog for lightweight smoke tests or environments where installing Verilator is impractical.
+Use Verilator by default. Use Icarus Verilog for lightweight smoke tests, or where installing Verilator is impractical.
 
 ## Choose a backend
 
@@ -17,22 +17,22 @@ Use Verilator by default. Use Icarus Verilog for lightweight smoke tests or envi
 | cocotb through VPI | Yes | Yes |
 | Default waveform | FST | VCD |
 
-Verilator compiles a cycle-based `simv` binary and provides RTL Buddy's coverage path. Icarus compiles a `.vvp` snapshot and runs it through `vvp`; RTL Buddy generates a `simv` wrapper so the surrounding flow stays the same.
+Verilator compiles a cycle-based `simv` binary. Icarus compiles a `.vvp` snapshot and runs it with `vvp`; RTL Buddy generates a `simv` wrapper so the rest of the flow is the same.
 
-Gate unsupported constructs when a suite must run on Icarus. Use [expected failures](expected-failures.md) only when the failure mode is understood.
+If a suite must run on Icarus, gate unsupported constructs. Use [expected failures](expected-failures.md) only when the failure mode is understood.
 
 ## Select a builder
 
-Builder precedence is `--builder <name>`, per-test `builder:`, suite-level `builder:`, then the platform default.
+The builder comes from, in order: `--builder <name>`, the test's `builder:`, the suite's `builder:`, the platform default.
 
-The selected `cfg-rtl-builder` entry should set `simulator-family`, or use an executable name from which RTL Buddy can infer it. See [Selecting the simulator builder](../reference/yaml.md#selecting-the-simulator-builder).
+Set `simulator-family` on the `cfg-rtl-builder` entry, or use an executable name RTL Buddy can infer it from. See [Selecting the simulator builder](../reference/yaml.md#selecting-the-simulator-builder).
 
 ## Open waveforms
 
-Verilator normally writes `dump.fst`; Icarus writes `dump.vcd`. `rb wave` opens the newest supported dump under `artefacts/<test>/`.
+Verilator writes `dump.fst` and Icarus writes `dump.vcd`. `rb wave` opens the newest supported dump under `artefacts/<test>/`.
 
-Set `wave-format: fst-postproc` on an Icarus builder to run `vcd2fst` after simulation. If `vcd2fst` is unavailable, the VCD remains usable.
+To convert an Icarus dump to FST after simulation, set `wave-format: fst-postproc` on the builder. If `vcd2fst` is missing, the VCD is kept.
 
 ## Collect coverage
 
-RTL Buddy coverage is currently Verilator-only and follows the platform-selected builder. Use `--builder verilator`, or make Verilator the platform default, instead of relying only on a suite- or test-level override. See [Coverage uses the platform builder](../known-issues.md#coverage-uses-the-platform-builder).
+RTL Buddy coverage supports Verilator only and follows the platform-selected builder. Pass `--builder verilator` or make Verilator the platform default; a suite- or test-level override alone is not enough. See [Coverage uses the platform builder](../known-issues.md#coverage-uses-the-platform-builder).

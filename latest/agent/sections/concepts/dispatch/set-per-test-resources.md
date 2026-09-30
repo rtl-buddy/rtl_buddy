@@ -13,4 +13,4 @@ tests:
     resources: {mem: 24G, time: "04:00:00"}
 ```
 
-Tests with identical resolved reservations share an array. Compilation normally uses `cfg-dispatch.compile`; when compilation occurs inside a simulation job, that job receives the field-wise maximum of both reservations.
+Tests with identical resolved reservations share an array.

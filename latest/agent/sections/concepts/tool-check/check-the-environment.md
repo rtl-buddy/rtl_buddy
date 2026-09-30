@@ -9,13 +9,11 @@ rb tool-check --format json           # bare JSON for scripts
 rb --machine tool-check               # standard machine envelope
 ```
 
-Optional tools appear by default. Use `--no-include-optional` to hide them. A tool may be optional globally but required by a command that is itself optional: pyslang does not block the core install, but it does block `elab` and `elab-regression`. The report contains:
+The report has two parts:
 
-- **Tools:** canonical name, `ok` / `missing` / `outdated` / `unsupported`, detected version, resolved path, minimum version, and optional status. `unsupported` marks a tool newer than the version range rtl-buddy is built against (pyslang 12 and later, for example); it blocks commands like `outdated` does.
-- **Subcommand readiness:** each declared `rb` command and the dependencies that block it. An optional feature does not make unrelated commands unready.
+- **Tools:** name, status (`ok`, `missing`, `outdated` or `unsupported`), detected version, path, minimum version and whether the tool is optional. `unsupported` marks a tool newer than the range rtl-buddy is built against (pyslang 12 and later, for example) and blocks commands as `outdated` does.
+- **Subcommand readiness:** each `rb` command and the dependencies blocking it. An optional tool can still block the commands that need it: pyslang does not block the core install, but blocks `elab` and `elab-regression`.
 
-Use `--required-for <subcommand>` for a focused preflight. Use `--explain <tool>` after a wrapper reports a missing dependency; it prints the detected state, commands that use the tool, any optional binaries, and platform-specific install hints.
+Optional tools are shown by default; `--no-include-optional` hides them. `--required-for <subcommand>` is a preflight for one command. `--explain <tool>` prints the detected state, the commands using the tool and platform install hints; use it after a wrapper reports a missing dependency. Aliases work, so `rtl-buddy-sch` resolves to `rtl-buddy-view`. An unknown name exits 1.
 
-A tool that declares optional binaries lists them under `Optional binaries (not required; not detected as this tool)`, each with what it buys. They enrich the tool without being part of it: they never satisfy detection, never supply the probed version, and never change a `ok` / `missing` / `outdated` status. Slurm's `scontrol` is the example — `scontrol show config` supplies the cluster's `MaxArraySize` and `SchedulerParameters=max_array_tasks`, so dispatch can split a resource group too large for one job array, and a submit host without it dispatches normally once `cfg-dispatch.max-array-size` — plus `cfg-dispatch.max-array-tasks`, where the cluster caps tasks per array below it — is set. Its second role is `scontrol update JobId=<id> Dependency=`, which starts a compile key's simulation jobs as soon as that key is built; that call is made from the **compute node** running the build job, so this check on the submit host does not prove it is available where it is used, and without it those jobs wait for the whole build job. Reading the absence of an optional binary as a missing tool, or its presence as a present one, is exactly the confusion the separate section exists to prevent: a host with `scontrol` but no `sbatch` reports slurm `missing`.
-
-Aliases are accepted by `--explain` and runtime dependency checks. Output always uses the canonical tool name. For example, `rtl-buddy-sch` resolves to `rtl-buddy-view`; an unknown-name machine response includes the known names and alias mapping.
+Versions are cached per binary path and modification time. `--no-probe-versions` skips probing for a faster presence-only check; versions show as unknown.

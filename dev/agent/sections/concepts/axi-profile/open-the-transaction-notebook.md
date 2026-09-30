@@ -6,6 +6,6 @@ rb axi-profile notebook my_test --port 2718
 rb axi-profile notebook my_test --headless
 ```
 
-The notebook requires the canonical per-test Parquet file from `run --emit-txns-parquet` and a `marimo` executable. Missing inputs fail with the exact command or extra needed to create them.
+The notebook needs the per-test Parquet file from `run --emit-txns-parquet` and a `marimo` executable. A missing input fails with the command or extra that creates it.
 
-Foreground mode opens the packaged notebook template. `--headless` disables the marimo token so the loopback-only hub can open the URL. `--daemon` is accepted but runs in the foreground; use hub-managed launch when the caller must return immediately.
+The default mode runs in the foreground with the packaged notebook template. `--headless` disables the marimo token so the loopback-only hub can open the URL. `--daemon` is accepted but still runs in the foreground; use a hub-launched notebook when the caller must return immediately.

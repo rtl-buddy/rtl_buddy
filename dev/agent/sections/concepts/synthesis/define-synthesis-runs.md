@@ -1,6 +1,6 @@
 ## Define synthesis runs
 
-A minimal `synth.yaml` can contain an unmapped and a technology-mapped run:
+A `synth.yaml` can hold an unmapped and a technology-mapped run:
 
 ```yaml
 rtl-buddy-filetype: synth_config
@@ -27,6 +27,4 @@ syntheses:
     reglvl: 0
 ```
 
-Paths resolve from `synth.yaml`. The synthesis top is the model's root module — its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping; the OpenROAD backend additionally requires LEF assets.
-
-Use `lef-paths` and `lib-paths` for block-specific hard macros. Use `tool_overrides` only for backend options that have no portable equivalent. See [YAML Formats: synth.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#synthyaml) for all fields.
+Paths resolve from `synth.yaml`. The synthesis top is the model's root module: its `top:` in `models.yaml`, defaulting to the model name. `platform` enables Liberty mapping. Use `lef-paths` and `lib-paths` for block-specific hard macros, and `tool_overrides` for backend options with no portable equivalent. All fields are in [YAML Formats: synth.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#synthyaml).

@@ -4,15 +4,11 @@ description: Parse, type-check, and elaborate models quickly with pyslang, using
 
 # Model Elaboration
 
-Use `rb elab` for a fast SystemVerilog parse, type-check, and elaboration gate
-without building a simulator executable. It consumes the same model and
-filelist every other model-based flow already uses; there is no separate
-`elab.yaml` and no second model path to keep synchronized.
+`rb elab` is a fast SystemVerilog parse, type-check, and elaboration gate that builds no simulator executable. It reads the same model and filelist as every other model-based flow. There is no `elab.yaml` and no second model path to keep in sync.
 
 ## Run a model
 
-Install the optional Python frontend, inspect the available models, then run
-one:
+Install the optional Python frontend, list the models, then run one:
 
 ```bash
 uv add "rtl_buddy[elab]"
@@ -20,9 +16,7 @@ rb --machine elab --list -c design/models.yaml
 rb --machine elab core -c design/models.yaml
 ```
 
-A bare run uses the model's `filelist` and selects `model.top`, falling back to
-the model name. Add a named profile only when a gate needs different sources,
-defines, parameters, compatibility options, resources, or top:
+A bare run uses the model's `filelist` and elaborates `model.top`, or the model name if `top` is unset. Add a named profile only when a gate needs different sources, defines, parameters, compatibility options, resources, or top:
 
 ```yaml
 rtl-buddy-filetype: model_config
@@ -40,24 +34,17 @@ models:
         resources: {cpus: 2, mem: 2G, time: "00:10:00"}
 ```
 
-Run it with:
-
 ```bash
 rb --machine elab core --profile smoke -c design/models.yaml
 ```
 
-Profile `top` overrides model `top`; model `top` overrides the model name.
-Profile source and include paths resolve from `models.yaml`. Warning controls
-contain only the text after `-W`; they can suppress warnings but cannot disable
-hard parse, type, or elaboration errors.
+- A profile `top` overrides the model `top`, which overrides the model name.
+- Profile source and include paths resolve from `models.yaml`.
+- `warnings` entries are the text after `-W`. They can suppress warnings but not hard parse, type, or elaboration errors.
 
 ## Raise the parser nesting limit
 
-Set a profile's `max_parse_depth` when a run fails with `language constructs are
-too deeply nested`. slang stops recursive descent after 1024 nesting levels, and
-generated RTL can exceed that inside a single expression — a long chain of
-conditional expressions or concatenations is the usual cause. It is unset by
-default and moves the limit only for the profile that declares it:
+If a run fails with `language constructs are too deeply nested`, set `max_parse_depth` on the profile. slang stops at 1024 nesting levels, and generated RTL can exceed that inside one expression, typically a long chain of conditional expressions or concatenations. The setting is unset by default and affects only the profile that declares it:
 
 ```yaml
     elaborations:
@@ -65,19 +52,11 @@ default and moves the limit only for the profile that declares it:
         max_parse_depth: 8192
 ```
 
-It lifts a depth guard, not a correctness one: malformed sources still fail with
-the same diagnostics. Raise it to what the generated source needs rather than to
-the accepted maximum — the guard turns runaway recursion into a diagnostic, and
-past it the passes after the parser can exhaust the C stack and kill the worker
-with no diagnostic at all. See [YAML Formats](../reference/yaml.md#elaboration-profiles)
-for the accepted range and [Quirks & Known Issues](../known-issues.md) for the
-platform limit on nesting depth.
+Malformed sources still fail with the same diagnostics. Set it to what the generated source needs, not to the maximum: beyond the guard, later passes can exhaust the C stack and kill the worker with no diagnostic. The accepted range is in [YAML Formats](../reference/yaml.md#elaboration-profiles), and the platform limit on nesting depth is in [Quirks & Known Issues](../known-issues.md).
 
 ## Run a regression
 
-An elaboration regression deliberately selects `models.yaml` files through a
-small manifest. It runs only named profiles, so adding an ordinary model does
-not silently expand a project-wide gate.
+An elaboration regression takes a small manifest that lists `models.yaml` files. It runs only named profiles, so adding an ordinary model does not widen a project-wide gate.
 
 ```yaml
 rtl-buddy-filetype: elab_reg_config
@@ -90,11 +69,11 @@ model-configs:
 rb --machine elab-regression -c elab_regression.yaml --reg-level 1
 ```
 
-Profiles above the requested level produce `SKIP`. A manifest with no named
-profiles is an error instead of an empty passing regression. Set
-`cfg-rtl-reg.elab-reg-cfg-path` when the manifest is not at the project root.
+- Profiles above the requested level report `SKIP`.
+- A manifest with no named profiles is an error, not an empty pass.
+- If the manifest is not at the project root, set `cfg-rtl-reg.elab-reg-cfg-path`.
 
-## Outputs and dispatch
+## Outputs
 
 Each run writes below the directory containing its `models.yaml`:
 
@@ -105,18 +84,14 @@ artefacts/elab/<model>/<base-or-profile>/
   result.json
 ```
 
-`elab.f` has unrolled includes and absolute path-valued entries. `result.json` records
-the selected top, explicit and parsed source counts, error and warning counts,
-the configured `max_parse_depth` (`null` when unset), elapsed time, peak worker
-memory, and pyslang version. A profile whose `prepend_sources`,
-`append_sources`, or `include_dirs` entry is missing produces a `FAIL` result at
-stage `filelist` instead of aborting the command, so a regression continues with
-its remaining profiles. Machine mode returns the
-same result payload and writes JSONL events to `rtl_buddy.log`.
+- `elab.f` is the filelist with includes unrolled and path entries made absolute.
+- `result.json` records the selected top, explicit and parsed source counts, error and warning counts, `max_parse_depth` (`null` when unset), elapsed time, peak worker memory, and the pyslang version.
+- A missing `prepend_sources`, `append_sources`, or `include_dirs` entry gives a `FAIL` at stage `filelist` for that profile. The command continues with the remaining profiles.
+- Machine mode returns the same result payload and writes JSONL events to `rtl_buddy.log`.
 
-`rb elab` dispatch is opt-in with `--dispatch`. `rb elab-regression` also honors
-`cfg-dispatch.backend`. Profiles layer their `resources` over
-`cfg-dispatch.resources`; `cpus` is both the scheduler request and pyslang
-worker thread count. Slurm enforces memory and time reservations.
-Local-parallel passes `cpus` to pyslang and uses its process-pool limit for
-concurrency, but does not enforce memory or time.
+## Dispatch elaboration
+
+`rb elab` dispatches only with `--dispatch`. `rb elab-regression` also honors `cfg-dispatch.backend`. A profile's `resources` layer over `cfg-dispatch.resources`, and `cpus` is both the scheduler request and the pyslang worker thread count.
+
+- Slurm enforces the memory and time reservations.
+- Local-parallel passes `cpus` to pyslang and limits concurrency with its process pool. It does not enforce memory or time.

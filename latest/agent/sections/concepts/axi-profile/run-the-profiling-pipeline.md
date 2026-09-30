@@ -1,6 +1,6 @@
 ## Run the profiling pipeline
 
-Run the four stages in order:
+The four stages run in this order. Discovery and monitor generation take a model; trace ingestion and notebook launch take a test.
 
 ```bash
 rb axi-profile discover soc_top
@@ -9,5 +9,3 @@ rb test my_test
 rb axi-profile run my_test --emit-txns-parquet
 rb axi-profile notebook my_test
 ```
-
-The stages are independent wrappers around the external profiler. Discovery and monitor generation select a model; trace ingestion and notebook launch select a test.

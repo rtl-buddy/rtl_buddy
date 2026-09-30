@@ -6,62 +6,40 @@ rb test smoke --rnd-last
 rb randtest smoke 20
 ```
 
-`--rnd-new` records a generated seed; `--rnd-last` reuses it. `randtest` runs repeated seeded iterations. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/#randtest) for replay and selection options.
+`--rnd-new` records a generated seed and `--rnd-last` reuses it. `randtest` runs repeated seeded iterations; see the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/#randtest) for replay and selection options.
 
-Use one explicit master seed when a test or regression must replay without
-depending on old artefacts:
+To replay a test or regression without old artefacts, pass one master seed:
 
 ```bash
 rb test smoke --master-seed 20260914
 rb regression --master-seed 20260914 --dispatch slurm
 ```
 
-RTL Buddy derives each runtime seed from the master seed, the
-project-root-relative `tests.yaml` path, the sweep-expanded test name, and the
-run ID when present. Test selection, ordering, checkout location, and dispatch
-timing do not change it. Repeating the command with the same master seed
-replays the same seeds. Master seeds are nonnegative integers and may exceed
-the simulator's seed range; derived simulator seeds are from 1 through
-2147483647.
+- Each runtime seed is derived from the master seed, the `tests.yaml` path relative to the project root, the sweep-expanded test name and the run ID. Selection, ordering, checkout location and dispatch timing do not change it.
+- A master seed is a nonnegative integer. Derived seeds, and a fixed `sim-rand-seed`, are 1 through 2147483647.
 
-Configure `sim-rand-seed-plusarg` when a preprocessor generates randomized
-stimulus:
+### Seed a preprocessor
+
+For a `preproc` hook that generates random stimulus, name the plusarg that carries the seed:
 
 ```yaml
 tests:
   - name: smoke
-    # ...
     sim-rand-seed-plusarg: stimulus_seed
 ```
 
-The resolved value is available through
-`test_cfg.get_resolved_seed()` and
-`test_cfg.get_plusarg("stimulus_seed")` before `preproc` runs. RTL Buddy then
-passes that value to the simulator, restores the configured plusarg if the
-hook changed it, writes it to `test.randseed` and `result.json`, and includes
-it in structured logs and machine results. Runtime seed values and plusargs do
-not change the compile key.
+- Before `preproc` runs, `test_cfg.get_resolved_seed()` and `test_cfg.get_plusarg("stimulus_seed")` return the resolved seed. The simulator gets that value even if the hook changed the plusarg.
+- The seed is written to `test.randseed`, `result.json` and machine results.
+- With no master or fixed seed, the plusarg gets the builder's default integer, including `0`.
+- `--rnd-new` and `--rnd-last` are rejected for such a test. `randtest` needs a fixed `sim-rand-seed`.
 
-Without a master or fixed test seed, the plusarg receives the builder's default
-integer unchanged, including `0`; the positive 31-bit limit applies only to
-fixed test seeds and master-derived seeds. `--rnd-new` and `--rnd-last` are
-rejected for a test that configures this plusarg because those modes select their value too late for preprocessing.
-`randtest` therefore requires a fixed `sim-rand-seed` for such a test; its one
-shared preprocessor run and every iteration receive that fixed value.
-
-Set `sim-rand-seed` on a test whose timing or command-cycle stimulus must stay
-fixed:
+Set `sim-rand-seed` to keep stimulus fixed:
 
 ```yaml
 tests:
   - name: command_timing
-    # ...
     sim-rand-seed: 41
     sim-rand-seed-plusarg: stimulus_seed
 ```
 
-The fixed value overrides the invocation's master, new, or replay seed policy.
-Mutation simulation oracles also resolve fixed seeds and exposed builder defaults
-before preprocessing, for both the baseline and every mutant.
-See [YAML Formats: tests.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#testsyaml) for the field
-contract.
+A fixed seed overrides the invocation's master, new or replay policy, including for mutation baselines and mutants.

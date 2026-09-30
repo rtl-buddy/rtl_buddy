@@ -3,10 +3,9 @@
 ```text
 Usage: rtl-buddy xplr gc [OPTIONS]
 
- reclaim experiment disk space, non-interactively: evict heavy artifacts + worktrees
- per policy (default keep-frontier never touches Pareto-frontier members or their
- lineage); record.json and the pinned sha always survive, so evicted experiments can be
- re-materialized
+ reclaim experiment disk space non-interactively: evict heavy artifacts and worktrees
+ per policy (default keep-frontier spares Pareto-frontier members and their lineage);
+ record.json and the pinned sha survive, so evicted experiments can be re-materialized
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --dry-run                 report what would be evicted without touching anything     │

@@ -1,6 +1,6 @@
 ## Configure model outputs
 
-Point the model at a checked-in bundle manifest and generated monitor:
+Point the model at a checked-in bundle manifest and a generated monitor file:
 
 ```yaml
 models:
@@ -10,6 +10,6 @@ models:
     axi_monitor_out: ../verif/soc_top/gen/axi_perf_mon.sv
 ```
 
-Paths are relative to `models.yaml`. `axi_bundles` is written by `discover` and read by `gen-monitor` and `run`. `axi_monitor_out` is written by `gen-monitor`; place it in the verification tree and add it to the testbench filelist once.
+Paths are relative to `models.yaml`. `discover` writes `axi_bundles`; `gen-monitor` and `run` read it. `gen-monitor` writes `axi_monitor_out`. Put that file in the verification tree and add it to the testbench filelist once.
 
-Both fields are optional until a command needs them. A missing required field fails before the external tool runs and points to the prerequisite step.
+Both fields are optional until a command needs them. A command with a missing required field fails before the external tool runs and names the step that produces it.

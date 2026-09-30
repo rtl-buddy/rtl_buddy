@@ -9,4 +9,9 @@ Use explicit contexts, never ambient `os.getcwd()`:
 
 Config-driven commands use their primary config's directory as `command_root`. Managed outputs go below it, external tools run from their artifact directory, and explicit CLI paths resolve from `invocation_cwd`.
 
-`--run-tag <name>` namespaces one invocation's artefact root to `<command_root>/artefacts/.runs/<name>/`. It is accepted by `test`, `randtest`, `regression`, the dispatch job commands, and `graph results`; every per-run path in the table below moves below it, and so does the command's `rtl_buddy.log`. Shared builds (`artefacts/.shared-builds/`, keyed on the compile fingerprint) and `graph.json` are shared and must not be namespaced. A new path builder under `artefacts/` therefore has to be classified: per-run paths go through `run_artifact_root()` / `test_artifact_dir(..., run_tag=...)`, shared ones do not. Unset keeps today's flat layout byte for byte.
+`--run-tag <name>` namespaces one invocation's artefact root to `<command_root>/artefacts/.runs/<name>/`. `test`, `randtest`, `regression`, the dispatch job commands, and `graph results` accept it.
+
+- Every per-run path in the table below, and the command's `rtl_buddy.log`, moves below the tagged root.
+- Shared builds (`artefacts/.shared-builds/`, keyed on the compile fingerprint) and `graph.json` are shared and never namespaced.
+- Classify every new path builder under `artefacts/` as per-run or shared. Per-run paths go through `run_artifact_root()` or `test_artifact_dir(..., run_tag=...)`; shared paths do not.
+- Without `--run-tag`, the flat layout is unchanged.

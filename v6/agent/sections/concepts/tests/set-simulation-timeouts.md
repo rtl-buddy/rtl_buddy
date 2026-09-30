@@ -1,6 +1,6 @@
 ## Set simulation timeouts
 
-`sim_timeout` defaults to 60 seconds. Add a builder-wide allowance for licensed simulators that may wait before running:
+`sim_timeout` is a wall-clock limit in seconds and defaults to 60. For licensed simulators that may queue before running, add a builder-wide allowance to every test's timeout:
 
 ```yaml
 cfg-rtl-builder:
@@ -8,6 +8,17 @@ cfg-rtl-builder:
     extra-sim-timeout: 900
 ```
 
-The allowance is added to each test's timeout. Override it for one command with `--extra-sim-timeout N`; use 0 to disable a configured allowance. Negative values are rejected. The setting affects simulation only, not compilation, and is forwarded to local-parallel and Slurm jobs.
+- `--extra-sim-timeout N` overrides it for one command. 0 disables a configured allowance; negative values are rejected.
+- It applies to simulation only, not compilation, and is forwarded to dispatch jobs.
+- With VCS `-licqueue`, the timeout pauses while the license-queue banner is printing, for at most one hour.
 
-For VCS runs using `-licqueue`, RTL Buddy pauses the test timeout while recognized license-queue banner output is active, for at most one hour. The timer resumes on other simulation output or after the cap. This avoids false timeouts without allowing an indefinite queue wait. Builder allowance remains useful for unrecognized or silent license managers.
+### Triaging `Sim hit timeout`
+
+`Sim hit timeout` means the wall-clock `sim_timeout` expired. It does not show the test is merely slow. Before raising the limit:
+
+1. Compare sibling tests under the same builder. If they also stall, inspect the shared build, tool or environment.
+2. Check whether `test.log` keeps advancing. Steady progress suggests a slow test; repeated activity suggests a functional wedge.
+3. Find the last completed phase or transaction and inspect its RTL or testbench condition.
+4. Confirm the resolved timeout, including builder and CLI allowances.
+
+A killed simulator may not flush its output, so `test.log` can end mid-line and its last bytes are not the exact stop location.

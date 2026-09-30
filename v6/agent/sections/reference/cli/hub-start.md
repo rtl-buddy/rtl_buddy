@@ -8,106 +8,71 @@ Usage: rtl-buddy hub start [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --foreground       --daemon                                    Run in the foreground │
 │                                                                (default). --daemon   │
-│                                                                detaches the hub into │
-│                                                                its own session,      │
-│                                                                redirects its output  │
-│                                                                to hub.log, and       │
-│                                                                returns as soon as    │
+│                                                                detaches the hub,     │
+│                                                                logs to hub.log, and  │
+│                                                                returns once          │
 │                                                                .rtl-buddy/hub.json   │
 │                                                                is published.         │
 │                                                                [default: foreground] │
 │ --serve-viewer     --no-serve-viewer                           Also serve the viewer │
-│                                                                HTTP+WebSocket layer  │
-│                                                                at the http_port.     │
-│                                                                When no               │
-│                                                                --viewer-bundle is    │
-│                                                                given, the hub        │
-│                                                                auto-discovers the    │
-│                                                                SPA shipped by        │
-│                                                                rtl-buddy-view (if    │
-│                                                                installed) and falls  │
-│                                                                back to a placeholder │
-│                                                                page if neither is    │
-│                                                                available.            │
+│                                                                over HTTP and         │
+│                                                                WebSocket. Without    │
+│                                                                --viewer-bundle, uses │
+│                                                                the SPA from an       │
+│                                                                installed             │
+│                                                                rtl-buddy-view, else  │
+│                                                                a placeholder page.   │
 │                                                                [default:             │
 │                                                                no-serve-viewer]      │
-│ --viewer-bundle                         PATH                   Override the          │
-│                                                                auto-discovered SPA   │
-│                                                                with this path        │
-│                                                                (directory containing │
-│                                                                index.html, or a path │
-│                                                                to a single           │
-│                                                                index.html). Use this │
-│                                                                when iterating on the │
-│                                                                SPA from a checkout — │
-│                                                                the auto-discovered   │
-│                                                                bundle ships with the │
-│                                                                installed wheel and   │
-│                                                                won't reflect         │
-│                                                                uncommitted viewer/   │
-│                                                                changes. Only used    │
-│                                                                with --serve-viewer.  │
+│ --viewer-bundle                         PATH                   SPA to serve instead  │
+│                                                                of the installed one: │
+│                                                                a directory           │
+│                                                                containing            │
+│                                                                index.html, or an     │
+│                                                                index.html path. Only │
+│                                                                used with             │
+│                                                                --serve-viewer.       │
 │ --listen-port                           INTEGER RANGE          TCP port for adapter  │
 │                                         [0<=x<=65535]          peers (nvim, rb       │
 │                                                                wave). Overrides      │
-│                                                                .listen_port from     │
+│                                                                .listen_port in       │
 │                                                                hub.toml. 0 =         │
-│                                                                OS-assigned. Pin to a │
-│                                                                specific number so    │
-│                                                                peers' discovery      │
-│                                                                records stay stable   │
-│                                                                across restarts.      │
-│ --http-port                             INTEGER RANGE          HTTP/WS port for the  │
-│                                         [0<=x<=65535]          browser-side SPA.     │
+│                                                                OS-assigned.          │
+│ --http-port                             INTEGER RANGE          HTTP/WebSocket port   │
+│                                         [0<=x<=65535]          for the browser SPA.  │
 │                                                                Overrides .http_port  │
-│                                                                from hub.toml. 0 =    │
-│                                                                OS-assigned. Pin to a │
-│                                                                specific number so    │
-│                                                                the SPA URL stays the │
-│                                                                same across restarts. │
-│                                                                Only used with        │
+│                                                                in hub.toml. 0 =      │
+│                                                                OS-assigned. Only     │
+│                                                                used with             │
 │                                                                --serve-viewer.       │
-│ --model                                 TEXT                   Generate view.json on │
-│                                                                hub start for this    │
-│                                                                model name (looked up │
-│                                                                in models.yaml),      │
-│                                                                avoiding a separate   │
-│                                                                `rb hier` invocation. │
-│                                                                When unset the hub    │
-│                                                                falls back to         │
-│                                                                .view_json from       │
+│ --model                                 TEXT                   Model name (from      │
+│                                                                models.yaml) to       │
+│                                                                generate view.json    │
+│                                                                for at start, instead │
+│                                                                of running `rb hier`. │
+│                                                                Without it the hub    │
+│                                                                uses .view_json from  │
 │                                                                hub.toml. Requires    │
 │                                                                --serve-viewer.       │
-│ --models-file                           PATH                   Explicit models.yaml  │
-│                                                                that owns the --model │
-│                                                                entry. Skips the      │
-│                                                                project-tree          │
-│                                                                discovery walk. Use   │
-│                                                                this to disambiguate  │
-│                                                                when the same model   │
-│                                                                name exists in more   │
-│                                                                than one models.yaml. │
-│ --axi-perf-from                         PATH                   Path to an            │
-│                                                                axi-perf.json (output │
-│                                                                of `rb axi-profile    │
-│                                                                run`). The hub bakes  │
-│                                                                its                   │
-│                                                                per-bundle/interconn… │
-│                                                                throughput overlay    │
-│                                                                into every generated  │
-│                                                                view.json AND records │
-│                                                                the source's          │
-│                                                                test/suite_dir so the │
-│                                                                SPA's 'Open in        │
-│                                                                marimo' button skips  │
-│                                                                its prompt. Use the   │
-│                                                                canonical             │
+│ --models-file                           PATH                   models.yaml that      │
+│                                                                holds the --model     │
+│                                                                entry, skipping       │
+│                                                                discovery. Use it     │
+│                                                                when several          │
+│                                                                models.yaml files     │
+│                                                                define the same name. │
+│ --axi-perf-from                         PATH                   axi-perf.json from    │
+│                                                                `rb axi-profile run`, │
+│                                                                whose throughput      │
+│                                                                overlay is added to   │
+│                                                                every generated       │
+│                                                                view.json. The layout │
 │                                                                <suite>/artefacts/ax… │
-│                                                                layout so the         │
-│                                                                test/suite_dir        │
-│                                                                derivation lands.     │
-│                                                                Only used with        │
-│                                                                --serve-viewer.       │
+│                                                                also lets the SPA     │
+│                                                                'Open in marimo'      │
+│                                                                button skip its       │
+│                                                                prompt. Only used     │
+│                                                                with --serve-viewer.  │
 │ --help                                                         Show this message and │
 │                                                                exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯

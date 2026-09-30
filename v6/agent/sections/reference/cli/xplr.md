@@ -7,10 +7,8 @@ Usage: rtl-buddy xplr [OPTIONS] COMMAND [ARGS]...
 
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --root        TEXT  anchor project-root discovery at this path instead of the        │
-│                     current directory (root_config.yaml/.git are resolved from       │
-│                     here). Group-level: place it between 'xplr' and the subcommand,  │
-│                     e.g. `rb xplr --root <project> list`. For driving a ledger from  │
-│                     outside its project checkout                                     │
+│                     current directory. Group-level: place it between 'xplr' and the  │
+│                     subcommand, e.g. `rb xplr --root <project> list`                 │
 │ --help              Show this message and exit.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
@@ -32,11 +30,10 @@ Usage: rtl-buddy xplr [OPTIONS] COMMAND [ARGS]...
 │                 artifact). Idempotent                                                │
 │ release         remove the experiment's worktree (worktree remove + prune); the exp  │
 │                 branch and the ledger record are kept                                │
-│ gc              reclaim experiment disk space, non-interactively: evict heavy        │
-│                 artifacts + worktrees per policy (default keep-frontier never        │
-│                 touches Pareto-frontier members or their lineage); record.json and   │
-│                 the pinned sha always survive, so evicted experiments can be         │
-│                 re-materialized                                                      │
+│ gc              reclaim experiment disk space non-interactively: evict heavy         │
+│                 artifacts and worktrees per policy (default keep-frontier spares     │
+│                 Pareto-frontier members and their lineage); record.json and the      │
+│                 pinned sha survive, so evicted experiments can be re-materialized    │
 │ mock            synthetic DSE backend with known optima (dev/CI harness)             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

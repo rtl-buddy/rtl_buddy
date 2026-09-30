@@ -14,38 +14,29 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ cursor         Broadcast cursor_time_changed{t_fs}.                                  │
 │ scope          Broadcast scope_changed{wave_scope}.                                  │
 │ open           Broadcast source_focused{file, line, col}.                            │
-│ graph-focus    Broadcast graph_focus{node} — point the hub's design knowledge graph  │
-│                pane (http://127.0.0.1:<http_port>/gph) at one node of                │
-│                artefacts/graph/graph.json. NODE is a graph node id: 'module:fifo',   │
-│                'inst:top/top.u_fifo', 'test:verif/dma#smoke',                        │
-│                'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and │
-│                docs/concepts/graph.md lists. The hub caches the focus and replays it │
-│                to the pane on connect, so sending this before the browser tab is     │
-│                open works.                                                           │
-│ cov-focus      Broadcast cov_focus{target} — point the hub's coverage pane           │
-│                (http://127.0.0.1:<http_port>/cov) at one target of the run's         │
-│                coverage model. TARGET is prefixed: 'file:design/blk.sv',             │
-│                'module:blk', or 'test:verif/blk#basic'; an unprefixed string is read │
-│                as a file path. --metric foregrounds one coverage kind, --line        │
-│                scrolls a file target to a line, and --item names a                   │
-│                branch/toggle/expression bin or an SVA cover point. The hub caches    │
-│                the focus and replays it to the pane on connect, so sending this      │
-│                before the browser tab is open works.                                 │
-│ phys-focus     Broadcast phys_focus{target} — point the hub's synth+power pane       │
-│                (http://127.0.0.1:<http_port>/phy) at one target of the run's         │
-│                physical model. TARGET is prefixed: 'instance:u_cpu/u_alu' or         │
-│                'module:alu'; an unprefixed string is read as an instance path.       │
-│                --metric foregrounds one physical metric. The graph pane (/gph)       │
-│                follows the same message: it turns its heat overlay on and highlights │
-│                the module the target belongs to. The hub caches the focus and        │
-│                replays it to both on connect, so sending this before the browser     │
-│                tabs are open works.                                                  │
+│ graph-focus    Broadcast graph_focus{node}: point the graph pane (/gph) at one node. │
+│                NODE is a graph node id as returned by `rb graph query`, such as      │
+│                'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke' or       │
+│                'covitem:dma#DMA-COV-1'. The hub replays the focus when the pane      │
+│                connects, so it can be sent before the tab is open.                   │
+│ cov-focus      Broadcast cov_focus{target}: point the coverage pane (/cov) at one    │
+│                target. TARGET is 'file:design/blk.sv', 'module:blk' or               │
+│                'test:verif/blk#basic'; an unprefixed string is a file path. --metric │
+│                foregrounds one coverage kind, --line scrolls a file target to a      │
+│                line, and --item names a bin or SVA cover point. The hub replays the  │
+│                focus when the pane connects, so it can be sent before the tab is     │
+│                open.                                                                 │
+│ phys-focus     Broadcast phys_focus{target}: point the synth and power pane (/phy)   │
+│                at one target. TARGET is 'instance:u_cpu/u_alu' or 'module:alu'; an   │
+│                unprefixed string is an instance path. --metric foregrounds one       │
+│                physical metric. The graph pane (/gph) also follows: it turns on its  │
+│                heat overlay and highlights the target's module. The hub replays the  │
+│                focus when either pane connects, so it can be sent before the tabs    │
+│                are open.                                                             │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
-│                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
-│                (clears any cached diagnostics from SOURCE). Use --instance to attach │
-│                a view.json instance_path hint that consumers (the SPA's on-canvas    │
-│                badge layer in particular) use as a fast path instead of the          │
-│                file+line resolver.                                                   │
+│                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty     │
+│                set, clearing SOURCE's diagnostics. --instance attaches a view.json   │
+│                instance_path so consumers skip file-and-line resolution.             │
 │ state          Snapshot the hub's cached state (active model, selection, cursor,     │
 │                scope, peers).                                                        │
 │ wave-add       Ask the wave peer (surfer) to add one or more signals to the view.    │
@@ -67,15 +58,11 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ wave-comment   Add comment rows (named dividers) to surfer's view. Returns the new   │
 │                item ids. Maps to WCP add_dividers.                                   │
 │ view-pan       Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.     │
-│ overlay        Flip an overlay's enabled state on the SPA. Built-in NAMES are        │
-│                'clock', 'reset', 'axi-perf', 'wave'; an unknown name is a no-op. Use │
-│                --on / --off (default --on). Useful for agents or scripted demos that │
-│                want to direct the user's attention to a specific overlay layer       │
-│                without a UI click.                                                   │
+│ overlay        Enable or disable an overlay on the schematic. NAME is 'clock',       │
+│                'reset', 'axi-perf' or 'wave'; an unknown name does nothing.          │
 │ capture        Ask the schematic (rtl-buddy-sch) to snapshot the current graph and   │
-│                write it to --out. Graph-only — surrounding panels are not captured.  │
-│                Useful for agents that want to look at what the user is seeing        │
-│                without a browser screenshot tool.                                    │
+│                write it to --out. Only the graph is captured, not the surrounding    │
+│                panels.                                                               │
 │ open-source    Ask the src peer (nvim) to open FILE at line+col.                     │
 │ resolve        resolve coordinates via the hub's view.json + tb_prefix mapping       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯

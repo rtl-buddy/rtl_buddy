@@ -1,3 +1,8 @@
 ## Coverage totals are per elaboration by default
 
-Verilator keys every coverage point by the module it elaborated, so a suite whose compile keys build the same RTL under different defines scores each source point once per parameterisation, and a key that exercises none of a block leaves that block's copy dark. `rb cov summary`, `--coverage-dir-summary` and the merged totals all report that figure, and a block reported short on branch coverage can be at 100% once the copies are collapsed. Read `source_totals` — `rb cov summary`'s `run (source)` row, `rb cov summary --by-source`, or `--coverage-source-summary` on `test`/`regression` — when the question is what the suite covered. `--coverage-dir-summary` has no collapsed form: it is parsed from LCOV, which has already folded the elaborations. See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/#per-elaboration-vs-source-point-figures).
+Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
+
+- `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, or `--coverage-source-summary` on `test` and `regression`.
+
+See [Coverage](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/#per-elaboration-vs-source-point-figures).

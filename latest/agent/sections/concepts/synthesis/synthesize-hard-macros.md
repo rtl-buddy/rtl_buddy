@@ -4,6 +4,6 @@ For each hard macro:
 
 1. Add its physical LEF to `lef-paths`.
 2. Add its timing Liberty to `lib-paths`.
-3. Provide a port-only RTL `(* blackbox *)` declaration for frontend binding.
+3. Provide a port-only `(* blackbox *)` RTL declaration for the frontend.
 
-The OpenROAD stage avoids generating a Verilog stub when the macro already exists in the supplied LEF or Liberty, preserving its physical area and timing arcs. If no physical or timing master exists, RTL Buddy generates a port-only stub and the reported PPA cannot represent that macro accurately.
+With both files supplied, the OpenROAD stage keeps the macro's area and timing arcs. Without them rtl_buddy generates a port-only stub, and the reported PPA does not represent the macro.

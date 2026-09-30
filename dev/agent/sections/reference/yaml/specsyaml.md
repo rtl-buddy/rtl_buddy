@@ -15,7 +15,7 @@ blocks:
 
 | Field | Requirement | Meaning |
 |---|---|---|
-| `blocks[].name` | Required | Block identifier matched to model name in multi-block specs |
+| `blocks[].name` | Required | Block identifier, matched to model name in multi-block specs |
 | `blocks[].desc` | Required | Human-readable description |
 | `blocks[].docs` | Optional list | Markdown paths relative to `specs.yaml` |
 | `blocks[].coverage-items` | Default empty | Functional coverage item list |

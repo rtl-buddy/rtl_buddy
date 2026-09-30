@@ -9,4 +9,4 @@
 - Verible linting, spec traceability, FPGA implementation, and AXI profiling
 - Machine-readable output, a design knowledge graph, and an MCP server for agents
 
-External tools are installed per workflow. See [Installation](https://rtl-buddy.github.io/rtl_buddy/v6/install/#external-tools-by-feature) for the supported integrations.
+Each workflow needs its own external tools. See [Installation](https://rtl-buddy.github.io/rtl_buddy/v6/install/#external-tools-by-feature).

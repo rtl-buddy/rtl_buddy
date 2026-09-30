@@ -3,15 +3,15 @@
 From a suite directory containing `tests.yaml`:
 
 ```bash
-uv run rb test --list
-uv run rb test basic
-uv run rb test
+uv run rb test --list     # list tests
+uv run rb test basic      # run one test
+uv run rb test            # run every test
 ```
 
-The first command lists tests, the second runs `basic`, and the third runs every test. From another directory, identify the suite explicitly:
+From another directory, name the suite:
 
 ```bash
 uv run rb test basic --test-config path/to/tests.yaml
 ```
 
-Outputs land beside `tests.yaml`, not in the directory where you invoked the command. See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/).
+Outputs land beside `tests.yaml`, not in the directory you ran from. See [Execution Context](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/execution-context/).

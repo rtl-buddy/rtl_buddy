@@ -14,28 +14,18 @@ cfg-dispatch:
     cpus: 8
     mem: 16G
     time: "02:00:00"
-    parallel: 4          # distinct builds compiled at once in the build job;
-                         # the head reserves up to cpus x parallel (32 here,
-                         # capped at the planned test count) and leaves mem
-                         # and time exactly as written
+    parallel: 4          # builds compiled at once in the build job
     split-verilate: true # Verilator suites verilate in their own Slurm job
-    verilate:            # that job's reservation; mem and time inherit the
-      cpus: 2            # compile values above
   sbatch-args:
     - --partition=verif
     - --account=chip
   max-jobs-per-array: 200
-  max-array-size: 1001   # the cluster's Slurm MaxArraySize; omit it to read
-                         # the value from `scontrol show config`
-  poll-interval: 10
+  max-array-size: 1001   # omit to read MaxArraySize from `scontrol show config`
   progress-interval: 60
   max-wait: 7200
   retry:
     attempts: 2
     backoff-sec: 60
-    backoff-max-sec: 600
-    jitter: 0.5
-    classifiers: [license-queue]
   rightsize:
     report: true
     over-threshold: 0.5
@@ -43,6 +33,6 @@ cfg-dispatch:
     margin: 1.5
 ```
 
-`jobs` controls the single local-parallel pool. `max-jobs-per-array` controls each Slurm array, and `max-array-size` controls how large one array may be before the group is split. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#root_configyaml) for defaults and validation.
+`jobs` sizes the local-parallel pool. `max-jobs-per-array` throttles each Slurm array. See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#root_configyaml) for defaults and validation.
 
-Always quote `time` values. YAML 1.1 can parse an unquoted value such as `4:00:00` as the integer `14400`, changing its meaning. rtl_buddy rejects that form. Quote times in global, compile, testbench, and test reservations, and in every [`modes:`](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#size-a-reservation-per-builder-mode) block.
+Quote every `time` value; an unquoted `4:00:00` is rejected.

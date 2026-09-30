@@ -1,5 +1,8 @@
 ## Coverage merging runs in the submitting process, with no timeout
 
-`verilator_coverage --write`, the coverage model build, and the LCOV exports (one per test with `use-lcov` or `--coverage-html`, otherwise one for the merged database) all run in the process that invoked `rb`, including under `--dispatch slurm` where every simulation ran on a compute node. On a large run this step is not small — a few hundred inputs can peak in the gigabytes — so a shared submit host with a per-user memory cap can kill it. There is no timeout on the merge either: a merge that hangs hangs the run.
+The merge and LCOV exports run in the process that invoked `rb`, including under `--dispatch slurm`.
 
-A merge killed this way reports `FAIL` for toggle, expression, and functional coverage, records `merge_failed` in the manifest and the machine envelope, and exits 1; see [Read a failed merge](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/#read-a-failed-merge). To avoid it, run the coverage-producing command itself on a compute node (for example, submit `rb regression --coverage-merge` as one job) rather than merging on the submit host.
+- A few hundred inputs can peak in the gigabytes. A memory cap on a shared submit host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/coverage/#read-a-failed-merge)).
+- There is no timeout, so a hung merge hangs the run.
+
+Run the coverage command on a compute node, for example by submitting `rb regression --coverage-merge` as one job.

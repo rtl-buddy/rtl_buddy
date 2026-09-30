@@ -1,9 +1,7 @@
 ## Reuse compilation
 
-When tests share compile inputs, reuse a compiled build:
-
 ```bash
 rb regression --share-build
 ```
 
-Verilator, VCS, and Icarus support cross-test sharing. Reuse is reported once per build directory per process on the console, and every test's `compile.log` (and the log file) records its own reuse; add `--rebuild` to compile even when the stamp says the build is current. See [Sharing compiled builds](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#sharing-compiled-builds-across-tests) for invalidation and backend limitations.
+When tests share compile inputs this reuses one build. Reuse is reported once per build directory on the console, and each test's `compile.log` and the log file record their own. `--rebuild` compiles even when the stamp says the build is current. Verilator, VCS and Icarus support sharing; see [Sharing compiled builds](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/#sharing-compiled-builds-across-tests) for invalidation and limits.

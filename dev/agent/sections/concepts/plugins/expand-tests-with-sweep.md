@@ -23,12 +23,12 @@ for i in range(4):
 
 | Variable | Value |
 |---|---|
-| `test_cfg` | Original immutable `TestConfig`; copied variants may change any field except `reglvl` |
-| `root_cfg` | Mutable `RootConfig` |
-| `suite_dir` | Absolute directory containing `tests.yaml` |
-| `artifact_dir` | Artefact root for the incoming test name |
-| `out_test_cfgs` | Output list the script must assign |
-| `logger` | rtl_buddy logger |
-| `__file__` | Absolute hook path |
+| `test_cfg` | The original, immutable `TestConfig`. A copy may change any field except `reglvl`. |
+| `root_cfg` | The mutable `RootConfig`. |
+| `suite_dir` | Absolute directory containing `tests.yaml`. |
+| `artifact_dir` | Artefact root for the incoming test name. |
+| `out_test_cfgs` | Output list the script must assign. |
+| `logger` | The rtl_buddy logger. |
+| `__file__` | Absolute path of the hook. |
 
-A script exception marks the source test as a setup failure; remaining tests continue.
+If the script raises, the source test is a setup failure and the remaining tests continue.

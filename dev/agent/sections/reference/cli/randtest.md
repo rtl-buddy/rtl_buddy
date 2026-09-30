@@ -30,10 +30,9 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 │                                       cancel, adopt)                                 │
 │                                       [default: (cfg-dispatch orphans, else warn)]   │
 │ --run-tag                    TEXT     namespace this run's artefact tree under       │
-│                                       artefacts/.runs/<tag>/ so a concurrent run of  │
-│                                       the same suite gets its own tree, its own tree │
-│                                       lock and its own log; shared builds stay       │
-│                                       shared                                         │
+│                                       artefacts/.runs/<tag>/ with its own tree lock  │
+│                                       and log, so concurrent runs of a suite do not  │
+│                                       collide; shared builds stay shared             │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

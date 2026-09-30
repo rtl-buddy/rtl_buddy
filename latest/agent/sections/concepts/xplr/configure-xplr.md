@@ -12,7 +12,7 @@ cfg-xplr:
   worktree-root: artefacts/xplr/worktrees
 ```
 
-`rb xplr` needs only a `root_config.yaml` or Git root; it does not load builder or platform configuration. When invoking it from elsewhere, anchor project discovery explicitly:
+`rb xplr` needs only a `root_config.yaml` or a Git root and loads no builder or platform configuration. From elsewhere, anchor discovery explicitly:
 
 ```bash
 rb xplr --root /path/to/project frontier

@@ -8,7 +8,7 @@ rb fpga --list
 rb fpga-regression -c ci/fpga_regression.yaml -l 1000
 ```
 
-Without `--bitstream`, the flow stops after routing and reports; `bitstream` is `null`. With bitstream generation enabled, Vivado downgrades the IP-oriented `NSTD-1` and `UCIO-1` bitgen blockers to warnings immediately before `write_bitstream`. Their original severities remain in `drc.rpt`; board projects should still constrain every pin.
+Without `--bitstream`, the flow stops after routing and reports, and `bitstream` is `null`. When a bitstream is requested, Vivado downgrades the IP-oriented `NSTD-1` and `UCIO-1` bitgen blockers to warnings just before `write_bitstream`. `drc.rpt` keeps their original severities. Board projects should still constrain every pin.
 
 A regression manifest lists `fpga.yaml` suites:
 
@@ -20,4 +20,6 @@ fpga-configs:
   - blocks/fifo/fpga.yaml
 ```
 
-Runs above `-l/--reg-level` are SKIP. Machine-mode regression results include the originating suite. See the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/) for selection and output options.
+Runs above `-l/--reg-level` are SKIP. Machine-mode regression results include the originating suite. Selection and output options are in the [CLI reference](https://rtl-buddy.github.io/rtl_buddy/v6/reference/cli/).
+
+Filelist `+incdir+` entries reach both backends: Vivado's `synth_design` gets them as `-include_dirs` and openXC7's `read_verilog` as `-I`. Each directory resolves against the filelist that declared it.

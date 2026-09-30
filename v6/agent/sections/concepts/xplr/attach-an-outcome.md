@@ -1,6 +1,6 @@
 ## Attach an outcome
 
-Declare terminal status, metrics, directions, units, and artefact paths:
+The outcome gives terminal status, metrics, their directions and units, and artefact paths:
 
 ```json
 {
@@ -19,4 +19,4 @@ Declare terminal status, metrics, directions, units, and artefact paths:
 }
 ```
 
-Metrics are numbers or booleans. Only numeric metrics with a `min` or `max` direction participate in Pareto dominance. Undirected measurements remain available for reporting and comparison.
+Metrics are numbers or booleans. Only numeric metrics with a `min` or `max` direction take part in Pareto dominance; undirected ones stay available for reporting and comparison.

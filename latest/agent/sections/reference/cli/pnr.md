@@ -34,9 +34,10 @@ Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]
 │                                               instead of failing                     │
 │ --jobs          -j      INTEGER RANGE [x>=1]  P&R runs at once: independent blocks   │
 │                                               harden side by side, and a top waits   │
-│                                               for all of its own. Each is a full     │
-│                                               OpenROAD session with its own threads: │
-│                                               setting, so size the two together      │
+│                                               for all of its own. Each run is a full │
+│                                               OpenROAD session sized by its          │
+│                                               `threads:` setting, so size the two    │
+│                                               together                               │
 │                                               [default: 1]                           │
 │ --synth                                       run each P&R run's upstream synthesis  │
 │                                               just before it, once per synthesis —   │

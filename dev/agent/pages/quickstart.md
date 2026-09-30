@@ -4,25 +4,25 @@ description: Run tests, regressions, synthesis, and randomized simulation in an 
 
 # Quick Start
 
-Run these commands from an installed project. See [Installation](install.md) if `uv run rb --version` fails.
+Run these commands from a project where RTL Buddy is installed. If `uv run rb --version` fails, see [Installation](install.md).
 
 ## Run tests
 
 From a suite directory containing `tests.yaml`:
 
 ```bash
-uv run rb test --list
-uv run rb test basic
-uv run rb test
+uv run rb test --list     # list tests
+uv run rb test basic      # run one test
+uv run rb test            # run every test
 ```
 
-The first command lists tests, the second runs `basic`, and the third runs every test. From another directory, identify the suite explicitly:
+From another directory, name the suite:
 
 ```bash
 uv run rb test basic --test-config path/to/tests.yaml
 ```
 
-Outputs land beside `tests.yaml`, not in the directory where you invoked the command. See [Execution Context](concepts/execution-context.md).
+Outputs land beside `tests.yaml`, not in the directory you ran from. See [Execution Context](concepts/execution-context.md).
 
 ## Run a regression
 
@@ -30,7 +30,7 @@ Outputs land beside `tests.yaml`, not in the directory where you invoked the com
 uv run rb regression
 ```
 
-This uses `./regression.yaml` when present, then the path configured in `root_config.yaml`. To choose another manifest:
+The manifest is `./regression.yaml` when present, otherwise the path set in `root_config.yaml`. To choose one:
 
 ```bash
 uv run rb regression --reg-config path/to/regression.yaml
@@ -41,12 +41,12 @@ See [Regressions](concepts/regressions.md) for level filtering and parallel disp
 ## Run randomized tests
 
 ```bash
-uv run rb test basic --rnd-new
-uv run rb randtest basic 5
-uv run rb randtest basic 5 --rnd-rpt 3
+uv run rb test basic --rnd-new         # one run with a new seed
+uv run rb randtest basic 5             # five distinct iterations
+uv run rb randtest basic 5 --rnd-rpt 3 # replay iteration 3
 ```
 
-These commands run once with a new seed, run five distinct iterations, and replay iteration 3 respectively. Seeds are recorded with the test artefacts.
+Seeds are recorded with the test artefacts.
 
 ## Run synthesis
 
@@ -55,13 +55,13 @@ uv run rb synth --list --synth-config path/to/synth.yaml
 uv run rb synth smoke_synth --synth-config path/to/synth.yaml
 ```
 
-The required backend and library configuration is covered in [Synthesis](concepts/synthesis.md).
+Backend and library configuration is in [Synthesis](concepts/synthesis.md).
 
 ## Inspect results
 
-Each suite writes orchestration output to `rtl_buddy.log` and per-test output under `artefacts/<test>/`. A `randtest` iteration uses `artefacts/<test>/run-NNNN/`; latest-run symlinks remain at the test artefact root.
+Each suite writes orchestration output to `rtl_buddy.log` and per-test output to `artefacts/<test>/`. A `randtest` iteration writes to `artefacts/<test>/run-NNNN/`, and latest-run symlinks stay at the test artefact root.
 
-For programmatic output:
+For JSON output:
 
 ```bash
 uv run rb --machine test basic

@@ -29,6 +29,10 @@ runs:
     reglvl: 1000
 ```
 
-Paths resolve from `power.yaml`. A synth-source run requires `synth`, `synth-path`, and `constraints`. A P&R-source run requires `pnr` and `pnr-path`; it uses the routed SDC unless `constraints` overrides it. `phys-run` is optional and names the synthesis run this one publishes its half of the physical model beside; see [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#pair-the-model-with-a-synthesis-run).
+Paths resolve from `power.yaml`.
 
-See [YAML Formats: power.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#poweryaml) for all fields.
+- A `synth` source requires `synth`, `synth-path` and `constraints`.
+- A `pnr` source requires `pnr` and `pnr-path`. It uses the routed SDC unless `constraints` overrides it.
+- `phys-run` is optional; see [Pair the model with a synthesis run](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/#pair-the-model-with-a-synthesis-run).
+
+All fields are in [YAML Formats: power.yaml](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#poweryaml).

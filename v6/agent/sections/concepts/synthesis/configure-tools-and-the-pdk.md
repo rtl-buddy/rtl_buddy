@@ -1,6 +1,6 @@
 ## Configure tools and the PDK
 
-Define backend defaults and map a named synthesis platform to a PDK corner in `root_config.yaml`:
+`root_config.yaml` holds backend defaults and maps a named synthesis platform to a PDK corner:
 
 ```yaml
 cfg-synth-tools:
@@ -31,18 +31,14 @@ cfg-synth-platforms:
     corner: tt
 ```
 
-All paths resolve from `root_config.yaml`.
+Paths resolve from `root_config.yaml`. The Yosys backend needs Liberty. The OpenROAD backend needs Liberty plus technology and macro LEF. Keep large PDK files untracked and provide a fetch script.
 
-The Yosys backend uses Liberty for mapping, area, and timing. The OpenROAD backend requires Liberty and technology/macro LEF; a missing LEF fails before running the tool. Keep large PDK files untracked and provide a reproducible fetch script.
+OpenROAD `strategy` is `AREA`, `TIMING`, `TIMING_ANNEAL`, or `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
 
-OpenROAD `strategy` values are `AREA`, `TIMING`, `TIMING_ANNEAL`, and `TIMING_GENETIC`. `AREA` reports the initial mapping; the timing strategies request OpenROAD resynthesis.
+Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`:
 
-Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`, so the per-PDK notes are short:
+- **Nangate45**: one Liberty file. The template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
+- **sky130hd**: one Liberty per corner, plus a `dont-use-cells` list for the probe and `lpflow` cells. See the template's `sky130hd` entry.
+- **ASAP7**: not validated. `corners:` takes one file per corner, so merge ASAP7's split gzipped Liberty files first.
 
-- **Nangate45** — one Liberty file (`NangateOpenCellLibrary_typical.lib`); the project template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
-- **sky130hd** — one Liberty per corner (`sky130_fd_sc_hd__tt_025C_1v80.lib`), plus the `dont-use-cells` list for the probe and `lpflow` cells; see the template's `sky130hd` entry and `synth/demo_tiny_alu_subsys_hier/download_pdk.sh`.
-- **ASAP7** — not validated by rtl_buddy. Its cells are split across one Liberty file per cell group per Vt and corner, mostly gzipped, and `corners:` takes one file per corner, so merge a corner's files into one Liberty first, as ORFS does for its synthesis step.
-
-The P&R side of each PDK, including the ASAP7 gaps, is in [Place-and-Route: PDK setup notes](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#pdk-setup-notes).
-
-A PDK's `dont-use-cells` list excludes cells from mapping: each pattern becomes a `-dont_use` argument to Yosys `dfflibmap` and `abc`, and on the OpenROAD backend a `set_dont_use` before the resynthesis stage reads the netlist. It is the same list [P&R](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#tune-the-process-dependent-steps) reads, so a cell excluded here is excluded there too, and two runs that exclude different cells fingerprint as two experiments. A synth platform's own `dont-use-cells` is added to the PDK's list, PDK entries first, as on a P&R platform.
+`dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#pdk-setup-notes).

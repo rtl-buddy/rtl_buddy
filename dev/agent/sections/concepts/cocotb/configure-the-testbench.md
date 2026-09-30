@@ -1,6 +1,6 @@
 ## Configure the testbench
 
-Add a required `toplevel:` and a `cocotb.module` string or list to the testbench entry:
+Give the testbench entry a required `toplevel:` and a `cocotb.module` string or list:
 
 ```yaml
 testbenches:
@@ -21,10 +21,13 @@ tests:
     reglvl: 0
 ```
 
-Select the simulator as for any other test:
+Choose the simulator as for any test:
 
 ```bash
 rb --builder icarus test cocotb_smoke
 ```
 
-Unsupported simulator families and a missing `toplevel:` are fatal configuration errors. `toplevel:` becomes `COCOTB_TOPLEVEL` and also roots the compile — Verilator `--top-module`, VCS `-top`, Icarus `-s` — unless the builder's `compile-time` opts already pin a top. See [Tests YAML](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#testsyaml) for the complete schema and [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/simulators/) for backend differences.
+- An unsupported simulator family or a missing `toplevel:` is a fatal configuration error.
+- `toplevel:` becomes `COCOTB_TOPLEVEL` and also sets the compile top (Verilator `--top-module`, VCS `-top`, Icarus `-s`), unless the builder's `compile-time` options already set one.
+
+See [Tests YAML](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#testsyaml) for the schema and [Simulation Backends](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/simulators/) for backend differences.
