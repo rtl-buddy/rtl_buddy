@@ -34,13 +34,13 @@ from ..phys.publish import (
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
-# ABC script for liberty without a timing constraint.
-_ABC_SCRIPT_NO_TIMING = (
-    "strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; strash; "
+# Yosys' default Liberty script without `dc2`, which rebuilds log-depth carry networks as ripple chains.
+DEFAULT_MAPPED_ABC_SCRIPT = (
+    "strash; &get -n; &fraig -x; &put; scorr; dretime; strash; "
     "&get -n; &dch -f; &nf {D}; &put"
 )
-# Adds stime -p to report critical-path delay.
-_ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
+# Appended when the SDC names a clock; `_parse_critical_path_ps` reads its report.
+_ABC_STIME = "; stime -p"
 
 
 def _flag_value(words: list[str], flag: str) -> str | None:
@@ -466,6 +466,34 @@ def dont_use_args(cells: list[str]) -> str:
     return "".join(f" -dont_use {cell}" for cell in cells)
 
 
+def mapped_abc_script(opts: SynthToolOpts) -> str:
+    """Return the ABC script a Liberty-mapped run passes to ``abc -script "+..."``.
+
+    The resolved ``abc_script``, or :data:`DEFAULT_MAPPED_ABC_SCRIPT` when it is empty.
+    """
+    script = (opts.abc_script or "").strip()
+    if not script:
+        return DEFAULT_MAPPED_ABC_SCRIPT
+    if '"' in script or "\n" in script:
+        raise FatalRtlBuddyError(
+            f"synth option abc-script must be one line without double quotes, "
+            f"got {script!r}; separate ABC commands with ';'"
+        )
+    return script
+
+
+def warn_mapped_abc_args(opts: SynthToolOpts, synth_name: str) -> None:
+    """Warn that a Liberty-mapped run drops the resolved ``abc_args``."""
+    if opts.abc_args:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth.abc_args_ignored",
+            synth=synth_name,
+            abc_args=opts.abc_args,
+        )
+
+
 def elaboration_fingerprint(opts: SynthToolOpts, root_cfg=None) -> dict:
     """Return the elaboration settings a generated Yosys script reads, for the options fingerprint.
 
@@ -721,6 +749,10 @@ class YosysSynth:
             eff_abc = self.effort_cfg.get_yosys_abc_args()
             if eff_abc:
                 opts.abc_args = eff_abc
+        if not overrides or "abc_script" not in overrides:
+            eff_script = self.effort_cfg.get_yosys_abc_script()
+            if eff_script:
+                opts.abc_script = eff_script
         self._opts = opts
         return opts
 
@@ -834,12 +866,11 @@ class YosysSynth:
                     )
             self._period_ps = period_ps
 
-            abc_script = (
-                _ABC_SCRIPT_WITH_TIMING
-                if period_ps is not None
-                else _ABC_SCRIPT_NO_TIMING
-            )
+            abc_script = mapped_abc_script(opts)
+            if period_ps is not None:
+                abc_script += _ABC_STIME
             abc_cmd += f' -script "+{abc_script}"'
+            warn_mapped_abc_args(opts, self.synth_cfg.get_name())
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
             lines.append(f"stat -liberty {lib_paths[0]}")
@@ -1169,7 +1200,8 @@ class YosysSynth:
         - `synth_args`: the resolved value, including effort and overrides.
         - `params` and `defines`: `defines` is the merged table the script
           received (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
-        - `mapped` branch: `abc_period_ps` (null when the SDC names no clock),
+        - `mapped` branch: `abc_script` (:func:`mapped_abc_script`),
+          `abc_period_ps` (null when the SDC names no clock),
           `libs` (:func:`library_fingerprint`) and `dont_use`.
         - unmapped branch: `abc_args`. Mapped runs ignore `abc_args`.
 
@@ -1185,6 +1217,7 @@ class YosysSynth:
             "defines": self._digested_defines(),
         }
         if mapped:
+            fed["abc_script"] = mapped_abc_script(opts)
             fed["abc_period_ps"] = self._period_ps
             fed["libs"] = library_fingerprint(self._resolve_lib_paths(), self.root_cfg)
             fed["dont_use"] = resolve_dont_use_cells(self.synth_cfg, self.root_cfg)

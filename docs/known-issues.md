@@ -217,6 +217,10 @@ See [Synthesis](concepts/synthesis.md#gate-unbound-interface-instances).
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs the warning `synth_tool_config.unknown_override` and the default is used. A non-mapping block, or a non-boolean `single_unit` or `best_effort_hierarchy`, is fatal. See [Synthesis](concepts/synthesis.md).
 
+## Wide adders map as ripple chains unless `synth-args` has `-noabc`
+
+Yosys `synth` runs its generic `abc` pass before the mapped-run ABC step, and that pass's script includes `dc2`, which rebuilds log-depth adders, negates and incrementers as ripple chains. The mapped-run default script omits `dc2`, but it cannot restore depth the earlier pass removed. Add `-noabc` to the effort's `synth-args` for timing-critical datapaths. See [Synthesis](concepts/synthesis.md#choose-the-mapped-run-abc-script).
+
 ## `rb phys module` reports no power for an RTL module
 
 The physical model's synthesis half holds RTL module names and its power half holds the Liberty cell of each leaf instance, so `rb phys module u_cpu` reports cell count and area with no instances and no power. Use `rb phys instance u_cpu`, which sums the leaf rows under the instance path. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).

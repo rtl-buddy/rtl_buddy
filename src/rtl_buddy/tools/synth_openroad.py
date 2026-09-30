@@ -19,11 +19,13 @@ from .synth_yosys import (
     find_conflicting_driver_warnings,
     find_unresolved_interface_warnings,
     lifetime_scan_inputs,
+    mapped_abc_script,
     parse_area_um2,
     parse_gate_count,
     resolve_dont_use_cells,
     slang_handles_params,
     validate_frontend,
+    warn_mapped_abc_args,
 )
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
@@ -48,12 +50,6 @@ from ..phys.publish import (
     withdrawal_failure_desc,
 )
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
-
-# Area-focused ABC script for the Yosys stage; OpenROAD does the timing analysis.
-_ABC_SCRIPT_AREA = (
-    "strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; strash; "
-    "&get -n; &dch -f; &nf {D}; &put"
-)
 
 
 class OpenRoadSynth:
@@ -149,13 +145,13 @@ class OpenRoadSynth:
 
         Elaboration always uses Yosys, so its opts come from the yosys tool config plus any
         `tool_overrides.yosys`, falling back to the openroad opts only when no yosys tool config
-        exists. Memoised because resolving overrides emits validation warnings.
+        exists. The effort's `abc-args` and `abc-script` apply unless those overrides set them.
+        Memoised because resolving overrides emits validation warnings.
         """
         if self._yosys_opts is not None:
             return self._yosys_opts
-        opts = self.tool_cfg.get_opts(
-            self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        )
+        overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+        opts = self.tool_cfg.get_opts(overrides)
         if self.root_cfg is not None:
             try:
                 yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
@@ -164,9 +160,12 @@ class OpenRoadSynth:
                 # resolving the opts must surface, not silently downgrade the frontend to "verilog".
                 yosys_tool_cfg = None
             if yosys_tool_cfg is not None:
-                opts = yosys_tool_cfg.get_opts(
-                    self.synth_cfg.get_tool_overrides_for("yosys")
-                )
+                overrides = self.synth_cfg.get_tool_overrides_for("yosys")
+                opts = yosys_tool_cfg.get_opts(overrides)
+        if not overrides or "abc_args" not in overrides:
+            opts.abc_args = self.effort_cfg.get_yosys_abc_args() or opts.abc_args
+        if not overrides or "abc_script" not in overrides:
+            opts.abc_script = self.effort_cfg.get_yosys_abc_script() or opts.abc_script
         self._yosys_opts = opts
         return opts
 
@@ -246,10 +245,11 @@ class OpenRoadSynth:
             )
             for lib in lib_paths:
                 lines.append(f"dfflibmap{dont_use} -liberty {lib}")
-            abc_cmd = (
-                f'abc -liberty {lib_paths[0]}{dont_use} -script "+{_ABC_SCRIPT_AREA}"'
+            lines.append(
+                f"abc -liberty {lib_paths[0]}{dont_use} "
+                f'-script "+{mapped_abc_script(opts)}"'
             )
-            lines.append(abc_cmd)
+            warn_mapped_abc_args(opts, self.synth_cfg.get_name())
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
             lines.append(f"stat -liberty {lib_paths[0]}")
             lines.append(self._stat_json_cmd(lib_paths[0]))
@@ -731,8 +731,9 @@ class OpenRoadSynth:
         These are the inputs the two generated scripts consume, not the resolved `SynthToolOpts`:
 
         - `elaborate`: the shared frontend subset (:func:`elaboration_fingerprint`) plus `synth_args`
-          from `effort_cfg.get_yosys_synth_args()`. `opts.synth_args` and the effort's `abc-args`
-          are ignored on this backend (the ABC script is fixed), so they are not digested.
+          from `effort_cfg.get_yosys_synth_args()`. `opts.synth_args` and `abc-args` are ignored on
+          this backend, so they are not digested.
+        - `abc_script`: the stage 1 ABC script (:func:`mapped_abc_script`).
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`.
         - `params` and `defines`: the elaboration values. `defines` is the merged table given to the
@@ -747,6 +748,7 @@ class OpenRoadSynth:
                 elaboration_fingerprint(self._resolve_yosys_opts(), self.root_cfg),
                 synth_args=self.effort_cfg.get_yosys_synth_args(),
             ),
+            "abc_script": mapped_abc_script(self._resolve_yosys_opts()),
             "map": {
                 "resynth": self._resynth_cmd(),
                 "pre_sta_tcl_sha256": text_sha256(

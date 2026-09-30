@@ -72,6 +72,8 @@ class SynthPlatformConfig:
 class SynthToolOpts:
     synth_args: str = ""
     abc_args: str = ""
+    # Mapped-run ABC script; empty means the built-in default.
+    abc_script: str = ""
     strategy: str = ""
     frontend: str = "verilog"
     plugin_path: str = ""
@@ -91,6 +93,7 @@ class SynthToolOpts:
 class SynthToolOptsFile:
     synth_args: str = field(rename="synth-args", default="")
     abc_args: str = field(rename="abc-args", default="")
+    abc_script: str = field(rename="abc-script", default="")
     strategy: str = field(default="")
     frontend: str = field(default="verilog")
     plugin_path: str = field(rename="plugin-path", default="")
@@ -156,6 +159,7 @@ def resolve_unresolved_interfaces_mode(opts: SynthToolOpts) -> str:
 SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
     "synth_args",
     "abc_args",
+    "abc_script",
     "strategy",
     "frontend",
     "plugin_path",
@@ -168,6 +172,7 @@ SYNTH_TOOL_OVERRIDE_KEYS: tuple[str, ...] = (
 
 # Type-checked overrides, as key -> (type, label, hint). A quoted `"true"` would otherwise be truthy.
 _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
+    "abc_script": (str, "string", "write the ABC commands as one quoted string"),
     "single_unit": (bool, "bool", "write an unquoted YAML true/false"),
     "best_effort_hierarchy": (bool, "bool", "write an unquoted YAML true/false"),
     "static_functions": (
@@ -192,6 +197,7 @@ _SYNTH_OVERRIDE_TYPES: dict[str, tuple[type, str, str]] = {
 class SynthEffortYosysFile:
     synth_args: str = field(rename="synth-args", default="")
     abc_args: str = field(rename="abc-args", default="")
+    abc_script: str = field(rename="abc-script", default="")
 
 
 @serde
@@ -219,6 +225,9 @@ class SynthEffortConfig:
 
     def get_yosys_abc_args(self) -> str:
         return self._cfg.yosys.abc_args
+
+    def get_yosys_abc_script(self) -> str:
+        return self._cfg.yosys.abc_script
 
     def get_openroad_run(self) -> bool:
         return self._cfg.openroad.run
@@ -307,6 +316,7 @@ class SynthToolConfig:
     def get_opts(self, overrides: dict | None = None) -> SynthToolOpts:
         synth_args = self._cfg.opts.synth_args
         abc_args = self._cfg.opts.abc_args
+        abc_script = self._cfg.opts.abc_script
         strategy = self._cfg.opts.strategy
         frontend = self._cfg.opts.frontend
         plugin_path = self._cfg.opts.plugin_path
@@ -331,6 +341,7 @@ class SynthToolConfig:
             self._validate_overrides(overrides)
             synth_args = overrides.get("synth_args", synth_args)
             abc_args = overrides.get("abc_args", abc_args)
+            abc_script = overrides.get("abc_script", abc_script)
             strategy = overrides.get("strategy", strategy)
             frontend = overrides.get("frontend", frontend)
             plugin_path = overrides.get("plugin_path", plugin_path)
@@ -348,6 +359,7 @@ class SynthToolConfig:
         return SynthToolOpts(
             synth_args=synth_args,
             abc_args=abc_args,
+            abc_script=abc_script,
             strategy=strategy,
             frontend=frontend,
             plugin_path=plugin_path,

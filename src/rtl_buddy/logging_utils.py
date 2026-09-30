@@ -1645,6 +1645,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "are dropped from the netlist, leaving any clock or reset it "
                 "carries undriven. frontend: slang binds it correctly"
             )
+        case "synth.abc_args_ignored":
+            return (
+                f'abc-args "{fields.get("abc_args")}" has no effect on the '
+                f'Liberty-mapped run "{fields.get("synth")}"; set abc-script to '
+                "change its ABC script"
+            )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.sdc_period_unevaluated":

@@ -26,13 +26,14 @@ experiment.
   elaboration subset
   (:func:`~rtl_buddy.tools.synth_yosys.elaboration_fingerprint`), the
   resolved ``synth-args``, parameters and defines, and which branch the
-  script took. A mapped run adds the ABC delay target from the SDC and
-  the resolved Liberty list and omits ``abc-args``. An unmapped run adds
-  ``abc-args`` and neither of the others. ``strategy`` is in neither.
+  script took. A mapped run adds the ABC script, the ABC delay target
+  from the SDC and the resolved Liberty list and omits ``abc-args``. An
+  unmapped run adds ``abc-args`` and none of the others. ``strategy`` is
+  in neither.
 * OpenROAD synthesis
   (:meth:`~rtl_buddy.tools.synth_openroad.OpenRoadSynth._publish_phys_model`):
   the elaboration subset with ``synth-args`` taken from the effort, the
-  command ``strategy`` maps to, the sha256 of the effort's pre-STA Tcl
+  stage 1 ABC script, the command ``strategy`` maps to, the sha256 of the effort's pre-STA Tcl
   (:func:`text_sha256`), the resolved LEF list and the resolved Liberty
   list. Both lists include the config's own ``lib-paths`` and
   ``lef-paths`` on top of the platform's. ``abc-args`` is omitted.
