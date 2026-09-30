@@ -2881,6 +2881,11 @@ def test_synth_suite_config_loads_xfail_flags(tmp_path):
             ],
         ),
         (
+            "synth.abc_args_ignored",
+            {"synth": "demo", "abc_args": "-fast"},
+            ["abc-args", "-fast", "demo", "abc-script"],
+        ),
+        (
             "synth_tool_config.override_type",
             {"tool": "yosys", "key": "single_unit", "expected": "bool", "got": "str"},
             ["tool_overrides.yosys.single_unit", "bool", "str"],
@@ -5882,7 +5887,9 @@ def test_a_failed_synth_clears_the_previous_runs_stat_dump(tmp_path, monkeypatch
 # What feeds the config digest, per backend and path
 
 
-def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
+def _effort_cfg(
+    name="standard", synth_args="", abc_args="", pre_sta_tcl="", abc_script=""
+):
     from rtl_buddy.config.synth import (
         SynthEffortConfig,
         SynthEffortConfigFile,
@@ -5893,7 +5900,9 @@ def _effort_cfg(name="standard", synth_args="", abc_args="", pre_sta_tcl=""):
     return SynthEffortConfig(
         SynthEffortConfigFile(
             name=name,
-            yosys=SynthEffortYosysFile(synth_args=synth_args, abc_args=abc_args),
+            yosys=SynthEffortYosysFile(
+                synth_args=synth_args, abc_args=abc_args, abc_script=abc_script
+            ),
             openroad=SynthEffortOpenroadFile(pre_sta_tcl=pre_sta_tcl),
         )
     )
@@ -5918,7 +5927,7 @@ def _yosys_digest(
 def test_a_mapped_yosys_run_ignores_abc_args_and_says_so_in_its_digest(tmp_path):
     """A mapped yosys run ignores `abc_args` and its digest says so.
 
-    `_write_script` hard-codes the ABC script on the mapped branch (`_ABC_SCRIPT_WITH_TIMING` or `_ABC_SCRIPT_NO_TIMING`, chosen by whether the SDC names a clock), so `abc_args` cannot distinguish two identical netlists.
+    The mapped branch passes `abc-script` to `abc -liberty`, never `abc_args`, so `abc_args` cannot distinguish two identical netlists.
     """
     plain = _yosys_digest(tmp_path, mapped=True)
     with_abc = _yosys_digest(
@@ -6185,7 +6194,7 @@ def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_pat
         )
         == base
     )
-    # Nor is `abc_args` from either source: stage 1's ABC line is the hard-coded `_ABC_SCRIPT_AREA`.
+    # Nor is `abc_args` from either source: stage 1's ABC line takes `abc-script` only.
     assert (
         _openroad_digest(tmp_path, tool_overrides={"openroad": {"abc_args": "-fast"}})
         == base
@@ -6437,3 +6446,232 @@ def test_openroad_or_script_threads_come_first(tmp_path, monkeypatch):
         "allocation": None,
         "allocation_source": None,
     }
+
+
+# Mapped-run ABC script
+
+
+def _mapped_sources(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    return fl, lib
+
+
+def _mapped_yosys(tmp_path, lib, *, effort=None, tool_cfg=None, **synth_kwargs):
+    return YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(platform="mylib", **synth_kwargs),
+        tool_cfg=tool_cfg or _tool_cfg(),
+        suite_dir=str(tmp_path),
+        root_cfg=_FakeRootCfg({"mylib": str(lib)}, dont_use_cells=["AND2_X1"]),
+        effort_cfg=effort or _effort_cfg(),
+    )
+
+
+def _mapped_openroad(tmp_path, lib, *, effort=None, tool_overrides=None):
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top", platform="mylib", tool_overrides=tool_overrides
+        ),
+        root_cfg=_FakeRootCfgOR(
+            lib_map={"mylib": str(lib)}, dont_use_cells=["AND2_X1"]
+        ),
+    )
+    or_synth.effort_cfg = effort or _effort_cfg()
+    return or_synth
+
+
+def _abc_line(script: str) -> str:
+    return next(line for line in script.splitlines() if line.startswith("abc "))
+
+
+def test_default_mapped_abc_script_has_no_dc2():
+    """`dc2` rebuilds the log-depth carry network `techmap` produces as a ripple chain."""
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    assert "dc2" not in DEFAULT_MAPPED_ABC_SCRIPT
+    assert "&nf {D}" in DEFAULT_MAPPED_ABC_SCRIPT
+
+
+def test_yosys_mapped_run_defaults_to_the_script_without_dc2(tmp_path):
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    script = Path(_mapped_yosys(tmp_path, lib)._write_script(str(fl))).read_text()
+    assert _abc_line(script) == (
+        f'abc -liberty {lib} -dont_use AND2_X1 -script "+{DEFAULT_MAPPED_ABC_SCRIPT}"'
+    )
+    assert "dc2" not in script
+
+
+def test_openroad_stage_1_defaults_to_the_script_without_dc2(tmp_path):
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _mapped_openroad(tmp_path, lib)
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script) == (
+        f'abc -liberty {lib} -dont_use AND2_X1 -script "+{DEFAULT_MAPPED_ABC_SCRIPT}"'
+    )
+    assert "dc2" not in script
+
+
+def test_effort_abc_script_replaces_the_yosys_mapped_script(tmp_path):
+    """The SDC delay target and the `stime -p` report stay; `-liberty` and `-dont_use` stay."""
+    fl, lib = _mapped_sources(tmp_path)
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 5.0 [get_ports clk]\n")
+    ys = _mapped_yosys(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(abc_script="strash; dretime; map {D}"),
+        constraints=str(sdc),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert _abc_line(script) == (
+        f"abc -liberty {lib} -dont_use AND2_X1 -D 5000 "
+        '-script "+strash; dretime; map {D}; stime -p"'
+    )
+
+
+def test_effort_abc_script_replaces_the_openroad_stage_1_script(tmp_path):
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _mapped_openroad(
+        tmp_path, lib, effort=_effort_cfg(abc_script="strash; dretime; map {D}")
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script) == (
+        f'abc -liberty {lib} -dont_use AND2_X1 -script "+strash; dretime; map {{D}}"'
+    )
+
+
+def test_abc_script_precedence_is_override_then_effort_then_tool(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys", tool="yosys", opts=SynthToolOptsFile(abc_script="tool")
+        )
+    )
+
+    def _script(**kwargs):
+        ys = _mapped_yosys(tmp_path, lib, tool_cfg=tool_cfg, **kwargs)
+        return _abc_line(Path(ys._write_script(str(fl))).read_text())
+
+    assert _script().endswith('-script "+tool"')
+    assert _script(effort=_effort_cfg(abc_script="effort")).endswith(
+        '-script "+effort"'
+    )
+    assert _script(
+        effort=_effort_cfg(abc_script="effort"),
+        tool_overrides={"yosys": {"abc_script": "run"}},
+    ).endswith('-script "+run"')
+
+
+def test_openroad_abc_script_override_beats_the_effort(tmp_path):
+    """With no yosys tool config the openroad backend reads `tool_overrides.openroad`."""
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _mapped_openroad(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(abc_script="effort"),
+        tool_overrides={"openroad": {"abc_script": "run"}},
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script).endswith('-script "+run"')
+
+
+def test_abc_script_block_scalar_newline_is_stripped(tmp_path):
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=_effort_cfg(abc_script="strash; map\n"))
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        '-script "+strash; map"'
+    )
+
+
+@pytest.mark.parametrize("bad", ['strash; "map"', "strash;\nmap"])
+def test_abc_script_that_cannot_be_quoted_is_fatal(tmp_path, bad):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=_effort_cfg(abc_script=bad))
+    with pytest.raises(FatalRtlBuddyError, match="abc-script"):
+        ys._write_script(str(fl))
+
+
+def test_abc_script_override_must_be_a_string():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    with pytest.raises(FatalRtlBuddyError, match="abc_script"):
+        _tool_cfg().get_opts({"abc_script": ["strash", "map"]})
+
+
+def test_effort_abc_script_loads_from_yaml():
+    from serde.yaml import from_yaml
+
+    from rtl_buddy.config.synth import SynthEffortConfig, SynthEffortConfigFile
+
+    effort = SynthEffortConfig(
+        from_yaml(
+            SynthEffortConfigFile,
+            "name: light\nyosys:\n  abc-script: strash; dretime; map {D}\n",
+        )
+    )
+    assert effort.get_yosys_abc_script() == "strash; dretime; map {D}"
+
+
+@pytest.mark.parametrize("backend", ["yosys", "openroad"])
+def test_mapped_run_warns_that_abc_args_are_ignored(tmp_path, caplog, backend):
+    fl, lib = _mapped_sources(tmp_path)
+    effort = _effort_cfg(abc_args="-fast")
+    with caplog.at_level(logging.WARNING):
+        if backend == "yosys":
+            _mapped_yosys(tmp_path, lib, effort=effort)._write_script(str(fl))
+        else:
+            _mapped_openroad(tmp_path, lib, effort=effort)._write_yosys_script(str(fl))
+    events = [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.abc_args_ignored"
+    ]
+    assert [r.rtl_fields["abc_args"] for r in events] == ["-fast"]
+
+
+def test_unmapped_run_uses_abc_args_without_warning(tmp_path, caplog):
+    fl, _ = _mapped_sources(tmp_path)
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=_effort_cfg(abc_args="-fast", abc_script="ignored"),
+    )
+    with caplog.at_level(logging.WARNING):
+        script = Path(ys._write_script(str(fl))).read_text()
+    assert "\nabc -fast\n" in script
+    assert "ignored" not in script
+    assert not [
+        r
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "synth.abc_args_ignored"
+    ]
+
+
+def test_mapped_digests_move_with_the_abc_script(tmp_path):
+    base = _yosys_digest(tmp_path, mapped=True)
+    assert base != _yosys_digest(
+        tmp_path, mapped=True, effort=_effort_cfg(abc_script="strash; map")
+    )
+    # The unmapped branch never reads it.
+    assert _yosys_digest(tmp_path, mapped=False) == _yosys_digest(
+        tmp_path, mapped=False, effort=_effort_cfg(abc_script="strash; map")
+    )
+    assert _openroad_digest(tmp_path) != _openroad_digest(
+        tmp_path, effort=_effort_cfg(abc_script="strash; map")
+    )
