@@ -1607,6 +1607,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/select-an-effort.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#choose-the-mapped-run-abc-script",
+          "slug": "choose-the-mapped-run-abc-script",
+          "title": "Choose the mapped-run ABC script",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/synthesis/choose-the-mapped-run-abc-script.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/synthesis/#synthesize-hard-macros",
           "slug": "synthesize-hard-macros",
           "title": "Synthesize hard macros",
@@ -2508,6 +2514,12 @@
           "slug": "unknown-synthesis-overrides-are-ignored-after-a-warning",
           "title": "Unknown synthesis overrides are ignored after a warning",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/unknown-synthesis-overrides-are-ignored-after-a-warning.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc",
+          "slug": "wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc",
+          "title": "Wide adders map as ripple chains unless `synth-args` has `-noabc`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#rb-phys-module-reports-no-power-for-an-rtl-module",

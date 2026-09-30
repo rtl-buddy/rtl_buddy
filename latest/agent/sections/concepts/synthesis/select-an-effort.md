@@ -7,7 +7,7 @@ cfg-synth-efforts:
   - name: quick
     yosys:
       synth-args: -flatten
-      abc-args: -fast
+      abc-script: "strash; dretime; map {D}"
     openroad:
       run: false
 

@@ -9,6 +9,7 @@ Each entry is a console message and the action it calls for.
 - **no `create_clock` found, or `create_clock -period` did not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
 - **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables` and `[expr]` stay unevaluated. Install tkinter.
 - **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
+- **`abc-args` has no effect on a Liberty-mapped run:** set `abc-script` to change the mapping script; keep `abc-args` for unmapped runs.
 - **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
 - **OpenROAD synthesis requires LEF files:** set `tech-lef` and `macro-lef` on the `cfg-pdks` entry, or `lef-paths` on the run.
 - **OpenROAD synthesis requires a mapped library:** set `platform:` on the run and define the matching `cfg-synth-platforms` entry.

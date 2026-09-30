@@ -226,7 +226,7 @@ cfg-synth-efforts:
   - name: quick
     yosys:
       synth-args: -flatten
-      abc-args: -fast
+      abc-script: "strash; dretime; map {D}"
     openroad:
       run: false
 
@@ -248,6 +248,30 @@ rb synth-regression --effort accurate
 Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-synth-tools`. With no effort, the built-in `standard` applies.
 
 `openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl run before STA; syntax errors appear only at runtime. The OpenROAD stage uses one thread unless the entry sets `threads:`; see [OpenROAD threads](pnr.md#openroad-threads).
+
+## Choose the mapped-run ABC script
+
+A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs. The default is Yosys' default Liberty script without `dc2`:
+
+```text
+strash; &get -n; &fraig -x; &put; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put
+```
+
+`dc2` rebuilds the log-depth carry networks that `techmap` produces for adders, negates and incrementers as ripple chains, so it is left out. Set another script in an effort, or for one run in `tool_overrides.yosys.abc_script`:
+
+```yaml
+cfg-synth-efforts:
+  - name: large
+    yosys:
+      synth-args: -noabc
+      abc-script: "strash; dretime; map {D}"
+```
+
+- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>` and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
+- Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
+- `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
+- `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
+- `synth` runs Yosys' generic `abc`, whose script includes `dc2`, before the mapped-run ABC step. Add `-noabc` to `synth-args` to keep log-depth carry networks.
 
 ## Synthesize hard macros
 
@@ -312,6 +336,7 @@ Each entry is a console message and the action it calls for.
 - **no `create_clock` found, or `create_clock -period` did not evaluate:** ABC runs unconstrained or skips that clock. Add a literal clock or restore the `tcl` reader.
 - **no Tcl interpreter is reachable, or Tcl refused a line:** the tokenizer reader is in use, so `$variables` and `[expr]` stay unevaluated. Install tkinter.
 - **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
+- **`abc-args` has no effect on a Liberty-mapped run:** set `abc-script` to change the mapping script; keep `abc-args` for unmapped runs.
 - **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
 - **OpenROAD synthesis requires LEF files:** set `tech-lef` and `macro-lef` on the `cfg-pdks` entry, or `lef-paths` on the run.
 - **OpenROAD synthesis requires a mapped library:** set `platform:` on the run and define the matching `cfg-synth-platforms` entry.
