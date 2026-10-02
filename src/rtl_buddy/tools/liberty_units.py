@@ -10,7 +10,8 @@ import re
 DEFAULT_PS_PER_UNIT = 1000.0
 
 _GZIP_MAGIC = b"\x1f\x8b"
-_CODE_RE = re.compile(r'\s+|/\*|"|[{}:;]|[^\s{}:;"/]+|/')
+_CODE_RE = re.compile(r'\s+|/\*|//|"|[{}:;]|[^\s{}:;"/]+|/')
+_STRING_RE = re.compile(r'[^\\"\r\n]+|\\\r?\n|\\.|"|\r?\n|\\')
 _VALUE_RE = re.compile(r"^\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*$")
 _PS_PER_SUFFIX = {"fs": 1e-3, "ps": 1.0, "ns": 1e3, "us": 1e6, "ms": 1e9, "s": 1e12}
 
@@ -43,7 +44,10 @@ def format_time_unit(ps: float) -> str:
 
 
 def _tokens(lines):
-    """Yield `(is_string, text)` Liberty tokens, skipping whitespace and `/* */` comments across lines."""
+    """Yield `(is_string, text)` Liberty tokens as OpenSTA's lexer splits them, skipping whitespace and comments.
+
+    `/* */` spans lines; `//` runs to the end of the line. A string ends at its closing quote or at an unescaped end of line.
+    """
     mode = None
     buf: list[str] = []
     for line in lines:
@@ -55,22 +59,26 @@ def _tokens(lines):
                     break
                 pos, mode = end + 2, None
             elif mode == "string":
-                end = line.find('"', pos)
-                if end < 0:
-                    buf.append(line[pos:])
-                    break
-                buf.append(line[pos:end])
-                yield True, "".join(buf)
-                buf, pos, mode = [], end + 1, None
+                m = _STRING_RE.match(line, pos)
+                tok, pos = m.group(), m.end()
+                if tok == '"' or tok in ("\n", "\r\n"):
+                    yield True, "".join(buf)
+                    buf, mode = [], None
+                elif tok not in ("\\\n", "\\\r\n"):
+                    buf.append(tok)
             else:
                 m = _CODE_RE.match(line, pos)
                 tok, pos = m.group(), m.end()
                 if tok == "/*":
                     mode = "comment"
+                elif tok == "//":
+                    break
                 elif tok == '"':
                     mode = "string"
                 elif not tok.isspace():
                     yield False, tok
+    if mode == "string":
+        yield True, "".join(buf)
 
 
 def time_unit_ps(path: str) -> float | None:
