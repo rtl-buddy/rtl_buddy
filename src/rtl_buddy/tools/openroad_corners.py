@@ -18,13 +18,17 @@ proc rb_find_corner {name} {
 }"""
 
 
-def liberty_tcl(corner_libs: dict[str, str], macro_libs: list[str]) -> list[str]:
+def liberty_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> list[str]:
     """Return Tcl that defines the corners and reads each Liberty into its corner.
 
-    `corner_libs` maps corner to Liberty, primary first; that order makes the first corner the command corner. Each macro Liberty is read into every corner. OpenSTA warns `STA-1140 library ... already exists` on the second read, which is harmless.
+    `corner_libs` maps corner to its Liberty files, primary first; that order makes the first corner the command corner. Each macro Liberty is read into every corner. OpenSTA warns `STA-1140 library ... already exists` on the second read, which is harmless.
     """
     lines = [f"define_corners {' '.join(corner_libs)}"]
-    lines.extend(f"read_liberty -corner {c} {lib}" for c, lib in corner_libs.items())
+    lines.extend(
+        f"read_liberty -corner {c} {lib}"
+        for c, libs in corner_libs.items()
+        for lib in libs
+    )
     for lib in macro_libs:
         lines.extend(f"read_liberty -corner {c} {lib}" for c in corner_libs)
     return lines
@@ -76,10 +80,12 @@ def timing_report_tcl(corners: list[str]) -> str:
     )
 
 
-def parse_corner_timing(log_text: str, corners: list[str]) -> dict[str, dict]:
+def parse_corner_timing(
+    log_text: str, corners: list[str], ps_per_unit: float
+) -> dict[str, dict]:
     """Parse per-corner `wns_setup_ps`, `wns_hold_ps` and `tns_ps` from `pnr.log` text.
 
-    Every configured corner gets an entry, in config order. A value that is missing or not a finite number is omitted.
+    The log prints in the Liberty `time_unit`, `ps_per_unit` picoseconds. Every configured corner gets an entry, in config order. A value that is missing or not a finite number is omitted.
     """
     found: dict[str, dict] = {c: {} for c in corners}
     for m in _CORNER_TIMING_RE.finditer(log_text):
@@ -87,11 +93,11 @@ def parse_corner_timing(log_text: str, corners: list[str]) -> dict[str, dict]:
         if corner not in found:
             continue
         try:
-            ns = float(value)
+            slack = float(value)
         except ValueError:
             continue
-        if math.isfinite(ns):
-            found[corner][_TIMING_FIELDS[kind]] = ns * 1000.0
+        if math.isfinite(slack):
+            found[corner][_TIMING_FIELDS[kind]] = slack * ps_per_unit
     return found
 
 

@@ -33,6 +33,7 @@ from .artifact_paths import (
     project_root_or_none,
 )
 from . import pnr_abstract, pnr_checkpoints
+from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -418,6 +419,8 @@ class OpenRoadPnr:
         self.artefact_dir = str(artefact_root)
         self._ckpt_run_dir: str | None = None
         self._openroad_returncode: int | None = None
+        # Picoseconds per Liberty `time_unit`; set by `run()` once the blocks' Liberty is known.
+        self._ps_per_unit: float | None = None
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, _SCRIPT_NAME)
@@ -479,7 +482,11 @@ class OpenRoadPnr:
             corner_reports = openroad_corners.timing_report_tcl(list(corner_libs))
         else:
             corner_libs = {}
-            read_liberty = "read_liberty $LIBERTY"
+            sta_libs = platform.get_sta_lib_paths()
+            read_liberty = "\n".join(
+                ["read_liberty $LIBERTY"]
+                + [f"read_liberty {lib}" for lib in sta_libs[1:]]
+            )
             corner_reports = ""
 
         extra_lines = []
@@ -551,7 +558,7 @@ class OpenRoadPnr:
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
             "sdc": sdc,
-            "liberty": platform.get_sta_lib_path(),
+            "liberty": platform.get_sta_lib_paths()[0],
             "read_liberty": read_liberty,
             "corner_reports": corner_reports,
             "tech_lef": pdk.get_tech_lef(),
@@ -639,7 +646,7 @@ class OpenRoadPnr:
         if not platform.is_multi_corner():
             return {}
         per_corner = openroad_corners.parse_corner_timing(
-            log_text, platform.get_sta_corners()
+            log_text, platform.get_sta_corners(), self._ps_per_unit
         )
         return {
             "corners": per_corner,
@@ -1539,7 +1546,10 @@ class OpenRoadPnr:
             "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
             "liberty": [
                 _file_fingerprint(p)
-                for p in [platform.get_sta_lib_path(), *self.pnr_cfg.get_lib_paths()]
+                for p in [
+                    *platform.get_sta_lib_paths(),
+                    *self.pnr_cfg.get_lib_paths(),
+                ]
             ],
             "lef": [
                 _file_fingerprint(p)
@@ -1615,7 +1625,7 @@ class OpenRoadPnr:
             for block in resolved:
                 pnr_abstract.check_technology(
                     block,
-                    liberty=platform.get_sta_lib_path(),
+                    liberty=platform.get_sta_lib_paths(),
                     tech_lef=platform.get_pdk().get_tech_lef(),
                 )
             resolved = pnr_abstract.assess_blocks(
@@ -1682,7 +1692,7 @@ class OpenRoadPnr:
             "rtl": pnr_abstract.filelist_sources(os.path.join(synth_dir, "synth.f")),
             "netlist": self._resolve_netlist_path(),
             "sdc": self.pnr_cfg.get_constraints(),
-            "liberty": [platform.get_sta_lib_path(), *self.pnr_cfg.get_lib_paths()],
+            "liberty": [*platform.get_sta_lib_paths(), *self.pnr_cfg.get_lib_paths()],
             "lef": _dedup_paths(
                 [pdk.get_tech_lef(), pdk.get_macro_lef(), *self.pnr_cfg.get_lef_paths()]
             ),
@@ -1727,7 +1737,9 @@ class OpenRoadPnr:
                     },
                     technology={
                         "tech_lef": platform.get_pdk().get_tech_lef(),
-                        "liberty": platform.get_sta_lib_path(),
+                        "liberty": pnr_abstract.one_or_many(
+                            platform.get_sta_lib_paths()
+                        ),
                     },
                     inputs=self.abstract_inputs(platform),
                     config=pnr_abstract.abstract_config(self._configured_cfg, platform),
@@ -1884,6 +1896,30 @@ class OpenRoadPnr:
         blocks_failure = self._resolve_blocks(platform)
         if blocks_failure is not None:
             return blocks_failure
+
+        try:
+            self._ps_per_unit = liberty_time_unit_ps(
+                [
+                    *(
+                        lib
+                        for libs in platform.get_sta_corner_lib_paths().values()
+                        for lib in libs
+                    ),
+                    *self.pnr_cfg.get_lib_paths(),
+                ]
+            )
+        except LibertyTimeUnitError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.liberty_time_unit_error",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+                units=e.units,
+            )
+            return PnrFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
 
         # Before the script, so a clamped thread count is reported before OpenROAD starts.
         self._threads()
@@ -2062,12 +2098,13 @@ class OpenRoadPnr:
         tns = self._parse_tns(log_text)
         drcs = self._count_drcs()
 
+        ps_per_unit = self._ps_per_unit
         metrics = {
             "area_um2": area,
             "cell_count": cells,
-            "wns_setup_ps": wns_setup * 1000.0 if wns_setup is not None else None,
-            "wns_hold_ps": wns_hold * 1000.0 if wns_hold is not None else None,
-            "tns_ps": tns * 1000.0 if tns is not None else None,
+            "wns_setup_ps": wns_setup * ps_per_unit if wns_setup is not None else None,
+            "wns_hold_ps": wns_hold * ps_per_unit if wns_hold is not None else None,
+            "tns_ps": tns * ps_per_unit if tns is not None else None,
             "drc_count": drcs,
         }
         corner_fields = self._corner_fields(platform, log_text)

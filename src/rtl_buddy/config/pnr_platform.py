@@ -168,9 +168,9 @@ class PnrPlatformConfig:
         """The primary corner: `corner:`, or the first entry of `corners:`."""
         return self._sta_corner
 
-    def get_sta_lib_path(self) -> str:
-        """The primary corner's Liberty."""
-        return self._pdk.get_corner_path(self._sta_corner)
+    def get_sta_lib_paths(self) -> list[str]:
+        """The primary corner's standard-cell Liberty files."""
+        return self._pdk.get_corner_paths(self._sta_corner)
 
     def get_sta_corners(self) -> list[str]:
         """Every analysis corner, primary first."""
@@ -180,9 +180,9 @@ class PnrPlatformConfig:
         """Whether the flows analyse more than one corner."""
         return len(self._sta_corners) > 1
 
-    def get_sta_corner_lib_paths(self) -> dict[str, str]:
-        """Each analysis corner's Liberty, in `get_sta_corners` order."""
-        return {c: self._pdk.get_corner_path(c) for c in self._sta_corners}
+    def get_sta_corner_lib_paths(self) -> dict[str, list[str]]:
+        """Each analysis corner's Liberty files, in `get_sta_corners` order."""
+        return {c: self._pdk.get_corner_paths(c) for c in self._sta_corners}
 
     def get_cts_buffer(self) -> str:
         """The root clock buffer: the configured name, or the first of a list."""

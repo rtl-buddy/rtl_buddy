@@ -7,11 +7,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
+from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_liberty
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     dont_use_args,
     elaboration_defines,
+    liberty_args,
     library_fingerprint,
     elaboration_fingerprint,
     emit_frontend_read_cmds,
@@ -76,6 +78,7 @@ class OpenRoadSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._yosys_opts: SynthToolOpts | None = None
+        self._ps_per_unit: float | None = None
         self._or_opts: SynthToolOpts | None = None
         # The `-D` table `_write_yosys_script` fed the frontend.
         self._script_defines: dict[str, str | None] | None = None
@@ -130,7 +133,23 @@ class OpenRoadSynth:
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
             return extras
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
+        return self.root_cfg.get_synth_platform_cfg(platform).get_paths() + extras
+
+    def _resolve_cell_lib_paths(self) -> list[str]:
+        """The standard-cell Liberty files mapping and `stat` use: the platform corner's, or `lib-paths` without a platform."""
+        platform = self.synth_cfg.get_platform()
+        if not platform or self.root_cfg is None:
+            return list(self.synth_cfg.get_lib_paths())
+        return self.root_cfg.get_synth_platform_cfg(platform).get_paths()
+
+    def _time_unit_ps(self) -> float:
+        """Return the Liberty `time_unit` in picoseconds, the unit OpenSTA reports slack in.
+
+        Raises :class:`LibertyTimeUnitError` when the libraries disagree.
+        """
+        if self._ps_per_unit is None:
+            self._ps_per_unit = liberty_time_unit_ps(self._resolve_lib_paths())
+        return self._ps_per_unit
 
     def _resolve_lef_paths(self) -> list[str]:
         platform = self.synth_cfg.get_platform()
@@ -191,14 +210,13 @@ class OpenRoadSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
-    def _stat_json_cmd(self, liberty: str | None) -> str:
+    def _stat_json_cmd(self, liberty_args: str) -> str:
         """Return the `stat -json` line that feeds the phys model's module rows.
 
         `tee -o` writes the JSON to a file and `-q` keeps it out of `synth_yosys.log`, which stage 1
         scrapes for its cell count and `ERROR:` lines.
         """
-        liberty_arg = f" -liberty {liberty}" if liberty else ""
-        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_args}"
 
     def _write_yosys_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
@@ -243,21 +261,20 @@ class OpenRoadSynth:
             dont_use = dont_use_args(
                 resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
             )
-            for lib in lib_paths:
-                lines.append(f"dfflibmap{dont_use} -liberty {lib}")
+            cell_libs = liberty_args(self._resolve_cell_lib_paths())
+            lines.append(f"dfflibmap{dont_use}{cell_libs}")
             lines.append(
-                f"abc -liberty {lib_paths[0]}{dont_use} "
-                f'-script "+{mapped_abc_script(opts)}"'
+                f'abc{cell_libs}{dont_use} -script "+{mapped_abc_script(opts)}"'
             )
             warn_mapped_abc_args(opts, self.synth_cfg.get_name())
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
-            lines.append(f"stat -liberty {lib_paths[0]}")
-            lines.append(self._stat_json_cmd(lib_paths[0]))
+            lines.append(f"stat{cell_libs}")
+            lines.append(self._stat_json_cmd(cell_libs))
         else:
             lines.append(
                 f"write_rtlil {os.path.join(self.artefact_dir, 'synth.rtlil')}"
             )
-            lines.append(self._stat_json_cmd(None))
+            lines.append(self._stat_json_cmd(""))
 
         script = "\n".join(lines) + "\n"
         script_path = self._yosys_script_path()
@@ -446,7 +463,7 @@ class OpenRoadSynth:
             (p, False) for p in lib_paths
         ]:
             try:
-                with open(path) as f:
+                with open(path) if is_lef else open_liberty(path) as f:
                     pending_cell = False
                     for line in f:
                         if is_lef:
@@ -465,7 +482,7 @@ class OpenRoadSynth:
                             names.add(m.group(1))
                         elif cell_open_re.match(line):
                             pending_cell = True
-            except OSError:
+            except (OSError, EOFError):
                 pass
         return names
 
@@ -618,7 +635,7 @@ class OpenRoadSynth:
         m = re.search(r"^Design area\s+([\d.]+)\s+um\^2", log_text, re.MULTILINE)
         return float(m.group(1)) if m else None
 
-    def _parse_or_wns_ns(self, log_text: str) -> float | None:
+    def _parse_or_wns(self, log_text: str) -> float | None:
         # Prefer the single line from `report_worst_slack -max`: "worst slack max -0.431".
         m = re.search(r"^worst slack\s+max\s+([-\d.]+)", log_text, re.MULTILINE)
         if m:
@@ -632,7 +649,7 @@ class OpenRoadSynth:
             return None
         return min(float(s) for s in matches)
 
-    def _parse_or_tns_ns(self, log_text: str) -> float | None:
+    def _parse_or_tns(self, log_text: str) -> float | None:
         m = re.search(r"^tns\s+(?:max|min)?\s*([-\d.]+)", log_text, re.MULTILINE)
         return float(m.group(1)) if m else None
 
@@ -696,11 +713,12 @@ class OpenRoadSynth:
             )
 
         area_um2 = self._parse_or_area_um2(log_text)
-        wns_ns = self._parse_or_wns_ns(log_text)
-        tns_ns = self._parse_or_tns_ns(log_text)
+        wns = self._parse_or_wns(log_text)
+        tns = self._parse_or_tns(log_text)
 
-        wns_ps = wns_ns * 1000.0 if wns_ns is not None else None
-        tns_ps = tns_ns * 1000.0 if tns_ns is not None else None
+        ps_per_unit = self._time_unit_ps()
+        wns_ps = wns * ps_per_unit if wns is not None else None
+        tns_ps = tns * ps_per_unit if tns is not None else None
 
         log_event(
             logger,
@@ -940,6 +958,21 @@ class OpenRoadSynth:
                     "to the synth.yaml entry"
                 ),
                 fail_stage="setup",
+            )
+
+        try:
+            self._time_unit_ps()
+        except LibertyTimeUnitError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.liberty_time_unit_error",
+                synth=self.synth_cfg.get_name(),
+                error=str(e),
+                units=e.units,
+            )
+            return SynthFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
             )
 
         if not lef_paths:

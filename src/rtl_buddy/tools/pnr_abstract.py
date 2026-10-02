@@ -358,32 +358,39 @@ def resolve_block(ref: BlockRef) -> ResolvedBlock:
     )
 
 
-def check_technology(
-    block: ResolvedBlock, *, liberty: str | None, tech_lef: str | None
-) -> None:
-    """Raise unless the consumer's technology LEF and corner Liberty match the block's.
+def one_or_many(paths: list[str]) -> str | list[str]:
+    """Return a one-file list as its path, so a single-file corner records as it always has."""
+    return paths[0] if len(paths) == 1 else list(paths)
 
-    Files are compared by content, not by path or platform name, so a block built on a block-level platform can go into a top on the full platform.
+
+def check_technology(
+    block: ResolvedBlock, *, liberty: list[str] | None, tech_lef: str | None
+) -> None:
+    """Raise unless the consumer's technology LEF and corner Liberty files match the block's.
+
+    Files are compared by content, in order, not by path or platform name, so a block built on a block-level platform can go into a top on the full platform.
     """
     recorded = block.manifest.get("technology") or {}
-    for role, path, what in (
+    for role, paths, what in (
         ("liberty", liberty, "corner Liberty"),
-        ("tech_lef", tech_lef, "technology LEF"),
+        ("tech_lef", None if tech_lef is None else [tech_lef], "technology LEF"),
     ):
-        if path is None:
+        if paths is None:
             continue
-        expected = (recorded.get(role) or {}).get("sha256")
-        if expected is None:
+        records = _records(recorded.get(role))
+        expected = [(r or {}).get("sha256") for r in records]
+        if not expected or None in expected:
             raise BlockResolutionError(
                 f"block {block.ref.name!r}: its abstract records no {what} — "
                 f"re-run `rb pnr {block.ref.pnr_run} -c {block.ref.pnr_suite_path}`"
             )
-        actual = (file_fingerprint(path, None) or {}).get("sha256")
+        actual = [(file_fingerprint(p, None) or {}).get("sha256") for p in paths]
         if actual != expected:
+            hardened = [(r or {}).get("path") for r in records]
             raise BlockResolutionError(
                 f"block {block.ref.name!r}: platform/corner mismatch — hardened "
-                f"against {what} {(recorded.get(role) or {}).get('path')!r}, "
-                f"this run uses {path!r}"
+                f"against {what} {one_or_many(hardened)!r}, "
+                f"this run uses {one_or_many(list(paths))!r}"
             )
 
 

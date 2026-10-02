@@ -86,8 +86,8 @@ class _Platform:
     def __init__(self, lib):
         self._lib = lib
 
-    def get_path(self):
-        return self._lib
+    def get_paths(self):
+        return [self._lib]
 
     def get_lef_paths(self):
         return []

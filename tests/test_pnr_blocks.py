@@ -228,10 +228,10 @@ def test_a_missing_pnr_path_fails_fast(tmp_path):
 def test_technology_is_compared_by_content(tmp_path):
     block = resolve_block(_ref(_block_suite(tmp_path)))
     same = _write(tmp_path / "top/pdk/typ.lib", _CORNER)
-    pnr_abstract.check_technology(block, liberty=str(same), tech_lef=None)
+    pnr_abstract.check_technology(block, liberty=[str(same)], tech_lef=None)
     other = _write(tmp_path / "top/pdk/ss.lib", "library (ss) {}\n")
     with pytest.raises(BlockResolutionError, match="platform/corner mismatch"):
-        pnr_abstract.check_technology(block, liberty=str(other), tech_lef=None)
+        pnr_abstract.check_technology(block, liberty=[str(other)], tech_lef=None)
 
 
 def test_an_abstract_that_records_no_technology_is_refused(tmp_path):
@@ -239,7 +239,7 @@ def test_an_abstract_that_records_no_technology_is_refused(tmp_path):
     del block.manifest["technology"]
     lib = _write(tmp_path / "top/pdk/typ.lib", _CORNER)
     with pytest.raises(BlockResolutionError, match="records no corner Liberty"):
-        pnr_abstract.check_technology(block, liberty=str(lib), tech_lef=None)
+        pnr_abstract.check_technology(block, liberty=[str(lib)], tech_lef=None)
 
 
 def _pdk(tmp_path):

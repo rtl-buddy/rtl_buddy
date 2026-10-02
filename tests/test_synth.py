@@ -1482,8 +1482,8 @@ class _FakePlatformCfg:
         self._path = path
         self._dont_use_cells = list(dont_use_cells)
 
-    def get_path(self):
-        return self._path
+    def get_paths(self):
+        return [self._path] if isinstance(self._path, str) else list(self._path)
 
     def get_dont_use_cells(self):
         return list(self._dont_use_cells)
@@ -2066,7 +2066,7 @@ def test_synth_platform_config_lef_paths_empty_when_pdk_has_no_lef(tmp_path):
         lambda _name: pdk,
     )
     assert cfg.get_lef_paths() == []
-    assert cfg.get_path() == str(tmp_path / "lib" / "cells.lib")
+    assert cfg.get_paths() == [str(tmp_path / "lib" / "cells.lib")]
 
 
 def test_synth_platform_config_lef_paths_from_pdk(tmp_path):
@@ -2098,8 +2098,8 @@ class _FakePlatformCfgWithLef:
         self._lef_paths = lef_paths or []
         self._dont_use_cells = list(dont_use_cells)
 
-    def get_path(self):
-        return self._path
+    def get_paths(self):
+        return [self._path] if isinstance(self._path, str) else list(self._path)
 
     def get_lef_paths(self):
         return self._lef_paths
@@ -2730,14 +2730,14 @@ def test_openroad_parse_area():
 
 def test_openroad_parse_wns_met():
     or_synth = _make_openroad(Path("/tmp"))
-    assert or_synth._parse_or_wns_ns(
-        "            6.754   slack (MET)\n"
-    ) == pytest.approx(6.754)
+    assert or_synth._parse_or_wns("            6.754   slack (MET)\n") == pytest.approx(
+        6.754
+    )
 
 
 def test_openroad_parse_wns_violated():
     or_synth = _make_openroad(Path("/tmp"))
-    assert or_synth._parse_or_wns_ns(
+    assert or_synth._parse_or_wns(
         "           -0.431   slack (VIOLATED)\n"
     ) == pytest.approx(-0.431)
 
@@ -2750,7 +2750,7 @@ def test_openroad_parse_wns_prefers_report_worst_slack():
         "worst slack max -2.150\n"
     )
     or_synth = _make_openroad(Path("/tmp"))
-    assert or_synth._parse_or_wns_ns(log) == pytest.approx(-2.150)
+    assert or_synth._parse_or_wns(log) == pytest.approx(-2.150)
 
 
 def test_openroad_parse_wns_multi_group_fallback_picks_min():
@@ -2763,12 +2763,12 @@ def test_openroad_parse_wns_multi_group_fallback_picks_min():
         "            5.919   slack (MET)\n"
     )
     or_synth = _make_openroad(Path("/tmp"))
-    assert or_synth._parse_or_wns_ns(log) == pytest.approx(-556.494)
+    assert or_synth._parse_or_wns(log) == pytest.approx(-556.494)
 
 
 def test_openroad_parse_tns_with_corner():
     or_synth = _make_openroad(Path("/tmp"))
-    assert or_synth._parse_or_tns_ns("tns max -3.964\n") == pytest.approx(-3.964)
+    assert or_synth._parse_or_tns("tns max -3.964\n") == pytest.approx(-3.964)
 
 
 def test_openroad_parse_area_missing_returns_none():
@@ -5654,8 +5654,8 @@ def test_write_script_stat_json_takes_the_liberty_that_gives_it_areas(tmp_path):
     class _RootCfg:
         def get_synth_platform_cfg(self, name):
             class _P:
-                def get_path(self_inner):
-                    return str(lib)
+                def get_paths(self_inner):
+                    return [str(lib)]
 
                 def get_dont_use_cells(self_inner):
                     return []

@@ -673,14 +673,14 @@ class _FakePlatform:
         # single-corner platform other tests use.
         self._corners = corners
 
-    def get_sta_lib_path(self):
-        return self._liberty
+    def get_sta_lib_paths(self):
+        return [self._liberty]
 
     def is_multi_corner(self):
         return bool(self._corners) and len(self._corners) > 1
 
     def get_sta_corner_lib_paths(self):
-        return dict(self._corners or {})
+        return {c: [lib] for c, lib in (self._corners or {}).items()}
 
     def get_pdk(self):
         return self._pdk

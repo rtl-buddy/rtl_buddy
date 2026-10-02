@@ -1792,6 +1792,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")
             return f'{flow} "{run}": {fields.get("reason")}'
+        case "pnr.liberty_time_unit_error" | "synth.liberty_time_unit_error":
+            flow = "P&R" if event.startswith("pnr") else "synthesis"
+            run = fields.get("pnr") or fields.get("synth")
+            return (
+                f'{flow} "{run}": {fields.get("error")}; the run stops because '
+                "OpenSTA reports, and reads the SDC, in a single time unit"
+            )
         case "pnr.block_stale_accepted" | "synth.block_stale_accepted":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")

@@ -146,8 +146,8 @@ def _fake_klayout(
 
 def test_pdk_resolves_corner_paths(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
-    assert pdk.get_corner_path("typ") == str(tmp_path / "pdk" / "lib" / "typ.lib")
-    assert pdk.get_corner_path("slow") == str(tmp_path / "pdk" / "lib" / "slow.lib")
+    assert pdk.get_corner_paths("typ") == [str(tmp_path / "pdk" / "lib" / "typ.lib")]
+    assert pdk.get_corner_paths("slow") == [str(tmp_path / "pdk" / "lib" / "slow.lib")]
     assert pdk.get_corners() == ["typ", "slow"]
     assert pdk.get_default_corner() == "typ"
 
@@ -155,7 +155,7 @@ def test_pdk_resolves_corner_paths(tmp_path):
 def test_pdk_unknown_corner_raises(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     with pytest.raises(FatalRtlBuddyError, match="has no corner 'fast'"):
-        pdk.get_corner_path("fast")
+        pdk.get_corner_paths("fast")
 
 
 def test_pdk_no_corners_raises(tmp_path):
@@ -328,7 +328,7 @@ def test_synth_platform_defaults_to_first_corner(tmp_path):
         lambda _name: pdk,
     )
     assert cfg.get_corner() == "typ"
-    assert cfg.get_path().endswith("typ.lib")
+    assert cfg.get_paths()[0].endswith("typ.lib")
 
 
 def test_synth_platform_explicit_corner(tmp_path):
@@ -338,7 +338,7 @@ def test_synth_platform_explicit_corner(tmp_path):
         lambda _name: pdk,
     )
     assert cfg.get_corner() == "slow"
-    assert cfg.get_path().endswith("slow.lib")
+    assert cfg.get_paths()[0].endswith("slow.lib")
 
 
 def test_synth_platform_lef_paths_are_pdk_lefs_only(tmp_path):
@@ -360,7 +360,7 @@ def test_pnr_platform_defaults_to_first_corner(tmp_path):
         lambda _name: pdk,
     )
     assert cfg.get_sta_corner() == "typ"
-    assert cfg.get_sta_lib_path().endswith("typ.lib")
+    assert cfg.get_sta_lib_paths()[0].endswith("typ.lib")
 
 
 def test_pnr_platform_unknown_sta_corner_raises(tmp_path):

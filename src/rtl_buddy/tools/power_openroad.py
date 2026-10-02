@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 #: How many times `_snapshot_netlist` re-copies a netlist that changed underneath it before failing the run.
 _SNAPSHOT_ATTEMPTS = 3
 
+from .liberty_units import open_liberty
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
@@ -120,7 +121,7 @@ def _liberty_cell_names(paths) -> set[str]:
     names: set[str] = set()
     for path in paths:
         try:
-            with open(path) as f:
+            with open_liberty(path) as f:
                 pending = False
                 for line in f:
                     if pending:
@@ -134,7 +135,7 @@ def _liberty_cell_names(paths) -> set[str]:
                         names.add(m.group(1))
                     elif _LIBERTY_CELL_OPEN_RE.match(line):
                         pending = True
-        except OSError:
+        except (OSError, EOFError):
             continue
     return names
 
@@ -619,7 +620,7 @@ class OpenRoadPower(BasePower):
         self._bind_phys_dir()
         platform = self._resolve_platform()
         pdk = platform.get_pdk()
-        liberty = platform.get_sta_lib_path()
+        liberties = platform.get_sta_lib_paths()
         # Every corner of a multi-corner platform in this one session; empty for a single corner.
         corner_libs = (
             platform.get_sta_corner_lib_paths() if platform.is_multi_corner() else {}
@@ -636,8 +637,8 @@ class OpenRoadPower(BasePower):
         self._physical_only_cells = list(pdk.get_fill_cells() or [])
         # The technology the `read_liberty` / `read_lef` lines name, in order, for `_phys_technology`.
         self._script_technology = {
-            "liberty": liberty,
-            "corner_libs": list(corner_libs.values()),
+            "liberty": liberties,
+            "corner_libs": [lib for libs in corner_libs.values() for lib in libs],
             "macro_libs": macro_libs,
             "tech_lef": tech_lef,
             "macro_lef": macro_lef,
@@ -703,7 +704,7 @@ class OpenRoadPower(BasePower):
             # Each macro library is read into every corner, after the standard cells; see `openroad_corners.liberty_tcl`.
             lines.extend(openroad_corners.liberty_tcl(corner_libs, macro_libs))
         else:
-            lines.append(f"read_liberty {liberty}")
+            lines.extend(f"read_liberty {lib}" for lib in liberties)
             # After the platform corner so a macro library never shadows a standard cell, in resolved order.
             lines.extend(f"read_liberty {lib}" for lib in macro_libs)
         lines.append(f"read_lef {tech_lef}")
@@ -921,7 +922,7 @@ class OpenRoadPower(BasePower):
             [
                 path
                 for path in [
-                    technology.get("liberty"),
+                    *(technology.get("liberty") or []),
                     *(technology.get("macro_libs") or []),
                 ]
                 if path and os.path.abspath(path) not in block_libs
@@ -1221,7 +1222,7 @@ class OpenRoadPower(BasePower):
         """
         resolved = self._script_technology or {}
         named = [
-            resolved.get("liberty"),
+            *(resolved.get("liberty") or []),
             # Every corner's Liberty under multi-corner, the primary's included; empty (so absent from the digest) for one corner.
             *(resolved.get("corner_libs") or []),
             *(resolved.get("macro_libs") or []),
