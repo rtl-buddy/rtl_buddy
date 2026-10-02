@@ -425,3 +425,10 @@ def test_a_foreign_scl_cache_in_the_inherited_tmpdir_is_not_used(tmp_path, monke
         foreign.chmod(0o755)
     assert "falling back to liberty format" not in own
     assert "yosys-tmp/yosys-liberty-scl-cache" in own
+
+
+def test_yosys_tmpdir_is_absolute_for_a_relative_artefact_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env = synth_yosys.yosys_env("run")
+    assert env["TMPDIR"] == str(tmp_path / "run" / synth_yosys.YOSYS_TMP_DIRNAME)
+    assert (tmp_path / "run" / synth_yosys.YOSYS_TMP_DIRNAME).is_dir()

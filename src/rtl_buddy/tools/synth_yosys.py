@@ -445,7 +445,7 @@ def yosys_env(artefact_dir: str) -> dict[str, str]:
     Yosys keeps temp files and its merged Liberty SCL cache under ``TMPDIR``; the default
     cache directory under ``/tmp`` belongs to whichever user created it first.
     """
-    tmp_dir = os.path.join(artefact_dir, YOSYS_TMP_DIRNAME)
+    tmp_dir = os.path.join(os.path.abspath(artefact_dir), YOSYS_TMP_DIRNAME)
     os.makedirs(tmp_dir, exist_ok=True)
     return {**os.environ, "TMPDIR": tmp_dir}
 
