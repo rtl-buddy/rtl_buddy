@@ -1482,8 +1482,8 @@ class _FakePlatformCfg:
         self._path = path
         self._dont_use_cells = list(dont_use_cells)
 
-    def get_path(self):
-        return self._path
+    def get_paths(self):
+        return [self._path] if isinstance(self._path, str) else list(self._path)
 
     def get_dont_use_cells(self):
         return list(self._dont_use_cells)
@@ -2066,7 +2066,7 @@ def test_synth_platform_config_lef_paths_empty_when_pdk_has_no_lef(tmp_path):
         lambda _name: pdk,
     )
     assert cfg.get_lef_paths() == []
-    assert cfg.get_path() == str(tmp_path / "lib" / "cells.lib")
+    assert cfg.get_paths() == [str(tmp_path / "lib" / "cells.lib")]
 
 
 def test_synth_platform_config_lef_paths_from_pdk(tmp_path):
@@ -2098,8 +2098,8 @@ class _FakePlatformCfgWithLef:
         self._lef_paths = lef_paths or []
         self._dont_use_cells = list(dont_use_cells)
 
-    def get_path(self):
-        return self._path
+    def get_paths(self):
+        return [self._path] if isinstance(self._path, str) else list(self._path)
 
     def get_lef_paths(self):
         return self._lef_paths
@@ -5654,8 +5654,8 @@ def test_write_script_stat_json_takes_the_liberty_that_gives_it_areas(tmp_path):
     class _RootCfg:
         def get_synth_platform_cfg(self, name):
             class _P:
-                def get_path(self_inner):
-                    return str(lib)
+                def get_paths(self_inner):
+                    return [str(lib)]
 
                 def get_dont_use_cells(self_inner):
                     return []

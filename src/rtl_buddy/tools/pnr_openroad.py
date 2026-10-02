@@ -482,7 +482,11 @@ class OpenRoadPnr:
             corner_reports = openroad_corners.timing_report_tcl(list(corner_libs))
         else:
             corner_libs = {}
-            read_liberty = "read_liberty $LIBERTY"
+            sta_libs = platform.get_sta_lib_paths()
+            read_liberty = "\n".join(
+                ["read_liberty $LIBERTY"]
+                + [f"read_liberty {lib}" for lib in sta_libs[1:]]
+            )
             corner_reports = ""
 
         extra_lines = []
@@ -554,7 +558,7 @@ class OpenRoadPnr:
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
             "sdc": sdc,
-            "liberty": platform.get_sta_lib_path(),
+            "liberty": platform.get_sta_lib_paths()[0],
             "read_liberty": read_liberty,
             "corner_reports": corner_reports,
             "tech_lef": pdk.get_tech_lef(),
@@ -1542,7 +1546,10 @@ class OpenRoadPnr:
             "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
             "liberty": [
                 _file_fingerprint(p)
-                for p in [platform.get_sta_lib_path(), *self.pnr_cfg.get_lib_paths()]
+                for p in [
+                    *platform.get_sta_lib_paths(),
+                    *self.pnr_cfg.get_lib_paths(),
+                ]
             ],
             "lef": [
                 _file_fingerprint(p)
@@ -1618,7 +1625,7 @@ class OpenRoadPnr:
             for block in resolved:
                 pnr_abstract.check_technology(
                     block,
-                    liberty=platform.get_sta_lib_path(),
+                    liberty=platform.get_sta_lib_paths(),
                     tech_lef=platform.get_pdk().get_tech_lef(),
                 )
             resolved = pnr_abstract.assess_blocks(
@@ -1685,7 +1692,7 @@ class OpenRoadPnr:
             "rtl": pnr_abstract.filelist_sources(os.path.join(synth_dir, "synth.f")),
             "netlist": self._resolve_netlist_path(),
             "sdc": self.pnr_cfg.get_constraints(),
-            "liberty": [platform.get_sta_lib_path(), *self.pnr_cfg.get_lib_paths()],
+            "liberty": [*platform.get_sta_lib_paths(), *self.pnr_cfg.get_lib_paths()],
             "lef": _dedup_paths(
                 [pdk.get_tech_lef(), pdk.get_macro_lef(), *self.pnr_cfg.get_lef_paths()]
             ),
@@ -1730,7 +1737,9 @@ class OpenRoadPnr:
                     },
                     technology={
                         "tech_lef": platform.get_pdk().get_tech_lef(),
-                        "liberty": platform.get_sta_lib_path(),
+                        "liberty": pnr_abstract.one_or_many(
+                            platform.get_sta_lib_paths()
+                        ),
                     },
                     inputs=self.abstract_inputs(platform),
                     config=pnr_abstract.abstract_config(self._configured_cfg, platform),
@@ -1891,7 +1900,11 @@ class OpenRoadPnr:
         try:
             self._ps_per_unit = liberty_time_unit_ps(
                 [
-                    *platform.get_sta_corner_lib_paths().values(),
+                    *(
+                        lib
+                        for libs in platform.get_sta_corner_lib_paths().values()
+                        for lib in libs
+                    ),
                     *self.pnr_cfg.get_lib_paths(),
                 ]
             )

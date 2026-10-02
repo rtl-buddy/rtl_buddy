@@ -436,6 +436,11 @@ def emit_frontend_read_cmds(
     raise AssertionError("unreachable: validate_frontend rejects other frontends")
 
 
+def liberty_args(paths: list[str]) -> str:
+    """Return one `` -liberty <file>`` per path, the form `dfflibmap`, `abc` and `stat` take for split cell libraries."""
+    return "".join(f" -liberty {path}" for path in paths)
+
+
 def library_fingerprint(paths, root_cfg) -> list[str]:
     """Return the technology library paths a generated script reads, as run identity.
 
@@ -733,7 +738,14 @@ class YosysSynth:
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
             return extras
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
+        return self.root_cfg.get_synth_platform_cfg(platform).get_paths() + extras
+
+    def _resolve_cell_lib_paths(self) -> list[str]:
+        """The standard-cell Liberty files mapping and `stat` use: the platform corner's, or `lib-paths` without a platform."""
+        platform = self.synth_cfg.get_platform()
+        if not platform or self.root_cfg is None:
+            return list(self.synth_cfg.get_lib_paths())
+        return self.root_cfg.get_synth_platform_cfg(platform).get_paths()
 
     def _parse_area_um2(self, log_text: str, top: str | None = None) -> float | None:
         return parse_area_um2(log_text, top)
@@ -797,14 +809,13 @@ class YosysSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
-    def _stat_json_cmd(self, liberty: str | None) -> str:
+    def _stat_json_cmd(self, liberty_args: str) -> str:
         """Return the ``stat -json`` script line that feeds the phys model's module rows.
 
         Written with ``tee -q -o`` to keep JSON out of ``synth.log``. Without a
         Liberty the modules get a null area.
         """
-        liberty_arg = f" -liberty {liberty}" if liberty else ""
-        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_args}"
 
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
@@ -851,10 +862,10 @@ class YosysSynth:
             dont_use = dont_use_args(
                 resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
             )
-            for lib in lib_paths:
-                lines.append(f"dfflibmap{dont_use} -liberty {lib}")
+            cell_libs = liberty_args(self._resolve_cell_lib_paths())
+            lines.append(f"dfflibmap{dont_use}{cell_libs}")
 
-            abc_cmd = f"abc -liberty {lib_paths[0]}{dont_use}"
+            abc_cmd = f"abc{cell_libs}{dont_use}"
             constraints = self.synth_cfg.get_constraints()
             period_ps = None
             if constraints:
@@ -886,13 +897,13 @@ class YosysSynth:
             warn_mapped_abc_args(opts, self.synth_cfg.get_name())
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
-            lines.append(f"stat -liberty {lib_paths[0]}")
-            lines.append(self._stat_json_cmd(lib_paths[0]))
+            lines.append(f"stat{cell_libs}")
+            lines.append(self._stat_json_cmd(cell_libs))
         else:
             if opts.abc_args:
                 lines.append(f"abc {opts.abc_args}")
             lines.append(f"write_rtlil {self._netlist_path()}")
-            lines.append(self._stat_json_cmd(None))
+            lines.append(self._stat_json_cmd(""))
 
         script = "\n".join(lines) + "\n"
         script_path = self._script_path()

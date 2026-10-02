@@ -18,13 +18,17 @@ proc rb_find_corner {name} {
 }"""
 
 
-def liberty_tcl(corner_libs: dict[str, str], macro_libs: list[str]) -> list[str]:
+def liberty_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> list[str]:
     """Return Tcl that defines the corners and reads each Liberty into its corner.
 
-    `corner_libs` maps corner to Liberty, primary first; that order makes the first corner the command corner. Each macro Liberty is read into every corner. OpenSTA warns `STA-1140 library ... already exists` on the second read, which is harmless.
+    `corner_libs` maps corner to its Liberty files, primary first; that order makes the first corner the command corner. Each macro Liberty is read into every corner. OpenSTA warns `STA-1140 library ... already exists` on the second read, which is harmless.
     """
     lines = [f"define_corners {' '.join(corner_libs)}"]
-    lines.extend(f"read_liberty -corner {c} {lib}" for c, lib in corner_libs.items())
+    lines.extend(
+        f"read_liberty -corner {c} {lib}"
+        for c, libs in corner_libs.items()
+        for lib in libs
+    )
     for lib in macro_libs:
         lines.extend(f"read_liberty -corner {c} {lib}" for c in corner_libs)
     return lines

@@ -50,11 +50,11 @@ def test_corners_list_selects_every_corner_primary_first(tmp_path):
     assert platform.get_sta_corners() == ["ss", "tt", "ff"]
     # The primary is the first entry, and the single-corner accessors answer for it.
     assert platform.get_sta_corner() == "ss"
-    assert platform.get_sta_lib_path() == str(tmp_path / "pdk/lib/ss.lib")
+    assert platform.get_sta_lib_paths() == [str(tmp_path / "pdk/lib/ss.lib")]
     assert list(platform.get_sta_corner_lib_paths().items()) == [
-        ("ss", str(tmp_path / "pdk/lib/ss.lib")),
-        ("tt", str(tmp_path / "pdk/lib/tt.lib")),
-        ("ff", str(tmp_path / "pdk/lib/ff.lib")),
+        ("ss", [str(tmp_path / "pdk/lib/ss.lib")]),
+        ("tt", [str(tmp_path / "pdk/lib/tt.lib")]),
+        ("ff", [str(tmp_path / "pdk/lib/ff.lib")]),
     ]
 
 

@@ -140,7 +140,8 @@ def merge_dont_use_cells(pdk_cells: list[str], platform_cells: list[str]) -> lis
 class PdkConfigFile:
     name: str
     site: str = ""
-    corners: dict[str, str] = field(default_factory=dict)
+    # Each corner is one Liberty path or a list of them (cell libraries split across files).
+    corners: dict[str, str | list[str]] = field(default_factory=dict)
     tech_lef: str = field(rename="tech-lef", default="")
     macro_lef: str = field(rename="macro-lef", default="")
     # One path or a list of paths.
@@ -171,7 +172,15 @@ class PdkConfig:
 
         self._name = cfg.name
         self._site = cfg.site
-        self._corners = {k: _resolve(v) for k, v in (cfg.corners or {}).items()}
+        self._corners = {
+            k: [_resolve(p) for p in _as_path_list(v)]
+            for k, v in (cfg.corners or {}).items()
+        }
+        for corner, paths in self._corners.items():
+            if not paths:
+                raise FatalRtlBuddyError(
+                    f"PDK '{cfg.name}': corner '{corner}' names no Liberty file"
+                )
         self._tech_lef = _resolve(cfg.tech_lef)
         self._macro_lef = _resolve(cfg.macro_lef)
         self._cell_gds = [_resolve(p) for p in _as_path_list(cfg.cell_gds)]
@@ -198,14 +207,15 @@ class PdkConfig:
     def get_corners(self) -> list[str]:
         return list(self._corners.keys())
 
-    def get_corner_path(self, corner: str) -> str:
-        path = self._corners.get(corner)
-        if path is None:
+    def get_corner_paths(self, corner: str) -> list[str]:
+        """The corner's standard-cell Liberty files, in config order."""
+        paths = self._corners.get(corner)
+        if paths is None:
             raise FatalRtlBuddyError(
                 f"PDK '{self._name}' has no corner '{corner}'; "
                 f"available: {sorted(self._corners)}"
             )
-        return path
+        return list(paths)
 
     def get_default_corner(self) -> str:
         if not self._corners:

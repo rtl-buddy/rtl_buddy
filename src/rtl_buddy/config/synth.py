@@ -30,7 +30,7 @@ class SynthPlatformConfigFile:
 class SynthPlatformConfig:
     """A PDK plus corner selection for synthesis.
 
-    `get_path()` is the Liberty for STA and tech mapping; `get_lef_paths()` is the PDK's tech and macro LEF. Block-specific LEFs come from `SynthConfig.get_lef_paths()`.
+    `get_paths()` is the corner's standard-cell Liberty, one or more files, for STA and tech mapping; `get_lef_paths()` is the PDK's tech and macro LEF. Block-specific LEFs come from `SynthConfig.get_lef_paths()`.
     """
 
     def __init__(self, cfg: SynthPlatformConfigFile, pdk_lookup):
@@ -39,7 +39,7 @@ class SynthPlatformConfig:
 
         pdk = pdk_lookup(cfg.pdk)
         self._corner = cfg.corner or pdk.get_default_corner()
-        self._lib_path = pdk.get_corner_path(self._corner)
+        self._lib_paths = pdk.get_corner_paths(self._corner)
         self._lef_paths = [p for p in (pdk.get_tech_lef(), pdk.get_macro_lef()) if p]
         self._dont_use_cells = merge_dont_use_cells(
             pdk.get_dont_use_cells(),
@@ -57,8 +57,8 @@ class SynthPlatformConfig:
     def get_corner(self) -> str:
         return self._corner
 
-    def get_path(self) -> str:
-        return self._lib_path
+    def get_paths(self) -> list[str]:
+        return list(self._lib_paths)
 
     def get_lef_paths(self) -> list[str]:
         return list(self._lef_paths)

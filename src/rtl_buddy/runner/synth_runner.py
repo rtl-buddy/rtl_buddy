@@ -107,7 +107,7 @@ class SynthRunner:
             return None
         platform = self.synth_cfg.get_platform()
         liberty = (
-            self.root_cfg.get_synth_platform_cfg(platform).get_path()
+            self.root_cfg.get_synth_platform_cfg(platform).get_paths()
             if platform
             else None
         )

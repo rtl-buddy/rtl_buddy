@@ -13,6 +13,7 @@ from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     dont_use_args,
     elaboration_defines,
+    liberty_args,
     library_fingerprint,
     elaboration_fingerprint,
     emit_frontend_read_cmds,
@@ -132,7 +133,14 @@ class OpenRoadSynth:
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
             return extras
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
+        return self.root_cfg.get_synth_platform_cfg(platform).get_paths() + extras
+
+    def _resolve_cell_lib_paths(self) -> list[str]:
+        """The standard-cell Liberty files mapping and `stat` use: the platform corner's, or `lib-paths` without a platform."""
+        platform = self.synth_cfg.get_platform()
+        if not platform or self.root_cfg is None:
+            return list(self.synth_cfg.get_lib_paths())
+        return self.root_cfg.get_synth_platform_cfg(platform).get_paths()
 
     def _time_unit_ps(self) -> float:
         """Return the Liberty `time_unit` in picoseconds, the unit OpenSTA reports slack in.
@@ -202,14 +210,13 @@ class OpenRoadSynth:
             undefineall_keeps_predefines=opts.frontend == "slang",
         )
 
-    def _stat_json_cmd(self, liberty: str | None) -> str:
+    def _stat_json_cmd(self, liberty_args: str) -> str:
         """Return the `stat -json` line that feeds the phys model's module rows.
 
         `tee -o` writes the JSON to a file and `-q` keeps it out of `synth_yosys.log`, which stage 1
         scrapes for its cell count and `ERROR:` lines.
         """
-        liberty_arg = f" -liberty {liberty}" if liberty else ""
-        return f"tee -q -o {self._stats_path()} stat -json{liberty_arg}"
+        return f"tee -q -o {self._stats_path()} stat -json{liberty_args}"
 
     def _write_yosys_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
@@ -254,21 +261,20 @@ class OpenRoadSynth:
             dont_use = dont_use_args(
                 resolve_dont_use_cells(self.synth_cfg, self.root_cfg)
             )
-            for lib in lib_paths:
-                lines.append(f"dfflibmap{dont_use} -liberty {lib}")
+            cell_libs = liberty_args(self._resolve_cell_lib_paths())
+            lines.append(f"dfflibmap{dont_use}{cell_libs}")
             lines.append(
-                f"abc -liberty {lib_paths[0]}{dont_use} "
-                f'-script "+{mapped_abc_script(opts)}"'
+                f'abc{cell_libs}{dont_use} -script "+{mapped_abc_script(opts)}"'
             )
             warn_mapped_abc_args(opts, self.synth_cfg.get_name())
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
-            lines.append(f"stat -liberty {lib_paths[0]}")
-            lines.append(self._stat_json_cmd(lib_paths[0]))
+            lines.append(f"stat{cell_libs}")
+            lines.append(self._stat_json_cmd(cell_libs))
         else:
             lines.append(
                 f"write_rtlil {os.path.join(self.artefact_dir, 'synth.rtlil')}"
             )
-            lines.append(self._stat_json_cmd(None))
+            lines.append(self._stat_json_cmd(""))
 
         script = "\n".join(lines) + "\n"
         script_path = self._yosys_script_path()
