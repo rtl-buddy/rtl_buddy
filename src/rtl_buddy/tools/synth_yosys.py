@@ -436,6 +436,20 @@ def emit_frontend_read_cmds(
     raise AssertionError("unreachable: validate_frontend rejects other frontends")
 
 
+YOSYS_TMP_DIRNAME = "yosys-tmp"
+
+
+def yosys_env(artefact_dir: str) -> dict[str, str]:
+    """Return the environment for a Yosys run, with ``TMPDIR`` set to the run's own directory.
+
+    Yosys keeps temp files and its merged Liberty SCL cache under ``TMPDIR``; the default
+    cache directory under ``/tmp`` belongs to whichever user created it first.
+    """
+    tmp_dir = os.path.join(artefact_dir, YOSYS_TMP_DIRNAME)
+    os.makedirs(tmp_dir, exist_ok=True)
+    return {**os.environ, "TMPDIR": tmp_dir}
+
+
 def liberty_args(paths: list[str]) -> str:
     """Return one `` -liberty <file>`` per path, the form `dfflibmap`, `abc` and `stat` take for split cell libraries."""
     return "".join(f" -liberty {path}" for path in paths)
@@ -1110,6 +1124,7 @@ class YosysSynth:
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
                     cwd=self.artefact_dir,
+                    env=yosys_env(self.artefact_dir),
                 )
 
         if result.returncode != 0:
