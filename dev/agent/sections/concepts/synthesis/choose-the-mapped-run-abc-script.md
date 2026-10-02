@@ -16,7 +16,7 @@ cfg-synth-efforts:
       abc-script: "strash; dretime; map {D}"
 ```
 
-- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>` and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
+- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
 - Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.

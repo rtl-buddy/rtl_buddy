@@ -39,6 +39,10 @@ Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`:
 
 - **Nangate45**: one Liberty file. The template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
 - **sky130hd**: one Liberty per corner, plus a `dont-use-cells` list for the probe and `lpflow` cells. See the template's `sky130hd` entry.
-- **ASAP7**: not validated. `corners:` takes one file per corner, so merge ASAP7's split gzipped Liberty files first.
+- **ASAP7**: not validated. List each corner's split Liberty files (AO, INVBUF, OA, SIMPLE, SEQ) under that corner.
+
+A corner takes one Liberty path or a list. Every file of the corner is read and goes to `dfflibmap`, `abc` and `stat`; `lib-paths` macros are only read. Without a `platform`, the `lib-paths` are the cell libraries.
+
+Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which rb reads from each file's `library` group (1 ns when unset) and uses to convert the ABC delay target and every reported time to picoseconds. All Liberty files a run reads must share one `time_unit`; otherwise the run fails at setup.
 
 `dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#pdk-setup-notes).

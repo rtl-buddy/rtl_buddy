@@ -2729,7 +2729,7 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png --gds-mode strict
 
 ## Interpret results
 
-The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route.
+The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps` and `tns_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
 
 A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
 
@@ -2914,7 +2914,7 @@ The same flow runs on any PDK the root config declares. Switching PDKs is a `pla
 
 - **Nangate45 (FreePDK45).** All defaults are calibrated on it. Set `site`, one Liberty corner, `tech-lef`, `macro-lef`, the tie and fill cells and `cts-buffer: BUF_X4`, and leave every process key unset. It has no PDN snippet, so runs have no power grid. For extraction, set `rcx-rules` to ORFS' `flow/platforms/nangate45/rcx_patterns.rules`; its LEF has no via resistance, so vias extract as 0 Ω.
 - **sky130hd.** The template's `sky130hd` PDK entry is a worked example, used by the `demo_tiny_alu_subsys_hier` runs. Beyond Nangate45's fields it needs `pin-layers` (`met3` / `met2`), `routing-layers` in `met*` names, a `pdn-config`, `placement.density: 0.60`, a `dont-use-cells` list for the probe and `lpflow` cells, and a `cts-buffer` list. Use ORFS' `flow/platforms/sky130hs/rcx_patterns.rules` for `rcx-rules`.
-- **ASAP7.** Not validated end to end. Follow ORFS' `flow/platforms/asap7` with a much lower placement density. The flow does not run ORFS' `tapcell`, tracks file or layer-RC file. `corners:` and `macro-lef` take one path each, so merge each corner's Liberty files and list the extra LEFs in `lef-paths`.
+- **ASAP7.** Not validated end to end. Follow ORFS' `flow/platforms/asap7` with a much lower placement density. The flow does not run ORFS' `tapcell`, tracks file or layer-RC file. List each corner's split Liberty files under that corner. `macro-lef` takes one path, so list the extra LEFs in `lef-paths`.
 
 ## OpenROAD threads
 
@@ -3810,7 +3810,11 @@ Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`:
 
 - **Nangate45**: one Liberty file. The template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
 - **sky130hd**: one Liberty per corner, plus a `dont-use-cells` list for the probe and `lpflow` cells. See the template's `sky130hd` entry.
-- **ASAP7**: not validated. `corners:` takes one file per corner, so merge ASAP7's split gzipped Liberty files first.
+- **ASAP7**: not validated. List each corner's split Liberty files (AO, INVBUF, OA, SIMPLE, SEQ) under that corner.
+
+A corner takes one Liberty path or a list. Every file of the corner is read and goes to `dfflibmap`, `abc` and `stat`; `lib-paths` macros are only read. Without a `platform`, the `lib-paths` are the cell libraries.
+
+Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which rb reads from each file's `library` group (1 ns when unset) and uses to convert the ABC delay target and every reported time to picoseconds. All Liberty files a run reads must share one `time_unit`; otherwise the run fails at setup.
 
 `dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](pnr.md#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
 
@@ -3975,7 +3979,7 @@ cfg-synth-efforts:
       abc-script: "strash; dretime; map {D}"
 ```
 
-- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>` and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
+- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
 - Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
@@ -8980,7 +8984,7 @@ cfg-pnr-platforms:
 | Block | Fields and behavior |
 |---|---|
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
-| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, and `rcx-rules`. `cell-gds` takes one path or a list, each resolved on its own. Paths resolve from `root_config.yaml` |
+| `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, and `rcx-rules`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
 | `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, and `openroad.pre-sta-tcl` settings. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
