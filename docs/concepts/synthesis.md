@@ -102,7 +102,9 @@ Synthesis reads only a PDK's Liberty corner, LEFs and `dont-use-cells`:
 
 - **Nangate45**: one Liberty file. The template's `synth/demo_tiny_alu_subsys/download_pdk.sh` fetches it.
 - **sky130hd**: one Liberty per corner, plus a `dont-use-cells` list for the probe and `lpflow` cells. See the template's `sky130hd` entry.
-- **ASAP7**: not validated. `corners:` takes one file per corner, so merge ASAP7's split gzipped Liberty files first.
+- **ASAP7**: not validated. `corners:` takes one file per corner, so merge ASAP7's split Liberty files first.
+
+Liberty files may be gzipped. SDC values are in the Liberty `time_unit`, which rb reads from each file's header (1 ns when unset) and uses to convert the ABC delay target and every reported time to picoseconds. All Liberty files a run reads must share one `time_unit`; otherwise the run fails at setup.
 
 `dont-use-cells` patterns exclude cells from mapping. A synth platform's own list is appended to the PDK's. [Place-and-Route](pnr.md#tune-the-process-dependent-steps) reads the PDK's list too, so two runs that exclude different cells count as two experiments. P&R-side PDK notes are in [Place-and-Route: PDK setup notes](pnr.md#pdk-setup-notes).
 
@@ -267,7 +269,7 @@ cfg-synth-efforts:
       abc-script: "strash; dretime; map {D}"
 ```
 
-- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>` and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
+- rtl_buddy keeps `-liberty` and `-dont_use`. On `tool: yosys` with an SDC clock it also passes `-D <period_ps>`, the shortest SDC period in picoseconds, and appends `stime -p`, whose report gives the run's WNS. Write `{D}` where a mapping command should take the delay target; `tool: openroad` passes none, so `{D}` is empty there.
 - Write the script on one line, with commands separated by `;` and no double quotes. A multi-line value or a double quote is a configuration error. Yosys replaces commas with spaces.
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
