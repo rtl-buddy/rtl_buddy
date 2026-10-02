@@ -33,6 +33,7 @@ from .artifact_paths import (
     project_root_or_none,
 )
 from . import pnr_abstract, pnr_checkpoints
+from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
@@ -418,6 +419,8 @@ class OpenRoadPnr:
         self.artefact_dir = str(artefact_root)
         self._ckpt_run_dir: str | None = None
         self._openroad_returncode: int | None = None
+        # Picoseconds per Liberty `time_unit`; set by `run()` once the blocks' Liberty is known.
+        self._ps_per_unit: float | None = None
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, _SCRIPT_NAME)
@@ -639,7 +642,7 @@ class OpenRoadPnr:
         if not platform.is_multi_corner():
             return {}
         per_corner = openroad_corners.parse_corner_timing(
-            log_text, platform.get_sta_corners()
+            log_text, platform.get_sta_corners(), self._ps_per_unit
         )
         return {
             "corners": per_corner,
@@ -1885,6 +1888,26 @@ class OpenRoadPnr:
         if blocks_failure is not None:
             return blocks_failure
 
+        try:
+            self._ps_per_unit = liberty_time_unit_ps(
+                [
+                    *platform.get_sta_corner_lib_paths().values(),
+                    *self.pnr_cfg.get_lib_paths(),
+                ]
+            )
+        except LibertyTimeUnitError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.liberty_time_unit_error",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+                units=e.units,
+            )
+            return PnrFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
+
         # Before the script, so a clamped thread count is reported before OpenROAD starts.
         self._threads()
         if self.pnr_cfg.get_checkpoints() is not None:
@@ -2062,12 +2085,13 @@ class OpenRoadPnr:
         tns = self._parse_tns(log_text)
         drcs = self._count_drcs()
 
+        ps_per_unit = self._ps_per_unit
         metrics = {
             "area_um2": area,
             "cell_count": cells,
-            "wns_setup_ps": wns_setup * 1000.0 if wns_setup is not None else None,
-            "wns_hold_ps": wns_hold * 1000.0 if wns_hold is not None else None,
-            "tns_ps": tns * 1000.0 if tns is not None else None,
+            "wns_setup_ps": wns_setup * ps_per_unit if wns_setup is not None else None,
+            "wns_hold_ps": wns_hold * ps_per_unit if wns_hold is not None else None,
+            "tns_ps": tns * ps_per_unit if tns is not None else None,
             "drc_count": drcs,
         }
         corner_fields = self._corner_fields(platform, log_text)

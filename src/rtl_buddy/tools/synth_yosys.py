@@ -8,6 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .artifact_paths import clear_stale_artefacts
+from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
@@ -606,6 +607,7 @@ class YosysSynth:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
         self._period_ps: int | None = None
+        self._ps_per_unit: float | None = None
         # The `-D` table `_write_script` fed the frontend, read by `_phys_options`.
         self._script_defines: dict[str, str | None] | None = None
         # SDC identity; see `_hash_constraints`. None before the run or with no SDC.
@@ -660,10 +662,19 @@ class YosysSynth:
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
 
+    def _time_unit_ps(self) -> float:
+        """Return the Liberty `time_unit` in picoseconds, the unit of the SDC's periods.
+
+        Raises :class:`LibertyTimeUnitError` when the libraries disagree.
+        """
+        if self._ps_per_unit is None:
+            self._ps_per_unit = liberty_time_unit_ps(self._resolve_lib_paths())
+        return self._ps_per_unit
+
     def _parse_clock_period_ps(self, sdc_path: str) -> int | None:
         """Return the minimum ``create_clock`` period in the SDC, in picoseconds, or None.
 
-        ABC ``-D`` takes one timing window, so multi-clock designs use the
+        Periods are in the Liberty `time_unit` (:meth:`_time_unit_ps`). ABC ``-D`` takes one timing window, so multi-clock designs use the
         minimum, which over-constrains slower domains. Periods are read via the
         constraint reader, so ``\\``-continued commands and ``{10.0}`` work. A
         period that is not a number (``$p`` under the tokenizer backend, or
@@ -702,18 +713,20 @@ class YosysSynth:
                 continue
         if not periods:
             return None
+        ps_per_unit = self._time_unit_ps()
         if len(periods) > 1:
+            ns_per_unit = ps_per_unit / 1000.0
             log_event(
                 logger,
                 logging.WARNING,
                 "synth.sdc_multi_clock",
                 synth=self.synth_cfg.get_name(),
                 clocks=len(periods),
-                periods_ns=periods,
-                used_ns=min(periods),
+                periods_ns=[p * ns_per_unit for p in periods],
+                used_ns=min(periods) * ns_per_unit,
                 sdc=sdc_path,
             )
-        return int(min(periods) * 1000)
+        return int(min(periods) * ps_per_unit)
 
     def _resolve_lib_paths(self) -> list[str]:
         extras = list(self.synth_cfg.get_lib_paths())
@@ -1001,6 +1014,21 @@ class YosysSynth:
         interfaces_mode = resolve_unresolved_interfaces_mode(opts)
         # Same for frontend errors: the gates below return before `_write_script()` checks.
         validate_frontend(opts, self.root_cfg)
+
+        try:
+            self._time_unit_ps()
+        except LibertyTimeUnitError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.liberty_time_unit_error",
+                synth=self.synth_cfg.get_name(),
+                error=str(e),
+                units=e.units,
+            )
+            return SynthFailResults(
+                name=self.name + "/results", desc=str(e), fail_stage="setup"
+            )
 
         try:
             fl_path = self._write_filelist()

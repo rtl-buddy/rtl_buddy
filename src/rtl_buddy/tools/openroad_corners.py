@@ -76,10 +76,12 @@ def timing_report_tcl(corners: list[str]) -> str:
     )
 
 
-def parse_corner_timing(log_text: str, corners: list[str]) -> dict[str, dict]:
+def parse_corner_timing(
+    log_text: str, corners: list[str], ps_per_unit: float
+) -> dict[str, dict]:
     """Parse per-corner `wns_setup_ps`, `wns_hold_ps` and `tns_ps` from `pnr.log` text.
 
-    Every configured corner gets an entry, in config order. A value that is missing or not a finite number is omitted.
+    The log prints in the Liberty `time_unit`, `ps_per_unit` picoseconds. Every configured corner gets an entry, in config order. A value that is missing or not a finite number is omitted.
     """
     found: dict[str, dict] = {c: {} for c in corners}
     for m in _CORNER_TIMING_RE.finditer(log_text):
@@ -87,11 +89,11 @@ def parse_corner_timing(log_text: str, corners: list[str]) -> dict[str, dict]:
         if corner not in found:
             continue
         try:
-            ns = float(value)
+            slack = float(value)
         except ValueError:
             continue
-        if math.isfinite(ns):
-            found[corner][_TIMING_FIELDS[kind]] = ns * 1000.0
+        if math.isfinite(slack):
+            found[corner][_TIMING_FIELDS[kind]] = slack * ps_per_unit
     return found
 
 

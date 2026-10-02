@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 #: How many times `_snapshot_netlist` re-copies a netlist that changed underneath it before failing the run.
 _SNAPSHOT_ATTEMPTS = 3
 
+from .liberty_units import open_liberty
 from ..config.openroad_threads import ThreadPlan, parse_reported_threads, plan_threads
 from ..config.power import PowerConfig
 from ..logging_utils import log_event, task_status
@@ -120,7 +121,7 @@ def _liberty_cell_names(paths) -> set[str]:
     names: set[str] = set()
     for path in paths:
         try:
-            with open(path) as f:
+            with open_liberty(path) as f:
                 pending = False
                 for line in f:
                     if pending:
@@ -134,7 +135,7 @@ def _liberty_cell_names(paths) -> set[str]:
                         names.add(m.group(1))
                     elif _LIBERTY_CELL_OPEN_RE.match(line):
                         pending = True
-        except OSError:
+        except (OSError, EOFError):
             continue
     return names
 

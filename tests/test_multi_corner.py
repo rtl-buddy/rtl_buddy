@@ -204,7 +204,9 @@ corner ff tns max 0.00
 
 
 def test_parse_corner_timing_reads_every_corner_in_config_order():
-    per_corner = openroad_corners.parse_corner_timing(_PNR_LOG_TAIL, ["tt", "ss", "ff"])
+    per_corner = openroad_corners.parse_corner_timing(
+        _PNR_LOG_TAIL, ["tt", "ss", "ff"], 1000.0
+    )
 
     assert list(per_corner) == ["tt", "ss", "ff"]
     assert per_corner["ss"] == pytest.approx(
@@ -218,6 +220,7 @@ def test_parse_corner_timing_leaves_out_what_the_log_does_not_say():
     per_corner = openroad_corners.parse_corner_timing(
         "corner tt worst slack max 1.00\ncorner xx worst slack max -9.00\n",
         ["tt", "ss"],
+        1000.0,
     )
     assert per_corner == {"tt": {"wns_setup_ps": 1000.0}, "ss": {}}
     assert openroad_corners.worst_corner(per_corner, "wns_hold_ps") is None
