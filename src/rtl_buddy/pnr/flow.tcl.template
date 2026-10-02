@@ -2,7 +2,7 @@
 #
 # Placeholders are substituted by Python before openroad runs. Stage order:
 #   read -> floorplan -> tie cells -> macros -> PDN -> pins ->
-#   global place -> resize -> legalize -> CTS -> detail place -> route ->
+#   global place -> tie fanout -> resize -> legalize -> CTS -> detail place -> route ->
 #   fill -> reports.
 
 set DESIGN          {{ design }}
@@ -55,9 +55,7 @@ initialize_floorplan \
 make_tracks
 {{ blockages_block }}
 puts ">>> Tie cells"
-if {[string length $TIEHI_CELL_PORT] > 0} { insert_tiecells $TIEHI_CELL_PORT }
-if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
-
+{{ tie_cells_block }}
 {{ macro_pack_procs }}
 puts ">>> Macro placement"
 set block [ord::get_db_block]
@@ -97,7 +95,7 @@ place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 
 puts ">>> Global placement"
 global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}
-
+{{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
 repair_design

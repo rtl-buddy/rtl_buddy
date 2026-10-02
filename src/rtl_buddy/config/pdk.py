@@ -36,6 +36,9 @@ DEFAULT_PLACEMENT_MACRO_HALO = 20.0
 #: Without it, cells abut the macro and the detailed router reports Metal Spacing violations at the shared edge.
 DEFAULT_PLACEMENT_MACRO_CELL_HALO = 1.0
 
+#: Distance in microns from each constant-driven load to the tie cell `repair_tie_fanout` gives it.
+DEFAULT_PLACEMENT_TIE_SEPARATION = 0.0
+
 
 @serde
 class PlacementFile:
@@ -48,6 +51,7 @@ class PlacementFile:
     padding: int | None = None
     macro_halo: float | None = field(rename="macro-halo", default=None)
     macro_cell_halo: float | None = field(rename="macro-cell-halo", default=None)
+    tie_separation: float | None = field(rename="tie-separation", default=None)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -88,11 +92,19 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
                 f"{where}: placement.macro-cell-halo must be >= 0, "
                 f"got {macro_cell_halo}"
             )
+    tie_separation = placement.tie_separation
+    if tie_separation is not None:
+        tie_separation = float(tie_separation)
+        if not 0.0 <= tie_separation < float("inf"):
+            raise FatalRtlBuddyError(
+                f"{where}: placement.tie-separation must be >= 0, got {tie_separation}"
+            )
     return PlacementFile(
         density=density,
         padding=padding,
         macro_halo=macro_halo,
         macro_cell_halo=macro_cell_halo,
+        tie_separation=tie_separation,
     )
 
 
@@ -272,6 +284,10 @@ class PdkConfig:
     def get_placement_macro_cell_halo(self) -> float | None:
         """Configured macro row keep-out in microns, or `None` when unset."""
         return self._placement.macro_cell_halo
+
+    def get_placement_tie_separation(self) -> float | None:
+        """Configured tie-cell separation in microns, or `None` when unset."""
+        return self._placement.tie_separation
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)
