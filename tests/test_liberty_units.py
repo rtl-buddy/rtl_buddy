@@ -116,9 +116,12 @@ def test_unreadable_liberty_has_no_unit(tmp_path):
     assert time_unit_ps(str(tmp_path / "missing.lib")) is None
 
 
-def test_time_unit_that_is_not_a_time_is_an_error(tmp_path):
-    with pytest.raises(LibertyTimeUnitError, match="not a time"):
-        time_unit_ps(_lib(tmp_path / "c.lib", "1V"))
+@pytest.mark.parametrize(
+    "unit", ["1V", "1.2.3ns", "1e309ps", "0ps", "2ns", "-1ns", "1nsec"]
+)
+def test_time_unit_that_is_not_a_liberty_time_unit_is_an_error(tmp_path, unit):
+    with pytest.raises(LibertyTimeUnitError, match="is not 1, 10 or 100"):
+        time_unit_ps(_lib(tmp_path / "c.lib", unit))
 
 
 def test_libraries_that_agree_give_their_unit(tmp_path):

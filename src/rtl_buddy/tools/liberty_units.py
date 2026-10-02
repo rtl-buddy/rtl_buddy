@@ -12,12 +12,12 @@ DEFAULT_PS_PER_UNIT = 1000.0
 _GZIP_MAGIC = b"\x1f\x8b"
 _CODE_RE = re.compile(r'\s+|/\*|//|"|[{}:;]|[^\s{}:;"/]+|/')
 _STRING_RE = re.compile(r'[^\\"\r\n]+|\\\r?\n|\\.|"|\r?\n|\\')
-_VALUE_RE = re.compile(r"^\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*$")
+_VALUE_RE = re.compile(r"^\s*(1|10|100)\s*(fs|ps|ns|us|ms|s)\s*$", re.IGNORECASE)
 _PS_PER_SUFFIX = {"fs": 1e-3, "ps": 1.0, "ns": 1e3, "us": 1e6, "ms": 1e9, "s": 1e12}
 
 
 class LibertyTimeUnitError(ValueError):
-    """The Liberty files of one run disagree on `time_unit`, or one sets a value that is not a time.
+    """The Liberty files of one run disagree on `time_unit`, or one sets a value that is not a Liberty time unit.
 
     `units` maps each readable path to its `time_unit` as written for the message.
     """
@@ -97,15 +97,11 @@ def time_unit_ps(path: str) -> float | None:
                     m = _VALUE_RE.match(tok)
                     if m is None:
                         raise LibertyTimeUnitError(
-                            f"{path}: time_unit {tok} is not a time", {path: tok}
+                            f"{path}: time_unit {tok} is not 1, 10 or 100 of s, ms, us, ns, ps or fs",
+                            {path: tok},
                         )
                     value, suffix = m.groups()
-                    scale = _PS_PER_SUFFIX.get(suffix.lower())
-                    if scale is None:
-                        raise LibertyTimeUnitError(
-                            f"{path}: time_unit {value}{suffix} is not a time",
-                            {path: f"{value}{suffix}"},
-                        )
+                    scale = _PS_PER_SUFFIX[suffix.lower()]
                     return round(float(value) * scale, 9)
                 elif seen == 1:
                     seen = 2 if (not is_string and tok == ":") else 0
