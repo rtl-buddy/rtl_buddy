@@ -98,6 +98,10 @@ def test_library_time_unit_after_a_cell_is_read(tmp_path):
         'library (l) { time_unit : "1ps" ; cell (A) { area : 1.0 ; } }\n',
         "library (l) { cell (A) { area : 1.0 ; } time_unit : 1ps ; }\n",
         'library (l)\n{\n  /* time_unit : "1ns" ; */ time_unit : "1ps" ;\n}\n',
+        'library (l) {\n/*\ntime_unit : "100ps" ; }\n*/\n  time_unit : "1ps" ;\n}\n',
+        'library (l) {\n  time_unit\n    :\n    "1ps" ;\n}\n',
+        'library (l) {\n  comment : "time_unit : 1ns ; {" ;\n  time_unit : "1ps" ;\n}\n',
+        'library (l) {\n  comment : "a\n  time_unit : 1ns ;\n  b" ;\n  time_unit : "1ps" ;\n}\n',
     ],
 )
 def test_time_unit_is_read_regardless_of_line_breaks(tmp_path, text):

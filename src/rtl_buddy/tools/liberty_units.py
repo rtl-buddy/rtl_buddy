@@ -10,10 +10,8 @@ import re
 DEFAULT_PS_PER_UNIT = 1000.0
 
 _GZIP_MAGIC = b"\x1f\x8b"
-_TOKEN_RE = re.compile(
-    r'(?P<unit>\btime_unit\s*:\s*"?\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*"?)'
-    r'|"[^"]*"|/\*.*?\*/|(?P<open>\{)|(?P<close>\})'
-)
+_CODE_RE = re.compile(r'\s+|/\*|"|[{}:;]|[^\s{}:;"/]+|/')
+_VALUE_RE = re.compile(r"^\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*$")
 _PS_PER_SUFFIX = {"fs": 1e-3, "ps": 1.0, "ns": 1e3, "us": 1e6, "ms": 1e9, "s": 1e12}
 
 
@@ -44,6 +42,37 @@ def format_time_unit(ps: float) -> str:
     return f"{ps:g}ps"
 
 
+def _tokens(lines):
+    """Yield `(is_string, text)` Liberty tokens, skipping whitespace and `/* */` comments across lines."""
+    mode = None
+    buf: list[str] = []
+    for line in lines:
+        pos, n = 0, len(line)
+        while pos < n:
+            if mode == "comment":
+                end = line.find("*/", pos)
+                if end < 0:
+                    break
+                pos, mode = end + 2, None
+            elif mode == "string":
+                end = line.find('"', pos)
+                if end < 0:
+                    buf.append(line[pos:])
+                    break
+                buf.append(line[pos:end])
+                yield True, "".join(buf)
+                buf, pos, mode = [], end + 1, None
+            else:
+                m = _CODE_RE.match(line, pos)
+                tok, pos = m.group(), m.end()
+                if tok == "/*":
+                    mode = "comment"
+                elif tok == '"':
+                    mode = "string"
+                elif not tok.isspace():
+                    yield False, tok
+
+
 def time_unit_ps(path: str) -> float | None:
     """Return the library group's `time_unit` in picoseconds, or None if the file cannot be read.
 
@@ -51,22 +80,29 @@ def time_unit_ps(path: str) -> float | None:
     """
     try:
         with open_liberty(path) as f:
-            depth = 0
-            for line in f:
-                for m in _TOKEN_RE.finditer(line):
-                    if m.group("open"):
-                        depth += 1
-                    elif m.group("close"):
-                        depth -= 1
-                    elif m.group("unit") and depth == 1:
-                        value, suffix = m.group(2), m.group(3)
-                        scale = _PS_PER_SUFFIX.get(suffix.lower())
-                        if scale is None:
-                            raise LibertyTimeUnitError(
-                                f"{path}: time_unit {value}{suffix} is not a time",
-                                {path: f"{value}{suffix}"},
-                            )
-                        return round(float(value) * scale, 9)
+            depth, seen = 0, 0
+            for is_string, tok in _tokens(f):
+                if not is_string and tok in "{}":
+                    depth += 1 if tok == "{" else -1
+                    seen = 0
+                elif seen == 2:
+                    m = _VALUE_RE.match(tok)
+                    if m is None:
+                        raise LibertyTimeUnitError(
+                            f"{path}: time_unit {tok} is not a time", {path: tok}
+                        )
+                    value, suffix = m.groups()
+                    scale = _PS_PER_SUFFIX.get(suffix.lower())
+                    if scale is None:
+                        raise LibertyTimeUnitError(
+                            f"{path}: time_unit {value}{suffix} is not a time",
+                            {path: f"{value}{suffix}"},
+                        )
+                    return round(float(value) * scale, 9)
+                elif seen == 1:
+                    seen = 2 if (not is_string and tok == ":") else 0
+                elif depth == 1 and not is_string and tok == "time_unit":
+                    seen = 1
     except (OSError, EOFError):
         return None
     return DEFAULT_PS_PER_UNIT
