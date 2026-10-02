@@ -77,10 +77,19 @@ def test_no_time_unit_is_the_liberty_default(tmp_path):
     assert time_unit_ps(_lib(tmp_path / "c.lib", None)) == DEFAULT_PS_PER_UNIT
 
 
-def test_time_unit_after_the_first_cell_is_not_the_header(tmp_path):
+def test_time_unit_inside_a_cell_is_ignored(tmp_path):
     lib = tmp_path / "c.lib"
     lib.write_text('library (l) {\n  cell (A) {\n    time_unit : "1ps" ;\n  }\n}\n')
     assert time_unit_ps(str(lib)) == DEFAULT_PS_PER_UNIT
+
+
+def test_library_time_unit_after_a_cell_is_read(tmp_path):
+    lib = tmp_path / "c.lib"
+    lib.write_text(
+        "library (l) {\n  cell (A) {\n    area : 1.0 ; /* { */\n"
+        '    pin (Y) { function : "{A}" ; }\n  }\n  time_unit : "1ps" ;\n}\n'
+    )
+    assert time_unit_ps(str(lib)) == 1.0
 
 
 def test_unreadable_liberty_has_no_unit(tmp_path):

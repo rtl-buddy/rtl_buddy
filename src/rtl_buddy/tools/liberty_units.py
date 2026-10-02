@@ -13,7 +13,7 @@ _GZIP_MAGIC = b"\x1f\x8b"
 _TIME_UNIT_RE = re.compile(
     r'^\s*time_unit\s*:\s*"?\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*"?\s*;?'
 )
-_CELL_RE = re.compile(r"^\s*cell\s*(?:\(|$)")
+_STRING_OR_COMMENT_RE = re.compile(r'"[^"]*"|/\*.*?\*/')
 _PS_PER_SUFFIX = {"fs": 1e-3, "ps": 1.0, "ns": 1e3, "us": 1e6, "ms": 1e9, "s": 1e12}
 
 
@@ -45,25 +45,27 @@ def format_time_unit(ps: float) -> str:
 
 
 def time_unit_ps(path: str) -> float | None:
-    """Return the Liberty header's `time_unit` in picoseconds, or None if the file cannot be read.
+    """Return the library group's `time_unit` in picoseconds, or None if the file cannot be read.
 
-    Only the header is scanned: a file with no `time_unit` before its first `cell` has the Liberty default.
+    Only an attribute directly inside the `library` group counts; one nested in a cell or other group is ignored. A library with none has the Liberty default.
     """
     try:
         with open_liberty(path) as f:
+            depth = 0
             for line in f:
-                m = _TIME_UNIT_RE.match(line)
-                if m:
-                    value, suffix = m.groups()
-                    scale = _PS_PER_SUFFIX.get(suffix.lower())
-                    if scale is None:
-                        raise LibertyTimeUnitError(
-                            f"{path}: time_unit {value}{suffix} is not a time",
-                            {path: f"{value}{suffix}"},
-                        )
-                    return round(float(value) * scale, 9)
-                if _CELL_RE.match(line):
-                    break
+                if depth == 1:
+                    m = _TIME_UNIT_RE.match(line)
+                    if m:
+                        value, suffix = m.groups()
+                        scale = _PS_PER_SUFFIX.get(suffix.lower())
+                        if scale is None:
+                            raise LibertyTimeUnitError(
+                                f"{path}: time_unit {value}{suffix} is not a time",
+                                {path: f"{value}{suffix}"},
+                            )
+                        return round(float(value) * scale, 9)
+                bare = _STRING_OR_COMMENT_RE.sub("", line)
+                depth += bare.count("{") - bare.count("}")
     except (OSError, EOFError):
         return None
     return DEFAULT_PS_PER_UNIT
