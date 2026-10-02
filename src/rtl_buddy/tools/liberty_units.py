@@ -10,10 +10,10 @@ import re
 DEFAULT_PS_PER_UNIT = 1000.0
 
 _GZIP_MAGIC = b"\x1f\x8b"
-_TIME_UNIT_RE = re.compile(
-    r'^\s*time_unit\s*:\s*"?\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*"?\s*;?'
+_TOKEN_RE = re.compile(
+    r'(?P<unit>\btime_unit\s*:\s*"?\s*([0-9.]+(?:[eE][-+]?\d+)?)\s*([A-Za-z]+)\s*"?)'
+    r'|"[^"]*"|/\*.*?\*/|(?P<open>\{)|(?P<close>\})'
 )
-_STRING_OR_COMMENT_RE = re.compile(r'"[^"]*"|/\*.*?\*/')
 _PS_PER_SUFFIX = {"fs": 1e-3, "ps": 1.0, "ns": 1e3, "us": 1e6, "ms": 1e9, "s": 1e12}
 
 
@@ -53,10 +53,13 @@ def time_unit_ps(path: str) -> float | None:
         with open_liberty(path) as f:
             depth = 0
             for line in f:
-                if depth == 1:
-                    m = _TIME_UNIT_RE.match(line)
-                    if m:
-                        value, suffix = m.groups()
+                for m in _TOKEN_RE.finditer(line):
+                    if m.group("open"):
+                        depth += 1
+                    elif m.group("close"):
+                        depth -= 1
+                    elif m.group("unit") and depth == 1:
+                        value, suffix = m.group(2), m.group(3)
                         scale = _PS_PER_SUFFIX.get(suffix.lower())
                         if scale is None:
                             raise LibertyTimeUnitError(
@@ -64,8 +67,6 @@ def time_unit_ps(path: str) -> float | None:
                                 {path: f"{value}{suffix}"},
                             )
                         return round(float(value) * scale, 9)
-                bare = _STRING_OR_COMMENT_RE.sub("", line)
-                depth += bare.count("{") - bare.count("}")
     except (OSError, EOFError):
         return None
     return DEFAULT_PS_PER_UNIT
