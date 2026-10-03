@@ -158,7 +158,7 @@ cfg-pnr-platforms:
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, and `placement.macro-cell-halo`.
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, and `placement.tie-separation`.
 
 The process-dependent P&R keys are all optional:
 
@@ -168,6 +168,7 @@ The process-dependent P&R keys are all optional:
 | `placement.padding` | `cfg-pdks`, `cfg-pnr-platforms` | Global-placement cell padding in sites, a non-negative integer applied to both `-pad_left` and `-pad_right`. Default `1` |
 | `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns between two macros and between a macro and each core edge, kept by the macro packer. Non-negative; default `20.0`, which `pdngen` needs to repair a channel on sky130hd |
 | `placement.macro-cell-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Standard-cell keep-out in microns on every side of each placed macro, applied as a hard placement blockage. Non-negative; default `1.0`; `0` places no blockage |
+| `placement.tie-separation` | `cfg-pdks`, `cfg-pnr-platforms` | Distance in microns between each constant-driven load and the tie cell `repair_tie_fanout` places for it after global placement. Non-negative; default `0` |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |

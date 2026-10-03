@@ -45,6 +45,19 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png --gds-mode strict
 
 `--png` and `--gds-mode` imply `--gds`. KLayout runs after a successful OpenROAD run. In the default `preview` mode a KLayout failure logs a warning and leaves the P&R verdict unchanged. In `strict` mode an undelivered export fails the run; see [Stream-out completeness](#stream-out-completeness).
 
+## Flow steps
+
+The generated `pnr.tcl` runs these steps in order:
+
+1. Read Liberty, LEF, the synthesis netlist and the SDC.
+2. Initialize the floorplan and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
+3. Place macros, build the power grid and place the IO pins.
+4. Run global placement, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
+5. Run `repair_design`, legalization, clock-tree synthesis, hold repair and a final legalization.
+6. Route globally and in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
+
+A tie port the PDK leaves unset gets neither tie step.
+
 ## Interpret results
 
 The summary reports cell count, design area, setup and hold WNS, and the number of non-empty DRC report lines. Positive slack meets timing and zero DRC lines indicate a clean route. `wns_setup_ps`, `wns_hold_ps` and `tns_ps` are converted to picoseconds from the Liberty `time_unit`; see [Synthesis: Configure tools and the PDK](synthesis.md#configure-tools-and-the-pdk).
@@ -138,6 +151,7 @@ cfg-pnr-platforms:
 - **`placement.density`** is the global-placement target utilization, above 0 and at most 1. **`placement.padding`** is cell padding in sites. A platform overrides either one field by field.
 - **`placement.macro-halo`** (default 20.0 µm) is the channel kept between macros and between a macro and each core edge. Below about 19 µm on sky130hd, `pdngen` fails with `PDN-0179`. Raise it for a coarser grid; lower it only when macros do not fit.
 - **`placement.macro-cell-halo`** (default 1.0 µm) keeps standard cells off macros with a hard blockage. Without it, the router can report a Metal Spacing violation at a pin on a hardened block's edge. `0` disables it.
+- **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
 - **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid.
 - **`dont-use-cells`** and **`rcx-rules`** are described below.

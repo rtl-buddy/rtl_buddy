@@ -1121,6 +1121,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/run-pr.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#flow-steps",
+          "slug": "flow-steps",
+          "title": "Flow steps",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/pnr/flow-steps.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/pnr/#interpret-results",
           "slug": "interpret-results",
           "title": "Interpret results",
