@@ -568,3 +568,26 @@ def test_the_default_macro_cell_halo_leaves_the_config_digest_alone(tmp_path):
     changed = pnr_abstract.abstract_config(run_cfg, wider)
     assert changed["placement"]["macro_cell_halo"] == 3.0
     assert pnr_abstract.config_digest(changed) != pnr_abstract.config_digest(default)
+
+
+def test_the_default_tie_separation_leaves_the_config_digest_alone(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    suite = _block_suite(tmp_path)
+    run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
+    default = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
+    assert "tie_separation" not in default["placement"]
+
+    platform = _block_platform(tmp_path)
+    spread = PnrPlatformConfig(
+        PnrPlatformConfigFile(
+            name="p",
+            pdk="p",
+            cts_buffer="B",
+            placement=PlacementFile(tie_separation=4.0),
+        ),
+        lambda _n: platform.get_pdk(),
+    )
+    changed = pnr_abstract.abstract_config(run_cfg, spread)
+    assert changed["placement"]["tie_separation"] == 4.0
+    assert pnr_abstract.config_digest(changed) != pnr_abstract.config_digest(default)

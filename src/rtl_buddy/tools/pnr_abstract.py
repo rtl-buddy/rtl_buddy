@@ -13,7 +13,10 @@ from importlib.metadata import version
 from pathlib import Path
 
 from ..config.blocks import BlockRef
-from ..config.pdk import DEFAULT_PLACEMENT_MACRO_CELL_HALO
+from ..config.pdk import (
+    DEFAULT_PLACEMENT_MACRO_CELL_HALO,
+    DEFAULT_PLACEMENT_TIE_SEPARATION,
+)
 from ..config.pnr import MacroPlacement
 from .artifact_paths import project_relative, project_root_or_none
 
@@ -168,6 +171,12 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 {"macro_cell_halo": platform.get_placement_macro_cell_halo()}
                 if platform.get_placement_macro_cell_halo()
                 != DEFAULT_PLACEMENT_MACRO_CELL_HALO
+                else {}
+            ),
+            **(
+                {"tie_separation": platform.get_placement_tie_separation()}
+                if platform.get_placement_tie_separation()
+                != DEFAULT_PLACEMENT_TIE_SEPARATION
                 else {}
             ),
         },

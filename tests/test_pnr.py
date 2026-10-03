@@ -3586,6 +3586,71 @@ def test_pnr_flow_renders_a_configured_macro_cell_halo(tmp_path):
     assert "set MACRO_CELL_HALO 2.5\n" in text
 
 
+def test_pnr_flow_repairs_tie_fanout_between_global_placement_and_repair_design(
+    tmp_path,
+):
+    """Each configured tie port gets `repair_tie_fanout` after global placement and
+    before the first `repair_design`, so every constant load has its own tie cell.
+    """
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+
+    assert "set TIEHI_CELL_PORT LOGIC1_X1/Z\n" in text
+    assert "set TIELO_CELL_PORT LOGIC0_X1/Z\n" in text
+    hi = text.index("repair_tie_fanout -separation 0 $TIEHI_CELL_PORT\n")
+    lo = text.index("repair_tie_fanout -separation 0 $TIELO_CELL_PORT\n")
+    assert text.count("repair_tie_fanout") == 2
+    assert text.index("global_placement -density") < hi < lo
+    assert lo < text.index("estimate_parasitics -placement\nrepair_design")
+    assert text.index("insert_tiecells $TIEHI_CELL_PORT\n") < text.index(
+        "global_placement -density"
+    )
+    assert "insert_tiecells $TIELO_CELL_PORT\n" in text
+
+
+def test_pnr_flow_without_tie_ports_inserts_and_repairs_no_tie_cells(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, tie_hi="", tie_lo="")
+    text = _render_flow(tmp_path, _platform(pdk))
+
+    assert "insert_tiecells" not in text
+    assert "repair_tie_fanout" not in text
+    assert "set TIEHI_CELL_PORT {}\n" in text
+    assert "set TIELO_CELL_PORT {}\n" in text
+
+
+def test_pnr_flow_repairs_only_the_configured_tie_port(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, tie_hi="")
+    text = _render_flow(tmp_path, _platform(pdk))
+
+    assert "repair_tie_fanout -separation 0 $TIELO_CELL_PORT\n" in text
+    assert "$TIEHI_CELL_PORT" not in text
+
+
+def test_pnr_flow_renders_a_configured_tie_separation(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(tie_separation=5.0))
+    assert _platform(pdk).get_placement_tie_separation() == 5.0
+    platform = _platform(pdk, placement=PlacementFile(tie_separation=2.5))
+    text = _render_flow(tmp_path, platform)
+
+    assert "repair_tie_fanout -separation 2.5 $TIEHI_CELL_PORT\n" in text
+
+
+def test_the_tie_separation_defaults_to_zero(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_tie_separation() is None
+    assert _platform(pdk).get_placement_tie_separation() == 0.0
+
+
+@pytest.mark.parametrize("separation", [-1.0, float("inf"), float("nan")])
+def test_pdk_rejects_an_unusable_tie_separation(tmp_path, separation):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, placement=PlacementFile(tie_separation=separation))
+    assert "placement.tie-separation" in str(excinfo.value)
+
+
 def _rtl_mp_yaml(tmp_path, floorplan_extra):
     pnr_yaml = tmp_path / "pnr.yaml"
     pnr_yaml.write_text(

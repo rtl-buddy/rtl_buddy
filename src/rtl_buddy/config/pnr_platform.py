@@ -9,6 +9,7 @@ from .pdk import (
     DEFAULT_PLACEMENT_MACRO_HALO,
     DEFAULT_PLACEMENT_MACRO_CELL_HALO,
     DEFAULT_PLACEMENT_PADDING,
+    DEFAULT_PLACEMENT_TIE_SEPARATION,
     PlacementFile,
     _validate_dont_use_cells,
     merge_dont_use_cells,
@@ -99,6 +100,11 @@ class PnrPlatformConfig:
             placement.macro_cell_halo,
             self._pdk.get_placement_macro_cell_halo(),
             DEFAULT_PLACEMENT_MACRO_CELL_HALO,
+        )
+        self._placement_tie_separation = _first_set(
+            placement.tie_separation,
+            self._pdk.get_placement_tie_separation(),
+            DEFAULT_PLACEMENT_TIE_SEPARATION,
         )
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
@@ -207,6 +213,10 @@ class PnrPlatformConfig:
     def get_placement_macro_cell_halo(self) -> float:
         """Macro-to-row keep-out in microns, after platform/PDK/default."""
         return self._placement_macro_cell_halo
+
+    def get_placement_tie_separation(self) -> float:
+        """Tie-cell separation in microns, after platform/PDK/default."""
+        return self._placement_tie_separation
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""

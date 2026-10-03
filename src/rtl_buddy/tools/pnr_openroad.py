@@ -544,6 +544,23 @@ class OpenRoadPnr:
             rcx_block = ""
             final_parasitics = "estimate_parasitics -global_routing"
 
+        tie_ports = [
+            ("TIEHI_CELL_PORT", pdk.get_tie_hi()),
+            ("TIELO_CELL_PORT", pdk.get_tie_lo()),
+        ]
+        tie_vars = [var for var, port in tie_ports if port]
+        tie_cells_block = "".join(f"insert_tiecells ${var}\n" for var in tie_vars)
+        separation = f"{platform.get_placement_tie_separation():g}"
+        tie_fanout_block = (
+            '\nputs ">>> Repair tie fanout"\n'
+            + "".join(
+                f"repair_tie_fanout -separation {separation} ${var}\n"
+                for var in tie_vars
+            )
+            if tie_vars
+            else ""
+        )
+
         pin_script = self.pnr_cfg.pin_constraints
         pin_constraints_tcl = ""
         if pin_script is not None:
@@ -567,8 +584,10 @@ class OpenRoadPnr:
             "util_pct": f"{fp.utilization * 100:.2f}",
             "aspect": f"{fp.aspect:.2f}",
             "core_margin": f"{fp.core_margin:.2f}",
-            "tie_hi": pdk.get_tie_hi(),
-            "tie_lo": pdk.get_tie_lo(),
+            "tie_hi": pdk.get_tie_hi() or "{}",
+            "tie_lo": pdk.get_tie_lo() or "{}",
+            "tie_cells_block": tie_cells_block,
+            "tie_fanout_block": tie_fanout_block,
             "cts_buf": cts_buf,
             "cts_root_buf": cts_root_buf,
             "place_density": f"{platform.get_placement_density():g}",

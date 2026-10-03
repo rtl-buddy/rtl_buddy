@@ -64,6 +64,7 @@ PROGRESS_STEPS = (
     "insert_tiecells",
     "pdngen",
     "global_placement",
+    "repair_tie_fanout",
     "repair_design",
     "detailed_placement",
     "clock_tree_synthesis",
