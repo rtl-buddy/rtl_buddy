@@ -1,5 +1,6 @@
 """Standard-cell libraries split across several Liberty files in one PDK corner."""
 
+import os
 import re
 import shutil
 import subprocess
@@ -13,9 +14,10 @@ from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 from rtl_buddy.config.synth import SynthConfig, SynthToolConfig, SynthToolConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
-from rtl_buddy.tools import openroad_corners, pnr_abstract
+from rtl_buddy.process_utils import ManagedProcessResult
+from rtl_buddy.tools import openroad_corners, pnr_abstract, synth_openroad, synth_yosys
 from rtl_buddy.tools.synth_openroad import OpenRoadSynth
-from rtl_buddy.tools.synth_yosys import YosysSynth
+from rtl_buddy.tools.synth_yosys import YosysSynth, yosys_env
 
 from test_multi_corner import _platform
 from test_pnr import _render_flow
@@ -362,3 +364,71 @@ def _script_path(synth):
     if isinstance(synth, YosysSynth):
         return synth._script_path()
     return synth._yosys_script_path()
+
+
+# Yosys temp directory
+
+
+@pytest.mark.parametrize("backend", ["yosys", "openroad"])
+def test_yosys_runs_with_tmpdir_in_its_artefact_dir(tmp_path, monkeypatch, backend):
+    lib = _ns_lib(tmp_path / "cells.lib")
+    synth, _script = _backend(tmp_path, backend, libs=[lib])
+    seen = []
+
+    def _fake(cmd, stdout, **kwargs):
+        seen.append(kwargs)
+        return ManagedProcessResult(returncode=1)
+
+    if backend == "yosys":
+        monkeypatch.setattr(synth_yosys, "run_managed_process", _fake)
+        monkeypatch.setattr(synth, "_write_filelist", lambda: str(tmp_path / "synth.f"))
+        synth.run()
+    else:
+        monkeypatch.setattr(synth_openroad.subprocess, "run", _fake)
+        synth._run_yosys_stage(str(tmp_path / "synth.f"))
+    tmp_dir = Path(synth.artefact_dir) / "yosys-tmp"
+    assert [kw["env"]["TMPDIR"] for kw in seen] == [str(tmp_dir)]
+    assert tmp_dir.is_dir()
+
+
+@pytest.mark.skipif(shutil.which("yosys") is None, reason="yosys not installed")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_foreign_scl_cache_in_the_inherited_tmpdir_is_not_used(tmp_path, monkeypatch):
+    (tmp_path / "top.sv").write_text(
+        "module top (input clk, input [3:0] a, b, output reg [3:0] q);\n"
+        "  always @(posedge clk) q <= (a & b) | ~a;\nendmodule\n"
+    )
+    synth, _script = _backend(tmp_path, "yosys", libs=_split_libraries(tmp_path))
+    shared = tmp_path / "shared-tmp"
+    foreign = shared / "yosys-liberty-scl-cache"
+    foreign.mkdir(parents=True)
+    foreign.chmod(0o555)
+    monkeypatch.setenv("TMPDIR", str(shared))
+
+    def _log(env):
+        return subprocess.run(
+            ["yosys", "-s", _script_path(synth)],
+            cwd=synth.artefact_dir,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    try:
+        inherited = _log(dict(os.environ))
+        if "scl" not in inherited.lower():
+            pytest.skip("this yosys has no merged SCL cache")
+        assert "falling back to liberty format" in inherited
+        own = _log(yosys_env(synth.artefact_dir))
+    finally:
+        foreign.chmod(0o755)
+    assert "falling back to liberty format" not in own
+    assert "yosys-tmp/yosys-liberty-scl-cache" in own
+
+
+def test_yosys_tmpdir_is_absolute_for_a_relative_artefact_dir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    env = synth_yosys.yosys_env("run")
+    assert env["TMPDIR"] == str(tmp_path / "run" / synth_yosys.YOSYS_TMP_DIRNAME)
+    assert (tmp_path / "run" / synth_yosys.YOSYS_TMP_DIRNAME).is_dir()

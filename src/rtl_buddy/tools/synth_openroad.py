@@ -28,6 +28,7 @@ from .synth_yosys import (
     slang_handles_params,
     validate_frontend,
     warn_mapped_abc_args,
+    yosys_env,
 )
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
@@ -364,6 +365,7 @@ class OpenRoadSynth:
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
                     check=False,
+                    env=yosys_env(self.artefact_dir),
                 )
 
         if result.returncode != 0:
