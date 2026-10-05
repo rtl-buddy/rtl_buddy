@@ -136,10 +136,7 @@ def _dont_use_check_tcl(cells: list[str]) -> str:
 
 def tcl_source(path: str) -> str:
     """Return a Tcl `source` of `path`, double-quoted with substitutions suppressed."""
-    escaped = path.replace("\\", "\\\\")
-    for char in ("$", "[", "]", '"'):
-        escaped = escaped.replace(char, "\\" + char)
-    return f'source "{escaped}"'
+    return f"source {pnr_checkpoints._tcl_quote(path)}"
 
 
 def _hook_block(title: str, path: str) -> str:

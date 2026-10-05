@@ -173,9 +173,9 @@ The process-dependent P&R keys are all optional:
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `tracks-tcl` | `cfg-pdks` | Path to a Tcl script of `make_tracks` commands (ORFS `MAKE_TRACKS`). P&R sources it after `initialize_floorplan` in place of the bare `make_tracks`. Unset by default |
-| `layer-rc-tcl` | `cfg-pdks` | Path to a Tcl script of `set_layer_rc` / `set_wire_rc` commands (ORFS `SET_RC_TCL`). P&R sources it after `read_sdc`, before placement-time parasitics estimates and CTS; a `netlist-source: pnr` power run sources it after `read_sdc` too. Unset by default |
+| `layer-rc-tcl` | `cfg-pdks` | Path to a Tcl script of `set_layer_rc` / `set_wire_rc` commands (ORFS `SET_RC_TCL`). P&R sources it after `read_sdc`, before placement-time parasitics estimates and CTS; a `netlist-source: pnr` power run sources it after `read_sdc` too and digests its contents when it estimates parasitics. Unset by default |
 | `tapcell-tcl` | `cfg-pdks` | Path to a Tcl script that inserts tap and endcap cells (ORFS `TAPCELL_TCL`). P&R sources it after macro placement, before the power grid. Unset by default |
-| `platform-tcl` | `cfg-pdks` | Path to a Tcl script sourced before P&R reads Liberty (ORFS `PLATFORM_TCL`), such as `suppress_message` lines. Unset by default |
+| `platform-tcl` | `cfg-pdks` | Path to a Tcl script that `rb pnr` and `rb power` source before reading Liberty (ORFS `PLATFORM_TCL`), such as `suppress_message` lines. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 
 A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).

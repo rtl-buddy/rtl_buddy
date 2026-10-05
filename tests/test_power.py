@@ -639,10 +639,13 @@ def test_power_suite_loads_xfail_flags(tmp_path):
 class _FakePdk:
     """A `cfg-pdks` corner as the power script reads it: two LEF paths."""
 
-    def __init__(self, tech_lef, macro_lef=None, fill_cells=(), layer_rc_tcl=""):
+    def __init__(
+        self, tech_lef, macro_lef=None, fill_cells=(), layer_rc_tcl="", platform_tcl=""
+    ):
         self._tech_lef = tech_lef
         self._macro_lef = macro_lef
         self._layer_rc_tcl = layer_rc_tcl
+        self._platform_tcl = platform_tcl
         # `filler_placement` adds tens of thousands of these to a routed database; they
         # have no Liberty and no power.
         self._fill_cells = list(fill_cells)
@@ -661,6 +664,9 @@ class _FakePdk:
 
     def get_layer_rc_tcl(self):
         return self._layer_rc_tcl
+
+    def get_platform_tcl(self):
+        return self._platform_tcl
 
 
 class _FakePlatform:
@@ -3412,6 +3418,13 @@ def test_the_blocks_the_run_read_are_in_its_result_and_machine_row(
     assert machine["blocks"] == [row]
 
 
+def _hook(tmp_path, name, text="# hook\n"):
+    path = tmp_path / "pdk" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
 def test_a_pnr_power_run_sources_the_pdk_layer_rc_after_the_constraints(tmp_path):
     """Layer RC is session state the ODB does not carry, so the estimate needs the PDK's
     `layer-rc-tcl` again; it follows `read_sdc`, as in `rb pnr`.
@@ -3419,7 +3432,7 @@ def test_a_pnr_power_run_sources_the_pdk_layer_rc_after_the_constraints(tmp_path
     backend, _routed = _make_pnr_power_backend(
         tmp_path, "create_clock -period 3 [get_ports clk]\n"
     )
-    rc = tmp_path / "pdk" / "set rc.tcl"
+    rc = _hook(tmp_path, "set rc.tcl")
     backend._resolve_platform = lambda: _FakePlatform(
         pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
     )
@@ -3433,8 +3446,10 @@ def test_a_pnr_power_run_sources_the_pdk_layer_rc_after_the_constraints(tmp_path
 
 
 def test_a_synth_power_run_does_not_source_the_layer_rc(tmp_path):
-    """Without a routed database there is no parasitics estimate to feed."""
-    rc = tmp_path / "pdk" / "setRC.tcl"
+    """Without a routed database there is no parasitics estimate to feed, and a missing
+    file there is not an error.
+    """
+    rc = tmp_path / "pdk" / "missing_setRC.tcl"
     backend = _make_power_backend(
         tmp_path,
         platform=_FakePlatform(
@@ -3443,3 +3458,96 @@ def test_a_synth_power_run_does_not_source_the_layer_rc(tmp_path):
     )
 
     assert "source" not in Path(backend._write_script()).read_text()
+    assert "layer_rc_tcl_sha256" not in backend._upstream_identity()
+
+
+@pytest.mark.parametrize("pnr_source", [False, True])
+def test_power_sources_the_platform_tcl_before_any_liberty(tmp_path, pnr_source):
+    tcl = _hook(tmp_path, "liberty_suppressions.tcl")
+    platform = _FakePlatform(pdk=_FakePdk("/pdk/fake/tech.lef", platform_tcl=str(tcl)))
+    if pnr_source:
+        backend, _ = _make_pnr_power_backend(
+            tmp_path, "create_clock -period 3 [get_ports clk]\n"
+        )
+        backend._resolve_platform = lambda: platform
+    else:
+        backend = _make_power_backend(tmp_path, platform=platform)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    source = lines.index(f'source "{tcl}"')
+    first_lib = next(i for i, ln in enumerate(lines) if ln.startswith("read_liberty"))
+    assert source < first_lib
+
+
+@pytest.mark.parametrize("key", ["platform-tcl", "layer-rc-tcl"])
+def test_power_fails_at_setup_on_a_missing_tcl_hook(tmp_path, monkeypatch, key):
+    from rtl_buddy.tools import power_openroad
+
+    backend, _ = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    missing = tmp_path / "pdk" / "missing.tcl"
+    field = key.replace("-", "_")
+    backend._resolve_platform = lambda: _FakePlatform(
+        pdk=_FakePdk("/pdk/fake/tech.lef", **{field: str(missing)})
+    )
+    events = _capture_power_events(monkeypatch)
+    launched = []
+    monkeypatch.setattr(
+        power_openroad.subprocess, "run", lambda *a, **k: launched.append(a)
+    )
+
+    res = backend.run()
+
+    assert res.results["result"] == "FAIL"
+    assert res.results["fail_stage"] == "setup"
+    assert f"{key} not found: {missing}" in res.results["desc"]
+    assert not launched
+    (fields,) = _fields_of(events, "power.tcl_hook_missing")
+    assert fields["key"] == key
+    assert fields["path"] == str(missing)
+
+
+def test_an_estimating_pnr_power_run_digests_the_layer_rc_contents(tmp_path):
+    """Editing `setRC.tcl` changes the estimate, so it is a new experiment."""
+    backend, _ = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    rc = _hook(
+        tmp_path, "setRC.tcl", "set_wire_rc -signal -resistance 1 -capacitance 1\n"
+    )
+    backend._resolve_platform = lambda: _FakePlatform(
+        pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
+    )
+
+    backend._write_script()
+    first = backend._upstream_identity()["layer_rc_tcl_sha256"]
+    rc.write_text("set_wire_rc -signal -resistance 2 -capacitance 2\n")
+    backend._write_script()
+    second = backend._upstream_identity()["layer_rc_tcl_sha256"]
+
+    assert first and second and first != second
+
+
+def test_a_pnr_power_run_without_layer_rc_keeps_its_digest_keys(tmp_path):
+    backend, _ = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    backend._write_script()
+    assert "layer_rc_tcl_sha256" not in backend._upstream_identity()
+
+
+def test_a_spef_timed_power_run_does_not_digest_the_layer_rc(tmp_path):
+    """With a trusted SPEF the layer RC never reaches the numbers."""
+    backend, _spef = _make_spef_power_backend(tmp_path)
+    rc = _hook(tmp_path, "setRC.tcl")
+    backend._resolve_platform = lambda: _FakePlatform(
+        pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
+    )
+
+    backend._write_script()
+
+    identity = backend._upstream_identity()
+    assert identity["parasitics"] == "spef"
+    assert "layer_rc_tcl_sha256" not in identity
