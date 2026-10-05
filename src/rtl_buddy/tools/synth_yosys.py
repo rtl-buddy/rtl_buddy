@@ -7,6 +7,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from . import block_params
 from .artifact_paths import clear_stale_artefacts
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
@@ -469,6 +470,67 @@ def library_fingerprint(paths, root_cfg) -> list[str]:
     return [project_relative(path, root) for path in paths]
 
 
+def yosys_read_lib_paths(
+    lib_paths: list[str], blocks, source_files: list[str], synth_name: str
+) -> list[str]:
+    """Return the Liberty files the Yosys script reads, without the abstracts of `blocks:` the sources stub.
+
+    A block's abstract Liberty defines its module with no parameters. Read ahead of the sources, it replaces the stub, and Yosys then rejects an instance's parameter override (`does not have a parameter named`). With a stub, the abstract adds nothing, because Yosys only needs a blackbox. A block the sources do not define keeps its abstract, which is then the blackbox.
+    """
+    if not blocks:
+        return list(lib_paths)
+    defined: set[str] = set()
+    for src in source_files:
+        try:
+            with open(src, errors="replace") as f:
+                defined |= block_params.defined_modules(f.read())
+        except OSError:
+            continue
+    stubbed = [b for b in blocks if b.ref.name in defined]
+    if not stubbed:
+        return list(lib_paths)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "synth.block_liberty_skipped",
+        synth=synth_name,
+        blocks=[b.ref.name for b in stubbed],
+    )
+    skip = {b.lib for b in stubbed}
+    return [p for p in lib_paths if p not in skip]
+
+
+def clean_block_netlist(netlist_path: str, blocks, synth_name: str) -> str | None:
+    """Strip the parameter overrides from `blocks:` instances in the mapped netlist, in place.
+
+    Returns a failure description when an override differs from the block's synthesis or the netlist cannot be rewritten, else None. See :mod:`.block_params`.
+    """
+    if not blocks or not os.path.isfile(netlist_path):
+        return None
+    try:
+        _, instances = block_params.clean_netlist(netlist_path, netlist_path, blocks)
+    except block_params.BlockParamError as e:
+        log_event(
+            logger,
+            logging.ERROR,
+            "synth.block_params_mismatch",
+            synth=synth_name,
+            error=str(e),
+        )
+        return str(e)
+    except OSError as e:
+        return f"could not strip block parameter overrides from {netlist_path}: {e}"
+    if instances:
+        log_event(
+            logger,
+            logging.INFO,
+            "synth.block_params_stripped",
+            synth=synth_name,
+            instances=[f"{i.module}:{i.instance}" for i in instances],
+        )
+    return None
+
+
 def resolve_dont_use_cells(synth_cfg, root_cfg) -> list[str]:
     """Return the platform's `dont-use-cells` patterns, or `[]` for an unmapped run.
 
@@ -632,6 +694,8 @@ class YosysSynth:
         # SDC identity; see `_hash_constraints`. None before the run or with no SDC.
         self._constraints_sha256: str | None = None
         self._opts: SynthToolOpts | None = None
+        # Resolved `blocks:` abstracts, set by the runner.
+        self.blocks: list = []
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -843,11 +907,13 @@ class YosysSynth:
         self._hash_constraints()
         incdirs = incdirs_from_filelist(fl_path)
 
+        source_files = self._source_files_from_filelist(fl_path)
         lines = []
-        for lib in lib_paths:
+        for lib in yosys_read_lib_paths(
+            lib_paths, self.blocks, source_files, self.synth_cfg.get_name()
+        ):
             lines.append(f"read_liberty -lib {lib}")
 
-        source_files = self._source_files_from_filelist(fl_path)
         lines.extend(
             emit_frontend_read_cmds(
                 opts=opts,
@@ -1208,6 +1274,13 @@ class YosysSynth:
                     module=module,
                     log=log_path,
                 )
+
+        # OpenROAD rejects the `#(...)` Yosys leaves on a parameterised block's instances.
+        block_error = clean_block_netlist(
+            self._netlist_path(mapped=True), self.blocks, self.synth_cfg.get_name()
+        )
+        if block_error is not None:
+            return self._fail_after_yosys(block_error)
 
         top = self.synth_cfg.get_top()
         area_um2 = self._parse_area_um2(log_text, top)

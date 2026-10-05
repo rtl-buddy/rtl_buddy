@@ -143,6 +143,7 @@ class SynthRunner:
                     block=block.ref.name,
                     changes=list(block.changes),
                 )
+        backend.blocks = resolved
         backend.synth_cfg = replace(
             self.synth_cfg,
             lib_paths=[*self.synth_cfg.get_lib_paths(), *(b.lib for b in resolved)],

@@ -32,7 +32,7 @@ from .artifact_paths import (
     project_relative,
     project_root_or_none,
 )
-from . import pnr_abstract, pnr_checkpoints
+from . import block_params, pnr_abstract, pnr_checkpoints
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 
 
@@ -75,6 +75,8 @@ _FIXED_OUTPUT_NAMES = tuple(
 
 # An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
+# The synth netlist with `blocks:` parameter overrides stripped, read in its place; an input like the script.
+_BLOCK_NETLIST_NAME = "pnr_netlist.v"
 # Public: `rb power` uses it to check the SPEF and ODB came from the same run.
 PNR_SCRIPT_NAME = _SCRIPT_NAME
 
@@ -450,6 +452,8 @@ class OpenRoadPnr:
         self._openroad_returncode: int | None = None
         # Picoseconds per Liberty `time_unit`; set by `run()` once the blocks' Liberty is known.
         self._ps_per_unit: float | None = None
+        # The netlist the script reads, when not the synth netlist itself; set by `_prepare_netlist`.
+        self._openroad_netlist: str | None = None
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, _SCRIPT_NAME)
@@ -494,7 +498,7 @@ class OpenRoadPnr:
 
     def _write_script(self, platform, fp) -> str:
         pdk = platform.get_pdk()
-        netlist = self._resolve_netlist_path()
+        netlist = self._openroad_netlist or self._resolve_netlist_path()
         sdc = self.pnr_cfg.get_constraints()
         if not sdc:
             raise RuntimeError(
@@ -1533,7 +1537,7 @@ class OpenRoadPnr:
                     _DEF2STREAM_REPORT_NAME,
                     _EXPORT_PROVENANCE_NAME,
                     *(
-                        (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME)
+                        (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME, _BLOCK_NETLIST_NAME)
                         if include_script
                         else ()
                     ),
@@ -1759,6 +1763,54 @@ class OpenRoadPnr:
             pnr=self.pnr_cfg.get_name(),
             blocks=[b.ref.name for b in resolved],
         )
+        return None
+
+    def _prepare_netlist(self) -> PnrFailResults | None:
+        """Point the script at a copy of the synth netlist with the `blocks:` instances' parameter overrides stripped.
+
+        OpenROAD's reader rejects the `#(...)` Yosys leaves on a parameterised block's instances. Since `rb synth` with `blocks:` already strips them, this matters for a netlist from a synthesis without `blocks:`. Returns a FAIL when an override differs from the block's synthesis `params:` or between instances; see :mod:`.block_params`.
+        """
+        self._openroad_netlist = None
+        if not self._blocks:
+            return None
+        source = self._resolve_netlist_path()
+        if not os.path.isfile(source):
+            return None
+        try:
+            path, instances = block_params.clean_netlist(
+                source,
+                os.path.join(self.artefact_dir, _BLOCK_NETLIST_NAME),
+                self._blocks,
+            )
+        except (block_params.BlockParamError, OSError) as e:
+            desc = (
+                str(e)
+                if isinstance(e, block_params.BlockParamError)
+                else f"could not strip block parameter overrides from {source}: {e}"
+            )
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.block_params_mismatch",
+                pnr=self.pnr_cfg.get_name(),
+                error=desc,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=desc,
+                fail_stage="setup",
+                fields=self._blocks_fields(),
+            )
+        if instances:
+            self._openroad_netlist = path
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr.block_params_stripped",
+                pnr=self.pnr_cfg.get_name(),
+                instances=[f"{i.module}:{i.instance}" for i in instances],
+                netlist=path,
+            )
         return None
 
     def _blocks_fields(self) -> dict:
@@ -2007,6 +2059,9 @@ class OpenRoadPnr:
         blocks_failure = self._resolve_blocks(platform)
         if blocks_failure is not None:
             return blocks_failure
+        netlist_failure = self._prepare_netlist()
+        if netlist_failure is not None:
+            return netlist_failure
 
         try:
             self._ps_per_unit = liberty_time_unit_ps(

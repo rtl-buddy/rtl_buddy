@@ -434,6 +434,24 @@ P&R takes each block's LEF, Liberty and GDS from its abstract; synthesis takes t
 - **Same technology and corner.** The block's technology LEF and corner Liberty must match the consuming run's, or the run fails with a platform/corner mismatch. A multi-corner platform cannot consume single-corner abstracts.
 - **Stale abstracts are refused.** If an input of the block changed since it was hardened (RTL, netlist, SDC, Liberty, LEF, snippets, its `pnr.yaml` or platform), the consuming run fails, naming the block, what changed and the command that re-hardens it. `--accept-stale` on `rb pnr` or `rb synth` consumes it anyway and the result description says `stale block abstract(s) accepted: <names>`.
 - **Blackbox the module.** The top's filelist must leave the block's module a blackbox, typically a port-only stub.
+- **Parameterised blocks.** A hardened block has one parameter set, the `params:` of its synthesis. A parent that overrides its parameters needs a stub that declares them; see [Instance a parameterised block](#instance-a-parameterised-block).
+
+## Instance a parameterised block
+
+A parent instances a parameterised block with an override such as `blk #(.W(16)) u_blk (...)`. Its stub declares the block's parameters, so the frontend accepts the override and sizes the ports. Yosys then writes an override for every parameter of the stub, localparams included, and OpenROAD cannot read one (`STA-0171`). rtl_buddy checks the overrides and removes them before OpenROAD reads the netlist:
+
+```systemverilog
+// blk_bb.sv, on the parent's filelist. The block was synthesised with params: {W: 16}.
+(* blackbox *)
+module blk #(parameter int W = 8, localparam int AW = $clog2(W)) (
+  input logic clk, input logic [W-1:0] d, output logic [W-1:0] q);
+endmodule
+```
+
+- `rb synth` with `blocks:` removes the overrides from `synth_netlist.v`. The block's abstract Liberty is not read by Yosys when the filelist defines the block's module, because it would replace the stub and lose its parameters.
+- `rb pnr` and `rb power` remove any overrides that remain, for example in a netlist from a synthesis without `blocks:`. `rb pnr` reads the result as `pnr_netlist.v` in its artefact directory; `rb power` reads its own `power_netlist.v` copy.
+- The run fails before OpenROAD reads the netlist when an instance sets a parameter to a value other than the block synthesis's `params:`, or when two instances of the block disagree. The message names the instance, the parameter and both values. Re-harden the block with the parameters the parent needs, or harden one block per parameter set.
+- Parameters the block's synthesis leaves at their defaults, and localparams such as `AW`, are not checked: the hardened netlist records no parameter values. They follow from the checked ones when the stub declares the same parameters as the block's RTL.
 
 ## Run a whole hierarchy
 
@@ -471,4 +489,5 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`fail_stage: abstract`, or `harden:` refused.** A view could not be produced (read `pnr.log`), or the platform has several corners.
 - **A missing or stale abstract, or a platform/corner mismatch.** Run the `rb pnr` command the message names, run `rb pnr` with no run name, or pass `--accept-stale`.
 - **`fail_stage: blocked`.** A block the run consumes failed. Fix it first.
+- **`instance '<inst>' ... of block '<blk>' sets <P>=...`, or `instances of block '<blk>' have different parameters`.** The parent instances a block with parameters it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.
