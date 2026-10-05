@@ -13,10 +13,12 @@
 # straps short of the block on both sides, so nothing reaches them. For each such
 # pin it finds the nearest parent strap of the pin's net on the pin's track on
 # either side, and adds one STRIPE box across the pin that overlaps each strap
-# end by a strap width. The phase check: a pin none of whose shapes is on a
-# track of a parent strap of its own net (a misplaced or mirrored block) fails
-# the run; a stray off-track shape of a pin that is otherwise joined is warned
-# about with an `RB-BLOCK-POWER-WARNING:` line.
+# end by a strap width. The phase check: a pin with a shape on or above the top
+# strap layer and none joined fails the run. That is a pin off its own net's
+# straps (a misplaced or mirrored block), a join that would touch another net's
+# strap (a rotated block), a pin above the top strap layer, or a parent grid
+# with no straps at all. A stray shape of a pin that is otherwise joined is
+# warned about with an `RB-BLOCK-POWER-WARNING:` line.
 #
 # Rectangles are {xlo ylo xhi yhi} in DBU. Problems are printed as
 # `RB-BLOCK-POWER-ERROR: ...` lines, which rb reports, and the run stops.
@@ -45,6 +47,8 @@ proc rb::block_power::pick_net {pin nets} {
 #                        no own strap is on the pin's track. NAMES are the other
 #                        nets whose straps are (empty when none is); NEAREST is
 #                        the centre line of the closest own strap, or ""
+#   {short NAMES}        the join would touch a strap of another net, as for a
+#                        rotated block whose pin runs across the straps
 proc rb::block_power::plan_join {pin horizontal own others} {
   # Along the strap: x on a horizontal layer. Across it: y.
   if {$horizontal} {
@@ -96,6 +100,17 @@ proc rb::block_power::plan_join {pin horizontal own others} {
   if {$after ne ""} {
     set width [expr {[lindex $after $c1] - [lindex $after $c0]}]
     lset box $a1 [expr {min([lindex $after $a1], [lindex $after $a0] + $width)}]
+  }
+  set shorts {}
+  foreach pair $others {
+    lassign $pair name s
+    if {[lindex $box 0] <= [lindex $s 2] && [lindex $s 0] <= [lindex $box 2]
+        && [lindex $box 1] <= [lindex $s 3] && [lindex $s 1] <= [lindex $box 3]} {
+      lappend shorts $name
+    }
+  }
+  if {[llength $shorts]} {
+    return [list short [lsort -unique $shorts]]
   }
   return [list join $box]
 }
@@ -209,20 +224,25 @@ proc rb::block_power::top_strap_layer {} {
 
 proc rb::block_power::join_straps {masters} {
   set layer_name [top_strap_layer]
-  if {$layer_name eq ""} {
-    return
+  set top_level -1
+  if {$layer_name ne ""} {
+    set layer [[ord::get_db_tech] findLayer $layer_name]
+    set top_level [$layer getRoutingLevel]
+    set horizontal [expr {[$layer getDirection] eq "HORIZONTAL"}]
+    set axis [expr {$horizontal ? "y" : "x"}]
   }
-  set layer [[ord::get_db_tech] findLayer $layer_name]
-  set horizontal [expr {[$layer getDirection] eq "HORIZONTAL"}]
-  set axis [expr {$horizontal ? "y" : "x"}]
   set strap_cache [dict create]
-  foreach sig {POWER GROUND} {
-    dict for {name net} [supply_nets $sig] {
-      dict set strap_cache $name [straps $net $layer_name]
+  if {$layer_name ne ""} {
+    foreach sig {POWER GROUND} {
+      dict for {name net} [supply_nets $sig] {
+        dict set strap_cache $name [straps $net $layer_name]
+      }
     }
   }
   set errors {}
-  set joined 0
+  set warnings {}
+  set joined_pins 0
+  set joined_shapes 0
   foreach inst [instances $masters] {
     foreach iterm [$inst getITerms] {
       set mterm [$iterm getMTerm]
@@ -231,15 +251,27 @@ proc rb::block_power::join_straps {masters} {
       }
       set pin "[$inst getName]/[$mterm getName]"
       set net [$iterm getNet]
+      # Shapes at or above the top strap layer are this proc's to connect; pdngen's macro grids handle the rest.
+      set mine 0
       set reached 0
-      set off_track {}
+      set problems {}
       foreach geom [$iterm getGeometries] {
         lassign $geom pin_layer rect
-        if {[$pin_layer getName] ne $layer_name} {
+        set level [$pin_layer getRoutingLevel]
+        if {$level == 0 || $level < $top_level} {
+          continue
+        }
+        incr mine
+        if {$layer_name eq ""} {
+          lappend problems "$pin is on [$pin_layer getName], and the parent's grid has no straps to join it to"
+          break
+        }
+        if {$level > $top_level} {
+          lappend problems "$pin has a shape on [$pin_layer getName], above the parent's top strap layer $layer_name, which nothing connects"
           continue
         }
         if {$net eq "NULL"} {
-          lappend errors "$pin is on no net"
+          lappend problems "$pin is on no net"
           break
         }
         set net_name [$net getName]
@@ -250,12 +282,16 @@ proc rb::block_power::join_straps {masters} {
         set others {}
         dict for {name rects} $strap_cache {
           if {$name ne $net_name} {
-            foreach s $rects {
-              lappend others [list $name $s]
+            foreach r $rects {
+              lappend others [list $name $r]
             }
           }
         }
         set p [list [$rect xMin] [$rect yMin] [$rect xMax] [$rect yMax]]
+        set centre [expr {$horizontal \
+            ? ([lindex $p 1] + [lindex $p 3]) / 2 \
+            : ([lindex $p 0] + [lindex $p 2]) / 2}]
+        set where "$net_name, $layer_name $axis=[format %.3f [ord::dbu_to_microns $centre]] um, [$inst getOrient]"
         set plan [plan_join $p $horizontal $own $others]
         switch -- [lindex $plan 0] {
           covered {
@@ -264,14 +300,13 @@ proc rb::block_power::join_straps {masters} {
           join {
             set swire [odb::dbSWire_create $net ROUTED]
             odb::dbSBox_create $swire $layer {*}[lindex $plan 1] STRIPE
-            incr joined
+            incr joined_shapes
             incr reached
           }
+          short {
+            lappend problems "$pin ($where) cannot be joined: the join would touch a [join [lindex $plan 1] /] strap"
+          }
           misaligned {
-            set centre [expr {$horizontal \
-                ? ([lindex $p 1] + [lindex $p 3]) / 2 \
-                : ([lindex $p 0] + [lindex $p 2]) / 2}]
-            set where "$layer_name $axis=[format %.3f [ord::dbu_to_microns $centre]] um, [$inst getOrient]"
             lassign $plan - names nearest
             set why [expr {[llength $names] \
                 ? "it is on a [join $names /] strap's track" \
@@ -279,25 +314,32 @@ proc rb::block_power::join_straps {masters} {
             if {$nearest ne ""} {
               append why ", the nearest $net_name strap is at $axis=[format %.3f [ord::dbu_to_microns $nearest]] um"
             }
-            lappend off_track "$pin ($net_name, $where) is not on a parent $net_name strap: $why"
+            lappend problems "$pin ($where) is not on a parent $net_name strap: $why"
           }
         }
       }
-      if {[llength $off_track] && !$reached} {
-        foreach msg $off_track {
-          lappend errors "$msg; place and orient the block so its supply pins line up with the parent's $layer_name straps"
+      if {!$mine} {
+        continue
+      }
+      if {$reached} {
+        incr joined_pins
+        foreach msg $problems {
+          lappend warnings "$msg; the pin's other shapes are joined"
         }
       } else {
-        foreach msg $off_track {
-          puts "RB-BLOCK-POWER-WARNING: $msg; the pin's other shapes are joined"
+        foreach msg $problems {
+          lappend errors "$msg; place and orient the block so its supply pins line up with the parent's [expr {$layer_name eq "" ? "" : "$layer_name "}]straps"
         }
       }
     }
   }
+  foreach msg $warnings {
+    puts "RB-BLOCK-POWER-WARNING: $msg"
+  }
   if {[llength $errors]} {
     fail $errors
   }
-  if {$joined} {
-    puts "rb: joined $joined block supply pin(s) on $layer_name to the parent's straps"
+  if {$joined_shapes} {
+    puts "rb: joined $joined_pins block supply pin(s) on $layer_name to the parent's straps ($joined_shapes shape(s))"
   }
 }

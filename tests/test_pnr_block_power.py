@@ -6,8 +6,13 @@ parent's straps, which `pdngen` stops short of the block. Its geometry is pure T
 driven here without OpenROAD; the rendering and the failure report go through `rb pnr`.
 """
 
+import shutil
+import subprocess
 from importlib.resources import files
 from pathlib import Path
+from textwrap import dedent
+
+import pytest
 
 from rtl_buddy.config.pdk import PdkConfig
 from rtl_buddy.tools import pnr_openroad
@@ -73,6 +78,17 @@ def test_a_pin_on_the_other_nets_track_fails_the_phase_check():
 
 def test_a_pin_on_no_track_fails_the_phase_check():
     assert _plan(_PIN, [], others=[]) == "misaligned {} {}"
+
+
+def test_a_join_that_would_touch_another_nets_strap_is_refused():
+    """A rotated block's pin runs across the straps; joining it to the VDD strap end
+    would short it to the VSS strap end beside it.
+    """
+    result = _tcl(
+        "set result [rb::block_power::plan_join {40000 30000 41600 90000} 1 "
+        "{{0 59200 36800 60800}} {{VSS {0 45600 36800 47200}}}]"
+    )
+    assert result == "short VSS"
 
 
 def test_a_vertical_layer_joins_along_y():
@@ -177,3 +193,193 @@ def test_a_stray_off_track_shape_is_a_warning_not_a_failure(
     with caplog.at_level("WARNING"):
         assert backend.run().is_pass()
     assert any(stray in r.getMessage() for r in caplog.records)
+
+
+# A self-contained OpenROAD case: a five-metal technology, and a 60 um block whose
+# supply pins are on met5 at the parent's met5 pitch and offset, named apart from the
+# parent's nets so that only `tie_supplies` connects them.
+_TECH_LEF = (
+    dedent("""\
+    VERSION 5.8 ;
+    BUSBITCHARS "[]" ;
+    DIVIDERCHAR "/" ;
+    UNITS
+      DATABASE MICRONS 1000 ;
+    END UNITS
+    MANUFACTURINGGRID 0.005 ;
+    SITE core
+      CLASS CORE ;
+      SYMMETRY Y ;
+      SIZE 0.46 BY 2.72 ;
+    END core
+    """)
+    + "".join(
+        f"LAYER met{n}\n  TYPE ROUTING ; DIRECTION {d} ; PITCH {p} ; WIDTH {w} ; "
+        f"SPACING {w} ;\nEND met{n}\n"
+        + (
+            f"LAYER via{n}\n  TYPE CUT ; SPACING 0.8 ; WIDTH 0.8 ;\nEND via{n}\n"
+            if n < 5
+            else ""
+        )
+        for n, d, p, w in (
+            (1, "HORIZONTAL", 0.34, 0.14),
+            (2, "VERTICAL", 0.46, 0.14),
+            (3, "HORIZONTAL", 0.68, 0.3),
+            (4, "VERTICAL", 0.92, 0.3),
+            (5, "HORIZONTAL", 3.4, 1.6),
+        )
+    )
+    + dedent("""\
+    VIARULE M3M4 GENERATE
+      LAYER met3 ; ENCLOSURE 0.19 0.19 ;
+      LAYER met4 ; ENCLOSURE 0.19 0.19 ;
+      LAYER via3 ; RECT -0.4 -0.4 0.4 0.4 ; SPACING 1.6 BY 1.6 ;
+    END M3M4
+    VIARULE M4M5 GENERATE
+      LAYER met4 ; ENCLOSURE 0.19 0.19 ;
+      LAYER met5 ; ENCLOSURE 0.31 0.31 ;
+      LAYER via4 ; RECT -0.4 -0.4 0.4 0.4 ; SPACING 1.6 BY 1.6 ;
+    END M4M5
+    END LIBRARY
+    """)
+)
+
+_BLOCK_LEF = dedent("""\
+    VERSION 5.8 ;
+    MACRO blk
+      CLASS BLOCK ;
+      ORIGIN 0 0 ;
+      SIZE 60 BY 60 ;
+      PIN VDDB
+        DIRECTION INOUT ;
+        USE POWER ;
+        PORT
+          LAYER met5 ;
+            RECT 0 31.84 60 33.44 ;
+        END
+      END VDDB
+      PIN VSSB
+        DIRECTION INOUT ;
+        USE GROUND ;
+        PORT
+          LAYER met5 ;
+            RECT 0 18.24 60 19.84 ;
+        END
+      END VSSB
+      OBS
+        LAYER met1 ; RECT 0 0 60 60 ;
+        LAYER met2 ; RECT 0 0 60 60 ;
+        LAYER met3 ; RECT 0 0 60 60 ;
+        LAYER met4 ; RECT 0 0 60 60 ;
+        LAYER met5 ; RECT 0 0 60 60 ;
+      END
+    END blk
+    END LIBRARY
+    """)
+
+_PARENT_PDN = dedent("""\
+    add_global_connection -net {VDD} -inst_pattern {.*} -pin_pattern {^VDD$} -power
+    add_global_connection -net {VSS} -inst_pattern {.*} -pin_pattern {^VSS$} -ground
+    global_connect
+    set_voltage_domain -name {CORE} -power {VDD} -ground {VSS}
+    define_pdn_grid -name {grid} -voltage_domains {CORE}
+    add_pdn_stripe -grid {grid} -layer {met4} -width {1.600} -pitch {27.200} -offset {13.600}
+    """)
+_MET5_STRAPS = dedent("""\
+    add_pdn_stripe -grid {grid} -layer {met5} -width {1.600} -pitch {27.200} -offset {13.600}
+    add_pdn_connect -grid {grid} -layers {met4 met5}
+    """)
+
+# A parent whose top strap layer is met4, below the block's met5 pins.
+_MET3_STRAPS = dedent("""\
+    add_pdn_stripe -grid {grid} -layer {met3} -width {1.600} -pitch {27.200} -offset {13.600}
+    add_pdn_connect -grid {grid} -layers {met3 met4}
+    """)
+
+_OPENROAD = shutil.which("openroad")
+
+
+def _openroad_case(tmp_path, *, y_um, orient, met5=True, join=True):
+    """Place the block at (60, y_um), build the grid, run both steps and check the grid."""
+    _write(tmp_path / "tech.lef", _TECH_LEF)
+    _write(tmp_path / "blk.lef", _BLOCK_LEF)
+    _write(tmp_path / "top.v", "module top ();\n  blk u_blk ();\nendmodule\n")
+    _write(tmp_path / "pdn.tcl", _PARENT_PDN + (_MET5_STRAPS if met5 else _MET3_STRAPS))
+    procs = files("rtl_buddy.pnr").joinpath("block_power.tcl").read_text()
+    _write(tmp_path / "block_power.tcl", procs)
+    script = _write(
+        tmp_path / "run.tcl",
+        dedent(f"""\
+            read_lef tech.lef
+            read_lef blk.lef
+            read_verilog top.v
+            link_design top
+            initialize_floorplan -die_area {{0 0 200 200}} -core_area {{10 10 190 190}} -site core
+            place_inst -name u_blk -location {{60 {y_um}}} -orientation {orient} -status FIRM
+            source pdn.tcl
+            source block_power.tcl
+            rb::block_power::tie_supplies {{blk}}
+            pdngen
+            {"rb::block_power::join_straps {blk}" if join else ""}
+            foreach net {{VDD VSS}} {{
+              if {{[catch {{check_power_grid -net $net -dont_require_terminals}}]}} {{
+                puts "CPG $net FAIL"
+              }} else {{
+                puts "CPG $net ok"
+              }}
+            }}
+            """),
+    )
+    proc = subprocess.run(
+        [_OPENROAD, "-exit", "-no_init", str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    return proc.stdout + proc.stderr
+
+
+needs_openroad = pytest.mark.skipif(_OPENROAD is None, reason="openroad not installed")
+
+
+@needs_openroad
+def test_openroad_ties_and_joins_a_met5_block_and_the_grid_checks_clean(tmp_path):
+    out = _openroad_case(tmp_path, y_um=32.64, orient="R0")
+
+    assert "rb: tied u_blk/VDDB to VDD" in out
+    assert "rb: tied u_blk/VSSB to VSS" in out
+    assert "rb: joined 2 block supply pin(s) on met5" in out
+    assert "CPG VDD ok" in out and "CPG VSS ok" in out
+    assert "RB-BLOCK-POWER-ERROR" not in out
+
+
+@needs_openroad
+def test_openroad_without_the_join_the_block_pins_are_unconnected(tmp_path):
+    out = _openroad_case(tmp_path, y_um=32.64, orient="R0", join=False)
+
+    assert "PSM-0039" in out
+    assert "CPG VDD FAIL" in out and "CPG VSS FAIL" in out
+
+
+@needs_openroad
+@pytest.mark.parametrize("y_um,orient", [(32.64, "MX"), (35.36, "R0")])
+def test_openroad_fails_a_mirrored_or_shifted_block(tmp_path, y_um, orient):
+    out = _openroad_case(tmp_path, y_um=y_um, orient=orient)
+
+    assert (
+        "RB-BLOCK-POWER-ERROR: u_blk/VDDB (VDD, met5 y=" in out
+        and f", {orient}) is not on a parent VDD strap" in out
+    )
+    assert "CPG" not in out
+
+
+@needs_openroad
+def test_openroad_fails_a_block_pin_above_the_parents_top_strap_layer(tmp_path):
+    out = _openroad_case(tmp_path, y_um=32.64, orient="R0", met5=False)
+
+    assert (
+        "RB-BLOCK-POWER-ERROR: u_blk/VDDB has a shape on met5, above the parent's "
+        "top strap layer met4" in out
+    )

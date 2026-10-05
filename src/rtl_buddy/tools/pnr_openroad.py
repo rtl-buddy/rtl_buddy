@@ -2281,9 +2281,9 @@ class OpenRoadPnr:
                 log_event(
                     logger,
                     logging.WARNING,
-                    "pnr.block_power_off_track",
+                    "pnr.block_power_warning",
                     pnr=self.pnr_cfg.get_name(),
-                    shape=line[len(_BLOCK_POWER_WARNING_TAG) :].strip(),
+                    detail=line[len(_BLOCK_POWER_WARNING_TAG) :].strip(),
                 )
         if block_power_errors:
             log_event(
