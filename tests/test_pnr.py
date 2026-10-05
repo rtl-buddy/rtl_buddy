@@ -3738,3 +3738,202 @@ def test_rtl_mp_goes_into_the_abstract_digest_only_when_set(tmp_path):
 
     assert placed["floorplan"]["macro_placement"] == "rtl-mp"
     assert pnr_abstract.config_digest(placed) != pnr_abstract.config_digest(packed)
+
+
+_HOOK_FILES = {
+    "platform_tcl": "pdk/asap7/liberty_suppressions.tcl",
+    "layer_rc_tcl": "pdk/asap7/setRC.tcl",
+    "tracks_tcl": "pdk/asap7/make_tracks.tcl",
+    "tapcell_tcl": "pdk/asap7/tapcell.tcl",
+}
+
+
+def test_pdk_leaves_the_tcl_hooks_unset_by_default(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_tracks_tcl() == ""
+    assert pdk.get_layer_rc_tcl() == ""
+    assert pdk.get_tapcell_tcl() == ""
+    assert pdk.get_platform_tcl() == ""
+    assert pdk.get_tcl_hooks() == {}
+
+
+def test_pdk_tcl_hooks_are_kebab_case_and_resolve_against_the_root_config(tmp_path):
+    from serde.yaml import from_yaml
+
+    pdk_file = from_yaml(
+        PdkConfigFile,
+        dedent("""\
+            name: "asap7"
+            corners:
+              tt: "pdk/lib/tt.lib"
+            tracks-tcl: "pdk/asap7/make_tracks.tcl"
+            layer-rc-tcl: "pdk/asap7/setRC.tcl"
+            tapcell-tcl: "pdk/asap7/tapcell.tcl"
+            platform-tcl: "pdk/asap7/liberty_suppressions.tcl"
+        """),
+    )
+    pdk = PdkConfig(pdk_file, str(tmp_path / "root_config.yaml"))
+    assert pdk.get_tracks_tcl() == str(tmp_path / "pdk/asap7/make_tracks.tcl")
+    assert pdk.get_layer_rc_tcl() == str(tmp_path / "pdk/asap7/setRC.tcl")
+    assert pdk.get_tapcell_tcl() == str(tmp_path / "pdk/asap7/tapcell.tcl")
+    assert pdk.get_platform_tcl() == str(
+        tmp_path / "pdk/asap7/liberty_suppressions.tcl"
+    )
+    # Flow order, keyed by the YAML spelling the setup error names.
+    assert list(pdk.get_tcl_hooks()) == [
+        "platform-tcl",
+        "layer-rc-tcl",
+        "tracks-tcl",
+        "tapcell-tcl",
+    ]
+
+
+def _hook_blocks(tmp_path):
+    """The exact text each hook adds to `pnr.tcl`, keyed like `_HOOK_FILES`."""
+    path = {k: tmp_path / v for k, v in _HOOK_FILES.items()}
+    return {
+        "platform_tcl": (
+            '\nputs ">>> Platform Tcl (platform-tcl)"\n'
+            f'source "{path["platform_tcl"]}"\n'
+        ),
+        "layer_rc_tcl": (
+            f'\nputs ">>> Layer RC (layer-rc-tcl)"\nsource "{path["layer_rc_tcl"]}"\n'
+        ),
+        "tapcell_tcl": (
+            '\nputs ">>> Tap and endcap cells (tapcell-tcl)"\n'
+            f'source "{path["tapcell_tcl"]}"\n'
+        ),
+    }
+
+
+def test_pnr_flow_without_tcl_hooks_is_unchanged(tmp_path):
+    """Unset hooks render `pnr.tcl` byte for byte as before: the bare `make_tracks` and
+    nothing else. Setting all four adds only their blocks.
+    """
+    pdk = _make_pdk_cfg(tmp_path)
+    unset = _render_flow(
+        tmp_path, _platform(pdk, cts_buffer="BUF_X4"), suite_dir=tmp_path / "a"
+    )
+    hooked = _render_flow(
+        tmp_path,
+        _platform(_make_pdk_cfg(tmp_path, **_HOOK_FILES), cts_buffer="BUF_X4"),
+        suite_dir=tmp_path / "a",
+    )
+
+    assert "\nmake_tracks\n" in unset
+    assert 'source "' not in unset
+    stripped = hooked
+    for block in _hook_blocks(tmp_path).values():
+        assert hooked.count(block) == 1
+        stripped = stripped.replace(block, "")
+    tracks = (
+        'puts ">>> Routing tracks (tracks-tcl)"\n'
+        f'source "{tmp_path / _HOOK_FILES["tracks_tcl"]}"'
+    )
+    assert hooked.count(tracks) == 1
+    assert stripped.replace(tracks, "make_tracks") == unset
+
+
+def test_pnr_flow_sources_each_tcl_hook_where_orfs_does(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, **_HOOK_FILES)
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+    at = {k: text.index(str(tmp_path / v)) for k, v in _HOOK_FILES.items()}
+
+    # ORFS `PLATFORM_TCL` precedes the Liberty reads, so its suppressions cover them.
+    assert at["platform_tcl"] < text.index("read_liberty")
+    # ORFS `SET_RC_TCL` follows `read_sdc`, ahead of every parasitics estimate and CTS.
+    assert text.index("read_sdc $SDC_FILE") < at["layer_rc_tcl"]
+    assert at["layer_rc_tcl"] < text.index("initialize_floorplan")
+    # The tracks script replaces `make_tracks` right after the floorplan.
+    assert "\nmake_tracks\n" not in text
+    assert text.index("initialize_floorplan") < at["tracks_tcl"]
+    assert at["tracks_tcl"] < text.index(">>> Tie cells")
+    # Taps go in after macro placement, before the power grid and pins.
+    assert text.index(">>> Macro placement") < at["tapcell_tcl"]
+    assert at["tapcell_tcl"] < text.index(">>> IO pin placement")
+    assert at["tapcell_tcl"] < text.index("global_placement")
+
+
+def test_pnr_flow_tapcell_precedes_the_power_grid(tmp_path):
+    pdk = _make_pdk_cfg(
+        tmp_path, pdn_config="pdk/pdn.tcl", tapcell_tcl=_HOOK_FILES["tapcell_tcl"]
+    )
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+    assert text.index(_HOOK_FILES["tapcell_tcl"]) < text.index("pdngen")
+
+
+def test_pnr_flow_quotes_a_tcl_hook_path(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, layer_rc_tcl='pdk/set $[rc] "x".tcl')
+    text = _render_flow(tmp_path, _platform(pdk, cts_buffer="BUF_X4"))
+    assert r'pdk/set \$\[rc\] \"x\".tcl"' in text
+
+
+@pytest.mark.parametrize("field", sorted(_HOOK_FILES))
+def test_pnr_run_rejects_a_missing_tcl_hook_before_launching_openroad(
+    tmp_path, monkeypatch, field
+):
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    launched = []
+    monkeypatch.setattr(
+        pnr_openroad.subprocess, "run", lambda *a, **kw: launched.append(a)
+    )
+    pdk = _make_pdk_cfg(tmp_path, **_HOOK_FILES)
+    for other, path in _HOOK_FILES.items():
+        if other != field:
+            _touch(str(tmp_path / path))
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = _platform(pdk, cts_buffer="BUF_X4")
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path, checkpoints=("floorplan",)),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    events = _capture_pnr_events(monkeypatch)
+
+    res = backend.run()
+
+    key = field.replace("_", "-")
+    assert isinstance(res, PnrFailResults)
+    assert res.results["fail_stage"] == "setup"
+    assert res.results["desc"] == f"{key} not found: {tmp_path / _HOOK_FILES[field]}"
+    assert not launched
+    assert not Path(backend._script_path()).exists()
+    # Refused before a checkpoint run directory is allocated.
+    assert not (tmp_path / "artefacts" / "demo_pnr" / "checkpoints").exists()
+    level, fields = _one_event(events, "pnr.tcl_hook_missing")
+    assert fields["key"] == key
+
+
+def test_tcl_hooks_are_checkpoint_and_abstract_inputs(tmp_path):
+    """A hook changes the layout, so checkpoint manifests fingerprint it and a hardened
+    abstract records it as an input and in its config digest.
+    """
+    from rtl_buddy.tools import pnr_abstract
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    plain = _platform(_make_pdk_cfg(tmp_path), cts_buffer="BUF_X4")
+    hooked = _platform(
+        _make_pdk_cfg(tmp_path, tapcell_tcl=_HOOK_FILES["tapcell_tcl"]),
+        cts_buffer="BUF_X4",
+    )
+    tap = str(tmp_path / _HOOK_FILES["tapcell_tcl"])
+    _touch(tap)
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    pnr_cfg.resolve_synth_cfg = MagicMock(
+        return_value=MagicMock(get_top=lambda: "t", get_name=lambda: "s")
+    )
+    backend = OpenRoadPnr("demo/openroad", pnr_cfg, str(tmp_path), MagicMock())
+
+    assert "tapcell_tcl" not in backend._checkpoint_inputs(plain, tap)
+    assert backend._checkpoint_inputs(hooked, tap)["tapcell_tcl"]["path"] == tap
+    assert "tapcell_tcl" not in backend.abstract_inputs(plain)
+    assert backend.abstract_inputs(hooked)["tapcell_tcl"] == tap
+
+    assert "tcl_hooks" not in pnr_abstract.abstract_config(pnr_cfg, plain)
+    hooked_cfg = pnr_abstract.abstract_config(pnr_cfg, hooked)
+    assert list(hooked_cfg["tcl_hooks"]) == ["tapcell-tcl"]

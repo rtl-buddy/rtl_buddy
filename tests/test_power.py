@@ -639,9 +639,10 @@ def test_power_suite_loads_xfail_flags(tmp_path):
 class _FakePdk:
     """A `cfg-pdks` corner as the power script reads it: two LEF paths."""
 
-    def __init__(self, tech_lef, macro_lef=None, fill_cells=()):
+    def __init__(self, tech_lef, macro_lef=None, fill_cells=(), layer_rc_tcl=""):
         self._tech_lef = tech_lef
         self._macro_lef = macro_lef
+        self._layer_rc_tcl = layer_rc_tcl
         # `filler_placement` adds tens of thousands of these to a routed database; they
         # have no Liberty and no power.
         self._fill_cells = list(fill_cells)
@@ -657,6 +658,9 @@ class _FakePdk:
 
     def get_macro_lef(self):
         return self._macro_lef
+
+    def get_layer_rc_tcl(self):
+        return self._layer_rc_tcl
 
 
 class _FakePlatform:
@@ -3406,3 +3410,36 @@ def test_the_blocks_the_run_read_are_in_its_result_and_machine_row(
         None, {"power_name": "demo_power", "results": res}
     )
     assert machine["blocks"] == [row]
+
+
+def test_a_pnr_power_run_sources_the_pdk_layer_rc_after_the_constraints(tmp_path):
+    """Layer RC is session state the ODB does not carry, so the estimate needs the PDK's
+    `layer-rc-tcl` again; it follows `read_sdc`, as in `rb pnr`.
+    """
+    backend, _routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    rc = tmp_path / "pdk" / "set rc.tcl"
+    backend._resolve_platform = lambda: _FakePlatform(
+        pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
+    )
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    source = lines.index(f'source "{rc}"')
+    read_sdc = next(i for i, ln in enumerate(lines) if ln.startswith("read_sdc "))
+    estimate = lines.index("estimate_parasitics -global_routing")
+    assert read_sdc < source < estimate
+
+
+def test_a_synth_power_run_does_not_source_the_layer_rc(tmp_path):
+    """Without a routed database there is no parasitics estimate to feed."""
+    rc = tmp_path / "pdk" / "setRC.tcl"
+    backend = _make_power_backend(
+        tmp_path,
+        platform=_FakePlatform(
+            pdk=_FakePdk("/pdk/fake/tech.lef", layer_rc_tcl=str(rc))
+        ),
+    )
+
+    assert "source" not in Path(backend._write_script()).read_text()

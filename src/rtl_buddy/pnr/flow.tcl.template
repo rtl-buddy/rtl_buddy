@@ -32,7 +32,7 @@ set FILL_CELLS      [list {{ fill_cells }}]
 
 set OUT_DIR         {{ out_dir }}
 file mkdir $OUT_DIR
-{{ threads_block }}{{ checkpoint_block }}
+{{ threads_block }}{{ checkpoint_block }}{{ platform_tcl_block }}
 puts ">>> Reading Liberty + LEF"
 {{ read_liberty }}
 read_lef     $TECH_LEF
@@ -45,14 +45,14 @@ link_design  $DESIGN
 
 puts ">>> Reading SDC"
 read_sdc $SDC_FILE
-{{ dont_use_block }}
+{{ layer_rc_block }}{{ dont_use_block }}
 puts ">>> Initializing floorplan"
 initialize_floorplan \
     -site         $SITE \
     -utilization  $CORE_UTIL_PCT \
     -aspect_ratio $CORE_ASPECT \
     -core_space   $CORE_MARGIN
-make_tracks
+{{ make_tracks }}
 {{ blockages_block }}
 puts ">>> Tie cells"
 {{ tie_cells_block }}
@@ -84,7 +84,7 @@ if {[llength $macros] > 0} {
     }
   }
 }
-{{ pdn_block }}
+{{ tapcell_block }}{{ pdn_block }}
 # Pins are placed after the macros and power grid so the pin placer sees placed
 # macros (unplaced ones raise PPL-0015). `place_pins` only avoids boundary
 # stretches a placed macro touches; keeping pins clear of macros kept a halo

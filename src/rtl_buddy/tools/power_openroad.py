@@ -32,7 +32,7 @@ from ..phys.publish import (
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
 from . import openroad_corners, pnr_abstract
 from .artifact_paths import clear_stale_artefacts
-from .pnr_openroad import PNR_SCRIPT_NAME, ROUTED_SPEF_SUFFIX
+from .pnr_openroad import PNR_SCRIPT_NAME, ROUTED_SPEF_SUFFIX, tcl_source
 from .power_base import BasePower
 from .synth_yosys import library_fingerprint
 
@@ -717,6 +717,10 @@ class OpenRoadPower(BasePower):
             spef = self._choose_parasitics(inputs)
             lines.append(f"read_db {odb}")
             lines.append(f"read_sdc {sdc}")
+            # Layer RC is session state, not stored in the ODB; the estimate below needs it as `rb pnr` had it.
+            layer_rc_tcl = pdk.get_layer_rc_tcl()
+            if layer_rc_tcl:
+                lines.append(tcl_source(layer_rc_tcl))
             if spef is not None:
                 lines.append(f"read_spef {spef}")
             else:

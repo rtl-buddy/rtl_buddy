@@ -134,6 +134,24 @@ def _dont_use_check_tcl(cells: list[str]) -> str:
     )
 
 
+def tcl_source(path: str) -> str:
+    """Return a Tcl `source` of `path`, double-quoted with substitutions suppressed."""
+    escaped = path.replace("\\", "\\\\")
+    for char in ("$", "[", "]", '"'):
+        escaped = escaped.replace(char, "\\" + char)
+    return f'source "{escaped}"'
+
+
+def _hook_block(title: str, path: str) -> str:
+    """Return a flow block sourcing a PDK Tcl hook, or `""` when the hook is unset.
+
+    The block carries its own leading newline so an unset hook renders the template byte-identically.
+    """
+    if not path:
+        return ""
+    return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
+
+
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Return the absolute paths of every non-log artefact one pnr run produces."""
     return [
@@ -525,6 +543,14 @@ class OpenRoadPnr:
             else ""
         )
 
+        # PDK Tcl hooks, each at the step where ORFS sources its counterpart.
+        tracks_tcl = pdk.get_tracks_tcl()
+        make_tracks = (
+            f'puts ">>> Routing tracks (tracks-tcl)"\n{tcl_source(tracks_tcl)}'
+            if tracks_tcl
+            else "make_tracks"
+        )
+
         # Must precede the first `read_liberty`.
         threads_tcl = self._threads().tcl()
         threads_block = f'\nputs ">>> Threads"\n{threads_tcl}\n' if threads_tcl else ""
@@ -600,6 +626,19 @@ class OpenRoadPnr:
             "dont_use_block": dont_use_block,
             "dont_use_check_block": dont_use_check_block,
             "pdn_block": pdn_block,
+            # Before the first `read_liberty`, as ORFS `PLATFORM_TCL`, so its `suppress_message` covers the Liberty reads.
+            "platform_tcl_block": _hook_block(
+                "Platform Tcl (platform-tcl)", pdk.get_platform_tcl()
+            ),
+            # After `read_sdc`, as ORFS `SET_RC_TCL`; every later parasitics estimate and CTS use it.
+            "layer_rc_block": _hook_block(
+                "Layer RC (layer-rc-tcl)", pdk.get_layer_rc_tcl()
+            ),
+            "make_tracks": make_tracks,
+            # After macro placement and before the power grid, as ORFS `TAPCELL_TCL`, so endcaps see the placed macros.
+            "tapcell_block": _hook_block(
+                "Tap and endcap cells (tapcell-tcl)", pdk.get_tapcell_tcl()
+            ),
             "threads_block": threads_block,
             "rcx_block": rcx_block,
             "final_parasitics": final_parasitics,
@@ -1582,6 +1621,10 @@ class OpenRoadPnr:
             ],
             "pin_constraints": _file_fingerprint(self.pnr_cfg.pin_constraints),
             "pdn_config": _file_fingerprint(pdk.get_pdn_config()),
+            **{
+                key.replace("-", "_"): _file_fingerprint(path)
+                for key, path in pdk.get_tcl_hooks().items()
+            },
             "script": _file_fingerprint(script_path),
         }
 
@@ -1717,6 +1760,10 @@ class OpenRoadPnr:
             ),
             "pin_constraints": self.pnr_cfg.pin_constraints,
             "pdn_config": pdk.get_pdn_config() or None,
+            # Only the configured hooks, so an abstract hardened without any records no extra roles.
+            **{
+                key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
+            },
         }
 
     def _publish_abstract(
@@ -1857,6 +1904,22 @@ class OpenRoadPnr:
                 desc=f"pdn-config not found: {pdn_config}",
                 fail_stage="setup",
             )
+
+        for key, path in platform.get_pdk().get_tcl_hooks().items():
+            if not os.path.isfile(path):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr.tcl_hook_missing",
+                    pnr=self.pnr_cfg.get_name(),
+                    key=key,
+                    path=path,
+                )
+                return PnrFailResults(
+                    name=self.name + "/results",
+                    desc=f"{key} not found: {path}",
+                    fail_stage="setup",
+                )
 
         # Read only after detailed route, so check now, before the checkpoint directory is allocated.
         rcx_rules = platform.get_pdk().get_rcx_rules()
