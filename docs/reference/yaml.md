@@ -153,7 +153,7 @@ cfg-pnr-platforms:
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
-| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
+| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `post-cts-setup-repair` (default `false`), `routing-layer-adjustment`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, and `openroad.pre-sta-tcl` settings. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
@@ -177,6 +177,9 @@ The process-dependent P&R keys are all optional:
 | `tapcell-tcl` | `cfg-pdks` | Path to a Tcl script that inserts tap and endcap cells (ORFS `TAPCELL_TCL`). P&R sources it after macro placement, before the power grid. Unset by default |
 | `platform-tcl` | `cfg-pdks` | Path to a Tcl script that `rb pnr` and `rb power` source before reading Liberty (ORFS `PLATFORM_TCL`), such as `suppress_message` lines. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
+| `cts-sink-clustering` | `cfg-pnr-platforms` | Boolean. Passes `-sink_clustering_enable` to `clock_tree_synthesis`. Default `true`; set `false` when CTS fails with `CTS-0080` |
+| `post-cts-setup-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -setup` after CTS, before hold repair. Default `false` |
+| `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the signal layers (`set_global_routing_layer_adjustment`), or on every layer when `routing-layers.signal` is unset. Unset by default, which keeps the router's default |
 
 A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
 

@@ -36,7 +36,7 @@ def liberty_tcl(corner_libs: dict[str, list[str]], macro_libs: list[str]) -> lis
 
 #: Lines `timing_report_tcl` prints per corner: the `report_worst_slack` and `report_tns` format behind a `corner <name>` prefix.
 _CORNER_TIMING_RE = re.compile(
-    r"^corner (\S+) (worst slack max|worst slack min|tns max) ([-\d.]+)\s*$",
+    r"^corner (\S+) (worst slack max|worst slack min|tns max|tns min) ([-\d.]+)\s*$",
     re.MULTILINE,
 )
 
@@ -44,11 +44,12 @@ _TIMING_FIELDS = {
     "worst slack max": "wns_setup_ps",
     "worst slack min": "wns_hold_ps",
     "tns max": "tns_ps",
+    "tns min": "tns_hold_ps",
 }
 
 
 def timing_report_tcl(corners: list[str]) -> str:
-    """Return Tcl that prints each corner's worst setup slack, worst hold slack and setup TNS."""
+    """Return Tcl that prints each corner's worst setup and hold slack and setup and hold TNS."""
     return "\n".join(
         [
             "",
@@ -60,15 +61,18 @@ def timing_report_tcl(corners: list[str]) -> str:
             "    set setup [sta::worst_slack_scene $corner max]",
             "    set hold [sta::worst_slack_scene $corner min]",
             "    set tns [sta::total_negative_slack_scene_cmd $corner max]",
+            "    set tns_hold [sta::total_negative_slack_scene_cmd $corner min]",
             "  } else {",
             "    set setup [sta::worst_slack_corner $corner max]",
             "    set hold [sta::worst_slack_corner $corner min]",
             "    set tns [sta::total_negative_slack_corner_cmd $corner max]",
+            "    set tns_hold [sta::total_negative_slack_corner_cmd $corner min]",
             "  }",
             "  set digits $::sta_report_default_digits",
             '  puts "corner $name worst slack max [sta::format_time $setup $digits]"',
             '  puts "corner $name worst slack min [sta::format_time $hold $digits]"',
             '  puts "corner $name tns max [sta::format_time $tns $digits]"',
+            '  puts "corner $name tns min [sta::format_time $tns_hold $digits]"',
             "}",
             # catch: a failure here must lose only that corner's rows, not the routed database.
             *(
@@ -83,7 +87,7 @@ def timing_report_tcl(corners: list[str]) -> str:
 def parse_corner_timing(
     log_text: str, corners: list[str], ps_per_unit: float
 ) -> dict[str, dict]:
-    """Parse per-corner `wns_setup_ps`, `wns_hold_ps` and `tns_ps` from `pnr.log` text.
+    """Parse per-corner `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps` from `pnr.log` text.
 
     The log prints in the Liberty `time_unit`, `ps_per_unit` picoseconds. Every configured corner gets an entry, in config order. A value that is missing or not a finite number is omitted.
     """

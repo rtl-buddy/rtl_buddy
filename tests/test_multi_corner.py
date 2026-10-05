@@ -135,7 +135,7 @@ def test_pnr_single_corner_script_reads_one_liberty_and_reports_no_corners(
 
     assert "read_liberty $LIBERTY\n" in text
     assert "define_corners" not in text
-    assert "report_tns\nreport_checks" in text
+    assert "report_tns\nreport_tns -min\nreport_checks" in text
     assert "Per-corner" not in text
 
 
@@ -177,6 +177,11 @@ def test_pnr_multi_corner_reports_follow_the_global_worst(tmp_path):
     assert text.index("report_tns\n") < block < text.index("report_checks")
     for corner in ("tt", "ss", "ff"):
         assert f"catch {{rb_report_corner_timing {corner}}} rb_err" in text
+    # Setup and hold TNS, each corner and global.
+    assert "report_tns\nreport_tns -min\n" in text
+    assert "sta::total_negative_slack_scene_cmd $corner min" in text
+    assert "sta::total_negative_slack_corner_cmd $corner min" in text
+    assert 'puts "corner $name tns min [sta::format_time $tns_hold $digits]"' in text
     # Both OpenSTA spellings, 3.0 first.
     assert "sta::worst_slack_scene $corner max" in text
     assert "sta::worst_slack_corner $corner max" in text
@@ -189,16 +194,20 @@ Design area 2580 um^2 43% utilization.
 worst slack max 9.46
 worst slack min 0.40
 tns max 0.00
+tns min -0.12
 >>> Per-corner timing
 corner tt worst slack max 13.59
 corner tt worst slack min 0.64
 corner tt tns max 0.00
+corner tt tns min 0.00
 corner ss worst slack max 9.46
 corner ss worst slack min 2.22
 corner ss tns max 0.00
+corner ss tns min 0.00
 corner ff worst slack max 14.06
 corner ff worst slack min 0.40
 corner ff tns max 0.00
+corner ff tns min -0.12
 >>> Write outputs
 """
 
@@ -210,8 +219,14 @@ def test_parse_corner_timing_reads_every_corner_in_config_order():
 
     assert list(per_corner) == ["tt", "ss", "ff"]
     assert per_corner["ss"] == pytest.approx(
-        {"wns_setup_ps": 9460.0, "wns_hold_ps": 2220.0, "tns_ps": 0.0}
+        {
+            "wns_setup_ps": 9460.0,
+            "wns_hold_ps": 2220.0,
+            "tns_ps": 0.0,
+            "tns_hold_ps": 0.0,
+        }
     )
+    assert per_corner["ff"]["tns_hold_ps"] == pytest.approx(-120.0)
     assert openroad_corners.worst_corner(per_corner, "wns_setup_ps") == "ss"
     assert openroad_corners.worst_corner(per_corner, "wns_hold_ps") == "ff"
 
@@ -288,6 +303,10 @@ def test_multi_corner_pnr_result_keeps_the_worst_and_adds_each_corner(
     assert results["worst_hold_corner"] == "ff"
     assert list(results["corners"]) == ["tt", "ss", "ff"]
     assert results["corners"]["tt"]["wns_setup_ps"] == pytest.approx(13590.0)
+    # Hold TNS, global and per corner, so "hold at the fast corner" is readable.
+    assert results["tns_ps"] == pytest.approx(0.0)
+    assert results["tns_hold_ps"] == pytest.approx(-120.0)
+    assert results["corners"]["ff"]["tns_hold_ps"] == pytest.approx(-120.0)
 
 
 def test_single_corner_pnr_result_carries_no_corner_fields(tmp_path, monkeypatch):
@@ -521,3 +540,29 @@ def test_a_failing_corner_report_does_not_stop_the_flow():
     out = subprocess.run([tclsh], input=script, capture_output=True, text=True)
     assert "REACHED_WRITE_DB" in out.stdout
     assert "per-corner timing for ss unavailable" in out.stdout
+
+
+def test_pnr_row_carries_setup_and_hold_tns():
+    from rtl_buddy.rtl_buddy import RtlBuddy
+    from rtl_buddy.runner.pnr_results import PnrPassResults
+
+    results = PnrPassResults(
+        name="demo/results",
+        tns_ps=-50.0,
+        fields={"tns_hold_ps": -12.0},
+    )
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "demo", "results": results})
+    assert row["tns_ps"] == -50.0
+    assert row["tns_hold_ps"] == -12.0
+
+
+def test_parse_tns_reads_setup_and_hold_separately(tmp_path):
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    backend = OpenRoadPnr("demo/openroad", _make_pnr_cfg(tmp_path), str(tmp_path), None)
+    log = "tns max -3.00\ntns min -0.50\n"
+    assert backend._parse_tns(log) == -3.0
+    assert backend._parse_tns(log, "min") == -0.5
+    # Without `report_tns -min` there is no hold TNS, not the setup one.
+    assert backend._parse_tns("tns -3.00\n") == -3.0
+    assert backend._parse_tns("tns -3.00\n", "min") is None

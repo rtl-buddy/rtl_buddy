@@ -149,6 +149,18 @@ def _hook_block(title: str, path: str) -> str:
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
 
 
+def _layer_adjustment_tcl(platform) -> str:
+    """Return the `set_global_routing_layer_adjustment` line, or `""` when the platform sets no adjustment.
+
+    It covers the signal layers, as ORFS does, or every layer when the platform names none.
+    """
+    adjustment = platform.get_routing_layer_adjustment()
+    if adjustment is None:
+        return ""
+    layers = "$SIGNAL_LAYERS" if platform.get_signal_layers() else "*"
+    return f"set_global_routing_layer_adjustment {layers} {adjustment:g}\n"
+
+
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Return the absolute paths of every non-log artefact one pnr run produces."""
     return [
@@ -642,6 +654,10 @@ class OpenRoadPnr:
             "harden_block": (
                 pnr_abstract.harden_tcl() if self.pnr_cfg.get_harden() else ""
             ),
+            "setup_repair": (
+                "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
+            ),
+            "layer_adjustment": _layer_adjustment_tcl(platform),
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -689,14 +705,19 @@ class OpenRoadPnr:
         m = re.search(rf"^worst slack {kind}\s+([-\d.]+)", log_text, re.MULTILINE)
         return float(m.group(1)) if m else None
 
-    def _parse_tns(self, log_text: str) -> float | None:
-        m = re.search(r"^tns\s+(?:max|min)?\s*([-\d.]+)", log_text, re.MULTILINE)
+    def _parse_tns(self, log_text: str, kind: str = "max") -> float | None:
+        """Parse `report_tns` (`kind="max"`, setup) or `report_tns -min` (`"min"`, hold).
+
+        A setup line may omit `max`; a hold line must say `min`.
+        """
+        qualifier = r"(?:max\s+)?" if kind == "max" else r"min\s+"
+        m = re.search(rf"^tns\s+{qualifier}([-\d.]+)", log_text, re.MULTILINE)
         return float(m.group(1)) if m else None
 
     def _corner_fields(self, platform, log_text: str) -> dict:
         """Return per-corner timing result fields for a multi-corner run.
 
-        `corners` maps each corner, in config order, to its `wns_setup_ps`, `wns_hold_ps` and `tns_ps`; `worst_setup_corner` and `worst_hold_corner` name the corner behind the scalar WNS fields. Empty for a single-corner platform.
+        `corners` maps each corner, in config order, to its `wns_setup_ps`, `wns_hold_ps`, `tns_ps` and `tns_hold_ps`; `worst_setup_corner` and `worst_hold_corner` name the corner behind the scalar WNS fields. Empty for a single-corner platform.
         """
         if not platform.is_multi_corner():
             return {}
@@ -2175,6 +2196,7 @@ class OpenRoadPnr:
         wns_setup = self._parse_wns(log_text, "max")
         wns_hold = self._parse_wns(log_text, "min")
         tns = self._parse_tns(log_text)
+        tns_hold = self._parse_tns(log_text, "min")
         drcs = self._count_drcs()
 
         ps_per_unit = self._ps_per_unit
@@ -2184,6 +2206,7 @@ class OpenRoadPnr:
             "wns_setup_ps": wns_setup * ps_per_unit if wns_setup is not None else None,
             "wns_hold_ps": wns_hold * ps_per_unit if wns_hold is not None else None,
             "tns_ps": tns * ps_per_unit if tns is not None else None,
+            "tns_hold_ps": tns_hold * ps_per_unit if tns_hold is not None else None,
             "drc_count": drcs,
         }
         corner_fields = self._corner_fields(platform, log_text)

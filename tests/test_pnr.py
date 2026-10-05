@@ -12,7 +12,11 @@ import pytest
 
 from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 from rtl_buddy.config.pnr import PnrConfig, PnrSuiteConfig
-from rtl_buddy.config.pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+from rtl_buddy.config.pnr_platform import (
+    PnrPlatformConfig,
+    PnrPlatformConfigFile,
+    PnrRoutingLayersFile,
+)
 from rtl_buddy.config.synth import SynthPlatformConfig, SynthPlatformConfigFile
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.runner.pnr_results import (
@@ -3937,3 +3941,103 @@ def test_tcl_hooks_are_checkpoint_and_abstract_inputs(tmp_path):
     assert "tcl_hooks" not in pnr_abstract.abstract_config(pnr_cfg, plain)
     hooked_cfg = pnr_abstract.abstract_config(pnr_cfg, hooked)
     assert list(hooked_cfg["tcl_hooks"]) == ["tapcell-tcl"]
+
+
+def test_pnr_platform_leaves_the_flow_knobs_off_by_default(tmp_path):
+    platform = _platform(_make_pdk_cfg(tmp_path))
+    assert platform.get_post_cts_setup_repair() is False
+    assert platform.get_routing_layer_adjustment() is None
+
+
+def test_pnr_flow_knobs_are_kebab_case(tmp_path):
+    from serde.yaml import from_yaml
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile,
+        dedent("""\
+            name: "asap7_tt"
+            pdk: "asap7"
+            post-cts-setup-repair: true
+            routing-layer-adjustment: 0.25
+        """),
+    )
+    platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
+    assert platform.get_post_cts_setup_repair() is True
+    assert platform.get_routing_layer_adjustment() == 0.25
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.5, float("nan")])
+def test_pnr_platform_rejects_a_layer_adjustment_outside_zero_to_one(tmp_path, value):
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(_make_pdk_cfg(tmp_path), routing_layer_adjustment=value)
+    assert "routing-layer-adjustment" in str(excinfo.value)
+    assert "nangate45_typ" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0])
+def test_pnr_platform_accepts_a_layer_adjustment_at_either_bound(tmp_path, value):
+    platform = _platform(_make_pdk_cfg(tmp_path), routing_layer_adjustment=value)
+    assert platform.get_routing_layer_adjustment() == value
+
+
+def test_pnr_flow_without_the_knobs_repairs_hold_only_and_keeps_the_router_default(
+    tmp_path,
+):
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    assert "repair_timing -setup" not in text
+    assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
+    assert "set_global_routing_layer_adjustment" not in text
+    assert "-clock $CLOCK_LAYERS\nglobal_route -congestion_iterations 20\n" in text
+
+
+def test_pnr_flow_repairs_setup_before_hold_after_cts(tmp_path):
+    platform = _platform(_make_pdk_cfg(tmp_path), post_cts_setup_repair=True)
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "estimate_parasitics -placement\nrepair_timing -setup\nrepair_timing -hold\n"
+    ) in text
+    assert text.index("clock_tree_synthesis") < text.index("repair_timing -setup")
+    # The repair buffers are legalized by the pass after it.
+    assert text.index("repair_timing -setup") < text.index(
+        ">>> Detail placement (legalize repair cells)"
+    )
+
+
+def test_pnr_flow_adjusts_the_signal_layers_before_global_route(tmp_path):
+    platform = _platform(
+        _make_pdk_cfg(tmp_path),
+        routing_layer_adjustment=0.25,
+        routing_layers=PnrRoutingLayersFile(signal="M2-M7", clock="M4-M7"),
+    )
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS\n"
+        "set_global_routing_layer_adjustment $SIGNAL_LAYERS 0.25\n"
+        "global_route"
+    ) in text
+
+
+def test_pnr_flow_adjusts_every_layer_without_a_signal_range(tmp_path):
+    platform = _platform(_make_pdk_cfg(tmp_path), routing_layer_adjustment=0.5)
+    text = _render_flow(tmp_path, platform)
+    assert "set_global_routing_layer_adjustment * 0.5\nglobal_route" in text
+
+
+def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
+    from rtl_buddy.tools import pnr_abstract
+
+    pnr_cfg = _make_pnr_cfg(tmp_path)
+    plain = pnr_abstract.abstract_config(pnr_cfg, _platform(_make_pdk_cfg(tmp_path)))
+    assert "post_cts_setup_repair" not in plain
+    assert "layer_adjustment" not in plain["routing"]
+
+    tuned = pnr_abstract.abstract_config(
+        pnr_cfg,
+        _platform(
+            _make_pdk_cfg(tmp_path),
+            post_cts_setup_repair=True,
+            routing_layer_adjustment=0.25,
+        ),
+    )
+    assert tuned["post_cts_setup_repair"] is True
+    assert tuned["routing"]["layer_adjustment"] == 0.25

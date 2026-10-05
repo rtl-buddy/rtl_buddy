@@ -30,6 +30,18 @@ def _as_cell_list(value: str | list[str]) -> list[str]:
 _CORNER_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
+def _validate_layer_adjustment(value, where: str) -> float | None:
+    """Range-check `routing-layer-adjustment`, the fraction of each layer's routing capacity the global router withholds."""
+    if value is None:
+        return None
+    if not 0.0 <= float(value) <= 1.0:
+        raise FatalRtlBuddyError(
+            f"{where}: routing-layer-adjustment must be a number from 0 to 1, "
+            f"got {value!r}"
+        )
+    return float(value)
+
+
 def _first_set(*values):
     """Return the first value that is not `None`."""
     return next(v for v in values if v is not None)
@@ -51,6 +63,12 @@ class PnrPlatformConfigFile:
     # With a list, CTS gets every entry as its buffer list and the first as the root buffer.
     cts_buffer: str | list[str] = field(rename="cts-buffer", default="")
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
+    # Runs `repair_timing -setup` before the post-CTS hold repair.
+    post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
+    # `set_global_routing_layer_adjustment` over the signal layers; `None` leaves the router's default.
+    routing_layer_adjustment: float | None = field(
+        rename="routing-layer-adjustment", default=None
+    )
     routing_layers: PnrRoutingLayersFile = field(
         rename="routing-layers", default_factory=PnrRoutingLayersFile
     )
@@ -71,6 +89,10 @@ class PnrPlatformConfig:
         self._sta_corner = self._sta_corners[0]
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
+        self._post_cts_setup_repair = cfg.post_cts_setup_repair
+        self._routing_layer_adjustment = _validate_layer_adjustment(
+            cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
+        )
         self._signal_layers = cfg.routing_layers.signal
         self._clock_layers = cfg.routing_layers.clock
         self._dont_use_cells = merge_dont_use_cells(
@@ -224,6 +246,14 @@ class PnrPlatformConfig:
 
     def get_cts_sink_clustering(self) -> bool:
         return self._cts_sink_clustering
+
+    def get_post_cts_setup_repair(self) -> bool:
+        """Whether post-CTS repair fixes setup before hold."""
+        return self._post_cts_setup_repair
+
+    def get_routing_layer_adjustment(self) -> float | None:
+        """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""
+        return self._routing_layer_adjustment
 
     def get_signal_layers(self) -> str:
         return self._signal_layers
