@@ -141,17 +141,21 @@ puts ">>> Final reports"
 {{ final_parasitics }}
 report_design_area
 # The routed design's instances, after every buffer, tie, tap and fill cell the
-# flow added. Physical-only cells (fill, decap, tap, endcap: LEF class CORE
-# SPACER, CORE WELLTAP or ENDCAP*, or a fill-cells master) are counted apart.
+# flow added. Physical-only cells (LEF class CORE SPACER, CORE WELLTAP or
+# ENDCAP*, or a master matching a fill-cells pattern as filler_placement
+# matches it) are counted apart.
 if {[catch {
   set rb_routed 0
   set rb_physical 0
   foreach inst [[ord::get_db_block] getInsts] {
     set master [$inst getMaster]
     set type [$master getType]
-    if {$type eq "CORE_SPACER" || $type eq "CORE_WELLTAP"
-        || [string match ENDCAP* $type]
-        || [lsearch -exact $FILL_CELLS [$master getName]] >= 0} {
+    set rb_is_fill 0
+    foreach rb_fill $FILL_CELLS {
+      if {[string match $rb_fill [$master getName]]} { set rb_is_fill 1; break }
+    }
+    if {$rb_is_fill || $type eq "CORE_SPACER" || $type eq "CORE_WELLTAP"
+        || [string match ENDCAP* $type]} {
       incr rb_physical
     } else {
       incr rb_routed

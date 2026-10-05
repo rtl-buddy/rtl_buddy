@@ -66,7 +66,7 @@ Three result fields count cells; compare experiments on `routed_cell_count`:
 
 - `cell_count`, the summary's Cells column, is the input netlist's instance count at the floorplan. It leaves out every cell the flow adds.
 - `routed_cell_count` is the finished design's instances, including tie, repair, clock-tree and hold buffers, excluding physical-only cells.
-- `physical_cell_count` is the physical-only cells: fill, decap, tap and endcap, meaning LEF class `CORE SPACER`, `CORE WELLTAP` or `ENDCAP*`, or a PDK `fill-cells` master.
+- `physical_cell_count` is the physical-only cells: masters of LEF class `CORE SPACER`, `CORE WELLTAP` or `ENDCAP*`, or matching a PDK `fill-cells` pattern. A decap counts only when its class is `CORE SPACER` or it is listed in `fill-cells`; sky130's `decap_*` cells are class `CORE`, so they count as routed unless listed.
 
 The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed <n> physical <m>`. If counting fails, both fields are absent and the run still passes.
 

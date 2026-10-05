@@ -4066,6 +4066,9 @@ def test_pnr_flow_counts_the_routed_design_after_fill(tmp_path):
     tag = text.index('puts "RB-CELL-COUNT: routed $rb_routed physical $rb_physical"')
     assert text.index("filler_placement $FILL_CELLS") < tag
     assert text.index(">>> Final reports") < tag < text.index(">>> Write outputs")
+    # fill-cells entries are patterns, matched as `filler_placement` matches them.
+    assert "if {[string match $rb_fill [$master getName]]}" in text
+    assert "lsearch -exact $FILL_CELLS" not in text
     # A failure loses the count, not the routed database.
     assert 'puts "rb: routed cell count unavailable: $rb_err"' in text
 
