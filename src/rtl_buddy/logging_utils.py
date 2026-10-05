@@ -1801,6 +1801,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "pnr.block_netlist_failed":
             return f'P&R "{fields.get("pnr")}": {fields.get("error")}'
+        case "pnr.block_power_failed":
+            errors = fields.get("errors") or []
+            more = f" (+{len(errors) - 1} more)" if len(errors) > 1 else ""
+            first = errors[0] if errors else ""
+            return f'P&R "{fields.get("pnr")}": block power: {first}{more}'
+        case "pnr.block_power_off_track":
+            return f'P&R "{fields.get("pnr")}": block power: {fields.get("shape")}'
         case "pnr.block_params_mismatch" | "synth.block_params_mismatch":
             flow = "P&R" if event.startswith("pnr") else "synthesis"
             run = fields.get("pnr") or fields.get("synth")

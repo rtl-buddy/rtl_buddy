@@ -39,6 +39,8 @@ from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
+# Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
+_BLOCK_POWER_FILE = "block_power.tcl"
 
 # Non-log files the flow writes under `$OUT_DIR`; `test_pnr.py` checks this covers every one.
 _FLOW_OUTPUT_NAMES = (
@@ -79,6 +81,10 @@ _SCRIPT_NAME = "pnr.tcl"
 _BLOCK_NETLIST_NAME = "pnr_netlist.v"
 # Public: `rb power` uses it to check the SPEF and ODB came from the same run.
 PNR_SCRIPT_NAME = _SCRIPT_NAME
+
+# Printed by `block_power.tcl` for each block supply pin it cannot tie or join, and for each stray pin shape off the parent's straps.
+_BLOCK_POWER_ERROR_TAG = "RB-BLOCK-POWER-ERROR:"
+_BLOCK_POWER_WARNING_TAG = "RB-BLOCK-POWER-WARNING:"
 
 # Judged by presence, so it is cleared with the GDS and PNG.
 _DEF2STREAM_REPORT_NAME = "def2stream.report.json"
@@ -496,6 +502,21 @@ class OpenRoadPnr:
     def _load_macro_pack(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PACK_FILE).read_text()
 
+    def _block_power_tcl(self, step: str) -> str:
+        """Return the Tcl that runs one `block_power.tcl` step on the `blocks:` instances, or "" without blocks.
+
+        `tie_supplies` goes before `pdngen` and carries the procs; `join_straps` goes after it.
+        """
+        if not self._blocks:
+            return ""
+        masters = " ".join(sorted({b.ref.name for b in self._blocks}))
+        procs = (
+            files(_TEMPLATE_PACKAGE).joinpath(_BLOCK_POWER_FILE).read_text()
+            if step == "tie_supplies"
+            else ""
+        )
+        return f"{procs}rb::block_power::{step} {{{masters}}}\n"
+
     def _write_script(self, platform, fp) -> str:
         pdk = platform.get_pdk()
         netlist = self._openroad_netlist or self._resolve_netlist_path()
@@ -553,7 +574,9 @@ class OpenRoadPnr:
 
         pdn_config = pdk.get_pdn_config()
         pdn_block = (
-            f'\nputs ">>> Power distribution network"\nsource {pdn_config}\npdngen\n'
+            f'\nputs ">>> Power distribution network"\nsource {pdn_config}\n'
+            f"{self._block_power_tcl('tie_supplies')}pdngen\n"
+            f"{self._block_power_tcl('join_straps')}"
             if pdn_config
             else ""
         )
@@ -2246,6 +2269,39 @@ class OpenRoadPnr:
             return self._fail_after_openroad(
                 f"{len(dont_use_hits)} instance(s) of dont-use-cells in the "
                 f"routed design: {inst} is {master} (pattern {pattern!r}){more}"
+            )
+
+        block_power_errors = [
+            line[len(_BLOCK_POWER_ERROR_TAG) :].strip()
+            for line in log_text.splitlines()
+            if line.startswith(_BLOCK_POWER_ERROR_TAG)
+        ]
+        for line in log_text.splitlines():
+            if line.startswith(_BLOCK_POWER_WARNING_TAG):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.block_power_off_track",
+                    pnr=self.pnr_cfg.get_name(),
+                    shape=line[len(_BLOCK_POWER_WARNING_TAG) :].strip(),
+                )
+        if block_power_errors:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.block_power_failed",
+                pnr=self.pnr_cfg.get_name(),
+                count=len(block_power_errors),
+                errors=block_power_errors,
+                log=log_path,
+            )
+            more = (
+                f" (+{len(block_power_errors) - 1} more)"
+                if len(block_power_errors) > 1
+                else ""
+            )
+            return self._fail_after_openroad(
+                f"block power: {block_power_errors[0]}{more}"
             )
 
         if result.returncode != 0:
