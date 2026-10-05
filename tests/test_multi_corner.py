@@ -566,3 +566,35 @@ def test_parse_tns_reads_setup_and_hold_separately(tmp_path):
     # Without `report_tns -min` there is no hold TNS, not the setup one.
     assert backend._parse_tns("tns -3.00\n") == -3.0
     assert backend._parse_tns("tns -3.00\n", "min") is None
+
+
+def test_pnr_result_keeps_the_input_count_and_adds_the_routed_counts(
+    tmp_path, monkeypatch
+):
+    """`cell_count` stays the floorplan's input-netlist figure; the tagged final count
+    gives the routed design, physical-only cells apart.
+    """
+    log = (
+        "[INFO IFP-0105] Number of instances:       330\n"
+        "Design area 43 um^2 40% utilization.\n"
+        "worst slack max 59.13\n"
+        "RB-CELL-COUNT: routed 412 physical 1638\n"
+    )
+    platform = _platform(_pdk(tmp_path))
+    res = _pnr_backend_over(tmp_path, monkeypatch, platform, log).run()
+
+    assert res.results["cell_count"] == 330
+    assert res.results["routed_cell_count"] == 412
+    assert res.results["physical_cell_count"] == 1638
+
+
+def test_pnr_result_without_the_tagged_count_has_no_routed_fields(
+    tmp_path, monkeypatch
+):
+    log = "[INFO IFP-0105] Number of instances:       330\nworst slack max 1.0\n"
+    platform = _platform(_pdk(tmp_path))
+    res = _pnr_backend_over(tmp_path, monkeypatch, platform, log).run()
+
+    assert res.results["cell_count"] == 330
+    assert "routed_cell_count" not in res.results
+    assert "physical_cell_count" not in res.results

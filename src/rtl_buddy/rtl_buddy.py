@@ -10137,6 +10137,8 @@ class RtlBuddy:
             row["suite"] = suite
         for k in (
             "cell_count",
+            "routed_cell_count",
+            "physical_cell_count",
             "area_um2",
             "wns_setup_ps",
             "wns_hold_ps",
