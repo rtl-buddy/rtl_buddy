@@ -16,6 +16,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from .artifact_paths import atomic_tmp_name
+
 _TOKEN_RE = re.compile(
     r"""
     (?P<ws>\s+)
@@ -61,6 +63,9 @@ def _tokens(text: str, *, attributes: bool = False) -> list[_Token]:
     return out
 
 
+# A module's optional lifetime keyword: `module automatic m`.
+_LIFETIMES = ("automatic", "static")
+
 _BLACKBOX_ATTR_RE = re.compile(r"^\(\*.*\bblackbox\b.*\*\)$", re.DOTALL)
 
 
@@ -77,6 +82,8 @@ class BlackboxModule:
     header_end: int
     #: Just past `endmodule`.
     end: int
+    #: Whether the header has a parameter port list, `#(...)`.
+    parameterised: bool = False
 
 
 def blackbox_modules(text: str) -> list[BlackboxModule]:
@@ -89,16 +96,20 @@ def blackbox_modules(text: str) -> list[BlackboxModule]:
     i = 0
     while i < len(toks) - 2:
         attr = toks[i]
+        n = i + 2
+        if n < len(toks) and toks[n].text in _LIFETIMES:
+            n += 1
         if not (
             attr.kind == "attr"
             and _BLACKBOX_ATTR_RE.match(attr.text)
             and toks[i + 1].text in ("module", "macromodule")
-            and toks[i + 2].kind in ("id", "escid")
+            and n < len(toks)
+            and toks[n].kind in ("id", "escid")
         ):
             i += 1
             continue
         depth = 0
-        j = i + 3
+        j = n + 1
         while j < len(toks) and not (toks[j].text == ";" and depth == 0):
             if toks[j].text == "(":
                 depth += 1
@@ -112,30 +123,16 @@ def blackbox_modules(text: str) -> list[BlackboxModule]:
             break
         found.append(
             BlackboxModule(
-                name=toks[i + 2].name,
+                name=toks[n].name,
                 start=attr.start,
                 header_start=toks[i + 1].start,
                 header_end=toks[j].end,
                 end=toks[k].end,
+                parameterised=n + 1 < len(toks) and toks[n + 1].text == "#",
             )
         )
         i = k + 1
     return found
-
-
-def defined_modules(text: str) -> set[str]:
-    """Return the names of the modules Verilog `text` declares.
-
-    Comments, strings and attributes cannot fake a declaration.
-    """
-    toks = _tokens(text)
-    names = set()
-    for i, tok in enumerate(toks[:-1]):
-        if tok.kind == "id" and tok.text in ("module", "macromodule"):
-            nxt = toks[i + 1]
-            if nxt.kind in ("id", "escid"):
-                names.add(nxt.name)
-    return names
 
 
 @dataclass
@@ -269,13 +266,17 @@ def parse_value(text: str):
 
     A sized literal is returned as `(value, width)`; a negative or signed one is sign-extended. Literals with x or z bits are returned as their normalised text, so they compare only with the same text.
     """
-    s = "".join(str(text).split()).replace("_", "")
+    raw = str(text).strip()
+    # A string's contents are compared verbatim; only numbers are normalised.
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return raw[1:-1]
+    s = "".join(raw.split()).replace("_", "")
     negative = False
     if s.startswith(("-", "+")):
         negative = s[0] == "-"
         s = s[1:]
-    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
-        return s[1:-1] if not negative else None
+    if s.startswith('"'):
+        return None
     m = _BASED_RE.match(s)
     if m:
         digits = m.group("digits")
@@ -422,10 +423,14 @@ def clean_netlist(
         if not in_place:
             _unlink(destination)
         return source, []
-    staging = destination + ".tmp"
-    with open(staging, "w") as f:
-        f.write(cleaned)
-    os.replace(staging, destination)
+    staging = atomic_tmp_name(destination)
+    try:
+        with open(staging, "w") as f:
+            f.write(cleaned)
+        os.replace(staging, destination)
+    except OSError:
+        _unlink(staging)
+        raise
     return destination, instances
 
 

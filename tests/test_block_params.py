@@ -17,7 +17,6 @@ from rtl_buddy.tools.block_params import (
     BlockParamError,
     check_instances,
     clean_netlist,
-    defined_modules,
     parse_value,
     strip_overrides,
     values_equal,
@@ -129,6 +128,11 @@ def test_a_netlist_without_block_overrides_is_returned_unchanged():
         ("1.5", 1.5, True),
         ("4'bx01z", "4'bX01Z", True),
         ("4'bx01z", 1, False),
+        ('"a_b c"', "a_b c", True),
+        ('"ab c"', "a_b c", False),
+        ('"a_bc"', "a_b c", False),
+        ('"a_b c"', "abc", False),
+        ("32'd1_0", "1_0", True),
     ],
 )
 def test_overrides_compare_by_value(literal, configured, equal):
@@ -164,22 +168,35 @@ def test_parameters_the_block_synthesis_does_not_set_are_not_checked():
     check_instances([_inst("u_blk", W="32'd16", AW="32'd99")], expected, "n.v")
 
 
+def test_string_parameters_differing_only_in_spaces_or_underscores_differ():
+    with pytest.raises(BlockParamError, match=r"different parameters \(MODE\)"):
+        check_instances(
+            [_inst("u_a", MODE='"ab c"'), _inst("u_b", MODE='"a_bc"')], {}, "n.v"
+        )
+
+
 def test_instances_of_one_block_with_different_parameters_are_refused():
     with pytest.raises(BlockParamError, match=r"different parameters \(W\)"):
         check_instances([_inst("u_a", W="32'd8"), _inst("u_b", W="32'd16")], {}, "n.v")
 
 
-def test_defined_modules_ignores_comments_and_strings():
+def test_blackbox_modules_ignores_comments_and_strings_and_reads_lifetimes():
     text = dedent("""\
-        // module fake_a;
-        /* module fake_b; */
-        initial $display("module fake_c");
+        // (* blackbox *) module fake_a; endmodule
+        initial $display("(* blackbox *) module fake_c;");
         (* blackbox *)
-        module blk_top #(parameter W = 8) (input a);
+        module automatic blk_top #(parameter W = 8) (input a);
         endmodule
-        macromodule \\esc$name (b); endmodule
+        (* blackbox *)
+        module static plain (input b);
+        endmodule
+        module real_one (input c); endmodule
         """)
-    assert defined_modules(text) == {"blk_top", "esc$name"}
+    found = block_params.blackbox_modules(text)
+    assert [(bb.name, bb.parameterised) for bb in found] == [
+        ("blk_top", True),
+        ("plain", False),
+    ]
 
 
 def _block_with_params(tmp_path, params="{W: 16}"):
@@ -270,6 +287,34 @@ def test_yosys_skips_the_abstract_liberty_of_a_block_the_sources_stub(tmp_path):
     assert yosys_read_lib_paths(libs, [], [str(stub)], "s") == libs
 
 
+def test_yosys_keeps_the_abstract_for_a_model_or_a_stub_without_parameters(tmp_path):
+    """Only a parameterised blackbox stub replaces the abstract; a simulation model of the
+    module under `ifndef SYNTHESIS would leave Yosys with no definition at all.
+    """
+    block = _block_with_params(tmp_path)
+    model = _write(
+        tmp_path / "blk_model.sv",
+        "`ifndef SYNTHESIS\nmodule blk_top #(parameter int W = 8) (input logic a);\n"
+        "endmodule\n`endif\n",
+    )
+    plain_stub = _write(
+        tmp_path / "blk_bb.sv",
+        "(* blackbox *)\nmodule blk_top (input logic a);\nendmodule\n",
+    )
+    automatic_stub = _write(
+        tmp_path / "blk_auto_bb.sv",
+        "(* blackbox *)\nmodule automatic blk_top #(parameter W = 8) (input a);\n"
+        "endmodule\n",
+    )
+    libs = ["cells.lib", block.lib]
+
+    assert yosys_read_lib_paths(libs, [block], [str(model)], "s") == libs
+    assert yosys_read_lib_paths(libs, [block], [str(plain_stub)], "s") == libs
+    assert yosys_read_lib_paths(libs, [block], [str(automatic_stub)], "s") == [
+        "cells.lib"
+    ]
+
+
 def _top_netlist(tmp_path, text):
     return _write(tmp_path / "top/artefacts/s/synth_netlist.v", text)
 
@@ -288,6 +333,11 @@ def test_a_top_run_reads_a_stripped_copy_of_the_netlist(tmp_path, monkeypatch):
     assert "#(" not in copy.read_text()
     assert source.read_text() == _ISSUE_NETLIST
     assert len(launched) == 1
+    inputs = backend._checkpoint_inputs(
+        backend.root_cfg.get_pnr_platform_cfg(), backend._script_path()
+    )
+    assert inputs["netlist"]["path"] == str(copy)
+    assert inputs["synth_netlist"]["path"] == str(source)
 
 
 def test_a_top_run_with_a_clean_netlist_reads_it_directly(tmp_path, monkeypatch):
@@ -425,3 +475,45 @@ def test_the_synth_runner_hands_the_backend_its_resolved_blocks(tmp_path, monkey
     runner.run()
 
     assert seen == {"blocks": ["blk_top"]}
+
+
+def test_a_netlist_that_cannot_be_copied_fails_under_its_own_event(
+    tmp_path, monkeypatch
+):
+    from rtl_buddy.tools import pnr_openroad
+
+    _block_with_params(tmp_path)
+    backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
+    _top_netlist(tmp_path, _ISSUE_NETLIST)
+    events = []
+    real_log_event = pnr_openroad.log_event
+
+    def _record(logger, level, event, **fields):
+        events.append(event)
+        real_log_event(logger, level, event, **fields)
+
+    def _no_space(*_a, **_k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pnr_openroad, "log_event", _record)
+    monkeypatch.setattr(block_params, "clean_netlist", _no_space)
+
+    res = backend.run()
+
+    assert res.results["fail_stage"] == "setup"
+    assert res.results["desc"].startswith("could not strip block parameter overrides")
+    assert launched == []
+    assert "pnr.block_netlist_failed" in events
+    assert "pnr.block_params_mismatch" not in events
+
+
+def test_a_stripped_copy_leaves_no_staging_file(tmp_path):
+    block = _block_with_params(tmp_path)
+    source = _write(tmp_path / "synth_netlist.v", _ISSUE_NETLIST)
+
+    clean_netlist(str(source), str(tmp_path / "pnr_netlist.v"), [block])
+
+    assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == [
+        "pnr_netlist.v",
+        "synth_netlist.v",
+    ]

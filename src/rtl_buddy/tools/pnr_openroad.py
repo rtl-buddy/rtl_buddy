@@ -1630,10 +1630,21 @@ class OpenRoadPnr:
         )
 
     def _checkpoint_inputs(self, platform, script_path: str) -> dict:
-        """Return fingerprints of the files the generated script reads, for the checkpoint manifest."""
+        """Return fingerprints of the files the generated script reads, for the checkpoint manifest.
+
+        `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from.
+        """
         pdk = platform.get_pdk()
+        stripped = (
+            {"synth_netlist": _file_fingerprint(self._resolve_netlist_path())}
+            if self._openroad_netlist
+            else {}
+        )
         return {
-            "netlist": _file_fingerprint(self._resolve_netlist_path()),
+            "netlist": _file_fingerprint(
+                self._openroad_netlist or self._resolve_netlist_path()
+            ),
+            **stripped,
             "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
             "liberty": [
                 _file_fingerprint(p)
@@ -1783,15 +1794,16 @@ class OpenRoadPnr:
                 self._blocks,
             )
         except (block_params.BlockParamError, OSError) as e:
+            mismatch = isinstance(e, block_params.BlockParamError)
             desc = (
                 str(e)
-                if isinstance(e, block_params.BlockParamError)
+                if mismatch
                 else f"could not strip block parameter overrides from {source}: {e}"
             )
             log_event(
                 logger,
                 logging.ERROR,
-                "pnr.block_params_mismatch",
+                "pnr.block_params_mismatch" if mismatch else "pnr.block_netlist_failed",
                 pnr=self.pnr_cfg.get_name(),
                 error=desc,
             )

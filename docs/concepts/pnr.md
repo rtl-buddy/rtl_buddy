@@ -448,8 +448,8 @@ module blk #(parameter int W = 8, localparam int AW = $clog2(W)) (
 endmodule
 ```
 
-- `rb synth` with `blocks:` removes the overrides from `synth_netlist.v`. The block's abstract Liberty is not read by Yosys when the filelist defines the block's module, because it would replace the stub and lose its parameters.
-- `rb pnr` and `rb power` remove any overrides that remain, for example in a netlist from a synthesis without `blocks:`. `rb pnr` reads the result as `pnr_netlist.v` in its artefact directory; `rb power` reads its own `power_netlist.v` copy.
+- `rb synth` with `blocks:` removes the overrides from `synth_netlist.v`. Yosys does not read the block's abstract Liberty when the filelist has a parameterised `(* blackbox *)` stub of the module, because the Liberty would replace the stub and lose its parameters.
+- `rb pnr` removes any overrides that remain, for example in a netlist from a synthesis without `blocks:`, and reads the result as `pnr_netlist.v` in its artefact directory. `rb power` takes its blocks from the synthesis it reads, so it strips its own `power_netlist.v` copy only when that synthesis has `blocks:`.
 - The run fails before OpenROAD reads the netlist when an instance sets a parameter to a value other than the block synthesis's `params:`, or when two instances of the block disagree. The message names the instance, the parameter and both values. Re-harden the block with the parameters the parent needs, or harden one block per parameter set.
 - Parameters the block's synthesis leaves at their defaults, and localparams such as `AW`, are not checked: the hardened netlist records no parameter values. They follow from the checked ones when the stub declares the same parameters as the block's RTL.
 

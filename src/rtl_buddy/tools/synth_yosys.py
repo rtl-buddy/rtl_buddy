@@ -473,20 +473,25 @@ def library_fingerprint(paths, root_cfg) -> list[str]:
 def yosys_read_lib_paths(
     lib_paths: list[str], blocks, source_files: list[str], synth_name: str
 ) -> list[str]:
-    """Return the Liberty files the Yosys script reads, without the abstracts of `blocks:` the sources stub.
+    """Return the Liberty files the Yosys script reads, without the abstracts of `blocks:` the sources stub with parameters.
 
-    A block's abstract Liberty defines its module with no parameters. Read ahead of the sources, it replaces the stub, and Yosys then rejects an instance's parameter override (`does not have a parameter named`). With a stub, the abstract adds nothing, because Yosys only needs a blackbox. A block the sources do not define keeps its abstract, which is then the blackbox.
+    A block's abstract Liberty defines its module with no parameters. Read ahead of the sources, it replaces a parameterised `(* blackbox *)` stub, and Yosys then rejects an instance's override (`does not have a parameter named`). Such a stub is the blackbox Yosys needs, so the abstract is left out. Any other definition of the module, such as a simulation model under `` `ifndef SYNTHESIS ``, does not count: the abstract stays, as it does for a stub without parameters.
     """
     if not blocks:
         return list(lib_paths)
-    defined: set[str] = set()
+    stubbed_names: set[str] = set()
     for src in source_files:
         try:
             with open(src, errors="replace") as f:
-                defined |= block_params.defined_modules(f.read())
+                text = f.read()
         except OSError:
             continue
-    stubbed = [b for b in blocks if b.ref.name in defined]
+        if "blackbox" not in text:
+            continue
+        stubbed_names |= {
+            bb.name for bb in block_params.blackbox_modules(text) if bb.parameterised
+        }
+    stubbed = [b for b in blocks if b.ref.name in stubbed_names]
     if not stubbed:
         return list(lib_paths)
     log_event(
