@@ -150,15 +150,11 @@ def _hook_block(title: str, path: str) -> str:
 
 
 def _layer_adjustment_tcl(platform) -> str:
-    """Return the `set_global_routing_layer_adjustment` line, or `""` when the platform sets no adjustment.
-
-    It covers the signal layers, as ORFS does, or every layer when the platform names none.
-    """
+    """Return the `set_global_routing_layer_adjustment` line over the signal layers, as ORFS does, or `""` when the platform sets no adjustment."""
     adjustment = platform.get_routing_layer_adjustment()
     if adjustment is None:
         return ""
-    layers = "$SIGNAL_LAYERS" if platform.get_signal_layers() else "*"
-    return f"set_global_routing_layer_adjustment {layers} {adjustment:g}\n"
+    return f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
 
 
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:

@@ -4017,10 +4017,27 @@ def test_pnr_flow_adjusts_the_signal_layers_before_global_route(tmp_path):
     ) in text
 
 
-def test_pnr_flow_adjusts_every_layer_without_a_signal_range(tmp_path):
-    platform = _platform(_make_pdk_cfg(tmp_path), routing_layer_adjustment=0.5)
-    text = _render_flow(tmp_path, platform)
-    assert "set_global_routing_layer_adjustment * 0.5\nglobal_route" in text
+@pytest.mark.parametrize("text", ["0", "1"])
+def test_integer_valued_float_keys_load_from_yaml(tmp_path, text):
+    """YAML `0` and `1` are ints; the float keys still load and validate as floats."""
+    from serde.yaml import from_yaml
+
+    platform = PnrPlatformConfig(
+        from_yaml(
+            PnrPlatformConfigFile,
+            dedent(f"""\
+                name: "p"
+                pdk: "p"
+                routing-layer-adjustment: {text}
+                placement: {{macro-cell-halo: {text}, tie-separation: {text}}}
+            """),
+        ),
+        lambda _n: _make_pdk_cfg(tmp_path),
+    )
+    assert platform.get_routing_layer_adjustment() == float(text)
+    assert isinstance(platform.get_routing_layer_adjustment(), float)
+    assert platform.get_placement_macro_cell_halo() == float(text)
+    assert platform.get_placement_tie_separation() == float(text)
 
 
 def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):

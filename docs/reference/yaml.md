@@ -179,7 +179,7 @@ The process-dependent P&R keys are all optional:
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 | `cts-sink-clustering` | `cfg-pnr-platforms` | Boolean. Passes `-sink_clustering_enable` to `clock_tree_synthesis`. Default `true`; set `false` when CTS fails with `CTS-0080` |
 | `post-cts-setup-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -setup` after CTS, before hold repair. Default `false` |
-| `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the signal layers (`set_global_routing_layer_adjustment`), or on every layer when `routing-layers.signal` is unset. Unset by default, which keeps the router's default |
+| `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the `routing-layers.signal` layers (`set_global_routing_layer_adjustment`). Unset by default, which keeps the router's default |
 
 A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
 
