@@ -33,6 +33,7 @@ from .artifact_paths import (
     project_root_or_none,
 )
 from . import block_params, pnr_abstract, pnr_checkpoints
+from .synth_yosys import probe_block_parameters
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 
 
@@ -77,6 +78,8 @@ _FIXED_OUTPUT_NAMES = tuple(
 
 # An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
+# Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
+_PARAM_PROBE_DIR = "param_probe"
 # The synth netlist with `blocks:` parameter overrides stripped, read in its place; an input like the script.
 _BLOCK_NETLIST_NAME = "pnr_netlist.v"
 # Public: `rb power` uses it to check the SPEF and ODB came from the same run.
@@ -1882,6 +1885,46 @@ class OpenRoadPnr:
             },
         }
 
+    def _record_block_parameters(self, staging: str, design: str) -> None:
+        """Write `<top>.params.json`, the parameter values the hardened top was elaborated with, into the staging abstract.
+
+        A parent's instance overrides are checked against it (see `block_params`). A probe that cannot run leaves no record and a warning: the abstract is still usable, and its consumers fall back to the synthesis's `params:`.
+        """
+        synth_cfg = self.pnr_cfg.resolve_synth_cfg()
+        synth_dir = os.path.join(
+            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
+            "artefacts",
+            synth_cfg.get_name(),
+        )
+        try:
+            record = probe_block_parameters(
+                synth_cfg,
+                self.root_cfg,
+                synth_dir,
+                os.path.join(self.artefact_dir, _PARAM_PROBE_DIR),
+            )
+            Path(pnr_abstract.view_path(staging, design, "params.json")).write_text(
+                record.to_json()
+            )
+        except Exception as e:  # never fails the harden; consumers fall back
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.block_params_unrecorded",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+            )
+            return
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr.block_params_recorded",
+            pnr=self.pnr_cfg.get_name(),
+            frontend=record.frontend,
+            complete=record.complete,
+            parameters=record.parameters,
+        )
+
     def _publish_abstract(
         self, platform, openroad_version: str | None, export: GdsExport | None
     ) -> dict | str:
@@ -1904,6 +1947,7 @@ class OpenRoadPnr:
             f"abstract view(s) not produced: {', '.join(missing)}" if missing else None
         )
         if problem is None:
+            self._record_block_parameters(staging, design)
             try:
                 shutil.copyfile(gds, pnr_abstract.view_path(staging, design, "gds"))
                 pnr_abstract.write_manifest(

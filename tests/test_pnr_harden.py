@@ -381,3 +381,51 @@ def test_filelist_sources_skips_options_and_resolves_against_the_filelist(tmp_pa
         str(tmp_path / "cells.v"),
     ]
     assert pnr_abstract.filelist_sources(str(tmp_path / "absent.f")) == []
+
+
+def test_a_hardening_run_publishes_the_tops_parameter_record(tmp_path, monkeypatch):
+    """The record the parent's overrides are checked against is an abstract view,
+    fingerprinted in the manifest so an edit makes the abstract stale.
+    """
+    from rtl_buddy.tools import block_params
+
+    record = block_params.ParamRecord(
+        module="demo_top",
+        frontend="slang",
+        complete=True,
+        parameters={"W": "32'b00000000000000000000000000010000"},
+        order=["W"],
+    )
+    monkeypatch.setattr(pnr_openroad, "probe_block_parameters", lambda *a, **k: record)
+    backend = _backend(tmp_path, monkeypatch)
+    _fake_tools(backend, monkeypatch)
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    out = Path(backend.artefact_dir) / "abstract"
+    published = out / "demo_top.params.json"
+    assert block_params.read_param_record(str(published)) == record
+    manifest = json.loads((out / "abstract.manifest.json").read_text())
+    assert manifest["outputs"]["params.json"]["sha256"] == _sha(
+        record.to_json().encode()
+    )
+
+
+def test_a_parameter_probe_that_fails_still_publishes_the_abstract(
+    tmp_path, monkeypatch
+):
+    def _fails(*_a, **_k):
+        raise RuntimeError("Yosys exited with code 1")
+
+    monkeypatch.setattr(pnr_openroad, "probe_block_parameters", _fails)
+    backend = _backend(tmp_path, monkeypatch)
+    _fake_tools(backend, monkeypatch)
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults), res.results
+    out = Path(backend.artefact_dir) / "abstract"
+    assert not (out / "demo_top.params.json").exists()
+    manifest = json.loads((out / "abstract.manifest.json").read_text())
+    assert "params.json" not in manifest["outputs"]

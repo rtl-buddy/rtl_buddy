@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -1404,3 +1405,122 @@ class YosysSynth:
                 error=published["error"],
             )
         return published["model"]
+
+
+#: The wrapper top the parameter probe elaborates around a block's top.
+_PROBE_TOP = "__rb_param_probe"
+
+
+def _probe_opts(synth_cfg, root_cfg) -> tuple[SynthToolOpts, str]:
+    """Return the Yosys frontend options a synthesis elaborates with, as its backend resolves them, and the Yosys executable."""
+    tool_name = synth_cfg.get_tool_name()
+    try:
+        tool_cfg = root_cfg.get_synth_tool_cfg("yosys")
+        overrides = synth_cfg.get_tool_overrides_for("yosys")
+    except FatalRtlBuddyError:
+        tool_cfg = root_cfg.get_synth_tool_cfg(tool_name)
+        overrides = synth_cfg.get_tool_overrides_for(tool_name)
+    return tool_cfg.get_opts(overrides), tool_cfg.get_executable()
+
+
+def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
+    """Elaborate a block's top in Yosys and return its parameter values as a `block_params.ParamRecord`.
+
+    Run when the block is hardened, so a parent's instance overrides can be compared with every value the block was built with. The top is wrapped in an instance carrying the synthesis's `params:`, in the synthesis's frontend, reading the sources and defines of its `synth.f`:
+
+    - slang: the top is a blackbox (`--blackboxed-module`), so only its header is elaborated, and the wrapper instance carries every parameter, localparams included, as a parent's would.
+    - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read. Localparams are not available, so the record is marked incomplete.
+
+    The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
+    """
+    top = synth_cfg.get_top()
+    fl_path = os.path.join(synth_dir, "synth.f")
+    if not os.path.isfile(fl_path):
+        raise RuntimeError(f"no synthesis filelist at {fl_path}; run rb synth first")
+    opts, executable = _probe_opts(synth_cfg, root_cfg)
+    from .pnr_abstract import filelist_sources
+
+    sources = filelist_sources(fl_path)
+    os.makedirs(out_dir, exist_ok=True)
+    wrapper = os.path.join(out_dir, "param_probe.sv")
+    params = synth_cfg.get_params() or {}
+    overrides = ", ".join(f".{k}({v})" for k, v in params.items())
+    Path(wrapper).write_text(
+        f"module {_PROBE_TOP};\n  {top} {'#(' + overrides + ') ' if overrides else ''}u_probe ();\nendmodule\n"
+    )
+    json_path = os.path.join(out_dir, "param_probe.json")
+    cmds = emit_frontend_read_cmds(
+        opts=opts,
+        source_files=[*sources, wrapper],
+        top=_PROBE_TOP,
+        defines=elaboration_defines(fl_path, synth_cfg.get_defines()),
+        params=None,
+        root_cfg=root_cfg,
+        incdirs=incdirs_from_filelist(fl_path),
+    )
+    if opts.frontend == "slang":
+        cmds[-1] = cmds[-1].replace(
+            f"--top {_PROBE_TOP}",
+            f"--top {_PROBE_TOP} --blackboxed-module {shlex.quote(top)}",
+            1,
+        )
+    else:
+        cmds += [f"hierarchy -top {_PROBE_TOP}", "proc"]
+    cmds.append(f"write_json {shlex.quote(json_path)}")
+    script = os.path.join(out_dir, "param_probe.ys")
+    Path(script).write_text("\n".join(cmds) + "\n")
+    log_path = os.path.join(out_dir, "param_probe.log")
+    with open(log_path, "w") as log_f:
+        result = subprocess.run(
+            [executable, "-q", "-s", script],
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            cwd=out_dir,
+            env=yosys_env(out_dir),
+            check=False,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Yosys exited with code {result.returncode}; see {log_path}"
+        )
+    try:
+        design = json.loads(Path(json_path).read_text())
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"unreadable probe output {json_path}: {e}") from None
+    modules = design.get("modules") or {}
+    if opts.frontend == "slang":
+        cell = (modules.get(_PROBE_TOP, {}).get("cells") or {}).get("u_probe")
+        if not cell:
+            raise RuntimeError(f"the probe found no instance of {top!r}")
+        values = cell.get("parameters") or {}
+        complete = True
+    else:
+        derived = [
+            m
+            for name, m in modules.items()
+            if name == top or name.startswith(f"$paramod\\{top}\\")
+        ]
+        if not derived:
+            raise RuntimeError(f"the probe did not elaborate {top!r}")
+        values = derived[0].get("parameter_default_values") or {}
+        complete = False
+    order = None
+    for src in sources:
+        try:
+            text = Path(src).read_text(errors="replace")
+        except OSError:
+            continue
+        if top in text:
+            order = block_params.parameter_port_names(text, top)
+            if order is not None:
+                break
+    return block_params.ParamRecord(
+        module=top,
+        frontend=opts.frontend,
+        complete=complete,
+        parameters={
+            k: block_params.yosys_json_literal(str(v))
+            for k, v in sorted(values.items())
+        },
+        order=order or [],
+    )
