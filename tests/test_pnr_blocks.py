@@ -58,7 +58,9 @@ def _block_platform(tmp_path):
     )
 
 
-def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, views=True):
+def _block_suite(
+    tmp_path, *, harden=True, module="blk_top", manifest=True, views=True, lef_text=None
+):
     """A block pnr.yaml whose `blk_pnr` run published a current abstract."""
     suite = _write(
         tmp_path / "blk/pnr.yaml",
@@ -77,7 +79,7 @@ def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, view
     out.mkdir(parents=True)
     if views:
         for view in ("lef", "lib", "gds"):
-            _write(out / f"{module}.{view}", f"{view}\n")
+            _write(out / f"{module}.{view}", _view_text(view, lef_text))
     if manifest:
         run_cfg = PnrSuiteConfig(str(suite)).get_runs("blk_pnr")[0]
         config = pnr_abstract.abstract_config(run_cfg, _block_platform(tmp_path))
@@ -99,7 +101,7 @@ def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, view
                     "outputs": {
                         view: {
                             "path": str(out / f"{module}.{view}"),
-                            "sha256": _sha(f"{view}\n"),
+                            "sha256": _sha(_view_text(view, lef_text)),
                         }
                         for view in ("lef", "lib", "gds")
                     }
@@ -109,6 +111,10 @@ def _block_suite(tmp_path, *, harden=True, module="blk_top", manifest=True, view
             ),
         )
     return suite
+
+
+def _view_text(view, lef_text):
+    return lef_text if view == "lef" and lef_text is not None else f"{view}\n"
 
 
 def _ref(suite, name="blk_top", run="blk_pnr"):

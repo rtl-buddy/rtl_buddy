@@ -6,6 +6,10 @@ checked against the block's synthesis and removed before any OpenROAD session re
 netlist.
 """
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from textwrap import dedent
 
@@ -13,15 +17,21 @@ import pytest
 
 from rtl_buddy.tools import block_params, pnr_abstract
 from rtl_buddy.tools.block_params import (
-    BlockInstance,
     BlockParamError,
-    check_instances,
+    StripSelfCheckError,
+    block_instances,
+    check_params,
+    check_ports,
     clean_netlist,
     parse_value,
     strip_overrides,
     values_equal,
 )
-from rtl_buddy.tools.synth_yosys import clean_block_netlist, yosys_read_lib_paths
+from rtl_buddy.tools.synth_yosys import (
+    clean_block_netlist,
+    probe_block_parameters,
+    yosys_read_lib_paths,
+)
 
 from test_pnr_blocks import _BLOCK_YAML, _block_suite, _ref, _top_backend, _write
 
@@ -41,7 +51,7 @@ _ISSUE_NETLIST = dedent("""\
       wire [15:0] q;
       (* src = "top.sv:2.3" *)
       blk_top #(
-        .AW(32'd5),
+        .AW(32'd4),
         .W(32'd16)
       ) \\u_blk  (
         .clk(clk),
@@ -59,10 +69,10 @@ def test_the_issue_netlist_loses_its_overrides_and_keeps_its_connections():
     assert "  blk_top \\u_blk  (\n    .clk(clk)," in cleaned
     assert inst.module == "blk_top"
     assert inst.instance == "u_blk"
-    assert inst.params == {"AW": "32'd5", "W": "32'd16"}
+    assert inst.params == {"AW": "32'd4", "W": "32'd16"}
     assert inst.line == 13
     # Nothing but the override list changed.
-    removed = "#(\n    .AW(32'd5),\n    .W(32'd16)\n  ) "
+    removed = "#(\n    .AW(32'd4),\n    .W(32'd16)\n  ) "
     assert cleaned == _ISSUE_NETLIST.replace(f"blk_top {removed}", "blk_top ")
 
 
@@ -147,39 +157,6 @@ def test_literals_parse_to_value_and_width():
     assert parse_value("$clog2(W)") is None
 
 
-def _inst(name, **params):
-    return BlockInstance(module="blk_top", instance=name, line=1, params=params)
-
-
-def test_an_override_that_differs_from_the_block_synthesis_is_refused():
-    expected = {"blk_top": ("synth run 's'", {"W": 16})}
-    check_instances([_inst("u_blk", W="32'd16", AW="32'd5")], expected, "n.v")
-
-    with pytest.raises(BlockParamError) as info:
-        check_instances([_inst("u_blk", W="32'd8", AW="32'd3")], expected, "n.v")
-    message = str(info.value)
-    assert "instance 'u_blk' (line 1) of block 'blk_top' sets W=32'd8" in message
-    assert "synthesised with W=16 (synth run 's')" in message
-
-
-def test_parameters_the_block_synthesis_does_not_set_are_not_checked():
-    # AW is a localparam derived from W; the hardened netlist records no value for it.
-    expected = {"blk_top": ("synth run 's'", {"W": 16})}
-    check_instances([_inst("u_blk", W="32'd16", AW="32'd99")], expected, "n.v")
-
-
-def test_string_parameters_differing_only_in_spaces_or_underscores_differ():
-    with pytest.raises(BlockParamError, match=r"different parameters \(MODE\)"):
-        check_instances(
-            [_inst("u_a", MODE='"ab c"'), _inst("u_b", MODE='"a_bc"')], {}, "n.v"
-        )
-
-
-def test_instances_of_one_block_with_different_parameters_are_refused():
-    with pytest.raises(BlockParamError, match=r"different parameters \(W\)"):
-        check_instances([_inst("u_a", W="32'd8"), _inst("u_b", W="32'd16")], {}, "n.v")
-
-
 def test_blackbox_modules_ignores_comments_and_strings_and_reads_lifetimes():
     text = dedent("""\
         // (* blackbox *) module fake_a; endmodule
@@ -199,9 +176,52 @@ def test_blackbox_modules_ignores_comments_and_strings_and_reads_lifetimes():
     ]
 
 
-def _block_with_params(tmp_path, params="{W: 16}"):
-    """A resolved block whose synthesis sets `params:`."""
-    suite = _block_suite(tmp_path)
+def _blk_lef(width=16, extra=""):
+    """The abstract LEF of `blk_top`, as `write_abstract_lef` writes it for a `width`-bit block."""
+
+    def pin(name, direction, use="SIGNAL"):
+        return (
+            f"  PIN {name}\n    DIRECTION {direction} ;\n    USE {use} ;\n"
+            "    PORT\n      LAYER met2 ;\n        RECT 0 0 1 1 ;\n    END\n"
+            f"  END {name}\n"
+        )
+
+    pins = pin("clk", "INPUT")
+    pins += "".join(pin(f"d[{i}]", "INPUT") for i in range(width))
+    pins += "".join(pin(f"q[{i}]", "OUTPUT") for i in range(width))
+    pins += pin("VDD", "INOUT", "POWER") + pin("VSS", "INOUT", "GROUND") + extra
+    return (
+        "VERSION 5.8 ;\nMACRO blk_top\n  CLASS BLOCK ;\n  SIZE 50 BY 50 ;\n"
+        f"{pins}END blk_top\nEND LIBRARY\n"
+    )
+
+
+def _record(parameters, *, complete=True, order=("W",), frontend="slang"):
+    return block_params.ParamRecord(
+        module="blk_top",
+        frontend=frontend,
+        complete=complete,
+        parameters=dict(parameters),
+        order=list(order),
+    )
+
+
+_W16 = {
+    "AW": "32'b00000000000000000000000000000100",
+    "W": "32'b00000000000000000000000000010000",
+}
+_W8 = {
+    "AW": "32'b00000000000000000000000000000011",
+    "W": "32'b00000000000000000000000000001000",
+}
+
+
+def _block_with_params(tmp_path, params="{W: 16}", *, width=16, record=_W16, **kw):
+    """A resolved block whose synthesis sets `params:`, with a `width`-bit abstract and, unless `record` is None, a parameter record."""
+    suite = _block_suite(tmp_path, lef_text=_blk_lef(width))
+    if record is not None:
+        out = tmp_path / "blk/artefacts/blk_pnr/abstract"
+        _write(out / "blk_top.params.json", _record(record, **kw).to_json())
     _write(
         tmp_path / "blk/models.yaml",
         'rtl-buddy-filetype: model_config\nmodels:\n  - name: "blk_top"\n'
@@ -241,7 +261,7 @@ def test_clean_netlist_without_overrides_reads_the_source_and_drops_a_stale_copy
 
 
 def test_a_mismatched_netlist_is_refused_naming_the_netlist(tmp_path):
-    block = _block_with_params(tmp_path, params="{W: 8}")
+    block = _block_with_params(tmp_path, params="{W: 8}", width=8, record=_W8)
     source = _write(tmp_path / "synth_netlist.v", _ISSUE_NETLIST)
 
     with pytest.raises(BlockParamError, match=f"^{source}: instance 'u_blk'"):
@@ -261,12 +281,13 @@ def test_synthesis_strips_its_netlist_in_place_and_keeps_a_clean_one(tmp_path):
 
 
 def test_synthesis_refuses_a_mismatched_override(tmp_path):
-    block = _block_with_params(tmp_path, params="{W: 8}")
+    block = _block_with_params(tmp_path, params="{W: 8}", width=8, record=_W8)
     netlist = _write(tmp_path / "synth_netlist.v", _ISSUE_NETLIST)
 
     error = clean_block_netlist(str(netlist), [block], "top_synth")
 
-    assert "sets W=32'd16" in error and "W=8" in error
+    assert "sets AW=32'd4, W=32'd16" in error
+    assert "hardened with AW=32'd3, W=32'd8" in error
 
 
 def test_yosys_skips_the_abstract_liberty_of_a_block_the_sources_stub(tmp_path):
@@ -344,7 +365,10 @@ def test_a_top_run_with_a_clean_netlist_reads_it_directly(tmp_path, monkeypatch)
     _block_with_params(tmp_path)
     backend, _ = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
     source = _top_netlist(
-        tmp_path, "module top; blk_top u_blk (.clk(clk)); endmodule\n"
+        tmp_path,
+        _ISSUE_NETLIST.replace(
+            "blk_top #(\n    .AW(32'd4),\n    .W(32'd16)\n  ) ", "blk_top "
+        ),
     )
 
     assert backend.run().is_pass()
@@ -356,7 +380,7 @@ def test_a_top_run_with_a_clean_netlist_reads_it_directly(tmp_path, monkeypatch)
 def test_a_top_run_with_a_mismatched_override_fails_before_openroad(
     tmp_path, monkeypatch
 ):
-    _block_with_params(tmp_path, params="{W: 8}")
+    _block_with_params(tmp_path, params="{W: 8}", width=8, record=_W8)
     backend, launched = _top_backend(tmp_path, monkeypatch, _BLOCK_YAML)
     _top_netlist(tmp_path, _ISSUE_NETLIST)
 
@@ -364,7 +388,7 @@ def test_a_top_run_with_a_mismatched_override_fails_before_openroad(
 
     assert res.results["fail_stage"] == "setup"
     assert (
-        "instance 'u_blk' (line 13) of block 'blk_top' sets W=32'd16"
+        "instance 'u_blk' (line 13) of block 'blk_top' sets AW=32'd4, W=32'd16"
         in res.results["desc"]
     )
     assert res.results["blocks"][0]["name"] == "blk_top"
@@ -389,7 +413,7 @@ def test_power_reads_a_stripped_snapshot(tmp_path):
 def test_power_refuses_a_mismatched_override(tmp_path):
     from test_power import _make_power_backend
 
-    block = _block_with_params(tmp_path, params="{W: 8}")
+    block = _block_with_params(tmp_path, params="{W: 8}", width=8, record=_W8)
     backend = _make_power_backend(tmp_path)
     netlist = tmp_path / "synth_netlist.v"
     netlist.write_text(_ISSUE_NETLIST)
@@ -517,3 +541,363 @@ def test_a_stripped_copy_leaves_no_staging_file(tmp_path):
         "pnr_netlist.v",
         "synth_netlist.v",
     ]
+
+
+# --- Ports against the abstract ------------------------------------------------------------
+
+
+def _netlist(instance: str, decls: str = "") -> str:
+    return (
+        "module top(clk, d, q);\n  input clk;\n  wire clk;\n  input [15:0] d;\n"
+        "  wire [15:0] d;\n  output [15:0] q;\n  wire [15:0] q;\n"
+        f"{decls}  {instance}\nendmodule\n"
+    )
+
+
+def _check_ports(tmp_path, instance, *, width=16, decls=""):
+    block = _block_with_params(tmp_path, width=width)
+    insts = block_instances(_netlist(instance, decls), {"blk_top"}, "n.v")
+    return check_ports(insts, [block], "n.v")
+
+
+def test_a_block_hardened_at_its_default_width_refuses_a_wider_parent(tmp_path):
+    """The block was hardened with W at its default 8; the parent sets W=16 and the
+    synthesis had no params:, so only the abstract's pin widths can tell.
+    """
+    with pytest.raises(BlockParamError) as info:
+        _check_ports(
+            tmp_path,
+            "blk_top #(.W(32'd16)) u_blk (.clk(clk), .d(d), .q(q));",
+            width=8,
+        )
+    assert (
+        "instance 'u_blk' (line 8) of block 'blk_top': port 'd' is connected to 16 "
+        "bit(s), but the hardened block's pin is 8 bit(s) wide"
+    ) in str(info.value)
+
+
+def test_connection_widths_come_from_selects_concatenations_and_constants(tmp_path):
+    assert (
+        _check_ports(
+            tmp_path,
+            "blk_top u_blk (.clk(clk), .d({ d[7:0], 4'h0, \\x.y [3:0] }), "
+            ".q({ 2 { q[7:0] } }));",
+            decls="  wire [3:0] \\x.y ;\n",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "connection,reason",
+    [
+        (".d(16)", "unsized constant 16"),
+        (".d(nope)", "undeclared net nope"),
+        (".d(d[i])", "i"),
+        (".d(d[3 +: 4])", "+"),
+    ],
+)
+def test_a_connection_rb_cannot_size_fails_closed(tmp_path, connection, reason):
+    with pytest.raises(BlockParamError) as info:
+        _check_ports(tmp_path, f"blk_top u_blk (.clk(clk), {connection}, .q(q));")
+    assert "cannot tell the width of port 'd'" in str(info.value)
+    assert reason in str(info.value)
+
+
+def test_a_port_the_abstract_lacks_is_refused(tmp_path):
+    with pytest.raises(BlockParamError, match="port 'en' is not a pin"):
+        _check_ports(tmp_path, "blk_top u_blk (.clk(clk), .d(d), .q(q), .en(clk));")
+
+
+def test_an_unconnected_input_fails_and_an_unconnected_output_warns(tmp_path):
+    with pytest.raises(BlockParamError, match="input pin 'd' is not connected"):
+        _check_ports(tmp_path, "blk_top u_blk (.clk(clk), .d(), .q(q));")
+    warnings = _check_ports(tmp_path / "w", "blk_top u_blk (.clk(clk), .d(d));")
+    assert warnings == [
+        "n.v: instance 'u_blk' (line 8) of block 'blk_top': output pin 'q' is not "
+        "connected"
+    ]
+
+
+def test_positional_port_connections_and_instance_arrays_fail_closed(tmp_path):
+    with pytest.raises(BlockParamError, match="positional port connections"):
+        _check_ports(tmp_path, "blk_top u_blk (clk, d, q);")
+    with pytest.raises(BlockParamError, match="instance arrays"):
+        _check_ports(tmp_path / "a", "blk_top u_blk [1:0] (.clk(clk));")
+
+
+def test_supply_pins_need_no_connection(tmp_path):
+    lef = abstract_pins_of(tmp_path)
+    assert {n for n, p in lef.items() if p.supply} == {"VDD", "VSS"}
+    assert (lef["d"].width, lef["d"].direction) == (16, "INPUT")
+
+
+def abstract_pins_of(tmp_path):
+    block = _block_with_params(tmp_path)
+    return block_params.abstract_pins(block.lef, "blk_top")
+
+
+# --- Parameters against the elaborated record ----------------------------------------------
+
+
+def _check_params(tmp_path, instance, **kw):
+    block = _block_with_params(tmp_path, **kw)
+    insts = block_instances(_netlist(instance), {"blk_top"}, "n.v")
+    return check_params(insts, [block], "n.v")
+
+
+def test_a_block_hardened_at_its_default_refuses_an_override_params_never_named(
+    tmp_path,
+):
+    """params: is empty, so the old check passed; the record knows W was 8."""
+    with pytest.raises(BlockParamError) as info:
+        _check_params(
+            tmp_path,
+            "blk_top #(.W(32'd16)) u_blk (.clk(clk), .d(d), .q(q));",
+            params="{}",
+            record=_W8,
+        )
+    assert "sets W=32'd16, but the block was hardened with W=32'd8" in str(info.value)
+
+
+def test_a_localparam_mismatch_is_refused(tmp_path):
+    with pytest.raises(BlockParamError) as info:
+        _check_params(
+            tmp_path,
+            "blk_top #(.AW(32'd5), .W(32'd16)) u_blk (.clk(clk), .d(d), .q(q));",
+        )
+    assert "sets AW=32'd5, but the block was hardened with AW=32'd4" in str(info.value)
+
+
+def test_positional_overrides_map_to_names_through_the_recorded_order(tmp_path):
+    assert (
+        _check_params(tmp_path, "blk_top #(16) u_blk (.clk(clk), .d(d), .q(q));") == []
+    )
+    with pytest.raises(BlockParamError, match="sets W=8, but the block was hardened"):
+        _check_params(tmp_path / "b", "blk_top #(8) u_blk (.clk(clk), .d(d), .q(q));")
+    with pytest.raises(BlockParamError, match="parameter order is unknown"):
+        _check_params(
+            tmp_path / "c",
+            "blk_top #(16) u_blk (.clk(clk), .d(d), .q(q));",
+            order=(),
+        )
+
+
+def test_an_override_the_block_does_not_have_is_refused(tmp_path):
+    with pytest.raises(BlockParamError, match="has no parameter 'DEPTH'"):
+        _check_params(tmp_path, "blk_top #(.DEPTH(4)) u_blk (.clk(clk), .d(d), .q(q));")
+
+
+def test_an_incomplete_record_warns_about_what_it_cannot_check(tmp_path):
+    warnings = _check_params(
+        tmp_path,
+        "blk_top #(.AW(32'd4), .W(32'd16)) u_blk (.clk(clk), .d(d), .q(q));",
+        record={"W": _W16["W"]},
+        complete=False,
+        frontend="verilog",
+    )
+    assert len(warnings) == 1 and "AW=32'd4 is not checked" in warnings[0]
+
+
+def test_without_a_record_params_are_checked_with_a_warning_to_reharden(tmp_path):
+    instance = "blk_top #(.W(32'd16)) u_blk (.clk(clk), .d(d), .q(q));"
+    warnings = _check_params(tmp_path, instance, record=None)
+    assert warnings == [
+        "block 'blk_top': its abstract records no elaborated parameters, so only the "
+        "synthesis's params: are checked — re-harden the block with this rtl_buddy"
+    ]
+    with pytest.raises(BlockParamError, match="synthesised with W=8"):
+        _check_params(tmp_path / "b", instance, record=None, params="{W: 8}")
+
+
+def test_instances_of_one_block_with_different_overrides_are_refused(tmp_path):
+    block = _block_with_params(tmp_path, record={"W": _W16["W"]}, complete=False)
+    netlist = _netlist(
+        "blk_top #(.W(32'd16)) u_a (.clk(clk), .d(d), .q(q));\n"
+        "  blk_top #(.W(16)) u_b (.clk(clk), .d(d), .q(q));\n"
+        '  blk_top #(.W(32\'d16), .MODE("x")) u_c (.clk(clk), .d(d), .q(q));'
+    )
+    insts = block_instances(netlist, {"blk_top"}, "n.v")
+    with pytest.raises(BlockParamError, match=r"different parameters \(MODE\)"):
+        check_params(insts, [block], "n.v")
+
+
+# --- The strip checks itself --------------------------------------------------------------
+
+
+def test_a_strip_that_changes_anything_else_is_an_internal_error(monkeypatch):
+    real = block_params._strip
+
+    def _also_renames(text, modules):
+        cleaned, found, cuts = real(text, modules)
+        return cleaned.replace("u_blk", "u_xxx"), found, cuts
+
+    monkeypatch.setattr(block_params, "_strip", _also_renames)
+    with pytest.raises(StripSelfCheckError, match="differs from the input"):
+        strip_overrides(_ISSUE_NETLIST, {"blk_top"})
+
+
+def test_the_strip_is_verified_on_tricky_input():
+    text = (
+        'module t; blk_top #(.S("#( ) u"), .W(32\'d1))u_a(.x(y)); '
+        "\\blk_top #(1) \\u_b[0] (.x(y)); endmodule\n"
+    )
+    cleaned, found = strip_overrides(text, {"blk_top"})
+    assert [i.instance for i in found] == ["u_a", "u_b[0]"]
+    assert strip_overrides(cleaned, {"blk_top"}) == (cleaned, [])
+
+
+# --- Real Yosys: the structure survives the strip -------------------------------------------
+
+_YOSYS = shutil.which("yosys")
+
+
+def _yosys_structure(tmp_path, netlist: str, name: str):
+    """Read `netlist` with `blk_top` a blackbox and return its cells (types and connections) and nets, without instance parameters."""
+    # One path for both reads: Yosys names generated cells after the source file.
+    src = tmp_path / "netlist_read.v"
+    src.write_text(netlist)
+    out = tmp_path / f"{name}.json"
+    stub = tmp_path / "blk_bb.v"
+    stub.write_text(
+        "(* blackbox *) module blk_top #(parameter W = 8) "
+        "(input clk, input [W-1:0] d, output [W-1:0] q); endmodule\n"
+    )
+    subprocess.run(
+        [
+            _YOSYS,
+            "-q",
+            "-p",
+            f"read_verilog {stub}; read_verilog {src}; proc; write_json {out}",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    design = json.loads(out.read_text())["modules"]["top"]
+    cells = {
+        name: {"type": c["type"], "connections": c["connections"]}
+        for name, c in design["cells"].items()
+    }
+    nets = {name: n["bits"] for name, n in design["netnames"].items()}
+    return cells, nets, design["ports"]
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_yosys_reads_the_same_structure_before_and_after_the_strip(tmp_path):
+    """Synthesise a parent of a parameterised blackbox with Yosys, strip the overrides,
+    and read both netlists back: cells, connections, nets and ports must be identical.
+    """
+    (tmp_path / "top.v").write_text(
+        "module top(input clk, input [15:0] a, input [7:0] b, output [15:0] q, "
+        "output [7:0] r);\n"
+        "  reg [15:0] s; always @(posedge clk) s <= a ^ {b, b};\n"
+        "  blk_top #(.W(16)) u_blk (.clk(clk), .d(s), .q(q));\n"
+        "  blk_top #(.W(8)) \\u.odd (.clk(clk), .d({b[3:0], 4'h5}), .q(r));\n"
+        "endmodule\n"
+    )
+    (tmp_path / "stub.v").write_text(
+        "(* blackbox *) module blk_top #(parameter W = 8) "
+        "(input clk, input [W-1:0] d, output [W-1:0] q); endmodule\n"
+    )
+    original = tmp_path / "netlist.v"
+    subprocess.run(
+        [
+            _YOSYS,
+            "-q",
+            "-p",
+            f"read_verilog {tmp_path / 'stub.v'}; read_verilog {tmp_path / 'top.v'}; "
+            f"synth -top top; write_verilog -noattr {original}",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    text = original.read_text()
+    assert "blk_top #(" in text
+    stripped, found = strip_overrides(text, {"blk_top"})
+    assert len(found) == 2 and "#(" not in stripped
+
+    assert _yosys_structure(tmp_path, text, "before") == _yosys_structure(
+        tmp_path, stripped, "after"
+    )
+
+
+# --- Real Yosys: the parameter probe -----------------------------------------------------
+
+
+def _probe_synth(tmp_path, frontend, params):
+    from types import SimpleNamespace
+
+    from rtl_buddy.config.synth import SynthToolOpts
+
+    blk = _write(
+        tmp_path / "blk.sv",
+        "module blk #(parameter int W = 8, localparam int AW = $clog2(W)) (\n"
+        "  input logic clk, input logic [W-1:0] d, output logic [W-1:0] q);\n"
+        "  always_ff @(posedge clk) q <= d;\nendmodule\n",
+    )
+    synth_dir = tmp_path / "synth"
+    _write(synth_dir / "synth.f", f"{blk}\n")
+    opts = SynthToolOpts()
+    opts.frontend = frontend
+    if frontend == "slang":
+        opts.plugin_path = os.environ["RTL_BUDDY_SLANG_PLUGIN"]
+    tool = SimpleNamespace(get_opts=lambda _o: opts, get_executable=lambda: _YOSYS)
+    root_cfg = SimpleNamespace(
+        get_synth_tool_cfg=lambda _n: tool, get_project_rootdir=lambda: str(tmp_path)
+    )
+    synth_cfg = SimpleNamespace(
+        get_top=lambda: "blk",
+        get_params=lambda: params,
+        get_defines=lambda: None,
+        get_tool_name=lambda: "yosys",
+        get_tool_overrides_for=lambda _n: None,
+    )
+    return probe_block_parameters(
+        synth_cfg, root_cfg, str(synth_dir), str(tmp_path / "p")
+    )
+
+
+@pytest.mark.skipif(
+    _YOSYS is None or not os.environ.get("RTL_BUDDY_SLANG_PLUGIN"),
+    reason="yosys or the yosys-slang plugin (RTL_BUDDY_SLANG_PLUGIN) not available",
+)
+@pytest.mark.parametrize("params,w,aw", [({"W": 16}, 16, 4), ({}, 8, 3)])
+def test_the_slang_probe_records_every_parameter_and_localparam(
+    tmp_path, params, w, aw
+):
+    record = _probe_synth(tmp_path, "slang", params)
+    assert record.complete and record.order == ["W"]
+    assert parse_value(record.parameters["W"])[0] == w
+    assert parse_value(record.parameters["AW"])[0] == aw
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_the_native_probe_records_parameters_and_is_marked_incomplete(tmp_path):
+    record = _probe_synth(tmp_path, "verilog", {"W": 16})
+    assert not record.complete
+    assert set(record.parameters) == {"W"}
+    assert parse_value(record.parameters["W"])[0] == 16
+
+
+def test_an_instance_after_a_procedural_block_is_still_checked(tmp_path):
+    netlist = _netlist(
+        "always @(posedge clk) begin end\n  blk_top u_blk (.clk(clk), .d(d), .q(q));"
+    )
+    [inst] = block_instances(netlist, {"blk_top"}, "n.v")
+    assert inst.connections == {"clk": 1, "d": 16, "q": 16}
+
+
+def test_a_net_with_two_packed_dimensions_fails_closed(tmp_path):
+    with pytest.raises(BlockParamError, match="declaration rb cannot size"):
+        _check_ports(
+            tmp_path,
+            "blk_top u_blk (.clk(clk), .d(m), .q(q));",
+            decls="  wire [1:0][7:0] m;\n",
+        )
+
+
+def test_an_override_on_an_instance_rb_cannot_read_is_refused(tmp_path):
+    block = _block_with_params(tmp_path)
+    text = "module top; blk_top #(.W(32'd16)) u_blk; endmodule\n"
+    with pytest.raises(BlockParamError, match="could not be read as an instance"):
+        block_params.clean_text(text, [block], "n.v")
