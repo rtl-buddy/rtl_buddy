@@ -1423,6 +1423,42 @@ def _probe_opts(synth_cfg, root_cfg) -> tuple[SynthToolOpts, str]:
     return tool_cfg.get_opts(overrides), tool_cfg.get_executable()
 
 
+def _probe_value(value) -> str:
+    """Return a `params:` value as the probe wrapper's override expression: numbers as written, other strings quoted."""
+    if isinstance(value, bool):
+        return str(int(value))
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    if (
+        len(text) >= 2 and text[0] == '"' and text[-1] == '"'
+    ) or block_params.is_number(text):
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _probe_lib_paths(synth_cfg, root_cfg, sources: list[str]) -> list[str]:
+    """Return the Liberty files the block's synthesis reads, so the probe knows the cells and sub-blocks its top instances."""
+    libs = list(getattr(synth_cfg, "get_lib_paths", lambda: [])())
+    platform = getattr(synth_cfg, "get_platform", lambda: None)()
+    if platform:
+        try:
+            libs = root_cfg.get_synth_platform_cfg(platform).get_paths() + libs
+        except Exception:  # the probe is best-effort; the synthesis already ran
+            pass
+    nested = []
+    refs = getattr(synth_cfg, "get_blocks", lambda: [])()
+    if refs:
+        from .pnr_abstract import BlockResolutionError, resolve_blocks
+
+        try:
+            nested = resolve_blocks(refs)
+        except BlockResolutionError:
+            nested = []
+        libs += [b.lib for b in nested]
+    return yosys_read_lib_paths(libs, nested, sources, synth_cfg.get_top())
+
+
 def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     """Elaborate a block's top in Yosys and return its parameter values as a `block_params.ParamRecord`.
 
@@ -1431,9 +1467,10 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     - slang: the top is a blackbox (`--blackboxed-module`), so only its header is elaborated, and the wrapper instance carries every parameter, localparams included, as a parent's would.
     - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read. Localparams are not available, so the record is marked incomplete.
 
-    The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
+    The synthesis's Liberty files are read first, so the top's cells and sub-blocks are known; with slang, unknown modules are also ignored, since only the header matters. String `params:` are quoted. The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
     """
     top = synth_cfg.get_top()
+    out_dir = os.path.abspath(out_dir)
     fl_path = os.path.join(synth_dir, "synth.f")
     if not os.path.isfile(fl_path):
         raise RuntimeError(f"no synthesis filelist at {fl_path}; run rb synth first")
@@ -1444,12 +1481,16 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     os.makedirs(out_dir, exist_ok=True)
     wrapper = os.path.join(out_dir, "param_probe.sv")
     params = synth_cfg.get_params() or {}
-    overrides = ", ".join(f".{k}({v})" for k, v in params.items())
+    overrides = ", ".join(f".{k}({_probe_value(v)})" for k, v in params.items())
     Path(wrapper).write_text(
         f"module {_PROBE_TOP};\n  {top} {'#(' + overrides + ') ' if overrides else ''}u_probe ();\nendmodule\n"
     )
     json_path = os.path.join(out_dir, "param_probe.json")
-    cmds = emit_frontend_read_cmds(
+    cmds = [
+        f"read_liberty -lib {shlex.quote(lib)}"
+        for lib in _probe_lib_paths(synth_cfg, root_cfg, sources)
+    ]
+    cmds += emit_frontend_read_cmds(
         opts=opts,
         source_files=[*sources, wrapper],
         top=_PROBE_TOP,
@@ -1461,7 +1502,9 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     if opts.frontend == "slang":
         cmds[-1] = cmds[-1].replace(
             f"--top {_PROBE_TOP}",
-            f"--top {_PROBE_TOP} --blackboxed-module {shlex.quote(top)}",
+            # Only the top's header matters: a module its body uses but no source or Liberty defines must not stop the probe.
+            f"--top {_PROBE_TOP} --blackboxed-module {shlex.quote(top)}"
+            " --ignore-unknown-modules",
             1,
         )
     else:
@@ -1495,14 +1538,22 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         values = cell.get("parameters") or {}
         complete = True
     else:
-        derived = [
-            m
-            for name, m in modules.items()
-            if name == top or name.startswith(f"$paramod\\{top}\\")
-        ]
-        if not derived:
+        # The wrapper's cell names the derived module, `$paramod\\blk\\W=...` or `$paramod$<sha1>\\blk`.
+        cell = (modules.get(_PROBE_TOP, {}).get("cells") or {}).get("u_probe") or {}
+        derived = modules.get(cell.get("type", ""))
+        if derived is None:
+            pattern = re.compile(rf"^\$paramod(\$[0-9a-f]+)?\\{re.escape(top)}(\\|$)")
+            derived = next(
+                (
+                    m
+                    for name, m in modules.items()
+                    if name == top or pattern.match(name)
+                ),
+                None,
+            )
+        if derived is None:
             raise RuntimeError(f"the probe did not elaborate {top!r}")
-        values = derived[0].get("parameter_default_values") or {}
+        values = derived.get("parameter_default_values") or {}
         complete = False
     order = None
     for src in sources:

@@ -1570,6 +1570,11 @@ class OpenRoadPnr:
         )
         # The abstract is cut from the result being replaced, whether or not this run hardens.
         stale += pnr_abstract.clear_abstract(self.artefact_dir)
+        # The parameter probe's scratch files belong to the abstract.
+        probe_dir = os.path.join(self.artefact_dir, _PARAM_PROBE_DIR)
+        if include_script and os.path.isdir(probe_dir):
+            shutil.rmtree(probe_dir, ignore_errors=True)
+            stale.append(probe_dir)
         if stale:
             log_event(
                 logger,
