@@ -1448,6 +1448,43 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "builder's working directory instead. Remove '+' from the "
                 "path to make them checkout-independent."
             )
+        case "release.map_entries_dropped":
+            return (
+                f"{fields.get('count')} name(s) from the previous release's map "
+                "are now preserved or collide with a preserved name, so their "
+                f"released spelling changes: {fields.get('names')}"
+            )
+        case "release.token_paste_preserved":
+            return (
+                f"{fields.get('count')} name(s) formed by macro token pasting "
+                f"ship unobfuscated (patterns: {fields.get('patterns')})"
+            )
+        case "release.names_forced_clear":
+            return (
+                f"{fields.get('count')} design unit name(s) ship unobfuscated "
+                "because a file left in the clear uses them: "
+                f"{fields.get('names')}"
+            )
+        case "release.verify_unconfigured":
+            return (
+                "release.yaml has no `verify:` section: the package is built "
+                "but never run, and it is not archived as a release"
+            )
+        case "release.not_archived":
+            return (
+                f"trial release ({fields.get('reason')}): the name map and "
+                f"manifest stay in {fields.get('path')} and are not archived"
+            )
+        case "release.verify_stage":
+            verdict = "passed" if fields.get("passed") else "FAILED"
+            return (
+                f"release verification {verdict} in stage {fields.get('stage')} "
+                f"(exit {fields.get('returncode')}); log: {fields.get('log')}"
+            )
+        case "release.done":
+            return (
+                f"release written to {fields.get('path')}; name map {fields.get('map')}"
+            )
         case "fpv.filelist_define_reserved":
             return (
                 f"ignoring `+define+{fields.get('define')}` from the model "

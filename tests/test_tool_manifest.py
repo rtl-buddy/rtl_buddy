@@ -1418,3 +1418,16 @@ def test_graph_floor_fails_required_for_graph():
     assert (
         tm.compute_exit_code([status], required_for="hier", subcommands=readiness) == 0
     )
+
+
+def test_release_tools_gate_only_rb_release():
+    """`rb release` needs Verible's obfuscator and VCS; no other command does."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    for name, binary in (
+        ("verible-obfuscate", "verible-verilog-obfuscate"),
+        ("vcs", "vcs"),
+    ):
+        spec = by_name[name]
+        assert spec.binaries == (binary,)
+        assert spec.used_by == ("release",)
+        assert spec.optional and spec.required_by == ("release",)

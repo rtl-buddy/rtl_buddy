@@ -2,7 +2,7 @@
 
 ``python -m rtl_buddy.constraints.tcl_worker`` reads one JSON request on stdin, writes one JSON response on stdout and exits::
 
-    {"text": "...", "interest": ["create_clock", ...],
+    {"text": "...", "interest": ["create_clock", ...] | null (every command),
      "command_limit": 5000000, "time_limit_seconds": 5}
 
     {"ok": true, "patchlevel": "9.0.3",
@@ -68,7 +68,7 @@ def _quote_word(word: str) -> str:
 def _evaluate(
     text: str,
     *,
-    interest: frozenset[str],
+    interest: frozenset[str] | None,
     command_limit: int,
     time_limit_seconds: float,
 ) -> dict:
@@ -108,7 +108,7 @@ def _evaluate(
                     "included": rest[-1] if rest else "",
                 }
             )
-        if name in interest:
+        if interest is None or name in interest:
             commands.append({"name": name, "words": rest, "line": line_no})
         # Return the command's source form so nested `[get_pins [get_cells u_a]/C]` matches the tokenizer.
         return "[" + " ".join([name, *rest]) + "]"
@@ -194,7 +194,11 @@ def main() -> int:
         try:
             response = _evaluate(
                 str(request.get("text", "")),
-                interest=frozenset(request.get("interest") or ()),
+                interest=(
+                    None
+                    if request.get("interest", ()) is None
+                    else frozenset(request.get("interest") or ())
+                ),
                 command_limit=int(request.get("command_limit", 5_000_000)),
                 time_limit_seconds=float(request.get("time_limit_seconds", 5)),
             )

@@ -30,6 +30,7 @@ const sidebars = {
         'concepts/phys',
         'concepts/fpga',
         'concepts/fpv',
+        'concepts/release',
         'concepts/abv-simulation',
         'concepts/mut',
         'concepts/xplr',

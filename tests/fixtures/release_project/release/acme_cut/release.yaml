@@ -1,0 +1,28 @@
+rtl-buddy-filetype: release_config
+name: acme
+version: 1.0.0
+metadata:
+  cut: acme_cut
+
+design:
+  model: acme_top
+  model-config: ../../rtl/models.yaml
+  top: acme_top
+  constraints:
+    - src: ../../rtl/acme_top.sdc
+      scope: acme_top
+
+testbench:
+  filelist: [ "tb/tb_acme.sv" ]
+  extra-files: [ "tb/run.sh" ]
+
+verify:
+  command: "bash verif/run.sh"
+  pass: "^TEST PASSED"
+  compare: "^SIG: .*"
+
+encryption:
+  key-file: keys.txt
+
+package:
+  docs: [ "docs/user_guide.md" ]
