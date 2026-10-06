@@ -1175,6 +1175,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/source-platform-tcl-hooks.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#set-wire-rc",
+          "slug": "set-wire-rc",
+          "title": "Set wire RC",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/set-wire-rc.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#macro-placement",
           "slug": "macro-placement",
           "title": "Macro placement",
@@ -2544,6 +2550,12 @@
           "slug": "wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc",
           "title": "Wide adders map as ripple chains unless `synth-args` has `-noabc`",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/wide-adders-map-as-ripple-chains-unless-synth-args-has-noabc.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#prefix-adders-off-the-critical-path-ripple-under-abc-script-default",
+          "slug": "prefix-adders-off-the-critical-path-ripple-under-abc-script-default",
+          "title": "Prefix adders off the critical path ripple under `abc-script: default`",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/prefix-adders-off-the-critical-path-ripple-under-abc-script-default.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-phys-module-reports-no-power-for-an-rtl-module",

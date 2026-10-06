@@ -75,9 +75,9 @@ All fields are in [YAML Formats: power.yaml](../reference/yaml.md#poweryaml).
 | `mode: static` | No activity command |
 | `mode: dynamic` with `activity.saif` | Per-signal SAIF activity |
 | `mode: dynamic` with `activity.vcd` | Per-signal VCD activity |
-| `mode: dynamic` with no trace | Global synthetic toggle rate and static probability |
+| `mode: dynamic` with no trace | Synthetic toggle rate and static probability, set globally and on the primary inputs |
 
-`activity.saif` and `activity.vcd` are mutually exclusive. Set `activity.scope` only with a trace, to the hierarchy containing the design, such as `tb_top/u_dut`. Synthetic defaults are a 0.1 toggle rate and 0.5 static probability; override them with `activity.default-toggle-rate` and `activity.default-static-prob`.
+`activity.saif` and `activity.vcd` are mutually exclusive. Set `activity.scope` only with a trace, to the hierarchy containing the design, such as `tb_top/u_dut`. Synthetic defaults are a 0.1 toggle rate and 0.5 static probability; override them with `activity.default-toggle-rate` and `activity.default-static-prob`. The inputs take the same values because OpenSTA reports `inf` or `NaN` power downstream of an input with no activity that it does not time, such as a false-pathed input.
 
 ## Capture SAIF activity
 

@@ -152,7 +152,15 @@ tool_overrides:
     plugin_path: ../yosys-slang/build/slang.so
 ```
 
-`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored. The override key stays `yosys` when the backend is `openroad`.
+`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored.
+
+The override key stays `yosys` when the backend is `openroad`. The Yosys stage of a `tool: openroad` run reads:
+
+- **Tool options**: the `yosys` entry of `cfg-synth-tools` when there is one, otherwise the `openroad` entry. With a `yosys` entry, Yosys options set only on the `openroad` entry are ignored with a warning.
+- **Overrides**: `tool_overrides.yosys`, over `tool_overrides.openroad` key by key. Older configs that set Yosys options under `openroad` keep working.
+- **`strategy`**: read only from the `openroad` entry and `tool_overrides.openroad`. `tool_overrides.yosys.strategy` warns and is ignored.
+
+A `tool_overrides` key other than the run's `tool:` and `yosys` warns and is ignored.
 
 ## Correctness gates
 
@@ -237,6 +245,7 @@ cfg-synth-efforts:
   - name: accurate
     openroad:
       run: true
+      repair: true
       pre-sta-tcl: |
         set_wire_load_mode top
         set_wire_load_model -name Small
@@ -253,15 +262,20 @@ Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-sy
 
 `openroad.run: false` skips OpenROAD and returns the Yosys result. `pre-sta-tcl` is raw Tcl run before STA; syntax errors appear only at runtime. The OpenROAD stage uses one thread unless the entry sets `threads:`; see [OpenROAD threads](pnr.md#openroad-threads).
 
+`openroad.repair: true` repairs the netlist before the area and timing reports. OpenROAD sources the PDK's `layer-rc-tcl`, when it has one, right after `read_sdc`, so a `set_wire_rc` in `pre-sta-tcl` overrides it. After `pre-sta-tcl` and any `strategy` resynthesis it runs `repair_design` and, with an SDC, `repair_timing -setup`. The default is `false`. Repair changes only the reported area, WNS and TNS: `synth_netlist.v` is still Yosys' netlist, and `rb pnr` repairs it again after placement. The design is unplaced, so the repair sees pin loads but no wire lengths.
+
 ## Choose the mapped-run ABC script
 
-A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs. The default is Yosys' default Liberty script without `dc2`:
+A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs, or names a preset: `default` or `delay`. The `default` preset is Yosys' default Liberty script without `dc2` and `&fraig -x`:
 
 ```text
-strash; &get -n; &fraig -x; &put; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put
+strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put
 ```
 
-`dc2` rebuilds the log-depth carry networks that `techmap` produces for adders, negates and incrementers as ripple chains, so it is left out. Set another script in an effort, or for one run in `tool_overrides.yosys.abc_script`:
+- `dc2` rebuilds the log-depth carry networks that `techmap` produces for adders, negates and incrementers as ripple chains, so it is left out.
+- `&fraig -x` is a SAT sweep that allows up to a million solver conflicts per node. On deep arithmetic, such as a chain of wide multipliers, it ran for hours without finishing, so it is left out too. `scorr` still merges equivalent registers.
+
+Set another script in an effort, or for one run in `tool_overrides.yosys.abc_script`:
 
 ```yaml
 cfg-synth-efforts:
@@ -276,6 +290,30 @@ cfg-synth-efforts:
 - `strash; dretime; map {D}` is the script of `abc -fast`. It maps a large flat design much faster than the default, at some cost in quality.
 - `abc-args` applies only to unmapped `tool: yosys` runs, as `abc <abc-args>`. A mapped run ignores it and warns `synth.abc_args_ignored`.
 - `synth` runs Yosys' generic `abc`, whose script includes `dc2`, before the mapped-run ABC step. Add `-noabc` to `synth-args` to keep log-depth carry networks.
+
+### Keep prefix adders log-depth with the `delay` preset
+
+`synth-args: -noabc -extra-map +/choices/kogge-stone.v` asks Yosys for a Kogge-Stone carry network; `sklansky.v` and `han-carlson.v` are the other `+/choices/` maps. The `default` preset can undo it:
+
+- ABC maps the whole flattened module as one network, with one required time: the deepest arrival anywhere in the module. A `-D` target does not change this.
+- `&dch -f` adds structural choices, and `&nf` area recovery uses them to rebuild every adder with slack in that view as a low-area ripple chain. An adder off the module's critical path loses its log depth because of unrelated logic beside it.
+
+The `delay` preset is the `default` preset without `&dch -f`:
+
+```text
+strash; scorr; dretime; strash; &get -n; &nf {D}; &put
+```
+
+When `abc-script` is unset and the `synth-args` of the run pass `-extra-map +/choices/<map>`, the run uses `delay` instead of `default` and logs `synth.abc_delay_preset` at INFO. Set `abc-script: default`, or a script, to keep choices.
+
+`delay` keeps such adders log-depth for more area, and it can lengthen the module's critical path, which no longer gets the choices. On sky130hd tt, a registered 32-bit Kogge-Stone adder beside two serial 32-bit multiply-adds:
+
+| Preset | adder path | module critical path | area |
+| --- | ---: | ---: | ---: |
+| `default` | 3.99 ns | 9.91 ns | 42952 |
+| `delay` | 1.89 ns | 10.79 ns | 46590 |
+
+Compare timing under both presets before keeping one. `delay` suits datapaths with many adders on separate register-to-register paths.
 
 ## Synthesize hard macros
 
@@ -307,6 +345,8 @@ synth-configs:
 ## Interpret results
 
 Mapped runs report gates and area. A constrained Yosys run reports WNS as clock period minus critical-path delay. OpenROAD reports actual WNS and TNS: negative values are violations, and TNS 0 means no endpoint has negative slack.
+
+Without the effort's `openroad.repair`, OpenROAD times Yosys' netlist as mapped, with no buffering or resizing. One unbuffered high-fanout net, such as a pipeline enable, can then dominate WNS. A constrained OpenROAD run records `timing_repaired` in `--machine` output and labels its description `(pre-repair timing)` or `(repaired timing)`. Turn on `repair` before reading WNS as a measure of logic depth.
 
 A Yosys run passes when the process exits 0, the log has no `ERROR:` line, and no correctness gate fires. An OpenROAD run also needs the OpenROAD stage to exit 0 with no `[ERROR ...]` line. Any failed stage reports `FAIL`; read that stage's log first.
 
@@ -343,6 +383,8 @@ Each entry is a console message and the action it calls for.
 - **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
 - **`abc-args` has no effect on a Liberty-mapped run:** set `abc-script` to change the mapping script; keep `abc-args` for unmapped runs.
 - **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
+- **`cfg-synth-tools` openroad opts ignored:** a `yosys` entry exists, so the Yosys stage reads its opts. Move the named options to the `yosys` entry.
+- **`tool_overrides` key ignored, or `tool_overrides.yosys.strategy` ignored:** a run reads only its own `tool:` key and `yosys`; set `strategy` under `tool_overrides.openroad`.
 - **OpenROAD synthesis requires LEF files:** set `tech-lef` and `macro-lef` on the `cfg-pdks` entry, or `lef-paths` on the run.
 - **OpenROAD synthesis requires a mapped library:** set `platform:` on the run and define the matching `cfg-synth-platforms` entry.
 - **`phys-model.json` has no per-module breakdown:** Yosys wrote no readable `stat -json`. The run still passes, but `rb phys module` has no rows for it.
