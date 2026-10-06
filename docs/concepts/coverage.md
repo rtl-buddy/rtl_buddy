@@ -163,7 +163,7 @@ An unknown module exits 2 and lists close candidates. With `--machine`, both tot
 rb hub start --serve-viewer
 ```
 
-Open `/cov`. The pane shows totals, ranked files, source annotations, points and per-test attribution from the same model as `rb cov`. Its figures are per elaboration; the source-point percentages are in the header tooltip. Line selections focus the source and schematic views, and module selections focus the graph. See [Coverage pane](hub.md#coverage-pane).
+Open `/cov`. The pane shows totals, ranked files, source annotations, points and per-test attribution from the same model as `rb cov`. Its figures are per elaboration by default; the `figures` picker, or `/cov?by=source`, switches them to source points. Line selections focus the source and schematic views, and module selections focus the graph. See [Coverage pane](hub.md#coverage-pane).
 
 After `rb graph results`, the design graph also joins declared `covers:` relationships to observed coverage; see [Coverage on the graph](graph.md#coverage-on-the-graph).
 
