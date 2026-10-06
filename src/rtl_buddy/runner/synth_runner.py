@@ -3,7 +3,7 @@ from dataclasses import replace
 
 logger = logging.getLogger(__name__)
 
-from ..config.synth import SynthConfig
+from ..config.synth import SynthConfig, warn_ignored_synth_settings
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..runner.synth_results import SynthFailResults, SynthResults
@@ -41,6 +41,7 @@ class SynthRunner:
         )
         tool_name = self.synth_cfg.get_tool_name()
         tool_cfg = self.root_cfg.get_synth_tool_cfg(tool_name)
+        warn_ignored_synth_settings(self.synth_cfg, self.root_cfg)
 
         effort_name = self.effort_override or self.synth_cfg.get_effort_name()
         effort_cfg = self.root_cfg.get_synth_effort_cfg(effort_name)

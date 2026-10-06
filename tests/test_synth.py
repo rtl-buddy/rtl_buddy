@@ -6176,25 +6176,30 @@ def _openroad_digest(
     return options_digest(or_synth._phys_options())
 
 
-def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_path):
-    """An openroad run digests the effort synth args its stage 1 reads.
+def test_an_openroad_run_digests_the_synth_args_its_stage_1_reads(tmp_path):
+    """An openroad run digests the resolved synth args its stage 1 reads.
 
-    `_write_yosys_script` appends `effort_cfg.get_yosys_synth_args()` to `synth -top` and ignores `opts.synth_args`, so an override of the latter does not move the digest and an effort change does.
+    `_write_yosys_script` appends the resolved `synth_args` (run override, then effort, then tool config) to `synth -top`, so each source moves the digest. `abc_args` is read by neither stage.
     """
     base = _openroad_digest(tmp_path)
     assert base is not None
 
-    # The effort's args are what stage 1 runs with, so they are identity.
-    assert _openroad_digest(tmp_path, effort=_effort_cfg(synth_args="-flatten")) != base
-
-    # The tool option of the same name is not read by either stage.
+    flatten_effort = _openroad_digest(
+        tmp_path, effort=_effort_cfg(synth_args="-flatten")
+    )
+    assert flatten_effort != base
+    # The same args from an override are the same experiment, under either key.
+    assert (
+        _openroad_digest(tmp_path, tool_overrides={"yosys": {"synth_args": "-flatten"}})
+        == flatten_effort
+    )
     assert (
         _openroad_digest(
             tmp_path, tool_overrides={"openroad": {"synth_args": "-flatten"}}
         )
-        == base
+        == flatten_effort
     )
-    # Nor is `abc_args` from either source: stage 1's ABC line takes `abc-script` only.
+    # `abc_args` from either source is not read: stage 1's ABC line takes `abc-script` only.
     assert (
         _openroad_digest(tmp_path, tool_overrides={"openroad": {"abc_args": "-fast"}})
         == base
@@ -6675,3 +6680,233 @@ def test_mapped_digests_move_with_the_abc_script(tmp_path):
     assert _openroad_digest(tmp_path) != _openroad_digest(
         tmp_path, effort=_effort_cfg(abc_script="strash; map")
     )
+
+
+# Yosys-stage keys of a `tool: openroad` run (#701)
+
+
+def _synth_line(script: str) -> str:
+    return next(line for line in script.splitlines() if line.startswith("synth -top"))
+
+
+def _or_tool_cfg_with(**opts):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    return SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad", tool="openroad", opts=SynthToolOptsFile(**opts)
+        )
+    )
+
+
+def test_openroad_stage_1_reads_synth_args_from_the_yosys_tool_entry(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=_FakeRootCfgORWithYosys(
+            lib_map={"mylib": str(lib)},
+            yosys_opts=SynthToolOptsFile(synth_args="-flatten"),
+        ),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _synth_line(script) == "synth -top top -flatten"
+
+
+def test_openroad_stage_1_reads_synth_args_from_its_own_entry_without_a_yosys_one(
+    tmp_path,
+):
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        tool_cfg=_or_tool_cfg_with(synth_args="-noabc"),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _synth_line(script) == "synth -top top -noabc"
+
+
+def test_openroad_synth_args_precedence_is_override_then_effort_then_tool(tmp_path):
+    fl, lib = _mapped_sources(tmp_path)
+
+    def _line(effort=None, tool_overrides=None):
+        or_synth = _make_openroad(
+            tmp_path,
+            synth_cfg=_make_synth_cfg(
+                model_name="top", platform="mylib", tool_overrides=tool_overrides
+            ),
+            tool_cfg=_or_tool_cfg_with(synth_args="-tool"),
+            root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+        )
+        or_synth.effort_cfg = effort or _effort_cfg()
+        return _synth_line(Path(or_synth._write_yosys_script(str(fl))).read_text())
+
+    assert _line() == "synth -top top -tool"
+    assert _line(effort=_effort_cfg(synth_args="-effort")) == "synth -top top -effort"
+    assert (
+        _line(
+            effort=_effort_cfg(synth_args="-effort"),
+            tool_overrides={"yosys": {"synth_args": "-run"}},
+        )
+        == "synth -top top -run"
+    )
+
+
+def test_openroad_stage_1_reads_tool_overrides_yosys_without_a_yosys_entry(tmp_path):
+    """The documented `yosys` override key works on a project with only an `openroad` tool entry."""
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _mapped_openroad(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(abc_script="effort"),
+        tool_overrides={"yosys": {"abc_script": "run", "synth_args": "-flatten"}},
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script).endswith('-script "+run"')
+    assert _synth_line(script) == "synth -top top -flatten"
+
+
+def test_openroad_stage_1_merges_both_override_keys_with_yosys_winning(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={
+                "openroad": {"abc_script": "legacy", "synth_args": "-legacy"},
+                "yosys": {"abc_script": "documented"},
+            },
+        ),
+        # The `openroad` key is read even when a `yosys` entry exists.
+        root_cfg=_FakeRootCfgORWithYosys(
+            lib_map={"mylib": str(lib)}, yosys_opts=SynthToolOptsFile()
+        ),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert '-script "+documented"' in _abc_line(script)
+    assert _synth_line(script) == "synth -top top -legacy"
+
+
+def test_openroad_effort_without_openroad_falls_back_with_both_override_keys(
+    tmp_path,
+):
+    """`openroad.run: false` hands a `tool: openroad` run to YosysSynth with the `yosys` entry, which still reads `tool_overrides.openroad`."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            tool="openroad",
+            platform="mylib",
+            tool_overrides={
+                "openroad": {"synth_args": "-legacy"},
+                "yosys": {"abc_script": "documented"},
+            },
+        ),
+        tool_cfg=SynthToolConfig(
+            SynthToolConfigFile(name="yosys", tool="yosys", opts=SynthToolOptsFile())
+        ),
+        suite_dir=str(tmp_path),
+        root_cfg=_FakeRootCfg({"mylib": str(lib)}),
+        effort_cfg=_effort_cfg(),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert _synth_line(script) == "synth -top top -legacy"
+    assert '-script "+documented' in _abc_line(script)
+
+
+def test_yosys_stage_overrides_reject_a_non_mapping_block():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _make_synth_cfg(
+        tool="openroad",
+        tool_overrides={"openroad": ["synth_args"], "yosys": {"synth_args": "-x"}},
+    )
+    with pytest.raises(FatalRtlBuddyError, match="tool_overrides.openroad must be"):
+        cfg.get_yosys_stage_overrides("openroad")
+
+
+def test_yosys_stage_overrides_for_a_yosys_run_are_the_yosys_block():
+    cfg = _make_synth_cfg(
+        tool_overrides={"yosys": {"synth_args": "-x"}, "openroad": {"strategy": "AREA"}}
+    )
+    assert cfg.get_yosys_stage_overrides("yosys") == {"synth_args": "-x"}
+
+
+class _FakeRootCfgTools:
+    def __init__(self, **tool_opts):
+        from rtl_buddy.config.synth import SynthToolOptsFile
+
+        self._cfgs = {
+            name: SynthToolConfig(
+                SynthToolConfigFile(
+                    name=name, tool=name, opts=SynthToolOptsFile(**opts)
+                )
+            )
+            for name, opts in tool_opts.items()
+        }
+
+    def get_synth_tool_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        if name not in self._cfgs:
+            raise FatalRtlBuddyError(f"tool '{name}' not found")
+        return self._cfgs[name]
+
+
+def _warn_ignored(caplog, synth_cfg, root_cfg):
+    from rtl_buddy.config.synth import warn_ignored_synth_settings
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        warn_ignored_synth_settings(synth_cfg, root_cfg)
+
+
+def test_ignored_synth_settings_warn_on_an_unread_tool_overrides_key(caplog):
+    cfg = _make_synth_cfg(
+        tool="openroad",
+        tool_overrides={"openroad": {}, "yosys": {}, "yosys_slang": {"frontend": "x"}},
+    )
+    _warn_ignored(caplog, cfg, None)
+    assert "'yosys_slang'" in caplog.text
+    assert "tool_overrides.openroad and tool_overrides.yosys" in caplog.text
+
+
+def test_ignored_synth_settings_warn_on_a_yosys_strategy(caplog):
+    cfg = _make_synth_cfg(
+        tool="openroad", tool_overrides={"yosys": {"strategy": "TIMING"}}
+    )
+    _warn_ignored(caplog, cfg, None)
+    assert "tool_overrides.yosys.strategy" in caplog.text
+
+
+def test_ignored_synth_settings_warn_on_shadowed_openroad_opts(caplog):
+    root_cfg = _FakeRootCfgTools(
+        openroad={"strategy": "TIMING", "frontend": "slang", "synth_args": "-flatten"},
+        yosys={"frontend": "slang"},
+    )
+    _warn_ignored(caplog, _make_synth_cfg(tool="openroad"), root_cfg)
+    # `frontend` agrees with the yosys entry and `strategy` is the OpenROAD stage's own.
+    assert "opts synth-args ignored" in caplog.text
+
+
+def test_ignored_synth_settings_quiet_for_a_clean_config(caplog):
+    root_cfg = _FakeRootCfgTools(openroad={"strategy": "AREA"}, yosys={})
+    cfg = _make_synth_cfg(
+        tool="openroad",
+        tool_overrides={"openroad": {"strategy": "AREA"}, "yosys": {"abc_script": "x"}},
+    )
+    _warn_ignored(caplog, cfg, root_cfg)
+    assert caplog.text == ""
+    # Without a yosys entry the openroad entry's opts are the Yosys stage's, so nothing is shadowed.
+    root_cfg = _FakeRootCfgTools(openroad={"synth_args": "-flatten"})
+    _warn_ignored(caplog, cfg, root_cfg)
+    assert caplog.text == ""

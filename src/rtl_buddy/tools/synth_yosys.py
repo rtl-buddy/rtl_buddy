@@ -570,6 +570,24 @@ def mapped_abc_script(opts: SynthToolOpts) -> str:
     return script
 
 
+def apply_effort(
+    opts: SynthToolOpts, overrides: dict | None, effort_cfg: SynthEffortConfig
+) -> SynthToolOpts:
+    """Set the effort's ``synth_args``, ``abc_args`` and ``abc_script`` on `opts` and return it.
+
+    Shared by both synthesis backends. An effort value replaces the tool config's but not a key
+    the run's `overrides` set, so precedence is run override, then effort, then tool config.
+    """
+    for key, value in (
+        ("synth_args", effort_cfg.get_yosys_synth_args()),
+        ("abc_args", effort_cfg.get_yosys_abc_args()),
+        ("abc_script", effort_cfg.get_yosys_abc_script()),
+    ):
+        if value and (not overrides or key not in overrides):
+            setattr(opts, key, value)
+    return opts
+
+
 def warn_mapped_abc_args(opts: SynthToolOpts, synth_name: str) -> None:
     """Warn that a Liberty-mapped run drops the resolved ``abc_args``."""
     if opts.abc_args:
@@ -848,20 +866,14 @@ class YosysSynth:
         """
         if self._opts is not None:
             return self._opts
-        overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        opts = self.tool_cfg.get_opts(overrides)
-        if not overrides or "synth_args" not in overrides:
-            eff_synth = self.effort_cfg.get_yosys_synth_args()
-            if eff_synth:
-                opts.synth_args = eff_synth
-        if not overrides or "abc_args" not in overrides:
-            eff_abc = self.effort_cfg.get_yosys_abc_args()
-            if eff_abc:
-                opts.abc_args = eff_abc
-        if not overrides or "abc_script" not in overrides:
-            eff_script = self.effort_cfg.get_yosys_abc_script()
-            if eff_script:
-                opts.abc_script = eff_script
+        # The run's `tool:`, not this tool config's name: a `tool: openroad` run that falls back here
+        # with the `yosys` entry still reads `tool_overrides.openroad`.
+        overrides = self.synth_cfg.get_yosys_stage_overrides(
+            self.synth_cfg.get_tool_name()
+        )
+        opts = apply_effort(
+            self.tool_cfg.get_opts(overrides), overrides, self.effort_cfg
+        )
         self._opts = opts
         return opts
 
@@ -1416,10 +1428,9 @@ def _probe_opts(synth_cfg, root_cfg) -> tuple[SynthToolOpts, str]:
     tool_name = synth_cfg.get_tool_name()
     try:
         tool_cfg = root_cfg.get_synth_tool_cfg("yosys")
-        overrides = synth_cfg.get_tool_overrides_for("yosys")
     except FatalRtlBuddyError:
         tool_cfg = root_cfg.get_synth_tool_cfg(tool_name)
-        overrides = synth_cfg.get_tool_overrides_for(tool_name)
+    overrides = synth_cfg.get_yosys_stage_overrides(tool_name)
     return tool_cfg.get_opts(overrides), tool_cfg.get_executable()
 
 

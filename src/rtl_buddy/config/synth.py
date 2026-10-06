@@ -1,7 +1,7 @@
 import logging
 import os
 import pprint
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, fields as dc_fields
 
 from serde import serde, field
 from serde.yaml import from_yaml
@@ -371,6 +371,68 @@ class SynthToolConfig:
         )
 
 
+def warn_ignored_synth_settings(synth_cfg: "SynthConfig", root_cfg) -> None:
+    """Warn about settings a run's backends never read.
+
+    - A `tool_overrides` key that is neither the run's `tool:` nor `yosys`.
+    - `tool_overrides.yosys.strategy`: only the OpenROAD stage reads `strategy`, from the run's
+      own key.
+    - On a `tool: openroad` run, Yosys-stage options of the `openroad` `cfg-synth-tools` entry
+      when a `yosys` entry exists, because the Yosys stage then reads the `yosys` entry. Only
+      values that differ from both the default and the `yosys` entry are reported.
+    """
+    tool_name = synth_cfg.get_tool_name()
+    overrides = synth_cfg.tool_overrides
+    if isinstance(overrides, dict):
+        unused = sorted(str(k) for k in overrides if k not in (tool_name, "yosys"))
+        if unused:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth_config.tool_overrides_unused",
+                synth=synth_cfg.get_name(),
+                tool=tool_name,
+                unused=unused,
+            )
+        yosys = overrides.get("yosys")
+        if isinstance(yosys, dict) and "strategy" in yosys:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth_config.yosys_strategy_ignored",
+                synth=synth_cfg.get_name(),
+                tool=tool_name,
+            )
+
+    if tool_name != "openroad" or root_cfg is None:
+        return
+    try:
+        or_cfg = root_cfg.get_synth_tool_cfg(tool_name)
+        yosys_cfg = root_cfg.get_synth_tool_cfg("yosys")
+    except FatalRtlBuddyError:
+        return
+    or_opts, yosys_opts, default = (
+        or_cfg.get_opts(),
+        yosys_cfg.get_opts(),
+        SynthToolOpts(),
+    )
+    ignored = [
+        f.name.replace("_", "-")
+        for f in dc_fields(SynthToolOpts)
+        if f.name != "strategy"
+        and getattr(or_opts, f.name) != getattr(default, f.name)
+        and getattr(or_opts, f.name) != getattr(yosys_opts, f.name)
+    ]
+    if ignored:
+        log_event(
+            logger,
+            logging.WARNING,
+            "synth_config.openroad_yosys_opts_ignored",
+            synth=synth_cfg.get_name(),
+            keys=ignored,
+        )
+
+
 @serde
 class SynthConfigFile:
     name: str
@@ -510,6 +572,34 @@ class SynthConfig:
         if self.tool_overrides is None:
             return None
         return self.tool_overrides.get(tool_name)
+
+    def get_yosys_stage_overrides(self, tool_name: str) -> dict | None:
+        """Return the `tool_overrides` the Yosys stage of a `tool_name` run reads.
+
+        `tool_overrides.yosys` is the documented key for every backend. The run's own key, such as
+        `openroad`, is read too and loses to `yosys` key by key, so configs that relied on it keep
+        working.
+        """
+        own = self.get_tool_overrides_for(tool_name)
+        yosys = self.get_tool_overrides_for("yosys")
+        if tool_name == "yosys" or own is None:
+            return yosys
+        if yosys is None:
+            return own
+        for key, block in ((tool_name, own), ("yosys", yosys)):
+            if not isinstance(block, dict):
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth_tool_config.override_not_mapping",
+                    tool=key,
+                    got=type(block).__name__,
+                )
+                raise FatalRtlBuddyError(
+                    f"tool_overrides.{key} must be a mapping, "
+                    f"got {type(block).__name__} ({block!r})"
+                )
+        return {**own, **yosys}
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:

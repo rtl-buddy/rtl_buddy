@@ -152,7 +152,15 @@ tool_overrides:
     plugin_path: ../yosys-slang/build/slang.so
 ```
 
-`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored. The override key stays `yosys` when the backend is `openroad`.
+`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored.
+
+The override key stays `yosys` when the backend is `openroad`. The Yosys stage of a `tool: openroad` run reads:
+
+- **Tool options**: the `yosys` entry of `cfg-synth-tools` when there is one, otherwise the `openroad` entry. With a `yosys` entry, Yosys options set only on the `openroad` entry are ignored with a warning.
+- **Overrides**: `tool_overrides.yosys`, over `tool_overrides.openroad` key by key. Older configs that set Yosys options under `openroad` keep working.
+- **`strategy`**: read only from the `openroad` entry and `tool_overrides.openroad`. `tool_overrides.yosys.strategy` warns and is ignored.
+
+A `tool_overrides` key other than the run's `tool:` and `yosys` warns and is ignored.
 
 ## Correctness gates
 
@@ -343,6 +351,8 @@ Each entry is a console message and the action it calls for.
 - **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
 - **`abc-args` has no effect on a Liberty-mapped run:** set `abc-script` to change the mapping script; keep `abc-args` for unmapped runs.
 - **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
+- **`cfg-synth-tools` openroad opts ignored:** a `yosys` entry exists, so the Yosys stage reads its opts. Move the named options to the `yosys` entry.
+- **`tool_overrides` key ignored, or `tool_overrides.yosys.strategy` ignored:** a run reads only its own `tool:` key and `yosys`; set `strategy` under `tool_overrides.openroad`.
 - **OpenROAD synthesis requires LEF files:** set `tech-lef` and `macro-lef` on the `cfg-pdks` entry, or `lef-paths` on the run.
 - **OpenROAD synthesis requires a mapped library:** set `platform:` on the run and define the matching `cfg-synth-platforms` entry.
 - **`phys-model.json` has no per-module breakdown:** Yosys wrote no readable `stat -json`. The run still passes, but `rb phys module` has no rows for it.
