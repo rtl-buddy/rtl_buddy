@@ -448,3 +448,17 @@ def test_icarus_simv_wrapper_embeds_cocotb_vpi_flags(icarus_sim):
     assert "-m libcocotbvpi_icarus" in wrapper_text
     snapshot = icarus_sim._get_icarus_snapshot_path()
     assert wrapper_text.index("libcocotbvpi_icarus") < wrapper_text.index(snapshot)
+
+
+def test_a_run_clears_the_previous_cocotb_results(tmp_path, monkeypatch):
+    """A stale cocotb_results.xml would grade a sim that died before writing its own, so a run removes it with the other per-run outputs."""
+    sim = _make_sim(tmp_path, monkeypatch, "verilator", [])
+    results = Path(sim._get_cocotb_results_path())
+    results.parent.mkdir(parents=True, exist_ok=True)
+    results.write_text("<testsuites/>")
+    (results.parent / "test.log").write_text("PASS\n")
+
+    sim.clear_run_outputs([None])
+
+    assert not results.exists()
+    assert not (results.parent / "test.log").exists()
