@@ -29,4 +29,12 @@ tool_overrides:
     plugin_path: ../yosys-slang/build/slang.so
 ```
 
-`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored. The override key stays `yosys` when the backend is `openroad`.
+`cfg-synth-tools.opts` uses kebab case (`plugin-path`); `tool_overrides.yosys` uses snake case (`plugin_path`). Unknown override keys are warned about and ignored.
+
+The override key stays `yosys` when the backend is `openroad`. The Yosys stage of a `tool: openroad` run reads:
+
+- **Tool options**: the `yosys` entry of `cfg-synth-tools` when there is one, otherwise the `openroad` entry. With a `yosys` entry, Yosys options set only on the `openroad` entry are ignored with a warning.
+- **Overrides**: `tool_overrides.yosys`, over `tool_overrides.openroad` key by key. Older configs that set Yosys options under `openroad` keep working.
+- **`strategy`**: read only from the `openroad` entry and `tool_overrides.openroad`. `tool_overrides.yosys.strategy` warns and is ignored.
+
+A `tool_overrides` key other than the run's `tool:` and `yosys` warns and is ignored.

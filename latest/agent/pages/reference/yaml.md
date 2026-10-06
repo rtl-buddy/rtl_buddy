@@ -91,8 +91,8 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 
 | Block | Fields and behavior |
 |---|---|
-| `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor`; optional `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
-| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML |
+| `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor` (default empty); optional `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
+| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML. `merge-timeout` is the seconds the raw merge may run before it is stopped and reported as failed; unset, the default, is no limit, since a merge of a few hundred databases can take minutes |
 | `cfg-coverview` | `name`, `generate-tables`, and inline Coverview `config` |
 | `cfg-surfer` | `name`, `path`; optional `wcp-port` (0 asks the OS), `editor-cmd` with `%f`/`%l`, `editor-terminal` (`tmux`, `iterm2`, `terminal`, or empty), `editor-sock`, and `ctrl-sock` |
 
@@ -153,8 +153,8 @@ cfg-pnr-platforms:
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
-| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `post-cts-setup-repair` (default `false`), `routing-layer-adjustment`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
-| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, and `openroad.pre-sta-tcl` settings. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
+| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](../concepts/pnr.md#sign-off-at-several-corners) |
+| `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
@@ -173,12 +173,13 @@ The process-dependent P&R keys are all optional:
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `tracks-tcl` | `cfg-pdks` | Path to a Tcl script of `make_tracks` commands (ORFS `MAKE_TRACKS`). P&R sources it after `initialize_floorplan` in place of the bare `make_tracks`. Unset by default |
-| `layer-rc-tcl` | `cfg-pdks` | Path to a Tcl script of `set_layer_rc` / `set_wire_rc` commands (ORFS `SET_RC_TCL`). P&R sources it after `read_sdc`, before placement-time parasitics estimates and CTS; a `netlist-source: pnr` power run sources it after `read_sdc` too and digests its contents when it estimates parasitics. Unset by default |
+| `layer-rc-tcl` | `cfg-pdks` | Path to a Tcl script of `set_layer_rc` / `set_wire_rc` commands (ORFS `SET_RC_TCL`). P&R sources it after `read_sdc`, before placement-time parasitics estimates and CTS, and warns `pnr.no_wire_rc` when it is unset; a `netlist-source: pnr` power run sources it after `read_sdc` too and digests its contents when it estimates parasitics. A synthesis effort with `openroad.repair` sources it before the repair. Unset by default |
 | `tapcell-tcl` | `cfg-pdks` | Path to a Tcl script that inserts tap and endcap cells (ORFS `TAPCELL_TCL`). P&R sources it after macro placement, before the power grid. Unset by default |
 | `platform-tcl` | `cfg-pdks` | Path to a Tcl script that `rb pnr` and `rb power` source before reading Liberty (ORFS `PLATFORM_TCL`), such as `suppress_message` lines. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 | `cts-sink-clustering` | `cfg-pnr-platforms` | Boolean. Passes `-sink_clustering_enable` to `clock_tree_synthesis`. Default `true`; set `false` when CTS fails with `CTS-0080` |
 | `post-cts-setup-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -setup` after CTS, before hold repair. Default `false` |
+| `global-route-hold-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -hold` on `estimate_parasitics -global_routing` after global route, then legalizes and reroutes incrementally before detail route. Default `false` |
 | `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the `routing-layers.signal` layers (`set_global_routing_layer_adjustment`). Unset by default, which keeps the router's default |
 
 A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](../concepts/pnr.md#tune-the-process-dependent-steps).
@@ -191,9 +192,9 @@ A `placement:` block on a P&R platform overrides its PDK's block field by field:
 
 For synthesis, `frontend: verilog` is the default. `frontend: slang` requires `plugin-path` or `RTL_BUDDY_SLANG_PLUGIN`; relative plugin paths resolve from the project root. `single-unit` and `best-effort-hierarchy` are slang-only booleans. `best-effort-hierarchy: true` asks yosys-slang to keep module instances as hierarchy instead of inlining them, which a design that relies on `(* keep_hierarchy *)` for mapping needs. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
-`abc-args` is the argument string of the `abc` command an unmapped `tool: yosys` run adds after `synth`; empty adds none. `abc-script` is the ABC script of a Liberty-mapped run's `abc -liberty` command, on both backends; empty selects the built-in default, which omits `dc2`. It is one line of `;`-separated ABC commands without double quotes, and `{D}` in it takes the SDC delay target. A mapped run ignores `abc-args` and warns. See [Synthesis](../concepts/synthesis.md#choose-the-mapped-run-abc-script).
+`abc-args` is the argument string of the `abc` command an unmapped `tool: yosys` run adds after `synth`; empty adds none. `abc-script` is the ABC script of a Liberty-mapped run's `abc -liberty` command, on both backends; `default` and `delay` name the built-in presets. Empty selects `delay`, which also omits `&dch -f`, when the run's `synth-args` pass `-extra-map +/choices/<map>`, and otherwise `default`, which omits `dc2` and `&fraig -x`. A script is one line of `;`-separated ABC commands without double quotes, and `{D}` in it takes the SDC delay target. A mapped run ignores `abc-args` and warns. See [Synthesis](../concepts/synthesis.md#choose-the-mapped-run-abc-script).
 
-In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs.
+In `synth.yaml` overrides, use snake-case keys such as `plugin_path` and `single_unit`. Unknown keys warn and are ignored; a non-mapping override or a wrong `single_unit` type is fatal. The elaboration override key is `yosys` for both Yosys and OpenROAD runs. An OpenROAD run's Yosys stage also reads `tool_overrides.openroad`, with `yosys` winning per key, and takes its tool options from the `yosys` entry of `cfg-synth-tools`, or from the `openroad` entry when there is no `yosys` entry. `strategy` is read only from `openroad`. Keys that no stage reads warn. See [Synthesis](../concepts/synthesis.md#systemverilog-frontend).
 
 `static-functions`, `conflicting-drivers`, and `unresolved-interfaces` are correctness gates on the Yosys elaboration stage, which the `yosys` and `openroad` backends both use. Omit an option to take its default. An unrecognized value is fatal.
 
@@ -297,6 +298,7 @@ cfg-dispatch:
     modes:
       cov: {mem: 32G, time: "02:00:00"}
   compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4, split-verilate: true, verilate: {cpus: 2}, modes: {cov: {mem: 48G}}}
+  coverage: {time: "01:00:00", modes: {cov: {mem: 8G}}}
   sbatch-args: [--partition=verif]
   max-jobs-per-array: 200
   max-array-size: 1001
@@ -331,6 +333,7 @@ cfg-dispatch:
 | `compile.parallel` | 1; integer of at least 1. Number of distinct builds the suite's build job compiles concurrently. A suite's own `compile.parallel` overrides it. See below |
 | `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded. `mem` and `time` default to the resolved `compile` values. Ignored where the split does not apply |
 | `compile.split-verilate` | `true`; splits a Verilator suite's build job into a verilate job and a C++ build job chained on `afterok`. A suite's own `compile.split-verilate` overrides it; Slurm only, since `local-parallel` never splits |
+| `coverage` | Inherits `resources`. Reserves the coverage tail job (merge, model build, LCOV exports, manifest) that `--dispatch slurm` submits after the simulations. Takes `cpus`, `mem`, `time` and `modes`; `mem`, `time` and `cpus` must be greater than zero. See [Run the coverage tail as a job](../concepts/dispatch.md#run-the-coverage-tail-as-a-job) |
 | `sbatch-args` | Empty list. Appended verbatim after the generated flags, so it overrides duplicates. See [`sbatch-args` behavior](#sbatch-args-behavior) |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
 | `max-array-size` | Unset; read from the cluster's `MaxArraySize` via `scontrol show config`. Must be at least 2. Slurm's largest task index is one below it, so `1001` allows 1000 elements per array. See [Array limits](#array-limits) |
@@ -348,20 +351,22 @@ cfg-dispatch:
 
 `compile.parallel` multiplies only the build job's `cpus` reservation, capped at the suite's planned test count. `mem` and `time` are submitted as written. Above 1, the job runs every config's `preproc` before any builder starts, so no hook may change another config's inputs. It has no effect where a builder compiles inside its own simulation job, since that job is one serial build.
 
-`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are discarded; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are ignored with a warning; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+
+An unknown key in `cfg-dispatch`, in its `resources`, `compile`, `compile.verilate`, `coverage`, `retry` or `rightsize` block, in a `tests.yaml` `resources:` or `compile:` block, or in an elaboration profile's `resources` is ignored. Each one logs the warning `config.unknown_key` with the file, the block and the nearest known key, for example `did you mean 'mem'?` for `memory:`. A later major release will make it fatal.
 
 ### Per-mode reservations
 
 A `modes:` block resizes a reservation for the run's `--builder-mode`.
 
-- It is available on every reservation block: `cfg-dispatch.resources`, `cfg-dispatch.compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`.
+- It is available on every reservation block: `cfg-dispatch.resources`, `cfg-dispatch.compile`, `cfg-dispatch.coverage`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`.
 - The base value resolves first. The mode block then applies over the resolved result, least specific layer first, so any mode block beats every base field: `test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`.
 - `cfg-dispatch.resources.modes` also sizes the compile reservation for that mode, because `resources` is the least specific layer of `compile`. To size only the build, put the mode under `cfg-dispatch.compile.modes`.
 - Within a compile block, any `verilate` key beats any `compile` key, and within each, any mode block beats every base field. `compile.modes.<mode>.verilate` is therefore the most specific verilate value.
 - Omitted fields and unnamed modes inherit, so a mode that no block names reserves the base value.
 - Mode names are free text, normally your `cfg-rtl-builder.builder-opts` keys, but they must be strings. Quote `on`, `no`, and `yes`.
 - Fields use the base validators, including the quoted-`time` rule.
-- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` block instead discards an unknown key without a warning, so a misspelled field such as `memory:` reserves nothing.
+- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` or `compile:` block instead ignores an unknown key after a `config.unknown_key` warning, so a misspelled field such as `memory:` reserves nothing.
 - `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
 - A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields.
 - A mode block is not part of the compile fingerprint.
@@ -599,6 +604,7 @@ Top-level fields:
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
+| `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
 The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself.
 
@@ -642,6 +648,7 @@ Test fields:
 | `uvm.max_warns` / `uvm.max_errors` | Optional | Thresholds whose excess fails the test |
 | `sweep.path` | Optional | Expansion hook path |
 | `preproc.path` | Optional | Precompile hook path |
+| `preproc-sets-plusdefines` | Default true; boolean | `false` declares that the `preproc` hook does not change the compile key (plusdefines, builder, model, assertions). The dispatch head then counts the test's build once with identical tests in the build job's reservation, instead of once per test. Overrides the suite value. The build job compares that key before and after the hook; a hook that changes any part of it anyway logs `build_job.preproc_changed_compile_key`, naming the changed fields |
 | `postproc.path` | Accepted, not executed | Custom postprocessing is unavailable |
 | `covers` | Optional list | Specification coverage IDs; no simulation effect |
 | `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#per-mode-reservations) sub-block is the most specific such layer |

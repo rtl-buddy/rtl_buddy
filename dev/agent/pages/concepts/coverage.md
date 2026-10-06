@@ -90,7 +90,9 @@ Merged Coverage: L:0.92 B:0.95 T:FAIL F:FAIL
 Coverage merge FAILED: verilator_coverage --write wrote no merged database, so toggle, expression, functional read FAIL (measurement lost), not UNSP (not instrumented) — see the coverage.merge.failed event
 ```
 
-The run exits 1, even when every test passed. Results and saved coverage are still written, and the `coverage.merge.failed` event carries the tool's return code and output. If the cause is memory or a killed process, rerun the coverage command on a compute node instead of the submit host. Machine output reports the failure as `merge_failed`.
+The run exits 1, even when every test passed. Results and saved coverage are still written, and the `coverage.merge.failed` event carries the tool's return code and output. If the cause is memory or a killed process, rerun the coverage command on a compute node instead of the submit host; under `--dispatch slurm` the merge already runs in its own job, so raise its reservation in `cfg-dispatch.coverage` (see [Run the coverage tail as a job](dispatch.md#run-the-coverage-tail-as-a-job)). A merge stopped by `cfg-coverage` `merge-timeout` fails the same way. Machine output reports the failure as `merge_failed`.
+
+A dispatched coverage tail that leaves no answer (refused submission, killed job, `max-wait` expiry) is reported as `Coverage tail FAILED` and `tail_failed` in machine output, with the job id and log. No model or manifest is written, every test result is, and the run exits 1. The previous run's `cov_dir/manifest.json` and `coverage-model.json` are removed before the job is submitted, so `rb cov summary`, the MCP coverage tools and the hub never present them as this run's.
 
 ## Per-elaboration vs source-point figures
 
@@ -107,7 +109,7 @@ rtl_buddy reports both:
 - **Per elaboration** (`totals`) answers "is this point covered in every build". Use it when one compile key is what you care about.
 - **Source point** (`source_totals`) answers "is this point covered by the suite", which is how a closure target is normally stated. A point counts as covered when any elaboration hit it.
 
-Line figures are already collapsed, so the `run` and `run (source)` rows of `rb cov summary` agree on line and differ on branch, toggle, expression and cover. `rb cov summary` shows both figures, and `--by-source` ranks the coldest files by source point. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
+Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
 
 Source points come from the coverage model. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
 
@@ -152,7 +154,7 @@ rb cov module blk
 rb cov module blk --all
 ```
 
-- `summary` reports run and test totals and the coldest files. `--limit 0` shows all files. `--by-source` ranks files by source point.
+- `summary` reports run and test totals and the coldest files. `--limit 0` shows all files. `--by-source` shows the same files with source-point figures.
 - `module` reports the points of exactly the named module, and `--all` includes hit points as well as misses. Module figures are per elaboration.
 
 An unknown module exits 2 and lists close candidates. With `--machine`, both totals blocks are always present. `rb mcp` exposes the same data as `cov_summary` and `cov_module`, with no hub needed; see [The MCP server](graph.md#the-mcp-server).
@@ -163,7 +165,7 @@ An unknown module exits 2 and lists close candidates. With `--machine`, both tot
 rb hub start --serve-viewer
 ```
 
-Open `/cov`. The pane shows totals, ranked files, source annotations, points and per-test attribution from the same model as `rb cov`. Its figures are per elaboration; the source-point percentages are in the header tooltip. Line selections focus the source and schematic views, and module selections focus the graph. See [Coverage pane](hub.md#coverage-pane).
+Open `/cov`. The pane shows totals, ranked files, source annotations, points and per-test attribution from the same model as `rb cov`. Its figures are per elaboration by default; the `figures` picker, or `/cov?by=source`, switches them to source points. Line selections focus the source and schematic views, and module selections focus the graph. See [Coverage pane](hub.md#coverage-pane).
 
 After `rb graph results`, the design graph also joins declared `covers:` relationships to observed coverage; see [Coverage on the graph](graph.md#coverage-on-the-graph).
 

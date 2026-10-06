@@ -584,7 +584,9 @@ Merged Coverage: L:0.92 B:0.95 T:FAIL F:FAIL
 Coverage merge FAILED: verilator_coverage --write wrote no merged database, so toggle, expression, functional read FAIL (measurement lost), not UNSP (not instrumented) — see the coverage.merge.failed event
 ```
 
-The run exits 1, even when every test passed. Results and saved coverage are still written, and the `coverage.merge.failed` event carries the tool's return code and output. If the cause is memory or a killed process, rerun the coverage command on a compute node instead of the submit host. Machine output reports the failure as `merge_failed`.
+The run exits 1, even when every test passed. Results and saved coverage are still written, and the `coverage.merge.failed` event carries the tool's return code and output. If the cause is memory or a killed process, rerun the coverage command on a compute node instead of the submit host; under `--dispatch slurm` the merge already runs in its own job, so raise its reservation in `cfg-dispatch.coverage` (see [Run the coverage tail as a job](dispatch.md#run-the-coverage-tail-as-a-job)). A merge stopped by `cfg-coverage` `merge-timeout` fails the same way. Machine output reports the failure as `merge_failed`.
+
+A dispatched coverage tail that leaves no answer (refused submission, killed job, `max-wait` expiry) is reported as `Coverage tail FAILED` and `tail_failed` in machine output, with the job id and log. No model or manifest is written, every test result is, and the run exits 1. The previous run's `cov_dir/manifest.json` and `coverage-model.json` are removed before the job is submitted, so `rb cov summary`, the MCP coverage tools and the hub never present them as this run's.
 
 ## Per-elaboration vs source-point figures
 
@@ -601,7 +603,7 @@ rtl_buddy reports both:
 - **Per elaboration** (`totals`) answers "is this point covered in every build". Use it when one compile key is what you care about.
 - **Source point** (`source_totals`) answers "is this point covered by the suite", which is how a closure target is normally stated. A point counts as covered when any elaboration hit it.
 
-Line figures are already collapsed, so the `run` and `run (source)` rows of `rb cov summary` agree on line and differ on branch, toggle, expression and cover. `rb cov summary` shows both figures, and `--by-source` ranks the coldest files by source point. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
+Both figures use one unit at every scope, so a test's figure compares with its file's and the run's. A line point is one block of code, not one source line: an `if` arm and its `else` on one line are two points, and the per-elaboration line count equals the `t=line` records in the merged `coverage.dat`. `rb cov summary` shows both figures, and `--by-source` shows the coldest files' source-point figures in the same order. `--coverage-dir-summary` is per elaboration only, because LCOV has already folded elaborations together.
 
 Source points come from the coverage model. A run with only LCOV fallback records no module, so its two figures are equal. If the run produced no model, the summary prints `Coverage source points: unavailable (no coverage model)`.
 
@@ -646,7 +648,7 @@ rb cov module blk
 rb cov module blk --all
 ```
 
-- `summary` reports run and test totals and the coldest files. `--limit 0` shows all files. `--by-source` ranks files by source point.
+- `summary` reports run and test totals and the coldest files. `--limit 0` shows all files. `--by-source` shows the same files with source-point figures.
 - `module` reports the points of exactly the named module, and `--all` includes hit points as well as misses. Module figures are per elaboration.
 
 An unknown module exits 2 and lists close candidates. With `--machine`, both totals blocks are always present. `rb mcp` exposes the same data as `cov_summary` and `cov_module`, with no hub needed; see [The MCP server](graph.md#the-mcp-server).
@@ -657,7 +659,7 @@ An unknown module exits 2 and lists close candidates. With `--machine`, both tot
 rb hub start --serve-viewer
 ```
 
-Open `/cov`. The pane shows totals, ranked files, source annotations, points and per-test attribution from the same model as `rb cov`. Its figures are per elaboration; the source-point percentages are in the header tooltip. Line selections focus the source and schematic views, and module selections focus the graph. See [Coverage pane](hub.md#coverage-pane).
+Open `/cov`. The pane shows totals, ranked files, source annotations, points and per-test attribution from the same model as `rb cov`. Its figures are per elaboration by default; the `figures` picker, or `/cov?by=source`, switches them to source points. Line selections focus the source and schematic views, and module selections focus the graph. See [Coverage pane](hub.md#coverage-pane).
 
 After `rb graph results`, the design graph also joins declared `covers:` relationships to observed coverage; see [Coverage on the graph](graph.md#coverage-on-the-graph).
 
@@ -730,7 +732,7 @@ Before using `--dispatch slurm`, provide:
 
 For each suite, dispatch submits one build job that compiles each distinct build once, then groups simulations with identical resolved resources into Slurm arrays that start after the build succeeds. Where [verilation is split off](#split-verilation-from-the-c-build), the build is two chained jobs. Results come back into the normal summary and exit status.
 
-A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
+A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A failed build is compiled once: the other tests on that build whose inputs are identical take its exit status, and their `compile.log` carries its transcript. A failure that may be transient is not shared, and each of those tests compiles for itself: one that waited for a license seat, or whose transcript ends in an out-of-memory signature (`Killed signal terminated program`, `virtual memory exhausted`, `out of memory`, `Cannot allocate memory`, make's `Error 137`). A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
 
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
@@ -775,6 +777,22 @@ cfg-dispatch:
 
 Quote every `time` value; an unquoted `4:00:00` is rejected.
 
+## Run the coverage tail as a job
+
+Under `--dispatch slurm`, the coverage tail of `rb test` and `rb regression` runs as one job instead of on the submit host: the raw merge, the `coverage-model.json` build, the LCOV exports and the manifest. It is submitted once every simulation is collected, the head waits on it like the fleet (`max-wait` applies), then reads back the summary lines and machine payload. Nothing is submitted when no test recorded coverage. A manifest-only tail (`--coverage-model none` with no merge, LCOV, HTML, Coverview, directory or source summary requested) also runs in the head, since a job would only add a queue wait. Without dispatch and under `local-parallel` the tail runs in the head as before.
+
+Size it with `cfg-dispatch.coverage`, which inherits `cfg-dispatch.resources` field by field and takes a `modes:` block. The tail only exists under a coverage build, so `modes.cov` is the usual place:
+
+```yaml
+cfg-dispatch:
+  coverage:
+    time: "01:00:00"
+    modes:
+      cov: {mem: 8G}
+```
+
+The job writes `cov_dir/` under the head's command root, logs to `.dispatch/coverage/` under the artefact root, and is named `rb:coverage`. If it fails, see [Read a failed merge](coverage.md#read-a-failed-merge).
+
 ## Set per-test resources
 
 Reservations resolve field by field in this order: test, testbench, `cfg-dispatch.resources`, built-in defaults.
@@ -794,7 +812,7 @@ Tests with identical resolved reservations share an array.
 
 ## Size a reservation per builder mode
 
-A `modes:` sub-block sizes the same test for the builder mode it runs in. A `-M cov` build carries coverage counters and a `-M debug` build dumps waves, so a test that fits in 1 GB under `-M reg` can need far more memory and about twice the wall clock. Every reservation block takes one: `cfg-dispatch.resources` and `.compile`, a suite's `compile:`, and a testbench's or test's `resources:` and `compile:`.
+A `modes:` sub-block sizes the same test for the builder mode it runs in. A `-M cov` build carries coverage counters and a `-M debug` build dumps waves, so a test that fits in 1 GB under `-M reg` can need far more memory and about twice the wall clock. Every reservation block takes one: `cfg-dispatch.resources`, `.compile` and `.coverage`, a suite's `compile:`, and a testbench's or test's `resources:` and `compile:`.
 
 ```yaml
 resources:
@@ -844,7 +862,7 @@ The suite block is the floor for the build job. The job aggregates the testbench
 - `mem`: the sum of the largest `min(parallel, n)` builds, since concurrent builds each hold their own peak.
 - `time`: the finish time of the job's work queue, where each build starts on the first free of `parallel` workers in plan order. Builds of 30, 30, and 20 minutes on two workers take 50 minutes.
 
-Only testbenches with selected tests count, so a run that skips `tb_chip_t1` reserves the suite's `8G`. With no testbench `compile:` block, suite `compile.mem` is the whole job, so size it for `parallel` concurrent builds from elaboration, not simulation. Once any testbench states its own `mem`, the suite value is read as one build's peak for each build that has none. A 256G testbench beside an unannotated build under `compile: {mem: 8G, parallel: 2}` reserves 264G.
+Only testbenches with selected tests count, so a run that skips `tb_chip_t1` reserves the suite's `8G`. The head counts one build per distinct testbench, plusdefines, builder, model and `assertions`, except that a test with a `preproc` hook counts as its own build, because the hook may set plusdefines. Set `preproc-sets-plusdefines: false` on the test or the suite when the hook only writes stimulus, so twenty such tests on one testbench reserve one build, not twenty. With no testbench `compile:` block, suite `compile.mem` is the whole job, so size it for `parallel` concurrent builds from elaboration, not simulation. Once any testbench states its own `mem`, the suite value is read as one build's peak for each build that has none. A 256G testbench beside an unannotated build under `compile: {mem: 8G, parallel: 2}` reserves 264G.
 
 ## Compile several builds at once
 
@@ -1044,6 +1062,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 ## Troubleshoot reservations, arrays, and waits
 
+- **`config.unknown_key`:** a reservation or `cfg-dispatch` key was misspelt and ignored, so the job gets the inherited value. Rename it to the suggested key. See [Parallel dispatch](../reference/yaml.md#parallel-dispatch).
 - **`dispatch.reservations_ignored`:** `local-parallel` does not enforce `cpus`, `mem`, or `time`. Lower `--jobs` if memory runs out.
 - **`OUT_OF_MEMORY` (Slurm) or `Killed` / exit 137 (local):** raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`. Elaboration of large generated structures can be the memory peak.
 - **sbatch refuses an array:** set `cfg-dispatch.max-array-size` or `max-array-tasks`. `dispatch.max_array_size_unknown` (INFO) means no limit could be read.
@@ -1058,6 +1077,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 - **`dispatch.build_job_deduped` and the build job stays `PENDING`:** inspect the job it waits for with `squeue -j <ids> -O JobID,State,Reason` and `scontrol show job <id>`. `RUNNING`, or `PENDING` for `Resources` or `Priority`, is normal; cancelling it discards a build this run will reuse. `scancel` it only if it is held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or an abandoned run.
 - **`build_job.group_input_drift`:** configs that share one build have different inputs. Give the config its own build, or fix the hook that rewrites the input per test.
+- **`build_job.group_failure_adoption_declined`:** a config shares a build whose first compile failed, but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
 - **`compile.build_stamp_rejected`, `compile.stamp_write_failed`, `compile.prebuilt_stamp_invalid`:** see [Recover when a gated job cannot use the build](#recover-when-a-gated-job-cannot-use-the-build).
 - **`dispatch.binary_mismatch`:** runs of one build directory did not all use the same executable, because one run rebuilt it while others used it. Results are scored as they ran; re-run to confirm.
 - **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `no-verilate-unsupported`): the build job verilated for itself. The result is correct but unsplit.
@@ -2222,7 +2242,7 @@ Ticking `heat` colors module nodes by a synthesis or power metric from the [`/ph
 
 Open `/cov` after a coverage-producing run. `GET /cov.json` uses the same builder as `rb cov summary`, so CLI and browser totals agree. `GET /cov/source?path=...` serves only files named by the coverage model, from under the project root.
 
-The pane offers metric filtering, coldest-file ordering, a per-test view, annotated source, and per-point attribution. Its numbers are per elaboration; the run's source-point percentages are in the header tooltip. Clicking source opens the editor peer, and clicking a module focuses the graph pane.
+The pane offers metric filtering, coldest-file ordering, a per-test view, annotated source, and per-point attribution. The `figures` picker switches the totals, file list and tests table between per-elaboration figures (the default) and source points, as `rb cov summary --by-source` does: same files, same order, different figures. The other figure is in the header tooltip. Open `/cov?by=source` to start on source points; the pane keeps `?by=` in the address as you switch. Clicking source opens the editor peer, and clicking a module focuses the graph pane.
 
 Reload after a run finishes if the landing page has not updated. Collection and metric definitions are in [Coverage](coverage.md).
 
@@ -4543,6 +4563,8 @@ A run writes to `artefacts/<test>/`; repeated runs use `run-NNNN/` subdirectorie
 - `run.f`: generated, non-portable filelist.
 - `coverage.dat`: raw coverage, when enabled.
 
+Before PRE, a run removes the previous run's `test.log`, `test.err`, `coverage.dat`, `compile.retry.log`, `result.json` and, for cocotb, `cocotb_results.xml`, so a test that stops at setup or compile leaves no earlier verdict beside its own. `test.randseed` is kept for `--replay`. Under `--dispatch` the build job clears the test's directory and each simulation job clears its run's, so a run whose job never started keeps the previous run's files; the summary and `--machine` output always describe this run.
+
 Symlinks to the latest test log, error log and seed stay at the test's artefact root. `rtl_buddy.log` beside `tests.yaml` holds orchestration events; `--machine` makes it JSON Lines and returns structured stdout. See [Agent Use](../agents.md#machine-mode).
 
 ## Troubleshooting
@@ -5704,7 +5726,7 @@ rtl-buddy-cdc has no include-path option, so `rb cdc` and the hub's domain-map b
 Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
 
 - `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
-- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, or `--coverage-source-summary` on `test` and `regression`.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
 
 See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
@@ -5712,14 +5734,14 @@ See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Pass `--builder <name>` for the run, or make that builder the platform default. See [YAML Formats](reference/yaml.md).
 
-## Coverage merging runs in the submitting process, with no timeout
+## Coverage merging runs in the submitting process without a Slurm backend
 
-The merge and LCOV exports run in the process that invoked `rb`, including under `--dispatch slurm`.
+Under `--dispatch slurm` the coverage tail (merge, model build, LCOV exports and manifest) runs as one job sized by `cfg-dispatch.coverage` (see [Run the coverage tail as a job](concepts/dispatch.md#run-the-coverage-tail-as-a-job)). Without dispatch, and under `--dispatch local-parallel`, it runs in the process that invoked `rb`.
 
-- A few hundred inputs can peak in the gigabytes. A memory cap on a shared submit host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](concepts/coverage.md#read-a-failed-merge)).
-- There is no timeout, so a hung merge hangs the run.
+- A few hundred inputs can peak in the gigabytes. A memory cap on that host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](concepts/coverage.md#read-a-failed-merge)).
+- The merge has no time limit unless `cfg-coverage` sets `merge-timeout`, so a hung merge hangs the run.
 
-Run the coverage command on a compute node, for example by submitting `rb regression --coverage-merge` as one job.
+Without Slurm, run the coverage command on a host with the memory it needs.
 
 ## Verilator randomized runs may not reproduce
 
@@ -5801,9 +5823,9 @@ A resource group larger than the cluster's array limit is submitted as several a
 
 YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
 
-## An unknown key in a `resources:` block is dropped silently
+## An unknown key in a reservation block is ignored after a warning
 
-A `resources:` block discards any key it does not define, with no warning. A typo such as `memory:` reserves nothing while reading as if it did. Check a new reservation against [YAML formats](reference/yaml.md#parallel-dispatch) and in the `Reserved` column of the reservation advice or the job's `--mem` and `--time`. A `modes:` block rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once.
+An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `coverage:`, `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
 
 ## Dispatch build jobs cover the whole suite
 
@@ -9105,7 +9127,7 @@ Project-local environment defaults belong in [`.rtl-buddy/.env`](../concepts/roo
 | Block | Fields and behavior |
 |---|---|
 | `cfg-verible` | `name`, `path`; optional `extra_args` keyed by `lint`, `format`, `syntax`, or `preprocessor` (default empty); optional `exclude` globs. Configured args precede CLI args. For the active platform, an invalid configured directory warns and falls back to `PATH` when possible |
-| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML |
+| `cfg-coverage` | `name` is the simulator family. `use-lcov: true` enables LCOV info and HTML. `merge-timeout` is the seconds the raw merge may run before it is stopped and reported as failed; unset, the default, is no limit, since a merge of a few hundred databases can take minutes |
 | `cfg-coverview` | `name`, `generate-tables`, and inline Coverview `config` |
 | `cfg-surfer` | `name`, `path`; optional `wcp-port` (0 asks the OS), `editor-cmd` with `%f`/`%l`, `editor-terminal` (`tmux`, `iterm2`, `terminal`, or empty), `editor-sock`, and `ctrl-sock` |
 
@@ -9311,6 +9333,7 @@ cfg-dispatch:
     modes:
       cov: {mem: 32G, time: "02:00:00"}
   compile: {cpus: 8, mem: 16G, time: "02:00:00", parallel: 4, split-verilate: true, verilate: {cpus: 2}, modes: {cov: {mem: 48G}}}
+  coverage: {time: "01:00:00", modes: {cov: {mem: 8G}}}
   sbatch-args: [--partition=verif]
   max-jobs-per-array: 200
   max-array-size: 1001
@@ -9345,6 +9368,7 @@ cfg-dispatch:
 | `compile.parallel` | 1; integer of at least 1. Number of distinct builds the suite's build job compiles concurrently. A suite's own `compile.parallel` overrides it. See below |
 | `compile.verilate` | `{cpus, mem, time}` sizing the verilate job of a split Verilator suite. `cpus` defaults to 2, since verilation is single-threaded. `mem` and `time` default to the resolved `compile` values. Ignored where the split does not apply |
 | `compile.split-verilate` | `true`; splits a Verilator suite's build job into a verilate job and a C++ build job chained on `afterok`. A suite's own `compile.split-verilate` overrides it; Slurm only, since `local-parallel` never splits |
+| `coverage` | Inherits `resources`. Reserves the coverage tail job (merge, model build, LCOV exports, manifest) that `--dispatch slurm` submits after the simulations. Takes `cpus`, `mem`, `time` and `modes`; `mem`, `time` and `cpus` must be greater than zero. See [Run the coverage tail as a job](../concepts/dispatch.md#run-the-coverage-tail-as-a-job) |
 | `sbatch-args` | Empty list. Appended verbatim after the generated flags, so it overrides duplicates. See [`sbatch-args` behavior](#sbatch-args-behavior) |
 | `max-jobs-per-array` | Per-array Slurm throttle, not a whole-run cap |
 | `max-array-size` | Unset; read from the cluster's `MaxArraySize` via `scontrol show config`. Must be at least 2. Slurm's largest task index is one below it, so `1001` allows 1000 elements per array. See [Array limits](#array-limits) |
@@ -9362,20 +9386,22 @@ cfg-dispatch:
 
 `compile.parallel` multiplies only the build job's `cpus` reservation, capped at the suite's planned test count. `mem` and `time` are submitted as written. Above 1, the job runs every config's `preproc` before any builder starts, so no hook may change another config's inputs. It has no effect where a builder compiles inside its own simulation job, since that job is one serial build.
 
-`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are discarded; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+`parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are ignored with a warning; in a testbench `compile:` block or any `modes:` block they are rejected at load.
+
+An unknown key in `cfg-dispatch`, in its `resources`, `compile`, `compile.verilate`, `coverage`, `retry` or `rightsize` block, in a `tests.yaml` `resources:` or `compile:` block, or in an elaboration profile's `resources` is ignored. Each one logs the warning `config.unknown_key` with the file, the block and the nearest known key, for example `did you mean 'mem'?` for `memory:`. A later major release will make it fatal.
 
 ### Per-mode reservations
 
 A `modes:` block resizes a reservation for the run's `--builder-mode`.
 
-- It is available on every reservation block: `cfg-dispatch.resources`, `cfg-dispatch.compile`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`.
+- It is available on every reservation block: `cfg-dispatch.resources`, `cfg-dispatch.compile`, `cfg-dispatch.coverage`, a suite's top-level `compile:`, and a testbench's or test's `resources:` and `compile:`.
 - The base value resolves first. The mode block then applies over the resolved result, least specific layer first, so any mode block beats every base field: `test.modes[m]` > `testbench.modes[m]` > `cfg-dispatch.modes[m]` > `test` > `testbench` > `cfg-dispatch`.
 - `cfg-dispatch.resources.modes` also sizes the compile reservation for that mode, because `resources` is the least specific layer of `compile`. To size only the build, put the mode under `cfg-dispatch.compile.modes`.
 - Within a compile block, any `verilate` key beats any `compile` key, and within each, any mode block beats every base field. `compile.modes.<mode>.verilate` is therefore the most specific verilate value.
 - Omitted fields and unnamed modes inherit, so a mode that no block names reserves the base value.
 - Mode names are free text, normally your `cfg-rtl-builder.builder-opts` keys, but they must be strings. Quote `on`, `no`, and `yes`.
 - Fields use the base validators, including the quoted-`time` rule.
-- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` block instead discards an unknown key without a warning, so a misspelled field such as `memory:` reserves nothing.
+- A `modes:` block rejects `parallel`, `split-verilate`, a nested `modes:`, and unknown keys at load. A base `resources:` or `compile:` block instead ignores an unknown key after a `config.unknown_key` warning, so a misspelled field such as `memory:` reserves nothing.
 - `modes:` is also rejected inside `compile.verilate` (write `compile.modes.<mode>.verilate`) and on an elaboration profile's `resources`, which resolves without a builder mode.
 - A testbench's `compile.modes` is the most specific layer and is aggregated over the planned builds like the base fields.
 - A mode block is not part of the compile fingerprint.
@@ -9613,6 +9639,7 @@ Top-level fields:
 | `tests` | Required | Test definitions |
 | `builder` | Optional | Suite default builder name |
 | `compile` | Optional | This suite's whole-job dispatch compile reservation: `cpus`, `mem`, quoted `time`, `parallel`, `split-verilate`, a `verilate` sub-block, and a [`modes`](#per-mode-reservations) sub-block. See below |
+| `preproc-sets-plusdefines` | Default true | Suite default for the test field of the same name |
 
 The suite `compile` block layers field by field over `cfg-dispatch.compile`, which layers over `cfg-dispatch.resources`. A testbench's own `compile` overrides it per build, and omitted fields inherit. It sizes the suite's build jobs and the compile half of a simulation job that compiles for itself.
 
@@ -9656,6 +9683,7 @@ Test fields:
 | `uvm.max_warns` / `uvm.max_errors` | Optional | Thresholds whose excess fails the test |
 | `sweep.path` | Optional | Expansion hook path |
 | `preproc.path` | Optional | Precompile hook path |
+| `preproc-sets-plusdefines` | Default true; boolean | `false` declares that the `preproc` hook does not change the compile key (plusdefines, builder, model, assertions). The dispatch head then counts the test's build once with identical tests in the build job's reservation, instead of once per test. Overrides the suite value. The build job compares that key before and after the hook; a hook that changes any part of it anyway logs `build_job.preproc_changed_compile_key`, naming the changed fields |
 | `postproc.path` | Accepted, not executed | Custom postprocessing is unavailable |
 | `covers` | Optional list | Specification coverage IDs; no simulation effect |
 | `resources` | Optional | Per-test dispatch reservation layered over testbench and root defaults; quote `time`. A [`modes`](#per-mode-reservations) sub-block is the most specific such layer |

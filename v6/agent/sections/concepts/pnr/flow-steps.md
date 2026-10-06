@@ -7,6 +7,6 @@ The generated `pnr.tcl` runs these steps in order:
 3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins.
 4. Run global placement, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
 5. Run `repair_design`, legalization, clock-tree synthesis, setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
-6. Route globally, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, and in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
+6. Route globally, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
 
 A tie port the PDK leaves unset gets neither tie step.

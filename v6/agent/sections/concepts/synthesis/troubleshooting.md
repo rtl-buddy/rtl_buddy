@@ -11,6 +11,8 @@ Each entry is a console message and the action it calls for.
 - **`single_unit` or `best_effort_hierarchy` has no effect:** the frontend is not `slang`. Set `frontend: slang` or remove the option.
 - **`abc-args` has no effect on a Liberty-mapped run:** set `abc-script` to change the mapping script; keep `abc-args` for unmapped runs.
 - **`tool_overrides.yosys` unknown key ignored:** override keys are snake case; the message lists the accepted ones.
+- **`cfg-synth-tools` openroad opts ignored:** a `yosys` entry exists, so the Yosys stage reads its opts. Move the named options to the `yosys` entry.
+- **`tool_overrides` key ignored, or `tool_overrides.yosys.strategy` ignored:** a run reads only its own `tool:` key and `yosys`; set `strategy` under `tool_overrides.openroad`.
 - **OpenROAD synthesis requires LEF files:** set `tech-lef` and `macro-lef` on the `cfg-pdks` entry, or `lef-paths` on the run.
 - **OpenROAD synthesis requires a mapped library:** set `platform:` on the run and define the matching `cfg-synth-platforms` entry.
 - **`phys-model.json` has no per-module breakdown:** Yosys wrote no readable `stat -json`. The run still passes, but `rb phys module` has no rows for it.

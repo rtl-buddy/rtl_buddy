@@ -317,6 +317,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/configure-dispatch.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#run-the-coverage-tail-as-a-job",
+          "slug": "run-the-coverage-tail-as-a-job",
+          "title": "Run the coverage tail as a job",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/dispatch/run-the-coverage-tail-as-a-job.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#set-per-test-resources",
           "slug": "set-per-test-resources",
           "title": "Set per-test resources",
@@ -2354,10 +2360,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-uses-the-platform-builder.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-merging-runs-in-the-submitting-process-with-no-timeout",
-          "slug": "coverage-merging-runs-in-the-submitting-process-with-no-timeout",
-          "title": "Coverage merging runs in the submitting process, with no timeout",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-merging-runs-in-the-submitting-process-with-no-timeout.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#coverage-merging-runs-in-the-submitting-process-without-a-slurm-backend",
+          "slug": "coverage-merging-runs-in-the-submitting-process-without-a-slurm-backend",
+          "title": "Coverage merging runs in the submitting process without a Slurm backend",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-merging-runs-in-the-submitting-process-without-a-slurm-backend.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#verilator-randomized-runs-may-not-reproduce",
@@ -2444,10 +2450,10 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/quote-dispatch-time-values.md"
         },
         {
-          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unknown-key-in-a-resources-block-is-dropped-silently",
-          "slug": "an-unknown-key-in-a-resources-block-is-dropped-silently",
-          "title": "An unknown key in a `resources:` block is dropped silently",
-          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-unknown-key-in-a-resources-block-is-dropped-silently.md"
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-unknown-key-in-a-reservation-block-is-ignored-after-a-warning",
+          "slug": "an-unknown-key-in-a-reservation-block-is-ignored-after-a-warning",
+          "title": "An unknown key in a reservation block is ignored after a warning",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-unknown-key-in-a-reservation-block-is-ignored-after-a-warning.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#dispatch-build-jobs-cover-the-whole-suite",

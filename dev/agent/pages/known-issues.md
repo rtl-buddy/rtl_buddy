@@ -19,7 +19,7 @@ rtl-buddy-cdc has no include-path option, so `rb cdc` and the hub's domain-map b
 Verilator scores each coverage point once per module elaboration. If a suite builds the same RTL under different defines or parameters, a block can look short on coverage when it is fully covered once the copies are collapsed.
 
 - `rb cov summary`, `--coverage-dir-summary` and merged totals report the per-elaboration figure.
-- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, or `--coverage-source-summary` on `test` and `regression`.
+- For the collapsed figure, read `source_totals`: the `run (source)` row of `rb cov summary`, `rb cov summary --by-source`, `--coverage-source-summary` on `test` and `regression`, or the `/cov` pane's `figures` picker.
 
 See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
@@ -27,14 +27,14 @@ See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Pass `--builder <name>` for the run, or make that builder the platform default. See [YAML Formats](reference/yaml.md).
 
-## Coverage merging runs in the submitting process, with no timeout
+## Coverage merging runs in the submitting process without a Slurm backend
 
-The merge and LCOV exports run in the process that invoked `rb`, including under `--dispatch slurm`.
+Under `--dispatch slurm` the coverage tail (merge, model build, LCOV exports and manifest) runs as one job sized by `cfg-dispatch.coverage` (see [Run the coverage tail as a job](concepts/dispatch.md#run-the-coverage-tail-as-a-job)). Without dispatch, and under `--dispatch local-parallel`, it runs in the process that invoked `rb`.
 
-- A few hundred inputs can peak in the gigabytes. A memory cap on a shared submit host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](concepts/coverage.md#read-a-failed-merge)).
-- There is no timeout, so a hung merge hangs the run.
+- A few hundred inputs can peak in the gigabytes. A memory cap on that host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](concepts/coverage.md#read-a-failed-merge)).
+- The merge has no time limit unless `cfg-coverage` sets `merge-timeout`, so a hung merge hangs the run.
 
-Run the coverage command on a compute node, for example by submitting `rb regression --coverage-merge` as one job.
+Without Slurm, run the coverage command on a host with the memory it needs.
 
 ## Verilator randomized runs may not reproduce
 
@@ -116,9 +116,9 @@ A resource group larger than the cluster's array limit is submitted as several a
 
 YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
 
-## An unknown key in a `resources:` block is dropped silently
+## An unknown key in a reservation block is ignored after a warning
 
-A `resources:` block discards any key it does not define, with no warning. A typo such as `memory:` reserves nothing while reading as if it did. Check a new reservation against [YAML formats](reference/yaml.md#parallel-dispatch) and in the `Reserved` column of the reservation advice or the job's `--mem` and `--time`. A `modes:` block rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once.
+An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `coverage:`, `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
 
 ## Dispatch build jobs cover the whole suite
 
