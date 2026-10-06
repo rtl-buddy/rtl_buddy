@@ -73,8 +73,7 @@ _RECORDS = (
 )
 
 # The same run as _RECORDS with parameterised module names (`blk_a__W1`, `blk_a__Wc`,
-# `blk_b`, `blk_b__W4`); line points are recorded once per elaboration and merged by
-# line, so a per-elaboration sum would double count.
+# `blk_b`, `blk_b__W4`); every point, line included, is recorded once per elaboration.
 _ELABORATED_RECORDS = (
     (_BLK_A, 1, "line", "", "blk_a__W1", 1),
     (_BLK_A, 2, "line", "", "blk_a__W1", 0),
@@ -479,7 +478,7 @@ def test_parameterised_modules_join_onto_the_source_named_nodes(
 def test_several_elaborations_aggregate_onto_the_one_node(
     elaborated_cov_project: Path,
 ):
-    """Several elaborations aggregate onto one node, counting module-less line points
+    """Several elaborations aggregate onto one node, each elaboration's points counted
     once."""
     nodes = _join(
         elaborated_cov_project, graph=_design_graph(elaborated_cov_project)
@@ -487,8 +486,8 @@ def test_several_elaborations_aggregate_onto_the_one_node(
     entry = nodes["module:blk_a"]
 
     assert entry["elaborations"] == ["blk_a__W1", "blk_a__Wc"]
-    # Both elaborations recorded both line points: two, not four.
-    assert entry["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    # Both elaborations recorded both line points: four per-elaboration points.
+    assert entry["totals"]["line"] == {"found": 4, "hit": 2, "ratio": 0.5}
     # A cover property is a point per elaboration.
     assert entry["totals"]["cover"] == {"found": 2, "hit": 1, "ratio": 0.5}
     assert entry["files"] == [_BLK_A]

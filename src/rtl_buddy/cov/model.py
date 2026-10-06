@@ -7,7 +7,7 @@
 - Each file carries its individual line, branch, toggle, expression and cover points, not only percentages. Toggle and expression detail comes from the raw database (:mod:`rtl_buddy.cov.raw`).
 - Each point carries per-test hit counts (attribution) unless built with ``--coverage-model totals``; ``attribution`` records which.
 - Points are keyed by project-relative source path via :mod:`rtl_buddy.cov.source_paths`.
-- ``totals`` counts points with the elaborated module in their identity; ``source_totals`` drops ``module`` so a point is hit when any elaboration hit it (:func:`~rtl_buddy.cov.raw.source_point_key`). Both appear on the run, each test and each file; see ``docs/concepts/coverage.md``.
+- ``totals`` counts points with the elaborated module in their identity (:func:`~rtl_buddy.cov.raw.point_key`), one per record of the merged raw database, in the same unit at every scope; ``source_totals`` drops ``module`` so a point is hit when any elaboration hit it (:func:`~rtl_buddy.cov.raw.source_point_key`). Both appear on the run, each test and each file; see ``docs/concepts/coverage.md``.
 
 The model is written to ``cov_dir/coverage-model.json`` and referenced by ``cov_dir/manifest.json``.
 """
@@ -89,12 +89,14 @@ class _Point:
             }
         )
 
-    def as_dict(self, metric: str) -> dict:
-        point = {"line": self.line, "hits": self.hits}
-        if metric != LINE:
-            point["column"] = self.column
-            point["name"] = self.name
-            point["module"] = self.module
+    def as_dict(self) -> dict:
+        point = {
+            "line": self.line,
+            "column": self.column,
+            "name": self.name,
+            "module": self.module,
+            "hits": self.hits,
+        }
         if self.tests:
             point["tests"] = dict(sorted(self.tests.items()))
         return point
@@ -272,7 +274,7 @@ def _file_row(entry: _FileEntry) -> dict:
         ordered = sorted(
             entry.points[metric].items(), key=lambda item: _sort_key(item[0])
         )
-        points = [point.as_dict(metric) for _, point in ordered]
+        points = [point.as_dict() for _, point in ordered]
         row[metric] = points
         row["totals"][metric] = _totals_entry(
             len(points), sum(1 for point in points if point["hits"] > 0)

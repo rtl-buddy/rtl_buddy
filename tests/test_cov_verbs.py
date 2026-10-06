@@ -486,8 +486,22 @@ def test_cov_module_reports_points_and_their_tests(cov_project):
     assert [row["path"] for row in payload["files"]] == ["design/blk.sv"]
     (file_row,) = payload["files"]
     assert file_row["line"] == [
-        {"line": 1, "hits": 1, "tests": {"basic": 1}},
-        {"line": 2, "hits": 7, "tests": {"basic": 0, "extra": 7}},
+        {
+            "line": 1,
+            "column": 1,
+            "name": "",
+            "module": "blk",
+            "hits": 1,
+            "tests": {"basic": 1},
+        },
+        {
+            "line": 2,
+            "column": 1,
+            "name": "",
+            "module": "blk",
+            "hits": 7,
+            "tests": {"basic": 0, "extra": 7},
+        },
     ]
     assert payload["tests"] == ["basic", "extra"]
 

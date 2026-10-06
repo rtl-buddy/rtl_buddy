@@ -131,8 +131,10 @@ def test_canonical_metric_and_page_helpers():
     assert module_from_page(None) is None
 
 
-def test_line_points_key_on_the_line_alone_others_on_the_full_identity():
-    line_record = {"metric": LINE, "line": 7, "column": 1, "name": None, "module": "a"}
+def test_every_metric_keys_on_the_full_identity():
+    """Line points key like the others, so an ``if`` and its ``else`` on one line stay two points (#678)."""
+    line_if = {"metric": LINE, "line": 7, "column": 1, "name": "if", "module": "a"}
+    line_else = dict(line_if, column=2, name="else")
     toggle_record = {
         "metric": TOGGLE,
         "line": 7,
@@ -141,7 +143,9 @@ def test_line_points_key_on_the_line_alone_others_on_the_full_identity():
         "module": "a",
     }
 
-    assert point_key(line_record) == (7,)
+    assert point_key(line_if) == (7, 1, "if", "a")
+    assert point_key(line_if) != point_key(line_else)
+    assert point_key(dict(line_if, module="b")) != point_key(line_if)
     assert point_key(toggle_record) == (7, 1, "q[0]", "a")
 
 
@@ -150,7 +154,7 @@ def test_source_point_key_drops_only_the_elaborated_module():
 
     The column stays in the key because it is a source column, the same in every elaboration; dropping it would fold one line's toggle bits together.
     """
-    line_record = {"metric": LINE, "line": 7, "column": 1, "name": None, "module": "a"}
+    line_a = {"metric": LINE, "line": 7, "column": 1, "name": "block", "module": "a"}
     toggle_a = {
         "metric": TOGGLE,
         "line": 7,
@@ -161,7 +165,8 @@ def test_source_point_key_drops_only_the_elaborated_module():
     toggle_b = dict(toggle_a, module="blk__Wc")
     other_bit = dict(toggle_a, column=9, name="q[1]")
 
-    assert source_point_key(line_record) == point_key(line_record) == (7,)
+    assert source_point_key(line_a) == source_point_key(dict(line_a, module="b"))
+    assert source_point_key(line_a) == (7, 1, "block")
     # Two elaborations of one source point share an identity.
     assert source_point_key(toggle_a) == source_point_key(toggle_b) == (7, 1, "q[0]")
     assert point_key(toggle_a) != point_key(toggle_b)
