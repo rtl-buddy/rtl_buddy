@@ -2105,6 +2105,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "ignored, falling back to the ./<flow>_regression.yaml filename "
                 "convention"
             )
+        case "config.unknown_key":
+            msg = (
+                f"{fields.get('path')}: unknown key {fields.get('key')!r} in "
+                f"{fields.get('block')} ignored"
+            )
+            if fields.get("suggestion"):
+                msg += f" (did you mean {fields.get('suggestion')!r}?)"
+            known = fields.get("known") or []
+            if known:
+                msg += f"; known keys are {', '.join(str(k) for k in known)}"
+            return msg + (
+                ". The block is read without it; a later major release will "
+                "make an unknown key fatal"
+            )
         case "root_config.reg_cfg_unknown_keys":
             return (
                 f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "

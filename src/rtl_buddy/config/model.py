@@ -5,11 +5,18 @@ import re
 logger = logging.getLogger(__name__)
 import pprint
 
+import yaml
+
 from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
 
-from .dispatch import DispatchResourcesFile, validate_resources_block
+from .dispatch import (
+    RESOURCES_BLOCK,
+    DispatchResourcesFile,
+    validate_resources_block,
+    warn_unknown_block_keys,
+)
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -380,6 +387,31 @@ class ModelConfigFile:
     models: list[ModelConfig] = field(default_factory=list)
 
 
+def _warn_unknown_elaboration_resources_keys(raw, path) -> list[str]:
+    """Warn about unknown keys in each elaboration profile's ``resources:`` block, which serde drops; return them."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("models"), list):
+        return []
+    found = []
+    for model in raw["models"]:
+        if not isinstance(model, dict) or not isinstance(
+            model.get("elaborations"), list
+        ):
+            continue
+        for profile in model["elaborations"]:
+            if not isinstance(profile, dict):
+                continue
+            found += warn_unknown_block_keys(
+                profile.get("resources"),
+                RESOURCES_BLOCK,
+                path=path,
+                block=(
+                    f"model {model.get('name')!r} elaboration "
+                    f"{profile.get('name')!r} resources"
+                ),
+            )
+    return found
+
+
 # TODO: Raise errors instead of killing things here
 class ModelConfigLoader:
     """Loads and validates the models in one ``models.yaml``, reading the file once."""
@@ -390,8 +422,10 @@ class ModelConfigLoader:
 
         try:
             with open(self.path, "r") as file:
-                data = from_yaml(ModelConfigFile, file.read())
-                self.models = data.models
+                text = file.read()
+            _warn_unknown_elaboration_resources_keys(yaml.safe_load(text), path)
+            data = from_yaml(ModelConfigFile, text)
+            self.models = data.models
         except Exception as e:
             log_event(
                 logger, logging.ERROR, "model_config.load_failed", path=path, error=e

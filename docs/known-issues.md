@@ -116,9 +116,9 @@ A resource group larger than the cluster's array limit is submitted as several a
 
 YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects it. Quote every `time` value in `resources:`, `compile:` and `modes:` blocks.
 
-## An unknown key in a `resources:` block is dropped silently
+## An unknown key in a reservation block is ignored after a warning
 
-A `resources:` block discards any key it does not define, with no warning. A typo such as `memory:` reserves nothing while reading as if it did. Check a new reservation against [YAML formats](reference/yaml.md#parallel-dispatch) and in the `Reserved` column of the reservation advice or the job's `--mem` and `--time`. A `modes:` block rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once.
+An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
 
 ## Dispatch build jobs cover the whole suite
 
