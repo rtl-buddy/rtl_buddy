@@ -1993,7 +1993,11 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
     monkeypatch.setattr(pnr_openroad, "_resolve_klayout_exe", lambda: "/opt/klayout")
 
-    pdk = _make_stream_pdk(tmp_path, klayout_props="pdk/klayout/props.lyp")
+    # With a layer RC, so the export is the only thing that can qualify the pass.
+    pdk = _make_stream_pdk(
+        tmp_path, klayout_props="pdk/klayout/props.lyp", layer_rc_tcl="pdk/rc.tcl"
+    )
+    _touch(pdk.get_layer_rc_tcl())
     platform = MagicMock()
     platform.get_pdk.return_value = pdk
     root_cfg = MagicMock()
@@ -3079,6 +3083,73 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
     return backend, odb
 
 
+def test_pnr_warns_when_the_pdk_has_no_layer_rc(tmp_path, monkeypatch):
+    """No `layer-rc-tcl`: the pass is qualified with `pnr.no_wire_rc`, naming the cause and the docs."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log="", returncode=0, dont_use_cells=[]
+    )
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults)
+    desc = res.results["desc"]
+    assert desc.startswith("P&R passed; pnr.no_wire_rc: ")
+    assert "(no layer-rc-tcl)" in desc
+    assert desc.endswith("; see rb docs show concepts/pnr#set-wire-rc")
+    level, fields = _one_event(events, "pnr.no_wire_rc")
+    assert level == logging.WARNING
+    assert fields["layer_rc_tcl"] is False
+    assert fields["codes"] == []
+    from rtl_buddy.logging_utils import _human_message
+
+    message = _human_message("pnr.no_wire_rc", fields)
+    assert "saw no wire RC (no layer-rc-tcl)" in message
+    assert message.endswith("see rb docs show concepts/pnr#set-wire-rc")
+
+
+def test_pnr_warns_on_zero_wire_rc_in_the_log_despite_a_layer_rc(tmp_path, monkeypatch):
+    """A `layer-rc-tcl` that leaves the RC zero still warns, naming OpenROAD's codes."""
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path,
+        monkeypatch,
+        log=(
+            "[WARNING EST-0018] wire capacitance for corner default is zero. "
+            "Use the set_wire_rc command to set wire resistance and capacitance.\n"
+            "[WARNING CTS-0104] Clock wire resistance/capacitance values are zero.\n"
+        ),
+        returncode=0,
+        dont_use_cells=[],
+    )
+    pdk = _make_pdk_cfg(tmp_path, layer_rc_tcl="pdk/rc.tcl")
+    _touch(pdk.get_layer_rc_tcl())
+    backend.root_cfg.get_pnr_platform_cfg.return_value.get_pdk.return_value = pdk
+
+    res = backend.run()
+
+    assert isinstance(res, PnrPassResults)
+    assert "(EST-0018, CTS-0104)" in res.results["desc"]
+    _level, fields = _one_event(events, "pnr.no_wire_rc")
+    assert fields["layer_rc_tcl"] is True
+    assert fields["codes"] == ["EST-0018", "CTS-0104"]
+
+
+def test_pnr_with_wire_rc_does_not_warn(tmp_path, monkeypatch):
+    events = _capture_pnr_events(monkeypatch)
+    backend, _odb = _dont_use_backend(
+        tmp_path, monkeypatch, log="", returncode=0, dont_use_cells=[]
+    )
+    pdk = _make_pdk_cfg(tmp_path, layer_rc_tcl="pdk/rc.tcl")
+    _touch(pdk.get_layer_rc_tcl())
+    backend.root_cfg.get_pnr_platform_cfg.return_value.get_pdk.return_value = pdk
+
+    res = backend.run()
+
+    assert res.results["desc"] == "P&R passed"
+    assert not [e for e in events if e[1] == "pnr.no_wire_rc"]
+
+
 def test_pnr_fails_naming_a_placed_dont_use_cell(tmp_path, monkeypatch):
     """The check's Tcl error exits OpenROAD non-zero; the verdict names the offender, not
     the exit code, and nothing is published.
@@ -3946,6 +4017,7 @@ def test_tcl_hooks_are_checkpoint_and_abstract_inputs(tmp_path):
 def test_pnr_platform_leaves_the_flow_knobs_off_by_default(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is False
+    assert platform.get_global_route_hold_repair() is False
     assert platform.get_routing_layer_adjustment() is None
 
 
@@ -3958,11 +4030,13 @@ def test_pnr_flow_knobs_are_kebab_case(tmp_path):
             name: "asap7_tt"
             pdk: "asap7"
             post-cts-setup-repair: true
+            global-route-hold-repair: true
             routing-layer-adjustment: 0.25
         """),
     )
     platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is True
+    assert platform.get_global_route_hold_repair() is True
     assert platform.get_routing_layer_adjustment() == 0.25
 
 
@@ -3988,6 +4062,27 @@ def test_pnr_flow_without_the_knobs_repairs_hold_only_and_keeps_the_router_defau
     assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
     assert "set_global_routing_layer_adjustment" not in text
     assert "-clock $CLOCK_LAYERS\nglobal_route -congestion_iterations 20\n" in text
+    assert text.count("repair_timing -hold") == 1
+    assert "global_route -start_incremental" not in text
+
+
+def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
+    """Hold is repaired on the global-route estimate, then the new cells are legalized and rerouted before detail route."""
+    platform = _platform(_make_pdk_cfg(tmp_path), global_route_hold_repair=True)
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "global_route -congestion_iterations 20\n"
+        'puts ">>> Post-global-route hold repair"\n'
+        "estimate_parasitics -global_routing\n"
+        "repair_timing -hold\n"
+        "global_route -start_incremental\n"
+        "detailed_placement\n"
+        "global_route -end_incremental\n"
+        "check_placement -verbose\n"
+    ) in text
+    assert text.index("global_route -end_incremental") < text.index(">>> Detail route")
+    # The post-CTS hold repair still runs, on placement parasitics.
+    assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
 
 
 def test_pnr_flow_repairs_setup_before_hold_after_cts(tmp_path):
@@ -4046,6 +4141,7 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
     pnr_cfg = _make_pnr_cfg(tmp_path)
     plain = pnr_abstract.abstract_config(pnr_cfg, _platform(_make_pdk_cfg(tmp_path)))
     assert "post_cts_setup_repair" not in plain
+    assert "global_route_hold_repair" not in plain
     assert "layer_adjustment" not in plain["routing"]
 
     tuned = pnr_abstract.abstract_config(
@@ -4053,10 +4149,12 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
         _platform(
             _make_pdk_cfg(tmp_path),
             post_cts_setup_repair=True,
+            global_route_hold_repair=True,
             routing_layer_adjustment=0.25,
         ),
     )
     assert tuned["post_cts_setup_repair"] is True
+    assert tuned["global_route_hold_repair"] is True
     assert tuned["routing"]["layer_adjustment"] == 0.25
 
 

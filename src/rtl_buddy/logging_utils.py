@@ -2468,6 +2468,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "matched no Liberty cell (STA-0122), so they exclude nothing — "
                 "check them for typos"
             )
+        case "pnr.no_wire_rc":
+            causes = ([] if fields.get("layer_rc_tcl") else ["no layer-rc-tcl"]) + [
+                str(c) for c in fields.get("codes") or []
+            ]
+            return (
+                f"pnr {fields.get('pnr')}: CTS, placement parasitics and hold repair "
+                f"saw no wire RC ({', '.join(causes)}), so the routed timing can "
+                f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
+                f"see {fields.get('docs')}"
+            )
         case "pnr.dont_use_instantiated":
             shown = [
                 f"{inst} ({master})"
