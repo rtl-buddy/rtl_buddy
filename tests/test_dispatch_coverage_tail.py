@@ -394,6 +394,24 @@ def _dat_record(*, file, line, type_, name, module="blk", col=1, hits=1):
     return f"C '{blob}' {hits}\n"
 
 
+def _covered_results(suite_dir: Path, test_name: str, run_id=None) -> PassResults:
+    """A passing result whose run wrote a one-line, one-toggle ``coverage.dat``."""
+    run_dir = suite_dir / "artefacts" / test_name
+    if run_id is not None:
+        run_dir /= f"run-{run_id:04d}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    source = os.path.relpath(suite_dir / "src" / "example.sv", run_dir)
+    raw = run_dir / "coverage.dat"
+    raw.write_text(
+        "# SystemC::Coverage-3\n"
+        + _dat_record(file=source, line=1, type_="line", name="b")
+        + _dat_record(file=source, line=2, type_="toggle", name="q", hits=0)
+    )
+    results = PassResults(name=test_name + "/results")
+    results.results["coverage"] = {"raw_paths": [str(raw)]}
+    return results
+
+
 class _TailBackend(DispatchBackend):
     """A scheduler-backed fake: sim jobs 'run' at submit with coverage, and the coverage
     job runs the real ``rb _cov-job`` argv in a subprocess, as a compute node would.
@@ -413,18 +431,7 @@ class _TailBackend(DispatchBackend):
         return JobHandle(job_id="fake-build", spec=spec)
 
     def submit(self, spec, *, dependency=None, delay_sec=0.0):
-        run_dir = Path(spec.suite_dir) / "artefacts" / spec.test_name
-        run_dir.mkdir(parents=True, exist_ok=True)
-        raw = run_dir / "coverage.dat"
-        raw.write_text(
-            "# SystemC::Coverage-3\n"
-            + _dat_record(file="../../src/example.sv", line=1, type_="line", name="b")
-            + _dat_record(
-                file="../../src/example.sv", line=2, type_="toggle", name="q", hits=0
-            )
-        )
-        results = PassResults(name=spec.test_name + "/results")
-        results.results["coverage"] = {"raw_paths": [str(raw)]}
+        results = _covered_results(Path(spec.suite_dir), spec.test_name, spec.run_id)
         write_result_json(
             spec.result_json,
             test_name=spec.test_name,
@@ -1045,3 +1052,188 @@ def test_a_coverage_job_cancelled_at_max_wait_retires_its_record(
     assert ["fake-coverage"] in backend.cancelled
     (record,) = _coverage_records(minimal_project)
     assert record["status"] == STATUS_CANCELLED
+
+
+# rb randtest -M cov runs the same tail (#746)
+
+
+def test_each_seed_is_its_own_coverage_test_on_the_same_result_object():
+    first = {"test_name": "basic", "randmode_i": 1, "results": Results(name="a")}
+    second = {"test_name": "basic", "randmode_i": 12, "results": Results(name="b")}
+    single = {"test_name": "basic", "randmode_i": None, "results": Results(name="c")}
+
+    rows = RtlBuddy._seed_coverage_rows([first, second, single])
+
+    assert [r["test_name"] for r in rows] == [
+        "basic/run-0001",
+        "basic/run-0012",
+        "basic",
+    ]
+    # Coverage the tail adds lands on the head's rows, which keep their own names.
+    assert [r["results"] for r in rows] == [
+        first["results"],
+        second["results"],
+        single["results"],
+    ]
+    assert first["test_name"] == "basic"
+
+
+def _fake_local_seeds(monkeypatch, calls):
+    """Run randtest's in-process seeds as passes that each wrote coverage."""
+
+    def run(self, suite_cfg, test_name=None, run_ids=None, **kwargs):
+        calls.append(list(run_ids))
+        suite_dir = Path(suite_cfg.get_path()).resolve().parent
+        return [
+            {
+                "test_name": test_name,
+                "randmode_i": run_id,
+                "results": _covered_results(suite_dir, test_name, run_id),
+            }
+            for run_id in run_ids
+        ]
+
+    monkeypatch.setattr(RtlBuddy, "_do_test_suite", run)
+
+
+def _manifest(project: Path) -> dict:
+    return json.loads((project / "cov_dir" / "manifest.json").read_text())
+
+
+def test_a_local_cov_randtest_writes_the_model_and_manifest(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    calls = []
+    _fake_local_seeds(monkeypatch, calls)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app,
+        ["--machine", "-M", "cov", "randtest", "basic", "3"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [[1, 2, 3]]
+    manifest = _manifest(minimal_project)
+    assert manifest["command"] == "randtest"
+    # One coverage test per seed, named like its artefact directory.
+    assert [t["name"] for t in manifest["tests"]] == [
+        "basic/run-0001",
+        "basic/run-0002",
+        "basic/run-0003",
+    ]
+    assert (minimal_project / "cov_dir" / "coverage-model.json").is_file()
+    coverage = _envelope(result)["payload"]["coverage"]
+    assert coverage["artefacts"]["manifest"] == "cov_dir/manifest.json"
+    # The machine rows keep the plain test name and the run id.
+    rows = _envelope(result)["payload"]["results"]
+    assert [(r["name"], r["run_id"]) for r in rows] == [
+        ("basic", 1),
+        ("basic", 2),
+        ("basic", 3),
+    ]
+
+
+def test_a_cov_replay_runs_the_tail_in_process(minimal_project: Path, monkeypatch):
+    _prepare(minimal_project)
+    calls = []
+    _fake_local_seeds(monkeypatch, calls)
+    backend = _TailBackend()
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app,
+        [
+            "--machine",
+            "-M",
+            "cov",
+            "randtest",
+            "basic",
+            "-r",
+            "7",
+            "--dispatch",
+            "slurm",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # A replay stays local, and so does its tail.
+    assert calls == [[7]]
+    assert backend.coverage_specs == []
+    assert [t["name"] for t in _manifest(minimal_project)["tests"]] == [
+        "basic/run-0007"
+    ]
+
+
+def test_a_dispatched_cov_randtest_runs_the_tail_as_one_job(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    backend = _LiveTailBackend()
+    _use(monkeypatch, backend)
+    _no_head_tail(monkeypatch)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app,
+        ["--machine", "-M", "cov", "randtest", "basic", "2", "--dispatch", "slurm"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert backend.tail_returncode == 0, backend.tail_output
+    (spec,) = backend.coverage_specs
+    assert (spec.resources.mem, spec.resources.time) == ("24G", "00:40:00")
+    assert backend.waited[-1] == ["fake-coverage"]
+    manifest = _manifest(minimal_project)
+    assert manifest["command"] == "randtest"
+    assert [t["name"] for t in manifest["tests"]] == [
+        "basic/run-0001",
+        "basic/run-0002",
+    ]
+    assert "artefacts" in _envelope(result)["payload"]["coverage"]
+    # ...and the job is in the run manifest like `test`'s and `regression`'s (#745).
+    (record,) = _coverage_records(minimal_project)
+    assert record["status"] == STATUS_COLLECTED
+
+
+def test_a_dispatched_randtest_waits_for_an_earlier_coverage_job(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    _orphan_coverage_record(minimal_project)
+    backend = _LiveTailBackend(live={"old-cov"})
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app,
+        ["--machine", "-M", "cov", "randtest", "basic", "2", "--dispatch", "slurm"],
+    )
+
+    assert result.exit_code == 0, result.output
+    waits = backend.waited
+    assert waits.index(["old-cov"]) < waits.index(["fake-coverage"])
+
+
+def test_a_randtest_asking_for_a_merge_without_coverage_fails_loud(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+
+    def run(self, suite_cfg, test_name=None, run_ids=None, **kwargs):
+        return [
+            {
+                "test_name": test_name,
+                "randmode_i": run_id,
+                "results": PassResults(name=f"{test_name}/results"),
+            }
+            for run_id in run_ids
+        ]
+
+    monkeypatch.setattr(RtlBuddy, "_do_test_suite", run)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app,
+        ["randtest", "basic", "2", "--coverage-merge"],
+    )
+
+    assert isinstance(result.exception, FatalRtlBuddyError)
+    assert "no coverage data" in str(result.exception)

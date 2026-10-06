@@ -14,7 +14,7 @@ Schema (``schema_version`` 1)::
       "schema_version": 1,
       "generator": "rtl-buddy 6.24.0",
       "generated_at": "2026-08-06T11:04:12+08:00",
-      "command": "regression",           # or "test"
+      "command": "regression",           # or "test", "randtest"
       "suite": "verif/demo/regression.yaml",
       "builder": "verilator",
       "simulator_family": "verilator",
