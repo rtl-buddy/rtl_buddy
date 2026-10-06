@@ -200,6 +200,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if platform.get_post_cts_setup_repair() is True
             else {}
         ),
+        **(
+            {"global_route_hold_repair": True}
+            if platform.get_global_route_hold_repair() is True
+            else {}
+        ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
     }

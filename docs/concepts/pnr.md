@@ -54,7 +54,7 @@ The generated `pnr.tcl` runs these steps in order:
 3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins.
 4. Run global placement, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
 5. Run `repair_design`, legalization, clock-tree synthesis, setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
-6. Route globally, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, and in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
+6. Route globally, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, repair hold on the global-route parasitics when `global-route-hold-repair` is set, route in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
 
 A tie port the PDK leaves unset gets neither tie step.
 
@@ -69,6 +69,8 @@ Three result fields count cells; compare experiments on `routed_cell_count`:
 - `physical_cell_count` is the physical-only cells: masters of LEF class `CORE SPACER`, `CORE WELLTAP` or `ENDCAP*`, or matching a PDK `fill-cells` pattern. A decap counts only when its class is `CORE SPACER` or it is listed in `fill-cells`; sky130's `decap_*` cells are class `CORE`, so they count as routed unless listed.
 
 The flow prints the last two after `>>> Final reports` as `RB-CELL-COUNT: routed <n> physical <m>`. If counting fails, both fields are absent and the run still passes.
+
+A pass is qualified with `pnr.no_wire_rc` when the pre-route steps had no wire RC; see [Set wire RC](#set-wire-rc).
 
 A run passes when OpenROAD exits 0 with no `[ERROR ...]` line and, under `gds-mode: strict`, the requested export was delivered complete. It skips when `reglvl` filters it out or `tool:` is unsupported. Timing violations and DRC counts are metrics only; gate signoff on them in your project.
 
@@ -163,6 +165,7 @@ cfg-pnr-platforms:
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
 - **`post-cts-setup-repair`** (default `false`) runs `repair_timing -setup` after CTS, before hold repair. Turn it on when the post-CTS netlist misses setup; it adds buffers and resizes cells, so QoR changes.
+- **`global-route-hold-repair`** (default `false`) repairs hold again after global route, on `estimate_parasitics -global_routing`, then legalizes and reroutes the new buffers before detail route, as ORFS does; see [Set wire RC](#set-wire-rc).
 - **`routing-layer-adjustment`** (0 to 1, unset by default) withholds that fraction of each signal layer's capacity from the global router (`set_global_routing_layer_adjustment`, ORFS `ROUTING_LAYER_ADJUSTMENT`, 0.25 on ASAP7). Raise it when detailed routing ends with DRCs in congested areas; unset leaves the router's default.
 - **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid.
 - **`dont-use-cells`** and **`rcx-rules`** are described below, and the platform Tcl hooks under [Source platform Tcl hooks](#source-platform-tcl-hooks).
@@ -210,6 +213,28 @@ cfg-pdks:
 - A configured file missing from disk fails the run at `setup`, naming the key.
 - `rb power` sources `platform-tcl` before its Liberty reads. The layer RC is session state that the routed ODB does not keep, so a [`netlist-source: pnr` power run](power.md#extracted-parasitics) also sources `layer-rc-tcl` after `read_sdc`.
 - The hooks are inputs to stage checkpoints and to a [hardened block's](#harden-a-block) abstract, so changing one makes the abstract stale.
+
+## Set wire RC
+
+Set the PDK's `layer-rc-tcl` so clock-tree synthesis, placement parasitics and hold repair see wire resistance and capacitance. Without it they see only the technology LEF's layer RC, which is zero on most open PDKs. CTS then balances, and hold repair fixes, a design with no wires, and the routed timing can fail hold that repair never saw.
+
+`rb pnr` warns with `pnr.no_wire_rc` when the PDK sets no `layer-rc-tcl`, or when `pnr.log` has OpenROAD's `[WARNING EST-0018]` (zero wire capacitance) or `[WARNING CTS-0104]` (zero clock wire RC). The warning is logged and appended to a passing run's description, naming the cause:
+
+```text
+P&R passed; pnr.no_wire_rc: pre-route steps saw no wire RC (no layer-rc-tcl, EST-0018, CTS-0104); see rb docs show concepts/pnr#set-wire-rc
+```
+
+For sky130hd, copy the `set_layer_rc` lines of OpenROAD's `test/sky130hd/sky130hd.rc` and add the wire RC layers for signal and clock nets:
+
+```tcl
+# pdk/sky130hd/setRC.tcl, named by cfg-pdks layer-rc-tcl
+set_layer_rc -layer met1 -capacitance 1.72375E-04 -resistance 8.929e-04
+# ... one line per layer and via, from sky130hd.rc
+set_wire_rc -signal -layer met2
+set_wire_rc -clock -layer met5
+```
+
+To also catch hold growth from wire lengths before detail route, set `global-route-hold-repair: true` on the platform. It runs `repair_timing -hold` on the global-route estimate, then legalizes the added buffers and reroutes their nets incrementally. It is off by default because it changes QoR. A `global_route` [checkpoint](#keep-stage-checkpoints) holds the route before this repair.
 
 ## Macro placement
 
