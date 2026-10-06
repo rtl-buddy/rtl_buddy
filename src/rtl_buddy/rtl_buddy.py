@@ -2440,6 +2440,71 @@ class RtlBuddy:
                 "stay shared",
             ),
         ] = None,
+        coverage_merge: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-merge",
+                help="merge coverage across the seeds; uses raw merge for summary/html and info-process for Coverview",
+            ),
+        ] = False,
+        coverage_merge_raw: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-merge-raw",
+                help="use raw Verilator merge for merged summary/html/Coverview",
+            ),
+        ] = False,
+        coverage_merge_info_process: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-merge-info-process",
+                help="use info-process merge for merged summary/Coverview; HTML merge is not supported",
+            ),
+        ] = False,
+        coverage_html: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-html",
+                help="generate merged LCOV HTML output in coverage_merge.html",
+            ),
+        ] = False,
+        coverage_coverview: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-coverview",
+                help="generate Coverview zip output from coverage info",
+            ),
+        ] = False,
+        coverage_dir_summary: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--coverage-dir-summary",
+                help="append coverage summary lines for repo-relative directory prefixes; may be repeated",
+            ),
+        ] = None,
+        coverage_dir_summary_file: Annotated[
+            str | None,
+            typer.Option(
+                "--coverage-dir-summary-file",
+                help="file containing repo-relative directory prefixes, one per line",
+            ),
+        ] = None,
+        coverage_source_summary: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-source-summary",
+                help="append run coverage scored per source point (covered when any elaboration hit it), beside the per-elaboration figure",
+            ),
+        ] = False,
+        coverage_model: Annotated[
+            str,
+            typer.Option(
+                "--coverage-model",
+                help="coverage-model.json to write: full (per-seed attribution per point), totals (points without attribution), or none (manifest and totals only)",
+                metavar="[full|totals|none]",
+                click_type=click.Choice(list(cov_model.MODEL_MODES)),
+            ),
+        ] = cov_model.MODEL_MODE_FULL,
     ):
         """
         repeat a test with multiple random seeds
@@ -2489,8 +2554,11 @@ class RtlBuddy:
             else None
         )
         reservation_findings = []
+        summary_title = "RandTest Results Summary"
         if dispatch_backend is not None:
             self.share_build = True
+            # Before anything is submitted, as for an orphaned fleet.
+            self._sweep_coverage_orphans(dispatch_backend)
             state = self._dispatch_suite_submit(
                 self.suite_cfg,
                 dispatch_backend,
@@ -2518,15 +2586,6 @@ class RtlBuddy:
                 state=state,
             )
             _log_reservation_advice(reservation_findings)
-            if not self.machine:
-                self._render_test_summary(
-                    "RandTest Results Summary",
-                    suite_results,
-                    include_run_id=True,
-                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
-                )
-                if reservation_findings:
-                    self._render_reservation_advice(reservation_findings)
         elif rpt_i is not None:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -2535,13 +2594,7 @@ class RtlBuddy:
                 seed_mode=SeedMode.REPLAY,
                 replay_run_id=rpt_i,
             )
-            if not self.machine:
-                self._render_test_summary(
-                    "RandTest Replay Summary",
-                    suite_results,
-                    include_run_id=True,
-                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
-                )
+            summary_title = "RandTest Replay Summary"
         else:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -2550,15 +2603,58 @@ class RtlBuddy:
                 seed_mode=SeedMode.NEW,
                 replay_run_id=None,
             )
-            if not self.machine:
-                self._render_test_summary(
-                    "RandTest Results Summary",
-                    suite_results,
-                    include_run_id=True,
-                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
-                )
 
         exit_code = self._exit_code_from_results(suite_results)
+        self._guard_coverage_requested(
+            suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
+            coverage_source_summary=coverage_source_summary,
+        )
+        metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
+        # The same tail as `test`: in-process, or one job under a backend whose jobs run
+        # off the submit host.
+        ((cov_metadata, coverage_payload),) = self._coverage_tail(
+            [
+                dict(
+                    suite_results=self._seed_coverage_rows(suite_results),
+                    outdir=str(ctx.command_root),
+                    suite_name=self.suite_cfg.get_path(),
+                    coverage_merge=coverage_merge,
+                    coverage_merge_raw=coverage_merge_raw,
+                    coverage_html=coverage_html,
+                    coverage_coverview=coverage_coverview,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[str(ctx.command_root)],
+                    dir_summary_paths=self._resolve_coverage_dir_summary_paths(
+                        coverage_dir_summary=coverage_dir_summary,
+                        coverage_dir_summary_file=coverage_dir_summary_file,
+                    ),
+                    source_summary=coverage_source_summary,
+                    command="randtest",
+                    model_mode=coverage_model,
+                )
+            ],
+            backend=dispatch_backend,
+        )
+        metadata.extend(cov_metadata)
+        exit_code |= self._coverage_merge_exit_code(coverage_payload)
+        self._refresh_result_side_cars(suite_results)
+        if not self.machine:
+            self._render_test_summary(
+                summary_title,
+                suite_results,
+                include_run_id=True,
+                metadata=metadata,
+            )
+            if reservation_findings:
+                self._render_reservation_advice(reservation_findings)
         if self.machine:
             payload = {
                 "results": [
@@ -2568,12 +2664,31 @@ class RtlBuddy:
                     for r in suite_results
                 ]
             }
+            coverage = self._machine_coverage_payload(coverage_payload)
+            if coverage is not None:
+                payload["coverage"] = coverage
             if dispatch_backend is not None:
                 payload["reservation_advice"] = [
                     finding.as_event() for finding in reservation_findings
                 ]
             self._emit_machine_result("randtest", exit_code, **payload)
         raise typer.Exit(exit_code)
+
+    @staticmethod
+    def _seed_coverage_rows(suite_results):
+        """randtest rows as the coverage tail sees them: one coverage test per seed.
+
+        Every seed shares its test's name, and the tail names per-test artefacts (LCOV
+        exports, Coverview datasets, model attribution) after it, so a seed is named
+        ``<test>/run-NNNN`` like its artefact directory. ``results`` stays the head's
+        own object, so coverage the tail adds to it lands on the reported row.
+        """
+        return [
+            row
+            if row.get("randmode_i") is None
+            else {**row, "test_name": f"{row['test_name']}/run-{row['randmode_i']:04d}"}
+            for row in suite_results
+        ]
 
     def _abs_invocation_path(self, path: str) -> Path:
         """Resolve ``path`` against the invocation cwd if it is relative.
