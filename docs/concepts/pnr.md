@@ -49,9 +49,9 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png --gds-mode strict
 
 The generated `pnr.tcl` runs these steps in order:
 
-1. Read Liberty, LEF, the synthesis netlist and the SDC.
-2. Initialize the floorplan and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
-3. Place macros, build the power grid and place the IO pins.
+1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, then source `layer-rc-tcl` when set.
+2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
+3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins.
 4. Run global placement, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
 5. Run `repair_design`, legalization, clock-tree synthesis, hold repair and a final legalization.
 6. Route globally and in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
@@ -154,7 +154,7 @@ cfg-pnr-platforms:
 - **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
 - **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid.
-- **`dont-use-cells`** and **`rcx-rules`** are described below.
+- **`dont-use-cells`** and **`rcx-rules`** are described below, and the platform Tcl hooks under [Source platform Tcl hooks](#source-platform-tcl-hooks).
 
 ## Exclude cells with dont-use-cells
 
@@ -172,6 +172,33 @@ A pattern that matches no Liberty cell excludes nothing. OpenROAD reports `STA-0
 `rcx-rules` is a path, resolved like `pdn-config`, to an OpenRCX extraction-rules file (ORFS `RCX_RULES`). Its `LayerCount` must match the technology LEF's routing stack.
 
 With it set, the flow extracts parasitics after fill insertion, writes `<top>.routed.spef`, and times the final reports on that SPEF instead of the global-route estimate. The summary's WNS and TNS come from the extracted parasitics, and a [`netlist-source: pnr` power run](power.md#extracted-parasitics) reads the same SPEF. With the key unset there is no extraction.
+
+## Source platform Tcl hooks
+
+Four optional PDK paths, resolved like `pdn-config`, name Tcl scripts the flow sources at the step where OpenROAD-flow-scripts (ORFS) sources its own. A platform taken from ORFS, such as ASAP7, needs them.
+
+| Key | ORFS variable | Sourced |
+| --- | --- | --- |
+| `platform-tcl` | `PLATFORM_TCL` | Before the first `read_liberty`, so `suppress_message` lines cover the Liberty reads |
+| `layer-rc-tcl` | `SET_RC_TCL` | After `read_sdc`, so `repair_design`, CTS, hold repair and the final reports see wire RC |
+| `tracks-tcl` | `MAKE_TRACKS` | After `initialize_floorplan`, instead of the bare `make_tracks` |
+| `tapcell-tcl` | `TAPCELL_TCL` | After macro placement and the macro keep-outs, before the power grid |
+
+```yaml
+cfg-pdks:
+  - name: asap7
+    # ...
+    platform-tcl: pdk/asap7/liberty_suppressions.tcl
+    layer-rc-tcl: pdk/asap7/setRC.tcl
+    tracks-tcl: pdk/asap7/make_tracks.tcl
+    tapcell-tcl: pdk/asap7/tapcell.tcl
+```
+
+- An unset key leaves the flow as it is: `make_tracks` with the technology LEF's default tracks, no taps, and the LEF's layer RC, which is zero on ASAP7.
+- Each file is sourced as written, so it must not depend on ORFS environment variables. ORFS' ASAP7 `openRoad/tapcell.tcl` takes both its tap and endcap master from `$::env(TAP_CELL_NAME)` and its macro halo from `$::env(MACRO_ROWS_HALO_X)` and `$::env(MACRO_ROWS_HALO_Y)`; copy it with those values filled in.
+- A configured file missing from disk fails the run at `setup`, naming the key.
+- `rb power` sources `platform-tcl` before its Liberty reads. The layer RC is session state that the routed ODB does not keep, so a [`netlist-source: pnr` power run](power.md#extracted-parasitics) also sources `layer-rc-tcl` after `read_sdc`.
+- The hooks are inputs to stage checkpoints and to a [hardened block's](#harden-a-block) abstract, so changing one makes the abstract stale.
 
 ## Macro placement
 
@@ -246,7 +273,7 @@ The same flow runs on any PDK the root config declares. Switching PDKs is a `pla
 
 - **Nangate45 (FreePDK45).** All defaults are calibrated on it. Set `site`, one Liberty corner, `tech-lef`, `macro-lef`, the tie and fill cells and `cts-buffer: BUF_X4`, and leave every process key unset. It has no PDN snippet, so runs have no power grid. For extraction, set `rcx-rules` to ORFS' `flow/platforms/nangate45/rcx_patterns.rules`; its LEF has no via resistance, so vias extract as 0 Ω.
 - **sky130hd.** The template's `sky130hd` PDK entry is a worked example, used by the `demo_tiny_alu_subsys_hier` runs. Beyond Nangate45's fields it needs `pin-layers` (`met3` / `met2`), `routing-layers` in `met*` names, a `pdn-config`, `placement.density: 0.60`, a `dont-use-cells` list for the probe and `lpflow` cells, and a `cts-buffer` list. Use ORFS' `flow/platforms/sky130hs/rcx_patterns.rules` for `rcx-rules`.
-- **ASAP7.** Not validated end to end. Follow ORFS' `flow/platforms/asap7` with a much lower placement density. The flow does not run ORFS' `tapcell`, tracks file or layer-RC file. List each corner's split Liberty files under that corner. `macro-lef` takes one path, so list the extra LEFs in `lef-paths`.
+- **ASAP7.** Follow ORFS' `flow/platforms/asap7`. Set the four [platform Tcl hooks](#source-platform-tcl-hooks) to its `liberty_suppressions.tcl`, `setRC.tcl`, `openRoad/make_tracks.tcl` and a copy of `openRoad/tapcell.tcl` with `TAP_CELL_NAME` and `MACRO_ROWS_HALO_X` / `_Y` filled in; without `tracks-tcl` the run stops at `make_tracks` with `IFP-0039`. List each corner's split Liberty files under that corner. `macro-lef` takes one path, so list the extra LEFs in `lef-paths`.
 
 ## OpenROAD threads
 

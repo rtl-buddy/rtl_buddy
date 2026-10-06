@@ -173,6 +173,11 @@ class PdkConfigFile:
     pdn_config: str = field(rename="pdn-config", default="")
     # OpenRCX rules file. When set, `rb pnr` writes `<top>.routed.spef`, which `rb power` with `netlist-source: pnr` reads.
     rcx_rules: str = field(rename="rcx-rules", default="")
+    # Platform Tcl hooks (ORFS `MAKE_TRACKS`, `SET_RC_TCL`, `TAPCELL_TCL`, `PLATFORM_TCL`); `rb pnr` sources each where ORFS does.
+    tracks_tcl: str = field(rename="tracks-tcl", default="")
+    layer_rc_tcl: str = field(rename="layer-rc-tcl", default="")
+    tapcell_tcl: str = field(rename="tapcell-tcl", default="")
+    platform_tcl: str = field(rename="platform-tcl", default="")
 
 
 class PdkConfig:
@@ -209,6 +214,12 @@ class PdkConfig:
         )
         self._pdn_config = _resolve(cfg.pdn_config)
         self._rcx_rules = _resolve(cfg.rcx_rules)
+        self._tcl_hooks = {
+            "platform-tcl": _resolve(cfg.platform_tcl),
+            "layer-rc-tcl": _resolve(cfg.layer_rc_tcl),
+            "tracks-tcl": _resolve(cfg.tracks_tcl),
+            "tapcell-tcl": _resolve(cfg.tapcell_tcl),
+        }
 
     def get_name(self) -> str:
         return self._name
@@ -299,3 +310,23 @@ class PdkConfig:
     def get_rcx_rules(self) -> str:
         """Resolved path to the OpenRCX rules file, or `""` when unset."""
         return self._rcx_rules
+
+    def get_tracks_tcl(self) -> str:
+        """Resolved path to the routing-track Tcl that replaces `make_tracks`, or `""` when unset."""
+        return self._tcl_hooks["tracks-tcl"]
+
+    def get_layer_rc_tcl(self) -> str:
+        """Resolved path to the layer-RC Tcl (`set_layer_rc` / `set_wire_rc`), or `""` when unset."""
+        return self._tcl_hooks["layer-rc-tcl"]
+
+    def get_tapcell_tcl(self) -> str:
+        """Resolved path to the tap/endcap insertion Tcl, or `""` when unset."""
+        return self._tcl_hooks["tapcell-tcl"]
+
+    def get_platform_tcl(self) -> str:
+        """Resolved path to the Tcl sourced before Liberty is read, or `""` when unset."""
+        return self._tcl_hooks["platform-tcl"]
+
+    def get_tcl_hooks(self) -> dict[str, str]:
+        """The configured Tcl hooks as `{yaml-key: resolved path}`, unset ones omitted, in flow order."""
+        return {k: v for k, v in self._tcl_hooks.items() if v}

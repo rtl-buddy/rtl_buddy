@@ -127,6 +127,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
         return project_relative(path, root) if root and path else path
 
     fp = pnr_cfg.get_floorplan()
+    hooks = dict(platform.get_pdk().get_tcl_hooks())
     return {
         "platform": pnr_cfg.get_platform(),
         "synth": {
@@ -186,6 +187,8 @@ def abstract_config(pnr_cfg, platform) -> dict:
         },
         "cts_buffers": list(platform.get_cts_buffers()),
         "dont_use_cells": list(platform.get_dont_use_cells()),
+        # Emitted only when a PDK Tcl hook is set so existing digests do not change.
+        **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
     }
 
 
