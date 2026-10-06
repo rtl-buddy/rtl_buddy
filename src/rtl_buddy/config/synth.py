@@ -41,6 +41,7 @@ class SynthPlatformConfig:
         self._corner = cfg.corner or pdk.get_default_corner()
         self._lib_paths = pdk.get_corner_paths(self._corner)
         self._lef_paths = [p for p in (pdk.get_tech_lef(), pdk.get_macro_lef()) if p]
+        self._layer_rc_tcl = pdk.get_layer_rc_tcl()
         self._dont_use_cells = merge_dont_use_cells(
             pdk.get_dont_use_cells(),
             _validate_dont_use_cells(
@@ -66,6 +67,10 @@ class SynthPlatformConfig:
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
+
+    def get_layer_rc_tcl(self) -> str:
+        """The PDK's `layer-rc-tcl` path, or `""` when unset; sourced before an effort's `openroad.repair`."""
+        return self._layer_rc_tcl
 
 
 @dataclass
@@ -204,6 +209,8 @@ class SynthEffortYosysFile:
 class SynthEffortOpenroadFile:
     run: bool = True
     pre_sta_tcl: str = field(rename="pre-sta-tcl", default="")
+    # Run `repair_design` and `repair_timing -setup` before the STA reports.
+    repair: bool = False
 
 
 @serde
@@ -234,6 +241,9 @@ class SynthEffortConfig:
 
     def get_openroad_pre_sta_tcl(self) -> str:
         return self._cfg.openroad.pre_sta_tcl
+
+    def get_openroad_repair(self) -> bool:
+        return self._cfg.openroad.repair
 
 
 _DEFAULT_EFFORT_NAME = "standard"
