@@ -158,6 +158,11 @@ class PnrPlatformConfig:
             self._pdk.get_placement_macro_cell_halo(),
             DEFAULT_PLACEMENT_MACRO_CELL_HALO,
         )
+        self._placement_reference_hpwl = (
+            placement.reference_hpwl
+            if placement.reference_hpwl is not None
+            else self._pdk.get_placement_reference_hpwl()
+        )
         self._placement_tie_separation = _first_set(
             placement.tie_separation,
             self._pdk.get_placement_tie_separation(),
@@ -274,6 +279,10 @@ class PnrPlatformConfig:
     def get_placement_tie_separation(self) -> float:
         """Tie-cell separation in microns, after platform/PDK/default."""
         return self._placement_tie_separation
+
+    def get_placement_reference_hpwl(self) -> float | None:
+        """Global-placement reference HPWL, platform over PDK, or `None` for the placer's own."""
+        return self._placement_reference_hpwl
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""

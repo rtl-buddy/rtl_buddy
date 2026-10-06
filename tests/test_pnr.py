@@ -3655,6 +3655,61 @@ def test_pdk_rejects_an_unusable_tie_separation(tmp_path, separation):
     assert "placement.tie-separation" in str(excinfo.value)
 
 
+def test_global_placement_keeps_the_placer_reference_hpwl_by_default(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_reference_hpwl() is None
+    platform = _platform(pdk)
+    assert platform.get_placement_reference_hpwl() is None
+    text = _render_flow(tmp_path, platform)
+    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "-reference_hpwl" not in text
+
+
+def test_global_placement_takes_the_reference_hpwl_platform_over_pdk(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(reference_hpwl=1000.0))
+    assert _platform(pdk).get_placement_reference_hpwl() == 1000.0
+    platform = _platform(pdk, placement=PlacementFile(reference_hpwl=4.46e8))
+    assert platform.get_placement_reference_hpwl() == 446000000.0
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "-reference_hpwl 446000000\n"
+    ) in text
+    assert text.count("-reference_hpwl") == 1
+
+
+def test_a_yaml_reference_hpwl_loads_as_a_number(tmp_path):
+    from serde.yaml import from_yaml
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile,
+        'name: "p"\npdk: "p"\nplacement: {reference-hpwl: 446000000}\n',
+    )
+    platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
+    assert platform.get_placement_reference_hpwl() == 446000000.0
+
+
+@pytest.mark.parametrize("hpwl", [0.0, -1.0, float("inf"), float("nan")])
+def test_a_platform_rejects_a_reference_hpwl_that_is_not_positive(tmp_path, hpwl):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(_make_pdk_cfg(tmp_path), placement=PlacementFile(reference_hpwl=hpwl))
+    assert "pnr platform 'nangate45_typ': placement.reference-hpwl must be" in str(
+        excinfo.value
+    )
+
+
+def test_a_pdk_rejects_a_reference_hpwl_that_is_not_positive(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _make_pdk_cfg(tmp_path, placement=PlacementFile(reference_hpwl=0.0))
+    assert "placement.reference-hpwl" in str(excinfo.value)
+
+
 def _rtl_mp_yaml(tmp_path, floorplan_extra):
     pnr_yaml = tmp_path / "pnr.yaml"
     pnr_yaml.write_text(
@@ -4148,6 +4203,18 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
     )
     assert ndr["cts_apply_ndr"] == "none"
     assert ndr["max_fanout"] == 5000
+
+    from rtl_buddy.config.pdk import PlacementFile
+
+    assert "reference_hpwl" not in plain["placement"]
+    spread = pnr_abstract.abstract_config(
+        pnr_cfg,
+        _platform(
+            _make_pdk_cfg(tmp_path), placement=PlacementFile(reference_hpwl=4.46e8)
+        ),
+    )
+    assert spread["placement"]["reference_hpwl"] == 4.46e8
+    assert pnr_abstract.config_digest(spread) != pnr_abstract.config_digest(plain)
 
 
 def test_pnr_flow_counts_the_routed_design_after_fill(tmp_path):

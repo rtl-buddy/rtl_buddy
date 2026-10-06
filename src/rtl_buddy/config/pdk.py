@@ -52,6 +52,8 @@ class PlacementFile:
     macro_halo: float | None = field(rename="macro-halo", default=None)
     macro_cell_halo: float | None = field(rename="macro-cell-halo", default=None)
     tie_separation: float | None = field(rename="tie-separation", default=None)
+    # `global_placement -reference_hpwl`; `None` leaves the placer's own reference.
+    reference_hpwl: float | None = field(rename="reference-hpwl", default=None)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -99,12 +101,21 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
             raise FatalRtlBuddyError(
                 f"{where}: placement.tie-separation must be >= 0, got {tie_separation}"
             )
+    reference_hpwl = placement.reference_hpwl
+    if reference_hpwl is not None:
+        if not 0.0 < float(reference_hpwl) < float("inf"):
+            raise FatalRtlBuddyError(
+                f"{where}: placement.reference-hpwl must be a positive number, "
+                f"got {reference_hpwl!r}"
+            )
+        reference_hpwl = float(reference_hpwl)
     return PlacementFile(
         density=density,
         padding=padding,
         macro_halo=macro_halo,
         macro_cell_halo=macro_cell_halo,
         tie_separation=tie_separation,
+        reference_hpwl=reference_hpwl,
     )
 
 
@@ -299,6 +310,10 @@ class PdkConfig:
     def get_placement_tie_separation(self) -> float | None:
         """Configured tie-cell separation in microns, or `None` when unset."""
         return self._placement.tie_separation
+
+    def get_placement_reference_hpwl(self) -> float | None:
+        """Configured global-placement reference HPWL, or `None` when unset."""
+        return self._placement.reference_hpwl
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)

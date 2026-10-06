@@ -182,6 +182,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 != DEFAULT_PLACEMENT_TIE_SEPARATION
                 else {}
             ),
+            **(
+                {"reference_hpwl": platform.get_placement_reference_hpwl()}
+                if isinstance(platform.get_placement_reference_hpwl(), float)
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
