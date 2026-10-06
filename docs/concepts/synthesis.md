@@ -266,13 +266,16 @@ Precedence is the run's `tool_overrides`, then the selected effort, then `cfg-sy
 
 ## Choose the mapped-run ABC script
 
-A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs. The default is Yosys' default Liberty script without `dc2`:
+A Liberty-mapped run, which is every `tool: openroad` run and a `tool: yosys` run with a `platform` or `lib-paths`, maps logic to cells with one `abc -liberty` command. `abc-script` sets the ABC commands it runs. The default is Yosys' default Liberty script without `dc2` and `&fraig -x`:
 
 ```text
-strash; &get -n; &fraig -x; &put; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put
+strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put
 ```
 
-`dc2` rebuilds the log-depth carry networks that `techmap` produces for adders, negates and incrementers as ripple chains, so it is left out. Set another script in an effort, or for one run in `tool_overrides.yosys.abc_script`:
+- `dc2` rebuilds the log-depth carry networks that `techmap` produces for adders, negates and incrementers as ripple chains, so it is left out.
+- `&fraig -x` is a SAT sweep that allows up to a million solver conflicts per node. On deep arithmetic, such as a chain of wide multipliers, it ran for hours without finishing, so it is left out too. `scorr` still merges equivalent registers.
+
+Set another script in an effort, or for one run in `tool_overrides.yosys.abc_script`:
 
 ```yaml
 cfg-synth-efforts:

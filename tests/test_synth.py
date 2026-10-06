@@ -6503,6 +6503,15 @@ def test_default_mapped_abc_script_has_no_dc2():
     assert "&nf {D}" in DEFAULT_MAPPED_ABC_SCRIPT
 
 
+def test_default_mapped_abc_script_has_no_fraig_sweep():
+    """`&fraig -x` is an unbounded SAT sweep that does not finish on deep arithmetic (#711)."""
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    assert "fraig" not in DEFAULT_MAPPED_ABC_SCRIPT
+    # The sequential sweep and retiming stay ahead of the choice-based mapping.
+    assert DEFAULT_MAPPED_ABC_SCRIPT.startswith("strash; scorr; dretime; ")
+
+
 def test_yosys_mapped_run_defaults_to_the_script_without_dc2(tmp_path):
     from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
 

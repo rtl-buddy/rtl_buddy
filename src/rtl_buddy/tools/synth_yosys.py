@@ -38,10 +38,10 @@ from ..phys.publish import (
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
-# Yosys' default Liberty script without `dc2`, which rebuilds log-depth carry networks as ripple chains.
+# Yosys' default Liberty script without `dc2`, which rebuilds log-depth carry networks as ripple
+# chains, and without `&fraig -x`, whose SAT sweep (1M conflicts per node) does not finish on deep arithmetic.
 DEFAULT_MAPPED_ABC_SCRIPT = (
-    "strash; &get -n; &fraig -x; &put; scorr; dretime; strash; "
-    "&get -n; &dch -f; &nf {D}; &put"
+    "strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put"
 )
 # Appended when the SDC names a clock; `_parse_critical_path_ps` reads its report.
 _ABC_STIME = "; stime -p"
