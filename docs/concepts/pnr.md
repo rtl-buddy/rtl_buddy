@@ -400,10 +400,23 @@ runs:
 
 A parent ties a hardened block into its grid the way it ties in any macro: its top-level straps cross the block and drop vias onto the block's power pins. This works only if the block leaves the top layers free. rtl_buddy does not enforce the split, so give the block its own platform and PDK entry:
 
-- The block owns the lower layers and the parent the top ones. On sky130hd the block routes and straps on met1 to met4 and exposes power pins on met4, and the parent's met5 straps run over it. A block strap on met5 blocks met5 over the whole block, and the parent's `pdngen` fails.
+- The block owns the lower layers and the parent the top ones. On sky130hd the block routes and straps on met1 to met4 and exposes power pins on met4, and the parent's met5 straps run over it. A block strap on met5 blocks met5 over the whole block, so the parent's straps cannot cross it. A block that needs met5 is handled by [joining its pins](#blocks-with-supply-pins-on-the-top-strap-layer).
 - Point a copy of the PDK entry at a block-level `pdn-config` whose straps stop below the parent's layers, and set the block platform's `routing-layers` to the same range.
 
 The template's `pnr/sky130hd/pdn_block.tcl` and `sky130hd_tt_block` platform show this split.
+
+`rb pnr` ties each block instance's power and ground pins, as the abstract LEF declares them (`USE POWER` / `USE GROUND`), when the parent's `pdn-config` leaves them on no net. A pin goes to the parent supply net of the same name, else to the parent's only power or ground net; with several candidates the run fails and asks for an `add_global_connection`. The log shows `rb: tied <inst>/<pin> to <net>`.
+
+## Blocks with supply pins on the top strap layer
+
+Some blocks cannot leave the parent's top layer free. A block with an OpenRAM sky130 SRAM is one: the SRAM obstructs met1 to met4 and its supply ring reaches a grid only through met5, so the block builds its own met5 straps and exposes VDD and VSS on met5. The parent's `pdngen` treats those pins as an obstruction and stops its met5 straps short of the block on both sides, so nothing reaches them.
+
+`rb pnr` joins such pins after `pdngen`. For each block supply pin on the parent's top strap layer it finds the parent strap of the pin's net on the same track, on each side of the block, and adds one strap-shaped box along the pin that overlaps each strap end by a strap width. The log shows `rb: joined N block supply pin(s) on met5 to the parent's straps (M shape(s))`.
+
+- **Build the block on the parent's pitch.** In the block's `pdn-config`, expose its grid on the top layer (`define_pdn_grid ... -pins {met5}`) and give its straps there the parent's width, pitch and net order, so that each pin lands on a parent strap of its own net. The block's position and orientation decide the rest: a pin is on track only if the block's origin is a whole number of pitches from the parent's strap offset, and a mirrored copy swaps which net each track carries.
+- **Keep the block out of the parent's macro grids.** A macro grid connects met4 to met5 over a macro, and this block blocks both, so `pdngen` warns `PDN-0232` for its grid and fails with `PDN-0233`. Define the parent's macro grids with `-cells` or `-instances` for its other macros instead of `-default`.
+- **Unjoinable pins fail the run.** A supply pin with a shape on or above the parent's top strap layer, none of whose shapes can be joined, fails with `block power: <inst>/<pin> ...`. That covers a pin off the straps of its own net (`is not on a parent <net> strap`, naming the net whose track it is on and the nearest strap of its own net), a join that would touch another net's strap, as for a rotated block (`cannot be joined`), and a pin above the parent's top strap layer. Change the block's core margin or size, or the parent's floorplan, until the pins line up. A single stray shape of a pin whose other shapes are joined, such as a short strap `pdngen` adds at a macro edge, is reported as a warning.
+- The block's other pins, on layers below the top one, are connected by `pdngen` as usual.
 
 ## Assemble hardened blocks
 
@@ -512,5 +525,6 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`fail_stage: abstract`, or `harden:` refused.** A view could not be produced (read `pnr.log`), or the platform has several corners.
 - **A missing or stale abstract, or a platform/corner mismatch.** Run the `rb pnr` command the message names, run `rb pnr` with no run name, or pass `--accept-stale`.
 - **`fail_stage: blocked`.** A block the run consumes failed. Fix it first.
+- **`block power: ... is not on a parent <net> strap`, `no single parent power net`, or `PDN-0233` on a block's macro grid.** A block's supply pins are off the parent's straps or cannot be tied. See [Blocks with supply pins on the top strap layer](#blocks-with-supply-pins-on-the-top-strap-layer).
 - **`instance '<inst>' ... of block '<blk>' sets <P>=...`, `port '<p>' is connected to N bit(s)`, `instances of block '<blk>' have different parameters`, or `... named by a hash`.** The parent instances a block with parameters or ports it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.
