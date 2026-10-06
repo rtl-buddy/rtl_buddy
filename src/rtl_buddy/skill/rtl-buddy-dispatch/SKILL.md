@@ -46,7 +46,7 @@ In machine mode, read `payload.reservation_advice` and apply each `edit_hint.fil
 
 ## Size the coverage tail
 
-Under Slurm, the coverage tail of `test` and `regression` (merge, `coverage-model.json`, LCOV exports, manifest) runs as one `rb:coverage` job after the fleet, logging to `.dispatch/coverage/`. Without Slurm it runs in the head.
+Under Slurm, the coverage tail of `test`, `regression` and `randtest` (merge, `coverage-model.json`, LCOV exports, manifest) runs as one `rb:coverage` job after the fleet, logging to `.dispatch/coverage/`. Without Slurm, or for `randtest -r`, it runs in the head. A still-running tail job from an earlier run is waited for first; `--orphans cancel` cancels it.
 
 - Reserve it with `cfg-dispatch.coverage` (inherits `resources`; `modes.cov` is the usual place). A merge OOM is an edit there.
 - `Coverage tail FAILED` (`tail_failed`) keeps every test result, writes no model or manifest, and exits 1.
