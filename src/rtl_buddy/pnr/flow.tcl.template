@@ -45,7 +45,7 @@ link_design  $DESIGN
 
 puts ">>> Reading SDC"
 read_sdc $SDC_FILE
-{{ layer_rc_block }}{{ dont_use_block }}
+{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}
 puts ">>> Initializing floorplan"
 initialize_floorplan \
     -site         $SITE \
@@ -108,7 +108,7 @@ set_propagated_clock [all_clocks]
 clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}
+    {{ cts_clustering_option }}{{ cts_ndr_option }}
 
 puts ">>> Detail placement (post-CTS)"
 detailed_placement

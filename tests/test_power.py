@@ -676,8 +676,15 @@ class _FakePlatform:
     technology and a mock answers every call with a new object.
     """
 
-    def __init__(self, liberty="/pdk/fake/nangate45_typ.lib", pdk=None, corners=None):
+    def __init__(
+        self,
+        liberty="/pdk/fake/nangate45_typ.lib",
+        pdk=None,
+        corners=None,
+        max_fanout=None,
+    ):
         self._liberty = liberty
+        self._max_fanout = max_fanout
         self._pdk = pdk or _FakePdk("/pdk/fake/tech.lef")
         # corner -> Liberty, primary first, for a multi-corner platform; `None` is the
         # single-corner platform other tests use.
@@ -694,6 +701,9 @@ class _FakePlatform:
 
     def get_pdk(self):
         return self._pdk
+
+    def get_max_fanout(self):
+        return self._max_fanout
 
 
 def _make_power_backend(tmp_path, platform=None):
@@ -3174,6 +3184,29 @@ def test_a_pnr_power_run_reads_the_trusted_spef_instead_of_estimating(tmp_path):
     report = next(i for i, ln in enumerate(lines) if ln.startswith("report_power >"))
     assert read_db < read_sdc < read_spef < report
     assert backend._parasitics == "spef"
+
+
+def test_a_synth_power_run_sets_the_platform_max_fanout_after_read_sdc(tmp_path):
+    backend = _make_power_backend(tmp_path, platform=_FakePlatform(max_fanout=100000))
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    read_sdc = next(i for i, ln in enumerate(lines) if ln.startswith("read_sdc "))
+    assert lines[read_sdc + 1] == "set_max_fanout 100000 [current_design]"
+    assert sum(ln.startswith("set_max_fanout") for ln in lines) == 1
+
+
+def test_a_pnr_power_run_sets_the_platform_max_fanout_after_read_sdc(tmp_path):
+    backend, _routed = _make_pnr_power_backend(
+        tmp_path, "create_clock -period 3 [get_ports clk]\n"
+    )
+    backend._resolve_platform = lambda: _FakePlatform(max_fanout=64)
+
+    lines = Path(backend._write_script()).read_text().splitlines()
+
+    read_sdc = next(i for i, ln in enumerate(lines) if ln.startswith("read_sdc "))
+    assert lines[read_sdc + 1] == "set_max_fanout 64 [current_design]"
+    assert sum(ln.startswith("set_max_fanout") for ln in lines) == 1
 
 
 def test_a_pnr_power_run_without_a_spef_estimates_as_before(tmp_path):

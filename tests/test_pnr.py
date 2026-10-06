@@ -3947,6 +3947,8 @@ def test_pnr_platform_leaves_the_flow_knobs_off_by_default(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is False
     assert platform.get_routing_layer_adjustment() is None
+    assert platform.get_cts_apply_ndr() is None
+    assert platform.get_max_fanout() is None
 
 
 def test_pnr_flow_knobs_are_kebab_case(tmp_path):
@@ -3959,11 +3961,55 @@ def test_pnr_flow_knobs_are_kebab_case(tmp_path):
             pdk: "asap7"
             post-cts-setup-repair: true
             routing-layer-adjustment: 0.25
+            cts-apply-ndr: none
+            max-fanout: 100000
         """),
     )
     platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
     assert platform.get_post_cts_setup_repair() is True
     assert platform.get_routing_layer_adjustment() == 0.25
+    # YAML `none` is the string OpenROAD takes, not an unset key.
+    assert platform.get_cts_apply_ndr() == "none"
+    assert platform.get_max_fanout() == 100000
+
+
+@pytest.mark.parametrize("value", ["none", "root_only", "half", "full"])
+def test_pnr_platform_accepts_each_cts_apply_ndr_value(tmp_path, value):
+    platform = _platform(_make_pdk_cfg(tmp_path), cts_apply_ndr=value)
+    assert platform.get_cts_apply_ndr() == value
+
+
+@pytest.mark.parametrize("value", ["", "None", "quarter", "root-only"])
+def test_pnr_platform_rejects_an_unknown_cts_apply_ndr(tmp_path, value):
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(_make_pdk_cfg(tmp_path), cts_apply_ndr=value)
+    assert "cts-apply-ndr" in str(excinfo.value)
+    assert "nangate45_typ" in str(excinfo.value)
+    assert "root_only" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", [0, -1, 2.5, 100.0, True])
+def test_pnr_platform_rejects_a_max_fanout_that_is_not_a_positive_integer(
+    tmp_path, value
+):
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(_make_pdk_cfg(tmp_path), max_fanout=value)
+    assert "max-fanout must be a positive integer" in str(excinfo.value)
+    assert "nangate45_typ" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("text", ["2.5", "true", "0"])
+def test_a_yaml_max_fanout_that_is_not_a_positive_integer_names_the_platform(
+    tmp_path, text
+):
+    from serde.yaml import from_yaml
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile, f'name: "p1"\npdk: "p"\nmax-fanout: {text}\n'
+    )
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
+    assert "pnr platform 'p1': max-fanout" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("value", [-0.1, 1.5, float("nan")])
@@ -4000,6 +4046,41 @@ def test_pnr_flow_repairs_setup_before_hold_after_cts(tmp_path):
     # The repair buffers are legalized by the pass after it.
     assert text.index("repair_timing -setup") < text.index(
         ">>> Detail placement (legalize repair cells)"
+    )
+
+
+def test_pnr_flow_without_ndr_or_fanout_keeps_the_tool_defaults(tmp_path):
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    assert "-apply_ndr" not in text
+    assert "set_max_fanout" not in text
+
+
+@pytest.mark.parametrize("clustering", [True, False])
+def test_pnr_flow_passes_the_cts_apply_ndr(tmp_path, clustering):
+    platform = _platform(
+        _make_pdk_cfg(tmp_path),
+        cts_apply_ndr="none",
+        cts_sink_clustering=clustering,
+    )
+    text = _render_flow(tmp_path, platform)
+    options = "-sink_clustering_enable" if clustering else ""
+    assert (
+        "    -buf_list $CTS_BUF \\\n"
+        f"    {options} -apply_ndr none\n\n"
+        'puts ">>> Detail placement (post-CTS)"'
+    ) in text
+    assert text.count("-apply_ndr") == 1
+
+
+def test_pnr_flow_sets_the_max_fanout_right_after_read_sdc(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path, layer_rc_tcl=_HOOK_FILES["layer_rc_tcl"])
+    text = _render_flow(tmp_path, _platform(pdk, max_fanout=100000))
+    assert "read_sdc $SDC_FILE\nset_max_fanout 100000 [current_design]\n" in text
+    assert text.count("set_max_fanout") == 1
+    # Ahead of every repair that reads it.
+    assert text.index("set_max_fanout") < text.index("repair_design")
+    assert text.index("set_max_fanout") < text.index(
+        str(tmp_path / _HOOK_FILES["layer_rc_tcl"])
     )
 
 
@@ -4058,6 +4139,15 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
     )
     assert tuned["post_cts_setup_repair"] is True
     assert tuned["routing"]["layer_adjustment"] == 0.25
+
+    assert "cts_apply_ndr" not in plain
+    assert "max_fanout" not in plain
+    ndr = pnr_abstract.abstract_config(
+        pnr_cfg,
+        _platform(_make_pdk_cfg(tmp_path), cts_apply_ndr="none", max_fanout=5000),
+    )
+    assert ndr["cts_apply_ndr"] == "none"
+    assert ndr["max_fanout"] == 5000
 
 
 def test_pnr_flow_counts_the_routed_design_after_fill(tmp_path):

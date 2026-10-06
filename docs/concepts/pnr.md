@@ -49,11 +49,11 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png --gds-mode strict
 
 The generated `pnr.tcl` runs these steps in order:
 
-1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, then source `layer-rc-tcl` when set.
+1. Source `platform-tcl` when set, read Liberty, LEF, the synthesis netlist and the SDC, set the design's max fanout when `max-fanout` is set, then source `layer-rc-tcl` when set.
 2. Initialize the floorplan, create routing tracks and run `insert_tiecells` for the PDK's `tie-hi` and `tie-lo` ports, one tie cell per constant net.
 3. Place macros, insert tap and endcap cells when `tapcell-tcl` is set, build the power grid and place the IO pins.
 4. Run global placement, then `repair_tie_fanout` for each tie port, which gives every constant-driven load its own tie cell `placement.tie-separation` microns away (default 0).
-5. Run `repair_design`, legalization, clock-tree synthesis, setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
+5. Run `repair_design`, legalization, clock-tree synthesis (with `-apply_ndr` when `cts-apply-ndr` is set), setup repair when `post-cts-setup-repair` is set, hold repair and a final legalization.
 6. Route globally, after `set_global_routing_layer_adjustment` when `routing-layer-adjustment` is set, and in detail, insert fill, extract parasitics when `rcx-rules` is set, then write reports and outputs.
 
 A tie port the PDK leaves unset gets neither tie step.
@@ -162,6 +162,8 @@ cfg-pnr-platforms:
 - **`placement.tie-separation`** (default 0 µm) is how far from its load each per-load tie cell is placed; see [Flow steps](#flow-steps).
 - **`cts-buffer`** takes a name or a list. With a list, the first entry is the root buffer.
 - **`cts-sink-clustering`** (default `true`) passes `-sink_clustering_enable` to CTS. Set it to `false` when CTS fails with `CTS-0080 Sink not found`, as it can on coincident clock pins or a large ASAP7 clock tree.
+- **`cts-apply-ndr`** (unset by default) passes `-apply_ndr` (`none`, `root_only`, `half` or `full`) to CTS; unset keeps OpenROAD's default, `half`. Set `none` when the global router detours clock nets that carry non-default rules to several times their Manhattan length, which shows as large hold violations and `GRT-0273 Disabled NDR` in the log.
+- **`max-fanout`** (positive integer, unset by default) adds `set_max_fanout <n> [current_design]` after each `read_sdc` in `rb pnr` and `rb power`, replacing a design-level limit from the SDC. When neither the Liberty nor the SDC sets a limit, `repair_design` uses 50 and buffers every larger net; on a library without one, such as SKY130 HD, that costs setup timing. A large value such as `100000` stops repair buffering for fanout alone.
 - **`post-cts-setup-repair`** (default `false`) runs `repair_timing -setup` after CTS, before hold repair. Turn it on when the post-CTS netlist misses setup; it adds buffers and resizes cells, so QoR changes.
 - **`routing-layer-adjustment`** (0 to 1, unset by default) withholds that fraction of each signal layer's capacity from the global router (`set_global_routing_layer_adjustment`, ORFS `ROUTING_LAYER_ADJUSTMENT`, 0.25 on ASAP7). Raise it when detailed routing ends with DRCs in congested areas; unset leaves the router's default.
 - **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid.

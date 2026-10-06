@@ -200,6 +200,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
             if platform.get_post_cts_setup_repair() is True
             else {}
         ),
+        **(
+            {"cts_apply_ndr": platform.get_cts_apply_ndr()}
+            if isinstance(platform.get_cts_apply_ndr(), str)
+            else {}
+        ),
+        **(
+            {"max_fanout": platform.get_max_fanout()}
+            if isinstance(platform.get_max_fanout(), int)
+            else {}
+        ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.
         **({"tcl_hooks": {k: _rel(v) for k, v in hooks.items()}} if hooks else {}),
     }
