@@ -43,6 +43,16 @@ from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResu
 DEFAULT_MAPPED_ABC_SCRIPT = (
     "strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put"
 )
+# The default without `&dch -f`. `&nf` area recovery over `&dch` choices, under the module's one global
+# required time, rebuilds prefix adders off that critical path as low-area ripple chains (#724).
+DELAY_MAPPED_ABC_SCRIPT = "strash; scorr; dretime; strash; &get -n; &nf {D}; &put"
+#: Names `abc-script` accepts in place of a script.
+MAPPED_ABC_PRESETS = {
+    "default": DEFAULT_MAPPED_ABC_SCRIPT,
+    "delay": DELAY_MAPPED_ABC_SCRIPT,
+}
+# `synth -extra-map +/choices/<map>.v` requests a prefix-adder carry network (kogge-stone, sklansky, ...).
+_CHOICES_MAP_RE = re.compile(r"(?:^|\s)-extra-map\s+\+/choices/\S+")
 # Appended when the SDC names a clock; `_parse_critical_path_ps` reads its report.
 _ABC_STIME = "; stime -p"
 
@@ -558,11 +568,17 @@ def dont_use_args(cells: list[str]) -> str:
 def mapped_abc_script(opts: SynthToolOpts) -> str:
     """Return the ABC script a Liberty-mapped run passes to ``abc -script "+..."``.
 
-    The resolved ``abc_script``, or :data:`DEFAULT_MAPPED_ABC_SCRIPT` when it is empty.
+    The resolved ``abc_script``, expanded when it names a :data:`MAPPED_ABC_PRESETS` entry. When it
+    is empty: the ``delay`` preset if the resolved ``synth_args`` (the arguments the run gives Yosys
+    ``synth``) request a ``+/choices/`` carry map, else the ``default`` preset.
     """
     script = (opts.abc_script or "").strip()
     if not script:
+        if _CHOICES_MAP_RE.search(opts.synth_args or ""):
+            return DELAY_MAPPED_ABC_SCRIPT
         return DEFAULT_MAPPED_ABC_SCRIPT
+    if script in MAPPED_ABC_PRESETS:
+        return MAPPED_ABC_PRESETS[script]
     if '"' in script or "\n" in script:
         raise FatalRtlBuddyError(
             f"synth option abc-script must be one line without double quotes, "
@@ -610,7 +626,12 @@ def clean_stat_json(path: str) -> None:
 
 
 def warn_mapped_abc_args(opts: SynthToolOpts, synth_name: str) -> None:
-    """Warn that a Liberty-mapped run drops the resolved ``abc_args``."""
+    """Warn that a Liberty-mapped run drops the resolved ``abc_args``, and note an automatic ``delay`` preset."""
+    if not (opts.abc_script or "").strip() and _CHOICES_MAP_RE.search(
+        opts.synth_args or ""
+    ):
+        # An upgrade changes the script under an unchanged config (#724), so say so in the run output.
+        log_event(logger, logging.INFO, "synth.abc_delay_preset", synth=synth_name)
     if opts.abc_args:
         log_event(
             logger,

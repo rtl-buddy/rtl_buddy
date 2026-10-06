@@ -1645,6 +1645,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "are dropped from the netlist, leaving any clock or reset it "
                 "carries undriven. frontend: slang binds it correctly"
             )
+        case "synth.abc_delay_preset":
+            return (
+                f'synth-args of "{fields.get("synth")}" request a +/choices/ carry map, so its '
+                "Liberty-mapped run uses the delay ABC preset (no &dch -f); set abc-script: default "
+                "to keep the area-oriented script"
+            )
         case "synth.abc_args_ignored":
             return (
                 f'abc-args "{fields.get("abc_args")}" has no effect on the '
