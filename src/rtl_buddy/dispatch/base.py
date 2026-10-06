@@ -140,6 +140,31 @@ RunnableJobSpec = TestJobSpec | ElabJobSpec
 
 
 @dataclass
+class CoverageJobSpec:
+    """The coverage tail of one invocation, run as one job (``rb _cov-job``).
+
+    ``suite_dir`` is the head's command root: the job's working directory, where
+    ``root_config.yaml`` is found from, and the parent of ``cov_dir/``. ``spec_json``
+    and ``result_json`` are absolute, on storage shared with the head
+    (:mod:`rtl_buddy.dispatch.coverage_tail`).
+    """
+
+    suite_dir: str
+    spec_json: Path
+    result_json: Path
+    resources: JobResources = field(default_factory=JobResources)
+    log_path: Path | None = None
+    builder_mode: str | None = None
+    builder_override: str | None = None
+    extra_sim_timeout: int | None = None
+    # The head's `--run-tag` artefact namespace, or None for the flat tree.
+    run_tag: str | None = None
+
+    def display_name(self) -> str:
+        return "coverage"
+
+
+@dataclass
 class JobHandle:
     """An accepted submission: the backend's job id plus its spec.
 
@@ -228,6 +253,21 @@ class DispatchBackend(ABC):
         ``dependency`` is a build job id gating every element.
         """
         return [self.submit(spec, dependency=dependency) for spec in specs]
+
+    # True for a backend whose jobs run off the submit host, so moving the coverage tail
+    # (merge, model build, LCOV exports) into a job of its own saves the submit host its
+    # memory and time. A backend that runs jobs on the head's machine keeps it in-process.
+    dispatches_coverage_tail: bool = False
+
+    def submit_coverage(self, spec: CoverageJobSpec) -> JobHandle:
+        """Submit the coverage tail job; return its handle without waiting.
+
+        Only called when :attr:`dispatches_coverage_tail` is true. The head submits it
+        once the fleet is collected and waits on it with :meth:`wait_all`.
+        """
+        raise NotImplementedError(
+            f"the {self.name} backend does not run the coverage tail as a job"
+        )
 
     def advance(self) -> None:
         """Let a self-executing backend make progress without blocking.

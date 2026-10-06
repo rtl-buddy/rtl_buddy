@@ -27,14 +27,14 @@ See [Coverage](concepts/coverage.md#per-elaboration-vs-source-point-figures).
 
 Coverage collection and labels use the platform-selected builder, even when a suite or test selects another `builder:`. A mismatch can mislabel or misparse coverage. Pass `--builder <name>` for the run, or make that builder the platform default. See [YAML Formats](reference/yaml.md).
 
-## Coverage merging runs in the submitting process, with no timeout
+## Coverage merging runs in the submitting process without a Slurm backend
 
-The merge and LCOV exports run in the process that invoked `rb`, including under `--dispatch slurm`.
+Under `--dispatch slurm` the coverage tail (merge, model build, LCOV exports and manifest) runs as one job sized by `cfg-dispatch.coverage` (see [Run the coverage tail as a job](concepts/dispatch.md#run-the-coverage-tail-as-a-job)). Without dispatch, and under `--dispatch local-parallel`, it runs in the process that invoked `rb`.
 
-- A few hundred inputs can peak in the gigabytes. A memory cap on a shared submit host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](concepts/coverage.md#read-a-failed-merge)).
-- There is no timeout, so a hung merge hangs the run.
+- A few hundred inputs can peak in the gigabytes. A memory cap on that host can kill the merge; coverage then reports `FAIL` and the command exits 1 (see [Read a failed merge](concepts/coverage.md#read-a-failed-merge)).
+- The merge has no time limit unless `cfg-coverage` sets `merge-timeout`, so a hung merge hangs the run.
 
-Run the coverage command on a compute node, for example by submitting `rb regression --coverage-merge` as one job.
+Without Slurm, run the coverage command on a host with the memory it needs.
 
 ## Verilator randomized runs may not reproduce
 
@@ -118,7 +118,7 @@ YAML 1.1 reads an unquoted `time: 4:00:00` as an integer, and rtl_buddy rejects 
 
 ## An unknown key in a reservation block is ignored after a warning
 
-An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
+An unknown key in a `resources:` or `compile:` block, in `cfg-dispatch`, or in its `coverage:`, `retry:` or `rightsize:` block is ignored. Each one logs the warning `config.unknown_key`, naming the file, the block and the nearest known key, so a typo such as `memory:` reserves nothing but is reported. A later major release will make an unknown key fatal. A `modes:` block already rejects unknown keys, but a release without `modes:` drops the whole block silently, so confirm a new mode's reservation once. See [YAML formats](reference/yaml.md#parallel-dispatch).
 
 ## Dispatch build jobs cover the whole suite
 

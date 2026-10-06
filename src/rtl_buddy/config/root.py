@@ -700,6 +700,11 @@ class RootConfig:
         cfg = self.get_coverage_cfg(simulator_name)
         return False if cfg is None else cfg.get_use_lcov()
 
+    def get_coverage_merge_timeout(self, simulator_name: str) -> float | None:
+        """Return the raw merge's ``merge-timeout`` in seconds for a simulator family, or None for no limit."""
+        cfg = self.get_coverage_cfg(simulator_name)
+        return None if cfg is None else cfg.get_merge_timeout()
+
     def get_coverview_cfg(self, simulator_name: str):
         """Return the Coverview packaging configuration for a simulator family, or None."""
         return self.coverview_cfgs.get(simulator_name)

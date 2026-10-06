@@ -2058,12 +2058,37 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"name to value, got {fields.get('got')}"
             )
         case "coverage.merge.failed":
+            how = (
+                f"ran past cfg-coverage merge-timeout ({fields.get('timeout')} s) "
+                "and was stopped"
+                if fields.get("timeout") is not None
+                else f"exited {fields.get('returncode')}"
+            )
             return (
-                "coverage merge failed: verilator_coverage --write exited "
-                f"{fields.get('returncode')} and wrote no "
+                f"coverage merge failed: verilator_coverage --write {how} and wrote no "
                 f"{fields.get('merged_path')}; toggle, expression and "
                 "functional coverage have no other source and are reported "
                 "as FAIL, not UNSP"
+            )
+        case "coverage.tail_submitted":
+            return (
+                f"coverage: merge, model and LCOV exports submitted as job "
+                f"{fields.get('job_id')} on {fields.get('backend')}; waiting "
+                f"(log {fields.get('log')})"
+            )
+        case "coverage.tail_cleared_previous":
+            return (
+                "coverage: removed the previous run's manifest and model before "
+                f"submitting the tail: {', '.join(fields.get('paths') or [])}"
+            )
+        case "coverage.tail_failed":
+            job = fields.get("job_id")
+            where = f"job {job}" if job is not None else "the job was not submitted"
+            return (
+                f"coverage tail failed ({where}): {fields.get('reason')}; no merge, "
+                "model or manifest was written (the previous run's were removed), "
+                "every test result was, and the run exits 1"
+                + (f" — see {fields.get('log')}" if job is not None else "")
             )
         case "coverage.merge.degraded":
             failed = fields.get("failed_metrics") or []
