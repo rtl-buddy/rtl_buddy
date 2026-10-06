@@ -1959,6 +1959,218 @@ def test_a_group_sibling_adopts_the_leaders_build_on_a_cold_tree(tmp_path, monke
     assert sibling.last_build_stamp["fingerprint_sha"]
 
 
+_LINT_FAILURE = "%Error: Exiting due to 15 warning(s)"
+
+
+def _failed_group_pair(tmp_path, monkeypatch, calls):
+    """A leader whose compile failed and a sibling on the same compile key, in build-job order."""
+    _install_fake_builder(monkeypatch, calls, returncode=1, stdout=_LINT_FAILURE)
+    leader = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    group = leader.compile_group_dir()
+    assert leader.compile() == 1
+    assert len(calls) == 1
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sibling.compile_group_dir() == group  # one compile key
+    return leader, sibling
+
+
+def test_a_group_sibling_adopts_the_leaders_failed_compile(tmp_path, monkeypatch):
+    """A sibling with the leader's inputs takes the leader's failure instead of failing the same compile again."""
+    _write_source(tmp_path)
+    calls = []
+    leader, sibling = _failed_group_pair(tmp_path, monkeypatch, calls)
+
+    verdict = sibling.adopt_group_failure(leader.last_compile_failure, leader="test_a")
+
+    assert verdict == ("adopted", None)
+    assert len(calls) == 1  # nothing recompiled
+    failure = sibling.last_compile_failure
+    assert failure["returncode"] == 1
+    assert failure["fingerprint_sha"] == leader.last_compile_failure["fingerprint_sha"]
+    # The sibling's own compile.log, which carries the leader's transcript.
+    own_log = Path(sibling._get_compile_transcript_path())
+    assert failure["transcript"] == str(own_log)
+    assert own_log != Path(leader.last_compile_failure["transcript"])
+    text = own_log.read_text()
+    assert text.startswith("Compile skipped: test_a, ")
+    assert _LINT_FAILURE in text
+    assert sibling.last_compile == {
+        "duration_sec": 0.0,
+        "builder": "verilator",
+        "reused": True,
+    }
+
+
+def test_a_gated_job_of_a_sibling_that_adopted_a_failure_names_it(
+    tmp_path, monkeypatch
+):
+    """The adopted failure travels through the build envelope: the sibling's sim job does not recompile and its desc names the compile error."""
+    from rtl_buddy.rtl_buddy import _annotate_build_failure
+
+    _write_source(tmp_path)
+    calls = []
+    leader, sibling = _failed_group_pair(tmp_path, monkeypatch, calls)
+    assert sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    ) == ("adopted", None)
+    entry = _annotate_build_failure(
+        {"test": "test_b"},
+        failure=sibling.last_compile_failure,
+        worker_error=None,
+        suite_dir=str(tmp_path),
+    )
+
+    gated = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    gated.expect_prebuilt = True
+    gated.build_result_json = _write_build_envelope(
+        tmp_path, failed=["test_b"], built=[], builds=[entry]
+    )
+
+    assert gated.compile() == 1
+    assert len(calls) == 1
+    assert _LINT_FAILURE in gated.compile_fail_desc
+    assert "(exit 1)" in gated.compile_fail_desc
+
+
+def test_a_group_sibling_with_other_inputs_does_not_adopt_a_failure(
+    tmp_path, monkeypatch
+):
+    """A failure is adopted only for the same compile: a sibling whose listed inputs differ compiles itself."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1, stdout=_LINT_FAILURE)
+    leader = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family="verilator")
+    group = leader.compile_group_dir()
+    assert leader.compile() == 1
+
+    sibling = _incdir_dot_sim(tmp_path, monkeypatch, "test_b", family="verilator")
+    # This member's PRE wrote a file under the listed `+incdir+.`.
+    (tmp_path / "prog_test_b.svh").write_text("`define B 1\n")
+    assert sibling.compile_group_dir() == group
+
+    assert sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    ) == (None, "compile inputs differ")
+    assert sibling.last_compile_failure is None
+    assert not Path(sibling._get_compile_transcript_path()).exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (None, "the compile did not exit with an error status (None)"),
+        ({"returncode": -9, "fingerprint_sha": "x"}, "(-9)"),
+        ({"returncode": 0, "fingerprint_sha": "x"}, "(0)"),
+        ({"returncode": True, "fingerprint_sha": "x"}, "(True)"),
+        ({"returncode": 1}, "no fingerprint for the failed compile"),
+    ],
+)
+def test_a_failure_without_compiler_evidence_is_not_adopted(
+    tmp_path, monkeypatch, failure, reason
+):
+    """A signal kill (the node's doing, not the source's) or a record with no fingerprint is left for the sibling's own compile."""
+    _write_source(tmp_path)
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+
+    verdict, detail = sibling.adopt_group_failure(failure, leader="test_a")
+
+    assert verdict is None
+    assert reason in detail
+    assert sibling.last_compile_failure is None
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "g++: fatal error: Killed signal terminated program cc1plus",
+        "virtual memory exhausted: Cannot allocate memory",
+        "cc1plus: out of memory allocating 65536 bytes",
+        "std::bad_alloc: Cannot allocate memory",
+        "make: *** [Vtop.mk:42: Vtop__ALL.o] Error 137",
+    ],
+)
+def test_an_out_of_resource_failure_is_not_adopted(tmp_path, monkeypatch, signature):
+    """A compile the host starved may fit on the sibling's turn, so the sibling compiles for itself."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, returncode=2, stdout=f"building...\n{signature}\n"
+    )
+    leader = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert leader.compile() == 2
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+
+    verdict, detail = sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    )
+
+    assert verdict is None
+    assert "ran out of resources" in detail
+    assert sibling.last_compile_failure is None
+    assert not Path(sibling._get_compile_transcript_path()).exists()
+
+
+def test_an_out_of_resource_signature_in_the_error_tail_is_not_adopted(
+    tmp_path, monkeypatch
+):
+    """Without a readable transcript, the record's own error tail is searched."""
+    _write_source(tmp_path)
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    failure = {
+        "returncode": 2,
+        "fingerprint_sha": "x",
+        "transcript": str(tmp_path / "gone.log"),
+        "error_tail": ["make: *** [all] Error 137"],
+    }
+
+    verdict, detail = sibling.adopt_group_failure(failure, leader="test_a")
+
+    assert verdict is None
+    assert "Error 137" in detail
+
+
+def test_a_failure_after_a_license_wait_is_not_adopted(tmp_path, monkeypatch):
+    """A VCS compile that queued for a seat records it, and its sibling compiles for itself."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch,
+        calls,
+        returncode=1,
+        stdout="Queuing for License VCSRuntime_Net\n...\nError-[XYZ] elaboration\n",
+    )
+    leader = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs"
+    )
+    assert leader.compile() == 1
+    assert leader.last_compile_failure["license_queued"] is True
+    sibling = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="vcs", family="vcs"
+    )
+
+    verdict, detail = sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    )
+
+    assert verdict is None
+    assert "license seat" in detail
+    assert sibling.last_compile_failure is None
+
+
+def test_a_license_queued_record_is_not_adopted_even_without_a_transcript(
+    tmp_path, monkeypatch
+):
+    """The record's ``license_queued`` flag alone declines, whatever the transcript says."""
+    _write_source(tmp_path)
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    failure = {"returncode": 1, "fingerprint_sha": "x", "license_queued": True}
+
+    verdict, detail = sibling.adopt_group_failure(failure, leader="test_a")
+
+    assert verdict is None
+    assert "license seat" in detail
+
+
 def test_a_group_sibling_that_rewrote_a_consumed_input_is_reported(
     tmp_path, monkeypatch
 ):

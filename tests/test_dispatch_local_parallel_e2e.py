@@ -651,3 +651,21 @@ def test_a_build_job_compiles_one_key_once_on_a_cold_tree(tmp_path_factory):
     # Both PREs ran, and B's created a directory not in A's stamp listing.
     for name in ("alpha", "beta"):
         assert (suite / f"prog_{name}" / "data.txt").read_text() == "second run\n"
+
+
+def test_a_failed_key_compiles_once_and_every_test_names_the_error(tmp_path_factory):
+    """Two tests on one compile key whose compile fails: the build job compiles once, the sibling adopts the failure, and both rows report the compile error rather than a missing result."""
+    work = tmp_path_factory.mktemp("failed_key")
+    compiles = work / "compiles.txt"
+    proc, envelope, _project, diag = _run(
+        work, _FIXTURE, extra_env={"RB_SHIM_FAIL": str(compiles)}
+    )
+
+    assert proc.returncode != 0, diag
+    assert envelope is not None, diag
+    assert len(compiles.read_text().splitlines()) == 1, diag
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert set(rows) == {"alpha", "beta"}, diag
+    for row in rows.values():
+        assert row["result"] == "FAIL", diag
+        assert "Exiting due to 15 warning(s)" in row["desc"], diag
