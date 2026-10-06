@@ -12,6 +12,7 @@ from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_libe
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
+    apply_effort,
     clean_block_netlist,
     dont_use_args,
     elaboration_defines,
@@ -168,29 +169,24 @@ class OpenRoadSynth:
     def _resolve_yosys_opts(self) -> SynthToolOpts:
         """Return the options for the Yosys elaboration stage.
 
-        Elaboration always uses Yosys, so its opts come from the yosys tool config plus any
-        `tool_overrides.yosys`, falling back to the openroad opts only when no yosys tool config
-        exists. The effort's `abc-args` and `abc-script` apply unless those overrides set them.
-        Memoised because resolving overrides emits validation warnings.
+        The base is the `yosys` tool config, or this backend's own tool config when no `yosys`
+        entry exists. On top go the run's `tool_overrides.yosys`, over `tool_overrides.<openroad>`
+        (:meth:`SynthConfig.get_yosys_stage_overrides`), and the effort's `synth-args`,
+        `abc-args` and `abc-script` unless those overrides set them. Memoised because resolving
+        overrides emits validation warnings.
         """
         if self._yosys_opts is not None:
             return self._yosys_opts
-        overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        opts = self.tool_cfg.get_opts(overrides)
+        base_cfg = self.tool_cfg
         if self.root_cfg is not None:
             try:
-                yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
+                base_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
             except FatalRtlBuddyError:
                 # No `yosys` entry under cfg-synth-tools. Only the lookup is guarded: a config error while
                 # resolving the opts must surface, not silently downgrade the frontend to "verilog".
-                yosys_tool_cfg = None
-            if yosys_tool_cfg is not None:
-                overrides = self.synth_cfg.get_tool_overrides_for("yosys")
-                opts = yosys_tool_cfg.get_opts(overrides)
-        if not overrides or "abc_args" not in overrides:
-            opts.abc_args = self.effort_cfg.get_yosys_abc_args() or opts.abc_args
-        if not overrides or "abc_script" not in overrides:
-            opts.abc_script = self.effort_cfg.get_yosys_abc_script() or opts.abc_script
+                pass
+        overrides = self.synth_cfg.get_yosys_stage_overrides(self.tool_cfg.get_name())
+        opts = apply_effort(base_cfg.get_opts(overrides), overrides, self.effort_cfg)
         self._yosys_opts = opts
         return opts
 
@@ -258,9 +254,8 @@ class OpenRoadSynth:
                 lines.append(f"chparam -set {key} {value} {top}")
 
         synth_cmd = f"synth -top {top}"
-        eff_synth = self.effort_cfg.get_yosys_synth_args()
-        if eff_synth:
-            synth_cmd += f" {eff_synth}"
+        if opts.synth_args:
+            synth_cmd += f" {opts.synth_args}"
         lines.append(synth_cmd)
         # Strip formal cells ($assert/$assume/$cover from unguarded immediate assertions): OpenROAD's structural `read_verilog` rejects them.
         lines.append("chformal -remove")
@@ -758,9 +753,8 @@ class OpenRoadSynth:
 
         These are the inputs the two generated scripts consume, not the resolved `SynthToolOpts`:
 
-        - `elaborate`: the shared frontend subset (:func:`elaboration_fingerprint`) plus `synth_args`
-          from `effort_cfg.get_yosys_synth_args()`. `opts.synth_args` and `abc-args` are ignored on
-          this backend, so they are not digested.
+        - `elaborate`: the shared frontend subset (:func:`elaboration_fingerprint`) plus the resolved
+          `synth_args`. `abc-args` is ignored on this backend, so it is not digested.
         - `abc_script`: the stage 1 ABC script (:func:`mapped_abc_script`).
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
           the script writer strips it), and the resolved `lefs`.
@@ -774,7 +768,7 @@ class OpenRoadSynth:
             "tool": self.tool_cfg.get_name(),
             "elaborate": dict(
                 elaboration_fingerprint(self._resolve_yosys_opts(), self.root_cfg),
-                synth_args=self.effort_cfg.get_yosys_synth_args(),
+                synth_args=self._resolve_yosys_opts().synth_args,
             ),
             "abc_script": mapped_abc_script(self._resolve_yosys_opts()),
             "map": {

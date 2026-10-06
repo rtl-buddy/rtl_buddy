@@ -1981,6 +1981,28 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "answer from — any per-module synthesis rows in the same model "
                 "still answer"
             )
+        case "synth_config.tool_overrides_unused":
+            unused = fields.get("unused") or []
+            return (
+                f'synthesis "{fields.get("synth")}": tool_overrides key(s) '
+                f"{', '.join(repr(str(k)) for k in unused)} ignored; a "
+                f"tool: {fields.get('tool')} run reads only tool_overrides."
+                f"{fields.get('tool')} and tool_overrides.yosys"
+            )
+        case "synth_config.yosys_strategy_ignored":
+            return (
+                f'synthesis "{fields.get("synth")}": tool_overrides.yosys.strategy '
+                "is ignored; strategy selects OpenROAD resynthesis, so set it "
+                "under tool_overrides.openroad"
+            )
+        case "synth_config.openroad_yosys_opts_ignored":
+            keys = fields.get("keys") or []
+            return (
+                f'synthesis "{fields.get("synth")}": cfg-synth-tools openroad '
+                f"opts {', '.join(str(k) for k in keys)} ignored; the Yosys stage "
+                "of a tool: openroad run reads the yosys entry's opts when one "
+                "exists, so set them there"
+            )
         case "synth_tool_config.unknown_override":
             unknown = fields.get("unknown") or []
             accepted = fields.get("accepted") or []

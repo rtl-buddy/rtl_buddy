@@ -856,6 +856,7 @@ def _probe_synth(tmp_path, frontend, params):
         get_defines=lambda: None,
         get_tool_name=lambda: "yosys",
         get_tool_overrides_for=lambda _n: None,
+        get_yosys_stage_overrides=lambda _n: None,
     )
     return probe_block_parameters(
         synth_cfg, root_cfg, str(synth_dir), str(tmp_path / "p")
@@ -1211,6 +1212,7 @@ def _probe_sources(tmp_path, frontend, params, sources: dict[str, str], libs=())
         get_defines=lambda: None,
         get_tool_name=lambda: "yosys",
         get_tool_overrides_for=lambda _n: None,
+        get_yosys_stage_overrides=lambda _n: None,
         get_lib_paths=lambda: [str(p) for p in libs],
         get_platform=lambda: None,
         get_blocks=lambda: [],
