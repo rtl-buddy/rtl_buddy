@@ -23,6 +23,7 @@ from rtl_buddy.tools.block_params import (
     check_params,
     check_ports,
     clean_netlist,
+    literals_equal,
     parse_value,
     strip_overrides,
     values_equal,
@@ -614,8 +615,8 @@ def test_an_unconnected_input_fails_and_an_unconnected_output_warns(tmp_path):
         _check_ports(tmp_path, "blk_top u_blk (.clk(clk), .d(), .q(q));")
     warnings = _check_ports(tmp_path / "w", "blk_top u_blk (.clk(clk), .d(d));")
     assert warnings == [
-        "n.v: instance 'u_blk' (line 8) of block 'blk_top': output pin 'q' is not "
-        "connected"
+        "n.v: output pin 'q' of block 'blk_top' is not connected on instance "
+        "'u_blk' (line 8)"
     ]
 
 
@@ -696,7 +697,11 @@ def test_an_incomplete_record_warns_about_what_it_cannot_check(tmp_path):
         complete=False,
         frontend="verilog",
     )
-    assert len(warnings) == 1 and "AW=32'd4 is not checked" in warnings[0]
+    assert warnings == [
+        "n.v: AW on block 'blk_top' is not checked on instance 'u_blk' (line 8): "
+        "the block's record (verilog frontend) has no localparams — harden it with "
+        "frontend: slang for a complete record"
+    ]
 
 
 def test_without_a_record_params_are_checked_with_a_warning_to_reharden(tmp_path):
@@ -726,14 +731,14 @@ def test_instances_of_one_block_with_different_overrides_are_refused(tmp_path):
 
 
 def test_a_strip_that_changes_anything_else_is_an_internal_error(monkeypatch):
-    real = block_params._strip
+    real = block_params._rewrite
 
-    def _also_renames(text, modules):
-        cleaned, found, cuts = real(text, modules)
-        return cleaned.replace("u_blk", "u_xxx"), found, cuts
+    def _also_renames(text, sites):
+        cleaned, changed = real(text, sites)
+        return cleaned.replace("clk(clk)", "clk(nope)"), changed
 
-    monkeypatch.setattr(block_params, "_strip", _also_renames)
-    with pytest.raises(StripSelfCheckError, match="differs from the input"):
+    monkeypatch.setattr(block_params, "_rewrite", _also_renames)
+    with pytest.raises(StripSelfCheckError, match="changed more than"):
         strip_overrides(_ISSUE_NETLIST, {"blk_top"})
 
 
@@ -901,3 +906,403 @@ def test_an_override_on_an_instance_rb_cannot_read_is_refused(tmp_path):
     text = "module top; blk_top #(.W(32'd16)) u_blk; endmodule\n"
     with pytest.raises(BlockParamError, match="could not be read as an instance"):
         block_params.clean_text(text, [block], "n.v")
+
+
+# --- Review of #719: the reviewer's reproducers (rev719/d1..d7, perf) ----------------------
+
+
+@pytest.mark.parametrize(
+    "a,b,equal",
+    [
+        # d6: a block hardened with BASE='h1000 at its default; the parent's 12'h000
+        # matches only the low 12 bits and must not pass.
+        ("12'h000", "32'b00000000000000000001000000000000", False),
+        ("32'h1000", "32'b00000000000000000001000000000000", True),
+        ("'h1000", "32'd4096", True),
+        # Same width: the bits decide, since a record carries no signedness.
+        ("-32'sd3", "32'b11111111111111111111111111111101", True),
+        ("32'd4294967293", "-32'sd3", True),
+        # Different widths: whole values, sign-extended only when signed.
+        ("8'sb11111101", "32'd4294967293", False),
+        ("8'sb11111101", "-3", True),
+        ("4'b10x1", "4'b10X1", True),
+        ("8'hx", "8'bxxxxxxxx", True),
+        ("8'hx0", "8'bxxxx0000", True),
+        ("4'bx01z", "4'b0011", False),
+        ('"a_b c"', '"a_b c"', True),
+    ],
+)
+def test_literals_compare_as_whole_values(a, b, equal):
+    assert literals_equal(a, b) is equal
+
+
+@pytest.mark.parametrize(
+    "literal,configured,equal",
+    [
+        ("32'd4294967295", -1, True),
+        ("12'h000", 4096, False),
+        ("12'hfff", -1, True),
+        ("12'hfff", 4095, True),
+        ("12'hfff", 8191, False),
+    ],
+)
+def test_a_yaml_integer_compares_modulo_the_literals_own_width(
+    literal, configured, equal
+):
+    assert values_equal(literal, configured) is equal
+
+
+def test_a_hardened_default_is_not_matched_by_its_low_bits(tmp_path):
+    """d6, end to end through the parameter check."""
+    with pytest.raises(BlockParamError) as info:
+        _check_params(
+            tmp_path,
+            "blk_top #(.BASE(12'h000)) u_blk (.clk(clk), .d(d), .q(q));",
+            record={"BASE": "32'b00000000000000000001000000000000"},
+            order=("BASE",),
+        )
+    assert "sets BASE=12'h000, but the block was hardened with BASE=32'd4096" in str(
+        info.value
+    )
+
+
+# d3: the native frontend derives a copy of a parameterised blackbox per parameter set.
+_PARAMOD_NETLIST = _netlist(
+    "\\$paramod\\blk_top\\W=s32'00000000000000000000000000010000  u_blk (\n"
+    "    .clk(clk),\n    .d(d),\n    .q(q)\n  );"
+)
+_HASHED_NETLIST = _netlist(
+    "\\$paramod$ccb5f337d60472a9ed5c481e0947040a631ef213\\blk_top  u_blk (\n"
+    "    .clk(clk),\n    .d(d),\n    .q(q)\n  );"
+)
+
+
+def test_a_native_frontend_instance_is_checked_and_renamed_to_the_block(tmp_path):
+    block = _block_with_params(
+        tmp_path, record={"W": _W16["W"]}, complete=False, frontend="verilog"
+    )
+
+    cleaned, [inst] = block_params.clean_text(_PARAMOD_NETLIST, [block], "n.v")
+
+    assert inst.params == {"W": "32'sb00000000000000000000000000010000"}
+    assert inst.connections == {"clk": 1, "d": 16, "q": 16}
+    assert "$paramod" not in cleaned and "  blk_top  u_blk (" in cleaned
+
+
+def test_a_native_frontend_instance_with_the_wrong_parameters_is_refused(tmp_path):
+    block = _block_with_params(
+        tmp_path, width=8, record={"W": _W8["W"]}, complete=False, frontend="verilog"
+    )
+    with pytest.raises(BlockParamError, match="hardened with W=32'd8"):
+        block_params.clean_text(_PARAMOD_NETLIST, [block], "n.v")
+
+
+def test_a_hashed_native_frontend_instance_fails_closed_naming_slang(tmp_path):
+    block = _block_with_params(tmp_path)
+    with pytest.raises(BlockParamError) as info:
+        block_params.clean_text(_HASHED_NETLIST, [block], "n.v")
+    assert "named by a hash" in str(info.value)
+    assert "frontend: slang" in str(info.value)
+
+
+def test_unpacked_array_ports_are_sized_from_their_concatenation(tmp_path):
+    """d2: Yosys flattens `arr[2]` of 4 bits into a concatenation."""
+    lef = _blk_lef(8, extra="")
+    block = _block_with_params(tmp_path, width=8, record=_W8)
+    Path(block.lef).write_text(lef)
+    netlist = (
+        "module top(clk, a0, a1, q);\n  input clk;\n  wire clk;\n  input [3:0] a0;\n"
+        "  wire [3:0] a0;\n  input [3:0] a1;\n  wire [3:0] a1;\n  wire [7:0] \\u_wrap.x ;\n"
+        "  output [7:0] q;\n  wire [7:0] q;\n"
+        "  blk_top #(\n    .AW(32'd3),\n    .W(32'd8)\n  ) \\u_wrap.u_blk  (\n"
+        "    .clk(clk),\n    .d({ a0, a1 }),\n    .q(q)\n  );\nendmodule\n"
+    )
+    [inst] = block_instances(netlist, {"blk_top"}, "n.v")
+    assert inst.instance == "u_wrap.u_blk"
+    assert inst.connections == {"clk": 1, "d": 8, "q": 8}
+
+
+def test_an_escaped_net_with_brackets_in_its_name_is_sized_from_its_declaration(
+    tmp_path,
+):
+    """d7: a memory word Yosys names `\\mem[1] `."""
+    assert (
+        _check_ports(
+            tmp_path,
+            "blk_top u_blk (.clk(clk), .d(\\mem[1] ), .q(q));",
+            decls="  wire [15:0] \\mem[1] ;\n",
+        )
+        == []
+    )
+
+
+def test_a_package_import_before_the_parameter_list_keeps_the_order():
+    """d1: `module blk import p::*; #(...)`."""
+    text = (
+        "module blk import p::*, q::x; #(parameter int W = 8, localparam int AW = "
+        "$clog2(W), parameter logic [63:0] K = 64'h1, parameter bit signed [7:0] N = "
+        '-3, parameter string S = "ab") (input logic clk);\nendmodule\n'
+    )
+    assert block_params.parameter_port_names(text, "blk") == ["W", "K", "N", "S"]
+    stub = "(* blackbox *)\n" + text
+    [bb] = block_params.blackbox_modules(stub)
+    assert bb.parameterised
+
+
+def test_a_module_header_with_a_lifetime_is_not_an_instance(tmp_path):
+    block = _block_with_params(tmp_path)
+    netlist = _ISSUE_NETLIST + (
+        "module automatic blk_top #(parameter W = 8) (clk, d, q);\n"
+        "  input clk;\n  input [W-1:0] d;\n  output [W-1:0] q;\nendmodule\n"
+    )
+    cleaned, [inst] = block_params.clean_text(netlist, [block], "n.v")
+    assert inst.instance == "u_blk"
+    assert "module automatic blk_top #(parameter W = 8)" in cleaned
+
+
+def test_a_comment_between_the_master_and_its_override_list_survives(tmp_path):
+    block = _block_with_params(tmp_path)
+    netlist = _netlist(
+        "blk_top /* keep */ #(.W(32'd16)) u_blk (.clk(clk), .d(d), .q(q));"
+    )
+    cleaned, [inst] = block_params.clean_text(netlist, [block], "n.v")
+    assert "blk_top /* keep */  u_blk (.clk(clk)" in cleaned
+    assert inst.params == {"W": "32'd16"}
+
+
+def test_lef_busbitchars_and_escaped_brackets(tmp_path):
+    lef = tmp_path / "b.lef"
+    lef.write_text(
+        'BUSBITCHARS "<>" ;\nMACRO m\n'
+        + "".join(
+            f"  PIN {n}\n    DIRECTION INPUT ;\n    USE SIGNAL ;\n  END {n}\n"
+            for n in ("d<0>", "d<1>", "d<2>", "x\\[0\\]", "y[3]")
+        )
+        + "END m\n"
+    )
+    pins = block_params.abstract_pins(str(lef), "m")
+    assert (pins["d"].width, pins["x[0]"].width, pins["y[3]"].width) == (3, 1, 1)
+
+
+def test_yosys_json_strings_keep_a_real_trailing_space():
+    assert block_params.yosys_json_literal("0101 ") == '"0101"'
+    assert block_params.yosys_json_literal("ab ") == '"ab "'
+    assert block_params.yosys_json_literal("0101") == "4'b0101"
+
+
+def test_the_probe_quotes_string_params_and_keeps_numbers():
+    from rtl_buddy.tools.synth_yosys import _probe_value
+
+    assert _probe_value("fast") == '"fast"'
+    assert _probe_value('"fast"') == '"fast"'
+    assert _probe_value("8'hff") == "8'hff"
+    assert _probe_value("4'bx01z") == "4'bx01z"
+    assert _probe_value(16) == "16"
+    assert _probe_value(True) == "1"
+    assert _probe_value('a"b') == '"a\\"b"'
+
+
+def test_warnings_are_reported_once_per_block_and_key(tmp_path):
+    block = _block_with_params(
+        tmp_path, record={"W": _W16["W"]}, complete=False, frontend="verilog"
+    )
+    netlist = _netlist(
+        "\n".join(
+            f"  blk_top #(.AW(32'd4), .W(32'd16)) u_{i} (.clk(clk), .d(d));"
+            for i in range(3)
+        )
+    )
+    insts = block_instances(netlist, {"blk_top"}, "n.v")
+    warnings = check_params(insts, [block], "n.v") + check_ports(insts, [block], "n.v")
+    assert len(warnings) == 2
+    assert all("'u_0' (line 8) and 2 more instance(s)" in w for w in warnings)
+
+
+def test_a_rewrite_that_touches_the_rest_of_the_netlist_is_an_internal_error(
+    monkeypatch,
+):
+    real = block_params._rewrite
+
+    def _edits_a_declaration(text, sites):
+        cleaned, changed = real(text, sites)
+        return cleaned.replace("input clk;", "input clk ;", 1), changed
+
+    monkeypatch.setattr(block_params, "_rewrite", _edits_a_declaration)
+    with pytest.raises(StripSelfCheckError, match="outside the block instances"):
+        strip_overrides(_ISSUE_NETLIST, {"blk_top"})
+
+
+def _perf_netlist(n_inst: int, cells_per_inst: int = 40) -> str:
+    """A flat netlist of inverters with `n_inst` block instances spread through it (rev719/perf)."""
+    lines = [
+        "module top(clk, d, q);",
+        "  input clk;",
+        "  wire clk;",
+        "  input [15:0] d;",
+    ]
+    lines += ["  wire [15:0] d;", "  output [15:0] q;", "  wire [15:0] q;"]
+    n_cells = n_inst * cells_per_inst
+    lines += [f"  wire _{i}_;" for i in range(n_cells)]
+    lines += [f"  wire [15:0] \\qq{b} ;" for b in range(n_inst)]
+    for i in range(n_cells):
+        lines += [
+            f'  (* src = "top.sv:{i}.1-{i}.9" *)',
+            f"  sky130_fd_sc_hd__inv_1 _c{i}_ (",
+            f"    .A(_{i}_),",
+            f"    .Y(_{(i + 1) % n_cells}_)",
+            "  );",
+        ]
+        if i % cells_per_inst == 0:
+            b = i // cells_per_inst
+            lines += [
+                "  blk_top #(",
+                "    .AW(32'd4),",
+                "    .W(32'd16)",
+                f"  ) \\u_blk{b}  (",
+                "    .clk(clk),",
+                "    .d({ d[7:0], d[15:8] }),",
+                f"    .q(\\qq{b} )",
+                "  );",
+            ]
+    lines.append("endmodule")
+    return "\n".join(lines) + "\n"
+
+
+def test_checking_and_stripping_scale_linearly(tmp_path):
+    """rev719/perf: the first version re-counted lines per instance and tokenised the
+    netlist three times, which was quadratic (99 s at 8k instances on 1.16M lines).
+    A 4x larger netlist must cost well under 16x.
+    """
+    import time
+
+    block = _block_with_params(tmp_path)
+    timings = []
+    for n in (250, 1000):
+        text = _perf_netlist(n)
+        start = time.perf_counter()
+        _, insts = block_params.clean_text(text, [block], "n.v")
+        timings.append(time.perf_counter() - start)
+        assert len(insts) == n
+    small, large = timings
+    assert large < 8 * small + 0.5, timings
+    assert large < 20, timings
+
+
+def _probe_sources(tmp_path, frontend, params, sources: dict[str, str], libs=()):
+    """Run the parameter probe on `sources` (name -> text) with top `blk`."""
+    from types import SimpleNamespace
+
+    from rtl_buddy.config.synth import SynthToolOpts
+
+    paths = [_write(tmp_path / name, text) for name, text in sources.items()]
+    synth_dir = tmp_path / "synth"
+    _write(synth_dir / "synth.f", "".join(f"{p}\n" for p in paths))
+    opts = SynthToolOpts()
+    opts.frontend = frontend
+    if frontend == "slang":
+        opts.plugin_path = os.environ["RTL_BUDDY_SLANG_PLUGIN"]
+    tool = SimpleNamespace(get_opts=lambda _o: opts, get_executable=lambda: _YOSYS)
+    root_cfg = SimpleNamespace(
+        get_synth_tool_cfg=lambda _n: tool, get_project_rootdir=lambda: str(tmp_path)
+    )
+    synth_cfg = SimpleNamespace(
+        get_top=lambda: "blk",
+        get_params=lambda: params,
+        get_defines=lambda: None,
+        get_tool_name=lambda: "yosys",
+        get_tool_overrides_for=lambda _n: None,
+        get_lib_paths=lambda: [str(p) for p in libs],
+        get_platform=lambda: None,
+        get_blocks=lambda: [],
+    )
+    return probe_block_parameters(
+        synth_cfg, root_cfg, str(synth_dir), str(tmp_path / "p")
+    )
+
+
+_BLK_WITH_CHILDREN = (
+    "module blk #(parameter int W = 8, localparam int AW = $clog2(W)) "
+    "(input logic clk, input logic [W-1:0] d, output logic [W-1:0] q);\n"
+    "  sub #(.N(W)) u_sub (.clk, .d, .q);\n"
+    "  sky130_fd_sc_hd__conb_1 u_tie ();\nendmodule\n"
+)
+_SUB_BB = (
+    "(* blackbox *)\nmodule sub #(parameter int N = 1) "
+    "(input logic clk, input logic [N-1:0] d, output logic [N-1:0] q);\nendmodule\n"
+)
+_CONB_LIB = (
+    "library (cells) {\n  cell (sky130_fd_sc_hd__conb_1) {\n    area : 1;\n  }\n}\n"
+)
+
+
+@pytest.mark.skipif(
+    _YOSYS is None or not os.environ.get("RTL_BUDDY_SLANG_PLUGIN"),
+    reason="yosys or the yosys-slang plugin (RTL_BUDDY_SLANG_PLUGIN) not available",
+)
+def test_the_slang_probe_ignores_modules_the_tops_body_instances(tmp_path):
+    """d4: a block that instances a cell and a sub-block no source defines."""
+    record = _probe_sources(
+        tmp_path, "slang", {"W": 16}, {"blk.sv": _BLK_WITH_CHILDREN}
+    )
+    assert parse_value(record.parameters["W"])[0] == 16
+    assert parse_value(record.parameters["AW"])[0] == 4
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_the_native_probe_reads_the_synthesis_liberty(tmp_path):
+    """d4: the native frontend elaborates the body, so its cells must be known."""
+    lib = _write(tmp_path / "cells.lib", _CONB_LIB)
+    record = _probe_sources(
+        tmp_path,
+        "verilog",
+        {"W": 16},
+        {"sub_bb.sv": _SUB_BB, "blk.sv": _BLK_WITH_CHILDREN},
+        libs=[lib],
+    )
+    assert parse_value(record.parameters["W"])[0] == 16
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_the_native_probe_finds_a_hashed_derived_module(tmp_path):
+    """d5: with several overrides Yosys names the derived module `$paramod$<sha1>\\blk`."""
+    record = _probe_sources(
+        tmp_path,
+        "verilog",
+        {"W": 16, "K": 5, "INIT": "64'hdeadbeefcafef00d", "DEPTH": 7},
+        {
+            "blk.v": (
+                "module blk #(parameter W = 8, parameter K = 3, parameter [63:0] INIT"
+                " = 64'h0, parameter DEPTH = 4) (input clk, input [W-1:0] d, output "
+                "reg [W-1:0] q);\n  always @(posedge clk) q <= d ^ INIT[W-1:0] ^ K ^ "
+                "DEPTH;\nendmodule\n"
+            )
+        },
+    )
+    assert not record.complete
+    assert record.order == ["W", "K", "INIT", "DEPTH"]
+    assert literals_equal(record.parameters["INIT"], "64'hdeadbeefcafef00d")
+    assert parse_value(record.parameters["DEPTH"])[0] == 7
+
+
+@pytest.mark.skipif(
+    _YOSYS is None or not os.environ.get("RTL_BUDDY_SLANG_PLUGIN"),
+    reason="yosys or the yosys-slang plugin (RTL_BUDDY_SLANG_PLUGIN) not available",
+)
+def test_the_slang_probe_records_strings_and_imported_headers(tmp_path):
+    """d1: a header after a package import, with string and signed parameters."""
+    record = _probe_sources(
+        tmp_path,
+        "slang",
+        {"W": 16, "S": "cd"},
+        {
+            "pkg.sv": "package p;\n  typedef logic [3:0] n_t;\nendpackage\n",
+            "blk.sv": (
+                "module blk import p::*; #(parameter int W = 8, parameter bit signed "
+                '[7:0] N = -3, parameter string S = "ab") (input logic clk, input '
+                "n_t x);\nendmodule\n"
+            ),
+        },
+    )
+    assert record.order == ["W", "N", "S"]
+    assert record.parameters["S"] == '"cd"'
+    assert literals_equal(record.parameters["N"], "-8'sd3")
