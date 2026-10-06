@@ -571,6 +571,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "One key compiled twice in one build job is what "
                 "cfg-dispatch.compile.parallel is sized against."
             )
+        case "build_job.preproc_changed_compile_key":
+            changed = ", ".join(str(f) for f in fields.get("changed") or []) or "?"
+            return (
+                f"{fields.get('test')}: declares preproc-sets-plusdefines: false, "
+                f"but its preproc hook changed its compile key ({changed}). The "
+                "build job's reservation counted this build with its compile key's "
+                "other tests, so it may be too small; remove the declaration or "
+                "stop the hook changing the key."
+            )
         case "build_job.group_failure_adoption_declined":
             return (
                 f"{fields.get('test')}: shares a compile key with "
