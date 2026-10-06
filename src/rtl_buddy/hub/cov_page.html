@@ -947,6 +947,15 @@
     return parts.length ? '?' + parts.join('&') : '';
   }
 
+  // The figures a cov_focus payload asks for. The wire spells them `elaboration` / `source`; an absent or unknown `by`
+  // is null, which leaves the picker alone.
+  function focusedBy(payload) {
+    var by = payload && payload.by;
+    if (by === 'source') { return FIGURES_SOURCE; }
+    if (by === 'elaboration') { return FIGURES_ELAB; }
+    return null;
+  }
+
   // Source-point count of one file's points: points sharing (line, column, name) are one point, hit when any of them has
   // `hits(point) > 0`. The test-lens counterpart of a file's source_totals, as rtl_buddy.cov.raw.source_point_key keys it.
   function sourceCount(points, hits) {
@@ -2198,6 +2207,9 @@
     }
     var target = payload && payload.target;
     if (typeof target !== 'string' || !target) { return; }
+    // `by` is pane-wide, not part of the focus, so it applies before the target resolves and holds on a miss.
+    var by = focusedBy(payload);
+    if (by) { setBy(by); renderByPicker(); }
     var opts = { line: payload.line, item: payload.item, metric: payload.metric };
     var ok;
     if (target.indexOf('module:') === 0) {
@@ -2208,8 +2220,10 @@
       ok = focusFile(target.indexOf('file:') === 0 ? target.slice(5) : target, opts);
     }
     // A miss is soft: report it and keep the current focus.
-    note(ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run',
-         ok ? null : 'warn');
+    var fallback = by === FIGURES_SOURCE && !state.payload.source_totals
+      ? '; this run has no source-point figures, showing per elaboration' : '';
+    note((ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run') + fallback,
+         ok && !fallback ? null : 'warn');
   }
 
   function focusByInstancePath(ip) {

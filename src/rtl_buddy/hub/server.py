@@ -516,6 +516,7 @@ class HubServer:
                     metric=env.payload.get("metric"),
                     line=env.payload.get("line"),
                     item=env.payload.get("item"),
+                    by=env.payload.get("by"),
                 )
             elif env.type == "phys_focus":
                 self.state.phys_focus = PhysFocus(

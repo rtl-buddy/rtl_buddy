@@ -653,7 +653,12 @@ def test_cov_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
     """
     from rtl_buddy.hub import send as hub_send
 
-    padded = {"target": "  module:blk_a  ", "metric": "toggle", "item": "  q[0] \t"}
+    padded = {
+        "target": "  module:blk_a  ",
+        "metric": "toggle",
+        "item": "  q[0] \t",
+        "by": "source",
+    }
 
     ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
     from_mcp: dict = {}
@@ -680,13 +685,18 @@ def test_cov_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
 
     monkeypatch.setattr(hub_send, "_open_or_exit", _Recorder)
     hub_send.cmd_cov_focus(
-        padded["target"], metric=padded["metric"], item=padded["item"]
+        padded["target"], metric=padded["metric"], item=padded["item"], by=padded["by"]
     )
 
     assert from_mcp == from_cli
     assert from_cli == {
         "type": "cov_focus",
-        "payload": {"target": "module:blk_a", "metric": "toggle", "item": "q[0]"},
+        "payload": {
+            "target": "module:blk_a",
+            "metric": "toggle",
+            "item": "q[0]",
+            "by": "source",
+        },
     }
 
 
@@ -698,6 +708,20 @@ def test_cov_focus_validates_before_dialling(mcp_project: Path):
 
     assert envelope["ok"] is False
     assert "metric" in envelope["error"]
+
+
+def test_cov_focus_validates_by_before_dialling(mcp_project: Path):
+    """``by`` takes the wire spelling, not the pane's ``elab``; port 1 refuses connections."""
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:1"))
+
+    envelope = ts.call("cov_focus", {"target": "design/blk_a.sv", "by": "elab"})
+
+    assert envelope["ok"] is False
+    assert "by" in envelope["error"]
+    assert ts.spec("cov_focus").input_schema["properties"]["by"]["enum"] == [
+        "elaboration",
+        "source",
+    ]
 
 
 def test_physical_reads_are_stateless_and_mirror_their_cli_verbs(mcp_project: Path):
