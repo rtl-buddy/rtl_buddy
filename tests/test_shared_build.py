@@ -12,8 +12,8 @@ import pytest
 
 from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.process_utils import ManagedProcessResult
-from rtl_buddy.runner.test_results import TestResults
-from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
+from rtl_buddy.runner.test_results import CompileFailResults, TestResults
+from rtl_buddy.runner.test_runner import RunDepth, TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.artifact_paths import atomic_tmp_name, shared_build_dir
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
 
@@ -3103,22 +3103,138 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
     assert "compiling despite being gated" not in caplog.text
 
 
-def test_clear_retry_transcripts_unlinks_every_named_run(tmp_path, monkeypatch):
-    """`run_multiple`'s one compile clears stale retry transcripts for runs 1..N."""
+def test_clear_run_outputs_unlinks_every_named_run(tmp_path, monkeypatch):
+    """`run_multiple`'s one compile clears the previous outputs of runs 1..N, and keeps the seed `--replay` reads."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
-    stale = []
+    stale, kept = [], []
     for run_id in (1, 2, 3):
-        p = Path(sim._get_artifact_dir(run_id=run_id)) / "compile.retry.log"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("%Error: an old dispatch's retry\n")
-        stale.append(p)
+        run_dir = Path(sim._get_artifact_dir(run_id=run_id))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "test.log",
+            "test.err",
+            "coverage.dat",
+            "compile.retry.log",
+            "result.json",
+        ):
+            (run_dir / name).write_text("an old run's output\n")
+            stale.append(run_dir / name)
+        (run_dir / "test.randseed").write_text("41\n")
+        kept.append(run_dir / "test.randseed")
 
-    sim.clear_retry_transcripts([1, 2, 3])
-    assert not any(p.exists() for p in stale)
+    sim.clear_run_outputs([1, 2, 3])
+    assert [p for p in stale if p.exists()] == []
+    assert all(p.exists() for p in kept)
+
+
+def test_clear_run_outputs_logs_a_file_it_cannot_remove(tmp_path, monkeypatch, caplog):
+    """An unremovable output is reported and does not stop the run."""
+    import logging as _logging
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    # A directory where test.log belongs: unlink() raises.
+    (Path(sim._get_artifact_dir()) / "test.log").mkdir(parents=True)
+    (Path(sim._get_artifact_dir()) / "test.err").write_text("old\n")
+
+    with caplog.at_level(_logging.WARNING):
+        sim.clear_run_outputs([None])
+
+    assert not (Path(sim._get_artifact_dir()) / "test.err").exists()
+    [event] = _events(caplog, "test.stale_output_unremovable")
+    assert event["path"].endswith("test.log")
+
+
+def _runner_for(sim, monkeypatch, *, run_id=None):
+    runner = RtlBuddyTestRunner(
+        name="rtl_buddy/testrunner",
+        root_cfg=sim.root_cfg,
+        test_cfg=sim.test_cfg,
+        rtl_builder_mode="sim",
+        test_runner_mode={"sim_to_stdout": True},
+        run_id=run_id,
+        run_depth=RunDepth.POST,
+        share_build=True,
+    )
+    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: sim)
+    return runner
+
+
+def _seed_passing_run(sim, run_id=None):
+    """Leave the outputs of an earlier passing run in the artifact directory."""
+    run_dir = Path(sim._get_artifact_dir(run_id=run_id))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "test.log").write_text("PASS\n")
+    (run_dir / "test.err").write_text("")
+    return run_dir
+
+
+def test_a_failed_compile_leaves_no_earlier_test_log(tmp_path, monkeypatch):
+    """A run whose compile fails removes the previous run's test.log, so its PASS banner cannot be read as this run's."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    run_dir = _seed_passing_run(sim)
+
+    result = _runner_for(sim, monkeypatch).run()
+
+    assert isinstance(result, CompileFailResults)
+    assert len(calls) == 1
+    assert not (run_dir / "test.log").exists()
+    assert not (run_dir / "test.err").exists()
+
+
+def test_a_fanned_out_failed_compile_leaves_no_earlier_test_log(tmp_path, monkeypatch):
+    """`run_multiple` clears every run's directory, not only the first run's."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    run_dirs = [_seed_passing_run(sim, run_id) for run_id in (1, 2)]
+
+    results = _runner_for(sim, monkeypatch, run_id=1).run_multiple([1, 2])
+
+    assert all(isinstance(res, CompileFailResults) for res in results)
+    assert not any((d / "test.log").exists() for d in run_dirs)
+
+
+def test_the_build_jobs_prepare_clears_the_earlier_test_log(tmp_path, monkeypatch):
+    """The dispatched build job drives `prepare()` directly; it clears the test's outputs too, so a sim job that never starts leaves none behind."""
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    run_dir = _seed_passing_run(sim)
+    runner = _runner_for(sim, monkeypatch)
+
+    assert runner.prepare() is None
+    assert not (run_dir / "test.log").exists()
+
+
+def test_a_gated_job_whose_build_failed_leaves_no_earlier_test_log(
+    tmp_path, monkeypatch
+):
+    """Under dispatch, the sim job that reports the build job's compile failure also clears the earlier run's test.log."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "returncode": 1, "error_tail": ["%Error: x"]}],
+    )
+    run_dir = _seed_passing_run(sim)
+
+    result = _runner_for(sim, monkeypatch).run()
+
+    assert isinstance(result, CompileFailResults)
+    assert calls == []
+    assert not (run_dir / "test.log").exists()
 
 
 def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch):

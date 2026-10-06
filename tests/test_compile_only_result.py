@@ -214,7 +214,7 @@ class _AbortingSim:
     def pre(self, **_kwargs):
         return None
 
-    def clear_retry_transcripts(self, run_ids):
+    def clear_run_outputs(self, run_ids):
         pass
 
     def compile(self):

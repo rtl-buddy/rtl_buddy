@@ -5392,8 +5392,9 @@ class RtlBuddy:
 
         pending = []
         # When this attempt went out. Retry classification accepts only artefacts at
-        # least this recent: `artefacts/<test>/test.log` is keyed on the test and never
-        # cleaned, so an old banner would satisfy the rule.
+        # least this recent: `artefacts/<test>/test.log` is keyed on the test, and a job
+        # that never started has not removed the previous run's, so an old banner would
+        # satisfy the rule.
         # Taken before the first submit.
         submitted_at = time.time()
         # (plan index, test name, job id) per submitted row, for the gates manifest.

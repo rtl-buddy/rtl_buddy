@@ -2466,6 +2466,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}) — the run itself "
                 "is unaffected, but `rb graph results` will report it as UNKNOWN"
             )
+        case "test.stale_output_unremovable":
+            return (
+                f"{fields.get('test')}: could not remove the previous run's "
+                f"{fields.get('path')} ({fields.get('error')}) — if this run "
+                "stops before rewriting it, that file is from an earlier run"
+            )
         case "elab.result_json_write_failed":
             name = fields.get("model")
             if fields.get("profile") is not None:

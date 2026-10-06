@@ -122,6 +122,15 @@ COVERAGE_DAT_NAME = "coverage.dat"
 SIMV_NAME = "simv"
 ICARUS_SNAPSHOT_NAME = "simv.vvp"
 
+# Per-run outputs a run removes before PRE (see `VlogSim.clear_run_outputs`).
+_RUN_OUTPUT_NAMES = (
+    TEST_LOG_NAME,
+    TEST_ERR_NAME,
+    COVERAGE_DAT_NAME,
+    COMPILE_RETRY_TRANSCRIPT_NAME,
+    RESULT_JSON_NAME,
+)
+
 # Simulator families whose compile output can be redirected into a shared build dir.
 # Other families compile inside each test's own artefact dir.
 SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
@@ -1444,21 +1453,37 @@ class VlogSim:
             / COMPILE_RETRY_TRANSCRIPT_NAME
         )
 
-    def clear_retry_transcripts(self, run_ids):
-        """Unlink the stale retry transcript of every run in ``run_ids``.
+    def _run_output_paths(self, run_id):
+        """The files one run writes into its artifact directory and a later run replaces.
 
-        For a caller whose one compile serves several runs
-        (:meth:`TestRunner.run_multiple`); the cleanup in :meth:`pre`/:meth:`compile`
-        reaches only ``self.run_id``. Best-effort.
+        Each holds a verdict or the evidence for one. ``test.randseed`` is not listed: a
+        ``--replay`` run reads the previous run's seed from it.
+        """
+        artifact_dir = Path(self._get_artifact_dir(run_id=run_id))
+        return [artifact_dir / name for name in _RUN_OUTPUT_NAMES]
+
+    def clear_run_outputs(self, run_ids):
+        """Unlink the previous run's outputs from the artifact directory of every run in
+        ``run_ids``.
+
+        Called before PRE, so a run that stops at setup or compile leaves no file from an
+        earlier run that names an earlier verdict. Best-effort: a file that cannot be
+        removed is logged and the run goes on.
         """
         for run_id in run_ids:
-            try:
-                (
-                    Path(self._get_artifact_dir(run_id=run_id))
-                    / COMPILE_RETRY_TRANSCRIPT_NAME
-                ).unlink(missing_ok=True)
-            except OSError:
-                pass
+            for path in self._run_output_paths(run_id):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "test.stale_output_unremovable",
+                        test=self.test_name,
+                        run_id=run_id,
+                        path=str(path),
+                        error=str(exc),
+                    )
 
     def _get_build_compile_transcript_path(self):
         """Where the build job wrote this test's transcript.
