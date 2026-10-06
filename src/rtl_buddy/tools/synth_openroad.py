@@ -35,6 +35,7 @@ from .synth_yosys import (
     yosys_env,
     yosys_read_lib_paths,
 )
+from .pnr_openroad import tcl_source
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
     SynthConfig,
@@ -586,6 +587,19 @@ class OpenRoadSynth:
             return "resynth_genetic"
         return None
 
+    def _layer_rc_tcl(self) -> str:
+        """The platform PDK's `layer-rc-tcl`, or `""` without one or without a platform."""
+        platform = self.synth_cfg.get_platform()
+        if not platform or self.root_cfg is None:
+            return ""
+        return self.root_cfg.get_synth_platform_cfg(platform).get_layer_rc_tcl()
+
+    def _timing_repaired(self) -> bool | None:
+        """Whether the reported WNS/TNS follow timing repair; None when the run reports no timing."""
+        if not self.synth_cfg.get_constraints():
+            return None
+        return self.effort_cfg.get_openroad_repair()
+
     def _write_or_script(self, lef_paths: list[str], lib_paths: list[str]) -> str:
         top = self.synth_cfg.get_top()
         constraints = self.synth_cfg.get_constraints()
@@ -616,6 +630,12 @@ class OpenRoadSynth:
         if constraints:
             lines.append(f"read_sdc {constraints}")
 
+        # Before `pre-sta-tcl`, as `rb pnr` sources it after `read_sdc`, so a `set_wire_rc` there wins.
+        repair = self.effort_cfg.get_openroad_repair()
+        layer_rc_tcl = self._layer_rc_tcl() if repair else None
+        if layer_rc_tcl:
+            lines.append(tcl_source(layer_rc_tcl))
+
         # Effort-defined pre-STA Tcl (e.g. floorplan, global_placement, estimate_parasitics).
         pre_sta_tcl = self.effort_cfg.get_openroad_pre_sta_tcl()
         if pre_sta_tcl:
@@ -624,6 +644,13 @@ class OpenRoadSynth:
         resynth = self._resynth_cmd()
         if resynth:
             lines.append(resynth)
+
+        # Effort `openroad.repair`: buffer and resize before the reports, as `rb pnr` does after
+        # placement. Without it the reports time Yosys' unbuffered netlist (#703).
+        if repair:
+            lines.append("repair_design")
+            if constraints:
+                lines.append("repair_timing -setup")
 
         lines.append("report_design_area")
         if constraints:
@@ -736,6 +763,7 @@ class OpenRoadSynth:
             gate_count=gate_count,
             wns_ps=wns_ps,
             tns_ps=tns_ps,
+            timing_repaired=self._timing_repaired(),
             log=log_path,
         )
         phys_model = self._publish_phys_model(area_um2=area_um2, gate_count=gate_count)
@@ -748,6 +776,7 @@ class OpenRoadSynth:
             static_function_findings=self.static_function_findings or None,
             unresolved_interfaces=self.unresolved_interfaces or None,
             phys_model=phys_model,
+            timing_repaired=self._timing_repaired(),
         )
 
     def _phys_options(self) -> dict:
@@ -759,13 +788,25 @@ class OpenRoadSynth:
           `synth_args`. `abc-args` is ignored on this backend, so it is not digested.
         - `abc_script`: the stage 1 ABC script (:func:`mapped_abc_script`).
         - `map`: `resynth` (from `_resynth_cmd`), the sha256 of the effort's pre-STA Tcl (stripped as
-          the script writer strips it), and the resolved `lefs`.
+          the script writer strips it), and the resolved `lefs`. With the effort's `openroad.repair`
+          on, also `repair: true` and the sha256 of the `layer-rc-tcl` it sources; both are absent
+          with repair off, so a run without repair keeps its digest.
         - `params` and `defines`: the elaboration values. `defines` is the merged table given to the
           frontend (:func:`elaboration_defines`), not `synth.yaml`'s field alone.
         - `libs`: the resolved Liberty set (:func:`library_fingerprint`), which both stages read. It
           includes the config's own `lib-paths` / `lef-paths` on top of the platform's, so the
           platform name alone is not enough.
         """
+        map_options = {
+            "resynth": self._resynth_cmd(),
+            "pre_sta_tcl_sha256": text_sha256(
+                self.effort_cfg.get_openroad_pre_sta_tcl().rstrip()
+            ),
+            "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
+        }
+        if self.effort_cfg.get_openroad_repair():
+            map_options["repair"] = True
+            map_options["layer_rc_tcl_sha256"] = sha256_of(self._layer_rc_tcl() or None)
         return {
             "tool": self.tool_cfg.get_name(),
             "elaborate": dict(
@@ -773,13 +814,7 @@ class OpenRoadSynth:
                 synth_args=self._resolve_yosys_opts().synth_args,
             ),
             "abc_script": mapped_abc_script(self._resolve_yosys_opts()),
-            "map": {
-                "resynth": self._resynth_cmd(),
-                "pre_sta_tcl_sha256": text_sha256(
-                    self.effort_cfg.get_openroad_pre_sta_tcl().rstrip()
-                ),
-                "lefs": library_fingerprint(self._resolve_lef_paths(), self.root_cfg),
-            },
+            "map": map_options,
             "libs": library_fingerprint(self._resolve_lib_paths(), self.root_cfg),
             # Both stages read the PDK's excluded cells; different exclusions are different experiments.
             "dont_use": resolve_dont_use_cells(self.synth_cfg, self.root_cfg),

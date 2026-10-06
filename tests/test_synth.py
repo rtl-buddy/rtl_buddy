@@ -6943,3 +6943,188 @@ def test_clean_stat_json_leaves_a_clean_or_unparseable_file_alone(tmp_path):
         assert path.read_text() == before
     # A missing file (Yosys failed before `stat`) is not an error.
     clean_stat_json(str(tmp_path / "absent.json"))
+
+
+# Timing repair before the synthesis STA (#703)
+
+
+def _effort_repair(repair=True):
+    from rtl_buddy.config.synth import (
+        SynthEffortConfig,
+        SynthEffortConfigFile,
+        SynthEffortOpenroadFile,
+    )
+
+    return SynthEffortConfig(
+        SynthEffortConfigFile(
+            name="repair", openroad=SynthEffortOpenroadFile(repair=repair)
+        )
+    )
+
+
+class _FakePlatformCfgWithRc(_FakePlatformCfgWithLef):
+    def __init__(self, path, lef_paths, layer_rc_tcl):
+        super().__init__(path, lef_paths)
+        self._layer_rc_tcl = layer_rc_tcl
+
+    def get_layer_rc_tcl(self):
+        return self._layer_rc_tcl
+
+
+class _FakeRootCfgORWithRc(_FakeRootCfgOR):
+    def __init__(self, lib, lef, layer_rc_tcl=""):
+        super().__init__(lib_map={"mylib": lib}, lef_map={"mylib": [lef]})
+        self._layer_rc_tcl = layer_rc_tcl
+
+    def get_synth_platform_cfg(self, name):
+        return _FakePlatformCfgWithRc(
+            self._lib_map[name], self._lef_map[name], self._layer_rc_tcl
+        )
+
+
+def _repair_openroad(tmp_path, *, repair, layer_rc_tcl="", sdc=True, strategy=""):
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    constraints = None
+    if sdc:
+        constraints = tmp_path / "c.sdc"
+        constraints.write_text("create_clock -period 1.0 [get_ports clk]\n")
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool="openroad",
+            constraints=str(constraints) if constraints else None,
+        ),
+        tool_cfg=_make_or_tool_cfg(strategy=strategy),
+        root_cfg=_FakeRootCfgORWithRc(str(lib), str(lef), layer_rc_tcl),
+    )
+    or_synth.effort_cfg = _effort_repair(repair)
+    return or_synth, lib, lef
+
+
+def _or_script_lines(or_synth, lib, lef):
+    return (
+        Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text().splitlines()
+    )
+
+
+def test_openroad_repair_runs_after_resynthesis_and_before_the_reports(tmp_path):
+    rc = tmp_path / "setRC.tcl"
+    rc.write_text("set_wire_rc -signal -layer met2\n")
+    or_synth, lib, lef = _repair_openroad(
+        tmp_path, repair=True, layer_rc_tcl=str(rc), strategy="TIMING"
+    )
+    lines = _or_script_lines(or_synth, lib, lef)
+    start = lines.index("resynth_annealing")
+    assert lines[start : start + 4] == [
+        "resynth_annealing",
+        "repair_design",
+        "repair_timing -setup",
+        "report_design_area",
+    ]
+    # Wire RC right after `read_sdc`, before `pre-sta-tcl`, so a `set_wire_rc` there wins.
+    sdc = lines.index(f"read_sdc {tmp_path / 'c.sdc'}")
+    assert lines[sdc + 1] == f'source "{rc}"'
+
+
+def test_openroad_repair_without_layer_rc_or_constraints(tmp_path):
+    or_synth, lib, lef = _repair_openroad(tmp_path, repair=True, sdc=False)
+    lines = _or_script_lines(or_synth, lib, lef)
+    # No clock to repair setup against, and no PDK wire RC to source.
+    assert "repair_design" in lines
+    assert "repair_timing -setup" not in lines
+    assert not any(line.startswith("source ") for line in lines)
+
+
+def test_openroad_without_repair_times_the_yosys_netlist_as_is(tmp_path):
+    rc = tmp_path / "setRC.tcl"
+    rc.write_text("")
+    or_synth, lib, lef = _repair_openroad(tmp_path, repair=False, layer_rc_tcl=str(rc))
+    lines = _or_script_lines(or_synth, lib, lef)
+    assert not any(line.startswith(("repair_", "source ")) for line in lines)
+
+
+@pytest.mark.parametrize(
+    "repair, sdc, expected, label",
+    [
+        (False, True, False, "Synthesis passed (pre-repair timing)"),
+        (True, True, True, "Synthesis passed (repaired timing)"),
+        (False, False, None, None),
+    ],
+)
+def test_openroad_results_say_whether_timing_was_repaired(
+    tmp_path, monkeypatch, repair, sdc, expected, label
+):
+    from rtl_buddy.tools import synth_openroad as synth_openroad_module
+
+    or_synth, lib, lef = _repair_openroad(tmp_path, repair=repair, sdc=sdc)
+    monkeypatch.setattr(
+        synth_openroad_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+
+    def _openroad(cmd, stdout, **kwargs):
+        stdout.write(
+            "Design area 100 um^2 50% utilization.\n"
+            "worst slack max -9.100\ntns max -120.000\n"
+        )
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(synth_openroad_module.subprocess, "run", _openroad)
+    monkeypatch.setattr(or_synth, "_publish_phys_model", lambda **kw: None)
+    res = or_synth._run_or_stage(10, [str(lef)], [str(lib)]).results
+    assert res["result"] == "PASS"
+    assert res.get("timing_repaired") is expected
+    assert res["desc"] == (label or "Synthesis passed")
+
+
+def test_synth_pass_results_without_timing_keep_the_plain_desc():
+    res = SynthPassResults(name="x/results", area_um2=1.0).results
+    assert res["desc"] == "Synthesis passed"
+    assert "timing_repaired" not in res
+
+
+def test_openroad_repair_moves_the_digest_and_off_keeps_it(tmp_path):
+    from rtl_buddy.phys.provenance import options_digest
+
+    rc = tmp_path / "setRC.tcl"
+    rc.write_text("set_wire_rc -signal -layer met2\n")
+
+    def _digest(repair, rc_text=None):
+        if rc_text is not None:
+            rc.write_text(rc_text)
+        or_synth, _, _ = _repair_openroad(tmp_path, repair=repair, layer_rc_tcl=str(rc))
+        return options_digest(or_synth._phys_options())
+
+    off = _digest(False)
+    on = _digest(True)
+    assert on != off
+    # Repair off adds no key, so existing runs keep their digest.
+    or_synth, _, _ = _repair_openroad(tmp_path, repair=False, layer_rc_tcl=str(rc))
+    assert "repair" not in or_synth._phys_options()["map"]
+    # The wire RC the repair estimates with is part of the experiment.
+    assert _digest(True, "set_wire_rc -signal -layer met3\n") != on
+
+
+def test_effort_openroad_repair_loads_from_yaml():
+    from serde.yaml import from_yaml
+
+    from rtl_buddy.config.synth import SynthEffortConfig, SynthEffortConfigFile
+
+    effort = SynthEffortConfig(
+        from_yaml(SynthEffortConfigFile, "name: fix\nopenroad:\n  repair: true\n")
+    )
+    assert effort.get_openroad_repair() is True
+    assert (
+        SynthEffortConfig(
+            from_yaml(SynthEffortConfigFile, "name: plain\n")
+        ).get_openroad_repair()
+        is False
+    )

@@ -34,10 +34,14 @@ class SynthPassResults(SynthResults):
         static_function_findings: int | None = None,
         unresolved_interfaces: int | None = None,
         phys_model: str | None = None,
+        timing_repaired: bool | None = None,
     ):
+        desc = "Synthesis passed"
+        if timing_repaired is not None:
+            desc += " (repaired timing)" if timing_repaired else " (pre-repair timing)"
         super().__init__(
             name=name,
-            results={"result": "PASS", "name": name, "desc": "Synthesis passed"},
+            results={"result": "PASS", "name": name, "desc": desc},
         )
         if area_um2 is not None:
             self.results["area_um2"] = area_um2
@@ -56,6 +60,9 @@ class SynthPassResults(SynthResults):
         # Path of the per-module breakdown; absent when none was published.
         if phys_model is not None:
             self.results["phys_model"] = phys_model
+        # Whether the reported WNS/TNS were taken after timing repair; set only by a run that reports them.
+        if timing_repaired is not None:
+            self.results["timing_repaired"] = timing_repaired
 
 
 class SynthFailResults(SynthResults):

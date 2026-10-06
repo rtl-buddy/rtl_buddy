@@ -10120,6 +10120,7 @@ class RtlBuddy:
             "area_um2",
             "wns_ps",
             "tns_ps",
+            "timing_repaired",
             "static_function_findings",
             "unresolved_interfaces",
             "phys_model",
