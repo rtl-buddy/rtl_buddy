@@ -62,6 +62,9 @@ _SEVERITIES = ("error", "warning", "info", "hint")
 #: ``cov_focus.metric`` enum; mirrors the hub wire schema and ``rb hub send cov-focus``.
 _COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
 
+#: ``cov_focus.by`` enum; mirrors the hub wire schema and ``rb hub send cov-focus --by``.
+_COV_FIGURES = ("elaboration", "source")
+
 #: ``phys_focus.metric`` enum; mirrors the hub wire schema and ``rb hub send phys-focus``.
 #: ``dynamic`` is internal + switching, summed by the pane; no model column has it.
 _PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
@@ -705,6 +708,13 @@ class Toolset:
             if not item:
                 raise ToolError("cov_focus: 'item' must be non-empty")
             payload["item"] = item
+        by = args.get("by")
+        if by is not None:
+            if by not in _COV_FIGURES:
+                raise ToolError(
+                    f"cov_focus: by must be one of {'/'.join(_COV_FIGURES)}, got {by!r}"
+                )
+            payload["by"] = by
         return self._hub_emit("cov_focus", payload)
 
     def _h_phys_focus(self, args: dict) -> dict:
@@ -1548,7 +1558,8 @@ def build_toolset(
                     "or 'test:verif/blk#basic' (an unprefixed string is read as a file "
                     "path). 'metric' foregrounds one coverage kind, 'line' scrolls a file "
                     "target, 'item' names a branch/toggle/expression bin or an SVA cover "
-                    "point. Use the names cov_summary and cov_module return. A target missing "
+                    "point, 'by' switches the pane between per-elaboration and source-point "
+                    "figures. Use the names cov_summary and cov_module return. A target missing "
                     "from the pane's model is a soft miss, and the hub replays the latest "
                     "focus to a pane that connects later, so sending before the tab opens "
                     "works."
@@ -1577,6 +1588,15 @@ def build_toolset(
                             "description": (
                                 "Point within the target: a bin id as /cov.json "
                                 "spells it, or an SVA cover point name."
+                            ),
+                        },
+                        "by": {
+                            "type": "string",
+                            "enum": list(_COV_FIGURES),
+                            "description": (
+                                "Figures the pane shows: per elaboration (cov_summary's "
+                                "totals) or source points (its source_totals). Omit to "
+                                "leave the pane's choice alone."
                             ),
                         },
                     },

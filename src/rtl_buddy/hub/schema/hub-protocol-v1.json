@@ -133,7 +133,7 @@
             "type": "object",
             "required": ["target"],
             "additionalProperties": false,
-            "description": "Focus the coverage pane (`GET /cov`) on one target of the run's coverage model (`GET /cov.json`). Modelled on `graph_focus`: one required coordinate string plus optional narrowing hints, all resolved by the pane. `target` is prefixed — `file:<path>`, `module:<name>`, or `test:<suite>#<name>`; a bare string carrying no recognised prefix is read as a file path. A target the pane's loaded model does not contain is a soft miss (the pane reports it and keeps its current focus), matching the semantics of `graph_focus` and `view_overlay_set`. The hub caches the latest `cov_focus` and replays it to a pane that registers later, so a focus sent before the tab is open still lands.",
+            "description": "Focus the coverage pane (`GET /cov`) on one target of the run's coverage model (`GET /cov.json`). Modelled on `graph_focus`: one required coordinate string plus optional narrowing hints, all resolved by the pane, plus an optional `by` that picks the figures the pane shows. `target` is prefixed — `file:<path>`, `module:<name>`, or `test:<suite>#<name>`; a bare string carrying no recognised prefix is read as a file path. A target the pane's loaded model does not contain is a soft miss (the pane reports it and keeps its current focus), matching the semantics of `graph_focus` and `view_overlay_set`. The hub caches the latest `cov_focus` and replays it to a pane that registers later, so a focus sent before the tab is open still lands.",
             "properties": {
               "target": {
                 "type": "string",
@@ -153,6 +153,10 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "Optional coverage item within the target — a branch/toggle/expression bin id as it appears in `/cov.json`, or an SVA cover point name. Unknown ids are a soft miss like an unknown `target`."
+              },
+              "by": {
+                "enum": ["elaboration", "source"],
+                "description": "Optional: which figures the pane shows, as its `figures` picker sets them. `elaboration` counts a point once per elaborated module (the `totals` of `/cov.json`); `source` counts it once per source point, covered when any elaboration hit it (the `source_totals`). Omitted means \"leave the pane's current choice alone\". A pane-wide display setting rather than part of the focus, so it applies even when `target` is a soft miss. A model without `source_totals` falls back to per-elaboration figures."
               }
             }
           }

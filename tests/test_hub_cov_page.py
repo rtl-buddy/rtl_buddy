@@ -525,6 +525,43 @@ def test_source_count_collapses_elaborations_under_a_hit_function():
     assert json.loads(empty) == {"found": 0, "hit": 0, "ratio": None}
 
 
+def test_cov_focus_by_maps_the_wire_spelling_onto_the_picker():
+    """``cov_focus.by`` speaks ``elaboration``/``source``; anything else, or no key,
+    leaves the picker alone (#747)."""
+
+    out = _node(
+        _figures_js()
+        + """
+        console.log(JSON.stringify([
+          focusedBy({ target: 'module:blk', by: 'source' }),
+          focusedBy({ target: 'module:blk', by: 'elaboration' }),
+          focusedBy({ target: 'module:blk' }),
+          focusedBy({ target: 'module:blk', by: 'elab' }),
+          focusedBy({ target: 'module:blk', by: 'sources' }),
+          focusedBy(null)
+        ]));
+        """
+    )
+    assert json.loads(out) == ["source", "elab", None, None, None, None]
+
+
+def test_cov_focus_by_switches_the_figures_before_it_resolves_the_target():
+    """The pick applies through ``setBy`` (picker, tables and ``?by=``) even when the
+    target misses, and says so when the run has no source-point figures (#747)."""
+
+    js = _page_js()
+    apply_focus = js[
+        js.index("function applyFocus(payload)") : js.index(
+            "function focusByInstancePath"
+        )
+    ]
+    by_at = apply_focus.index("var by = focusedBy(payload);")
+    set_at = apply_focus.index("if (by) { setBy(by); renderByPicker(); }")
+    resolve_at = apply_focus.index("if (target.indexOf('module:') === 0)")
+    assert by_at < set_at < resolve_at
+    assert "no source-point figures" in apply_focus
+
+
 def test_the_toggle_swaps_cells_but_not_the_order():
     """Same files, same order as `rb cov summary --by-source`: ranking reads `totals`,
     the cells read the chosen figures."""
@@ -1887,6 +1924,8 @@ async def test_http_cov_json_400_without_project_root():
         {"target": "module:blk", "metric": "branch"},
         {"target": "file:design/blk.sv", "line": 4, "item": "else"},
         {"target": "test:verif/blk#basic"},
+        {"target": "module:blk", "by": "source"},
+        {"target": "module:blk", "metric": "line", "by": "elaboration"},
     ],
 )
 def test_cov_focus_envelope_validates(payload: dict):
@@ -1909,6 +1948,8 @@ def test_cov_focus_envelope_validates(payload: dict):
         {"target": "module:blk", "line": 0},
         {"target": "module:blk", "extra": 1},
         {"target": "module:blk", "metric": None},
+        {"target": "module:blk", "by": "elab"},
+        {"target": "module:blk", "by": None},
     ],
 )
 def test_cov_focus_rejects_malformed_payloads(payload: dict):
@@ -1951,11 +1992,13 @@ def test_cov_focus_state_slot_omits_unset_hints():
         metric="branch",
         line=4,
         item="else",
+        by="source",
     ).payload() == {
         "target": "file:design/blk.sv",
         "metric": "branch",
         "line": 4,
         "item": "else",
+        "by": "source",
     }
 
 
@@ -2059,7 +2102,12 @@ async def test_cov_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
                 kind=Kind.EVENT,
                 type="cov_focus",
                 id=new_id(),
-                payload={"target": "file:design/blk.sv", "line": 4, "item": "else"},
+                payload={
+                    "target": "file:design/blk.sv",
+                    "line": 4,
+                    "item": "else",
+                    "by": "source",
+                },
             )
         )
         await asyncio.sleep(0.1)
@@ -2076,6 +2124,7 @@ async def test_cov_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
                 "target": "file:design/blk.sv",
                 "line": 4,
                 "item": "else",
+                "by": "source",
             }
         finally:
             await pane.close()
