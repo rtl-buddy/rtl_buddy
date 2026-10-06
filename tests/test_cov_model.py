@@ -5,6 +5,8 @@ Fixtures are captured Verilator record shapes written inline; `coverage.dat` is 
 
 import json
 import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -131,8 +133,22 @@ def test_line_points_fold_across_tests_and_carry_attribution(tmp_path):
     (file_row,) = model["files"]
 
     assert file_row["line"] == [
-        {"line": 1, "hits": 1, "tests": {"basic": 1}},
-        {"line": 2, "hits": 4, "tests": {"basic": 0, "random": 4}},
+        {
+            "line": 1,
+            "column": 1,
+            "name": "",
+            "module": "blk",
+            "hits": 1,
+            "tests": {"basic": 1},
+        },
+        {
+            "line": 2,
+            "column": 1,
+            "name": "",
+            "module": "blk",
+            "hits": 4,
+            "tests": {"basic": 0, "random": 4},
+        },
     ]
     assert file_row["totals"]["line"] == {"found": 2, "hit": 2, "ratio": 1.0}
 
@@ -267,19 +283,120 @@ def test_source_totals_keep_a_point_no_elaboration_hit_dark(tmp_path):
     assert file_row["source_totals"]["toggle"] == {"found": 1, "hit": 0, "ratio": 0.0}
 
 
-def test_line_points_already_fold_per_file_so_both_figures_agree(tmp_path):
-    """Line points carry no module, so the file figure is the same collapsed count under both readings."""
+def test_line_points_are_per_elaboration_at_every_scope(tmp_path):
+    """A line point elaborated in two modules is two points in the file, run and test figures; its source figure is one."""
     _root, _suite, model = _two_elaboration_model(tmp_path)
     (file_row,) = model["files"]
     (test_row,) = model["tests"]
 
-    assert file_row["totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
-    assert file_row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
-    # A per-test row counts one record per elaboration; its source row collapses them.
-    assert test_row["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
-    assert test_row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    for row in (file_row, model, test_row):
+        assert row["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
+        assert row["source_totals"]["line"] == {"found": 1, "hit": 1, "ratio": 1.0}
     assert test_row["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
     assert test_row["source_totals"]["branch"] == {"found": 1, "hit": 1, "ratio": 1.0}
+    assert [point["module"] for point in file_row["line"]] == ["blk__W13", "blk__Wc"]
+
+
+def _merged_line_count(*dats):
+    """``t=line`` records a ``verilator_coverage --write`` merge of `dats` holds: one per key with ``h`` dropped."""
+    keys = set()
+    for dat in dats:
+        for raw_line in open(dat, encoding="utf-8"):
+            if not raw_line.startswith("C '"):
+                continue
+            blob = raw_line[3 : raw_line.rindex("' ")]
+            pairs = [chunk.split("\x02", 1) for chunk in blob.split("\x01") if chunk]
+            fields = {key: value for key, value in pairs}
+            if fields.get("t") == "line":
+                fields.pop("h", None)
+                keys.add(tuple(sorted(fields.items())))
+    return len(keys)
+
+
+def _shared_line_model(tmp_path):
+    """Two tests over one file whose line 5 holds an ``if`` and an ``else`` block, elaborated in two modules (#678).
+
+    Each test's database holds all six line records; ``basic`` hits only W13's ``if``, ``random`` only Wc's ``else``.
+    """
+    root, suite = _project(tmp_path)
+    hit_by_test = {"basic": ("blk__W13", "if"), "random": ("blk__Wc", "else")}
+    tests, dats = [], []
+    for test, (hot_module, hot_name) in hit_by_test.items():
+        records = []
+        for module in ("blk__W13", "blk__Wc"):
+            for name, col in (("if", 3), ("else", 4)):
+                records.append(
+                    _dat_record(
+                        file="../../../design/blk.sv",
+                        line=5,
+                        type_="line",
+                        name=name,
+                        module=module,
+                        col=col,
+                        hits=int((module, name) == (hot_module, hot_name)),
+                    )
+                )
+            records.append(
+                _dat_record(
+                    file="../../../design/blk.sv",
+                    line=7,
+                    type_="line",
+                    name="block",
+                    module=module,
+                    col=3,
+                    hits=1,
+                )
+            )
+        dat = _write_dat(suite / "artefacts" / test / "coverage.dat", records)
+        dats.append(dat)
+        tests.append(
+            TestArtefacts(
+                name=test,
+                raw=dat,
+                suite="verif/blk/tests.yaml",
+                source_roots=(str(suite / "artefacts" / test), str(suite)),
+            )
+        )
+    model = build_model(tests, project_root=root, simulator="verilator")
+    return model, dats
+
+
+def test_run_line_total_counts_every_merged_line_record(tmp_path):
+    """Run and file line totals count the merged database's ``t=line`` records, and a merge never finds fewer points than one test (#678)."""
+    model, dats = _shared_line_model(tmp_path)
+    (file_row,) = model["files"]
+
+    assert _merged_line_count(*dats) == 6
+    assert model["totals"]["line"]["found"] == _merged_line_count(*dats)
+    assert file_row["totals"]["line"]["found"] == model["totals"]["line"]["found"]
+    for test_row in model["tests"]:
+        assert test_row["totals"]["line"] == {
+            "found": 6,
+            "hit": 3,
+            "ratio": 0.5,
+        }
+        assert model["totals"]["line"]["found"] >= test_row["totals"]["line"]["found"]
+        assert model["totals"]["line"]["hit"] >= test_row["totals"]["line"]["hit"]
+    assert model["totals"]["line"] == {"found": 6, "hit": 4, "ratio": 4 / 6}
+    # Source points: if, else and the block, each hit by some elaboration.
+    assert model["source_totals"]["line"] == {"found": 3, "hit": 3, "ratio": 1.0}
+
+
+@pytest.mark.skipif(
+    shutil.which("verilator_coverage") is None,
+    reason="verilator_coverage not installed",
+)
+def test_run_line_total_matches_a_real_verilator_merge(tmp_path):
+    """The same figures against the merge ``verilator_coverage --write`` writes."""
+    model, dats = _shared_line_model(tmp_path)
+    merged = tmp_path / "coverage_merged.dat"
+    subprocess.run(
+        ["verilator_coverage", "--write", str(merged), *dats],
+        check=True,
+        capture_output=True,
+    )
+
+    assert model["totals"]["line"]["found"] == _merged_line_count(merged)
 
 
 def test_source_totals_equal_totals_on_an_info_only_model(tmp_path):

@@ -134,12 +134,10 @@ def _int_or_none(value):
 
 
 def point_key(record: dict) -> tuple:
-    """Per-elaboration identity of a point within one file.
+    """Per-elaboration identity of a point within one file: ``(line, column, name, module)``.
 
-    ``(line,)`` for line coverage, else ``(line, column, name, module)``. A point elaborated in two modules is two points. See :func:`source_point_key`.
+    The same for every metric, so a file or run counts each record of the merged database once, as a test does. Two line points on one source line (an ``if`` and its ``else``, or one line elaborated in two modules) are two points. See :func:`source_point_key`.
     """
-    if record["metric"] == LINE:
-        return (record["line"],)
     return (
         record["line"],
         record["column"],
@@ -151,10 +149,8 @@ def point_key(record: dict) -> tuple:
 def source_point_key(record: dict) -> tuple:
     """Source identity of a point: :func:`point_key` without ``module``.
 
-    Elaborations of one source point collapse into one point with summed hits, so it is covered when any elaboration hit it. ``column`` stays in the key, or one line's toggle bits would merge.
+    Elaborations of one source point collapse into one point with summed hits, so it is covered when any elaboration hit it. ``column`` and ``name`` stay in the key, or one line's toggle bits, or its ``if`` and ``else`` blocks, would merge.
     """
-    if record["metric"] == LINE:
-        return (record["line"],)
     return (
         record["line"],
         record["column"],

@@ -618,7 +618,12 @@ def test_every_metric_gets_a_column():
     assert "function entriesOn(lineNo, metric)" in js
     # The `L` column is the hit-count gutter with a header.
     assert "if (metric === 'line') {" in js
-    assert "tint(cell, h > 0 ? 1 : 0);" in js
+    # Tinted by the share of the line's points hit (#678).
+    assert "tint(cell, point.hit / point.points.length);" in js
+    assert (
+        "var byLine = foldLinePoints(pointsOfElaboration(row.line, state.elab), hitsFor);"
+        in js
+    )
     assert "bindCellClick(cell, n, 'line');" in js
     # An empty cell stays empty.
     assert "if (!list.length) { return; }" in js
@@ -1235,15 +1240,15 @@ def test_a_qualified_test_target_matches_the_models_bare_name():
 
 
 def test_the_files_elaborations_come_from_its_points_not_its_modules():
-    """A file's elaborations come from the modules its points were recorded against;
-    line points carry no module and never contribute."""
+    """A file's elaborations come from the modules its points were recorded against,
+    line points included; a point with no module never contributes."""
 
     out = _node(
         _elaboration_lens_js()
         + """
         var row = {
           modules: ['ip_cdc_sync', 'ip_cdc_sync__W4'],
-          line: [{ line: 20, hits: 2152 }],
+          line: [{ line: 20, module: 'ip_cdc_sync__W8', hits: 2152 }],
           branch: [
             { line: 21, module: 'ip_cdc_sync__W4', hits: 36 },
             { line: 21, module: 'ip_cdc_sync', hits: 108 }
@@ -1259,8 +1264,8 @@ def test_the_files_elaborations_come_from_its_points_not_its_modules():
         """
     )
     spans, lines_only, empty = out.strip().splitlines()
-    assert json.loads(spans) == ["ip_cdc_sync", "ip_cdc_sync__W4"]
-    # Line points alone leave nothing to choose between, so no control appears.
+    assert json.loads(spans) == ["ip_cdc_sync", "ip_cdc_sync__W4", "ip_cdc_sync__W8"]
+    # Module-less line points (an older model) leave nothing to choose between.
     assert json.loads(lines_only) == []
     assert json.loads(empty) == []
 
@@ -1371,11 +1376,12 @@ def test_the_header_control_appears_only_when_there_is_a_choice():
     assert "setElab(seg.name)" in js
 
 
-def test_the_lens_recounts_found_and_leaves_line_merged():
-    """The elaboration lens recounts `found` but leaves line coverage merged."""
+def test_the_lens_recounts_found_for_every_metric():
+    """The elaboration lens recounts `found` for every metric, line included (#678)."""
 
     js = _page_js()
-    assert "var elab = metric === 'line' ? null : state.elab;" in js
+    assert "var elab = state.elab;" in js
+    assert "metric === 'line' ? null : state.elab" not in js
     assert "var points = pointsOfElaboration(row[metric], elab);" in js
     assert "var found = elab ? points.length : t.found;" in js
     assert "return { found: found, hit: hit, ratio: found ? hit / found : null };" in js
@@ -1385,7 +1391,50 @@ def test_the_lens_recounts_found_and_leaves_line_merged():
     )
     # The column header says which way it reads.
     assert "', counting only ' + state.elab" in js
-    assert "elaboration lens leaves it merged" in js
+    assert "elaboration lens leaves it merged" not in js
+
+
+def test_line_points_fold_per_source_line():
+    """Several line points on one source line fold into one L cell: hits and per-test
+    hits summed, the hit share scored by the lens's hit function (#678)."""
+
+    out = _node(
+        _elaboration_lens_js()
+        + """
+        var points = [
+          { line: 5, column: 3, name: 'if', module: 'blk__W13', hits: 4,
+            tests: { a: 4, b: 0 } },
+          { line: 5, column: 4, name: 'else', module: 'blk__W13', hits: 0,
+            tests: { a: 0, b: 0 } },
+          { line: 5, column: 3, name: 'if', module: 'blk__Wc', hits: 2,
+            tests: { a: 0, b: 2 } },
+          { line: 7, column: 3, name: 'block', module: 'blk__Wc', hits: 0 },
+          { line: null, hits: 9 }
+        ];
+        var merged = foldLinePoints(points, function (p) { return p.hits; });
+        console.log(JSON.stringify(Object.keys(merged)));
+        var five = merged[5];
+        console.log(JSON.stringify([five.hits, five.tests, five.hit, five.points.length,
+                                    five.module]));
+        console.log(JSON.stringify([merged[7].hits, merged[7].hit, merged[7].module]));
+        // The test lens scores by that test's hits.
+        var lensed = foldLinePoints(points, function (p) { return (p.tests || {}).b || 0; });
+        console.log(JSON.stringify(lensed[5].hit));
+        // The elaboration lens folds only that elaboration, plus module-less points.
+        var one = foldLinePoints(
+          pointsOfElaboration(points.concat([{ line: 5, hits: 1 }]), 'blk__W13'),
+          function (p) { return p.hits; });
+        console.log(JSON.stringify([Object.keys(one), one[5].points.length, one[5].hit]));
+        console.log(JSON.stringify(foldLinePoints(null, function () { return 0; })));
+        """
+    )
+    keys, five, seven, lensed, one, empty = out.strip().splitlines()
+    assert json.loads(keys) == ["5", "7"]
+    assert json.loads(five) == [6, {"a": 4, "b": 2}, 2, 3, None]
+    assert json.loads(seven) == [0, 0, "blk__Wc"]
+    assert json.loads(lensed) == 1
+    assert json.loads(one) == [["5"], 3, 2]
+    assert json.loads(empty) == {}
 
 
 def test_the_panel_breaks_down_per_elaboration_and_the_subhead_is_the_way_in():

@@ -919,11 +919,9 @@
 
   // >>> elaboration-lens
   // Builds on `baseModuleName`. The elaborated modules a file's points were recorded against.
-  // `line` points carry no module, so they never contribute and are never scoped by the lens.
   function elaborationsOf(row, metrics) {
     var names = [], seen = Object.create(null);
     (metrics || []).forEach(function (metric) {
-      if (metric === 'line') { return; }
       ((row && row[metric]) || []).forEach(function (point) {
         var name = point && point.module;
         if (!name || seen[name]) { return; }
@@ -955,11 +953,37 @@
     });
   }
 
+  // A point with no module (an .info fallback, or a line point in a model written before line points carried one) is in every
+  // elaboration, as `rb cov module` keeps it.
   function pointsOfElaboration(points, elab) {
     if (!elab) { return points || []; }
     return (points || []).filter(function (point) {
-      return point && point.module === elab;
+      return point && (point.module == null || point.module === elab);
     });
+  }
+
+  // A source line can hold several line points (an `if` arm and its `else`, one per elaboration). The L column shows one
+  // figure per line: hits and per-test hits summed, `hit` the points with `hits(point) > 0`, `module` only when all agree.
+  function foldLinePoints(points, hits) {
+    var byLine = Object.create(null);
+    (points || []).forEach(function (point) {
+      if (!point || point.line == null) { return; }
+      var module = point.module || null;
+      var fold = byLine[point.line];
+      if (!fold) {
+        fold = byLine[point.line] =
+          { line: point.line, module: module, hits: 0, tests: {}, points: [], hit: 0 };
+      } else if (fold.module !== module) {
+        fold.module = null;
+      }
+      fold.points.push(point);
+      fold.hits += point.hits || 0;
+      Object.keys(point.tests || {}).forEach(function (name) {
+        fold.tests[name] = (fold.tests[name] || 0) + point.tests[name];
+      });
+      if (hits(point) > 0) { fold.hit += 1; }
+    });
+    return byLine;
   }
 
   // Split a cell's entries per elaboration, with a hit count each. `hits` is passed in to keep this pure.
@@ -1097,8 +1121,7 @@
     segs.forEach(function (seg) {
       var b = elem('button', state.elab === seg.name ? 'on' : null, seg.label);
       b.title = seg.name +
-        '\nCount only this elaboration’s points. Line coverage stays merged: ' +
-        'verilator records it per source line, with no module on it.';
+        '\nCount only this elaboration’s points.';
       b.addEventListener('click', function () { setElab(seg.name); });
       wrap.appendChild(b);
     });
@@ -1405,7 +1428,7 @@
   //: line number -> entries of the rendered file.
   var lineMarks = Object.create(null);
 
-  //: line number -> that line's line-coverage point.
+  //: line number -> that line's line-coverage points, folded by `foldLinePoints`.
   var linePoints = Object.create(null);
 
   // Toggle always collapses to a badge; other metrics only when a line has more than one point.
@@ -1683,8 +1706,13 @@
     if (!host || !point) { return false; }
     detailWhere(lineNo);
     els.detailHead.appendChild(elem('span', 'pill', 'line'));
+    if (point.points.length > 1) {
+      els.detailHead.appendChild(elem('span', 'pill',
+        METRIC_INITIAL.line + ' ' + point.hit + '/' + point.points.length));
+    }
     els.detailHead.appendChild(elem('span', 'pill', hitsFor(point) + ' hits'));
     if (state.test) { els.detailHead.appendChild(lensPill()); }
+    if (state.elab) { els.detailHead.appendChild(elabPill()); }
     appendDetailClose();
     bindDetailToRow(host, lineNo, 'line', opts);
     showPoint('line', point);
@@ -1723,8 +1751,7 @@
   // which points exist, so `found` is recounted too. Both on is the intersection.
   function fileTotals(row, metric) {
     var t = totalsOf(row, metric);
-    // Line coverage is per source line with no module, so the elaboration lens leaves it alone.
-    var elab = metric === 'line' ? null : state.elab;
+    var elab = state.elab;
     if (!state.test && !elab) { return t; }
     if (!elab && !t.found) { return t; }
     var points = pointsOfElaboration(row[metric], elab);
@@ -1747,16 +1774,11 @@
         METRIC_INITIAL[metric] + ' ' +
         (t.found ? Math.round(t.ratio * 100) + '%' : '—')));
       if (t.found) { th.appendChild(elem('div', 'mh-num', t.hit + '/' + t.found)); }
-      var scoped = state.elab && metric !== 'line';
       th.title = metric + (t.found
         ? ': ' + t.hit + ' of ' + t.found + ' points in this file hit' +
           (state.test ? ' by ' + state.test : '') +
-          (scoped ? ', counting only ' + state.elab : '')
-        : ': no points in this file' + (scoped ? ' for ' + state.elab : '')) +
-        (state.elab && metric === 'line'
-          ? '\nline coverage is per source line and carries no module, so the ' +
-            'elaboration lens leaves it merged'
-          : '') +
+          (state.elab ? ', counting only ' + state.elab : '')
+        : ': no points in this file' + (state.elab ? ' for ' + state.elab : '')) +
         '\nclick to rank the file list on ' + metric;
       th.addEventListener('click', function () { setMetric(metric); });
       tr.appendChild(th);
@@ -1799,10 +1821,7 @@
     if (state.test) { els.fileHead.appendChild(lensPill()); }
 
     var lines = state.sources[row.path];
-    var byLine = Object.create(null);
-    (row.line || []).forEach(function (point) {
-      if (point.line != null) { byLine[point.line] = point; }
-    });
+    var byLine = foldLinePoints(pointsOfElaboration(row.line, state.elab), hitsFor);
     var marks = pointsByLine(row);
     lineMarks = marks;
     linePoints = byLine;
@@ -1828,13 +1847,16 @@
         var cell = elem('td', 'marks' + (metric === 'line' ? ' hits' : ''));
         cell.dataset.metric = metric;
         if (metric === 'line') {
-          // The L column is a hit count, not a badge.
+          // The L column is a hit count, not a badge, tinted by the share of the line's points hit.
           var point = byLine[n];
           if (point) {
             var h = hitsFor(point);
+            var many = point.points.length > 1;
             cell.textContent = h;
-            cell.title = attribution(point) + '\nclick for the detail panel';
-            tint(cell, h > 0 ? 1 : 0);
+            cell.title = (many
+              ? point.hit + ' of ' + point.points.length + ' line points on this line hit\n'
+              : '') + attribution(point) + '\nclick for the detail panel';
+            tint(cell, point.hit / point.points.length);
             cell.classList.add('act');
             bindCellClick(cell, n, 'line');
           }
