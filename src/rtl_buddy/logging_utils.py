@@ -807,6 +807,24 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "--orphans adopt to collect those instead, or --orphans "
                 "cancel to scancel them first"
             )
+        case "dispatch.coverage_orphan_found":
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: the coverage job of an earlier run of "
+                f"{fields.get('command_root')} is still queued or running: "
+                f"{' '.join(map(str, ids))} (run token {fields.get('run_token')}, "
+                f"submitted by pid {fields.get('pid')}, recorded in "
+                f"{fields.get('manifest')}). This run's coverage tail waits for it "
+                "before writing cov_dir/ — re-run with --orphans cancel to "
+                "scancel it first"
+            )
+        case "coverage.tail_awaiting_orphan":
+            ids = fields.get("job_ids") or []
+            return (
+                f"coverage: waiting for an earlier run's coverage job "
+                f"({' '.join(map(str, ids))}) to leave the {fields.get('backend')} "
+                "queue before writing cov_dir/"
+            )
         case "dispatch.orphans_cancelled":
             ids = fields.get("job_ids") or []
             return (
