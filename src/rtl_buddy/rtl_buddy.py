@@ -394,6 +394,39 @@ def _summarize_compile_work(build_entries) -> dict:
     }
 
 
+#: Names of :func:`_preproc_compile_key`'s fields, in order, for the drift warning.
+_PREPROC_COMPILE_KEY_FIELDS = (
+    "plusdefines",
+    "builder",
+    "model",
+    "model_path",
+    "assertions",
+)
+
+
+def _preproc_compile_key(cfg):
+    """The part of the head's build key a ``preproc`` hook could change.
+
+    ``(plusdefines, builder, model name, model path, assertions)``, as the head keys the
+    build job's reservation on it. ``preproc-sets-plusdefines: false`` declares the hook
+    keeps all of it; the build job compares it before and after PRE.
+    """
+    model = cfg.get_model()
+    return (
+        # repr, not the value: the key only has to separate configs, and a
+        # plusdefine is whatever YAML or a sweep hook put there.
+        tuple(
+            sorted((str(k), repr(v)) for k, v in (cfg.get_plusdefines() or {}).items())
+        ),
+        cfg.get_builder_name(),
+        getattr(model, "name", None),
+        getattr(model, "path", None),
+        # `assertions: true` adds Verilator's SVA flags to `key_cmd` in
+        # `_build_compile_plan`, so tests that disagree on it are two builds.
+        getattr(cfg, "assertions", False),
+    )
+
+
 def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
     """Add the failure keys to one ``builds`` record, in place.
 
@@ -2835,11 +2868,39 @@ class RtlBuddy:
                 build_phase=phase,
                 run_tag=self._run_tag,
             )
+            # What the head keyed this config's build on, for a declaration to check.
+            declared_key = (
+                _preproc_compile_key(cfg)
+                if cfg.get_preproc_path()
+                and not getattr(cfg, "preproc_sets_plusdefines", True)
+                else None
+            )
             try:
                 res = runner.prepare()
                 group_dir = None
                 if res is None:
                     group_dir, res = runner.compile_group_dir()
+                if declared_key is not None:
+                    changed = [
+                        field
+                        for field, before, after in zip(
+                            _PREPROC_COMPILE_KEY_FIELDS,
+                            declared_key,
+                            _preproc_compile_key(cfg),
+                            strict=True,
+                        )
+                        if before != after
+                    ]
+                    if changed:
+                        # The reservation counted this build once for its key; a hook
+                        # that moved the key makes the job under-reserved.
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "build_job.preproc_changed_compile_key",
+                            test=cfg.get_name(),
+                            changed=changed,
+                        )
             except Exception as exc:  # noqa: BLE001 - see exit-0 contract
                 # The exit-0 contract covers this phase too: one config's broken setup
                 # (e.g. SystemCSim's missing `cfg-systemc`) is reported failed and must
@@ -4926,7 +4987,8 @@ class RtlBuddy:
         # (testbench, plusdefines, builder, model, assertions); configs that resolve to
         # one group_dir are counted twice (over-reserving).
         # Keyed per test instead, to avoid under-counting: a `preproc:` hook (may set
-        # plusdefines after this snapshot) and a builder that cannot share (per-test
+        # plusdefines after this snapshot) unless the test declares
+        # `preproc-sets-plusdefines: false`, and a builder that cannot share (per-test
         # output path). The test name goes in the key, not the run id: a run_id fan-out
         # shares `artefacts/<test>/`.
         # `parallel` is resolved here because memory adds across builds in flight and
@@ -4938,30 +5000,22 @@ class RtlBuddy:
             tb = cfg.get_testbench()
             tb_name = getattr(tb, "name", None)
             tb_compile = getattr(tb, "compile", None)
-            model = cfg.get_model()
             key = (
                 tb_name,
                 getattr(tb_compile, "cpus", None),
                 getattr(tb_compile, "mem", None),
                 getattr(tb_compile, "time", None),
-                # repr, not the value: the key only has to separate configs, and a
-                # plusdefine is whatever YAML or a sweep hook put there.
-                tuple(
-                    sorted(
-                        (str(k), repr(v))
-                        for k, v in (cfg.get_plusdefines() or {}).items()
-                    )
-                ),
-                cfg.get_builder_name(),
-                getattr(model, "name", None),
-                getattr(model, "path", None),
-                # `assertions: true` adds Verilator's SVA flags to `key_cmd` in
-                # `_build_compile_plan`, so tests that disagree on it are two builds.
-                getattr(cfg, "assertions", False),
+                # plusdefines, builder, model, assertions: what the build job checks
+                # a `preproc-sets-plusdefines: false` hook kept.
+                _preproc_compile_key(cfg),
                 # Per-test output dir means per-test build; also per test with a
-                # `preproc:` hook.
+                # `preproc:` hook that may change the key.
                 cfg.get_name()
-                if entry["compile_in_job"] or cfg.get_preproc_path()
+                if entry["compile_in_job"]
+                or (
+                    cfg.get_preproc_path()
+                    and getattr(cfg, "preproc_sets_plusdefines", True)
+                )
                 else None,
             )
             if key in seen_builds:

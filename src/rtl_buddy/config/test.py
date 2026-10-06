@@ -1,7 +1,7 @@
 import copy
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from serde import serde, field, from_dict, to_dict
 from .dispatch import (
     DispatchResourcesFile,
@@ -140,6 +140,8 @@ class TestConfig:
     default_timeout: int = 60
     sim_rand_seed: int | None = None
     sim_rand_seed_plusarg: str | None = None
+    # False declares that the `preproc` hook leaves the compile key alone, so the dispatch head plans this test's build with hook-less tests on the same key.
+    preproc_sets_plusdefines: bool = True
     resolved_seed: int | None = None
     seed_source: str | None = None
     seed_identity: str | None = None
@@ -355,6 +357,7 @@ class TestConfig:
             "default_timeout": self.default_timeout,
             "sim_rand_seed": self.sim_rand_seed,
             "sim_rand_seed_plusarg": self.sim_rand_seed_plusarg,
+            "preproc_sets_plusdefines": self.preproc_sets_plusdefines,
             "resolved_seed": self.get_resolved_seed(),
             "seed_source": self.seed_source,
             "seed_identity": self.seed_identity,
@@ -387,6 +390,7 @@ class TestConfig:
             default_timeout=d["default_timeout"],
             sim_rand_seed=d.get("sim_rand_seed"),
             sim_rand_seed_plusarg=d.get("sim_rand_seed_plusarg"),
+            preproc_sets_plusdefines=d.get("preproc_sets_plusdefines", True),
             resolved_seed=d.get("resolved_seed"),
             seed_source=d.get("seed_source"),
             seed_identity=d.get("seed_identity"),
@@ -443,8 +447,21 @@ class TestConfigFile:
     sim_rand_seed_plusarg: str | None = field(
         rename="sim-rand-seed-plusarg", default=None
     )
+    # Any, not bool: validated in initialise() so a wrong value names the key.
+    preproc_sets_plusdefines: Any = field(
+        rename="preproc-sets-plusdefines", default=None
+    )
 
-    def initialise(self, config_dir, tbs, suite_builder=None):
+    def initialise(
+        self,
+        config_dir,
+        tbs,
+        suite_builder=None,
+        suite_preproc_sets_plusdefines=None,
+    ):
+        validate_preproc_sets_plusdefines(
+            self.preproc_sets_plusdefines, where=f"test {self.name!r}"
+        )
         if self.sim_rand_seed is not None:
             try:
                 validate_sim_seed(self.sim_rand_seed)
@@ -490,6 +507,29 @@ class TestConfigFile:
             resources=self.resources,
             sim_rand_seed=self.sim_rand_seed,
             sim_rand_seed_plusarg=self.sim_rand_seed_plusarg,
+            # Test value, else the suite's, else the conservative default.
+            preproc_sets_plusdefines=next(
+                (
+                    value
+                    for value in (
+                        self.preproc_sets_plusdefines,
+                        suite_preproc_sets_plusdefines,
+                    )
+                    if value is not None
+                ),
+                True,
+            ),
+        )
+
+
+def validate_preproc_sets_plusdefines(value, *, where):
+    """Reject a ``preproc-sets-plusdefines`` that is neither unset nor a boolean.
+
+    Raises FatalRtlBuddyError naming ``where``; a quoted ``"false"`` would otherwise read as true.
+    """
+    if value is not None and not isinstance(value, bool):
+        raise FatalRtlBuddyError(
+            f"{where}: preproc-sets-plusdefines must be true or false, got {value!r}"
         )
 
 

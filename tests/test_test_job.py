@@ -1822,6 +1822,74 @@ def test_an_adopted_failure_after_a_built_leader_is_not_tried(
     assert stamped_runner.adopt_failure_calls == []
 
 
+def _set_builder(cfg):
+    cfg.builder_name = "other-builder"
+
+
+def _set_model(cfg):
+    import dataclasses
+
+    cfg.model = dataclasses.replace(cfg.model, name="other_model")
+
+
+def _set_assertions(cfg):
+    cfg.assertions = not cfg.assertions
+
+
+@pytest.mark.parametrize(
+    ("hook", "changed"),
+    [
+        (lambda cfg: cfg.set_plusdefine("WIDTH", 64), ["plusdefines"]),
+        (_set_builder, ["builder"]),
+        (_set_model, ["model"]),
+        (_set_assertions, ["assertions"]),
+        (None, None),
+    ],
+    ids=["plusdefines", "builder", "model", "assertions", "unchanged"],
+)
+def test_a_build_job_flags_a_hook_that_broke_its_compile_key_declaration(
+    minimal_project: Path, stub_runner: type[_StubTestRunner], hook, changed
+):
+    """`preproc-sets-plusdefines: false` sized the reservation; a hook that changes any part of the compile key anyway is warned about."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    (minimal_project / "pre.py").write_text("pass\n")
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "    preproc:\n    postproc:\n",
+            "    preproc:\n      path: pre.py\n"
+            "    preproc-sets-plusdefines: false\n    postproc:\n",
+            1,
+        )
+    )
+
+    def _prepare(name):
+        if hook is not None and name == "basic":
+            cfg = next(
+                init["test_cfg"]
+                for init in stub_runner.inits
+                if init["test_cfg"].get_name() == name
+            )
+            hook(cfg)
+        return None
+
+    stub_runner.prepare_hook = _prepare
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+    warned = [
+        (record["test"], record["changed"])
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.preproc_changed_compile_key"
+    ]
+    assert warned == ([("basic", changed)] if changed else [])
+
+
 def test_the_new_build_job_events_have_dedicated_human_messages():
     from rtl_buddy.logging_utils import _human_message
 
@@ -1831,6 +1899,13 @@ def test_the_new_build_job_events_have_dedicated_human_messages():
     assert "basic" in unstamped and "obj_dir_ab" in unstamped
     assert "compile.stamp_write_failed" in unstamped
     assert "build_job group_leader_unstamped" not in unstamped
+
+    broke = _human_message(
+        "build_job.preproc_changed_compile_key",
+        {"test": "basic", "changed": ["plusdefines", "builder"]},
+    )
+    assert "basic" in broke and "preproc-sets-plusdefines" in broke
+    assert "plusdefines, builder" in broke
 
     failure_declined = _human_message(
         "build_job.group_failure_adoption_declined",

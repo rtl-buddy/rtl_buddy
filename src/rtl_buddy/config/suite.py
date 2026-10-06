@@ -6,9 +6,13 @@ import os
 
 from serde import serde, field
 from serde.yaml import from_yaml
-from typing import Literal
+from typing import Any, Literal
 from .dispatch import SuiteCompileFile, validate_compile_block
-from .test import TestbenchConfig, TestConfigFile
+from .test import (
+    TestbenchConfig,
+    TestConfigFile,
+    validate_preproc_sets_plusdefines,
+)
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -21,6 +25,10 @@ class SuiteConfigFile:
     builder: str | None = None
     # Layers over cfg-dispatch.compile field by field. A dedicated class keeps an unset `parallel` (None) distinct from `parallel: 1`.
     compile: SuiteCompileFile | None = None
+    # Suite default for each test's `preproc-sets-plusdefines`; Any so the load error names the key.
+    preproc_sets_plusdefines: Any = field(
+        rename="preproc-sets-plusdefines", default=None
+    )
 
 
 class SuiteConfig:
@@ -55,6 +63,7 @@ class SuiteConfig:
                     error=e,
                 )
                 raise FatalRtlBuddyError(f"{path}: {e}") from e
+            validate_preproc_sets_plusdefines(data.preproc_sets_plusdefines, where=path)
 
             # The dict comprehensions below would silently keep the last duplicate.
             seen_tbs: dict[str, int] = {}
@@ -106,7 +115,9 @@ class SuiteConfig:
             config_dir = os.path.dirname(path)
             try:
                 self.tests = {
-                    test.name: test.initialise(config_dir, tbs, data.builder)
+                    test.name: test.initialise(
+                        config_dir, tbs, data.builder, data.preproc_sets_plusdefines
+                    )
                     for test in data.tests
                 }
             except KeyError:
