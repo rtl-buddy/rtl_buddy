@@ -571,6 +571,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "One key compiled twice in one build job is what "
                 "cfg-dispatch.compile.parallel is sized against."
             )
+        case "build_job.group_failure_adoption_declined":
+            return (
+                f"{fields.get('test')}: shares a compile key with "
+                f"{fields.get('leader')}, whose compile failed, but could not "
+                f"adopt that failure ({fields.get('reason')}), so it compiles "
+                "the key again."
+            )
+        case "compile.group_failure_adopted":
+            return (
+                f"{fields.get('test')}: not compiling — {fields.get('leader')} "
+                "has the same compile key and inputs and its compile failed "
+                f"with exit {fields.get('returncode')}; see "
+                f"{fields.get('transcript')}"
+            )
         case "compile.build_stamp_refresh_failed":
             return (
                 f"{fields.get('test')}: could not rewrite the shared build "

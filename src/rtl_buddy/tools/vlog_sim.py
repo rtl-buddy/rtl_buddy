@@ -92,6 +92,33 @@ def force_symlink(target, link_name):
 # Sentinel for "argument not given", where None is a meaningful value (see VlogSim.pre).
 _UNSET = object()
 
+# Transcript signatures of a compile the host starved rather than the source broke: the
+# OOM killer (gcc's "Killed signal terminated program", make's "Error 137" = 128+9) or
+# an allocation failure. A same-key sibling does not adopt such a failure; it may fit.
+_OUT_OF_RESOURCE_RE = re.compile(
+    r"Killed signal terminated program"
+    r"|virtual memory exhausted"
+    r"|out of memory"
+    r"|Cannot allocate memory"
+    r"|\bError 137\b",
+    re.IGNORECASE,
+)
+
+# Trailing transcript lines searched for an out-of-resource signature.
+_OUT_OF_RESOURCE_TAIL_LINES = 40
+
+
+def _transcript_tail(path, limit):
+    """The last ``limit`` lines of a transcript, or [] when it cannot be read."""
+    if not path:
+        return []
+    try:
+        text = Path(path).read_text(errors="replace")
+    except (OSError, ValueError):
+        return []
+    return text.splitlines()[-limit:]
+
+
 # Stamp written into a shared build dir after a successful compile. It records the
 # compile inputs the simv was built from.
 # Defined in `artifact_paths` and re-exported here.
@@ -3732,6 +3759,132 @@ class VlogSim:
         self.last_compile_failure = {"returncode": 1, "error_tail": [line]}
         return dependency
 
+    def adopt_group_failure(self, failure, *, leader):
+        """Take the failed compile of a same-key sibling, or say why not.
+
+        ``failure`` is the sibling's :attr:`last_compile_failure` and ``leader`` its
+        test name. The failure is adopted only when this member would run the same
+        compile: the builder exited with an error status (not a signal, which may be
+        the node's doing) and the record's ``fingerprint_sha`` equals this member's,
+        so the compile line, toolchain and every listed input's content are the same.
+        That is the rule a gated sim job uses to decline a retry. A failure that may
+        be transient is not adopted either: one that waited for a license seat, or
+        whose transcript tail shows the host out of memory (see
+        :meth:`_transient_failure_reason`).
+
+        Adopting writes this member's ``compile.log`` (a breadcrumb naming the
+        sibling, then the sibling's transcript) and records the sibling's return code
+        as this member's failure, so the build envelope and the gated sim job report
+        the compile error without compiling again.
+
+        Returns ``("adopted", None)`` or ``(None, <reason>)``; the caller compiles on
+        the latter.
+        """
+        failure = failure if isinstance(failure, dict) else {}
+        returncode = failure.get("returncode")
+        if (
+            not isinstance(returncode, int)
+            or isinstance(returncode, bool)
+            or returncode <= 0
+        ):
+            return None, f"the compile did not exit with an error status ({returncode})"
+        failed_sha = failure.get("fingerprint_sha")
+        if failed_sha is None:
+            return None, "no fingerprint for the failed compile"
+        transient = self._transient_failure_reason(failure)
+        if transient is not None:
+            return None, transient
+        plan = self._compile_plan()
+        if _fingerprint_sha(plan.fingerprint) != failed_sha:
+            return None, "compile inputs differ"
+        # Consumed like a compile, with the same reset: one compile, one verdict.
+        self._compile_plan_cache = None
+        self.compile_fail_desc = None
+        self.stamp_write_failed = False
+        self._compile_transcript_override = None
+        leader_transcript = failure.get("transcript")
+        transcript = self._write_adopted_failure_transcript(
+            leader, returncode, leader_transcript
+        )
+        self.last_compile_failure = {
+            "returncode": returncode,
+            # The sibling's own transcript when this member's could not be written.
+            "transcript": transcript or leader_transcript,
+            "fingerprint_sha": failed_sha,
+        }
+        # 0.0 and reused: nothing compiled for this member.
+        self._record_compile(duration_sec=0.0, reused=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "compile.group_failure_adopted",
+            test=self.test_name,
+            leader=leader,
+            returncode=returncode,
+            transcript=self.last_compile_failure["transcript"],
+        )
+        return "adopted", None
+
+    @staticmethod
+    def _transient_failure_reason(failure):
+        """Why a failed compile may not recur for a sibling, or None.
+
+        A compile that waited in the license queue (``license_queued``, or the queue
+        marker in its transcript tail) or whose transcript tail shows the host running
+        out of memory may have failed for reasons that do not repeat, so its siblings
+        compile for themselves.
+        """
+        tail = _transcript_tail(failure.get("transcript"), _OUT_OF_RESOURCE_TAIL_LINES)
+        if not tail:
+            tail = [str(line) for line in failure.get("error_tail") or []]
+        if failure.get("license_queued") or has_license_queue_marker("\n".join(tail)):
+            return (
+                "the compile waited for a license seat, so its failure may be transient"
+            )
+        for line in tail:
+            match = _OUT_OF_RESOURCE_RE.search(line)
+            if match is not None:
+                return (
+                    f"the compile ran out of resources ({match.group(0)!r}), so its "
+                    "failure may be transient"
+                )
+        return None
+
+    def _write_adopted_failure_transcript(self, leader, returncode, leader_transcript):
+        """Write this member's ``compile.log`` for an adopted failure; return its path,
+        or None.
+
+        A breadcrumb naming the sibling and its exit status, then the sibling's
+        transcript, so the file reads as the compile error wherever a reader or the
+        gated sim job looks for it. Best-effort, like the compile transcript.
+        """
+        text = (
+            f"Compile skipped: {leader}, which has the same compile key and "
+            f"inputs, failed with exit {returncode}, so this test was not "
+            "compiled again.\n"
+        )
+        if leader_transcript:
+            text += f"Its transcript: {leader_transcript}\n"
+            try:
+                carried = Path(leader_transcript).read_text(errors="replace")
+            except (OSError, ValueError):
+                carried = ""
+            if carried:
+                text += f"\n=== transcript of {leader}'s compile ===\n{carried}"
+        transcript_path = self._get_compile_transcript_path()
+        try:
+            self._replace_text(transcript_path, text)
+        except OSError as e:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.transcript_unwritable",
+                test=self.test_name,
+                error=str(e),
+            )
+            return None
+        return transcript_path
+
     def _report_build_reused(self, plan, *, stamp_dir, shared=True):
         """Report on the console and in the test's ``compile.log`` that this compile was
         skipped.
@@ -4136,6 +4289,10 @@ class VlogSim:
                 "returncode": result.returncode,
                 "transcript": transcript_path,
             }
+            if license_queued:
+                # A failure after a license wait may be the server's; a same-key
+                # sibling compiles for itself rather than adopt it.
+                self.last_compile_failure["license_queued"] = True
             failed_sha = _fingerprint_sha(fingerprint)
             if failed_sha is not None:
                 # Which compile failed: a gated sim job honours the no-retry verdict

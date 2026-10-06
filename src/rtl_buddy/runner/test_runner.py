@@ -206,6 +206,14 @@ class TestRunner:
         """
         return self._vlog_sim.adopt_group_build()
 
+    def adopt_group_failure(self, failure, *, leader):
+        """Adopt a same-key sibling's failed compile on the prepared sim.
+
+        Returns ``("adopted", None)`` or ``(None, <reason>)``; see :meth:`VlogSim.adopt_group_failure`.
+        Only the dispatched build job calls it, after the group's first compile failed.
+        """
+        return self._vlog_sim.adopt_group_failure(failure, leader=leader)
+
     @property
     def builder_name(self):
         """Return the resolved builder's name, or ``None`` before :meth:`prepare` built the sim.

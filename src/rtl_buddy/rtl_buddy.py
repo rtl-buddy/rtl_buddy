@@ -2862,6 +2862,9 @@ class RtlBuddy:
         # Config that compiled each group's build, keyed by group dir. A group is one
         # worker's unit, so no two threads touch one key.
         group_leaders = {}
+        # The group's first failed compile, as (test name, failure record), keyed the
+        # same way. Siblings with the same inputs adopt it rather than fail it again.
+        group_failures = {}
         # Distinct from a runner reporting no stamp: a runner class that reports none
         # keeps the leader rule, as with `adopt_group_build`.
         unreported = object()
@@ -3173,6 +3176,10 @@ class RtlBuddy:
             under one key, which is reported, not recompiled, because a recompile would
             make the last writer decide what both simulate.
 
+            A failed compile is adopted the same way: a sibling whose compile inputs
+            are identical takes the failure (return code and transcript) instead of
+            failing the same compile again.
+
             Re-checks the cancellation latch before every member and when a worker takes
             the next group. The pool cancels only pending futures, and
             ``ThreadPoolExecutor.__exit__`` waits for a worker that already took the
@@ -3227,6 +3234,28 @@ class RtlBuddy:
                         leader=leader,
                         reason=detail,
                     )
+                failed_leader = group_failures.get(group_dir)
+                adopt_failure = getattr(runner, "adopt_group_failure", None)
+                if failed_leader is not None and adopt_failure is not None:
+                    # A deterministic failure (a fatal lint warning) would fail every
+                    # sibling the same way, one full compile each, serially.
+                    failed_name, failure = failed_leader
+                    try:
+                        verdict, detail = adopt_failure(failure, leader=failed_name)
+                    except Exception as exc:  # noqa: BLE001 - exit-0 contract
+                        rows.append((index, name, False, str(exc), runner, group_dir))
+                        continue
+                    if verdict == "adopted":
+                        rows.append((index, name, False, None, runner, group_dir))
+                        continue
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "build_job.group_failure_adoption_declined",
+                        test=name,
+                        leader=failed_name,
+                        reason=detail,
+                    )
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
@@ -3254,6 +3283,12 @@ class RtlBuddy:
                             )
                     else:
                         group_leaders.setdefault(group_dir, name)
+                elif isinstance(res, CompileFailResults):
+                    # The builder ran and failed; a filelist or setup failure never
+                    # reached it and has nothing to adopt.
+                    failure = getattr(runner, "last_compile_failure", None)
+                    if failure is not None:
+                        group_failures.setdefault(group_dir, (name, failure))
                 rows.append((index, name, built, None, runner, group_dir))
             # Outside the loop, so outside every build-directory lock `compile_prepared`
             # took: this key is built and stamped.
