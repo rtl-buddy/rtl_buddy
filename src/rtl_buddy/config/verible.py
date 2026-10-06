@@ -74,7 +74,8 @@ class VeribleConfig:
 class VeribleConfigFile:
     name: str
     path: str | list[str]
-    extra_args: dict[str, list[str]]
+    #: Optional: a project that never runs verible (synthesis only, say) need not list it.
+    extra_args: dict[str, list[str]] = field(default_factory=dict)
     exclude: list[str] = field(default_factory=list)
 
     def initialise(

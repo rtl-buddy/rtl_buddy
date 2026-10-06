@@ -1526,6 +1526,25 @@ def _verible_records(caplog, level):
     ]
 
 
+def test_verible_extra_args_is_optional(tmp_path, monkeypatch):
+    """A `cfg-verible` entry without `extra_args` loads, and asks for nothing extra."""
+    active = _mkdir(tmp_path / "verible-here")
+    _touch_exe(active / "verible-verilog-syntax")
+    _write_two_verible_project(
+        tmp_path, active=str(active), inactive=str(tmp_path / "absent")
+    )
+    root_cfg = tmp_path / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text().replace("    extra_args: {}\n", ""))
+    assert "extra_args:" not in root_cfg.read_text()
+    monkeypatch.chdir(tmp_path)
+
+    rc = RootConfig(name="no-extra-args")
+
+    verible = rc.platform_cfg.get_verible()
+    assert verible.extra_args == {}
+    assert verible.get_extra_args("lint") == []
+
+
 def test_verible_pin_diagnostics_skip_the_unrouted_entry(tmp_path, monkeypatch, caplog):
     """The other platform's broken pin is not warned about on this host; it stays visible at DEBUG."""
     import logging
