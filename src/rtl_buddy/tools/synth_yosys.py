@@ -27,6 +27,7 @@ from ..constraints.tcl_reader import read_commands
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.manifest import project_relative
+from ..phys.reports import stat_json_span
 from ..phys.publish import (
     confirm_digest,
     invalidate_half,
@@ -586,6 +587,26 @@ def apply_effort(
         if value and (not overrides or key not in overrides):
             setattr(opts, key, value)
     return opts
+
+
+def clean_stat_json(path: str) -> None:
+    """Rewrite a ``tee -q -o <path> stat -json`` capture to the JSON object alone.
+
+    Shared by both synthesis backends. ``tee`` writes everything ``stat`` logs, so a gzipped
+    Liberty's ``Found gzip magic ...`` notice lands ahead of the JSON and the file does not parse
+    (#710). A file that is already only the object, or holds none, is left as it is.
+    """
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return
+    span = stat_json_span(text)
+    if span is None:
+        return
+    start, end = span
+    if not text[:start].strip() and not text[end:].strip():
+        return
+    Path(path).write_text(text[start:end] + "\n")
 
 
 def warn_mapped_abc_args(opts: SynthToolOpts, synth_name: str) -> None:
@@ -1210,6 +1231,7 @@ class YosysSynth:
                     cwd=self.artefact_dir,
                     env=yosys_env(self.artefact_dir),
                 )
+        clean_stat_json(self._stats_path())
 
         if result.returncode != 0:
             log_event(

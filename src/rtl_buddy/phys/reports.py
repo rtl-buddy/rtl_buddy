@@ -13,6 +13,28 @@ import json
 import re
 
 
+#: A line-initial `{`, where `stat -json` starts its object.
+_JSON_OBJECT_START_RE = re.compile(r"^\{", re.MULTILINE)
+
+
+def stat_json_span(text: str) -> tuple[int, int] | None:
+    """The ``[start, end)`` span of the JSON object in a ``tee -o <file> stat -json`` capture.
+
+    ``tee`` captures everything the command logs, not only the JSON: ``stat -liberty`` on a
+    gzipped Liberty first prints ``Found gzip magic in file ...``, and Liberty parser warnings
+    land there too. The object is the first line-initial ``{`` that decodes to a JSON object.
+    """
+    decoder = json.JSONDecoder()
+    for match in _JSON_OBJECT_START_RE.finditer(text):
+        try:
+            doc, end = decoder.raw_decode(text, match.start())
+        except ValueError:
+            continue
+        if isinstance(doc, dict):
+            return match.start(), end
+    return None
+
+
 def parse_stat_json(text: str) -> list[dict]:
     """Per-module rows from Yosys' ``stat -json`` dump.
 
@@ -27,7 +49,11 @@ def parse_stat_json(text: str) -> list[dict]:
     try:
         doc = json.loads(text)
     except (ValueError, TypeError):
-        return []
+        # Log lines captured around the object; see :func:`stat_json_span`.
+        span = stat_json_span(text) if isinstance(text, str) else None
+        if span is None:
+            return []
+        doc = json.loads(text[span[0] : span[1]])
     modules = doc.get("modules") if isinstance(doc, dict) else None
     if not isinstance(modules, dict):
         return []

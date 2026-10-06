@@ -51,6 +51,7 @@ from rtl_buddy.phys.reports import (
     parse_instance_cells,
     parse_instance_power,
     parse_stat_json,
+    stat_json_span,
 )
 
 
@@ -143,6 +144,23 @@ def test_stat_json_without_a_liberty_still_yields_cell_counts():
 def test_stat_json_the_design_rollup_is_not_a_module_row():
     """The sibling `design` block is the whole-design total; the model takes totals from the log scrape so the two can be compared."""
     assert "design" not in [row["module"] for row in parse_stat_json(STAT_JSON)]
+
+
+def test_stat_json_rows_survive_log_lines_captured_around_the_object():
+    """`tee -o` captures the gzip notice Yosys prints reading a `.lib.gz` (#710), and any parser warning."""
+    captured = (
+        "Found gzip magic in file `cells.lib.gz', decompressing using zlib.\n"
+        + STAT_JSON
+        + "\nWarning: trailing noise {not json}\n"
+    )
+    assert parse_stat_json(captured) == parse_stat_json(STAT_JSON)
+
+
+def test_stat_json_span_finds_the_object_and_nothing_else():
+    prefix = "Found gzip magic in file `x.lib.gz'.\n{ not json\n"
+    start, end = stat_json_span(prefix + STAT_JSON + "\nafter\n")
+    assert (prefix + STAT_JSON + "\nafter\n")[start:end] == STAT_JSON.strip()
+    assert stat_json_span("Found gzip magic only\n") is None
 
 
 def test_stat_json_unreadable_input_yields_no_rows():

@@ -14,6 +14,7 @@ from .synth_yosys import (
     MAX_EVENT_FINDINGS,
     apply_effort,
     clean_block_netlist,
+    clean_stat_json,
     dont_use_args,
     elaboration_defines,
     liberty_args,
@@ -369,6 +370,7 @@ class OpenRoadSynth:
                     check=False,
                     env=yosys_env(self.artefact_dir),
                 )
+        clean_stat_json(self._stats_path())
 
         if result.returncode != 0:
             return None, False, None
