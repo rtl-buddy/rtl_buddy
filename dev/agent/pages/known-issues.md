@@ -36,10 +36,6 @@ Under `--dispatch slurm` the coverage tail (merge, model build, LCOV exports and
 
 Without Slurm, run the coverage command on a host with the memory it needs.
 
-## An orphaned coverage job is only found within its own artefact tree
-
-Under `--dispatch slurm` a coverage tail job whose head died is recorded in the artefact root's `.dispatch/coverage/` and found by the next Slurm run there (see [Interrupted runs](concepts/dispatch.md#interrupted-runs-warn-cancel-adopt)). `cov_dir/` is shared by every `--run-tag`, so a job orphaned under another tag, or untagged, is not seen and can still write `cov_dir/` during this run. Runs without a Slurm backend, including every `rb randtest -r` replay, do not check at all. Cancel a leftover `rb:coverage` job by hand (`scancel`) before re-running coverage in that directory.
-
 ## Verilator randomized runs may not reproduce
 
 Verilator can behave differently for the same random seed. When reproducibility matters, use VCS with `-xlrm hier_inst_seed` and give instances stable explicit names. If VCS does not write `HierInstanceSeed.txt` in the simulation directory, rtl_buddy warns `sim.hier_seed_missing` and cannot record the seed. The verdict is unchanged.

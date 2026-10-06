@@ -53,12 +53,6 @@ rb -M cov regression --coverage-merge --coverage-coverview
 rb -M cov regression --coverage-coverview --coverage-per-test
 ```
 
-`rb randtest` takes the same flags and runs the same merge, model and manifest over its seeds. Each seed is one coverage test named like its artefact directory, `<test>/run-NNNN`, so per-test exports and attribution stay apart. `--coverage-per-test` is regression-only, because it packages one Coverview dataset per test across a regression's suites; `randtest` does not accept it. A replay (`-r`) runs the tail in-process over its one seed, rewriting `cov_dir/manifest.json` and `coverage-model.json` for that seed alone, and never checks for an earlier run's coverage job (see [Interrupted runs](dispatch.md#interrupted-runs-warn-cancel-adopt)).
-
-```bash
-rb -M cov randtest basic 50 --coverage-merge
-```
-
 HTML needs `use-lcov: true` and `genhtml` (diagnose with `rb tool-check --explain lcov`) and is written to `coverage_merge.html` under the command root. Coverview is an archive export for CI or handoff and needs the external `info-process` and compatible Coverview tooling. For interactive inspection use `rb cov` or the hub. See the [CLI reference](../reference/cli.md) for all options.
 
 ## Add directory and source-point summaries
@@ -133,7 +127,7 @@ Toggle, expression and labeled cover detail need raw Verilator databases. Withou
 
 ## Skip the model when nothing will read it
 
-Per-test attribution grows with points times tests, and for a large toggle-instrumented suite it can dominate the run's output and post-dispatch time. `--coverage-model` on `test`, `randtest` and `regression` chooses how much to write:
+Per-test attribution grows with points times tests, and for a large toggle-instrumented suite it can dominate the run's output and post-dispatch time. `--coverage-model` on `test` and `regression` chooses how much to write:
 
 - `full` (default): every point with per-test hit counts.
 - `totals`: every point and hit count, without per-test attribution.

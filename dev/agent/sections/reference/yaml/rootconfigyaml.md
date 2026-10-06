@@ -383,7 +383,6 @@ The next run finds an interrupted run's still-live jobs from the `artefacts/.dis
 - `cancel` runs `scancel` on them first. The cancel is verified and fatal if the jobs survive it.
 - `adopt` collects them instead of submitting. It needs exactly one complete orphan whose test config, backend, tests, plan, resolved reservations, and invocation options all match this run, and is fatal otherwise, including for a record left mid-submission.
 - Only scheduler-backed backends consult it. Elsewhere the value is ignored with a warning, and an explicit `--orphans adopt` is fatal.
-- A coverage tail job left running is recorded in `artefacts/.dispatch/coverage/`. `cancel` cancels it; `warn` and `adopt` let it finish before this run writes `cov_dir/`.
 
 See [Interrupted runs](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#interrupted-runs-warn-cancel-adopt).
 

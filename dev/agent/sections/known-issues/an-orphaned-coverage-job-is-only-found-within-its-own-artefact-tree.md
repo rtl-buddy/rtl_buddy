@@ -1,3 +1,0 @@
-## An orphaned coverage job is only found within its own artefact tree
-
-Under `--dispatch slurm` a coverage tail job whose head died is recorded in the artefact root's `.dispatch/coverage/` and found by the next Slurm run there (see [Interrupted runs](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#interrupted-runs-warn-cancel-adopt)). `cov_dir/` is shared by every `--run-tag`, so a job orphaned under another tag, or untagged, is not seen and can still write `cov_dir/` during this run. Runs without a Slurm backend, including every `rb randtest -r` replay, do not check at all. Cancel a leftover `rb:coverage` job by hand (`scancel`) before re-running coverage in that directory.
