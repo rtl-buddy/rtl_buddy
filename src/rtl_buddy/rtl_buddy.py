@@ -10140,6 +10140,8 @@ class RtlBuddy:
             "area_um2",
             "wns_setup_ps",
             "wns_hold_ps",
+            "tns_ps",
+            "tns_hold_ps",
             "drc_count",
             "worst_setup_corner",
             "worst_hold_corner",

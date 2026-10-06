@@ -115,9 +115,9 @@ detailed_placement
 
 puts ">>> Post-CTS timing repair"
 estimate_parasitics -placement
-repair_timing -hold
+{{ setup_repair }}repair_timing -hold
 
-# repair_timing -hold inserts unlegalized buffers; without this pass the
+# repair_timing inserts unlegalized buffers; without this pass the
 # detailed router fails with DRT-0073.
 puts ">>> Detail placement (legalize repair cells)"
 detailed_placement
@@ -126,7 +126,7 @@ check_placement -verbose
 
 puts ">>> Global route"
 set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
-global_route -congestion_iterations 20
+{{ layer_adjustment }}global_route -congestion_iterations 20
 
 puts ">>> Detail route"
 detailed_route \
@@ -142,7 +142,8 @@ puts ">>> Final reports"
 report_design_area
 report_worst_slack -max
 report_worst_slack -min
-report_tns{{ corner_reports }}
+report_tns
+report_tns -min{{ corner_reports }}
 report_checks -path_delay max -fields {slew cap input nets fanout} -format full_clock_expanded > $OUT_DIR/timing.rpt
 
 puts ">>> Write outputs"
