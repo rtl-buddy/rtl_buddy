@@ -7137,3 +7137,141 @@ def test_effort_openroad_repair_loads_from_yaml():
         ).get_openroad_repair()
         is False
     )
+
+
+_KOGGE_STONE = "-noabc -extra-map +/choices/kogge-stone.v"
+
+
+def test_delay_preset_drops_only_dch_from_the_default():
+    """`&dch -f` choices let `&nf` area recovery ripple prefix adders off the critical path (#724)."""
+    from rtl_buddy.tools.synth_yosys import (
+        DEFAULT_MAPPED_ABC_SCRIPT,
+        DELAY_MAPPED_ABC_SCRIPT,
+        MAPPED_ABC_PRESETS,
+    )
+
+    assert "&dch" not in DELAY_MAPPED_ABC_SCRIPT
+    assert DELAY_MAPPED_ABC_SCRIPT == DEFAULT_MAPPED_ABC_SCRIPT.replace("&dch -f; ", "")
+    assert MAPPED_ABC_PRESETS == {
+        "default": DEFAULT_MAPPED_ABC_SCRIPT,
+        "delay": DELAY_MAPPED_ABC_SCRIPT,
+    }
+
+
+@pytest.mark.parametrize("preset", ["default", "delay", " delay "])
+def test_abc_script_names_a_preset_on_both_backends(tmp_path, preset):
+    from rtl_buddy.tools.synth_yosys import MAPPED_ABC_PRESETS
+
+    expected = MAPPED_ABC_PRESETS[preset.strip()]
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=_effort_cfg(abc_script=preset))
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{expected}"'
+    )
+    or_synth = _mapped_openroad(
+        tmp_path, lib, tool_overrides={"openroad": {"abc_script": preset}}
+    )
+    assert _abc_line(Path(or_synth._write_yosys_script(str(fl))).read_text()).endswith(
+        f'-script "+{expected}"'
+    )
+
+
+@pytest.mark.parametrize("carry", ["kogge-stone", "sklansky", "han-carlson"])
+def test_prefix_adder_effort_defaults_to_the_delay_preset(tmp_path, carry):
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT
+
+    effort = _effort_cfg(synth_args=f"-noabc -extra-map +/choices/{carry}.v")
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=effort)
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"'
+    )
+    or_synth = _mapped_openroad(tmp_path, lib, effort=effort)
+    assert _abc_line(Path(or_synth._write_yosys_script(str(fl))).read_text()).endswith(
+        f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"'
+    )
+
+
+def test_prefix_adder_tool_synth_args_select_the_delay_preset_on_yosys(tmp_path):
+    """`tool: yosys` runs `synth` with the resolved `synth-args`, tool config included."""
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, tool_cfg=_tool_cfg(synth_args=_KOGGE_STONE))
+    script = Path(ys._write_script(str(fl))).read_text()
+    synth_line = next(line for line in script.splitlines() if line.startswith("synth "))
+    assert synth_line.endswith(f" {_KOGGE_STONE}")
+    assert _abc_line(script).endswith(f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"')
+
+
+@pytest.mark.parametrize(
+    "synth_args",
+    ["", "-noabc", "-noabc -extra-map my_cells.v", "-noabc -extra-map=+/choices/x.v"],
+)
+def test_other_synth_args_keep_the_default_preset(tmp_path, synth_args):
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=_effort_cfg(synth_args=synth_args))
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{DEFAULT_MAPPED_ABC_SCRIPT}"'
+    )
+
+
+def test_a_set_abc_script_beats_the_prefix_adder_default(tmp_path):
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(synth_args=_KOGGE_STONE, abc_script="default"),
+    )
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{DEFAULT_MAPPED_ABC_SCRIPT}"'
+    )
+    ys = _mapped_yosys(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(synth_args=_KOGGE_STONE),
+        tool_overrides={"yosys": {"abc_script": "strash; map {D}"}},
+    )
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        '-script "+strash; map {D}"'
+    )
+
+
+def test_prefix_adder_tool_synth_args_select_the_delay_preset_on_openroad(
+    tmp_path, caplog
+):
+    """Stage 1 picks the preset from the resolved synth-args (#701), tool entry included, and says so."""
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        tool_cfg=_or_tool_cfg_with(synth_args=_KOGGE_STONE),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    with caplog.at_level("INFO"):
+        script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script).endswith(f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"')
+    assert or_synth._phys_options()["abc_script"] == DELAY_MAPPED_ABC_SCRIPT
+    assert "delay ABC preset" in caplog.text
+
+
+def test_mapped_digests_record_the_prefix_adder_preset(tmp_path):
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT, YosysSynth
+
+    effort = _effort_cfg(synth_args=_KOGGE_STONE)
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(lib_paths=["/pdk/slow.lib"]),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=effort,
+    )
+    assert ys._phys_options(mapped=True)["abc_script"] == DELAY_MAPPED_ABC_SCRIPT
+    or_synth = _mapped_openroad(tmp_path, tmp_path / "cells.lib", effort=effort)
+    assert or_synth._phys_options()["abc_script"] == DELAY_MAPPED_ABC_SCRIPT

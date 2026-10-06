@@ -221,6 +221,10 @@ See [Synthesis](concepts/synthesis.md#gate-unbound-interface-instances).
 
 Yosys `synth` runs its generic `abc` pass before the mapped-run ABC step, and that pass's script includes `dc2`, which rebuilds log-depth adders, negates and incrementers as ripple chains. The mapped-run default script omits `dc2`, but it cannot restore depth the earlier pass removed. Add `-noabc` to the effort's `synth-args` for timing-critical datapaths. See [Synthesis](concepts/synthesis.md#choose-the-mapped-run-abc-script).
 
+## Prefix adders off the critical path ripple under `abc-script: default`
+
+With the `default` mapped-run script, `&dch -f` choices and `&nf` area recovery under the module's one global required time rebuild Kogge-Stone and other `+/choices/` adders off the critical path as ripple chains. A run whose `synth-args` request a `+/choices/` map uses the `delay` preset unless `abc-script` is set. See [Synthesis](concepts/synthesis.md#keep-prefix-adders-log-depth-with-the-delay-preset).
+
 ## `rb phys module` reports no power for an RTL module
 
 The physical model's synthesis half holds RTL module names and its power half holds the Liberty cell of each leaf instance, so `rb phys module u_cpu` reports cell count and area with no instances and no power. Use `rb phys instance u_cpu`, which sums the leaf rows under the instance path. See [Physical Metrics](concepts/phys.md#what-the-module-join-can-answer).
