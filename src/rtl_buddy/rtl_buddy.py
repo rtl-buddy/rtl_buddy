@@ -145,6 +145,7 @@ from .dispatch.plan import (
 )
 from .dispatch.progress import group_job_ids
 from .dispatch.run_manifest import (
+    KIND_COVERAGE,
     STATUS_CANCELLED,
     STATUS_COLLECTED,
     STATUS_STALE,
@@ -162,6 +163,7 @@ from .dispatch.run_manifest import (
     set_run_status,
     update_pending_job_ids,
     verilate_from,
+    write_coverage_manifest,
     write_run_manifest,
 )
 from .dispatch.retry import backoff_delay, classify_missing_result
@@ -982,6 +984,9 @@ class RtlBuddy:
         # `_orphans_policy` is the resolved value.
         self._orphans: str | None = None
         self._orphans_policy: str = "warn"
+        # Earlier runs' coverage tail jobs still on the cluster that this run must let
+        # finish before its own tail writes `cov_dir/` (`_sweep_coverage_orphans`).
+        self._coverage_orphans: list = []
         self.build_result_json = None
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
@@ -1407,6 +1412,12 @@ class RtlBuddy:
             for call in calls
             for row in call["suite_results"]
         )
+        if has_coverage and self._coverage_orphans:
+            # An earlier run's coverage job still writing `cov_dir/` would race this
+            # tail on the same manifest, model and merged database.
+            reason = self._await_coverage_orphans(backend)
+            if reason is not None:
+                return self._coverage_tail_failed(calls, reason=reason)
         if (
             backend is None
             or not getattr(backend, "dispatches_coverage_tail", False)
@@ -1432,7 +1443,7 @@ class RtlBuddy:
         reported as ``tail_failed`` and the run exits 1.
         """
         run_token = uuid.uuid4().hex
-        tail_dir = self.exec_ctx.artifact_root / ".dispatch" / "coverage"
+        tail_dir = self._coverage_tail_dir()
         spec_path, results = write_tail_spec(
             tail_dir / f"spec-{run_token}.json", calls, run_token=run_token
         )
@@ -1463,8 +1474,14 @@ class RtlBuddy:
                 paths=removed,
             )
         handle = None
+        record = None
         try:
             handle = backend.submit_coverage(spec)
+            # Recorded as soon as it is accepted, like a fleet: a head killed while it
+            # waits leaves the job running, and the next run must find it.
+            record = self._record_coverage_job(
+                backend, handle, tail_dir=tail_dir, run_token=run_token
+            )
             log_console_event(
                 logger,
                 logging.INFO,
@@ -1477,14 +1494,16 @@ class RtlBuddy:
         except FatalRtlBuddyError as exc:
             # A refused submission or an expired max-wait; the collected results stand.
             if handle is not None:
-                backend.cancel_all([handle])
+                self._cancel_coverage_job(backend, handle, record, run_token)
             return self._coverage_tail_failed(
                 calls, reason=str(exc), handle=handle, spec=spec
             )
         except BaseException:
             if handle is not None:
-                backend.cancel_all([handle])
+                self._cancel_coverage_job(backend, handle, record, run_token)
             raise
+        # The job left the queue: the next run has nothing of this one to find.
+        self._close_run_manifest({"run_manifest": record}, STATUS_COLLECTED)
         try:
             outcomes, tests = load_tail_result(
                 result_json,
@@ -1511,10 +1530,131 @@ class RtlBuddy:
         )
         return outcomes
 
-    def _coverage_tail_failed(self, calls, *, reason, handle, spec):
-        """One ``(metadata, coverage)`` per call for a coverage tail job that produced no answer."""
+    def _coverage_tail_dir(self):
+        """Where the coverage tail job's spec, result, log and run record live."""
+        return self.exec_ctx.artifact_root / ".dispatch" / "coverage"
+
+    def _record_coverage_job(self, backend, handle, *, tail_dir, run_token):
+        """Write the accepted coverage job's run record; its path, or ``None``.
+
+        Best effort, as for a fleet: the job is already accepted, so a failed write
+        only costs the next run the ability to find it.
+        """
+        if not backend.scheduled:
+            return None
+        path = run_manifest_path(tail_dir, run_token)
+        try:
+            return write_coverage_manifest(
+                path,
+                run_token=run_token,
+                backend=backend.name,
+                started_at=time.time(),
+                command_root=handle.spec.suite_dir,
+                handle=handle,
+            )
+        except (OSError, TypeError, ValueError) as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.run_manifest_write_failed",
+                suite_dir=handle.spec.suite_dir,
+                path=str(path),
+                error=str(e),
+            )
+            return None
+
+    def _cancel_coverage_job(self, backend, handle, record, run_token):
+        """Cancel this run's coverage job; retire its record only once it is gone."""
+        backend.cancel_all([handle])
+        self._close_cancelled_run_manifest(
+            backend,
+            {"run_manifest": record, "pending": [(0, handle)], "run_token": run_token},
+        )
+
+    def _sweep_coverage_orphans(self, backend):
+        """Deal with earlier runs' coverage jobs still on the cluster, before submitting.
+
+        A head killed while it waited on its coverage tail leaves that job running,
+        writing ``cov_dir/`` under the same command root this run's tail writes. The
+        records in ``.dispatch/coverage/`` are probed like fleet records. Under
+        ``--orphans cancel`` the jobs are cancelled here (fatal if one survives,
+        before anything is submitted). Under ``warn`` and ``adopt`` they are named and
+        left running, and this run's tail waits for them before writing ``cov_dir/``:
+        a coverage job cannot be adopted, since the head that would read its answer
+        is gone.
+        """
+        self._coverage_orphans = []
+        if backend is None or not backend.scheduled:
+            return
+        command_root = str(self.exec_ctx.command_root)
+        orphans = self._discover_orphan_runs(
+            backend, self._coverage_tail_dir(), run_token=None, kind=KIND_COVERAGE
+        )
+        if not orphans:
+            return
+        if self._orphans_policy == "cancel":
+            self._cancel_orphan_runs(backend, orphans, suite_dir=command_root)
+            return
+        for orphan in orphans:
+            payload = orphan["payload"]
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.coverage_orphan_found",
+                command_root=command_root,
+                manifest=str(orphan["path"]),
+                run_token=payload.get("run_token"),
+                pid=payload.get("pid"),
+                job_ids=group_job_ids(orphan["live"]),
+                jobs=len(orphan["live"]),
+            )
+        self._coverage_orphans = orphans
+
+    def _await_coverage_orphans(self, backend):
+        """Wait for the coverage jobs :meth:`_sweep_coverage_orphans` left running.
+
+        Returns ``None`` once they have left the queue, else why not (``max-wait``
+        expired). Never cancels them: that is ``--orphans cancel``'s choice, made at
+        start-up. An interrupt propagates and leaves them running, as found.
+        """
+        orphans, self._coverage_orphans = self._coverage_orphans, []
+        handles = [handle for orphan in orphans for handle in orphan["handles"]]
+        live = sorted({job for orphan in orphans for job in orphan["live"]})
+        log_console_event(
+            logger,
+            logging.WARNING,
+            "coverage.tail_awaiting_orphan",
+            backend=backend.name,
+            job_ids=group_job_ids(live),
+            jobs=len(live),
+        )
+        try:
+            backend.wait_all(handles)
+        except FatalRtlBuddyError as exc:
+            return (
+                f"an earlier run's coverage job ({' '.join(live)}) is still "
+                f"writing cov_dir/: {exc}"
+            )
+        for orphan in orphans:
+            set_run_status(orphan["path"], STATUS_STALE)
+        return None
+
+    def _coverage_tail_failed(self, calls, *, reason, handle=None, spec=None):
+        """One ``(metadata, coverage)`` per call for a coverage tail that produced no answer.
+
+        ``spec`` is ``None`` when the tail never got as far as a job: an earlier run's
+        coverage job would not leave the queue.
+        """
         job_id = None if handle is None else handle.job_id
-        log = str(spec.log_path) if spec.log_path is not None else None
+        log = (
+            str(spec.log_path)
+            if spec is not None and spec.log_path is not None
+            else None
+        )
+        if spec is None:
+            # As before a submission: the previous run's verdict must not outlive one
+            # this run failed to produce.
+            clear_previous_outputs(calls)
         log_event(
             logger,
             logging.ERROR,
@@ -1522,7 +1662,7 @@ class RtlBuddy:
             job_id=job_id,
             reason=reason,
             log=log,
-            result_json=str(spec.result_json),
+            result_json=str(spec.result_json) if spec is not None else None,
         )
         failure = {"job_id": job_id, "reason": reason, "log": log}
         where = f"job {job_id}" if job_id is not None else "not submitted"
@@ -2109,6 +2249,8 @@ class RtlBuddy:
                     "dispatch.share_build_implied",
                     backend=dispatch_backend.name,
                 )
+            # Before anything is submitted, as for an orphaned fleet.
+            self._sweep_coverage_orphans(dispatch_backend)
             suite_display = self._display_path(
                 str(ctx.primary_config), base_dir=str(self.invocation_cwd)
             )
@@ -4569,7 +4711,7 @@ class RtlBuddy:
     ORPHAN_CANCEL_POLL_S = 2.0
 
     def _discover_orphan_runs(
-        self, backend, dispatch_root, *, run_token, suite_config=None
+        self, backend, dispatch_root, *, run_token, suite_config=None, kind=None
     ):
         """Interrupted runs of this suite whose jobs are still on the cluster.
 
@@ -4584,7 +4726,7 @@ class RtlBuddy:
         ``run_token`` is this invocation's nonce and the only thing that excludes a
         manifest from the scan (see :func:`discover_run_manifests`). ``dispatch_root``
         is the suite's whole ``.dispatch/`` tree, and ``suite_config`` keeps the scan to
-        this suite's records.
+        this suite's records. ``kind`` selects coverage tail records instead of fleets.
         """
         if not backend.scheduled:
             # local-parallel jobs are this process's children; an interrupted run leaves
@@ -4592,7 +4734,7 @@ class RtlBuddy:
             return []
         orphans = []
         for path, payload in discover_run_manifests(
-            dispatch_root, run_token=run_token, suite_config=suite_config
+            dispatch_root, run_token=run_token, suite_config=suite_config, kind=kind
         ):
             try:
                 handles = handles_from(payload)
@@ -4742,15 +4884,21 @@ class RtlBuddy:
             suite_dir=suite_dir,
             live=live,
         )
+        if orphan["payload"].get("kind") == KIND_COVERAGE:
+            # A coverage job is never collected; `adopt` (like `warn`) waits for it.
+            why = "this run's coverage tail would write the same cov_dir/"
+            alternative = "or use --orphans warn to let it finish first."
+        else:
+            why = "a second fleet beside that one would write the same artefact directories"
+            alternative = "or use --orphans adopt to collect them instead."
         raise FatalRtlBuddyError(
             f"--orphans cancel could not take down the interrupted run "
             f"recorded in {orphan['path']}: {' '.join(live)} "
             f"{'is' if len(live) == 1 else 'are'} still queued or running "
             f"after {round(self.ORPHAN_CANCEL_WAIT_S)}s (or the scheduler "
-            "could not be asked). Nothing was submitted — a second fleet "
-            "beside that one would write the same artefact directories. "
+            f"could not be asked). Nothing was submitted — {why}. "
             "Cancel them by hand (scancel " + " ".join(live) + ") and "
-            "re-run, or use --orphans adopt to collect them instead."
+            "re-run, " + alternative
         )
 
     def _close_cancelled_run_manifest(self, backend, state):
@@ -7342,6 +7490,9 @@ class RtlBuddy:
                     "dispatch.share_build_implied",
                     backend=dispatch_backend.name,
                 )
+            # Before anything is submitted, as for an orphaned fleet; under the
+            # orchestration context, whose command root holds `cov_dir/`.
+            self._sweep_coverage_orphans(dispatch_backend)
 
         exit_code = 0
         reg_results = []

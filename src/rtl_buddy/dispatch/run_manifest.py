@@ -9,6 +9,11 @@ head's ``run_token`` (also stamped into the jobs' envelopes), lets a later
 invocation find, adopt or cancel that fleet. Nothing here raises on an
 unreadable manifest; it is skipped. See :mod:`.plan` and :mod:`.gates` for the
 other per-run files.
+
+The coverage tail job (``rb _cov-job``) gets a record of its own, of ``kind``
+``coverage``, under ``.dispatch/coverage/``: one per invocation, written once the
+job is accepted (:func:`write_coverage_manifest`). Fleet discovery skips it, so it
+is never adopted as a fleet.
 """
 
 import dataclasses
@@ -19,7 +24,13 @@ from pathlib import Path
 
 from ..config.dispatch import JobResources
 from ..seed_mode import SeedMode
-from .base import BUILD_PHASE_VERILATE, BuildJobSpec, JobHandle, TestJobSpec
+from .base import (
+    BUILD_PHASE_VERILATE,
+    BuildJobSpec,
+    CoverageJobSpec,
+    JobHandle,
+    TestJobSpec,
+)
 from .plan import run_scoped_path
 
 RUN_SCHEMA_VERSION = 1
@@ -39,17 +50,32 @@ STATUS_STALE = "stale"
 # Statuses probed for a live fleet.
 ACTIVE_STATUSES = (STATUS_SUBMITTING, STATUS_RUNNING)
 
+# A coverage tail job's record; a fleet's record has no ``kind``.
+KIND_COVERAGE = "coverage"
+
 # Spec fields that are ``Path`` on the dataclass and ``str`` in JSON.
 _PATH_FIELDS = frozenset(
-    {"result_json", "log_path", "plan_path", "build_result_json", "gates_json"}
+    {
+        "result_json",
+        "log_path",
+        "plan_path",
+        "build_result_json",
+        "gates_json",
+        "spec_json",
+    }
 )
 # `verilate` and `build` are both BuildJobSpec; the spec's `phase` tells them apart.
 _SPEC_TYPES = {
     "build": BuildJobSpec,
     "verilate": BuildJobSpec,
     "test": TestJobSpec,
+    "coverage": CoverageJobSpec,
 }
-_SPEC_KINDS = {BuildJobSpec: "build", TestJobSpec: "test"}
+_SPEC_KINDS = {
+    BuildJobSpec: "build",
+    TestJobSpec: "test",
+    CoverageJobSpec: "coverage",
+}
 
 
 def run_manifest_path(dispatch_root, run_token) -> Path:
@@ -184,6 +210,33 @@ def write_run_manifest(
     return _atomic_write(path, payload)
 
 
+def write_coverage_manifest(
+    path, *, run_token, backend, started_at, command_root, handle
+) -> Path:
+    """Record one accepted coverage tail job, ``running``; return ``path``.
+
+    The same schema as a fleet's record, so the orphan sweep reads, probes and
+    cancels it alike; ``kind`` keeps fleet discovery and adoption away from it.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": RUN_SCHEMA_VERSION,
+        "kind": KIND_COVERAGE,
+        "run_token": run_token,
+        "pid": os.getpid(),
+        "backend": backend,
+        "started_at": started_at,
+        "submitted_at": started_at,
+        "command_root": str(command_root),
+        "coverage": _handle_entry(handle),
+        "pending": [],
+        "rows": [],
+        "status": STATUS_RUNNING,
+    }
+    return _atomic_write(path, payload)
+
+
 def _handle_entry(handle: JobHandle) -> dict:
     return {
         "job_id": handle.job_id,
@@ -309,13 +362,14 @@ def _manifest_dirs(root: Path):
 
 
 def discover_run_manifests(
-    dispatch_root, *, run_token, suite_config=None
+    dispatch_root, *, run_token, suite_config=None, kind=None
 ) -> list[tuple[Path, dict]]:
     """Manifests under ``dispatch_root`` whose status is ``submitting`` or ``running``.
 
     This head's own manifests are excluded by ``run_token``, not pid, since pids
-    are reused. ``suite_config`` narrows the scan to one suite. Results are
-    sorted by path.
+    are reused. ``suite_config`` narrows the scan to one suite. ``kind`` picks the
+    records: ``None`` for fleets, :data:`KIND_COVERAGE` for coverage tail jobs.
+    Results are sorted by path.
     """
     found = []
     for directory in _manifest_dirs(Path(dispatch_root)):
@@ -329,6 +383,8 @@ def discover_run_manifests(
                 continue
             if payload.get("status") not in ACTIVE_STATUSES:
                 continue
+            if payload.get("kind") != kind:
+                continue
             if run_token is not None and payload.get("run_token") == run_token:
                 continue
             if suite_config is not None and payload.get("suite_config") != suite_config:
@@ -340,7 +396,7 @@ def discover_run_manifests(
 def handles_from(payload) -> list[JobHandle]:
     """Every job the manifest names, compile jobs first; raises on a bad spec."""
     handles = []
-    for key in ("verilate", "build"):
+    for key in ("verilate", "build", "coverage"):
         entry = payload.get(key)
         if isinstance(entry, dict):
             handles.append(

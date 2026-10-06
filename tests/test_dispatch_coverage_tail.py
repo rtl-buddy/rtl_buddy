@@ -1,9 +1,9 @@
 """The coverage tail (merge, model build, LCOV exports, manifest) as one dispatched job (#650).
 
 Covers the ``cfg-dispatch.coverage`` reservation, the ``cfg-coverage`` merge timeout,
-the ``rb _cov-job`` argv and its Slurm submission, the spec/result round trip, and the
+the ``rb _cov-job`` argv and its Slurm submission, the spec/result round trip, the
 head's flow over a fake scheduler-backed backend whose coverage job runs the real
-``rb _cov-job`` in a subprocess.
+``rb _cov-job`` in a subprocess, and the job's run record and orphan sweep (#745).
 """
 
 from __future__ import annotations
@@ -40,6 +40,21 @@ from rtl_buddy.dispatch.coverage_tail import (
 )
 from rtl_buddy.dispatch.local_parallel import LocalProcessBackend
 from rtl_buddy.dispatch.plan import read_plan_token
+from rtl_buddy.dispatch.run_manifest import (
+    KIND_COVERAGE,
+    STATUS_CANCELLED,
+    STATUS_COLLECTED,
+    STATUS_RUNNING,
+    STATUS_STALE,
+    decode_spec,
+    discover_run_manifests,
+    encode_spec,
+    handles_from,
+    load_run_manifest,
+    run_manifest_path,
+    write_coverage_manifest,
+    write_run_manifest,
+)
 from rtl_buddy.dispatch.slurm import SlurmDispatchBackend
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
@@ -767,3 +782,266 @@ def test_a_manifest_only_call_is_light_and_any_heavy_flag_is_not():
     ):
         assert not is_manifest_only({**base, flag: True}), flag
     assert not is_manifest_only({**base, "dir_summary_paths": ["src"]})
+
+
+# the coverage job in the run manifest (#745)
+
+
+def test_a_coverage_job_spec_round_trips_through_its_record(tmp_path: Path):
+    spec = _cov_spec(tmp_path, run_tag="nightly", extra_sim_timeout=30)
+
+    assert decode_spec(json.loads(json.dumps(encode_spec(spec)))) == spec
+
+
+def test_coverage_records_and_fleet_records_are_discovered_apart(tmp_path: Path):
+    dispatch = tmp_path / "artefacts" / ".dispatch"
+    fleet = write_run_manifest(
+        run_manifest_path(dispatch, "fleet"),
+        run_token="fleet",
+        backend="slurm",
+        started_at=0.0,
+        suite_config=str(tmp_path / "tests.yaml"),
+        plan=str(dispatch / "plan.json"),
+        rows=[],
+        status=STATUS_RUNNING,
+    )
+    cov = write_coverage_manifest(
+        run_manifest_path(dispatch / "coverage", "cov"),
+        run_token="cov",
+        backend="slurm",
+        started_at=0.0,
+        command_root=str(tmp_path),
+        handle=JobHandle(job_id="77", spec=_cov_spec(tmp_path), cluster="c1"),
+    )
+
+    # Fleet discovery scans `.dispatch/coverage/` too, and must not take the coverage
+    # job for a fleet it could adopt.
+    assert [p for p, _ in discover_run_manifests(dispatch, run_token=None)] == [fleet]
+    found = discover_run_manifests(
+        dispatch / "coverage", run_token=None, kind=KIND_COVERAGE
+    )
+    assert [p for p, _ in found] == [cov]
+    ((_, payload),) = found
+    (handle,) = handles_from(payload)
+    assert (handle.job_id, handle.cluster) == ("77", "c1")
+    assert isinstance(handle.spec, CoverageJobSpec)
+
+
+class _LiveTailBackend(_TailBackend):
+    """``_TailBackend`` with a queue: ``live`` holds the ids still on it."""
+
+    def __init__(self, *, live=(), wait_error=None, **kwargs):
+        super().__init__(**kwargs)
+        self.live = set(live)
+        # job id -> exception raised by the wait that includes it.
+        self.wait_error = dict(wait_error or {})
+
+    def live_job_ids(self, handles, *, timeout_s=None):
+        return {h.job_id for h in handles if h is not None and h.job_id in self.live}
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        super().wait_all(handles, extra_wait=extra_wait)
+        for h in handles:
+            error = self.wait_error.pop(h.job_id, None)
+            if error is not None:
+                raise error
+        self.live -= {h.job_id for h in handles}
+
+    def cancel_all(self, handles):
+        super().cancel_all(handles)
+        self.live -= {h.job_id for h in handles if h is not None}
+
+
+def _coverage_dir(project: Path) -> Path:
+    return project / "artefacts" / ".dispatch" / "coverage"
+
+
+def _coverage_records(project: Path) -> list[dict]:
+    return [
+        load_run_manifest(path)[0]
+        for path in sorted(_coverage_dir(project).glob("run-*.json"))
+    ]
+
+
+def _orphan_coverage_record(project: Path, job_id: str = "old-cov") -> Path:
+    """The record a head SIGKILLed while waiting on its coverage job leaves behind."""
+    return write_coverage_manifest(
+        run_manifest_path(_coverage_dir(project), "earlier"),
+        run_token="earlier",
+        backend="fake",
+        started_at=0.0,
+        command_root=str(project),
+        handle=JobHandle(job_id=job_id, spec=_cov_spec(project)),
+    )
+
+
+_COV_TEST = ["--machine", "-M", "cov", "test", "basic", "--dispatch", "slurm"]
+
+
+def test_the_coverage_job_is_recorded_and_retired_once_collected(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    backend = _LiveTailBackend()
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(RtlBuddy(name="test_cov_tail").app, _COV_TEST)
+
+    assert result.exit_code == 0, result.output
+    (record,) = _coverage_records(minimal_project)
+    assert record["kind"] == KIND_COVERAGE
+    assert record["coverage"]["job_id"] == "fake-coverage"
+    assert record["coverage"]["spec"]["kind"] == "coverage"
+    assert record["command_root"] == str(minimal_project)
+    # The job left the queue under this head, so the next run has nothing to find.
+    assert record["status"] == STATUS_COLLECTED
+
+
+def test_an_interrupted_head_cancels_its_coverage_job_and_says_so(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    backend = _LiveTailBackend(wait_error={"fake-coverage": KeyboardInterrupt()})
+    backend.submit_coverage = lambda spec: (
+        backend.live.add("fake-coverage")
+        or JobHandle(job_id="fake-coverage", spec=spec)
+    )
+    _use(monkeypatch, backend)
+
+    CliRunner().invoke(RtlBuddy(name="test_cov_tail").app, _COV_TEST)
+
+    assert ["fake-coverage"] in backend.cancelled
+    (record,) = _coverage_records(minimal_project)
+    assert record["status"] == STATUS_CANCELLED
+
+
+def test_a_coverage_job_that_outlives_its_head_is_waited_for_before_cov_dir(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    orphan = _orphan_coverage_record(minimal_project)
+    backend = _LiveTailBackend(live={"old-cov"})
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(RtlBuddy(name="test_cov_tail").app, _COV_TEST)
+
+    assert result.exit_code == 0, result.output
+    assert "old-cov" in result.output  # dispatch.coverage_orphan_found
+    # warn: left running, never cancelled...
+    assert backend.cancelled == []
+    # ...and waited for before this run's tail job went out.
+    waits = backend.waited
+    assert waits.index(["old-cov"]) < waits.index(["fake-coverage"])
+    assert load_run_manifest(orphan)[0]["status"] == STATUS_STALE
+    assert (minimal_project / "cov_dir" / "manifest.json").is_file()
+
+
+def test_orphans_cancel_takes_an_earlier_coverage_job_down_before_submitting(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    orphan = _orphan_coverage_record(minimal_project)
+    backend = _LiveTailBackend(live={"old-cov"})
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app, _COV_TEST + ["--orphans", "cancel"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert backend.cancelled == [["old-cov"]]
+    assert ["old-cov"] not in backend.waited
+    assert load_run_manifest(orphan)[0]["status"] == STATUS_CANCELLED
+    assert backend.coverage_specs, "this run's own tail still ran"
+
+
+def test_an_earlier_coverage_job_that_outlasts_max_wait_fails_only_the_tail(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    orphan = _orphan_coverage_record(minimal_project)
+    backend = _LiveTailBackend(
+        live={"old-cov"},
+        wait_error={"old-cov": FatalRtlBuddyError("max-wait 60s exceeded")},
+    )
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(RtlBuddy(name="test_cov_tail").app, _COV_TEST)
+
+    envelope = _envelope(result)
+    assert envelope["exit_code"] == 1, result.output
+    failure = envelope["payload"]["coverage"]["tail_failed"]
+    assert failure["job_id"] is None
+    assert "old-cov" in failure["reason"] and "max-wait" in failure["reason"]
+    # No tail of this run's raced the survivor, and it was not cancelled.
+    assert backend.coverage_specs == []
+    assert backend.cancelled == []
+    assert load_run_manifest(orphan)[0]["status"] == STATUS_RUNNING
+    assert [r["result"] for r in envelope["payload"]["results"]] == ["PASS"]
+
+
+def test_an_earlier_coverage_job_that_survives_orphans_cancel_stops_the_run(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    orphan = _orphan_coverage_record(minimal_project)
+    backend = _LiveTailBackend(live={"old-cov"})
+    backend.cancel_all = lambda handles: backend.cancelled.append(
+        [h.job_id for h in handles]
+    )
+    _use(monkeypatch, backend)
+    monkeypatch.setattr(RtlBuddy, "ORPHAN_CANCEL_WAIT_S", 0.0)
+
+    result = CliRunner().invoke(
+        RtlBuddy(name="test_cov_tail").app, _COV_TEST + ["--orphans", "cancel"]
+    )
+
+    assert result.exit_code != 0
+    message = str(result.exception)
+    assert "cov_dir" in message and "scancel old-cov" in message
+    # Fatal before anything of this run's went out.
+    assert backend.coverage_specs == []
+    assert not list((minimal_project / "artefacts" / ".dispatch").glob("plan-*.json"))
+    assert load_run_manifest(orphan)[0]["status"] == STATUS_RUNNING
+
+
+def test_an_interrupt_while_waiting_on_an_earlier_coverage_job_leaves_it_running(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    orphan = _orphan_coverage_record(minimal_project)
+    backend = _LiveTailBackend(
+        live={"old-cov"}, wait_error={"old-cov": KeyboardInterrupt()}
+    )
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(RtlBuddy(name="test_cov_tail").app, _COV_TEST)
+
+    assert result.exit_code == 130, result.output
+    # Not this run's job: left running and recorded as found, for the next run.
+    assert backend.cancelled == []
+    assert backend.coverage_specs == []
+    assert load_run_manifest(orphan)[0]["status"] == STATUS_RUNNING
+
+
+def test_a_coverage_job_cancelled_at_max_wait_retires_its_record(
+    minimal_project: Path, monkeypatch
+):
+    _prepare(minimal_project)
+    backend = _LiveTailBackend(
+        wait_error={"fake-coverage": FatalRtlBuddyError("max-wait 60s exceeded")}
+    )
+    backend.submit_coverage = lambda spec: (
+        backend.live.add("fake-coverage")
+        or JobHandle(job_id="fake-coverage", spec=spec)
+    )
+    _use(monkeypatch, backend)
+
+    result = CliRunner().invoke(RtlBuddy(name="test_cov_tail").app, _COV_TEST)
+
+    envelope = _envelope(result)
+    assert envelope["exit_code"] == 1, result.output
+    assert envelope["payload"]["coverage"]["tail_failed"]["job_id"] == "fake-coverage"
+    assert ["fake-coverage"] in backend.cancelled
+    (record,) = _coverage_records(minimal_project)
+    assert record["status"] == STATUS_CANCELLED
