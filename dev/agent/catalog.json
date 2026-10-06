@@ -1169,6 +1169,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/extract-parasitics-with-rcx-rules.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#source-platform-tcl-hooks",
+          "slug": "source-platform-tcl-hooks",
+          "title": "Source platform Tcl hooks",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/source-platform-tcl-hooks.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#macro-placement",
           "slug": "macro-placement",
           "title": "Macro placement",
@@ -1241,10 +1247,22 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/block-power-grid-convention.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#blocks-with-supply-pins-on-the-top-strap-layer",
+          "slug": "blocks-with-supply-pins-on-the-top-strap-layer",
+          "title": "Blocks with supply pins on the top strap layer",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/blocks-with-supply-pins-on-the-top-strap-layer.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#assemble-hardened-blocks",
           "slug": "assemble-hardened-blocks",
           "title": "Assemble hardened blocks",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/assemble-hardened-blocks.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#instance-a-parameterised-block",
+          "slug": "instance-a-parameterised-block",
+          "title": "Instance a parameterised block",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/pnr/instance-a-parameterised-block.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#run-a-whole-hierarchy",
