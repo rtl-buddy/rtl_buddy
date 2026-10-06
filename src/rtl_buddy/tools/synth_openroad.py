@@ -6,11 +6,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from . import block_params
 from .artifact_paths import clear_stale_artefacts
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps, open_liberty
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
 from .synth_yosys import (
     MAX_EVENT_FINDINGS,
+    clean_block_netlist,
     dont_use_args,
     elaboration_defines,
     liberty_args,
@@ -29,6 +31,7 @@ from .synth_yosys import (
     validate_frontend,
     warn_mapped_abc_args,
     yosys_env,
+    yosys_read_lib_paths,
 )
 from .sv_lifetime_scan import LifetimeFinding, describe_findings, scan_files
 from ..config.synth import (
@@ -89,6 +92,8 @@ class OpenRoadSynth:
         self.unresolved_interfaces = 0
         # Thread plan resolved by `_write_or_script`; None until stage 2 is scripted.
         self._thread_plan: ThreadPlan | None = None
+        # Resolved `blocks:` abstracts, set by the runner.
+        self.blocks: list = []
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -229,11 +234,13 @@ class OpenRoadSynth:
         incdirs = incdirs_from_filelist(fl_path)
         opts = self._resolve_yosys_opts()
 
+        source_files = self._source_files_from_filelist(fl_path)
         lines = []
-        for lib in lib_paths:
+        for lib in yosys_read_lib_paths(
+            lib_paths, self.blocks, source_files, self.synth_cfg.get_name()
+        ):
             lines.append(f"read_liberty -lib {lib}")
 
-        source_files = self._source_files_from_filelist(fl_path)
         lines.extend(
             emit_frontend_read_cmds(
                 opts=opts,
@@ -506,23 +513,24 @@ class OpenRoadSynth:
             candidates = self._source_files_from_filelist(self._filelist_path())
         except OSError:
             return []
-        # Match a module header through the closing `);` of its port list from the (* blackbox *) attribute; the body up to endmodule is dropped.
-        bb_re = re.compile(
-            r"\(\*\s*blackbox\s*\*\)\s*"
-            r"(module\s+(\w+)\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
-            r".*?"
-            r"endmodule",
-            re.DOTALL,
-        )
         module_re = re.compile(r"^\s*module\s+\w+", re.MULTILINE)
         shadowed: list[str] = []
 
-        def _stub_or_drop(m: re.Match) -> str:
-            name = m.group(2)
-            if name in known_masters:
-                shadowed.append(name)
-                return ""
-            return f"{m.group(1)}\nendmodule"
+        def _stub_or_drop(content: str) -> str:
+            # Each module is cut from the (* blackbox *) attribute to endmodule. The header, through the `;` after its port list, is kept; the body is dropped.
+            pieces = []
+            last = 0
+            for bb in block_params.blackbox_modules(content):
+                pieces.append(content[last : bb.start])
+                if bb.name in known_masters:
+                    shadowed.append(bb.name)
+                else:
+                    pieces.append(
+                        f"{content[bb.header_start : bb.header_end]}\nendmodule"
+                    )
+                last = bb.end
+            pieces.append(content[last:])
+            return "".join(pieces)
 
         result = []
         for src in candidates:
@@ -531,7 +539,7 @@ class OpenRoadSynth:
                     content = f.read()
                 if "(* blackbox *)" not in content:
                     continue
-                cleaned = bb_re.sub(_stub_or_drop, content)
+                cleaned = _stub_or_drop(content)
                 if not module_re.search(cleaned):
                     # Every blackbox in this file has a LEF/Liberty master; nothing left to read.
                     continue
@@ -1032,6 +1040,13 @@ class OpenRoadSynth:
             return self._fail_after_yosys(
                 yosys_desc or "Yosys stage failed; see synth_yosys.log"
             )
+
+        # Stage 2 and every later reader need the `#(...)` gone from parameterised block instances.
+        block_error = clean_block_netlist(
+            self._yosys_netlist_path(), self.blocks, self.synth_cfg.get_name()
+        )
+        if block_error is not None:
+            return self._fail_after_yosys(block_error)
 
         result = self._run_or_stage(gate_count, lef_paths, lib_paths)
         if isinstance(result, SynthFailResults):

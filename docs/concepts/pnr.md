@@ -391,6 +391,7 @@ runs:
 ```
 
 - `harden` implies `--gds` and forces `gds-mode: strict`, so it needs KLayout.
+- The run also elaborates the block's top in Yosys, with the frontend, sources, defines and Liberty of the block's synthesis, and records its parameter values as `<top>.params.json`. Parents' overrides are checked against it (see [Instance a parameterised block](#instance-a-parameterised-block)). The probe's script, log and output stay in `param_probe/` of the artefact directory until the next run. If Yosys cannot elaborate the top, the abstract is published without the record and the run warns `pnr.block_params_unrecorded`.
 - The views are published together or not at all. If one cannot be produced, the run fails with `fail_stage: abstract` and leaves no `abstract/`; the routed DEF and ODB stay. Each rerun removes the previous abstract first.
 - An abstract carries one corner's timing model, so `harden` on a multi-corner platform is refused before OpenROAD starts.
 - The model has timing arcs only, so a parent's `rb power` sees the block as drawing 0 W. Run `rb power` on the block itself.
@@ -434,6 +435,46 @@ P&R takes each block's LEF, Liberty and GDS from its abstract; synthesis takes t
 - **Same technology and corner.** The block's technology LEF and corner Liberty must match the consuming run's, or the run fails with a platform/corner mismatch. A multi-corner platform cannot consume single-corner abstracts.
 - **Stale abstracts are refused.** If an input of the block changed since it was hardened (RTL, netlist, SDC, Liberty, LEF, snippets, its `pnr.yaml` or platform), the consuming run fails, naming the block, what changed and the command that re-hardens it. `--accept-stale` on `rb pnr` or `rb synth` consumes it anyway and the result description says `stale block abstract(s) accepted: <names>`.
 - **Blackbox the module.** The top's filelist must leave the block's module a blackbox, typically a port-only stub.
+- **Parameterised blocks.** A hardened block has one parameter set, the `params:` of its synthesis. A parent that overrides its parameters needs a stub that declares them; see [Instance a parameterised block](#instance-a-parameterised-block).
+
+## Instance a parameterised block
+
+A parent instances a parameterised block with an override such as `blk #(.W(16)) u_blk (...)`. Its stub declares the block's parameters, so the frontend accepts the override and sizes the ports:
+
+```systemverilog
+// blk_bb.sv, on the parent's filelist. The block was synthesised with params: {W: 16}.
+(* blackbox *)
+module blk #(parameter int W = 8, localparam int AW = $clog2(W)) (
+  input logic clk, input logic [W-1:0] d, output logic [W-1:0] q);
+endmodule
+```
+
+Yosys then writes the instance in a form OpenROAD cannot use:
+
+- With `frontend: slang` it writes `blk #(.AW(32'd4), .W(32'd16)) u_blk (...)`. That is every parameter, localparams included, and OpenROAD rejects the syntax (`STA-0171`).
+- With the native `verilog` frontend it derives a copy of the blackbox, `\$paramod\blk\W=s32'0...10000 u_blk (...)`, and OpenROAD has no master of that name. With many overrides Yosys names the copy by a hash, `\$paramod$<sha1>\blk`. The values cannot be read back from that name, so such an instance fails the run with a request to use `frontend: slang`.
+
+rtl_buddy rewrites each instance as `blk u_blk (...)` before OpenROAD reads the netlist:
+
+- `rb synth` with `blocks:` rewrites `synth_netlist.v`. Yosys does not read the block's abstract Liberty when the filelist has a parameterised `(* blackbox *)` stub of the module, because the Liberty would replace the stub and lose its parameters.
+- `rb pnr` rewrites any instances that remain, for example in a netlist from a synthesis without `blocks:`, and reads the result as `pnr_netlist.v` in its artefact directory.
+- `rb power` takes its blocks from the synthesis it reads, so it checks and rewrites its own `power_netlist.v` copy only when that synthesis has `blocks:`.
+
+Each of these steps checks every instance of a block before rewriting it, so the rewrite does not hide a parent that disagrees with the hardened block. A failed check stops the run before OpenROAD reads the netlist, and its message names the instance, its line, and both values.
+
+- **Ports match the abstract.** Every port the instance connects must be a pin or bus of the block's abstract LEF, with the same width (`port 'd' is connected to 16 bit(s), but the hardened block's pin is 8 bit(s) wide`). Every signal pin of the abstract must be connected.
+  - An unconnected input or inout fails; an unconnected output is a warning. Supply pins are not checked here.
+  - Widths come from the netlist's declarations, selects, concatenations and sized constants.
+  - A connection rb cannot size, a positional port list or an instance array fails with the connection named.
+  - This is the strongest check. Any parameter that changes a port's width is caught here, recorded or not.
+- **Overrides match the elaborated block, as far as the record goes.** Every `harden: true` run elaborates the block's top once more in Yosys (scratch files in `param_probe/` of the run's artefact directory) and records its parameter values as `<top>.params.json` in the abstract. Each override on an instance, named or positional, is compared with its recorded value as a whole number; two literals of the same width compare by their bits. All instances of a block must also agree. What the record covers depends on the block's frontend:
+  - **`frontend: slang`**: the record lists the top's parameters and localparams, so an override the block does not have fails. A real-valued parameter cannot be recorded; the abstract is then published without a record.
+  - **native `verilog` frontend**: the record lists parameters but not localparams, so an override the record lacks is only a warning.
+  - **No record**: an abstract hardened by an older rtl_buddy, or one whose top Yosys could not elaborate (warning `pnr.block_params_unrecorded`). Only the synthesis's `params:` are compared, with a warning to re-harden.
+  - Warnings are reported once per block and parameter, with a count of the instances.
+- **The rewrite removes nothing else.** Outside the rewritten statements the output is byte-identical to the input. Each rewritten statement, read back from the output, has the input's tokens minus the `#(...)` list and with the master renamed, and needs no further rewrite. Anything else is an internal error, not a silent edit.
+
+The record is an abstract view, so editing or losing it makes the abstract stale. Re-harden a block (`rb pnr <block run>`) to give it a record.
 
 ## Run a whole hierarchy
 
@@ -471,4 +512,5 @@ rb pnr -c pnr/top/pnr.yaml --synth
 - **`fail_stage: abstract`, or `harden:` refused.** A view could not be produced (read `pnr.log`), or the platform has several corners.
 - **A missing or stale abstract, or a platform/corner mismatch.** Run the `rb pnr` command the message names, run `rb pnr` with no run name, or pass `--accept-stale`.
 - **`fail_stage: blocked`.** A block the run consumes failed. Fix it first.
+- **`instance '<inst>' ... of block '<blk>' sets <P>=...`, `port '<p>' is connected to N bit(s)`, `instances of block '<blk>' have different parameters`, or `... named by a hash`.** The parent instances a block with parameters or ports it was not hardened with. See [Instance a parameterised block](#instance-a-parameterised-block).
 - **`fail_stage: error`.** The run crashed; the exception is in the row description. Its consumers are blocked and other runs still report.

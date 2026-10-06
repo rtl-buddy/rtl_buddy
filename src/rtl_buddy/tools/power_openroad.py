@@ -30,7 +30,7 @@ from ..phys.publish import (
     withdrawal_failure_desc,
 )
 from ..runner.power_results import PowerFailResults, PowerPassResults, PowerResults
-from . import openroad_corners, pnr_abstract
+from . import block_params, openroad_corners, pnr_abstract
 from .artifact_paths import clear_stale_artefacts
 from .pnr_openroad import PNR_SCRIPT_NAME, ROUTED_SPEF_SUFFIX, tcl_source
 from .power_base import BasePower
@@ -317,10 +317,18 @@ class OpenRoadPower(BasePower):
                 if self._source_identity(source) != before:
                     # The source was rewritten mid-copy; drop the staging file and copy again.
                     continue
+                # OpenROAD rejects the `#(...)` on a parameterised block's instances.
+                block_params.clean_netlist(
+                    str(staging), str(staging), self._blocks, where=source
+                )
                 os.replace(staging, snapshot)
                 # Hash the copy, not the source: it is the file OpenROAD reads.
                 self._netlist_sha256 = sha256_of(snapshot)
                 return None
+        except block_params.BlockParamError as e:
+            with contextlib.suppress(OSError):
+                staging.unlink()
+            return str(e)
         except OSError as e:
             with contextlib.suppress(OSError):
                 staging.unlink()

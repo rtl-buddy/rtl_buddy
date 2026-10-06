@@ -104,6 +104,8 @@ SIBLING_OUTPUT_NAMES = (
     # Stream-out input manifest and KLayout completeness report; a strict re-render reads the report.
     "def2stream.inputs.json",
     "def2stream.report.json",
+    # rb pnr's copy of the synth netlist without `blocks:` parameter overrides, as read by OpenROAD.
+    "pnr_netlist.v",
     # rb synth (tools/synth_yosys.py, tools/synth_openroad.py)
     "synth_netlist.v",
     "synth.rtlil",

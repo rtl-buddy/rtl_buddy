@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -7,6 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from . import block_params
 from .artifact_paths import clear_stale_artefacts
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 from .vlog_filelist import VlogFilelist, incdirs_from_filelist
@@ -469,6 +471,72 @@ def library_fingerprint(paths, root_cfg) -> list[str]:
     return [project_relative(path, root) for path in paths]
 
 
+def yosys_read_lib_paths(
+    lib_paths: list[str], blocks, source_files: list[str], synth_name: str
+) -> list[str]:
+    """Return the Liberty files the Yosys script reads, without the abstracts of `blocks:` the sources stub with parameters.
+
+    A block's abstract Liberty defines its module with no parameters. Read ahead of the sources, it replaces a parameterised `(* blackbox *)` stub, and Yosys then rejects an instance's override (`does not have a parameter named`). Such a stub is the blackbox Yosys needs, so the abstract is left out. Any other definition of the module, such as a simulation model under `` `ifndef SYNTHESIS ``, does not count: the abstract stays, as it does for a stub without parameters.
+    """
+    if not blocks:
+        return list(lib_paths)
+    stubbed_names: set[str] = set()
+    for src in source_files:
+        try:
+            with open(src, errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        if "blackbox" not in text:
+            continue
+        stubbed_names |= {
+            bb.name for bb in block_params.blackbox_modules(text) if bb.parameterised
+        }
+    stubbed = [b for b in blocks if b.ref.name in stubbed_names]
+    if not stubbed:
+        return list(lib_paths)
+    log_event(
+        logger,
+        logging.DEBUG,
+        "synth.block_liberty_skipped",
+        synth=synth_name,
+        blocks=[b.ref.name for b in stubbed],
+    )
+    skip = {b.lib for b in stubbed}
+    return [p for p in lib_paths if p not in skip]
+
+
+def clean_block_netlist(netlist_path: str, blocks, synth_name: str) -> str | None:
+    """Strip the parameter overrides from `blocks:` instances in the mapped netlist, in place.
+
+    Returns a failure description when an override differs from the block's synthesis or the netlist cannot be rewritten, else None. See :mod:`.block_params`.
+    """
+    if not blocks or not os.path.isfile(netlist_path):
+        return None
+    try:
+        _, instances = block_params.clean_netlist(netlist_path, netlist_path, blocks)
+    except block_params.BlockParamError as e:
+        log_event(
+            logger,
+            logging.ERROR,
+            "synth.block_params_mismatch",
+            synth=synth_name,
+            error=str(e),
+        )
+        return str(e)
+    except OSError as e:
+        return f"could not strip block parameter overrides from {netlist_path}: {e}"
+    if instances:
+        log_event(
+            logger,
+            logging.INFO,
+            "synth.block_params_stripped",
+            synth=synth_name,
+            instances=[f"{i.module}:{i.instance}" for i in instances],
+        )
+    return None
+
+
 def resolve_dont_use_cells(synth_cfg, root_cfg) -> list[str]:
     """Return the platform's `dont-use-cells` patterns, or `[]` for an unmapped run.
 
@@ -632,6 +700,8 @@ class YosysSynth:
         # SDC identity; see `_hash_constraints`. None before the run or with no SDC.
         self._constraints_sha256: str | None = None
         self._opts: SynthToolOpts | None = None
+        # Resolved `blocks:` abstracts, set by the runner.
+        self.blocks: list = []
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -843,11 +913,13 @@ class YosysSynth:
         self._hash_constraints()
         incdirs = incdirs_from_filelist(fl_path)
 
+        source_files = self._source_files_from_filelist(fl_path)
         lines = []
-        for lib in lib_paths:
+        for lib in yosys_read_lib_paths(
+            lib_paths, self.blocks, source_files, self.synth_cfg.get_name()
+        ):
             lines.append(f"read_liberty -lib {lib}")
 
-        source_files = self._source_files_from_filelist(fl_path)
         lines.extend(
             emit_frontend_read_cmds(
                 opts=opts,
@@ -1209,6 +1281,13 @@ class YosysSynth:
                     log=log_path,
                 )
 
+        # OpenROAD rejects the `#(...)` Yosys leaves on a parameterised block's instances.
+        block_error = clean_block_netlist(
+            self._netlist_path(mapped=True), self.blocks, self.synth_cfg.get_name()
+        )
+        if block_error is not None:
+            return self._fail_after_yosys(block_error)
+
         top = self.synth_cfg.get_top()
         area_um2 = self._parse_area_um2(log_text, top)
         gate_count = self._parse_gate_count(log_text, top)
@@ -1326,3 +1405,173 @@ class YosysSynth:
                 error=published["error"],
             )
         return published["model"]
+
+
+#: The wrapper top the parameter probe elaborates around a block's top.
+_PROBE_TOP = "__rb_param_probe"
+
+
+def _probe_opts(synth_cfg, root_cfg) -> tuple[SynthToolOpts, str]:
+    """Return the Yosys frontend options a synthesis elaborates with, as its backend resolves them, and the Yosys executable."""
+    tool_name = synth_cfg.get_tool_name()
+    try:
+        tool_cfg = root_cfg.get_synth_tool_cfg("yosys")
+        overrides = synth_cfg.get_tool_overrides_for("yosys")
+    except FatalRtlBuddyError:
+        tool_cfg = root_cfg.get_synth_tool_cfg(tool_name)
+        overrides = synth_cfg.get_tool_overrides_for(tool_name)
+    return tool_cfg.get_opts(overrides), tool_cfg.get_executable()
+
+
+def _probe_value(value) -> str:
+    """Return a `params:` value as the probe wrapper's override expression: numbers as written, other strings quoted."""
+    if isinstance(value, bool):
+        return str(int(value))
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value)
+    if (
+        len(text) >= 2 and text[0] == '"' and text[-1] == '"'
+    ) or block_params.is_number(text):
+        return text
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _probe_lib_paths(synth_cfg, root_cfg, sources: list[str]) -> list[str]:
+    """Return the Liberty files the block's synthesis reads, so the probe knows the cells and sub-blocks its top instances."""
+    libs = list(getattr(synth_cfg, "get_lib_paths", lambda: [])())
+    platform = getattr(synth_cfg, "get_platform", lambda: None)()
+    if platform:
+        try:
+            libs = root_cfg.get_synth_platform_cfg(platform).get_paths() + libs
+        except Exception:  # the probe is best-effort; the synthesis already ran
+            pass
+    nested = []
+    refs = getattr(synth_cfg, "get_blocks", lambda: [])()
+    if refs:
+        from .pnr_abstract import BlockResolutionError, resolve_blocks
+
+        try:
+            nested = resolve_blocks(refs)
+        except BlockResolutionError:
+            nested = []
+        libs += [b.lib for b in nested]
+    return yosys_read_lib_paths(libs, nested, sources, synth_cfg.get_top())
+
+
+def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
+    """Elaborate a block's top in Yosys and return its parameter values as a `block_params.ParamRecord`.
+
+    Run when the block is hardened, so a parent's instance overrides can be compared with every value the block was built with. The top is wrapped in an instance carrying the synthesis's `params:`, in the synthesis's frontend, reading the sources and defines of its `synth.f`:
+
+    - slang: the top is a blackbox (`--blackboxed-module`), so only its header is elaborated, and the wrapper instance carries every parameter, localparams included, as a parent's would.
+    - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read. Localparams are not available, so the record is marked incomplete.
+
+    The synthesis's Liberty files are read first, so the top's cells and sub-blocks are known; with slang, unknown modules are also ignored, since only the header matters. String `params:` are quoted. The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
+    """
+    top = synth_cfg.get_top()
+    out_dir = os.path.abspath(out_dir)
+    fl_path = os.path.join(synth_dir, "synth.f")
+    if not os.path.isfile(fl_path):
+        raise RuntimeError(f"no synthesis filelist at {fl_path}; run rb synth first")
+    opts, executable = _probe_opts(synth_cfg, root_cfg)
+    from .pnr_abstract import filelist_sources
+
+    sources = filelist_sources(fl_path)
+    os.makedirs(out_dir, exist_ok=True)
+    wrapper = os.path.join(out_dir, "param_probe.sv")
+    params = synth_cfg.get_params() or {}
+    overrides = ", ".join(f".{k}({_probe_value(v)})" for k, v in params.items())
+    Path(wrapper).write_text(
+        f"module {_PROBE_TOP};\n  {top} {'#(' + overrides + ') ' if overrides else ''}u_probe ();\nendmodule\n"
+    )
+    json_path = os.path.join(out_dir, "param_probe.json")
+    cmds = [
+        f"read_liberty -lib {shlex.quote(lib)}"
+        for lib in _probe_lib_paths(synth_cfg, root_cfg, sources)
+    ]
+    cmds += emit_frontend_read_cmds(
+        opts=opts,
+        source_files=[*sources, wrapper],
+        top=_PROBE_TOP,
+        defines=elaboration_defines(fl_path, synth_cfg.get_defines()),
+        params=None,
+        root_cfg=root_cfg,
+        incdirs=incdirs_from_filelist(fl_path),
+    )
+    if opts.frontend == "slang":
+        cmds[-1] = cmds[-1].replace(
+            f"--top {_PROBE_TOP}",
+            # Only the top's header matters: a module its body uses but no source or Liberty defines must not stop the probe.
+            f"--top {_PROBE_TOP} --blackboxed-module {shlex.quote(top)}"
+            " --ignore-unknown-modules",
+            1,
+        )
+    else:
+        cmds += [f"hierarchy -top {_PROBE_TOP}", "proc"]
+    cmds.append(f"write_json {shlex.quote(json_path)}")
+    script = os.path.join(out_dir, "param_probe.ys")
+    Path(script).write_text("\n".join(cmds) + "\n")
+    log_path = os.path.join(out_dir, "param_probe.log")
+    with open(log_path, "w") as log_f:
+        result = subprocess.run(
+            [executable, "-q", "-s", script],
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            cwd=out_dir,
+            env=yosys_env(out_dir),
+            check=False,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Yosys exited with code {result.returncode}; see {log_path}"
+        )
+    try:
+        design = json.loads(Path(json_path).read_text())
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"unreadable probe output {json_path}: {e}") from None
+    modules = design.get("modules") or {}
+    if opts.frontend == "slang":
+        cell = (modules.get(_PROBE_TOP, {}).get("cells") or {}).get("u_probe")
+        if not cell:
+            raise RuntimeError(f"the probe found no instance of {top!r}")
+        values = cell.get("parameters") or {}
+        complete = True
+    else:
+        # The wrapper's cell names the derived module, `$paramod\\blk\\W=...` or `$paramod$<sha1>\\blk`.
+        cell = (modules.get(_PROBE_TOP, {}).get("cells") or {}).get("u_probe") or {}
+        derived = modules.get(cell.get("type", ""))
+        if derived is None:
+            pattern = re.compile(rf"^\$paramod(\$[0-9a-f]+)?\\{re.escape(top)}(\\|$)")
+            derived = next(
+                (
+                    m
+                    for name, m in modules.items()
+                    if name == top or pattern.match(name)
+                ),
+                None,
+            )
+        if derived is None:
+            raise RuntimeError(f"the probe did not elaborate {top!r}")
+        values = derived.get("parameter_default_values") or {}
+        complete = False
+    order = None
+    for src in sources:
+        try:
+            text = Path(src).read_text(errors="replace")
+        except OSError:
+            continue
+        if top in text:
+            order = block_params.parameter_port_names(text, top)
+            if order is not None:
+                break
+    return block_params.ParamRecord(
+        module=top,
+        frontend=opts.frontend,
+        complete=complete,
+        parameters={
+            k: block_params.yosys_json_literal(str(v))
+            for k, v in sorted(values.items())
+        },
+        order=order or [],
+    )

@@ -32,7 +32,8 @@ from .artifact_paths import (
     project_relative,
     project_root_or_none,
 )
-from . import pnr_abstract, pnr_checkpoints
+from . import block_params, pnr_abstract, pnr_checkpoints
+from .synth_yosys import probe_block_parameters
 from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 
 
@@ -75,6 +76,10 @@ _FIXED_OUTPUT_NAMES = tuple(
 
 # An input, not an output: cleared up front only (see `_clear_stale_outputs`).
 _SCRIPT_NAME = "pnr.tcl"
+# Where `harden: true` elaborates the top to record its parameter values; see `_record_block_parameters`.
+_PARAM_PROBE_DIR = "param_probe"
+# The synth netlist with `blocks:` parameter overrides stripped, read in its place; an input like the script.
+_BLOCK_NETLIST_NAME = "pnr_netlist.v"
 # Public: `rb power` uses it to check the SPEF and ODB came from the same run.
 PNR_SCRIPT_NAME = _SCRIPT_NAME
 
@@ -450,6 +455,8 @@ class OpenRoadPnr:
         self._openroad_returncode: int | None = None
         # Picoseconds per Liberty `time_unit`; set by `run()` once the blocks' Liberty is known.
         self._ps_per_unit: float | None = None
+        # The netlist the script reads, when not the synth netlist itself; set by `_prepare_netlist`.
+        self._openroad_netlist: str | None = None
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, _SCRIPT_NAME)
@@ -494,7 +501,7 @@ class OpenRoadPnr:
 
     def _write_script(self, platform, fp) -> str:
         pdk = platform.get_pdk()
-        netlist = self._resolve_netlist_path()
+        netlist = self._openroad_netlist or self._resolve_netlist_path()
         sdc = self.pnr_cfg.get_constraints()
         if not sdc:
             raise RuntimeError(
@@ -1533,7 +1540,7 @@ class OpenRoadPnr:
                     _DEF2STREAM_REPORT_NAME,
                     _EXPORT_PROVENANCE_NAME,
                     *(
-                        (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME)
+                        (_SCRIPT_NAME, _DEF2STREAM_INPUTS_NAME, _BLOCK_NETLIST_NAME)
                         if include_script
                         else ()
                     ),
@@ -1563,6 +1570,11 @@ class OpenRoadPnr:
         )
         # The abstract is cut from the result being replaced, whether or not this run hardens.
         stale += pnr_abstract.clear_abstract(self.artefact_dir)
+        # The parameter probe's scratch files belong to the abstract.
+        probe_dir = os.path.join(self.artefact_dir, _PARAM_PROBE_DIR)
+        if include_script and os.path.isdir(probe_dir):
+            shutil.rmtree(probe_dir, ignore_errors=True)
+            stale.append(probe_dir)
         if stale:
             log_event(
                 logger,
@@ -1626,10 +1638,21 @@ class OpenRoadPnr:
         )
 
     def _checkpoint_inputs(self, platform, script_path: str) -> dict:
-        """Return fingerprints of the files the generated script reads, for the checkpoint manifest."""
+        """Return fingerprints of the files the generated script reads, for the checkpoint manifest.
+
+        `netlist` is the file OpenROAD reads; when that is the `blocks:`-stripped copy, `synth_netlist` records the synth netlist it was made from.
+        """
         pdk = platform.get_pdk()
+        stripped = (
+            {"synth_netlist": _file_fingerprint(self._resolve_netlist_path())}
+            if self._openroad_netlist
+            else {}
+        )
         return {
-            "netlist": _file_fingerprint(self._resolve_netlist_path()),
+            "netlist": _file_fingerprint(
+                self._openroad_netlist or self._resolve_netlist_path()
+            ),
+            **stripped,
             "sdc": _file_fingerprint(self.pnr_cfg.get_constraints()),
             "liberty": [
                 _file_fingerprint(p)
@@ -1761,6 +1784,55 @@ class OpenRoadPnr:
         )
         return None
 
+    def _prepare_netlist(self) -> PnrFailResults | None:
+        """Point the script at a copy of the synth netlist with the `blocks:` instances' parameter overrides stripped.
+
+        OpenROAD's reader rejects the `#(...)` Yosys leaves on a parameterised block's instances. Since `rb synth` with `blocks:` already strips them, this matters for a netlist from a synthesis without `blocks:`. Returns a FAIL when an override differs from the block's synthesis `params:` or between instances; see :mod:`.block_params`.
+        """
+        self._openroad_netlist = None
+        if not self._blocks:
+            return None
+        source = self._resolve_netlist_path()
+        if not os.path.isfile(source):
+            return None
+        try:
+            path, instances = block_params.clean_netlist(
+                source,
+                os.path.join(self.artefact_dir, _BLOCK_NETLIST_NAME),
+                self._blocks,
+            )
+        except (block_params.BlockParamError, OSError) as e:
+            mismatch = isinstance(e, block_params.BlockParamError)
+            desc = (
+                str(e)
+                if mismatch
+                else f"could not strip block parameter overrides from {source}: {e}"
+            )
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.block_params_mismatch" if mismatch else "pnr.block_netlist_failed",
+                pnr=self.pnr_cfg.get_name(),
+                error=desc,
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=desc,
+                fail_stage="setup",
+                fields=self._blocks_fields(),
+            )
+        if instances:
+            self._openroad_netlist = path
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr.block_params_stripped",
+                pnr=self.pnr_cfg.get_name(),
+                instances=[f"{i.module}:{i.instance}" for i in instances],
+                netlist=path,
+            )
+        return None
+
     def _blocks_fields(self) -> dict:
         """Return the `blocks` result field listing the abstracts this run consumed."""
         if not self._blocks:
@@ -1795,6 +1867,46 @@ class OpenRoadPnr:
             },
         }
 
+    def _record_block_parameters(self, staging: str, design: str) -> None:
+        """Write `<top>.params.json`, the parameter values the hardened top was elaborated with, into the staging abstract.
+
+        A parent's instance overrides are checked against it (see `block_params`). A probe that cannot run leaves no record and a warning: the abstract is still usable, and its consumers fall back to the synthesis's `params:`.
+        """
+        synth_cfg = self.pnr_cfg.resolve_synth_cfg()
+        synth_dir = os.path.join(
+            os.path.dirname(self.pnr_cfg.get_synth_suite_path()),
+            "artefacts",
+            synth_cfg.get_name(),
+        )
+        try:
+            record = probe_block_parameters(
+                synth_cfg,
+                self.root_cfg,
+                synth_dir,
+                os.path.join(self.artefact_dir, _PARAM_PROBE_DIR),
+            )
+            Path(pnr_abstract.view_path(staging, design, "params.json")).write_text(
+                record.to_json()
+            )
+        except Exception as e:  # never fails the harden; consumers fall back
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.block_params_unrecorded",
+                pnr=self.pnr_cfg.get_name(),
+                error=str(e),
+            )
+            return
+        log_event(
+            logger,
+            logging.INFO,
+            "pnr.block_params_recorded",
+            pnr=self.pnr_cfg.get_name(),
+            frontend=record.frontend,
+            complete=record.complete,
+            parameters=record.parameters,
+        )
+
     def _publish_abstract(
         self, platform, openroad_version: str | None, export: GdsExport | None
     ) -> dict | str:
@@ -1817,6 +1929,7 @@ class OpenRoadPnr:
             f"abstract view(s) not produced: {', '.join(missing)}" if missing else None
         )
         if problem is None:
+            self._record_block_parameters(staging, design)
             try:
                 shutil.copyfile(gds, pnr_abstract.view_path(staging, design, "gds"))
                 pnr_abstract.write_manifest(
@@ -2007,6 +2120,9 @@ class OpenRoadPnr:
         blocks_failure = self._resolve_blocks(platform)
         if blocks_failure is not None:
             return blocks_failure
+        netlist_failure = self._prepare_netlist()
+        if netlist_failure is not None:
+            return netlist_failure
 
         try:
             self._ps_per_unit = liberty_time_unit_ps(

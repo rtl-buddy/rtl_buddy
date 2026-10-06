@@ -28,6 +28,8 @@ ABSTRACT_MANIFEST_NAME = "abstract.manifest.json"
 ABSTRACT_MANIFEST_SCHEMA = 1
 #: Manifest keys of the three views; each file is `<top>.<key>`.
 ABSTRACT_VIEWS = ("lef", "lib", "gds")
+#: Views published when they could be produced: `<top>.params.json`, the parameter values the top was elaborated with (see `block_params`).
+OPTIONAL_VIEWS = ("params.json",)
 
 
 def abstract_dir(artefact_dir: str) -> str:
@@ -235,7 +237,11 @@ def write_manifest(
         return file_fingerprint(value, root)
 
     outputs = {}
-    for view in ABSTRACT_VIEWS:
+    # The parameter record is optional: its probe can fail, and older abstracts have none.
+    optional = [
+        v for v in OPTIONAL_VIEWS if os.path.isfile(view_path(staging, design, v))
+    ]
+    for view in (*ABSTRACT_VIEWS, *optional):
         record = file_fingerprint(view_path(staging, design, view), root) or {}
         record["path"] = (
             project_relative(view_path(published, design, view), root)
