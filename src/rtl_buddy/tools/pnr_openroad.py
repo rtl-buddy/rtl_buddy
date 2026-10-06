@@ -94,6 +94,12 @@ DEFAULT_PNG_HEIGHT = 2048
 
 _DONT_USE_VIOLATION_TAG = "RB-DONT-USE-VIOLATION:"
 
+# Printed once by the final reports: the routed design's logical and physical-only instance counts.
+_CELL_COUNT_TAG = "RB-CELL-COUNT:"
+_CELL_COUNT_RE = re.compile(
+    rf"^{re.escape(_CELL_COUNT_TAG)} routed (\d+) physical (\d+)\s*$", re.MULTILINE
+)
+
 _STA_CELL_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
 )
@@ -654,6 +660,7 @@ class OpenRoadPnr:
                 "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
             ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
+            "cell_count_tag": _CELL_COUNT_TAG,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
@@ -694,8 +701,16 @@ class OpenRoadPnr:
         return float(m.group(1)) if m else None
 
     def _parse_cell_count(self, log_text: str) -> int | None:
+        """The input netlist's instance count: the floorplan's first `Number of instances:` line, before any cell the flow adds."""
         m = re.search(r"Number of instances:\s+(\d+)", log_text)
         return int(m.group(1)) if m else None
+
+    def _parse_routed_cell_counts(self, log_text: str) -> tuple[int | None, int | None]:
+        """Return `(routed, physical)` from the final reports' tagged count, or `(None, None)` when absent."""
+        m = _CELL_COUNT_RE.search(log_text)
+        if not m:
+            return None, None
+        return int(m.group(1)), int(m.group(2))
 
     def _parse_wns(self, log_text: str, kind: str) -> float | None:
         m = re.search(rf"^worst slack {kind}\s+([-\d.]+)", log_text, re.MULTILINE)
@@ -2189,6 +2204,7 @@ class OpenRoadPnr:
 
         area = self._parse_area_um2(log_text)
         cells = self._parse_cell_count(log_text)
+        routed_cells, physical_cells = self._parse_routed_cell_counts(log_text)
         wns_setup = self._parse_wns(log_text, "max")
         wns_hold = self._parse_wns(log_text, "min")
         tns = self._parse_tns(log_text)
@@ -2199,6 +2215,8 @@ class OpenRoadPnr:
         metrics = {
             "area_um2": area,
             "cell_count": cells,
+            "routed_cell_count": routed_cells,
+            "physical_cell_count": physical_cells,
             "wns_setup_ps": wns_setup * ps_per_unit if wns_setup is not None else None,
             "wns_hold_ps": wns_hold * ps_per_unit if wns_hold is not None else None,
             "tns_ps": tns * ps_per_unit if tns is not None else None,

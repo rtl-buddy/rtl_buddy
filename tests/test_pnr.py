@@ -4058,3 +4058,37 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
     )
     assert tuned["post_cts_setup_repair"] is True
     assert tuned["routing"]["layer_adjustment"] == 0.25
+
+
+def test_pnr_flow_counts_the_routed_design_after_fill(tmp_path):
+    """The tagged count runs in the final reports, after every cell the flow adds."""
+    text = _render_flow(tmp_path, _platform(_make_pdk_cfg(tmp_path)))
+    tag = text.index('puts "RB-CELL-COUNT: routed $rb_routed physical $rb_physical"')
+    assert text.index("filler_placement $FILL_CELLS") < tag
+    assert text.index(">>> Final reports") < tag < text.index(">>> Write outputs")
+    # fill-cells entries are patterns, matched as `filler_placement` matches them.
+    assert "if {[string match $rb_fill [$master getName]]}" in text
+    assert "lsearch -exact $FILL_CELLS" not in text
+    # A failure loses the count, not the routed database.
+    assert 'puts "rb: routed cell count unavailable: $rb_err"' in text
+
+
+def test_pnr_row_carries_the_routed_cell_counts():
+    from rtl_buddy.rtl_buddy import RtlBuddy
+    from rtl_buddy.runner.pnr_results import PnrPassResults
+
+    results = PnrPassResults(
+        name="demo/results",
+        cell_count=330,
+        fields={"routed_cell_count": 412, "physical_cell_count": 1638},
+    )
+    row = RtlBuddy._pnr_result_row(None, {"pnr_name": "demo", "results": results})
+    assert (
+        row["cell_count"],
+        row["routed_cell_count"],
+        row["physical_cell_count"],
+    ) == (
+        330,
+        412,
+        1638,
+    )
