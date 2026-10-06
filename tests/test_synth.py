@@ -6910,3 +6910,36 @@ def test_ignored_synth_settings_quiet_for_a_clean_config(caplog):
     root_cfg = _FakeRootCfgTools(openroad={"synth_args": "-flatten"})
     _warn_ignored(caplog, cfg, root_cfg)
     assert caplog.text == ""
+
+
+# `stat -json` capture cleanup (#710)
+
+
+def test_clean_stat_json_strips_the_gzip_notice(tmp_path):
+    import json
+
+    from rtl_buddy.tools.synth_yosys import clean_stat_json
+
+    obj = '{\n   "modules": {"\\\\top": {"num_cells": 2, "area": 3.5}}\n}'
+    path = tmp_path / "synth_stat.json"
+    path.write_text(
+        "Found gzip magic in file `c.lib.gz', decompressing using zlib.\n" + obj + "\n"
+    )
+    clean_stat_json(str(path))
+    assert path.read_text() == obj + "\n"
+    assert json.loads(path.read_text())["modules"]["\\top"]["area"] == 3.5
+
+
+def test_clean_stat_json_leaves_a_clean_or_unparseable_file_alone(tmp_path):
+    from rtl_buddy.tools.synth_yosys import clean_stat_json
+
+    clean = tmp_path / "clean.json"
+    clean.write_text('{"modules": {}}\n')
+    junk = tmp_path / "junk.json"
+    junk.write_text("ERROR: no JSON here\n")
+    for path in (clean, junk):
+        before = path.read_text()
+        clean_stat_json(str(path))
+        assert path.read_text() == before
+    # A missing file (Yosys failed before `stat`) is not an error.
+    clean_stat_json(str(tmp_path / "absent.json"))
