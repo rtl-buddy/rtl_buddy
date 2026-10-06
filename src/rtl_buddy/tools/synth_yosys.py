@@ -1465,7 +1465,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     Run when the block is hardened, so a parent's instance overrides can be compared with every value the block was built with. The top is wrapped in an instance carrying the synthesis's `params:`, in the synthesis's frontend, reading the sources and defines of its `synth.f`:
 
     - slang: the top is a blackbox (`--blackboxed-module`), so only its header is elaborated, and the wrapper instance carries every parameter, localparams included, as a parent's would.
-    - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read. Localparams are not available, so the record is marked incomplete.
+    - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read, plus any `real` override from the wrapper's cell, which the derived module leaves out. Localparams and `real` defaults are not available, so the record is marked incomplete.
 
     The synthesis's Liberty files are read first, so the top's cells and sub-blocks are known; with slang, unknown modules are also ignored, since only the header matters. String `params:` are quoted. The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
     """
@@ -1486,6 +1486,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         f"module {_PROBE_TOP};\n  {top} {'#(' + overrides + ') ' if overrides else ''}u_probe ();\nendmodule\n"
     )
     json_path = os.path.join(out_dir, "param_probe.json")
+    overrides_json = os.path.join(out_dir, "param_probe_overrides.json")
     cmds = [
         f"read_liberty -lib {shlex.quote(lib)}"
         for lib in _probe_lib_paths(synth_cfg, root_cfg, sources)
@@ -1508,7 +1509,15 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
             1,
         )
     else:
-        cmds += [f"hierarchy -top {_PROBE_TOP}", "proc"]
+        # The wrapper (read last) is elaborated on read, so its cell still carries the override values before `hierarchy` derives the top: Yosys leaves `real` parameters out of the derived module's defaults.
+        cmds[-1] = cmds[-1].replace("read_verilog -sv -defer", "read_verilog -sv", 1)
+        cmds += [
+            f"select {_PROBE_TOP}",
+            f"write_json -selected {shlex.quote(overrides_json)}",
+            "select -clear",
+            f"hierarchy -top {_PROBE_TOP}",
+            "proc",
+        ]
     cmds.append(f"write_json {shlex.quote(json_path)}")
     script = os.path.join(out_dir, "param_probe.ys")
     Path(script).write_text("\n".join(cmds) + "\n")
@@ -1554,6 +1563,17 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         if derived is None:
             raise RuntimeError(f"the probe did not elaborate {top!r}")
         values = derived.get("parameter_default_values") or {}
+        # A `real` parameter is only in the wrapper cell's overrides, as Yosys's string ("2.500000"); one left at its default is not recorded.
+        try:
+            before = json.loads(Path(overrides_json).read_text())
+        except (OSError, ValueError) as e:
+            raise RuntimeError(
+                f"unreadable probe output {overrides_json}: {e}"
+            ) from None
+        wrapper_cell = (
+            ((before.get("modules") or {}).get(_PROBE_TOP) or {}).get("cells") or {}
+        ).get("u_probe") or {}
+        values = {**(wrapper_cell.get("parameters") or {}), **values}
         complete = False
     order = None
     for src in sources:
