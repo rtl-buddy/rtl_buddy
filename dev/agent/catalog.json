@@ -2366,6 +2366,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/coverage-merging-runs-in-the-submitting-process-without-a-slurm-backend.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#an-orphaned-coverage-job-is-only-found-within-its-own-artefact-tree",
+          "slug": "an-orphaned-coverage-job-is-only-found-within-its-own-artefact-tree",
+          "title": "An orphaned coverage job is only found within its own artefact tree",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/an-orphaned-coverage-job-is-only-found-within-its-own-artefact-tree.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#verilator-randomized-runs-may-not-reproduce",
           "slug": "verilator-randomized-runs-may-not-reproduce",
           "title": "Verilator randomized runs may not reproduce",

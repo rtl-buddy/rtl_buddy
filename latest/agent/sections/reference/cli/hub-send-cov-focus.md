@@ -6,8 +6,9 @@ Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
  Broadcast cov_focus{target}: point the coverage pane (/cov) at one target. TARGET is
  'file:design/blk.sv', 'module:blk' or 'test:verif/blk#basic'; an unprefixed string is
  a file path. --metric foregrounds one coverage kind, --line scrolls a file target to a
- line, and --item names a bin or SVA cover point. The hub replays the focus when the
- pane connects, so it can be sent before the tab is open.
+ line, and --item names a bin or SVA cover point. --by switches the pane's figures
+ between per-elaboration and source points. The hub replays the focus when the pane
+ connects, so it can be sent before the tab is open.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    target      TEXT  coverage target, e.g. module:blk or design/blk.sv [required]  │
@@ -19,6 +20,10 @@ Usage: rtl-buddy hub send cov-focus [OPTIONS] TARGET
 │ --item          TEXT                  Point within the target: a                     │
 │                                       branch/toggle/expression bin name as /cov.json │
 │                                       spells it, or an SVA cover point name.         │
+│ --by            TEXT                  elaboration|source — which figures the pane    │
+│                                       shows, as its figures picker and               │
+│                                       /cov?by=source do. Omitted leaves the pane's   │
+│                                       choice alone.                                  │
 │ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -9,4 +9,4 @@
 - **`dispatch.wait_states_unfiltered`:** an old `squeue` refused the state filter, so a held job can be reported finished early.
 - **`dispatch.result_missing`:** a job produced no result. It counts as a failure unless the message says it is being retried.
 - **`dispatch.retry_abandoned`:** a retry could not be submitted; the earlier result stays scored.
-- **`dispatch.orphans_found` / `dispatch.orphans_cancel_failed`:** see [Interrupted runs](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#interrupted-runs-warn-cancel-adopt).
+- **`dispatch.orphans_found` / `dispatch.orphans_cancel_failed` / `dispatch.coverage_orphan_found`:** see [Interrupted runs](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/dispatch/#interrupted-runs-warn-cancel-adopt).

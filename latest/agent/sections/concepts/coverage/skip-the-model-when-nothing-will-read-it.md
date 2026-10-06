@@ -1,6 +1,6 @@
 ## Skip the model when nothing will read it
 
-Per-test attribution grows with points times tests, and for a large toggle-instrumented suite it can dominate the run's output and post-dispatch time. `--coverage-model` on `test` and `regression` chooses how much to write:
+Per-test attribution grows with points times tests, and for a large toggle-instrumented suite it can dominate the run's output and post-dispatch time. `--coverage-model` on `test`, `randtest` and `regression` chooses how much to write:
 
 - `full` (default): every point with per-test hit counts.
 - `totals`: every point and hit count, without per-test attribution.

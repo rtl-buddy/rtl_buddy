@@ -23,9 +23,10 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                target. TARGET is 'file:design/blk.sv', 'module:blk' or               │
 │                'test:verif/blk#basic'; an unprefixed string is a file path. --metric │
 │                foregrounds one coverage kind, --line scrolls a file target to a      │
-│                line, and --item names a bin or SVA cover point. The hub replays the  │
-│                focus when the pane connects, so it can be sent before the tab is     │
-│                open.                                                                 │
+│                line, and --item names a bin or SVA cover point. --by switches the    │
+│                pane's figures between per-elaboration and source points. The hub     │
+│                replays the focus when the pane connects, so it can be sent before    │
+│                the tab is open.                                                      │
 │ phys-focus     Broadcast phys_focus{target}: point the synth and power pane (/phy)   │
 │                at one target. TARGET is 'instance:u_cpu/u_alu' or 'module:alu'; an   │
 │                unprefixed string is an instance path. --metric foregrounds one       │
