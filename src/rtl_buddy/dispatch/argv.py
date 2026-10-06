@@ -11,6 +11,7 @@ from ..seed_mode import SeedMode
 from .base import (
     BUILD_PHASE_FULL,
     BuildJobSpec,
+    CoverageJobSpec,
     ElabJobSpec,
     RunnableJobSpec,
     TestJobSpec,
@@ -153,6 +154,23 @@ def elab_job_argv(spec: ElabJobSpec) -> list[str]:
     ]
     if spec.profile_name is not None:
         argv += ["--profile", spec.profile_name]
+    return argv
+
+
+def coverage_job_argv(spec: CoverageJobSpec) -> list[str]:
+    """The ``rb _cov-job`` invocation for one coverage tail."""
+    argv = _rb_argv(spec)
+    argv += [
+        "_cov-job",
+        "--spec",
+        str(spec.spec_json),
+        "--result-json",
+        str(spec.result_json),
+        "--command-root",
+        str(spec.suite_dir),
+    ]
+    if spec.run_tag is not None:
+        argv += ["--run-tag", spec.run_tag]
     return argv
 
 

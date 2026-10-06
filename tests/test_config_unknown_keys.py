@@ -139,6 +139,7 @@ def test_cfg_dispatch_blocks_warn_about_an_unknown_key(minimal_project: Path, ca
                 "  compile:",
                 "    parallel: 2",
                 "    verilate: { mme: 8G }",
+                "  coverage: { tme: 01:00:00 }",
                 "  retry: { attempt: 2 }",
                 "  rightsize: { margins: 2.0 }",
             ]
@@ -153,6 +154,7 @@ def test_cfg_dispatch_blocks_warn_about_an_unknown_key(minimal_project: Path, ca
         ("cfg-dispatch", "poll_interval", "poll-interval"),
         ("cfg-dispatch.resources", "memory", "mem"),
         ("cfg-dispatch.compile.verilate", "mme", "mem"),
+        ("cfg-dispatch.coverage", "tme", "time"),
         ("cfg-dispatch.retry", "attempt", "attempts"),
         ("cfg-dispatch.rightsize", "margins", "margin"),
     }

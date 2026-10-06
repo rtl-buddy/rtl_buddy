@@ -11,6 +11,7 @@
 from ..errors import FatalRtlBuddyError
 from .base import (
     BuildJobSpec,
+    CoverageJobSpec,
     DispatchBackend,
     ElabJobSpec,
     JobHandle,
@@ -23,6 +24,7 @@ from .slurm import SlurmDispatchBackend
 
 __all__ = [
     "BuildJobSpec",
+    "CoverageJobSpec",
     "DispatchBackend",
     "ElabJobSpec",
     "JobHandle",

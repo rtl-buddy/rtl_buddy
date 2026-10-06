@@ -27,10 +27,11 @@ from typing import NamedTuple
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
-from .argv import build_job_argv, elab_job_argv, test_job_argv
+from .argv import build_job_argv, coverage_job_argv, elab_job_argv, test_job_argv
 from .base import (
     BUILD_PHASE_VERILATE,
     BuildJobSpec,
+    CoverageJobSpec,
     DispatchBackend,
     JobHandle,
     RunnableJobSpec,
@@ -554,6 +555,7 @@ def _task_sampling_interval(value: str) -> float | None:
 
 class SlurmDispatchBackend(DispatchBackend):
     name = "slurm"
+    dispatches_coverage_tail = True
 
     def __init__(self, dispatch_cfg):
         # Raises with the manifest's install hint when the Slurm client is absent.
@@ -1009,6 +1011,43 @@ class SlurmDispatchBackend(DispatchBackend):
         else:
             fields.update(model=spec.model_name, profile=spec.profile_name)
         log_event(logger, logging.INFO, "dispatch.submitted", **fields)
+        return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
+
+    def submit_coverage(self, spec: CoverageJobSpec) -> JobHandle:
+        """Submit the coverage tail as one job, with the ``cfg-dispatch.coverage`` reservation.
+
+        No dependency: the head submits it after collecting the fleet, because the job
+        reads the collected per-test results from its spec.
+        """
+        cmd = self._reservation_argv(
+            spec.resources,
+            job_name=tagged_job_name(f"rb:{spec.display_name()}", self.job_tag),
+            chdir=spec.suite_dir,
+            log_path=spec.log_path,
+        )
+        cmd += self.sbatch_args
+        cmd += ["--wrap", shlex.join(coverage_job_argv(spec))]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
+        if proc.returncode != 0:
+            raise FatalRtlBuddyError(
+                f"sbatch failed for the coverage job (rc={proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
+        job_id, cluster = self._accepted_on(proc.stdout)
+        if not job_id:
+            raise FatalRtlBuddyError("sbatch returned no job id for the coverage job")
+        log_event(
+            logger,
+            logging.INFO,
+            "dispatch.coverage_submitted",
+            backend=self.name,
+            job_id=job_id,
+            suite_dir=spec.suite_dir,
+            time=spec.resources.time,
+            cpus=spec.resources.cpus,
+            mem=spec.resources.mem,
+            cluster=cluster,
+        )
         return JobHandle(job_id=job_id, spec=spec, cluster=cluster)
 
     def _cluster_selection(self) -> str | None:

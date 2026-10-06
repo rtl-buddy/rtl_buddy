@@ -99,6 +99,22 @@ cfg-dispatch:
 
 Quote every `time` value; an unquoted `4:00:00` is rejected.
 
+## Run the coverage tail as a job
+
+Under `--dispatch slurm`, the coverage tail of `rb test` and `rb regression` runs as one job instead of on the submit host: the raw merge, the `coverage-model.json` build, the LCOV exports and the manifest. It is submitted once every simulation is collected, the head waits on it like the fleet (`max-wait` applies), then reads back the summary lines and machine payload. Nothing is submitted when no test recorded coverage. A manifest-only tail (`--coverage-model none` with no merge, LCOV, HTML, Coverview, directory or source summary requested) also runs in the head, since a job would only add a queue wait. Without dispatch and under `local-parallel` the tail runs in the head as before.
+
+Size it with `cfg-dispatch.coverage`, which inherits `cfg-dispatch.resources` field by field and takes a `modes:` block. The tail only exists under a coverage build, so `modes.cov` is the usual place:
+
+```yaml
+cfg-dispatch:
+  coverage:
+    time: "01:00:00"
+    modes:
+      cov: {mem: 8G}
+```
+
+The job writes `cov_dir/` under the head's command root, logs to `.dispatch/coverage/` under the artefact root, and is named `rb:coverage`. If it fails, see [Read a failed merge](coverage.md#read-a-failed-merge).
+
 ## Set per-test resources
 
 Reservations resolve field by field in this order: test, testbench, `cfg-dispatch.resources`, built-in defaults.
@@ -118,7 +134,7 @@ Tests with identical resolved reservations share an array.
 
 ## Size a reservation per builder mode
 
-A `modes:` sub-block sizes the same test for the builder mode it runs in. A `-M cov` build carries coverage counters and a `-M debug` build dumps waves, so a test that fits in 1 GB under `-M reg` can need far more memory and about twice the wall clock. Every reservation block takes one: `cfg-dispatch.resources` and `.compile`, a suite's `compile:`, and a testbench's or test's `resources:` and `compile:`.
+A `modes:` sub-block sizes the same test for the builder mode it runs in. A `-M cov` build carries coverage counters and a `-M debug` build dumps waves, so a test that fits in 1 GB under `-M reg` can need far more memory and about twice the wall clock. Every reservation block takes one: `cfg-dispatch.resources`, `.compile` and `.coverage`, a suite's `compile:`, and a testbench's or test's `resources:` and `compile:`.
 
 ```yaml
 resources:

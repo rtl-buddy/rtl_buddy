@@ -23,6 +23,7 @@ from ..config.root import RootConfig
 from ..cov.raw import COVER, EXPRESSION, parse_raw_records
 from ..cov.source_paths import SourcePathResolver
 from ..logging_utils import log_event
+from ..process_utils import run_managed_process
 from .artifact_paths import sanitize_artifact_component
 
 
@@ -682,6 +683,11 @@ class VlogCov:
         )
         return html_dir
 
+    def _merge_timeout(self):
+        """``cfg-coverage`` ``merge-timeout`` for this simulator family, or None (no limit)."""
+        getter = getattr(self.root_cfg, "get_coverage_merge_timeout", None)
+        return None if getter is None else getter(self.simulator_name)
+
     def merge(
         self,
         raw_paths,
@@ -710,6 +716,7 @@ class VlogCov:
 
         merged_path = os.path.join(outdir, f"{merge_basename}.dat")
         run_cmd = ["verilator_coverage", "--write", merged_path] + raw_paths
+        timeout = self._merge_timeout()
         log_event(
             logger,
             logging.INFO,
@@ -718,9 +725,13 @@ class VlogCov:
             merged_path=merged_path,
             inputs=raw_paths,
             command=" ".join(run_cmd),
+            timeout=timeout,
         )
-        result = subprocess.run(run_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
+        # Managed so an interrupt or a head shutdown takes the merge down with it.
+        result = run_managed_process(
+            run_cmd, capture_output=True, text=True, timeout=timeout
+        )
+        if result.returncode != 0 or result.timed_out:
             log_event(
                 logger,
                 logging.ERROR,
@@ -729,8 +740,10 @@ class VlogCov:
                 merged_path=merged_path,
                 inputs=raw_paths,
                 returncode=result.returncode,
-                stderr=result.stderr.strip(),
-                stdout=result.stdout.strip(),
+                # Present only when cfg-coverage merge-timeout stopped the merge.
+                timeout=timeout if result.timed_out else None,
+                stderr=(result.stderr or "").strip(),
+                stdout=(result.stdout or "").strip(),
             )
             merged_path = None
         else:

@@ -568,6 +568,9 @@ class DispatchConfigFile:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
+    # The coverage tail job's reservation (merge, model build, LCOV exports, manifest) under a scheduler-backed backend; defaults to `resources`.
+    # Run-level, one job per invocation, so it has no suite or testbench layer. `modes.<mode>` layers on top like the others.
+    coverage: DispatchResourcesFile | None = None
     # Compile reservation; defaults to `resources`. Normally sizes the head-dispatched build job.
     # For a builder that cannot share a build it is folded into each sim job (see combine_for_in_job_compile).
     # Also carries `parallel`, which per-job `resources:` blocks lack.
@@ -640,6 +643,28 @@ class DispatchConfigFile:
                 ),
             )
 
+        def _validated_coverage(res):
+            """The coverage block, through the compile mem/time/cpus validators: one job, sized like a build."""
+            if res is None:
+                return None
+            try:
+                cpus = _validate_compile_cpus(res.cpus)
+                mem = _validate_compile_mem(res.mem)
+                time = _validate_compile_time(res.time)
+            except FatalRtlBuddyError as e:
+                raise FatalRtlBuddyError(f"cfg-dispatch.coverage: {e}") from e
+            return DispatchResourcesFile(
+                cpus=cpus,
+                mem=mem,
+                time=time,
+                # Names its own block in any message.
+                modes=validate_modes_block(
+                    getattr(res, "modes", None),
+                    where="cfg-dispatch.coverage.",
+                    compile_block=True,
+                ),
+            )
+
         if self.progress_interval < 0:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch progress-interval must be >= 0 "
@@ -690,6 +715,7 @@ class DispatchConfigFile:
             backend=self.backend,
             resources=_validated(self.resources),
             compile=_validated_compile(self.compile),
+            coverage=_validated_coverage(self.coverage),
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
             progress_interval=self.progress_interval,
@@ -721,6 +747,7 @@ DISPATCH_BLOCK = (
     {
         "resources": RESOURCES_BLOCK,
         "compile": (DispatchCompileFile, _VERILATE_BLOCK),
+        "coverage": RESOURCES_BLOCK,
         "retry": (RetryConfigFile, {}),
         "rightsize": (RightsizeConfigFile, {}),
     },
@@ -777,6 +804,7 @@ class DispatchConfig:
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
     compile: DispatchCompileFile | None = None
+    coverage: DispatchResourcesFile | None = None
     sbatch_args: list = None
     poll_interval: float = 10.0
     progress_interval: float = 60.0
@@ -839,6 +867,33 @@ def resolve_resources(
             resolved.cpus = layer.cpus
         if layer.mem is not None:
             # Raw serde may carry the YAML sexagesimal/int trap; validate as applied.
+            resolved.mem = _validate_mem(layer.mem)
+        if layer.time is not None:
+            resolved.time = _validate_time(layer.time)
+    return resolved
+
+
+def resolve_coverage_resources(dispatch_cfg, *, builder_mode=None) -> JobResources:
+    """Resolve the coverage tail job's reservation.
+
+    Layers apply field by field: ``cfg-dispatch.coverage``, ``cfg-dispatch.resources``, built-in defaults.
+    ``builder_mode`` then layers each block's ``modes.<builder_mode>`` over the result, least specific first, as :func:`resolve_resources` does.
+    The tail exists only for a coverage run, so ``modes.cov`` is the usual place to size it.
+    """
+    resolved = JobResources()
+    blocks = []
+    if dispatch_cfg is not None:
+        blocks = [(dispatch_cfg.resources, False), (dispatch_cfg.coverage, True)]
+    layers = [block for block, _ in blocks] + [
+        mode_override(block, builder_mode, compile_block=is_coverage)
+        for block, is_coverage in blocks
+    ]
+    for layer in layers:
+        if layer is None:
+            continue
+        if layer.cpus is not None:
+            resolved.cpus = layer.cpus
+        if layer.mem is not None:
             resolved.mem = _validate_mem(layer.mem)
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)

@@ -103,6 +103,7 @@ from .config.dispatch import (
     aggregate_compile_resources,
     mode_governed_fields,
     resolve_compile_resources,
+    resolve_coverage_resources,
     resolve_verilate_resources,
     resolve_resources,
     cpu_request_overrides,
@@ -119,9 +120,18 @@ from .dispatch.base import (
     BUILD_PHASE_VERILATE,
     BUILD_PHASES,
     BuildJobSpec,
+    CoverageJobSpec,
     ElabJobSpec,
     TestJobSpec,
     telemetry_key,
+)
+from .dispatch.coverage_tail import (
+    clear_previous_outputs,
+    is_manifest_only,
+    load_tail_result,
+    load_tail_spec,
+    write_tail_result,
+    write_tail_spec,
 )
 from .dispatch.gates import release_batches, wait_for_gates, write_gates
 from .dispatch.plan import (
@@ -579,6 +589,13 @@ class RtlBuddy:
             hidden=True,
             help="internal: compile a suite's runnable tests (share-build)",
         )(self.do_cmd_build_job)
+        # Remote-dispatch coverage tail: merge, model build, LCOV exports and manifest
+        # on a compute node, for a run whose simulations were dispatched.
+        self.app.command(
+            "_cov-job",
+            hidden=True,
+            help="internal: run a dispatched run's coverage tail and write its result JSON",
+        )(self.do_cmd_cov_job)
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
         )
@@ -1192,6 +1209,7 @@ class RtlBuddy:
             "_test-job",
             "_build-job",
             "_elab-job",
+            "_cov-job",
         ):
             self._artifact_locks.acquire(
                 ctx.artifact_root,
@@ -1360,6 +1378,9 @@ class RtlBuddy:
         ``error`` payload and lose them. It folds into the run status as exit 1, "a tool
         flow failed".
         """
+        if coverage_payload and coverage_payload.get("tail_failed"):
+            # Logged as coverage.tail_failed where it happened.
+            return 1
         if not coverage_payload or not coverage_payload.get("merge_failed"):
             return 0
         log_event(
@@ -1369,6 +1390,161 @@ class RtlBuddy:
             failed_metrics=list(coverage_payload.get("failed_metrics") or []),
         )
         return 1
+
+    def _coverage_tail(self, calls, *, backend):
+        """Run the coverage tail: one ``build_metadata`` per call, returning ``(metadata, coverage)`` each.
+
+        Each call is a dict of ``build_metadata`` keyword arguments. Under a backend
+        whose jobs run off the submit host (:attr:`DispatchBackend.dispatches_coverage_tail`)
+        and with any coverage collected, every call runs in one ``rb _cov-job`` instead
+        of in this process; otherwise, including ``--dispatch local`` and
+        ``local-parallel``, they run here as before. A tail that asks only for the
+        manifest (no merge, export or model file; :func:`is_manifest_only`) also stays
+        here: a job would cost a queue wait for no memory saved.
+        """
+        has_coverage = any(
+            row["results"].results.get("coverage")
+            for call in calls
+            for row in call["suite_results"]
+        )
+        if (
+            backend is None
+            or not getattr(backend, "dispatches_coverage_tail", False)
+            or not has_coverage
+            or all(is_manifest_only(call) for call in calls)
+        ):
+            return [
+                self.coverage.build_metadata(
+                    call["suite_results"],
+                    **{k: v for k, v in call.items() if k != "suite_results"},
+                )
+                for call in calls
+            ]
+        return self._dispatch_coverage_tail(backend, calls)
+
+    def _dispatch_coverage_tail(self, backend, calls):
+        """Submit the coverage tail as one job, wait on it and read its answer back.
+
+        The job writes ``cov_dir/`` (merge, model, LCOV exports, manifest) under the
+        same command root the in-process tail would, and returns each call's display
+        lines and machine payload plus the per-test ``coverage`` dicts it updated. A
+        submission, wait or result failure does not lose the collected results: it is
+        reported as ``tail_failed`` and the run exits 1.
+        """
+        run_token = uuid.uuid4().hex
+        tail_dir = self.exec_ctx.artifact_root / ".dispatch" / "coverage"
+        spec_path, results = write_tail_spec(
+            tail_dir / f"spec-{run_token}.json", calls, run_token=run_token
+        )
+        result_json = tail_dir / f"result-{run_token}.json"
+        spec = CoverageJobSpec(
+            suite_dir=str(calls[0]["outdir"]),
+            spec_json=spec_path,
+            result_json=result_json,
+            resources=resolve_coverage_resources(
+                self.root_cfg.get_dispatch_cfg(), builder_mode=self.rtl_builder_mode
+            ),
+            log_path=tail_dir / f"{backend.name}-{run_token}.log",
+            builder_mode=self.rtl_builder_mode,
+            builder_override=self._builder_override,
+            extra_sim_timeout=self._extra_sim_timeout_override,
+            run_tag=self._run_tag,
+        )
+        # The previous run's manifest and model go first: a tail that leaves no answer
+        # must not leave them for `rb cov summary`, mcp or hub /cov to read as this
+        # run's. The in-process tail rewrites both or, on a failed merge, writes a
+        # manifest that says so; a dispatched tail that fails writes neither.
+        removed = clear_previous_outputs(calls)
+        if removed:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "coverage.tail_cleared_previous",
+                paths=removed,
+            )
+        handle = None
+        try:
+            handle = backend.submit_coverage(spec)
+            log_console_event(
+                logger,
+                logging.INFO,
+                "coverage.tail_submitted",
+                backend=backend.name,
+                job_id=handle.job_id,
+                log=str(spec.log_path),
+            )
+            backend.wait_all([handle])
+        except FatalRtlBuddyError as exc:
+            # A refused submission or an expired max-wait; the collected results stand.
+            if handle is not None:
+                backend.cancel_all([handle])
+            return self._coverage_tail_failed(
+                calls, reason=str(exc), handle=handle, spec=spec
+            )
+        except BaseException:
+            if handle is not None:
+                backend.cancel_all([handle])
+            raise
+        try:
+            outcomes, tests = load_tail_result(
+                result_json,
+                expected_run_token=run_token,
+                expected_calls=len(calls),
+                expected_tests=len(results),
+            )
+        except FatalRtlBuddyError as exc:
+            return self._coverage_tail_failed(
+                calls, reason=str(exc), handle=handle, spec=spec
+            )
+        # The job's LCOV exports and HTML trees land on the head's results, as they would
+        # in-process, so side-cars and machine rows name them.
+        for res, coverage in zip(results, tests, strict=True):
+            if coverage is not None:
+                res.results["coverage"] = coverage
+        log_event(
+            logger,
+            logging.INFO,
+            "coverage.tail_collected",
+            backend=backend.name,
+            job_id=handle.job_id,
+            result_json=str(result_json),
+        )
+        return outcomes
+
+    def _coverage_tail_failed(self, calls, *, reason, handle, spec):
+        """One ``(metadata, coverage)`` per call for a coverage tail job that produced no answer."""
+        job_id = None if handle is None else handle.job_id
+        log = str(spec.log_path) if spec.log_path is not None else None
+        log_event(
+            logger,
+            logging.ERROR,
+            "coverage.tail_failed",
+            job_id=job_id,
+            reason=reason,
+            log=log,
+            result_json=str(spec.result_json),
+        )
+        failure = {"job_id": job_id, "reason": reason, "log": log}
+        where = f"job {job_id}" if job_id is not None else "not submitted"
+        line = (
+            f"Coverage tail FAILED ({where}): {reason}; no merge, model or manifest "
+            "was written" + (f" — see {log}" if job_id is not None and log else "")
+        )
+        outcomes = []
+        for index, call in enumerate(calls):
+            coverage = {
+                "merged": None,
+                "dir_summary": [],
+                "merge_failed": False,
+                "failed_metrics": [],
+                "tail_failed": dict(failure),
+            }
+            covers = self.coverage.collect_cover_records(call["suite_results"])
+            if covers:
+                coverage["covers"] = covers
+            # One job failed, so the summary says so once however many calls it held.
+            outcomes.append(([line] if index == 0 else [], coverage))
+        return outcomes
 
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
@@ -1994,20 +2170,25 @@ class RtlBuddy:
                     for key, value in self._plusarg_overrides.items()
                 )
             )
-        cov_metadata, coverage_payload = self.coverage.build_metadata(
-            suite_results,
-            outdir=str(ctx.command_root),
-            suite_name=self.suite_cfg.get_path(),
-            coverage_merge=coverage_merge,
-            coverage_merge_raw=coverage_merge_raw,
-            coverage_html=coverage_html,
-            coverage_coverview=coverage_coverview,
-            coverage_merge_info_process=coverage_merge_info_process,
-            source_roots=[str(ctx.command_root)],
-            dir_summary_paths=dir_summary_paths,
-            source_summary=coverage_source_summary,
-            command="test",
-            model_mode=coverage_model,
+        ((cov_metadata, coverage_payload),) = self._coverage_tail(
+            [
+                dict(
+                    suite_results=suite_results,
+                    outdir=str(ctx.command_root),
+                    suite_name=self.suite_cfg.get_path(),
+                    coverage_merge=coverage_merge,
+                    coverage_merge_raw=coverage_merge_raw,
+                    coverage_html=coverage_html,
+                    coverage_coverview=coverage_coverview,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[str(ctx.command_root)],
+                    dir_summary_paths=dir_summary_paths,
+                    source_summary=coverage_source_summary,
+                    command="test",
+                    model_mode=coverage_model,
+                )
+            ],
+            backend=dispatch_backend,
         )
         metadata.extend(cov_metadata)
         # After build_metadata: the manifest and model are on disk, so a failed merge
@@ -2646,6 +2827,67 @@ class RtlBuddy:
                 metadata=[f"Builder: {self.builder}"],
             )
         raise typer.Exit(exit_code)
+
+    def do_cmd_cov_job(
+        self,
+        spec: Annotated[
+            str,
+            typer.Option("--spec", help="the head's coverage tail spec (JSON)"),
+        ],
+        result_json: Annotated[
+            str,
+            typer.Option(
+                "--result-json", help="where to write the tail's result envelope"
+            ),
+        ],
+        command_root: Annotated[
+            str,
+            typer.Option(
+                "--command-root",
+                help="the head's command root; root_config.yaml is found from "
+                "it and cov_dir/ is written under it",
+            ),
+        ],
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="the head's artefact namespace, so this job logs in the "
+                "tree the head planned",
+            ),
+        ] = None,
+    ):
+        """internal: run a dispatched run's coverage tail and write its result JSON"""
+        self._run_tag = validate_run_tag(run_tag)
+        spec_path = self._abs_invocation_path(spec)
+        result_path = self._abs_invocation_path(result_json)
+        # Log beside the envelope, never into the head's rtl_buddy.log.
+        self._enter_command_context(
+            command_root=self._abs_invocation_path(command_root),
+            log_path=job_log_path(result_path),
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "command.cov_job",
+            command="_cov-job",
+            spec=str(spec_path),
+            result_json=str(result_path),
+        )
+        run_token, calls, tests = load_tail_spec(spec_path)
+        outcomes = [
+            self.coverage.build_metadata(
+                call["suite_results"],
+                **{k: v for k, v in call.items() if k != "suite_results"},
+            )
+            for call in calls
+        ]
+        write_tail_result(
+            result_path, run_token=run_token, outcomes=outcomes, tests=tests
+        )
+        if self.machine:
+            self._emit_machine_result("_cov-job", 0, result_json=str(result_path))
+        raise typer.Exit(0)
 
     def do_cmd_build_job(
         self,
@@ -3860,9 +4102,9 @@ class RtlBuddy:
     def _machine_coverage_payload(coverage):
         """Return the run-level coverage payload if it carries data, else None.
 
-        Any of `covers`, `artefacts`, `merge_failed` or `source_summary` counts as data
-        on its own, since each is produced without a `--coverage-merge*` flag or when a
-        merge died before writing anything.
+        Any of `covers`, `artefacts`, `merge_failed`, `tail_failed` or `source_summary`
+        counts as data on its own, since each is produced without a `--coverage-merge*`
+        flag or when a merge or the dispatched tail died before writing anything.
         """
         if coverage and (
             coverage.get("merged")
@@ -3870,6 +4112,7 @@ class RtlBuddy:
             or coverage.get("covers")
             or coverage.get("artefacts")
             or coverage.get("merge_failed")
+            or coverage.get("tail_failed")
             or coverage.get("source_summary")
         ):
             return coverage
@@ -7349,47 +7592,61 @@ class RtlBuddy:
             and not coverage_merge_info_process
         ):
             reg_outdir = str(ctx.command_root)
-            for reg_result in reg_results:
-                # Per-suite HTML only: no merge, so no structured merged payload.
-                cov_metadata, _ = self.coverage.build_metadata(
-                    reg_result["results"],
-                    outdir=reg_outdir,
-                    suite_name=reg_result["test_suite"],
-                    coverage_merge=False,
-                    coverage_merge_raw=False,
-                    coverage_html=True,
-                    coverage_coverview=coverage_coverview,
-                    coverage_per_test=coverage_per_test,
-                    reg_results=reg_results,
-                    coverage_merge_info_process=coverage_merge_info_process,
-                    source_roots=[reg_result["test_suite_path"]],
-                    dir_summary_paths=dir_summary_paths,
-                    source_summary=coverage_source_summary,
-                    command="regression",
-                    model_mode=coverage_model,
-                )
+            # Per-suite HTML only: no merge, so no structured merged payload.
+            outcomes = self._coverage_tail(
+                [
+                    dict(
+                        suite_results=reg_result["results"],
+                        outdir=reg_outdir,
+                        suite_name=reg_result["test_suite"],
+                        coverage_merge=False,
+                        coverage_merge_raw=False,
+                        coverage_html=True,
+                        coverage_coverview=coverage_coverview,
+                        coverage_per_test=coverage_per_test,
+                        reg_results=reg_results,
+                        coverage_merge_info_process=coverage_merge_info_process,
+                        source_roots=[reg_result["test_suite_path"]],
+                        dir_summary_paths=dir_summary_paths,
+                        source_summary=coverage_source_summary,
+                        command="regression",
+                        model_mode=coverage_model,
+                    )
+                    for reg_result in reg_results
+                ],
+                backend=dispatch_backend,
+            )
+            for cov_metadata, suite_coverage in outcomes:
                 metadata.extend(cov_metadata)
+                # A tail job that failed fails every call; carry that one verdict.
+                if suite_coverage.get("tail_failed"):
+                    coverage_payload["tail_failed"] = suite_coverage["tail_failed"]
         else:
             reg_outdir = str(ctx.command_root)
             regression_source_roots = [
                 reg_result["test_suite_path"] for reg_result in reg_results
             ]
-            cov_metadata, coverage_payload = self.coverage.build_metadata(
-                all_suite_results,
-                outdir=reg_outdir,
-                suite_name=self.reg_cfg.get_path(),
-                coverage_merge=coverage_merge,
-                coverage_merge_raw=coverage_merge_raw,
-                coverage_html=coverage_html,
-                coverage_coverview=coverage_coverview,
-                coverage_per_test=coverage_per_test,
-                reg_results=reg_results,
-                coverage_merge_info_process=coverage_merge_info_process,
-                source_roots=regression_source_roots,
-                dir_summary_paths=dir_summary_paths,
-                source_summary=coverage_source_summary,
-                command="regression",
-                model_mode=coverage_model,
+            ((cov_metadata, coverage_payload),) = self._coverage_tail(
+                [
+                    dict(
+                        suite_results=all_suite_results,
+                        outdir=reg_outdir,
+                        suite_name=self.reg_cfg.get_path(),
+                        coverage_merge=coverage_merge,
+                        coverage_merge_raw=coverage_merge_raw,
+                        coverage_html=coverage_html,
+                        coverage_coverview=coverage_coverview,
+                        coverage_per_test=coverage_per_test,
+                        reg_results=reg_results,
+                        coverage_merge_info_process=coverage_merge_info_process,
+                        source_roots=regression_source_roots,
+                        dir_summary_paths=dir_summary_paths,
+                        source_summary=coverage_source_summary,
+                        command="regression",
+                        model_mode=coverage_model,
+                    )
+                ],
+                backend=dispatch_backend,
             )
             metadata.extend(cov_metadata)
         # Same rule as `test`, applied once the artefacts are written.

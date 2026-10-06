@@ -14,6 +14,7 @@ from rtl_buddy.cov.manifest import MANIFEST_FILENAME
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.test_results import TestResults
 from rtl_buddy.tools.coverage import CoverageReporter
+from rtl_buddy.tools import vlog_cov as vlog_cov_module
 from rtl_buddy.tools.vlog_cov import CoverageMetrics, VlogCov
 
 _KILLED = -15
@@ -122,7 +123,17 @@ def _shim_verilator_coverage(monkeypatch, project, *, merge_returncode):
         # `strings` probing and `--annotate` summaries report nothing, like an unsupported metric.
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
+    def fake_managed(cmd, **kwargs):
+        result = fake_run(cmd)
+        return SimpleNamespace(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            timed_out=False,
+        )
+
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(vlog_cov_module, "run_managed_process", fake_managed)
     return calls
 
 
