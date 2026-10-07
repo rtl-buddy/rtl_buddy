@@ -94,7 +94,7 @@ puts ">>> IO pin placement"
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 
 puts ">>> Global placement"
-global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}
+global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
 {{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement

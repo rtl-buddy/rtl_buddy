@@ -54,6 +54,9 @@ class PlacementFile:
     tie_separation: float | None = field(rename="tie-separation", default=None)
     # `global_placement -reference_hpwl`; `None` leaves the placer's own reference.
     reference_hpwl: float | None = field(rename="reference-hpwl", default=None)
+    # `global_placement -routability_driven` / `-routability_use_grt`; `None` inherits, unset means off.
+    routability_driven: bool | None = field(rename="routability-driven", default=None)
+    routability_use_grt: bool | None = field(rename="routability-use-grt", default=None)
 
 
 def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
@@ -116,6 +119,8 @@ def validate_placement(placement: PlacementFile, where: str) -> PlacementFile:
         macro_cell_halo=macro_cell_halo,
         tie_separation=tie_separation,
         reference_hpwl=reference_hpwl,
+        routability_driven=placement.routability_driven,
+        routability_use_grt=placement.routability_use_grt,
     )
 
 
@@ -314,6 +319,14 @@ class PdkConfig:
     def get_placement_reference_hpwl(self) -> float | None:
         """Configured global-placement reference HPWL, or `None` when unset."""
         return self._placement.reference_hpwl
+
+    def get_placement_routability_driven(self) -> bool | None:
+        """Configured `global_placement -routability_driven`, or `None` when unset."""
+        return self._placement.routability_driven
+
+    def get_placement_routability_use_grt(self) -> bool | None:
+        """Configured `global_placement -routability_use_grt`, or `None` when unset."""
+        return self._placement.routability_use_grt
 
     def get_dont_use_cells(self) -> list[str]:
         return list(self._dont_use_cells)

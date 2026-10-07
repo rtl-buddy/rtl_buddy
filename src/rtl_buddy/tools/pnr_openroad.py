@@ -204,6 +204,16 @@ def _reference_hpwl_option(platform) -> str:
     return f" -reference_hpwl {hpwl:.15g}" if hpwl is not None else ""
 
 
+def _routability_options(platform) -> str:
+    """Return ` -routability_driven` and ` -routability_use_grt` for global placement when set, else `""`."""
+    options = ""
+    if platform.get_placement_routability_driven():
+        options += " -routability_driven"
+    if platform.get_placement_routability_use_grt():
+        options += " -routability_use_grt"
+    return options
+
+
 def _cts_apply_ndr_option(platform) -> str:
     """Return ` -apply_ndr <value>` for the CTS invocation, or `""` for the tool's default."""
     ndr = platform.get_cts_apply_ndr()
@@ -703,6 +713,7 @@ class OpenRoadPnr:
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
             "reference_hpwl_option": _reference_hpwl_option(platform),
+            "routability_options": _routability_options(platform),
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
