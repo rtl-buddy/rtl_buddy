@@ -92,6 +92,8 @@ class External:
 
     path: str
     ship_as: str
+    #: Package directory whose filelist carries these references; ``design`` by default.
+    dir: str | None = None
 
 
 @dataclass
@@ -335,6 +337,7 @@ def load_release_config(path: str | os.PathLike) -> ReleaseConfig:
                     )
                 ),
                 ship_as=er.get("ship-as", str, required=True),
+                dir=er.get("dir", str, None),
             )
         )
         er.done()

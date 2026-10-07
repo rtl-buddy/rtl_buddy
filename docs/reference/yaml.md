@@ -1099,7 +1099,7 @@ package:
 | `design.preserve.interfaces` | Optional list | Modules whose name, ports and parameters are kept: hardening boundaries and constraint scopes |
 | `design.preserve.identifiers` | Optional list | Further names kept everywhere |
 | `design.files` | Optional list | Per-file overrides: `match` (a glob on the base name, or on the project-relative path when it contains `/`), `reason` (required), and any of `obfuscate`, `encrypt`, `strip-comments`, `dir` (the package directory the file ships in). Later rules win; a rule matching nothing is an error |
-| `design.externals` | Optional list | `path` (environment variables expanded; relative to `release.yaml` unless absolute) whose files are not shipped, and `ship-as`, the prefix written in their place |
+| `design.externals` | Optional list | `path` (environment variables expanded; relative to `release.yaml` unless absolute) whose files are not shipped, `ship-as`, the prefix written in their place, and optional `dir`, the package directory whose filelist carries the references (default `design`) |
 | `design.constraints` | Optional list | `src` SDC file, `scope` (a preserved module), optional `ship-as` file name, and `mode`: `rewrite` (default; evaluate and translate) or `verbatim` (ship unchanged after a port check) |
 | `testbench.filelist` | Optional list | Filelist lines, as in `models.yaml`, relative to `release.yaml` |
 | `testbench.extra-files` | Optional list | Files copied into `verif/` unchanged, such as run scripts |

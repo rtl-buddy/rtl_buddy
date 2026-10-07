@@ -640,3 +640,37 @@ def test_header_names_cover_ansi_and_non_ansi_headers():
     names = header_names(text)
     assert {"m1", "W", "a", "b", "m2", "c", "d", "DEPTH"} <= names
     assert not {"hidden", "secret"} & names
+
+
+def test_an_external_goes_to_its_directory_once(project: Path, tcl_backend):
+    vendor = project / "vendor_mem"
+    vendor.mkdir()
+    (vendor / "vmem.v").write_text("module vmem (input clk); endmodule\n")
+    acme_f = project / "rtl/acme.f"
+    acme_f.write_text(
+        acme_f.read_text() + "-v ../vendor_mem/vmem.v\n-v ../vendor_mem/vmem.v\n"
+    )
+    _edit(
+        project / REL / "release.yaml",
+        lambda d: d["design"].update(
+            {
+                "externals": [
+                    {
+                        "path": "../../vendor_mem",
+                        "ship-as": "$VMEM_DIR",
+                        "dir": "design_cust_to_replace",
+                    }
+                ]
+            }
+        ),
+    )
+    files = _release_files(_run(project, verify=False))
+    assert "-v $VMEM_DIR/vmem.v" not in files["design/acme_top.f"]
+    assert (
+        files["design_cust_to_replace/design_cust_to_replace.f"].count(
+            "-v $VMEM_DIR/vmem.v"
+        )
+        == 1
+    )
+    assert files["sim.f"].count("-v $VMEM_DIR/vmem.v") == 1
+    assert not any(n.endswith("vmem.v") for n in files)

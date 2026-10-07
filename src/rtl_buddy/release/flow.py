@@ -110,6 +110,15 @@ class FilelistLine:
     kind: str  # "item", "incdir", "define", "external", "libext"
     value: str
     item: Item | None = None
+    #: Package directory whose filelist carries a non-item line.
+    dir: str | None = None
+
+    @property
+    def target(self) -> str:
+        if self.item is not None:
+            return self.item.subdir
+        assert self.dir is not None
+        return self.dir
 
 
 @dataclass
@@ -309,24 +318,34 @@ class ReleaseFlow:
         default = cfg.design.protect if section == "design" else cfg.testbench.protect  # type: ignore[union-attr]
         rules = cfg.design.files if section == "design" else cfg.testbench.files  # type: ignore[union-attr]
         new: list[Item] = []
+        home = DESIGN_DIR if section == "design" else VERIF_DIR
+        emitted = {(ln.kind, ln.value) for ln in lines if ln.item is None}
+
+        def option_line(kind: str, value: str, pkg_dir: str | None = None) -> None:
+            # Nested filelists repeat their options; each is written once.
+            if (kind, value) not in emitted:
+                emitted.add((kind, value))
+                lines.append(FilelistLine(kind, value, dir=pkg_dir or home))
+
         for value, option in entries:
             if option == "+define+":
                 defines.add(value.split("=", 1)[0])
-                lines.append(FilelistLine("define", value))
+                option_line("define", value)
                 continue
             if option == "+libext+":
-                lines.append(FilelistLine("libext", value))
+                option_line("libext", value)
                 continue
             path = os.path.normpath(value)
-            if self._external_for(path):
+            ext = self._external_for(path)
+            if ext:
                 shipped = self._ship_external(path)
                 if option == "+incdir+":
-                    lines.append(FilelistLine("external", f"+incdir+{shipped}"))
+                    option_line("external", f"+incdir+{shipped}", ext.dir)
                 elif option == "-y ":
-                    lines.append(FilelistLine("external", f"-y {shipped}"))
+                    option_line("external", f"-y {shipped}", ext.dir)
                 else:
                     prefix = "-v " if option == "-v " else ""
-                    lines.append(FilelistLine("external", f"{prefix}{shipped}"))
+                    option_line("external", f"{prefix}{shipped}", ext.dir)
                     external_sources.append(Path(path))
                 continue
             if not self._inside_project(path):
@@ -603,17 +622,17 @@ class ReleaseFlow:
         pkg: bool,
         only_dir: str | None = None,
     ) -> str:
-        """Render filelist lines with release-root-relative paths; ``only_dir`` keeps the files of one package directory."""
+        """Render filelist lines with release-root-relative paths; ``only_dir`` keeps the lines one package directory carries."""
         out = [
             f"// {self.cfg.name} {self.cfg.version}: {title}",
             "// Paths are relative to the release root; run tools from there.",
             *(f"+incdir+{d}" for d in incdirs),
         ]
         for ln in lines:
+            if only_dir is not None and ln.target != only_dir:
+                continue
             if ln.kind == "item":
                 assert ln.item is not None
-                if only_dir is not None and ln.item.subdir != only_dir:
-                    continue
                 name = ln.item.shipped_name() if pkg else ln.item.name
                 prefix = "-v " if ln.item.role == "lib" else ""
                 out.append(f"{prefix}{ln.item.subdir}/{name}")
@@ -626,44 +645,33 @@ class ReleaseFlow:
         return "\n".join(out) + "\n"
 
     def _filelists(self, col: Collected, root: Path, pkg: bool) -> None:
-        """One filelist per package directory, and ``sim.f`` with every file in compile order.
+        """One filelist per package directory, and ``sim.f`` with every line in compile order.
 
-        ``design/<top>.f`` carries the design's defines and external references,
-        ``verif/tb.f`` the testbench's, and any other directory's ``<dir>/<name>.f``
-        lists its files only.
+        A directory's filelist carries its files and the options and external
+        references assigned to it: the design's go to ``design/<top>.f``, the
+        testbench's to ``verif/tb.f``, an external's to its ``dir``.
         """
+        everything = col.design_lines + col.tb_lines
         dirs = [DESIGN_DIR]
-        for item in col.items:
-            if item.subdir not in dirs:
-                dirs.append(item.subdir)
+        for ln in everything:
+            if ln.target not in dirs:
+                dirs.append(ln.target)
         tb = self.cfg.testbench is not None
         if tb and VERIF_DIR not in dirs:
             dirs.append(VERIF_DIR)
-        design_items = [ln for ln in col.design_lines if ln.kind == "item"]
+        names = {
+            DESIGN_DIR: (f"{col.top}.f", f"{col.top} design filelist"),
+            VERIF_DIR: ("tb.f", "testbench filelist"),
+        }
         for d in dirs:
             (root / d).mkdir(parents=True, exist_ok=True)
-            if d == DESIGN_DIR:
-                path, title, lines = (
-                    root / d / f"{col.top}.f",
-                    f"{col.top} design filelist",
-                    col.design_lines,
-                )
-            elif d == VERIF_DIR:
-                path, title, lines = (
-                    root / d / "tb.f",
-                    "testbench filelist",
-                    design_items + col.tb_lines,
-                )
-            else:
-                path, title, lines = (
-                    root / d / f"{Path(d).name}.f",
-                    f"{d} filelist",
-                    design_items,
-                )
-            path.write_text(self._filelist_text(lines, [d], title, pkg, only_dir=d))
+            fname, title = names.get(d, (f"{Path(d).name}.f", f"{d} filelist"))
+            (root / d / fname).write_text(
+                self._filelist_text(everything, [d], title, pkg, only_dir=d)
+            )
         (root / "sim.f").write_text(
             self._filelist_text(
-                col.design_lines + col.tb_lines,
+                everything,
                 dirs,
                 "simulation filelist: every file in compile order",
                 pkg,
