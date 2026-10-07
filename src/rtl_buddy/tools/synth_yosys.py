@@ -1521,7 +1521,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     - slang: the top is a blackbox (`--blackboxed-module`), so only its header is elaborated, and the wrapper instance carries every parameter, localparams included, as a parent's would.
     - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read, plus any `real` override from the wrapper's cell, which the derived module leaves out. Localparams and `real` defaults are not available, so the record is marked incomplete.
 
-    The synthesis's Liberty files are read first, so the top's cells and sub-blocks are known; with slang, unknown modules are also ignored, since only the header matters. String `params:` are quoted. The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
+    The synthesis's Liberty files are read first, so the top's cells and sub-blocks are known; with slang, unknown modules are also ignored, since only the header matters. String `params:` are quoted. The parameter order for positional overrides is read from the top's declaration in the sources, and so are the names the top declares as parameters and localparams in its own scope: only those are recorded, never a generate loop's genvar or a localparam of a generate or procedural block. Raises RuntimeError when the probe cannot run or its output is unusable.
     """
     top = synth_cfg.get_top()
     out_dir = os.path.abspath(out_dir)
@@ -1630,6 +1630,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         values = {**(wrapper_cell.get("parameters") or {}), **values}
         complete = False
     order = None
+    declared = None
     for src in sources:
         try:
             text = Path(src).read_text(errors="replace")
@@ -1638,7 +1639,11 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         if top in text:
             order = block_params.parameter_port_names(text, top)
             if order is not None:
+                declared = block_params.module_scope_parameter_names(text, top)
                 break
+    if declared is not None:
+        # yosys-slang's blackbox cell carries every parameter of the top's body, nested scopes included: each generate loop iteration's genvar and each generate or procedural block's localparams. Keep the top's own.
+        values = {k: v for k, v in values.items() if k in declared}
     return block_params.ParamRecord(
         module=top,
         frontend=opts.frontend,

@@ -1447,3 +1447,100 @@ def test_a_native_real_parameter_is_recorded_and_matches_the_parents_override(
     insts = block_instances(_parent("3.0"), {"blk_top"}, "n.v")
     with pytest.raises(BlockParamError, match='hardened with R="2.500000"'):
         check_params(insts, [block], "n.v")
+
+
+# --- #763: generate genvars and nested-scope localparams stay out of the record ------------
+
+_BLK_WITH_GENERATE = (
+    "module blk #(parameter int W = 8, localparam int AW = $clog2(W)) (\n"
+    "  input logic clk, input logic [W-1:0] d, output logic [W-1:0] q);\n"
+    "  localparam int BODY = 3;\n"
+    "  genvar g;\n"
+    "  for (g = 0; g < 2; g++) begin : gm\n"
+    "    localparam int INNER = g + 5;\n"
+    "  end\n"
+    "  for (genvar y = 0; y < 8; y++) begin : gi\n"
+    "    for (genvar j = 0; j < 3; j++) begin : gj end\n"
+    "  end\n"
+    "  function automatic int f(int x);\n"
+    "    localparam int FN = 1;\n"
+    "    return x + FN;\n"
+    "  endfunction\n"
+    "  always_ff @(posedge clk) begin : pb\n"
+    "    localparam int PROC = 2;\n"
+    "    q <= d;\n"
+    "  end\n"
+    "  localparam int LATE = BODY + 1;\n"
+    "endmodule\n"
+)
+
+
+def test_module_scope_parameter_names_skip_genvars_and_nested_scopes():
+    assert block_params.module_scope_parameter_names(_BLK_WITH_GENERATE, "blk") == {
+        "W",
+        "AW",
+        "BODY",
+        "LATE",
+    }
+
+
+def test_module_scope_parameter_names_read_body_parameters_without_a_header():
+    text = (
+        "module blk (a);\n  input a;\n  parameter W = 4, K = 2;\n"
+        "  localparam [3:0] L = 4'h3;\n  genvar i;\n"
+        "  generate for (i = 0; i < W; i = i + 1) begin : g\n"
+        "    localparam N = i;\n  end endgenerate\nendmodule\n"
+    )
+    assert block_params.module_scope_parameter_names(text, "blk") == {"W", "K", "L"}
+
+
+def test_module_scope_parameter_names_skip_bodiless_scope_keywords():
+    """DPI imports, `typedef class` and `wait fork` have no closing keyword."""
+    text = (
+        'module blk #(parameter W = 1) ();\n  import "DPI-C" function int c_f(int x);\n'
+        "  typedef class cls;\n  initial begin fork #1; join_none wait fork; end\n"
+        "  localparam AFTER = 2;\nendmodule\n"
+    )
+    assert block_params.module_scope_parameter_names(text, "blk") == {"W", "AFTER"}
+
+
+def test_module_scope_parameter_names_give_up_on_unbalanced_scopes():
+    text = (
+        "module blk #(parameter W = 1) ();\n  begin\n  localparam X = 1;\nendmodule\n"
+    )
+    assert block_params.module_scope_parameter_names(text, "blk") is None
+    assert block_params.module_scope_parameter_names(text, "other") is None
+
+
+@pytest.mark.skipif(
+    _YOSYS is None or not os.environ.get("RTL_BUDDY_SLANG_PLUGIN"),
+    reason="yosys or the yosys-slang plugin (RTL_BUDDY_SLANG_PLUGIN) not available",
+)
+def test_the_slang_probe_keeps_genvars_out_of_the_record(tmp_path):
+    """#763: yosys-slang's blackbox cell carries genvars and nested localparams."""
+    record = _probe_sources(
+        tmp_path, "slang", {"W": 16}, {"blk.sv": _BLK_WITH_GENERATE}
+    )
+    assert record.complete
+    assert set(record.parameters) == {"W", "AW", "BODY", "LATE"}
+    assert parse_value(record.parameters["W"])[0] == 16
+    assert parse_value(record.parameters["AW"])[0] == 4
+    assert parse_value(record.parameters["LATE"])[0] == 4
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_the_native_probe_keeps_genvars_out_of_the_record(tmp_path):
+    record = _probe_sources(
+        tmp_path,
+        "verilog",
+        {"W": 16},
+        {
+            "blk.v": (
+                "module blk #(parameter W = 8) (input clk, input [W-1:0] d, output "
+                "[W-1:0] q);\n  genvar g;\n  generate for (g = 0; g < W; g = g + 1)"
+                " begin : gb\n    assign q[g] = d[g];\n  end endgenerate\n"
+                "  for (genvar y = 0; y < 8; y = y + 1) begin : gi end\nendmodule\n"
+            )
+        },
+    )
+    assert set(record.parameters) == {"W"}
