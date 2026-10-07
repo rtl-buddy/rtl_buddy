@@ -138,12 +138,12 @@ cfg-pnr-platforms:
 | `cfg-synth-tools` | `name`, `tool`, and `opts`. Yosys options are `synth-args`, `abc-args`, `abc-script`, `frontend`, `plugin-path`, `single-unit`, `best-effort-hierarchy`, `static-functions`, `conflicting-drivers`, and `unresolved-interfaces`. OpenROAD also accepts `strategy` |
 | `cfg-pdks` | `name`, `site`, `corners`; optional `tech-lef`, `macro-lef`, `cell-gds`, `klayout-tech`, `klayout-props`, `tie-hi`, `tie-lo`, `fill-cells`, `pin-layers.horizontal` / `pin-layers.vertical` (default `metal3` / `metal2`), `placement.*`, `dont-use-cells`, `pdn-config`, `rcx-rules`, `tracks-tcl`, `layer-rc-tcl`, `tapcell-tcl`, and `platform-tcl`. `corners` maps a corner name to its standard-cell Liberty: one path, or a list for cells split across files. `cell-gds` takes one path or a list. Each path resolves on its own from `root_config.yaml` |
 | `cfg-synth-platforms` | `name`, `pdk`; optional `corner` (the first declared corner by default) and `dont-use-cells` |
-| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners) |
+| `cfg-pnr-platforms` | `name`, `pdk`; optional `corner` or `corners`, `cts-buffer`, `cts-sink-clustering` (default `true`), `cts-apply-ndr`, `post-cts-setup-repair` (default `false`), `global-route-hold-repair` (default `false`), `routing-layer-adjustment`, `max-fanout`, `routing-layers.signal` / `.clock`, `placement.*`, and `dont-use-cells`. `corners` is a non-empty list of PDK corner names, the first being the primary, analysed together by `rb pnr` and `rb power`; it excludes `corner`. See [multi-corner signoff](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#sign-off-at-several-corners) |
 | `cfg-synth-efforts` | Named `yosys.synth-args`, `yosys.abc-args`, `yosys.abc-script`, `openroad.run`, `openroad.pre-sta-tcl`, and `openroad.repair` settings. `openroad.repair` (default `false`) runs `repair_design` and `repair_timing -setup` before the synthesis STA reports. The built-in default is `standard`. Precedence is per-run override, then effort, then tool config |
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, and `placement.tie-separation`.
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, and `placement.reference-hpwl`.
 
 The process-dependent P&R keys are all optional:
 
@@ -154,6 +154,7 @@ The process-dependent P&R keys are all optional:
 | `placement.macro-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Minimum channel in microns between two macros and between a macro and each core edge, kept by the macro packer. Non-negative; default `20.0`, which `pdngen` needs to repair a channel on sky130hd |
 | `placement.macro-cell-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Standard-cell keep-out in microns on every side of each placed macro, applied as a hard placement blockage. Non-negative; default `1.0`; `0` places no blockage |
 | `placement.tie-separation` | `cfg-pdks`, `cfg-pnr-platforms` | Distance in microns between each constant-driven load and the tie cell `repair_tie_fanout` places for it after global placement. Non-negative; default `0` |
+| `placement.reference-hpwl` | `cfg-pdks`, `cfg-pnr-platforms` | Positive number. Passed as `global_placement -reference_hpwl`. Unset by default, which keeps the placer's size-derived reference; a fixed value spreads a large design further and can clear global-route overflow |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
@@ -163,9 +164,11 @@ The process-dependent P&R keys are all optional:
 | `platform-tcl` | `cfg-pdks` | Path to a Tcl script that `rb pnr` and `rb power` source before reading Liberty (ORFS `PLATFORM_TCL`), such as `suppress_message` lines. Unset by default |
 | `cts-buffer` | `cfg-pnr-platforms` | One buffer name or a list. A list becomes the CTS `-buf_list`, with its first entry as `-root_buf` |
 | `cts-sink-clustering` | `cfg-pnr-platforms` | Boolean. Passes `-sink_clustering_enable` to `clock_tree_synthesis`. Default `true`; set `false` when CTS fails with `CTS-0080` |
+| `cts-apply-ndr` | `cfg-pnr-platforms` | One of `none`, `root_only`, `half`, `full`. Passed as `clock_tree_synthesis -apply_ndr`. Unset by default, which keeps OpenROAD's default (`half`); set `none` when global route detours clock nets |
 | `post-cts-setup-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -setup` after CTS, before hold repair. Default `false` |
 | `global-route-hold-repair` | `cfg-pnr-platforms` | Boolean. Runs `repair_timing -hold` on `estimate_parasitics -global_routing` after global route, then legalizes and reroutes incrementally before detail route. Default `false` |
 | `routing-layer-adjustment` | `cfg-pnr-platforms` | Number from 0 to 1. Global-routing capacity withheld on the `routing-layers.signal` layers (`set_global_routing_layer_adjustment`). Unset by default, which keeps the router's default |
+| `max-fanout` | `cfg-pnr-platforms` | Positive integer. `rb pnr` and `rb power` add `set_max_fanout <n> [current_design]` after each `read_sdc`. Unset by default, which leaves the Liberty or SDC limit, or 50 in `repair_design` when neither sets one |
 
 A `placement:` block on a P&R platform overrides its PDK's block field by field: the platform wins where it names a value, the PDK where it does not. See [Place-and-Route](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#tune-the-process-dependent-steps).
 
