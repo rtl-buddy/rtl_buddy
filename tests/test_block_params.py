@@ -462,20 +462,15 @@ def test_the_openroad_backend_drops_a_parameterised_stub_with_a_master(tmp_path)
     or_synth = _make_openroad(
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
     )
-    _write_filelist(or_synth, src)
+    fl = _write_filelist(or_synth, src)
 
-    [stub] = or_synth._write_or_blackbox_stubs({"blk_top"})
-
-    text = Path(stub).read_text()
-    assert "blk_top" not in text
-    assert "module glue" in text
-    # Without a master the header is kept as a port-only stub.
-    [stub] = or_synth._write_or_blackbox_stubs(set())
-    text = Path(stub).read_text()
-    assert (
-        "module blk_top #(parameter int W = 8, localparam int AW = $clog2(W))" in text
-    )
-    assert text.count("endmodule") == 2
+    or_synth._masters_from_lef_and_liberty = lambda lefs, libs: {"blk_top"}
+    assert or_synth._blackbox_stub_plan(str(fl), [], []) == []
+    # Without a master Yosys writes the blackbox, and only it: `glue` is in the netlist already.
+    or_synth._masters_from_lef_and_liberty = lambda lefs, libs: set()
+    assert or_synth._blackbox_stub_plan(str(fl), ["x.lef"], []) == [
+        (str(Path(or_synth.artefact_dir) / "or_blk_bb.sv"), ["blk_top"])
+    ]
 
 
 def test_the_synth_runner_hands_the_backend_its_resolved_blocks(tmp_path, monkeypatch):
