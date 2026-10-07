@@ -24,7 +24,7 @@ verifications:
 - `top` defaults to the model's root module, `depth` to 20 and `engines` to `smtbmc yices`.
 - `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Both frontends define `FORMAL`.
 
-Other fields: `params` (parameter overrides), `tool_overrides` (`timeout`, `extra_args`), `frontend`, `coi` and `vacuity` toggles, `covers` for [spec traceability](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/), and `xfail` / `xfail_strict` for [expected failures](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/expected-failures/). See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/) for the schema.
+Other fields: `params` (parameter overrides), `tool_overrides` (`timeout`, `extra_args`), `frontend`, `coi` and `vacuity` toggles, `vacuity_engines`, `covers` for [spec traceability](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/), and `xfail` / `xfail_strict` for [expected failures](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/expected-failures/). See [YAML formats](https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/) for the schema.
 
 Project-wide tool settings go in `root_config.yaml`:
 
