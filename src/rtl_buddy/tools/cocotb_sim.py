@@ -66,6 +66,14 @@ class CocotbSim(VlogSim):
     def _get_cocotb_results_path(self, run_id=None) -> str:
         return str(Path(self._get_artifact_dir(run_id=run_id)) / "cocotb_results.xml")
 
+    def _run_output_paths(self, run_id):
+        # The results file is this run's verdict: a stale one would grade a sim that
+        # died before writing its own.
+        return [
+            *super()._run_output_paths(run_id),
+            Path(self._get_cocotb_results_path(run_id=run_id)),
+        ]
+
     def _filter_builder_opts(self, opts: list) -> list:
         if self._cocotb_family() == "verilator":
             # cocotb uses --exe + verilator.cpp, not --binary's built-in main

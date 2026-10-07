@@ -1,5 +1,7 @@
-"""Yosys-backed check that the default mapped-run ABC script keeps a wide adder log-depth."""
+"""Yosys-backed checks of the mapped run: the ABC scripts keep wide adders log-depth, and `synth_stat.json` parses with a gzipped Liberty."""
 
+import gzip
+import json
 import re
 import shutil
 import subprocess
@@ -24,6 +26,18 @@ pytestmark = pytest.mark.skipif(
 )
 
 WIDTH = 42
+
+_ADDER = (
+    f"module add (input logic [{WIDTH - 1}:0] a, b, output logic [{WIDTH}:0] z);\n"
+    "  assign z = a + b;\nendmodule\n"
+)
+# A prefix adder beside a deeper, unrelated multiplier cone: the adder is off the global critical path.
+_ADDER_BESIDE_MULTIPLIER = (
+    "module add (input logic [31:0] a, b, input logic [15:0] c, d, e,\n"
+    "            output logic [32:0] z, output logic [15:0] p);\n"
+    "  assign z = a + b;\n  assign p = ((c * d) * e) * c;\nendmodule\n"
+)
+_KOGGE_STONE = "-noabc -extra-map +/choices/kogge-stone.v"
 
 _CELLS = {
     "BUF": (["A"], "A", 1.0),
@@ -109,26 +123,28 @@ class _Root:
         raise FatalRtlBuddyError(f"tool '{name}' not found")
 
 
-def _effort(abc_script=""):
+def _effort(abc_script="", synth_args="-noabc"):
     # `synth` runs Yosys' generic `abc`, whose default script has `dc2`, unless given -noabc.
     return SynthEffortConfig(
         SynthEffortConfigFile(
             name="depth",
-            yosys=SynthEffortYosysFile(synth_args="-noabc", abc_script=abc_script),
+            yosys=SynthEffortYosysFile(synth_args=synth_args, abc_script=abc_script),
         )
     )
 
 
-def _write_script(tmp_path, backend, abc_script):
+def _write_script(
+    tmp_path, backend, abc_script, synth_args="-noabc", source=_ADDER, gzipped=False
+):
     sv = tmp_path / "add.sv"
-    sv.write_text(
-        f"module add (input logic [{WIDTH - 1}:0] a, b, output logic [{WIDTH}:0] z);\n"
-        "  assign z = a + b;\nendmodule\n"
-    )
+    sv.write_text(source)
     fl = tmp_path / "synth.f"
     fl.write_text(f"{sv}\n")
     lib = tmp_path / "mini.lib"
     lib.write_text(_liberty())
+    if gzipped:
+        lib = tmp_path / "mini.lib.gz"
+        lib.write_bytes(gzip.compress(_liberty().encode()))
     synth_cfg = SynthConfig(
         name=f"add_{backend}",
         desc="adder depth",
@@ -148,7 +164,7 @@ def _write_script(tmp_path, backend, abc_script):
         tool_cfg=tool_cfg,
         suite_dir=str(tmp_path),
         root_cfg=_Root(str(lib)),
-        effort_cfg=_effort(abc_script),
+        effort_cfg=_effort(abc_script, synth_args),
     )
     if backend == "yosys":
         synth = YosysSynth(**kwargs)
@@ -156,12 +172,19 @@ def _write_script(tmp_path, backend, abc_script):
     else:
         synth = OpenRoadSynth(**kwargs)
         script = synth._write_yosys_script(str(fl))
-    return synth.artefact_dir, script, lib
+    synth._test_filelist = str(fl)
+    return synth, script, lib
 
 
-def _mapped_depth(tmp_path, backend, abc_script=""):
-    """Map the adder with the backend's generated Yosys script; return its `ltp -noff` length."""
-    artefact_dir, script, lib = _write_script(tmp_path, backend, abc_script)
+def _mapped_depth(tmp_path, backend, abc_script="", synth_args="-noabc", source=_ADDER):
+    """Map `add` with the backend's generated Yosys script; return the `ltp -noff` length to `z`.
+
+    Other outputs and the logic only they use are deleted before the path is measured.
+    """
+    synth, script, lib = _write_script(
+        tmp_path, backend, abc_script, synth_args, source
+    )
+    artefact_dir = synth.artefact_dir
     subprocess.run(
         ["yosys", "-q", "-s", script], cwd=artefact_dir, check=True, capture_output=True
     )
@@ -170,7 +193,8 @@ def _mapped_depth(tmp_path, backend, abc_script=""):
         [
             "yosys",
             "-p",
-            f"read_liberty -lib {lib}; read_verilog {netlist}; hierarchy -top add; ltp -noff",
+            f"read_liberty -lib {lib}; read_verilog {netlist}; hierarchy -top add; "
+            "delete add/o:* add/o:z %d; opt_clean -purge; ltp -noff",
         ],
         cwd=artefact_dir,
         check=True,
@@ -194,3 +218,55 @@ def test_dc2_in_the_mapped_script_makes_the_adder_ripple(tmp_path):
         "&get -n; &dch -f; &nf {D}; &put"
     )
     assert _mapped_depth(tmp_path, "yosys", dc2_script) > WIDTH // 2
+
+
+def _stat_rows(synth):
+    """`synth_stat.json` decoded with the strict parser, as `{module: area}`."""
+    doc = json.loads(Path(synth._stats_path()).read_text())
+    return {name: stats.get("area") for name, stats in doc["modules"].items()}
+
+
+def test_yosys_run_writes_valid_stat_json_with_a_gzipped_liberty(tmp_path, monkeypatch):
+    """#710: `tee -o` captures Yosys' `Found gzip magic` notice ahead of the JSON; the run strips it."""
+    synth, _, _ = _write_script(tmp_path, "yosys", "", gzipped=True)
+    monkeypatch.setattr(synth, "_write_filelist", lambda: synth._test_filelist)
+    res = synth.run()
+    assert res.results["result"] == "PASS", res.results
+    rows = _stat_rows(synth)
+    assert rows["\\add"] and rows["\\add"] > 0
+    assert "Found gzip magic" in Path(synth._log_path()).read_text()
+
+
+def test_openroad_stage_1_writes_valid_stat_json_with_a_gzipped_liberty(tmp_path):
+    synth, _, _ = _write_script(tmp_path, "openroad", "", gzipped=True)
+    synth.yosys_executable = "yosys"
+    gate_count, ok, desc = synth._run_yosys_stage(synth._test_filelist)
+    assert ok, desc
+    rows = _stat_rows(synth)
+    assert rows["\\add"] and rows["\\add"] > 0
+
+
+def test_default_mapped_script_ripples_an_off_critical_prefix_adder(tmp_path):
+    """The negative control for #724: `&dch -f` choices let `&nf` area recovery ripple the adder."""
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    depth = _mapped_depth(
+        tmp_path,
+        "yosys",
+        DEFAULT_MAPPED_ABC_SCRIPT,
+        _KOGGE_STONE,
+        _ADDER_BESIDE_MULTIPLIER,
+    )
+    assert depth > 16
+
+
+@pytest.mark.parametrize("backend", ["yosys", "openroad"])
+def test_prefix_adder_effort_keeps_an_off_critical_adder_log_depth(tmp_path, backend):
+    """With `+/choices/` in `synth-args` and no `abc-script`, the `delay` preset maps the run."""
+    depth = _mapped_depth(
+        tmp_path,
+        backend,
+        synth_args=_KOGGE_STONE,
+        source=_ADDER_BESIDE_MULTIPLIER,
+    )
+    assert depth <= 10

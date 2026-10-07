@@ -45,7 +45,7 @@ A recognized VCS `-licqueue` wait pauses the clock; check the reported queue dur
 
 ## Memory
 
-Verilator elaboration of large generated structures can be OOM-killed. A Slurm `OUT_OF_MEMORY` state, or a local compiler `Killed`/SIGKILL, calls for more memory, not a longer timeout. When queued, use the `rtl-buddy-dispatch` skill.
+Verilator elaboration of large generated structures can be OOM-killed. A Slurm `OUT_OF_MEMORY` state, or a local compiler `Killed`/SIGKILL, calls for more memory, not a longer timeout. When queued, use the `rtl-buddy-dispatch` skill. A misspelt key in a `resources:` or `compile:` block (`memory:`) is ignored with WARNING `config.unknown_key` naming the nearest key, so the job gets the inherited value; a later major makes it fatal.
 
 ## Shared builds
 
@@ -54,6 +54,7 @@ Verilator elaboration of large generated structures can be OOM-killed. A Slurm `
 - Every builder's stamp lists each `+incdir+` tree (recursively) and `-y` directory (flat). Verilator reports the files it consumed, so its listing is compared by name only: an added or removed file rebuilds, an edit rebuilds only if the build read that file.
 - VCS/Icarus report no header dependencies, so any edited, added or removed file in a listed directory rebuilds.
 - A header a `preproc` hook writes into `artifact_dir` is tracked. Inside a dispatch build job, configs with one key adopt the first one's build; a consumed input that differs fails that config with `build_job.group_input_drift`, and a new `-y` file or shadowing header declines adoption.
+- The dispatch build-job reservation counts each test with a `preproc` hook as its own build, since the hook may set plusdefines. Set `preproc-sets-plusdefines: false` (boolean, on the test or as the suite default) when the hook only writes stimulus; a hook that changes the compile key anyway logs `build_job.preproc_changed_compile_key`.
 - Reuse is reported. If an edit seems ignored or a PASS looks suspicious, read `compile.build_reused` (run log; console once per build directory) and the test's `compile.log` breadcrumb. Force a fresh compile with `--rebuild`, not by deleting `artefacts/.shared-builds/`. `--dispatch` implies `--share-build`, so dropping the flag there does not stop reuse.
 - `shared-build-root` (config `cfg-rtl-reg`, env `RTL_BUDDY_SHARED_BUILD_ROOT`, flag `--shared-build-root`; flag wins, then env; empty turns it off) keeps builds across workspace wipes, keyed by content so identical inputs share a directory. Nothing prunes it; prune between runs, never during one.
 

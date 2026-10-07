@@ -167,7 +167,7 @@ def _file_summary(file_row: dict) -> dict:
 def coldest_first(file_rows, limit=None):
     """Order files coldest first: lowest line ratio, then most misses, then path.
 
-    Files with no line points go last. `limit` (when positive) truncates. The ``/cov`` pane uses the same ordering. The order is identical under ``--by-source``, since line counts do not change when elaborations collapse.
+    Files with no line points go last. `limit` (when positive) truncates. The ``/cov`` pane uses the same ordering. ``--by-source`` keeps this per-elaboration order and changes only the figures shown.
     """
 
     def sort_key(row):
@@ -277,7 +277,7 @@ def module_coverage(model: dict, module: str) -> dict:
 def modules_coverage(model: dict, modules) -> dict:
     """:func:`module_coverage` over a set of elaborated module names (e.g. one source module built with two parameterisations).
 
-    Do not sum separate :func:`module_coverage` results: line points carry no module and would be counted once per name. Returns the same shape with ``module`` replaced by a sorted ``modules`` list.
+    Do not sum separate :func:`module_coverage` results: points with no module (an ``.info`` fallback, a model written before line points carried one) would be counted once per name. Returns the same shape with ``module`` replaced by a sorted ``modules`` list.
     """
     names = frozenset(str(name) for name in modules)
     known = model.get("modules") or {}
@@ -324,7 +324,7 @@ def module_payload(ctx: CovContext, module: str) -> dict:
 
 
 def _module_file(file_row: dict, modules: frozenset[str], tests: dict) -> dict:
-    """One file's points restricted to ``modules``; points with no module (line points, ``.info`` fallback) are kept once."""
+    """One file's points restricted to ``modules``; points with no module (``.info`` fallback, older models' line points) are kept once."""
     entry = {
         "path": file_row["path"],
         "modules": file_row.get("modules", []),

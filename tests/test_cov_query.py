@@ -292,8 +292,22 @@ def test_module_payload_is_per_file_per_point(project):
     assert [row["path"] for row in payload["files"]] == ["design/blk.sv"]
     (file_row,) = payload["files"]
     assert file_row["line"] == [
-        {"line": 1, "hits": 1, "tests": {"basic": 1}},
-        {"line": 2, "hits": 0, "tests": {"basic": 0}},
+        {
+            "line": 1,
+            "column": 1,
+            "name": "",
+            "module": "blk",
+            "hits": 1,
+            "tests": {"basic": 1},
+        },
+        {
+            "line": 2,
+            "column": 1,
+            "name": "",
+            "module": "blk",
+            "hits": 0,
+            "tests": {"basic": 0},
+        },
     ]
     assert file_row["toggle"][0]["name"] == "q[0]"
     assert payload["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}

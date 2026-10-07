@@ -64,7 +64,7 @@ class GraphFocus:
 class CovFocus:
     """Last broadcast ``cov_focus`` payload and its origin.
 
-    Replayed on registration like :class:`GraphFocus`. The optional ``metric``, ``line`` and ``item`` hints are kept so the replay lands on the same place as the original.
+    Replayed on registration like :class:`GraphFocus`. The optional ``metric``, ``line`` and ``item`` hints and the ``by`` figures choice are kept so the replay lands on the same place as the original.
     """
 
     target: str
@@ -72,6 +72,7 @@ class CovFocus:
     metric: Optional[str] = None
     line: Optional[int] = None
     item: Optional[str] = None
+    by: Optional[str] = None
 
     def payload(self) -> dict[str, Any]:
         """The on-wire payload; unset hints are omitted, not null."""
@@ -83,6 +84,8 @@ class CovFocus:
             out["line"] = self.line
         if self.item is not None:
             out["item"] = self.item
+        if self.by is not None:
+            out["by"] = self.by
         return out
 
 

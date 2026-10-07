@@ -117,9 +117,16 @@ class TestRunner:
             ),
         )
 
-    def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT):
-        """Create the sim instance and run PRE; return an error string or None."""
+    def _run_pre(self, *, pre_run_id=_PRE_RUN_ID_DEFAULT, run_ids=None):
+        """Create the sim instance, clear the previous run's outputs and run PRE.
+
+        Returns an error string or None. ``run_ids`` are the runs whose outputs are
+        cleared, ``[self.run_id]`` by default.
+        """
         self._vlog_sim = self._create_vlog_sim()
+        # Before PRE, so a run that stops at setup or compile cannot leave an earlier
+        # run's test.log beside its own result.
+        self._vlog_sim.clear_run_outputs([self.run_id] if run_ids is None else run_ids)
         if pre_run_id is _PRE_RUN_ID_DEFAULT:
             return self._vlog_sim.pre()
         return self._vlog_sim.pre(run_id=pre_run_id)
@@ -198,6 +205,14 @@ class TestRunner:
         Only the dispatched build job calls it, after the group leader compiled.
         """
         return self._vlog_sim.adopt_group_build()
+
+    def adopt_group_failure(self, failure, *, leader):
+        """Adopt a same-key sibling's failed compile on the prepared sim.
+
+        Returns ``("adopted", None)`` or ``(None, <reason>)``; see :meth:`VlogSim.adopt_group_failure`.
+        Only the dispatched build job calls it, after the group's first compile failed.
+        """
+        return self._vlog_sim.adopt_group_failure(failure, leader=leader)
 
     @property
     def builder_name(self):
@@ -355,11 +370,10 @@ class TestRunner:
             test=self.test_cfg.get_name(),
             run_ids=run_ids,
         )
-        # pre_run_id=None: the hook serves every run_id, not just run_ids[0].
-        pre_error = self._run_pre(pre_run_id=None)
+        # pre_run_id=None: the hook serves every run_id, not just run_ids[0]; so does the
+        # cleanup.
+        pre_error = self._run_pre(pre_run_id=None, run_ids=run_ids)
         vlog_sim = self._vlog_sim
-        # Must precede the SetupFail return; the sim's own cleanup reaches only run_ids[0].
-        vlog_sim.clear_retry_transcripts(run_ids)
         if pre_error is not None:
             return [
                 SetupFailResults(name=self.name + "/results", desc=pre_error)

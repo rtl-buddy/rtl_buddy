@@ -1556,6 +1556,9 @@ class _StampedStubRunner(_StubTestRunner):
     # test name -> (verdict, detail), the adopt_group_build contract.
     adopt_of = None
     adopt_calls: list = []
+    # test name -> (verdict, detail), the adopt_group_failure contract.
+    adopt_failure_of = None
+    adopt_failure_calls: list = []
 
     @property
     def last_build_stamp(self):
@@ -1574,6 +1577,11 @@ class _StampedStubRunner(_StubTestRunner):
         hook = type(self).adopt_of
         return (None, "no stamp") if hook is None else hook(self.test_name)
 
+    def adopt_group_failure(self, failure, *, leader):
+        type(self).adopt_failure_calls.append((self.test_name, leader, failure))
+        hook = type(self).adopt_failure_of
+        return (None, "no hook") if hook is None else hook(self.test_name)
+
 
 @pytest.fixture
 def stamped_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StampedStubRunner]:
@@ -1591,6 +1599,8 @@ def stamped_runner(monkeypatch: pytest.MonkeyPatch) -> type[_StampedStubRunner]:
     _StampedStubRunner.stamp_write_failed_of = None
     _StampedStubRunner.adopt_of = None
     _StampedStubRunner.adopt_calls = []
+    _StampedStubRunner.adopt_failure_of = None
+    _StampedStubRunner.adopt_failure_calls = []
     monkeypatch.setattr(rtl_buddy_module, "TestRunner", _StampedStubRunner)
     return _StampedStubRunner
 
@@ -1689,6 +1699,197 @@ def test_a_declined_adoption_says_which_config_and_why(
     ]
 
 
+def _failing_leader_group(stamped_runner, *, leader_result=None):
+    """Put both fixture tests on one key whose first compile fails; return the compile log."""
+    from rtl_buddy.runner.test_results import CompileFailResults
+
+    compiled = []
+    failure = {"returncode": 1, "transcript": "/t/compile.log", "fingerprint_sha": "s"}
+
+    def _compile(name):
+        compiled.append(name)
+        if leader_result is not None:
+            return leader_result
+        return CompileFailResults(name=f"{name}/results")
+
+    stamped_runner.group_of = lambda _name: "one-shared-build-dir"
+    stamped_runner.compile_hook = _compile
+    stamped_runner.compile_failure_of = lambda _name: dict(failure)
+    return compiled, failure
+
+
+@pytest.mark.parametrize("parallel", ["1", "2"])
+def test_a_failed_leader_compile_is_adopted_not_repeated(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner], parallel
+):
+    """Siblings on a key whose leader failed take the failure instead of compiling it again, in both loop shapes."""
+    compiled, failure = _failing_leader_group(stamped_runner)
+    stamped_runner.adopt_failure_of = lambda _name: ("adopted", None)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "-l",
+            "5",
+            "--parallel",
+            parallel,
+            "--result-json",
+            "build-result-1.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert compiled == ["basic"]
+    assert stamped_runner.adopt_failure_calls == [("extra", "basic", failure)]
+    payload = _build_payload(result.output)
+    assert payload["built"] == []
+    assert set(payload["failed"]) == {"basic", "extra"}
+    # The sibling's record is a compile failure, so its gated sim job reports it rather than recompiling.
+    records = {
+        record["test"]: record
+        for record in load_build_result_json(minimal_project / "build-result-1.json")[
+            "builds"
+        ]
+    }
+    assert records["extra"]["returncode"] == 1
+    assert records["extra"]["fingerprint_sha"] == "s"
+
+
+def test_a_declined_failure_adoption_compiles_and_says_why(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A sibling that cannot adopt the failure compiles, and the decline is logged with the reason."""
+    compiled, _failure = _failing_leader_group(stamped_runner)
+    stamped_runner.adopt_failure_of = lambda _name: (None, "compile inputs differ")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert compiled == ["basic", "extra"]
+    declined = [
+        record
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.group_failure_adoption_declined"
+    ]
+    assert [(r["test"], r["leader"], r["reason"]) for r in declined] == [
+        ("extra", "basic", "compile inputs differ")
+    ]
+
+
+def test_a_leader_that_never_reached_a_builder_is_not_adopted_from(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """Only a builder failure is adopted: a filelist failure has no compile to share."""
+    from rtl_buddy.runner.test_results import FilelistFailResults
+
+    compiled, _failure = _failing_leader_group(
+        stamped_runner,
+        leader_result=FilelistFailResults(name="b/results", desc="missing file"),
+    )
+    stamped_runner.adopt_failure_of = lambda _name: ("adopted", None)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert compiled == ["basic", "extra"]
+    assert stamped_runner.adopt_failure_calls == []
+
+
+def test_an_adopted_failure_after_a_built_leader_is_not_tried(
+    minimal_project: Path, stamped_runner: type[_StampedStubRunner]
+):
+    """A key whose first compile succeeded has no failure to adopt; siblings take the build path."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stamped_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    stamped_runner.group_of = lambda _name: "one-shared-build-dir"
+    stamped_runner.adopt_of = lambda _name: ("adopted", None)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert stamped_runner.adopt_calls == ["extra"]
+    assert stamped_runner.adopt_failure_calls == []
+
+
+def _set_builder(cfg):
+    cfg.builder_name = "other-builder"
+
+
+def _set_model(cfg):
+    import dataclasses
+
+    cfg.model = dataclasses.replace(cfg.model, name="other_model")
+
+
+def _set_assertions(cfg):
+    cfg.assertions = not cfg.assertions
+
+
+@pytest.mark.parametrize(
+    ("hook", "changed"),
+    [
+        (lambda cfg: cfg.set_plusdefine("WIDTH", 64), ["plusdefines"]),
+        (_set_builder, ["builder"]),
+        (_set_model, ["model"]),
+        (_set_assertions, ["assertions"]),
+        (None, None),
+    ],
+    ids=["plusdefines", "builder", "model", "assertions", "unchanged"],
+)
+def test_a_build_job_flags_a_hook_that_broke_its_compile_key_declaration(
+    minimal_project: Path, stub_runner: type[_StubTestRunner], hook, changed
+):
+    """`preproc-sets-plusdefines: false` sized the reservation; a hook that changes any part of the compile key anyway is warned about."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    (minimal_project / "pre.py").write_text("pass\n")
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "    preproc:\n    postproc:\n",
+            "    preproc:\n      path: pre.py\n"
+            "    preproc-sets-plusdefines: false\n    postproc:\n",
+            1,
+        )
+    )
+
+    def _prepare(name):
+        if hook is not None and name == "basic":
+            cfg = next(
+                init["test_cfg"]
+                for init in stub_runner.inits
+                if init["test_cfg"].get_name() == name
+            )
+            hook(cfg)
+        return None
+
+    stub_runner.prepare_hook = _prepare
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+    warned = [
+        (record["test"], record["changed"])
+        for record in _records(minimal_project / "rtl_buddy.log")
+        if record.get("event") == "build_job.preproc_changed_compile_key"
+    ]
+    assert warned == ([("basic", changed)] if changed else [])
+
+
 def test_the_new_build_job_events_have_dedicated_human_messages():
     from rtl_buddy.logging_utils import _human_message
 
@@ -1698,6 +1899,25 @@ def test_the_new_build_job_events_have_dedicated_human_messages():
     assert "basic" in unstamped and "obj_dir_ab" in unstamped
     assert "compile.stamp_write_failed" in unstamped
     assert "build_job group_leader_unstamped" not in unstamped
+
+    broke = _human_message(
+        "build_job.preproc_changed_compile_key",
+        {"test": "basic", "changed": ["plusdefines", "builder"]},
+    )
+    assert "basic" in broke and "preproc-sets-plusdefines" in broke
+    assert "plusdefines, builder" in broke
+
+    failure_declined = _human_message(
+        "build_job.group_failure_adoption_declined",
+        {"test": "extra", "leader": "basic", "reason": "compile inputs differ"},
+    )
+    assert "extra" in failure_declined and "basic" in failure_declined
+    assert "compile inputs differ" in failure_declined
+    adopted = _human_message(
+        "compile.group_failure_adopted",
+        {"test": "extra", "leader": "basic", "returncode": 1, "transcript": "c.log"},
+    )
+    assert "exit 1" in adopted and "c.log" in adopted and "basic" in adopted
 
     declined = _human_message(
         "build_job.group_adoption_declined",

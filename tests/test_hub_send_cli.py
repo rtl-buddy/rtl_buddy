@@ -269,6 +269,19 @@ def test_send_cov_focus_caches_the_focus(
     assert cached.item is None
 
 
+@pytest.mark.parametrize("by", ["source", "elaboration"])
+def test_send_cov_focus_by_selects_the_figures(
+    threaded_hub: _ThreadedHub, discovery_root: Path, by: str
+):
+    """``--by`` rides on the cached focus, so a late pane opens on those figures (#747)."""
+
+    result = CliRunner().invoke(send_app, ["cov-focus", "module:blk", "--by", by])
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.cov_focus  # noqa: SLF001
+    assert cached.payload() == {"target": "module:blk", "by": by}
+
+
 def test_send_cov_focus_defaults_omit_the_hints(
     threaded_hub: _ThreadedHub, discovery_root: Path
 ):
@@ -289,6 +302,8 @@ def test_send_cov_focus_defaults_omit_the_hints(
         ["cov-focus", "module:blk", "--metric", "statement"],
         ["cov-focus", "module:blk", "--line", "0"],
         ["cov-focus", "module:blk", "--item", " "],
+        ["cov-focus", "module:blk", "--by", "elab"],
+        ["cov-focus", "module:blk", "--by", "Source"],
     ],
 )
 def test_send_cov_focus_rejects_bad_arguments(

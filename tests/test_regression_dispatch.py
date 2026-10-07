@@ -2236,6 +2236,76 @@ def test_a_preproc_hook_makes_a_test_its_own_build(
     assert mem_to_bytes(build.resources.mem) == 60 * 2**30
 
 
+def _two_preproc_tests_on_one_30g_testbench(
+    project: Path, *, basic_flag="", twin_flag="", suite_flag=""
+):
+    """`basic` and `twin` on one 30G testbench, both with a preproc hook; ``*_flag`` is extra YAML for that layer."""
+    (project / "pre.py").write_text("pass\n")
+    _two_tests_on_one_30g_testbench(
+        project, extra="    preproc:\n      path: pre.py\n" + twin_flag
+    )
+    tests_yaml = project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text()
+        .replace(
+            "    preproc:\n    postproc:\n",
+            "    preproc:\n      path: pre.py\n" + basic_flag + "    postproc:\n",
+            1,
+        )
+        .replace("testbenches:\n", suite_flag + "testbenches:\n", 1)
+    )
+
+
+@pytest.mark.parametrize(
+    "layers",
+    [
+        pytest.param(
+            {
+                "basic_flag": "    preproc-sets-plusdefines: false\n",
+                "twin_flag": "    preproc-sets-plusdefines: false\n",
+            },
+            id="per-test",
+        ),
+        pytest.param(
+            {"suite_flag": "preproc-sets-plusdefines: false\n"}, id="per-suite"
+        ),
+    ],
+)
+def test_a_hook_declared_not_to_set_plusdefines_shares_its_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    layers,
+):
+    """`preproc-sets-plusdefines: false` keys a hooked test like a hook-less one, so identical tests reserve one build."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_preproc_tests_on_one_30g_testbench(minimal_project, **layers)
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert mem_to_bytes(build.resources.mem) == 30 * 2**30
+
+
+def test_a_test_flag_overrides_the_suite_preproc_declaration(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A test that says its hook does set plusdefines stays its own build under a suite-wide `false`."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(minimal_project, _compile_parallel_config(2))
+    _two_preproc_tests_on_one_30g_testbench(
+        minimal_project,
+        suite_flag="preproc-sets-plusdefines: false\n",
+        twin_flag="    preproc-sets-plusdefines: true\n",
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert mem_to_bytes(build.resources.mem) == 60 * 2**30
+
+
 def test_without_a_preproc_hook_identical_tests_are_one_build(
     minimal_project: Path,
     fake_backend: _FakeBackend,

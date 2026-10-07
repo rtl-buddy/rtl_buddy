@@ -23,10 +23,7 @@ from test_multi_corner import _platform
 from test_pnr import _render_flow
 from test_power import _FakePlatform, _make_power_backend
 
-_ABC_SCRIPT = (
-    "strash; &get -n; &fraig -x; &put; scorr; dretime; strash; "
-    "&get -n; &dch -f; &nf {D}; &put"
-)
+_ABC_SCRIPT = "strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put"
 
 #: The scripts a one-file platform corner with no `lib-paths` generated before corners took lists.
 _GOLDEN = {

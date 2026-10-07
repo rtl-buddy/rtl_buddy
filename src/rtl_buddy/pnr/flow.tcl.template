@@ -127,7 +127,7 @@ check_placement -verbose
 puts ">>> Global route"
 set_routing_layers -signal $SIGNAL_LAYERS -clock $CLOCK_LAYERS
 {{ layer_adjustment }}global_route -congestion_iterations 20
-
+{{ global_route_hold_repair }}
 puts ">>> Detail route"
 detailed_route \
     -output_drc  $OUT_DIR/route.drc.rpt \

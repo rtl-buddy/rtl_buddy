@@ -49,8 +49,9 @@ def normalise_scheduler_state(state) -> str:
 def _is_fresh(path, submitted_at) -> bool:
     """Was this file written by the attempt that started at ``submitted_at``?
 
-    ``test.log`` and ``test.err`` are not cleaned between runs, so older files
-    are ignored. ``None`` means no submission time is known and accepts the file.
+    A job removes its run's ``test.log`` and ``test.err`` before it starts, but one
+    that never started leaves the previous run's, so older files are ignored.
+    ``None`` means no submission time is known and accepts the file.
     """
     if submitted_at is None:
         return True

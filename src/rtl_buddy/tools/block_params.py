@@ -283,7 +283,8 @@ def _literal(text):
         digits = m.group("digits").lower().replace("?", "z")
         base = m.group("base").lower()
         width = int(m.group("width")) if m.group("width") else None
-        signed = bool(m.group("signed")) or negative
+        # A leading minus does not make a literal signed: `-8'd1` is 8'd255.
+        signed = bool(m.group("signed"))
         if any(c in "xz" for c in digits):
             if base == "d" or width is None:
                 return None
@@ -317,9 +318,11 @@ def _literal(text):
 def literals_equal(a: str, b: str) -> bool:
     """Return whether two Verilog literals denote the same parameter value.
 
-    Integers compare as whole values, each reduced to its own width and sign-extended only when signed, so `12'h000` differs from `'h1000`. Two literals of the same width also compare equal when their bits are equal, because a recorded value carries no signedness. x/z literals compare by their bits; strings compare verbatim.
+    Integers compare as whole values, each reduced to its own width and sign-extended only when signed, so `12'h000` differs from `'h1000`. Two literals of the same width also compare equal when their bits are equal, because a recorded value carries no signedness. x/z literals compare by their bits; strings compare verbatim, except that a string reading as a real or unsized decimal number compares with a number as that number: Yosys records a `real` parameter as the string `"2.500000"` and writes it to a netlist as `2.500000`.
     """
     la, lb = _literal(a), _literal(b)
+    if isinstance(la, str) != isinstance(lb, str):
+        la, lb = _string_as_number(la), _string_as_number(lb)
     if la is None or lb is None:
         return False
     if isinstance(la, str) or isinstance(lb, str):
@@ -337,6 +340,18 @@ def literals_equal(a: str, b: str) -> bool:
     return va == vb
 
 
+def _string_as_number(lit):
+    """Return a string literal's contents parsed as a real or an unsized decimal, or None when they are not one; any other literal unchanged."""
+    if not isinstance(lit, str):
+        return lit
+    number = _literal(lit)
+    if isinstance(number, float):
+        return number
+    if isinstance(number, tuple) and number[1] is None and number[3] is None:
+        return number
+    return None
+
+
 def _bits_of(lit, width: int | None = None) -> str | None:
     value, w, _signed, bits = lit
     if bits is not None:
@@ -349,7 +364,7 @@ def _bits_of(lit, width: int | None = None) -> str | None:
 def values_equal(netlist_value: str, configured) -> bool:
     """Return whether a netlist override equals a `params:` value from YAML.
 
-    A YAML integer equals a literal of width W when they agree modulo 2**W and the integer fits W bits, signed or unsigned, so `32'd4294967295` equals -1 but `12'h000` does not equal 4096. A YAML string is read as a Verilog literal when it parses as one (`"8'hff"`), and otherwise compared with a string literal's contents.
+    A YAML integer equals a literal of width W when they agree modulo 2**W and the integer fits W bits, signed or unsigned, so `32'd4294967295` equals -1 but `12'h000` does not equal 4096. A YAML string is read as a Verilog literal when it parses as one (`"8'hff"`), and otherwise compared with a string literal's contents. A quoted unsized number (`"-1"`, `"255"`) is the integer it spells, so it gets the same fits-the-width rule.
     """
     if isinstance(configured, bool):
         configured = int(configured)
@@ -357,7 +372,10 @@ def values_equal(netlist_value: str, configured) -> bool:
         want = _literal(configured)
         if want is None:
             return _literal(netlist_value) == configured
-        return literals_equal(netlist_value, configured)
+        if isinstance(want, tuple) and want[1] is None and want[3] is None:
+            configured = want[0]
+        else:
+            return literals_equal(netlist_value, configured)
     got = _literal(netlist_value)
     if got is None or isinstance(got, str):
         return False
@@ -1344,7 +1362,10 @@ def check_params(instances: list[BlockInstance], blocks, where: str) -> list[str
                 mismatched.append(key)
         if mismatched:
             got = ", ".join(f"{k}={named[k]}" for k in mismatched)
-            want = ", ".join(f"{k}={_shown(record.parameters[k])}" for k in mismatched)
+            want = ", ".join(
+                f"{k}={_shown(record.parameters[k], signed=_is_signed(named[k]))}"
+                for k in mismatched
+            )
             raise BlockParamError(
                 f"{context} sets {got}, but the block was hardened with {want} — "
                 "make the instance match, or re-harden the block with the "
@@ -1381,11 +1402,25 @@ def check_params(instances: list[BlockInstance], blocks, where: str) -> list[str
     return warnings
 
 
-def _shown(literal: str) -> str:
-    """Return a recorded literal as a reader would write it: `32'd16` rather than 32 bits."""
+def _is_signed(literal: str) -> bool:
+    """Whether a netlist override is a signed integer literal: `-1`, `32'sd5`."""
+    lit = _literal(literal)
+    return isinstance(lit, tuple) and lit[2]
+
+
+def _shown(literal: str, *, signed: bool = False) -> str:
+    """Return a recorded literal as a reader would write it: `32'd16` rather than 32 bits.
+
+    A record carries no signedness, so a negative value reads as its unsigned bits. When the override it is shown against is signed, a value with its top bit set is shown signed, `-32'sd1` rather than `32'd4294967295`.
+    """
     value = parse_value(literal)
     if isinstance(value, tuple) and value[1]:
-        return f"{value[1]}'d{value[0]}"
+        number, width = value
+        if signed and number >= 1 << (width - 1):
+            number -= 1 << width
+        if number < 0:
+            return f"-{width}'sd{-number}"
+        return f"{width}'d{number}"
     return literal
 
 

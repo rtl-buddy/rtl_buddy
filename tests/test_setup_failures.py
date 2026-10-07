@@ -19,20 +19,20 @@ class DummyTestCfg:
 
 class DummySim:
     def __init__(self):
-        self.cleared_retry_runs = None
+        self.cleared_runs = None
 
     def pre(self, **_kwargs):
         return "Setup failed in preproc: boom"
 
-    def clear_retry_transcripts(self, run_ids):
-        self.cleared_retry_runs = list(run_ids)
+    def clear_run_outputs(self, run_ids):
+        self.cleared_runs = list(run_ids)
 
 
 class DummyPassingSim:
     def pre(self, **_kwargs):
         return None
 
-    def clear_retry_transcripts(self, run_ids):
+    def clear_run_outputs(self, run_ids):
         pass
 
     def compile(self):
@@ -51,7 +51,7 @@ class DummyFilelistFailSim:
     def pre(self, **_kwargs):
         return None
 
-    def clear_retry_transcripts(self, run_ids):
+    def clear_run_outputs(self, run_ids):
         pass
 
     def compile(self):
@@ -157,8 +157,8 @@ def test_test_runner_returns_setup_fail_for_all_runs_on_preproc_error(
 
     assert len(results) == 3
     assert all(isinstance(result, SetupFailResults) for result in results)
-    # Every reported run sheds its stale retry transcript, even when PRE failed.
-    assert sim.cleared_retry_runs == [1, 2, 3]
+    # Every reported run sheds its previous outputs, even when PRE failed.
+    assert sim.cleared_runs == [1, 2, 3]
 
 
 def test_sweep_failure_becomes_setup_fail_result(tmp_path):

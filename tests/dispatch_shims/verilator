@@ -69,6 +69,15 @@ if [ -n "${RB_SHIM_HANG:-}" ]; then
   sleep "$RB_SHIM_HANG"
   [ -n "${RB_SHIM_PIDS:-}" ] && echo "survived $$" >> "$RB_SHIM_PIDS"
 fi
+# With $RB_SHIM_FAIL set it appends its --Mdir to that file and fails the way a
+# fatal lint warning does, so a test can count the compiles of a failing key
+# (#665). Off by default.
+if [ -n "${RB_SHIM_FAIL:-}" ]; then
+  echo "$(basename "$mdir")" >> "$RB_SHIM_FAIL"
+  echo "%Warning-UNDRIVEN: src.sv:3:7: Signal is not driven: 'q'" >&2
+  echo "%Error: Exiting due to 15 warning(s)" >&2
+  exit 1
+fi
 start=""
 if [ -n "${RB_SHIM_SPANS:-}" ]; then
   start=$(python3 -c 'import time; print("%.6f" % time.time())')

@@ -206,6 +206,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
             else {}
         ),
         **(
+            {"global_route_hold_repair": True}
+            if platform.get_global_route_hold_repair() is True
+            else {}
+        ),
+        **(
             {"cts_apply_ndr": platform.get_cts_apply_ndr()}
             if isinstance(platform.get_cts_apply_ndr(), str)
             else {}

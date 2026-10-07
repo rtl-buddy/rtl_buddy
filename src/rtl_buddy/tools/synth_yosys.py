@@ -27,6 +27,7 @@ from ..constraints.tcl_reader import read_commands
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..phys.manifest import project_relative
+from ..phys.reports import stat_json_span
 from ..phys.publish import (
     confirm_digest,
     invalidate_half,
@@ -37,11 +38,21 @@ from ..phys.publish import (
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
-# Yosys' default Liberty script without `dc2`, which rebuilds log-depth carry networks as ripple chains.
+# Yosys' default Liberty script without `dc2`, which rebuilds log-depth carry networks as ripple
+# chains, and without `&fraig -x`, whose SAT sweep (1M conflicts per node) does not finish on deep arithmetic.
 DEFAULT_MAPPED_ABC_SCRIPT = (
-    "strash; &get -n; &fraig -x; &put; scorr; dretime; strash; "
-    "&get -n; &dch -f; &nf {D}; &put"
+    "strash; scorr; dretime; strash; &get -n; &dch -f; &nf {D}; &put"
 )
+# The default without `&dch -f`. `&nf` area recovery over `&dch` choices, under the module's one global
+# required time, rebuilds prefix adders off that critical path as low-area ripple chains (#724).
+DELAY_MAPPED_ABC_SCRIPT = "strash; scorr; dretime; strash; &get -n; &nf {D}; &put"
+#: Names `abc-script` accepts in place of a script.
+MAPPED_ABC_PRESETS = {
+    "default": DEFAULT_MAPPED_ABC_SCRIPT,
+    "delay": DELAY_MAPPED_ABC_SCRIPT,
+}
+# `synth -extra-map +/choices/<map>.v` requests a prefix-adder carry network (kogge-stone, sklansky, ...).
+_CHOICES_MAP_RE = re.compile(r"(?:^|\s)-extra-map\s+\+/choices/\S+")
 # Appended when the SDC names a clock; `_parse_critical_path_ps` reads its report.
 _ABC_STIME = "; stime -p"
 
@@ -557,11 +568,17 @@ def dont_use_args(cells: list[str]) -> str:
 def mapped_abc_script(opts: SynthToolOpts) -> str:
     """Return the ABC script a Liberty-mapped run passes to ``abc -script "+..."``.
 
-    The resolved ``abc_script``, or :data:`DEFAULT_MAPPED_ABC_SCRIPT` when it is empty.
+    The resolved ``abc_script``, expanded when it names a :data:`MAPPED_ABC_PRESETS` entry. When it
+    is empty: the ``delay`` preset if the resolved ``synth_args`` (the arguments the run gives Yosys
+    ``synth``) request a ``+/choices/`` carry map, else the ``default`` preset.
     """
     script = (opts.abc_script or "").strip()
     if not script:
+        if _CHOICES_MAP_RE.search(opts.synth_args or ""):
+            return DELAY_MAPPED_ABC_SCRIPT
         return DEFAULT_MAPPED_ABC_SCRIPT
+    if script in MAPPED_ABC_PRESETS:
+        return MAPPED_ABC_PRESETS[script]
     if '"' in script or "\n" in script:
         raise FatalRtlBuddyError(
             f"synth option abc-script must be one line without double quotes, "
@@ -570,8 +587,51 @@ def mapped_abc_script(opts: SynthToolOpts) -> str:
     return script
 
 
+def apply_effort(
+    opts: SynthToolOpts, overrides: dict | None, effort_cfg: SynthEffortConfig
+) -> SynthToolOpts:
+    """Set the effort's ``synth_args``, ``abc_args`` and ``abc_script`` on `opts` and return it.
+
+    Shared by both synthesis backends. An effort value replaces the tool config's but not a key
+    the run's `overrides` set, so precedence is run override, then effort, then tool config.
+    """
+    for key, value in (
+        ("synth_args", effort_cfg.get_yosys_synth_args()),
+        ("abc_args", effort_cfg.get_yosys_abc_args()),
+        ("abc_script", effort_cfg.get_yosys_abc_script()),
+    ):
+        if value and (not overrides or key not in overrides):
+            setattr(opts, key, value)
+    return opts
+
+
+def clean_stat_json(path: str) -> None:
+    """Rewrite a ``tee -q -o <path> stat -json`` capture to the JSON object alone.
+
+    Shared by both synthesis backends. ``tee`` writes everything ``stat`` logs, so a gzipped
+    Liberty's ``Found gzip magic ...`` notice lands ahead of the JSON and the file does not parse
+    (#710). A file that is already only the object, or holds none, is left as it is.
+    """
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return
+    span = stat_json_span(text)
+    if span is None:
+        return
+    start, end = span
+    if not text[:start].strip() and not text[end:].strip():
+        return
+    Path(path).write_text(text[start:end] + "\n")
+
+
 def warn_mapped_abc_args(opts: SynthToolOpts, synth_name: str) -> None:
-    """Warn that a Liberty-mapped run drops the resolved ``abc_args``."""
+    """Warn that a Liberty-mapped run drops the resolved ``abc_args``, and note an automatic ``delay`` preset."""
+    if not (opts.abc_script or "").strip() and _CHOICES_MAP_RE.search(
+        opts.synth_args or ""
+    ):
+        # An upgrade changes the script under an unchanged config (#724), so say so in the run output.
+        log_event(logger, logging.INFO, "synth.abc_delay_preset", synth=synth_name)
     if opts.abc_args:
         log_event(
             logger,
@@ -848,20 +908,14 @@ class YosysSynth:
         """
         if self._opts is not None:
             return self._opts
-        overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
-        opts = self.tool_cfg.get_opts(overrides)
-        if not overrides or "synth_args" not in overrides:
-            eff_synth = self.effort_cfg.get_yosys_synth_args()
-            if eff_synth:
-                opts.synth_args = eff_synth
-        if not overrides or "abc_args" not in overrides:
-            eff_abc = self.effort_cfg.get_yosys_abc_args()
-            if eff_abc:
-                opts.abc_args = eff_abc
-        if not overrides or "abc_script" not in overrides:
-            eff_script = self.effort_cfg.get_yosys_abc_script()
-            if eff_script:
-                opts.abc_script = eff_script
+        # The run's `tool:`, not this tool config's name: a `tool: openroad` run that falls back here
+        # with the `yosys` entry still reads `tool_overrides.openroad`.
+        overrides = self.synth_cfg.get_yosys_stage_overrides(
+            self.synth_cfg.get_tool_name()
+        )
+        opts = apply_effort(
+            self.tool_cfg.get_opts(overrides), overrides, self.effort_cfg
+        )
         self._opts = opts
         return opts
 
@@ -1198,6 +1252,7 @@ class YosysSynth:
                     cwd=self.artefact_dir,
                     env=yosys_env(self.artefact_dir),
                 )
+        clean_stat_json(self._stats_path())
 
         if result.returncode != 0:
             log_event(
@@ -1416,10 +1471,9 @@ def _probe_opts(synth_cfg, root_cfg) -> tuple[SynthToolOpts, str]:
     tool_name = synth_cfg.get_tool_name()
     try:
         tool_cfg = root_cfg.get_synth_tool_cfg("yosys")
-        overrides = synth_cfg.get_tool_overrides_for("yosys")
     except FatalRtlBuddyError:
         tool_cfg = root_cfg.get_synth_tool_cfg(tool_name)
-        overrides = synth_cfg.get_tool_overrides_for(tool_name)
+    overrides = synth_cfg.get_yosys_stage_overrides(tool_name)
     return tool_cfg.get_opts(overrides), tool_cfg.get_executable()
 
 
@@ -1465,7 +1519,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
     Run when the block is hardened, so a parent's instance overrides can be compared with every value the block was built with. The top is wrapped in an instance carrying the synthesis's `params:`, in the synthesis's frontend, reading the sources and defines of its `synth.f`:
 
     - slang: the top is a blackbox (`--blackboxed-module`), so only its header is elaborated, and the wrapper instance carries every parameter, localparams included, as a parent's would.
-    - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read. Localparams are not available, so the record is marked incomplete.
+    - verilog: the wrapper's hierarchy is elaborated and the derived module's parameters are read, plus any `real` override from the wrapper's cell, which the derived module leaves out. Localparams and `real` defaults are not available, so the record is marked incomplete.
 
     The synthesis's Liberty files are read first, so the top's cells and sub-blocks are known; with slang, unknown modules are also ignored, since only the header matters. String `params:` are quoted. The parameter order for positional overrides is read from the top's declaration in the sources. Raises RuntimeError when the probe cannot run or its output is unusable.
     """
@@ -1486,6 +1540,7 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         f"module {_PROBE_TOP};\n  {top} {'#(' + overrides + ') ' if overrides else ''}u_probe ();\nendmodule\n"
     )
     json_path = os.path.join(out_dir, "param_probe.json")
+    overrides_json = os.path.join(out_dir, "param_probe_overrides.json")
     cmds = [
         f"read_liberty -lib {shlex.quote(lib)}"
         for lib in _probe_lib_paths(synth_cfg, root_cfg, sources)
@@ -1508,7 +1563,15 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
             1,
         )
     else:
-        cmds += [f"hierarchy -top {_PROBE_TOP}", "proc"]
+        # The wrapper (read last) is elaborated on read, so its cell still carries the override values before `hierarchy` derives the top: Yosys leaves `real` parameters out of the derived module's defaults.
+        cmds[-1] = cmds[-1].replace("read_verilog -sv -defer", "read_verilog -sv", 1)
+        cmds += [
+            f"select {_PROBE_TOP}",
+            f"write_json -selected {shlex.quote(overrides_json)}",
+            "select -clear",
+            f"hierarchy -top {_PROBE_TOP}",
+            "proc",
+        ]
     cmds.append(f"write_json {shlex.quote(json_path)}")
     script = os.path.join(out_dir, "param_probe.ys")
     Path(script).write_text("\n".join(cmds) + "\n")
@@ -1554,6 +1617,17 @@ def probe_block_parameters(synth_cfg, root_cfg, synth_dir: str, out_dir: str):
         if derived is None:
             raise RuntimeError(f"the probe did not elaborate {top!r}")
         values = derived.get("parameter_default_values") or {}
+        # A `real` parameter is only in the wrapper cell's overrides, as Yosys's string ("2.500000"); one left at its default is not recorded.
+        try:
+            before = json.loads(Path(overrides_json).read_text())
+        except (OSError, ValueError) as e:
+            raise RuntimeError(
+                f"unreadable probe output {overrides_json}: {e}"
+            ) from None
+        wrapper_cell = (
+            ((before.get("modules") or {}).get(_PROBE_TOP) or {}).get("cells") or {}
+        ).get("u_probe") or {}
+        values = {**(wrapper_cell.get("parameters") or {}), **values}
         complete = False
     order = None
     for src in sources:

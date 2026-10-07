@@ -103,6 +103,7 @@ from .config.dispatch import (
     aggregate_compile_resources,
     mode_governed_fields,
     resolve_compile_resources,
+    resolve_coverage_resources,
     resolve_verilate_resources,
     resolve_resources,
     cpu_request_overrides,
@@ -119,9 +120,18 @@ from .dispatch.base import (
     BUILD_PHASE_VERILATE,
     BUILD_PHASES,
     BuildJobSpec,
+    CoverageJobSpec,
     ElabJobSpec,
     TestJobSpec,
     telemetry_key,
+)
+from .dispatch.coverage_tail import (
+    clear_previous_outputs,
+    is_manifest_only,
+    load_tail_result,
+    load_tail_spec,
+    write_tail_result,
+    write_tail_spec,
 )
 from .dispatch.gates import release_batches, wait_for_gates, write_gates
 from .dispatch.plan import (
@@ -135,6 +145,7 @@ from .dispatch.plan import (
 )
 from .dispatch.progress import group_job_ids
 from .dispatch.run_manifest import (
+    KIND_COVERAGE,
     STATUS_CANCELLED,
     STATUS_COLLECTED,
     STATUS_STALE,
@@ -152,6 +163,7 @@ from .dispatch.run_manifest import (
     set_run_status,
     update_pending_job_ids,
     verilate_from,
+    write_coverage_manifest,
     write_run_manifest,
 )
 from .dispatch.retry import backoff_delay, classify_missing_result
@@ -394,6 +406,39 @@ def _summarize_compile_work(build_entries) -> dict:
     }
 
 
+#: Names of :func:`_preproc_compile_key`'s fields, in order, for the drift warning.
+_PREPROC_COMPILE_KEY_FIELDS = (
+    "plusdefines",
+    "builder",
+    "model",
+    "model_path",
+    "assertions",
+)
+
+
+def _preproc_compile_key(cfg):
+    """The part of the head's build key a ``preproc`` hook could change.
+
+    ``(plusdefines, builder, model name, model path, assertions)``, as the head keys the
+    build job's reservation on it. ``preproc-sets-plusdefines: false`` declares the hook
+    keeps all of it; the build job compares it before and after PRE.
+    """
+    model = cfg.get_model()
+    return (
+        # repr, not the value: the key only has to separate configs, and a
+        # plusdefine is whatever YAML or a sweep hook put there.
+        tuple(
+            sorted((str(k), repr(v)) for k, v in (cfg.get_plusdefines() or {}).items())
+        ),
+        cfg.get_builder_name(),
+        getattr(model, "name", None),
+        getattr(model, "path", None),
+        # `assertions: true` adds Verilator's SVA flags to `key_cmd` in
+        # `_build_compile_plan`, so tests that disagree on it are two builds.
+        getattr(cfg, "assertions", False),
+    )
+
+
 def _annotate_build_failure(entry, *, failure, worker_error, suite_dir):
     """Add the failure keys to one ``builds`` record, in place.
 
@@ -546,6 +591,13 @@ class RtlBuddy:
             hidden=True,
             help="internal: compile a suite's runnable tests (share-build)",
         )(self.do_cmd_build_job)
+        # Remote-dispatch coverage tail: merge, model build, LCOV exports and manifest
+        # on a compute node, for a run whose simulations were dispatched.
+        self.app.command(
+            "_cov-job",
+            hidden=True,
+            help="internal: run a dispatched run's coverage tail and write its result JSON",
+        )(self.do_cmd_cov_job)
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
         )
@@ -932,6 +984,9 @@ class RtlBuddy:
         # `_orphans_policy` is the resolved value.
         self._orphans: str | None = None
         self._orphans_policy: str = "warn"
+        # Earlier runs' coverage tail jobs still on the cluster that this run must let
+        # finish before its own tail writes `cov_dir/` (`_sweep_coverage_orphans`).
+        self._coverage_orphans: list = []
         self.build_result_json = None
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
@@ -1159,6 +1214,7 @@ class RtlBuddy:
             "_test-job",
             "_build-job",
             "_elab-job",
+            "_cov-job",
         ):
             self._artifact_locks.acquire(
                 ctx.artifact_root,
@@ -1327,6 +1383,9 @@ class RtlBuddy:
         ``error`` payload and lose them. It folds into the run status as exit 1, "a tool
         flow failed".
         """
+        if coverage_payload and coverage_payload.get("tail_failed"):
+            # Logged as coverage.tail_failed where it happened.
+            return 1
         if not coverage_payload or not coverage_payload.get("merge_failed"):
             return 0
         log_event(
@@ -1336,6 +1395,296 @@ class RtlBuddy:
             failed_metrics=list(coverage_payload.get("failed_metrics") or []),
         )
         return 1
+
+    def _coverage_tail(self, calls, *, backend):
+        """Run the coverage tail: one ``build_metadata`` per call, returning ``(metadata, coverage)`` each.
+
+        Each call is a dict of ``build_metadata`` keyword arguments. Under a backend
+        whose jobs run off the submit host (:attr:`DispatchBackend.dispatches_coverage_tail`)
+        and with any coverage collected, every call runs in one ``rb _cov-job`` instead
+        of in this process; otherwise, including ``--dispatch local`` and
+        ``local-parallel``, they run here as before. A tail that asks only for the
+        manifest (no merge, export or model file; :func:`is_manifest_only`) also stays
+        here: a job would cost a queue wait for no memory saved.
+        """
+        has_coverage = any(
+            row["results"].results.get("coverage")
+            for call in calls
+            for row in call["suite_results"]
+        )
+        if has_coverage and self._coverage_orphans:
+            # An earlier run's coverage job still writing `cov_dir/` would race this
+            # tail on the same manifest, model and merged database.
+            reason = self._await_coverage_orphans(backend)
+            if reason is not None:
+                return self._coverage_tail_failed(calls, reason=reason)
+        if (
+            backend is None
+            or not getattr(backend, "dispatches_coverage_tail", False)
+            or not has_coverage
+            or all(is_manifest_only(call) for call in calls)
+        ):
+            return [
+                self.coverage.build_metadata(
+                    call["suite_results"],
+                    **{k: v for k, v in call.items() if k != "suite_results"},
+                )
+                for call in calls
+            ]
+        return self._dispatch_coverage_tail(backend, calls)
+
+    def _dispatch_coverage_tail(self, backend, calls):
+        """Submit the coverage tail as one job, wait on it and read its answer back.
+
+        The job writes ``cov_dir/`` (merge, model, LCOV exports, manifest) under the
+        same command root the in-process tail would, and returns each call's display
+        lines and machine payload plus the per-test ``coverage`` dicts it updated. A
+        submission, wait or result failure does not lose the collected results: it is
+        reported as ``tail_failed`` and the run exits 1.
+        """
+        run_token = uuid.uuid4().hex
+        tail_dir = self._coverage_tail_dir()
+        spec_path, results = write_tail_spec(
+            tail_dir / f"spec-{run_token}.json", calls, run_token=run_token
+        )
+        result_json = tail_dir / f"result-{run_token}.json"
+        spec = CoverageJobSpec(
+            suite_dir=str(calls[0]["outdir"]),
+            spec_json=spec_path,
+            result_json=result_json,
+            resources=resolve_coverage_resources(
+                self.root_cfg.get_dispatch_cfg(), builder_mode=self.rtl_builder_mode
+            ),
+            log_path=tail_dir / f"{backend.name}-{run_token}.log",
+            builder_mode=self.rtl_builder_mode,
+            builder_override=self._builder_override,
+            extra_sim_timeout=self._extra_sim_timeout_override,
+            run_tag=self._run_tag,
+        )
+        # The previous run's manifest and model go first: a tail that leaves no answer
+        # must not leave them for `rb cov summary`, mcp or hub /cov to read as this
+        # run's. The in-process tail rewrites both or, on a failed merge, writes a
+        # manifest that says so; a dispatched tail that fails writes neither.
+        removed = clear_previous_outputs(calls)
+        if removed:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "coverage.tail_cleared_previous",
+                paths=removed,
+            )
+        handle = None
+        record = None
+        try:
+            handle = backend.submit_coverage(spec)
+            # Recorded as soon as it is accepted, like a fleet: a head killed while it
+            # waits leaves the job running, and the next run must find it.
+            record = self._record_coverage_job(
+                backend, handle, tail_dir=tail_dir, run_token=run_token
+            )
+            log_console_event(
+                logger,
+                logging.INFO,
+                "coverage.tail_submitted",
+                backend=backend.name,
+                job_id=handle.job_id,
+                log=str(spec.log_path),
+            )
+            backend.wait_all([handle])
+        except FatalRtlBuddyError as exc:
+            # A refused submission or an expired max-wait; the collected results stand.
+            if handle is not None:
+                self._cancel_coverage_job(backend, handle, record, run_token)
+            return self._coverage_tail_failed(
+                calls, reason=str(exc), handle=handle, spec=spec
+            )
+        except BaseException:
+            if handle is not None:
+                self._cancel_coverage_job(backend, handle, record, run_token)
+            raise
+        # The job left the queue: the next run has nothing of this one to find.
+        self._close_run_manifest({"run_manifest": record}, STATUS_COLLECTED)
+        try:
+            outcomes, tests = load_tail_result(
+                result_json,
+                expected_run_token=run_token,
+                expected_calls=len(calls),
+                expected_tests=len(results),
+            )
+        except FatalRtlBuddyError as exc:
+            return self._coverage_tail_failed(
+                calls, reason=str(exc), handle=handle, spec=spec
+            )
+        # The job's LCOV exports and HTML trees land on the head's results, as they would
+        # in-process, so side-cars and machine rows name them.
+        for res, coverage in zip(results, tests, strict=True):
+            if coverage is not None:
+                res.results["coverage"] = coverage
+        log_event(
+            logger,
+            logging.INFO,
+            "coverage.tail_collected",
+            backend=backend.name,
+            job_id=handle.job_id,
+            result_json=str(result_json),
+        )
+        return outcomes
+
+    def _coverage_tail_dir(self):
+        """Where the coverage tail job's spec, result, log and run record live."""
+        return self.exec_ctx.artifact_root / ".dispatch" / "coverage"
+
+    def _record_coverage_job(self, backend, handle, *, tail_dir, run_token):
+        """Write the accepted coverage job's run record; its path, or ``None``.
+
+        Best effort, as for a fleet: the job is already accepted, so a failed write
+        only costs the next run the ability to find it.
+        """
+        if not backend.scheduled:
+            return None
+        path = run_manifest_path(tail_dir, run_token)
+        try:
+            return write_coverage_manifest(
+                path,
+                run_token=run_token,
+                backend=backend.name,
+                started_at=time.time(),
+                command_root=handle.spec.suite_dir,
+                handle=handle,
+            )
+        except (OSError, TypeError, ValueError) as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.run_manifest_write_failed",
+                suite_dir=handle.spec.suite_dir,
+                path=str(path),
+                error=str(e),
+            )
+            return None
+
+    def _cancel_coverage_job(self, backend, handle, record, run_token):
+        """Cancel this run's coverage job; retire its record only once it is gone."""
+        backend.cancel_all([handle])
+        self._close_cancelled_run_manifest(
+            backend,
+            {"run_manifest": record, "pending": [(0, handle)], "run_token": run_token},
+        )
+
+    def _sweep_coverage_orphans(self, backend):
+        """Deal with earlier runs' coverage jobs still on the cluster, before submitting.
+
+        A head killed while it waited on its coverage tail leaves that job running,
+        writing ``cov_dir/`` under the same command root this run's tail writes. The
+        records in ``.dispatch/coverage/`` are probed like fleet records. Under
+        ``--orphans cancel`` the jobs are cancelled here (fatal if one survives,
+        before anything is submitted). Under ``warn`` and ``adopt`` they are named and
+        left running, and this run's tail waits for them before writing ``cov_dir/``:
+        a coverage job cannot be adopted, since the head that would read its answer
+        is gone.
+        """
+        self._coverage_orphans = []
+        if backend is None or not backend.scheduled:
+            return
+        command_root = str(self.exec_ctx.command_root)
+        orphans = self._discover_orphan_runs(
+            backend, self._coverage_tail_dir(), run_token=None, kind=KIND_COVERAGE
+        )
+        if not orphans:
+            return
+        if self._orphans_policy == "cancel":
+            self._cancel_orphan_runs(backend, orphans, suite_dir=command_root)
+            return
+        for orphan in orphans:
+            payload = orphan["payload"]
+            log_console_event(
+                logger,
+                logging.WARNING,
+                "dispatch.coverage_orphan_found",
+                command_root=command_root,
+                manifest=str(orphan["path"]),
+                run_token=payload.get("run_token"),
+                pid=payload.get("pid"),
+                job_ids=group_job_ids(orphan["live"]),
+                jobs=len(orphan["live"]),
+            )
+        self._coverage_orphans = orphans
+
+    def _await_coverage_orphans(self, backend):
+        """Wait for the coverage jobs :meth:`_sweep_coverage_orphans` left running.
+
+        Returns ``None`` once they have left the queue, else why not (``max-wait``
+        expired). Never cancels them: that is ``--orphans cancel``'s choice, made at
+        start-up. An interrupt propagates and leaves them running, as found.
+        """
+        orphans, self._coverage_orphans = self._coverage_orphans, []
+        handles = [handle for orphan in orphans for handle in orphan["handles"]]
+        live = sorted({job for orphan in orphans for job in orphan["live"]})
+        log_console_event(
+            logger,
+            logging.WARNING,
+            "coverage.tail_awaiting_orphan",
+            backend=backend.name,
+            job_ids=group_job_ids(live),
+            jobs=len(live),
+        )
+        try:
+            backend.wait_all(handles)
+        except FatalRtlBuddyError as exc:
+            return (
+                f"an earlier run's coverage job ({' '.join(live)}) is still "
+                f"writing cov_dir/: {exc}"
+            )
+        for orphan in orphans:
+            set_run_status(orphan["path"], STATUS_STALE)
+        return None
+
+    def _coverage_tail_failed(self, calls, *, reason, handle=None, spec=None):
+        """One ``(metadata, coverage)`` per call for a coverage tail that produced no answer.
+
+        ``spec`` is ``None`` when the tail never got as far as a job: an earlier run's
+        coverage job would not leave the queue.
+        """
+        job_id = None if handle is None else handle.job_id
+        log = (
+            str(spec.log_path)
+            if spec is not None and spec.log_path is not None
+            else None
+        )
+        if spec is None:
+            # As before a submission: the previous run's verdict must not outlive one
+            # this run failed to produce.
+            clear_previous_outputs(calls)
+        log_event(
+            logger,
+            logging.ERROR,
+            "coverage.tail_failed",
+            job_id=job_id,
+            reason=reason,
+            log=log,
+            result_json=str(spec.result_json) if spec is not None else None,
+        )
+        failure = {"job_id": job_id, "reason": reason, "log": log}
+        where = f"job {job_id}" if job_id is not None else "not submitted"
+        line = (
+            f"Coverage tail FAILED ({where}): {reason}; no merge, model or manifest "
+            "was written" + (f" — see {log}" if job_id is not None and log else "")
+        )
+        outcomes = []
+        for index, call in enumerate(calls):
+            coverage = {
+                "merged": None,
+                "dir_summary": [],
+                "merge_failed": False,
+                "failed_metrics": [],
+                "tail_failed": dict(failure),
+            }
+            covers = self.coverage.collect_cover_records(call["suite_results"])
+            if covers:
+                coverage["covers"] = covers
+            # One job failed, so the summary says so once however many calls it held.
+            outcomes.append(([line] if index == 0 else [], coverage))
+        return outcomes
 
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
@@ -1900,6 +2249,8 @@ class RtlBuddy:
                     "dispatch.share_build_implied",
                     backend=dispatch_backend.name,
                 )
+            # Before anything is submitted, as for an orphaned fleet.
+            self._sweep_coverage_orphans(dispatch_backend)
             suite_display = self._display_path(
                 str(ctx.primary_config), base_dir=str(self.invocation_cwd)
             )
@@ -1961,20 +2312,25 @@ class RtlBuddy:
                     for key, value in self._plusarg_overrides.items()
                 )
             )
-        cov_metadata, coverage_payload = self.coverage.build_metadata(
-            suite_results,
-            outdir=str(ctx.command_root),
-            suite_name=self.suite_cfg.get_path(),
-            coverage_merge=coverage_merge,
-            coverage_merge_raw=coverage_merge_raw,
-            coverage_html=coverage_html,
-            coverage_coverview=coverage_coverview,
-            coverage_merge_info_process=coverage_merge_info_process,
-            source_roots=[str(ctx.command_root)],
-            dir_summary_paths=dir_summary_paths,
-            source_summary=coverage_source_summary,
-            command="test",
-            model_mode=coverage_model,
+        ((cov_metadata, coverage_payload),) = self._coverage_tail(
+            [
+                dict(
+                    suite_results=suite_results,
+                    outdir=str(ctx.command_root),
+                    suite_name=self.suite_cfg.get_path(),
+                    coverage_merge=coverage_merge,
+                    coverage_merge_raw=coverage_merge_raw,
+                    coverage_html=coverage_html,
+                    coverage_coverview=coverage_coverview,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[str(ctx.command_root)],
+                    dir_summary_paths=dir_summary_paths,
+                    source_summary=coverage_source_summary,
+                    command="test",
+                    model_mode=coverage_model,
+                )
+            ],
+            backend=dispatch_backend,
         )
         metadata.extend(cov_metadata)
         # After build_metadata: the manifest and model are on disk, so a failed merge
@@ -2084,6 +2440,71 @@ class RtlBuddy:
                 "stay shared",
             ),
         ] = None,
+        coverage_merge: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-merge",
+                help="merge coverage across the seeds; uses raw merge for summary/html and info-process for Coverview",
+            ),
+        ] = False,
+        coverage_merge_raw: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-merge-raw",
+                help="use raw Verilator merge for merged summary/html/Coverview",
+            ),
+        ] = False,
+        coverage_merge_info_process: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-merge-info-process",
+                help="use info-process merge for merged summary/Coverview; HTML merge is not supported",
+            ),
+        ] = False,
+        coverage_html: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-html",
+                help="generate merged LCOV HTML output in coverage_merge.html",
+            ),
+        ] = False,
+        coverage_coverview: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-coverview",
+                help="generate Coverview zip output from coverage info",
+            ),
+        ] = False,
+        coverage_dir_summary: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--coverage-dir-summary",
+                help="append coverage summary lines for repo-relative directory prefixes; may be repeated",
+            ),
+        ] = None,
+        coverage_dir_summary_file: Annotated[
+            str | None,
+            typer.Option(
+                "--coverage-dir-summary-file",
+                help="file containing repo-relative directory prefixes, one per line",
+            ),
+        ] = None,
+        coverage_source_summary: Annotated[
+            bool,
+            typer.Option(
+                "--coverage-source-summary",
+                help="append run coverage scored per source point (covered when any elaboration hit it), beside the per-elaboration figure",
+            ),
+        ] = False,
+        coverage_model: Annotated[
+            str,
+            typer.Option(
+                "--coverage-model",
+                help="coverage-model.json to write: full (per-seed attribution per point), totals (points without attribution), or none (manifest and totals only)",
+                metavar="[full|totals|none]",
+                click_type=click.Choice(list(cov_model.MODEL_MODES)),
+            ),
+        ] = cov_model.MODEL_MODE_FULL,
     ):
         """
         repeat a test with multiple random seeds
@@ -2133,8 +2554,11 @@ class RtlBuddy:
             else None
         )
         reservation_findings = []
+        summary_title = "RandTest Results Summary"
         if dispatch_backend is not None:
             self.share_build = True
+            # Before anything is submitted, as for an orphaned fleet.
+            self._sweep_coverage_orphans(dispatch_backend)
             state = self._dispatch_suite_submit(
                 self.suite_cfg,
                 dispatch_backend,
@@ -2162,15 +2586,6 @@ class RtlBuddy:
                 state=state,
             )
             _log_reservation_advice(reservation_findings)
-            if not self.machine:
-                self._render_test_summary(
-                    "RandTest Results Summary",
-                    suite_results,
-                    include_run_id=True,
-                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
-                )
-                if reservation_findings:
-                    self._render_reservation_advice(reservation_findings)
         elif rpt_i is not None:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -2179,13 +2594,7 @@ class RtlBuddy:
                 seed_mode=SeedMode.REPLAY,
                 replay_run_id=rpt_i,
             )
-            if not self.machine:
-                self._render_test_summary(
-                    "RandTest Replay Summary",
-                    suite_results,
-                    include_run_id=True,
-                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
-                )
+            summary_title = "RandTest Replay Summary"
         else:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -2194,15 +2603,58 @@ class RtlBuddy:
                 seed_mode=SeedMode.NEW,
                 replay_run_id=None,
             )
-            if not self.machine:
-                self._render_test_summary(
-                    "RandTest Results Summary",
-                    suite_results,
-                    include_run_id=True,
-                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
-                )
 
         exit_code = self._exit_code_from_results(suite_results)
+        self._guard_coverage_requested(
+            suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
+            coverage_source_summary=coverage_source_summary,
+        )
+        metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
+        # The same tail as `test`: in-process, or one job under a backend whose jobs run
+        # off the submit host.
+        ((cov_metadata, coverage_payload),) = self._coverage_tail(
+            [
+                dict(
+                    suite_results=self._seed_coverage_rows(suite_results),
+                    outdir=str(ctx.command_root),
+                    suite_name=self.suite_cfg.get_path(),
+                    coverage_merge=coverage_merge,
+                    coverage_merge_raw=coverage_merge_raw,
+                    coverage_html=coverage_html,
+                    coverage_coverview=coverage_coverview,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[str(ctx.command_root)],
+                    dir_summary_paths=self._resolve_coverage_dir_summary_paths(
+                        coverage_dir_summary=coverage_dir_summary,
+                        coverage_dir_summary_file=coverage_dir_summary_file,
+                    ),
+                    source_summary=coverage_source_summary,
+                    command="randtest",
+                    model_mode=coverage_model,
+                )
+            ],
+            backend=dispatch_backend,
+        )
+        metadata.extend(cov_metadata)
+        exit_code |= self._coverage_merge_exit_code(coverage_payload)
+        self._refresh_result_side_cars(suite_results)
+        if not self.machine:
+            self._render_test_summary(
+                summary_title,
+                suite_results,
+                include_run_id=True,
+                metadata=metadata,
+            )
+            if reservation_findings:
+                self._render_reservation_advice(reservation_findings)
         if self.machine:
             payload = {
                 "results": [
@@ -2212,12 +2664,31 @@ class RtlBuddy:
                     for r in suite_results
                 ]
             }
+            coverage = self._machine_coverage_payload(coverage_payload)
+            if coverage is not None:
+                payload["coverage"] = coverage
             if dispatch_backend is not None:
                 payload["reservation_advice"] = [
                     finding.as_event() for finding in reservation_findings
                 ]
             self._emit_machine_result("randtest", exit_code, **payload)
         raise typer.Exit(exit_code)
+
+    @staticmethod
+    def _seed_coverage_rows(suite_results):
+        """randtest rows as the coverage tail sees them: one coverage test per seed.
+
+        Every seed shares its test's name, and the tail names per-test artefacts (LCOV
+        exports, Coverview datasets, model attribution) after it, so a seed is named
+        ``<test>/run-NNNN`` like its artefact directory. ``results`` stays the head's
+        own object, so coverage the tail adds to it lands on the reported row.
+        """
+        return [
+            row
+            if row.get("randmode_i") is None
+            else {**row, "test_name": f"{row['test_name']}/run-{row['randmode_i']:04d}"}
+            for row in suite_results
+        ]
 
     def _abs_invocation_path(self, path: str) -> Path:
         """Resolve ``path`` against the invocation cwd if it is relative.
@@ -2614,6 +3085,67 @@ class RtlBuddy:
             )
         raise typer.Exit(exit_code)
 
+    def do_cmd_cov_job(
+        self,
+        spec: Annotated[
+            str,
+            typer.Option("--spec", help="the head's coverage tail spec (JSON)"),
+        ],
+        result_json: Annotated[
+            str,
+            typer.Option(
+                "--result-json", help="where to write the tail's result envelope"
+            ),
+        ],
+        command_root: Annotated[
+            str,
+            typer.Option(
+                "--command-root",
+                help="the head's command root; root_config.yaml is found from "
+                "it and cov_dir/ is written under it",
+            ),
+        ],
+        run_tag: Annotated[
+            str | None,
+            typer.Option(
+                "--run-tag",
+                help="the head's artefact namespace, so this job logs in the "
+                "tree the head planned",
+            ),
+        ] = None,
+    ):
+        """internal: run a dispatched run's coverage tail and write its result JSON"""
+        self._run_tag = validate_run_tag(run_tag)
+        spec_path = self._abs_invocation_path(spec)
+        result_path = self._abs_invocation_path(result_json)
+        # Log beside the envelope, never into the head's rtl_buddy.log.
+        self._enter_command_context(
+            command_root=self._abs_invocation_path(command_root),
+            log_path=job_log_path(result_path),
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "command.cov_job",
+            command="_cov-job",
+            spec=str(spec_path),
+            result_json=str(result_path),
+        )
+        run_token, calls, tests = load_tail_spec(spec_path)
+        outcomes = [
+            self.coverage.build_metadata(
+                call["suite_results"],
+                **{k: v for k, v in call.items() if k != "suite_results"},
+            )
+            for call in calls
+        ]
+        write_tail_result(
+            result_path, run_token=run_token, outcomes=outcomes, tests=tests
+        )
+        if self.machine:
+            self._emit_machine_result("_cov-job", 0, result_json=str(result_path))
+        raise typer.Exit(0)
+
     def do_cmd_build_job(
         self,
         test_config: Annotated[
@@ -2835,11 +3367,39 @@ class RtlBuddy:
                 build_phase=phase,
                 run_tag=self._run_tag,
             )
+            # What the head keyed this config's build on, for a declaration to check.
+            declared_key = (
+                _preproc_compile_key(cfg)
+                if cfg.get_preproc_path()
+                and not getattr(cfg, "preproc_sets_plusdefines", True)
+                else None
+            )
             try:
                 res = runner.prepare()
                 group_dir = None
                 if res is None:
                     group_dir, res = runner.compile_group_dir()
+                if declared_key is not None:
+                    changed = [
+                        field
+                        for field, before, after in zip(
+                            _PREPROC_COMPILE_KEY_FIELDS,
+                            declared_key,
+                            _preproc_compile_key(cfg),
+                            strict=True,
+                        )
+                        if before != after
+                    ]
+                    if changed:
+                        # The reservation counted this build once for its key; a hook
+                        # that moved the key makes the job under-reserved.
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "build_job.preproc_changed_compile_key",
+                            test=cfg.get_name(),
+                            changed=changed,
+                        )
             except Exception as exc:  # noqa: BLE001 - see exit-0 contract
                 # The exit-0 contract covers this phase too: one config's broken setup
                 # (e.g. SystemCSim's missing `cfg-systemc`) is reported failed and must
@@ -2862,6 +3422,9 @@ class RtlBuddy:
         # Config that compiled each group's build, keyed by group dir. A group is one
         # worker's unit, so no two threads touch one key.
         group_leaders = {}
+        # The group's first failed compile, as (test name, failure record), keyed the
+        # same way. Siblings with the same inputs adopt it rather than fail it again.
+        group_failures = {}
         # Distinct from a runner reporting no stamp: a runner class that reports none
         # keeps the leader rule, as with `adopt_group_build`.
         unreported = object()
@@ -3173,6 +3736,10 @@ class RtlBuddy:
             under one key, which is reported, not recompiled, because a recompile would
             make the last writer decide what both simulate.
 
+            A failed compile is adopted the same way: a sibling whose compile inputs
+            are identical takes the failure (return code and transcript) instead of
+            failing the same compile again.
+
             Re-checks the cancellation latch before every member and when a worker takes
             the next group. The pool cancels only pending futures, and
             ``ThreadPoolExecutor.__exit__`` waits for a worker that already took the
@@ -3227,6 +3794,28 @@ class RtlBuddy:
                         leader=leader,
                         reason=detail,
                     )
+                failed_leader = group_failures.get(group_dir)
+                adopt_failure = getattr(runner, "adopt_group_failure", None)
+                if failed_leader is not None and adopt_failure is not None:
+                    # A deterministic failure (a fatal lint warning) would fail every
+                    # sibling the same way, one full compile each, serially.
+                    failed_name, failure = failed_leader
+                    try:
+                        verdict, detail = adopt_failure(failure, leader=failed_name)
+                    except Exception as exc:  # noqa: BLE001 - exit-0 contract
+                        rows.append((index, name, False, str(exc), runner, group_dir))
+                        continue
+                    if verdict == "adopted":
+                        rows.append((index, name, False, None, runner, group_dir))
+                        continue
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "build_job.group_failure_adoption_declined",
+                        test=name,
+                        leader=failed_name,
+                        reason=detail,
+                    )
                 try:
                     res = runner.compile_prepared()
                 except Exception as exc:  # noqa: BLE001 - see exit-0 contract
@@ -3254,6 +3843,12 @@ class RtlBuddy:
                             )
                     else:
                         group_leaders.setdefault(group_dir, name)
+                elif isinstance(res, CompileFailResults):
+                    # The builder ran and failed; a filelist or setup failure never
+                    # reached it and has nothing to adopt.
+                    failure = getattr(runner, "last_compile_failure", None)
+                    if failure is not None:
+                        group_failures.setdefault(group_dir, (name, failure))
                 rows.append((index, name, built, None, runner, group_dir))
             # Outside the loop, so outside every build-directory lock `compile_prepared`
             # took: this key is built and stamped.
@@ -3764,9 +4359,9 @@ class RtlBuddy:
     def _machine_coverage_payload(coverage):
         """Return the run-level coverage payload if it carries data, else None.
 
-        Any of `covers`, `artefacts`, `merge_failed` or `source_summary` counts as data
-        on its own, since each is produced without a `--coverage-merge*` flag or when a
-        merge died before writing anything.
+        Any of `covers`, `artefacts`, `merge_failed`, `tail_failed` or `source_summary`
+        counts as data on its own, since each is produced without a `--coverage-merge*`
+        flag or when a merge or the dispatched tail died before writing anything.
         """
         if coverage and (
             coverage.get("merged")
@@ -3774,6 +4369,7 @@ class RtlBuddy:
             or coverage.get("covers")
             or coverage.get("artefacts")
             or coverage.get("merge_failed")
+            or coverage.get("tail_failed")
             or coverage.get("source_summary")
         ):
             return coverage
@@ -4230,7 +4826,7 @@ class RtlBuddy:
     ORPHAN_CANCEL_POLL_S = 2.0
 
     def _discover_orphan_runs(
-        self, backend, dispatch_root, *, run_token, suite_config=None
+        self, backend, dispatch_root, *, run_token, suite_config=None, kind=None
     ):
         """Interrupted runs of this suite whose jobs are still on the cluster.
 
@@ -4245,7 +4841,7 @@ class RtlBuddy:
         ``run_token`` is this invocation's nonce and the only thing that excludes a
         manifest from the scan (see :func:`discover_run_manifests`). ``dispatch_root``
         is the suite's whole ``.dispatch/`` tree, and ``suite_config`` keeps the scan to
-        this suite's records.
+        this suite's records. ``kind`` selects coverage tail records instead of fleets.
         """
         if not backend.scheduled:
             # local-parallel jobs are this process's children; an interrupted run leaves
@@ -4253,7 +4849,7 @@ class RtlBuddy:
             return []
         orphans = []
         for path, payload in discover_run_manifests(
-            dispatch_root, run_token=run_token, suite_config=suite_config
+            dispatch_root, run_token=run_token, suite_config=suite_config, kind=kind
         ):
             try:
                 handles = handles_from(payload)
@@ -4403,15 +4999,21 @@ class RtlBuddy:
             suite_dir=suite_dir,
             live=live,
         )
+        if orphan["payload"].get("kind") == KIND_COVERAGE:
+            # A coverage job is never collected; `adopt` (like `warn`) waits for it.
+            why = "this run's coverage tail would write the same cov_dir/"
+            alternative = "or use --orphans warn to let it finish first."
+        else:
+            why = "a second fleet beside that one would write the same artefact directories"
+            alternative = "or use --orphans adopt to collect them instead."
         raise FatalRtlBuddyError(
             f"--orphans cancel could not take down the interrupted run "
             f"recorded in {orphan['path']}: {' '.join(live)} "
             f"{'is' if len(live) == 1 else 'are'} still queued or running "
             f"after {round(self.ORPHAN_CANCEL_WAIT_S)}s (or the scheduler "
-            "could not be asked). Nothing was submitted — a second fleet "
-            "beside that one would write the same artefact directories. "
+            f"could not be asked). Nothing was submitted — {why}. "
             "Cancel them by hand (scancel " + " ".join(live) + ") and "
-            "re-run, or use --orphans adopt to collect them instead."
+            "re-run, " + alternative
         )
 
     def _close_cancelled_run_manifest(self, backend, state):
@@ -4891,7 +5493,8 @@ class RtlBuddy:
         # (testbench, plusdefines, builder, model, assertions); configs that resolve to
         # one group_dir are counted twice (over-reserving).
         # Keyed per test instead, to avoid under-counting: a `preproc:` hook (may set
-        # plusdefines after this snapshot) and a builder that cannot share (per-test
+        # plusdefines after this snapshot) unless the test declares
+        # `preproc-sets-plusdefines: false`, and a builder that cannot share (per-test
         # output path). The test name goes in the key, not the run id: a run_id fan-out
         # shares `artefacts/<test>/`.
         # `parallel` is resolved here because memory adds across builds in flight and
@@ -4903,30 +5506,22 @@ class RtlBuddy:
             tb = cfg.get_testbench()
             tb_name = getattr(tb, "name", None)
             tb_compile = getattr(tb, "compile", None)
-            model = cfg.get_model()
             key = (
                 tb_name,
                 getattr(tb_compile, "cpus", None),
                 getattr(tb_compile, "mem", None),
                 getattr(tb_compile, "time", None),
-                # repr, not the value: the key only has to separate configs, and a
-                # plusdefine is whatever YAML or a sweep hook put there.
-                tuple(
-                    sorted(
-                        (str(k), repr(v))
-                        for k, v in (cfg.get_plusdefines() or {}).items()
-                    )
-                ),
-                cfg.get_builder_name(),
-                getattr(model, "name", None),
-                getattr(model, "path", None),
-                # `assertions: true` adds Verilator's SVA flags to `key_cmd` in
-                # `_build_compile_plan`, so tests that disagree on it are two builds.
-                getattr(cfg, "assertions", False),
+                # plusdefines, builder, model, assertions: what the build job checks
+                # a `preproc-sets-plusdefines: false` hook kept.
+                _preproc_compile_key(cfg),
                 # Per-test output dir means per-test build; also per test with a
-                # `preproc:` hook.
+                # `preproc:` hook that may change the key.
                 cfg.get_name()
-                if entry["compile_in_job"] or cfg.get_preproc_path()
+                if entry["compile_in_job"]
+                or (
+                    cfg.get_preproc_path()
+                    and getattr(cfg, "preproc_sets_plusdefines", True)
+                )
                 else None,
             )
             if key in seen_builds:
@@ -5392,8 +5987,9 @@ class RtlBuddy:
 
         pending = []
         # When this attempt went out. Retry classification accepts only artefacts at
-        # least this recent: `artefacts/<test>/test.log` is keyed on the test and never
-        # cleaned, so an old banner would satisfy the rule.
+        # least this recent: `artefacts/<test>/test.log` is keyed on the test, and a job
+        # that never started has not removed the previous run's, so an old banner would
+        # satisfy the rule.
         # Taken before the first submit.
         submitted_at = time.time()
         # (plan index, test name, job id) per submitted row, for the gates manifest.
@@ -7009,6 +7605,9 @@ class RtlBuddy:
                     "dispatch.share_build_implied",
                     backend=dispatch_backend.name,
                 )
+            # Before anything is submitted, as for an orphaned fleet; under the
+            # orchestration context, whose command root holds `cov_dir/`.
+            self._sweep_coverage_orphans(dispatch_backend)
 
         exit_code = 0
         reg_results = []
@@ -7259,47 +7858,61 @@ class RtlBuddy:
             and not coverage_merge_info_process
         ):
             reg_outdir = str(ctx.command_root)
-            for reg_result in reg_results:
-                # Per-suite HTML only: no merge, so no structured merged payload.
-                cov_metadata, _ = self.coverage.build_metadata(
-                    reg_result["results"],
-                    outdir=reg_outdir,
-                    suite_name=reg_result["test_suite"],
-                    coverage_merge=False,
-                    coverage_merge_raw=False,
-                    coverage_html=True,
-                    coverage_coverview=coverage_coverview,
-                    coverage_per_test=coverage_per_test,
-                    reg_results=reg_results,
-                    coverage_merge_info_process=coverage_merge_info_process,
-                    source_roots=[reg_result["test_suite_path"]],
-                    dir_summary_paths=dir_summary_paths,
-                    source_summary=coverage_source_summary,
-                    command="regression",
-                    model_mode=coverage_model,
-                )
+            # Per-suite HTML only: no merge, so no structured merged payload.
+            outcomes = self._coverage_tail(
+                [
+                    dict(
+                        suite_results=reg_result["results"],
+                        outdir=reg_outdir,
+                        suite_name=reg_result["test_suite"],
+                        coverage_merge=False,
+                        coverage_merge_raw=False,
+                        coverage_html=True,
+                        coverage_coverview=coverage_coverview,
+                        coverage_per_test=coverage_per_test,
+                        reg_results=reg_results,
+                        coverage_merge_info_process=coverage_merge_info_process,
+                        source_roots=[reg_result["test_suite_path"]],
+                        dir_summary_paths=dir_summary_paths,
+                        source_summary=coverage_source_summary,
+                        command="regression",
+                        model_mode=coverage_model,
+                    )
+                    for reg_result in reg_results
+                ],
+                backend=dispatch_backend,
+            )
+            for cov_metadata, suite_coverage in outcomes:
                 metadata.extend(cov_metadata)
+                # A tail job that failed fails every call; carry that one verdict.
+                if suite_coverage.get("tail_failed"):
+                    coverage_payload["tail_failed"] = suite_coverage["tail_failed"]
         else:
             reg_outdir = str(ctx.command_root)
             regression_source_roots = [
                 reg_result["test_suite_path"] for reg_result in reg_results
             ]
-            cov_metadata, coverage_payload = self.coverage.build_metadata(
-                all_suite_results,
-                outdir=reg_outdir,
-                suite_name=self.reg_cfg.get_path(),
-                coverage_merge=coverage_merge,
-                coverage_merge_raw=coverage_merge_raw,
-                coverage_html=coverage_html,
-                coverage_coverview=coverage_coverview,
-                coverage_per_test=coverage_per_test,
-                reg_results=reg_results,
-                coverage_merge_info_process=coverage_merge_info_process,
-                source_roots=regression_source_roots,
-                dir_summary_paths=dir_summary_paths,
-                source_summary=coverage_source_summary,
-                command="regression",
-                model_mode=coverage_model,
+            ((cov_metadata, coverage_payload),) = self._coverage_tail(
+                [
+                    dict(
+                        suite_results=all_suite_results,
+                        outdir=reg_outdir,
+                        suite_name=self.reg_cfg.get_path(),
+                        coverage_merge=coverage_merge,
+                        coverage_merge_raw=coverage_merge_raw,
+                        coverage_html=coverage_html,
+                        coverage_coverview=coverage_coverview,
+                        coverage_per_test=coverage_per_test,
+                        reg_results=reg_results,
+                        coverage_merge_info_process=coverage_merge_info_process,
+                        source_roots=regression_source_roots,
+                        dir_summary_paths=dir_summary_paths,
+                        source_summary=coverage_source_summary,
+                        command="regression",
+                        model_mode=coverage_model,
+                    )
+                ],
+                backend=dispatch_backend,
             )
             metadata.extend(cov_metadata)
         # Same rule as `test`, applied once the artefacts are written.
@@ -10120,6 +10733,7 @@ class RtlBuddy:
             "area_um2",
             "wns_ps",
             "tns_ps",
+            "timing_repaired",
             "static_function_findings",
             "unresolved_interfaces",
             "phys_model",

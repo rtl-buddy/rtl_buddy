@@ -8,6 +8,8 @@ Reservations resolve field by field (test, testbench, ``cfg-dispatch``), then th
 See docs/concepts/dispatch.md.
 """
 
+import dataclasses
+import difflib
 import logging
 import math
 import os
@@ -69,7 +71,7 @@ class CompileVerilateFile:
 class DispatchCompileFile:
     """``cfg-dispatch.compile``: the compile's reservation and its concurrency.
 
-    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. Unknown keys such as ``parallel`` in a per-test ``resources:`` block are silently dropped by serde, not rejected.
+    Separate from :class:`DispatchResourcesFile` because ``parallel`` belongs to the per-suite build job, not to a per-test reservation. An unknown key such as ``parallel`` in a per-test ``resources:`` block is dropped by serde; :func:`warn_unknown_block_keys` warns about it.
     """
 
     cpus: int | None = None
@@ -566,6 +568,9 @@ class DispatchConfigFile:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
+    # The coverage tail job's reservation (merge, model build, LCOV exports, manifest) under a scheduler-backed backend; defaults to `resources`.
+    # Run-level, one job per invocation, so it has no suite or testbench layer. `modes.<mode>` layers on top like the others.
+    coverage: DispatchResourcesFile | None = None
     # Compile reservation; defaults to `resources`. Normally sizes the head-dispatched build job.
     # For a builder that cannot share a build it is folded into each sim job (see combine_for_in_job_compile).
     # Also carries `parallel`, which per-job `resources:` blocks lack.
@@ -638,6 +643,28 @@ class DispatchConfigFile:
                 ),
             )
 
+        def _validated_coverage(res):
+            """The coverage block, through the compile mem/time/cpus validators: one job, sized like a build."""
+            if res is None:
+                return None
+            try:
+                cpus = _validate_compile_cpus(res.cpus)
+                mem = _validate_compile_mem(res.mem)
+                time = _validate_compile_time(res.time)
+            except FatalRtlBuddyError as e:
+                raise FatalRtlBuddyError(f"cfg-dispatch.coverage: {e}") from e
+            return DispatchResourcesFile(
+                cpus=cpus,
+                mem=mem,
+                time=time,
+                # Names its own block in any message.
+                modes=validate_modes_block(
+                    getattr(res, "modes", None),
+                    where="cfg-dispatch.coverage.",
+                    compile_block=True,
+                ),
+            )
+
         if self.progress_interval < 0:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch progress-interval must be >= 0 "
@@ -688,6 +715,7 @@ class DispatchConfigFile:
             backend=self.backend,
             resources=_validated(self.resources),
             compile=_validated_compile(self.compile),
+            coverage=_validated_coverage(self.coverage),
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
             progress_interval=self.progress_interval,
@@ -702,6 +730,73 @@ class DispatchConfigFile:
         )
 
 
+def _serde_keys(cls) -> tuple[str, ...]:
+    """The YAML keys a serde class reads: each field's ``rename``, else its name."""
+    return tuple(
+        f.metadata.get("serde_rename", f.name) for f in dataclasses.fields(cls)
+    )
+
+
+# Nested reservation blocks checked by warn_unknown_block_keys: key -> (class, its own nested blocks).
+_VERILATE_BLOCK = {"verilate": (CompileVerilateFile, {})}
+RESOURCES_BLOCK = (DispatchResourcesFile, {})
+SUITE_COMPILE_BLOCK = (SuiteCompileFile, _VERILATE_BLOCK)
+TESTBENCH_COMPILE_BLOCK = (TestbenchCompileFile, _VERILATE_BLOCK)
+DISPATCH_BLOCK = (
+    DispatchConfigFile,
+    {
+        "resources": RESOURCES_BLOCK,
+        "compile": (DispatchCompileFile, _VERILATE_BLOCK),
+        "coverage": RESOURCES_BLOCK,
+        "retry": (RetryConfigFile, {}),
+        "rightsize": (RightsizeConfigFile, {}),
+    },
+)
+
+
+# (path, block, key) already warned about: a models.yaml is reloaded for every test that names one of its models.
+_WARNED_UNKNOWN_KEYS: set[tuple[str, str, str]] = set()
+
+
+def warn_unknown_block_keys(raw, spec, *, path, block) -> list[str]:
+    """Warn about every key serde would drop from the raw mapping ``raw``; return them as ``block.key`` paths.
+
+    ``spec`` is ``(serde class, {key: nested spec})``. Each unknown key logs ``config.unknown_key`` naming ``path``, the block, the key and its closest known spelling, once per process.
+    A non-mapping ``raw`` is left to the typed load, and a ``modes:`` block is not descended into because :func:`validate_modes_block` already rejects its unknown keys.
+    """
+    if not isinstance(raw, dict):
+        return []
+    cls, nested = spec
+    known = _serde_keys(cls)
+    found = []
+    for key in raw:
+        if key in known:
+            continue
+        # YAML 1.1 reads an unquoted `on`/`yes` key as a boolean.
+        name = str(key)
+        found.append(f"{block}.{name}")
+        seen = (str(path), block, name)
+        if seen in _WARNED_UNKNOWN_KEYS:
+            continue
+        _WARNED_UNKNOWN_KEYS.add(seen)
+        close = difflib.get_close_matches(name, known, n=1)
+        log_event(
+            logger,
+            logging.WARNING,
+            "config.unknown_key",
+            path=str(path),
+            block=block,
+            key=name,
+            suggestion=close[0] if close else None,
+            known=list(known),
+        )
+    for key, child in nested.items():
+        found += warn_unknown_block_keys(
+            raw.get(key), child, path=path, block=f"{block}.{key}"
+        )
+    return found
+
+
 @dataclass
 class DispatchConfig:
     """Validated runtime dispatch configuration (see DispatchConfigFile)."""
@@ -709,6 +804,7 @@ class DispatchConfig:
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
     compile: DispatchCompileFile | None = None
+    coverage: DispatchResourcesFile | None = None
     sbatch_args: list = None
     poll_interval: float = 10.0
     progress_interval: float = 60.0
@@ -771,6 +867,33 @@ def resolve_resources(
             resolved.cpus = layer.cpus
         if layer.mem is not None:
             # Raw serde may carry the YAML sexagesimal/int trap; validate as applied.
+            resolved.mem = _validate_mem(layer.mem)
+        if layer.time is not None:
+            resolved.time = _validate_time(layer.time)
+    return resolved
+
+
+def resolve_coverage_resources(dispatch_cfg, *, builder_mode=None) -> JobResources:
+    """Resolve the coverage tail job's reservation.
+
+    Layers apply field by field: ``cfg-dispatch.coverage``, ``cfg-dispatch.resources``, built-in defaults.
+    ``builder_mode`` then layers each block's ``modes.<builder_mode>`` over the result, least specific first, as :func:`resolve_resources` does.
+    The tail exists only for a coverage run, so ``modes.cov`` is the usual place to size it.
+    """
+    resolved = JobResources()
+    blocks = []
+    if dispatch_cfg is not None:
+        blocks = [(dispatch_cfg.resources, False), (dispatch_cfg.coverage, True)]
+    layers = [block for block, _ in blocks] + [
+        mode_override(block, builder_mode, compile_block=is_coverage)
+        for block, is_coverage in blocks
+    ]
+    for layer in layers:
+        if layer is None:
+            continue
+        if layer.cpus is not None:
+            resolved.cpus = layer.cpus
+        if layer.mem is not None:
             resolved.mem = _validate_mem(layer.mem)
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)

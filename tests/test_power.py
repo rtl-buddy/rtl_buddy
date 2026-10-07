@@ -1211,6 +1211,45 @@ def test_a_trace_rewritten_under_the_run_is_recorded_as_unknown(
     assert "trace_changed_during_run" in caplog.text
 
 
+def test_synthetic_activity_also_drives_the_inputs(tmp_path):
+    """Synthetic activity sets the primary inputs as well as `-global`.
+
+    With `-global` alone, OpenSTA reports inf/NaN power downstream of inputs it does not
+    time, and the Total line no longer parses.
+    """
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.mode = "dynamic"
+    backend.power_cfg.activity.default_toggle_rate = 0.2
+    backend.power_cfg.activity.default_static_prob = 0.4
+    assert backend.power_cfg.get_activity_source() == "synthetic"
+
+    assert backend._emit_activity_cmds() == [
+        "set_power_activity -global -activity 0.2 -duty 0.4",
+        "set_power_activity -input -activity 0.2 -duty 0.4",
+    ]
+
+
+def test_the_options_digest_marks_synthetic_input_activity(tmp_path, monkeypatch):
+    """Rows from before inputs took the synthetic rate (#714) must not share a digest with later ones."""
+    import rtl_buddy.tools.power_openroad as power_openroad
+
+    seen = []
+    publish = power_openroad.publish_power
+
+    def _spy(**kwargs):
+        seen.append(kwargs["options"])
+        return publish(**kwargs)
+
+    monkeypatch.setattr(power_openroad, "publish_power", _spy)
+    backend = _make_power_backend(tmp_path)
+    backend.power_cfg.mode = "dynamic"
+    assert backend.power_cfg.get_activity_source() == "synthetic"
+    _run_prepared_power(
+        backend, monkeypatch, instances=_INSTANCE_RPT, cells=_INSTANCE_CELLS
+    )
+    assert seen[-1]["input_activity"] is True
+
+
 def test_a_static_run_hashes_no_trace_and_reads_none(tmp_path, monkeypatch):
     """A static run hashes no trace and reads none.
 

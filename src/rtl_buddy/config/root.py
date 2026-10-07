@@ -38,7 +38,12 @@ from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
 from .xplr import XplrConfig, XplrConfigFile
-from .dispatch import DispatchConfig, DispatchConfigFile
+from .dispatch import (
+    DISPATCH_BLOCK,
+    DispatchConfig,
+    DispatchConfigFile,
+    warn_unknown_block_keys,
+)
 from .env_file import apply_env_file
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -486,6 +491,13 @@ class RootConfig:
 
             # cfg-dispatch execution backend (optional, single block)
             if data.dispatch is not None:
+                # serde drops an unknown key; warn before the typed block is validated.
+                warn_unknown_block_keys(
+                    raw.get("cfg-dispatch"),
+                    DISPATCH_BLOCK,
+                    path=self.root_cfg_path,
+                    block="cfg-dispatch",
+                )
                 self.dispatch_cfg = data.dispatch.initialise()
 
             # RegConfig loads lazily in get_rtl_reg_cfg() so non-simulation commands never read regression.yaml or suite files.
@@ -687,6 +699,11 @@ class RootConfig:
         """Whether LCOV output is enabled for a simulator family."""
         cfg = self.get_coverage_cfg(simulator_name)
         return False if cfg is None else cfg.get_use_lcov()
+
+    def get_coverage_merge_timeout(self, simulator_name: str) -> float | None:
+        """Return the raw merge's ``merge-timeout`` in seconds for a simulator family, or None for no limit."""
+        cfg = self.get_coverage_cfg(simulator_name)
+        return None if cfg is None else cfg.get_merge_timeout()
 
     def get_coverview_cfg(self, simulator_name: str):
         """Return the Coverview packaging configuration for a simulator family, or None."""

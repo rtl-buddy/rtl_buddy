@@ -339,6 +339,64 @@ def test_suite_config_rejects_empty_runtime_seed_plusarg(minimal_project: Path):
         SuiteConfig(str(suite_path))
 
 
+def test_preproc_sets_plusdefines_resolves_test_then_suite_then_true(
+    minimal_project: Path,
+):
+    """The test's value wins, then the suite's, then the conservative default."""
+    suite_path = minimal_project / "tests.yaml"
+    text = suite_path.read_text()
+    assert all(
+        cfg.preproc_sets_plusdefines is True
+        for cfg in SuiteConfig(str(suite_path)).get_tests()
+    )
+
+    suite_path.write_text(
+        text.replace(
+            "testbenches:\n", "preproc-sets-plusdefines: false\ntestbenches:\n", 1
+        ).replace(
+            "    sim_timeout:\n",
+            "    sim_timeout:\n    preproc-sets-plusdefines: true\n",
+            1,
+        )
+    )
+    tests = {cfg.name: cfg for cfg in SuiteConfig(str(suite_path)).get_tests()}
+    assert tests["basic"].preproc_sets_plusdefines is True
+    assert tests["extra"].preproc_sets_plusdefines is False
+
+
+@pytest.mark.parametrize("layer", ["suite", "test"])
+@pytest.mark.parametrize("value", ['"false"', "0", "no-thanks"])
+def test_preproc_sets_plusdefines_must_be_a_boolean(
+    minimal_project: Path, layer, value
+):
+    """A quoted or numeric value is rejected at load, naming the key: `"false"` would otherwise read as true."""
+    suite_path = minimal_project / "tests.yaml"
+    text = suite_path.read_text()
+    if layer == "suite":
+        text = text.replace(
+            "testbenches:\n", f"preproc-sets-plusdefines: {value}\ntestbenches:\n", 1
+        )
+    else:
+        text = text.replace(
+            "    sim_timeout:\n",
+            f"    sim_timeout:\n    preproc-sets-plusdefines: {value}\n",
+            1,
+        )
+    suite_path.write_text(text)
+
+    with pytest.raises(
+        FatalRtlBuddyError, match="preproc-sets-plusdefines must be true or false"
+    ):
+        SuiteConfig(str(suite_path))
+
+
+def test_an_older_plan_without_the_preproc_declaration_reads_as_true():
+    """A plan written before the key existed keeps the per-test keying."""
+    plan = _make_full_plan_dict()
+    del plan["preproc_sets_plusdefines"]
+    assert TC.from_plan_dict(plan).preproc_sets_plusdefines is True
+
+
 def test_test_config_plusdefines_lazy_init_and_merge():
     cfg = _make_test_config()
     assert cfg.get_plusdefines() is None
@@ -395,6 +453,7 @@ def test_testconfig_plan_roundtrip():
         xfail_strict=False,
         sim_rand_seed=17,
         sim_rand_seed_plusarg="stimulus_seed",
+        preproc_sets_plusdefines=False,
         resolved_seed=29,
         seed_source="master",
         seed_identity="verif/axi/tests.yaml::axi_soak.W64::single",
@@ -1524,6 +1583,25 @@ def _verible_records(caplog, level):
         for r in caplog.records
         if r.name == "rtl_buddy.config.verible" and r.levelno == level
     ]
+
+
+def test_verible_extra_args_is_optional(tmp_path, monkeypatch):
+    """A `cfg-verible` entry without `extra_args` loads, and asks for nothing extra."""
+    active = _mkdir(tmp_path / "verible-here")
+    _touch_exe(active / "verible-verilog-syntax")
+    _write_two_verible_project(
+        tmp_path, active=str(active), inactive=str(tmp_path / "absent")
+    )
+    root_cfg = tmp_path / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text().replace("    extra_args: {}\n", ""))
+    assert "extra_args:" not in root_cfg.read_text()
+    monkeypatch.chdir(tmp_path)
+
+    rc = RootConfig(name="no-extra-args")
+
+    verible = rc.platform_cfg.get_verible()
+    assert verible.extra_args == {}
+    assert verible.get_extra_args("lint") == []
 
 
 def test_verible_pin_diagnostics_skip_the_unrouted_entry(tmp_path, monkeypatch, caplog):

@@ -580,10 +580,14 @@ class OpenRoadPower(BasePower):
             scope_arg = f" -scope {activity.scope}" if activity.scope else ""
             return [f"read_power_activities{scope_arg} -vcd {activity.vcd}"]
         if source == "synthetic":
+            # `-global` alone leaves primary inputs with no activity. OpenSTA then reports inf/NaN
+            # power downstream of any input it does not time (a false-pathed one, say), so the
+            # inputs take the same rate. The options digest marks it (`input_activity`), so rows
+            # from before this change are not taken for the same experiment.
+            rate = f"-activity {activity.default_toggle_rate} -duty {activity.default_static_prob}"
             return [
-                f"set_power_activity -global "
-                f"-activity {activity.default_toggle_rate} "
-                f"-duty {activity.default_static_prob}"
+                f"set_power_activity -global {rate}",
+                f"set_power_activity -input {rate}",
             ]
         return []  # "default" → static, no activity commands
 
@@ -1346,6 +1350,8 @@ class OpenRoadPower(BasePower):
                 **self._upstream_identity(),
                 "mode": self.power_cfg.get_mode(),
                 "activity_source": source,
+                # Synthetic activity also drives the primary inputs (#714); earlier runs left them idle.
+                **({"input_activity": True} if source == "synthetic" else {}),
                 # Under a multi-corner platform the watts and rows are the worst corner's; say which. Absent for one corner.
                 **({"corner": worst_corner} if worst_corner else {}),
                 "reglvl": self.power_cfg.get_reglvl(self.power_cfg.get_tool_name()),

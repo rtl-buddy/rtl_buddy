@@ -54,7 +54,7 @@ Before using `--dispatch slurm`, provide:
 
 For each suite, dispatch submits one build job that compiles each distinct build once, then groups simulations with identical resolved resources into Slurm arrays that start after the build succeeds. Where [verilation is split off](#split-verilation-from-the-c-build), the build is two chained jobs. Results come back into the normal summary and exit status.
 
-A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
+A compile or verilate failure fails the tests that use that build, with the compiler's exit status and error lines; unrelated builds continue, and the build job still exits 0 so its dependents run. A failed build is compiled once: the other tests on that build whose inputs are identical take its exit status, and their `compile.log` carries its transcript. A failure that may be transient is not shared, and each of those tests compiles for itself: one that waited for a license seat, or whose transcript ends in an out-of-memory signature (`Killed signal terminated program`, `virtual memory exhausted`, `out of memory`, `Cannot allocate memory`, make's `Error 137`). A job that produces no result (scheduler kill, node failure, dependency failure) is reported as a failed test, never dropped.
 
 `max-jobs-per-array` throttles each array, so total concurrency can approach the throttle times the number of arrays (or slices, for [large groups](#split-large-groups-into-several-arrays)).
 
@@ -99,6 +99,24 @@ cfg-dispatch:
 
 Quote every `time` value; an unquoted `4:00:00` is rejected.
 
+## Run the coverage tail as a job
+
+Under `--dispatch slurm`, the coverage tail of `rb test`, `rb randtest` and `rb regression` runs as one job instead of on the submit host: the raw merge, the `coverage-model.json` build, the LCOV exports and the manifest. It is submitted once every simulation is collected, the head waits on it like the fleet (`max-wait` applies), then reads back the summary lines and machine payload. Nothing is submitted when no test recorded coverage. A manifest-only tail (`--coverage-model none` with no merge, LCOV, HTML, Coverview, directory or source summary requested) also runs in the head, since a job would only add a queue wait. Without dispatch and under `local-parallel` the tail runs in the head as before.
+
+Size it with `cfg-dispatch.coverage`, which inherits `cfg-dispatch.resources` field by field and takes a `modes:` block. The tail only exists under a coverage build, so `modes.cov` is the usual place:
+
+```yaml
+cfg-dispatch:
+  coverage:
+    time: "01:00:00"
+    modes:
+      cov: {mem: 8G}
+```
+
+The job writes `cov_dir/` under the head's command root, logs to `.dispatch/coverage/` under the artefact root, and is named `rb:coverage`. If it fails, see [Read a failed merge](coverage.md#read-a-failed-merge).
+
+Once accepted, the job is recorded in `.dispatch/coverage/run-<pid>-<token>.json`, like a fleet. If the head dies while waiting on it, the next run finds it there (see [Interrupted runs](#interrupted-runs-warn-cancel-adopt)).
+
 ## Set per-test resources
 
 Reservations resolve field by field in this order: test, testbench, `cfg-dispatch.resources`, built-in defaults.
@@ -118,7 +136,7 @@ Tests with identical resolved reservations share an array.
 
 ## Size a reservation per builder mode
 
-A `modes:` sub-block sizes the same test for the builder mode it runs in. A `-M cov` build carries coverage counters and a `-M debug` build dumps waves, so a test that fits in 1 GB under `-M reg` can need far more memory and about twice the wall clock. Every reservation block takes one: `cfg-dispatch.resources` and `.compile`, a suite's `compile:`, and a testbench's or test's `resources:` and `compile:`.
+A `modes:` sub-block sizes the same test for the builder mode it runs in. A `-M cov` build carries coverage counters and a `-M debug` build dumps waves, so a test that fits in 1 GB under `-M reg` can need far more memory and about twice the wall clock. Every reservation block takes one: `cfg-dispatch.resources`, `.compile` and `.coverage`, a suite's `compile:`, and a testbench's or test's `resources:` and `compile:`.
 
 ```yaml
 resources:
@@ -168,7 +186,7 @@ The suite block is the floor for the build job. The job aggregates the testbench
 - `mem`: the sum of the largest `min(parallel, n)` builds, since concurrent builds each hold their own peak.
 - `time`: the finish time of the job's work queue, where each build starts on the first free of `parallel` workers in plan order. Builds of 30, 30, and 20 minutes on two workers take 50 minutes.
 
-Only testbenches with selected tests count, so a run that skips `tb_chip_t1` reserves the suite's `8G`. With no testbench `compile:` block, suite `compile.mem` is the whole job, so size it for `parallel` concurrent builds from elaboration, not simulation. Once any testbench states its own `mem`, the suite value is read as one build's peak for each build that has none. A 256G testbench beside an unannotated build under `compile: {mem: 8G, parallel: 2}` reserves 264G.
+Only testbenches with selected tests count, so a run that skips `tb_chip_t1` reserves the suite's `8G`. The head counts one build per distinct testbench, plusdefines, builder, model and `assertions`, except that a test with a `preproc` hook counts as its own build, because the hook may set plusdefines. Set `preproc-sets-plusdefines: false` on the test or the suite when the hook only writes stimulus, so twenty such tests on one testbench reserve one build, not twenty. With no testbench `compile:` block, suite `compile.mem` is the whole job, so size it for `parallel` concurrent builds from elaboration, not simulation. Once any testbench states its own `mem`, the suite value is read as one build's peak for each build that has none. A 256G testbench beside an unannotated build under `compile: {mem: 8G, parallel: 2}` reserves 264G.
 
 ## Compile several builds at once
 
@@ -277,6 +295,14 @@ If the head process dies (late `Ctrl-C`, dropped SSH session, login node reboot)
 
 A run that died while still submitting can never be adopted. `--orphans` has no effect for `local` and `local-parallel`; `--orphans adopt` there is a fatal error.
 
+A head can also die while it waits on its [coverage tail job](#run-the-coverage-tail-as-a-job), which keeps writing `cov_dir/`. `rb test`, `rb randtest` and `rb regression` check the command root's `artefacts/.dispatch/coverage/` records at start-up too:
+
+- `cancel` cancels that job before submitting anything, as for a fleet.
+- `warn` logs `dispatch.coverage_orphan_found` and leaves it running. This run's coverage tail then waits for it to leave the queue before writing `cov_dir/` (`coverage.tail_awaiting_orphan`). If `max-wait` expires first, this run's tail fails as `tail_failed` (exit 1) and the job is left running; it may still write its own manifest and model into `cov_dir/` afterwards.
+- `adopt` logs the same warning, but a coverage job cannot be adopted: the head that would read its answer is gone. `adopt` still needs an interrupted fleet to collect, so with only a coverage job left the run stops with the usual `--orphans adopt found no interrupted run` error. When it does adopt a fleet, the coverage tail waits as under `warn`.
+- Under `--run-tag` the records live in that tag's `artefacts/.runs/<tag>/.dispatch/coverage/`, while `cov_dir/` is shared by every tag. A coverage job orphaned under another tag, or untagged, is not seen.
+- Without a Slurm backend (`local`, `local-parallel`, and always for a `rb randtest -r` replay) nothing is checked: the tail writes `cov_dir/` even if an earlier Slurm run's coverage job is still running there.
+
 `adopt` needs exactly one orphan recorded from the same invocation: the same test config, tests, run IDs, per-test plan, builder options, `--extra-sim-timeout`, `--rebuild`, and reservations. Any difference is a fatal error naming the test and field. A `rb randtest` run that draws fresh seeds can never be adopted, and two orphans with live jobs are also fatal.
 
 ## Retry license-queue timeouts
@@ -368,6 +394,7 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 
 ## Troubleshoot reservations, arrays, and waits
 
+- **`config.unknown_key`:** a reservation or `cfg-dispatch` key was misspelt and ignored, so the job gets the inherited value. Rename it to the suggested key. See [Parallel dispatch](../reference/yaml.md#parallel-dispatch).
 - **`dispatch.reservations_ignored`:** `local-parallel` does not enforce `cpus`, `mem`, or `time`. Lower `--jobs` if memory runs out.
 - **`OUT_OF_MEMORY` (Slurm) or `Killed` / exit 137 (local):** raise the field named by `reservation_advice[*].edit_hint`, not `sim_timeout`. Elaboration of large generated structures can be the memory peak.
 - **sbatch refuses an array:** set `cfg-dispatch.max-array-size` or `max-array-tasks`. `dispatch.max_array_size_unknown` (INFO) means no limit could be read.
@@ -376,12 +403,13 @@ A test whose retries ran under different cpu requests gets no `cpus` row (`right
 - **`dispatch.wait_states_unfiltered`:** an old `squeue` refused the state filter, so a held job can be reported finished early.
 - **`dispatch.result_missing`:** a job produced no result. It counts as a failure unless the message says it is being retried.
 - **`dispatch.retry_abandoned`:** a retry could not be submitted; the earlier result stays scored.
-- **`dispatch.orphans_found` / `dispatch.orphans_cancel_failed`:** see [Interrupted runs](#interrupted-runs-warn-cancel-adopt).
+- **`dispatch.orphans_found` / `dispatch.orphans_cancel_failed` / `dispatch.coverage_orphan_found`:** see [Interrupted runs](#interrupted-runs-warn-cancel-adopt).
 
 ## Troubleshoot builds
 
 - **`dispatch.build_job_deduped` and the build job stays `PENDING`:** inspect the job it waits for with `squeue -j <ids> -O JobID,State,Reason` and `scontrol show job <id>`. `RUNNING`, or `PENDING` for `Resources` or `Priority`, is normal; cancelling it discards a build this run will reuse. `scancel` it only if it is held (`JobHeldUser`, `JobHeldAdmin`), unschedulable (`PartitionConfig`, `BadConstraints`), or an abandoned run.
 - **`build_job.group_input_drift`:** configs that share one build have different inputs. Give the config its own build, or fix the hook that rewrites the input per test.
+- **`build_job.group_failure_adoption_declined`:** a config shares a build whose first compile failed, but its inputs differ, the compiler was killed by a signal, or the failure may be transient (a license wait or an out-of-memory signature in the transcript), so it compiles again. A hook that rewrites a listed input per test causes the first; for an out-of-memory failure, raise `compile.mem` or lower `compile.parallel`.
 - **`compile.build_stamp_rejected`, `compile.stamp_write_failed`, `compile.prebuilt_stamp_invalid`:** see [Recover when a gated job cannot use the build](#recover-when-a-gated-job-cannot-use-the-build).
 - **`dispatch.binary_mismatch`:** runs of one build directory did not all use the same executable, because one run rebuilt it while others used it. Results are scored as they ran; re-run to confirm.
 - **`compile.build_phase_fallback`** (`marker-missing`, `marker-stale`, `no-verilate-unsupported`): the build job verilated for itself. The result is correct but unsplit.

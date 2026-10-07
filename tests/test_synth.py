@@ -6176,25 +6176,30 @@ def _openroad_digest(
     return options_digest(or_synth._phys_options())
 
 
-def test_an_openroad_run_digests_the_effort_synth_args_its_stage_1_reads(tmp_path):
-    """An openroad run digests the effort synth args its stage 1 reads.
+def test_an_openroad_run_digests_the_synth_args_its_stage_1_reads(tmp_path):
+    """An openroad run digests the resolved synth args its stage 1 reads.
 
-    `_write_yosys_script` appends `effort_cfg.get_yosys_synth_args()` to `synth -top` and ignores `opts.synth_args`, so an override of the latter does not move the digest and an effort change does.
+    `_write_yosys_script` appends the resolved `synth_args` (run override, then effort, then tool config) to `synth -top`, so each source moves the digest. `abc_args` is read by neither stage.
     """
     base = _openroad_digest(tmp_path)
     assert base is not None
 
-    # The effort's args are what stage 1 runs with, so they are identity.
-    assert _openroad_digest(tmp_path, effort=_effort_cfg(synth_args="-flatten")) != base
-
-    # The tool option of the same name is not read by either stage.
+    flatten_effort = _openroad_digest(
+        tmp_path, effort=_effort_cfg(synth_args="-flatten")
+    )
+    assert flatten_effort != base
+    # The same args from an override are the same experiment, under either key.
+    assert (
+        _openroad_digest(tmp_path, tool_overrides={"yosys": {"synth_args": "-flatten"}})
+        == flatten_effort
+    )
     assert (
         _openroad_digest(
             tmp_path, tool_overrides={"openroad": {"synth_args": "-flatten"}}
         )
-        == base
+        == flatten_effort
     )
-    # Nor is `abc_args` from either source: stage 1's ABC line takes `abc-script` only.
+    # `abc_args` from either source is not read: stage 1's ABC line takes `abc-script` only.
     assert (
         _openroad_digest(tmp_path, tool_overrides={"openroad": {"abc_args": "-fast"}})
         == base
@@ -6498,6 +6503,15 @@ def test_default_mapped_abc_script_has_no_dc2():
     assert "&nf {D}" in DEFAULT_MAPPED_ABC_SCRIPT
 
 
+def test_default_mapped_abc_script_has_no_fraig_sweep():
+    """`&fraig -x` is an unbounded SAT sweep that does not finish on deep arithmetic (#711)."""
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    assert "fraig" not in DEFAULT_MAPPED_ABC_SCRIPT
+    # The sequential sweep and retiming stay ahead of the choice-based mapping.
+    assert DEFAULT_MAPPED_ABC_SCRIPT.startswith("strash; scorr; dretime; ")
+
+
 def test_yosys_mapped_run_defaults_to_the_script_without_dc2(tmp_path):
     from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
 
@@ -6675,3 +6689,589 @@ def test_mapped_digests_move_with_the_abc_script(tmp_path):
     assert _openroad_digest(tmp_path) != _openroad_digest(
         tmp_path, effort=_effort_cfg(abc_script="strash; map")
     )
+
+
+# Yosys-stage keys of a `tool: openroad` run (#701)
+
+
+def _synth_line(script: str) -> str:
+    return next(line for line in script.splitlines() if line.startswith("synth -top"))
+
+
+def _or_tool_cfg_with(**opts):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    return SynthToolConfig(
+        SynthToolConfigFile(
+            name="openroad", tool="openroad", opts=SynthToolOptsFile(**opts)
+        )
+    )
+
+
+def test_openroad_stage_1_reads_synth_args_from_the_yosys_tool_entry(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=_FakeRootCfgORWithYosys(
+            lib_map={"mylib": str(lib)},
+            yosys_opts=SynthToolOptsFile(synth_args="-flatten"),
+        ),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _synth_line(script) == "synth -top top -flatten"
+
+
+def test_openroad_stage_1_reads_synth_args_from_its_own_entry_without_a_yosys_one(
+    tmp_path,
+):
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        tool_cfg=_or_tool_cfg_with(synth_args="-noabc"),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _synth_line(script) == "synth -top top -noabc"
+
+
+def test_openroad_synth_args_precedence_is_override_then_effort_then_tool(tmp_path):
+    fl, lib = _mapped_sources(tmp_path)
+
+    def _line(effort=None, tool_overrides=None):
+        or_synth = _make_openroad(
+            tmp_path,
+            synth_cfg=_make_synth_cfg(
+                model_name="top", platform="mylib", tool_overrides=tool_overrides
+            ),
+            tool_cfg=_or_tool_cfg_with(synth_args="-tool"),
+            root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+        )
+        or_synth.effort_cfg = effort or _effort_cfg()
+        return _synth_line(Path(or_synth._write_yosys_script(str(fl))).read_text())
+
+    assert _line() == "synth -top top -tool"
+    assert _line(effort=_effort_cfg(synth_args="-effort")) == "synth -top top -effort"
+    assert (
+        _line(
+            effort=_effort_cfg(synth_args="-effort"),
+            tool_overrides={"yosys": {"synth_args": "-run"}},
+        )
+        == "synth -top top -run"
+    )
+
+
+def test_openroad_stage_1_reads_tool_overrides_yosys_without_a_yosys_entry(tmp_path):
+    """The documented `yosys` override key works on a project with only an `openroad` tool entry."""
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _mapped_openroad(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(abc_script="effort"),
+        tool_overrides={"yosys": {"abc_script": "run", "synth_args": "-flatten"}},
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script).endswith('-script "+run"')
+    assert _synth_line(script) == "synth -top top -flatten"
+
+
+def test_openroad_stage_1_merges_both_override_keys_with_yosys_winning(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={
+                "openroad": {"abc_script": "legacy", "synth_args": "-legacy"},
+                "yosys": {"abc_script": "documented"},
+            },
+        ),
+        # The `openroad` key is read even when a `yosys` entry exists.
+        root_cfg=_FakeRootCfgORWithYosys(
+            lib_map={"mylib": str(lib)}, yosys_opts=SynthToolOptsFile()
+        ),
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert '-script "+documented"' in _abc_line(script)
+    assert _synth_line(script) == "synth -top top -legacy"
+
+
+def test_openroad_effort_without_openroad_falls_back_with_both_override_keys(
+    tmp_path,
+):
+    """`openroad.run: false` hands a `tool: openroad` run to YosysSynth with the `yosys` entry, which still reads `tool_overrides.openroad`."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            tool="openroad",
+            platform="mylib",
+            tool_overrides={
+                "openroad": {"synth_args": "-legacy"},
+                "yosys": {"abc_script": "documented"},
+            },
+        ),
+        tool_cfg=SynthToolConfig(
+            SynthToolConfigFile(name="yosys", tool="yosys", opts=SynthToolOptsFile())
+        ),
+        suite_dir=str(tmp_path),
+        root_cfg=_FakeRootCfg({"mylib": str(lib)}),
+        effort_cfg=_effort_cfg(),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert _synth_line(script) == "synth -top top -legacy"
+    assert '-script "+documented' in _abc_line(script)
+
+
+def test_yosys_stage_overrides_reject_a_non_mapping_block():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _make_synth_cfg(
+        tool="openroad",
+        tool_overrides={"openroad": ["synth_args"], "yosys": {"synth_args": "-x"}},
+    )
+    with pytest.raises(FatalRtlBuddyError, match="tool_overrides.openroad must be"):
+        cfg.get_yosys_stage_overrides("openroad")
+
+
+def test_yosys_stage_overrides_for_a_yosys_run_are_the_yosys_block():
+    cfg = _make_synth_cfg(
+        tool_overrides={"yosys": {"synth_args": "-x"}, "openroad": {"strategy": "AREA"}}
+    )
+    assert cfg.get_yosys_stage_overrides("yosys") == {"synth_args": "-x"}
+
+
+class _FakeRootCfgTools:
+    def __init__(self, **tool_opts):
+        from rtl_buddy.config.synth import SynthToolOptsFile
+
+        self._cfgs = {
+            name: SynthToolConfig(
+                SynthToolConfigFile(
+                    name=name, tool=name, opts=SynthToolOptsFile(**opts)
+                )
+            )
+            for name, opts in tool_opts.items()
+        }
+
+    def get_synth_tool_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        if name not in self._cfgs:
+            raise FatalRtlBuddyError(f"tool '{name}' not found")
+        return self._cfgs[name]
+
+
+def _warn_ignored(caplog, synth_cfg, root_cfg):
+    from rtl_buddy.config.synth import warn_ignored_synth_settings
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        warn_ignored_synth_settings(synth_cfg, root_cfg)
+
+
+def test_ignored_synth_settings_warn_on_an_unread_tool_overrides_key(caplog):
+    cfg = _make_synth_cfg(
+        tool="openroad",
+        tool_overrides={"openroad": {}, "yosys": {}, "yosys_slang": {"frontend": "x"}},
+    )
+    _warn_ignored(caplog, cfg, None)
+    assert "'yosys_slang'" in caplog.text
+    assert "tool_overrides.openroad and tool_overrides.yosys" in caplog.text
+
+
+def test_ignored_synth_settings_warn_on_a_yosys_strategy(caplog):
+    cfg = _make_synth_cfg(
+        tool="openroad", tool_overrides={"yosys": {"strategy": "TIMING"}}
+    )
+    _warn_ignored(caplog, cfg, None)
+    assert "tool_overrides.yosys.strategy" in caplog.text
+
+
+def test_ignored_synth_settings_warn_on_shadowed_openroad_opts(caplog):
+    root_cfg = _FakeRootCfgTools(
+        openroad={"strategy": "TIMING", "frontend": "slang", "synth_args": "-flatten"},
+        yosys={"frontend": "slang"},
+    )
+    _warn_ignored(caplog, _make_synth_cfg(tool="openroad"), root_cfg)
+    # `frontend` agrees with the yosys entry and `strategy` is the OpenROAD stage's own.
+    assert "opts synth-args ignored" in caplog.text
+
+
+def test_ignored_synth_settings_quiet_for_a_clean_config(caplog):
+    root_cfg = _FakeRootCfgTools(openroad={"strategy": "AREA"}, yosys={})
+    cfg = _make_synth_cfg(
+        tool="openroad",
+        tool_overrides={"openroad": {"strategy": "AREA"}, "yosys": {"abc_script": "x"}},
+    )
+    _warn_ignored(caplog, cfg, root_cfg)
+    assert caplog.text == ""
+    # Without a yosys entry the openroad entry's opts are the Yosys stage's, so nothing is shadowed.
+    root_cfg = _FakeRootCfgTools(openroad={"synth_args": "-flatten"})
+    _warn_ignored(caplog, cfg, root_cfg)
+    assert caplog.text == ""
+
+
+# `stat -json` capture cleanup (#710)
+
+
+def test_clean_stat_json_strips_the_gzip_notice(tmp_path):
+    import json
+
+    from rtl_buddy.tools.synth_yosys import clean_stat_json
+
+    obj = '{\n   "modules": {"\\\\top": {"num_cells": 2, "area": 3.5}}\n}'
+    path = tmp_path / "synth_stat.json"
+    path.write_text(
+        "Found gzip magic in file `c.lib.gz', decompressing using zlib.\n" + obj + "\n"
+    )
+    clean_stat_json(str(path))
+    assert path.read_text() == obj + "\n"
+    assert json.loads(path.read_text())["modules"]["\\top"]["area"] == 3.5
+
+
+def test_clean_stat_json_leaves_a_clean_or_unparseable_file_alone(tmp_path):
+    from rtl_buddy.tools.synth_yosys import clean_stat_json
+
+    clean = tmp_path / "clean.json"
+    clean.write_text('{"modules": {}}\n')
+    junk = tmp_path / "junk.json"
+    junk.write_text("ERROR: no JSON here\n")
+    for path in (clean, junk):
+        before = path.read_text()
+        clean_stat_json(str(path))
+        assert path.read_text() == before
+    # A missing file (Yosys failed before `stat`) is not an error.
+    clean_stat_json(str(tmp_path / "absent.json"))
+
+
+# Timing repair before the synthesis STA (#703)
+
+
+def _effort_repair(repair=True):
+    from rtl_buddy.config.synth import (
+        SynthEffortConfig,
+        SynthEffortConfigFile,
+        SynthEffortOpenroadFile,
+    )
+
+    return SynthEffortConfig(
+        SynthEffortConfigFile(
+            name="repair", openroad=SynthEffortOpenroadFile(repair=repair)
+        )
+    )
+
+
+class _FakePlatformCfgWithRc(_FakePlatformCfgWithLef):
+    def __init__(self, path, lef_paths, layer_rc_tcl):
+        super().__init__(path, lef_paths)
+        self._layer_rc_tcl = layer_rc_tcl
+
+    def get_layer_rc_tcl(self):
+        return self._layer_rc_tcl
+
+
+class _FakeRootCfgORWithRc(_FakeRootCfgOR):
+    def __init__(self, lib, lef, layer_rc_tcl=""):
+        super().__init__(lib_map={"mylib": lib}, lef_map={"mylib": [lef]})
+        self._layer_rc_tcl = layer_rc_tcl
+
+    def get_synth_platform_cfg(self, name):
+        return _FakePlatformCfgWithRc(
+            self._lib_map[name], self._lef_map[name], self._layer_rc_tcl
+        )
+
+
+def _repair_openroad(tmp_path, *, repair, layer_rc_tcl="", sdc=True, strategy=""):
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    constraints = None
+    if sdc:
+        constraints = tmp_path / "c.sdc"
+        constraints.write_text("create_clock -period 1.0 [get_ports clk]\n")
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool="openroad",
+            constraints=str(constraints) if constraints else None,
+        ),
+        tool_cfg=_make_or_tool_cfg(strategy=strategy),
+        root_cfg=_FakeRootCfgORWithRc(str(lib), str(lef), layer_rc_tcl),
+    )
+    or_synth.effort_cfg = _effort_repair(repair)
+    return or_synth, lib, lef
+
+
+def _or_script_lines(or_synth, lib, lef):
+    return (
+        Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text().splitlines()
+    )
+
+
+def test_openroad_repair_runs_after_resynthesis_and_before_the_reports(tmp_path):
+    rc = tmp_path / "setRC.tcl"
+    rc.write_text("set_wire_rc -signal -layer met2\n")
+    or_synth, lib, lef = _repair_openroad(
+        tmp_path, repair=True, layer_rc_tcl=str(rc), strategy="TIMING"
+    )
+    lines = _or_script_lines(or_synth, lib, lef)
+    start = lines.index("resynth_annealing")
+    assert lines[start : start + 4] == [
+        "resynth_annealing",
+        "repair_design",
+        "repair_timing -setup",
+        "report_design_area",
+    ]
+    # Wire RC right after `read_sdc`, before `pre-sta-tcl`, so a `set_wire_rc` there wins.
+    sdc = lines.index(f"read_sdc {tmp_path / 'c.sdc'}")
+    assert lines[sdc + 1] == f'source "{rc}"'
+
+
+def test_openroad_repair_without_layer_rc_or_constraints(tmp_path):
+    or_synth, lib, lef = _repair_openroad(tmp_path, repair=True, sdc=False)
+    lines = _or_script_lines(or_synth, lib, lef)
+    # No clock to repair setup against, and no PDK wire RC to source.
+    assert "repair_design" in lines
+    assert "repair_timing -setup" not in lines
+    assert not any(line.startswith("source ") for line in lines)
+
+
+def test_openroad_without_repair_times_the_yosys_netlist_as_is(tmp_path):
+    rc = tmp_path / "setRC.tcl"
+    rc.write_text("")
+    or_synth, lib, lef = _repair_openroad(tmp_path, repair=False, layer_rc_tcl=str(rc))
+    lines = _or_script_lines(or_synth, lib, lef)
+    assert not any(line.startswith(("repair_", "source ")) for line in lines)
+
+
+@pytest.mark.parametrize(
+    "repair, sdc, expected, label",
+    [
+        (False, True, False, "Synthesis passed (pre-repair timing)"),
+        (True, True, True, "Synthesis passed (repaired timing)"),
+        (False, False, None, None),
+    ],
+)
+def test_openroad_results_say_whether_timing_was_repaired(
+    tmp_path, monkeypatch, repair, sdc, expected, label
+):
+    from rtl_buddy.tools import synth_openroad as synth_openroad_module
+
+    or_synth, lib, lef = _repair_openroad(tmp_path, repair=repair, sdc=sdc)
+    monkeypatch.setattr(
+        synth_openroad_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+
+    def _openroad(cmd, stdout, **kwargs):
+        stdout.write(
+            "Design area 100 um^2 50% utilization.\n"
+            "worst slack max -9.100\ntns max -120.000\n"
+        )
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(synth_openroad_module.subprocess, "run", _openroad)
+    monkeypatch.setattr(or_synth, "_publish_phys_model", lambda **kw: None)
+    res = or_synth._run_or_stage(10, [str(lef)], [str(lib)]).results
+    assert res["result"] == "PASS"
+    assert res.get("timing_repaired") is expected
+    assert res["desc"] == (label or "Synthesis passed")
+
+
+def test_synth_pass_results_without_timing_keep_the_plain_desc():
+    res = SynthPassResults(name="x/results", area_um2=1.0).results
+    assert res["desc"] == "Synthesis passed"
+    assert "timing_repaired" not in res
+
+
+def test_openroad_repair_moves_the_digest_and_off_keeps_it(tmp_path):
+    from rtl_buddy.phys.provenance import options_digest
+
+    rc = tmp_path / "setRC.tcl"
+    rc.write_text("set_wire_rc -signal -layer met2\n")
+
+    def _digest(repair, rc_text=None):
+        if rc_text is not None:
+            rc.write_text(rc_text)
+        or_synth, _, _ = _repair_openroad(tmp_path, repair=repair, layer_rc_tcl=str(rc))
+        return options_digest(or_synth._phys_options())
+
+    off = _digest(False)
+    on = _digest(True)
+    assert on != off
+    # Repair off adds no key, so existing runs keep their digest.
+    or_synth, _, _ = _repair_openroad(tmp_path, repair=False, layer_rc_tcl=str(rc))
+    assert "repair" not in or_synth._phys_options()["map"]
+    # The wire RC the repair estimates with is part of the experiment.
+    assert _digest(True, "set_wire_rc -signal -layer met3\n") != on
+
+
+def test_effort_openroad_repair_loads_from_yaml():
+    from serde.yaml import from_yaml
+
+    from rtl_buddy.config.synth import SynthEffortConfig, SynthEffortConfigFile
+
+    effort = SynthEffortConfig(
+        from_yaml(SynthEffortConfigFile, "name: fix\nopenroad:\n  repair: true\n")
+    )
+    assert effort.get_openroad_repair() is True
+    assert (
+        SynthEffortConfig(
+            from_yaml(SynthEffortConfigFile, "name: plain\n")
+        ).get_openroad_repair()
+        is False
+    )
+
+
+_KOGGE_STONE = "-noabc -extra-map +/choices/kogge-stone.v"
+
+
+def test_delay_preset_drops_only_dch_from_the_default():
+    """`&dch -f` choices let `&nf` area recovery ripple prefix adders off the critical path (#724)."""
+    from rtl_buddy.tools.synth_yosys import (
+        DEFAULT_MAPPED_ABC_SCRIPT,
+        DELAY_MAPPED_ABC_SCRIPT,
+        MAPPED_ABC_PRESETS,
+    )
+
+    assert "&dch" not in DELAY_MAPPED_ABC_SCRIPT
+    assert DELAY_MAPPED_ABC_SCRIPT == DEFAULT_MAPPED_ABC_SCRIPT.replace("&dch -f; ", "")
+    assert MAPPED_ABC_PRESETS == {
+        "default": DEFAULT_MAPPED_ABC_SCRIPT,
+        "delay": DELAY_MAPPED_ABC_SCRIPT,
+    }
+
+
+@pytest.mark.parametrize("preset", ["default", "delay", " delay "])
+def test_abc_script_names_a_preset_on_both_backends(tmp_path, preset):
+    from rtl_buddy.tools.synth_yosys import MAPPED_ABC_PRESETS
+
+    expected = MAPPED_ABC_PRESETS[preset.strip()]
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=_effort_cfg(abc_script=preset))
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{expected}"'
+    )
+    or_synth = _mapped_openroad(
+        tmp_path, lib, tool_overrides={"openroad": {"abc_script": preset}}
+    )
+    assert _abc_line(Path(or_synth._write_yosys_script(str(fl))).read_text()).endswith(
+        f'-script "+{expected}"'
+    )
+
+
+@pytest.mark.parametrize("carry", ["kogge-stone", "sklansky", "han-carlson"])
+def test_prefix_adder_effort_defaults_to_the_delay_preset(tmp_path, carry):
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT
+
+    effort = _effort_cfg(synth_args=f"-noabc -extra-map +/choices/{carry}.v")
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=effort)
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"'
+    )
+    or_synth = _mapped_openroad(tmp_path, lib, effort=effort)
+    assert _abc_line(Path(or_synth._write_yosys_script(str(fl))).read_text()).endswith(
+        f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"'
+    )
+
+
+def test_prefix_adder_tool_synth_args_select_the_delay_preset_on_yosys(tmp_path):
+    """`tool: yosys` runs `synth` with the resolved `synth-args`, tool config included."""
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, tool_cfg=_tool_cfg(synth_args=_KOGGE_STONE))
+    script = Path(ys._write_script(str(fl))).read_text()
+    synth_line = next(line for line in script.splitlines() if line.startswith("synth "))
+    assert synth_line.endswith(f" {_KOGGE_STONE}")
+    assert _abc_line(script).endswith(f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"')
+
+
+@pytest.mark.parametrize(
+    "synth_args",
+    ["", "-noabc", "-noabc -extra-map my_cells.v", "-noabc -extra-map=+/choices/x.v"],
+)
+def test_other_synth_args_keep_the_default_preset(tmp_path, synth_args):
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(tmp_path, lib, effort=_effort_cfg(synth_args=synth_args))
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{DEFAULT_MAPPED_ABC_SCRIPT}"'
+    )
+
+
+def test_a_set_abc_script_beats_the_prefix_adder_default(tmp_path):
+    from rtl_buddy.tools.synth_yosys import DEFAULT_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    ys = _mapped_yosys(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(synth_args=_KOGGE_STONE, abc_script="default"),
+    )
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        f'-script "+{DEFAULT_MAPPED_ABC_SCRIPT}"'
+    )
+    ys = _mapped_yosys(
+        tmp_path,
+        lib,
+        effort=_effort_cfg(synth_args=_KOGGE_STONE),
+        tool_overrides={"yosys": {"abc_script": "strash; map {D}"}},
+    )
+    assert _abc_line(Path(ys._write_script(str(fl))).read_text()).endswith(
+        '-script "+strash; map {D}"'
+    )
+
+
+def test_prefix_adder_tool_synth_args_select_the_delay_preset_on_openroad(
+    tmp_path, caplog
+):
+    """Stage 1 picks the preset from the resolved synth-args (#701), tool entry included, and says so."""
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT
+
+    fl, lib = _mapped_sources(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        tool_cfg=_or_tool_cfg_with(synth_args=_KOGGE_STONE),
+        root_cfg=_FakeRootCfgOR(lib_map={"mylib": str(lib)}),
+    )
+    with caplog.at_level("INFO"):
+        script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert _abc_line(script).endswith(f'-script "+{DELAY_MAPPED_ABC_SCRIPT}"')
+    assert or_synth._phys_options()["abc_script"] == DELAY_MAPPED_ABC_SCRIPT
+    assert "delay ABC preset" in caplog.text
+
+
+def test_mapped_digests_record_the_prefix_adder_preset(tmp_path):
+    from rtl_buddy.tools.synth_yosys import DELAY_MAPPED_ABC_SCRIPT, YosysSynth
+
+    effort = _effort_cfg(synth_args=_KOGGE_STONE)
+    ys = YosysSynth(
+        name="t/yosys",
+        synth_cfg=_make_synth_cfg(lib_paths=["/pdk/slow.lib"]),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+        effort_cfg=effort,
+    )
+    assert ys._phys_options(mapped=True)["abc_script"] == DELAY_MAPPED_ABC_SCRIPT
+    or_synth = _mapped_openroad(tmp_path, tmp_path / "cells.lib", effort=effort)
+    assert or_synth._phys_options()["abc_script"] == DELAY_MAPPED_ABC_SCRIPT

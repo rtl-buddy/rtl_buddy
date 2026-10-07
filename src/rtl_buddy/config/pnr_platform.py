@@ -90,6 +90,10 @@ class PnrPlatformConfigFile:
     cts_sink_clustering: bool = field(rename="cts-sink-clustering", default=True)
     # Runs `repair_timing -setup` before the post-CTS hold repair.
     post_cts_setup_repair: bool = field(rename="post-cts-setup-repair", default=False)
+    # Repairs hold again after global route, on `estimate_parasitics -global_routing`, as ORFS does.
+    global_route_hold_repair: bool = field(
+        rename="global-route-hold-repair", default=False
+    )
     # `set_global_routing_layer_adjustment` over the signal layers; `None` leaves the router's default.
     routing_layer_adjustment: float | None = field(
         rename="routing-layer-adjustment", default=None
@@ -119,6 +123,7 @@ class PnrPlatformConfig:
         self._cts_buffers = _as_cell_list(cfg.cts_buffer)
         self._cts_sink_clustering = cfg.cts_sink_clustering
         self._post_cts_setup_repair = cfg.post_cts_setup_repair
+        self._global_route_hold_repair = cfg.global_route_hold_repair
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
         )
@@ -294,6 +299,10 @@ class PnrPlatformConfig:
     def get_post_cts_setup_repair(self) -> bool:
         """Whether post-CTS repair fixes setup before hold."""
         return self._post_cts_setup_repair
+
+    def get_global_route_hold_repair(self) -> bool:
+        """Whether hold is repaired again on global-route parasitics, before detail route."""
+        return self._global_route_hold_repair
 
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""

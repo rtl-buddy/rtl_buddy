@@ -111,6 +111,12 @@ _CELL_COUNT_RE = re.compile(
     rf"^{re.escape(_CELL_COUNT_TAG)} routed (\d+) physical (\d+)\s*$", re.MULTILINE
 )
 
+# OpenROAD's warnings that a pre-route step saw zero wire R/C: EST-0018 from `estimate_parasitics -placement`, CTS-0104 from clock-tree latency balancing.
+_NO_WIRE_RC_CODES = ("EST-0018", "CTS-0104")
+
+# Where the `pnr.no_wire_rc` warning sends the reader.
+_NO_WIRE_RC_DOCS = "rb docs show concepts/pnr#set-wire-rc"
+
 _STA_CELL_NOT_FOUND = re.compile(
     r"^\[WARNING STA-0122\] cell '(.+)' not found\.$", re.M
 )
@@ -164,6 +170,24 @@ def _hook_block(title: str, path: str) -> str:
     if not path:
         return ""
     return f'\nputs ">>> {title}"\n{tcl_source(path)}\n'
+
+
+def _global_route_hold_repair_tcl(platform) -> str:
+    """Return the post-global-route hold repair, as ORFS runs it, or `""` when the platform leaves it off.
+
+    The global-route estimate includes the wires that post-CTS repair (on placement parasitics) could not see. The resizer reroutes the nets it changes; the cells it adds are legalized and their nets rerouted incrementally before detail route.
+    """
+    if not platform.get_global_route_hold_repair():
+        return ""
+    return (
+        'puts ">>> Post-global-route hold repair"\n'
+        "estimate_parasitics -global_routing\n"
+        "repair_timing -hold\n"
+        "global_route -start_incremental\n"
+        "detailed_placement\n"
+        "global_route -end_incremental\n"
+        "check_placement -verbose\n"
+    )
 
 
 def _layer_adjustment_tcl(platform) -> str:
@@ -710,6 +734,7 @@ class OpenRoadPnr:
                 "repair_timing -setup\n" if platform.get_post_cts_setup_repair() else ""
             ),
             "layer_adjustment": _layer_adjustment_tcl(platform),
+            "global_route_hold_repair": _global_route_hold_repair_tcl(platform),
             "cell_count_tag": _CELL_COUNT_TAG,
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
@@ -1666,6 +1691,31 @@ class OpenRoadPnr:
                 log=self._log_path(),
             )
 
+    def _no_wire_rc_qualifier(self, platform, log_text: str) -> str:
+        """Warn when CTS, placement parasitics and hold repair ran with zero wire R/C, and return the result qualifier, or `""`.
+
+        Without a PDK `layer-rc-tcl` the technology LEF's layer RC is all the pre-route steps see, which is zero on most open PDKs. The run still passes, but CTS balances and hold repair fixes paths whose wires are not there yet, so the final extracted timing can fail hold that repair never saw. Either cause is enough: no `layer-rc-tcl`, or OpenROAD's own warning that the RC it has is zero.
+        """
+        no_layer_rc = not platform.get_pdk().get_layer_rc_tcl()
+        codes = [code for code in _NO_WIRE_RC_CODES if f"[WARNING {code}]" in log_text]
+        if not no_layer_rc and not codes:
+            return ""
+        causes = (["no layer-rc-tcl"] if no_layer_rc else []) + codes
+        log_event(
+            logger,
+            logging.WARNING,
+            "pnr.no_wire_rc",
+            pnr=self.pnr_cfg.get_name(),
+            layer_rc_tcl=not no_layer_rc,
+            codes=codes,
+            docs=_NO_WIRE_RC_DOCS,
+            log=self._log_path(),
+        )
+        return (
+            f"pnr.no_wire_rc: pre-route steps saw no wire RC "
+            f"({', '.join(causes)}); see {_NO_WIRE_RC_DOCS}"
+        )
+
     def _fail_after_openroad(self, desc: str) -> PnrFailResults:
         """Return a FAIL for a run that already invoked OpenROAD, after removing its outputs.
 
@@ -2396,6 +2446,9 @@ class OpenRoadPnr:
                 f"{len(error_lines)} ERROR(s) in OpenROAD log"
             )
 
+        # Logged for every run that got this far; only a pass carries it in the result description.
+        no_wire_rc = self._no_wire_rc_qualifier(platform, log_text)
+
         area = self._parse_area_um2(log_text)
         cells = self._parse_cell_count(log_text)
         routed_cells, physical_cells = self._parse_routed_cell_counts(log_text)
@@ -2476,6 +2529,7 @@ class OpenRoadPnr:
             for q in (
                 export.desc if export else "",
                 pnr_abstract.stale_qualifier(self._blocks),
+                no_wire_rc,
             )
             if q
         ]

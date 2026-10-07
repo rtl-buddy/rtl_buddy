@@ -343,6 +343,12 @@
     <label class="chk" title="Which metric the FILE LIST is ranked and barred on — coldest first, files with no points of that kind last — and which the cold-only filter reads. It opens on toggle, where the holes usually are, and clicking a column header in the source view sets it too. The source view itself always shows all five. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
       metric <select id="metric"></select>
     </label>
+    <label class="chk" title="Which figures the totals, file list and tests table show. PER ELABORATION counts a point once per elaborated module (what rb cov summary's run row reports): a block built under two parameterisations is two points. SOURCE POINTS counts it once, covered when any elaboration hit it (rb cov summary --by-source); the file list keeps the per-elaboration order. Open the pane on source points with /cov?by=source.">
+      figures <select id="by">
+        <option value="elab">per elaboration</option>
+        <option value="source">source points</option>
+      </select>
+    </label>
     <label class="chk" title="Restrict the FILE LIST and the tests table to one module's sources. These are the ELABORATED names the simulator compiled (ip_async_fifo__DB13), because that is what the coverage model is keyed on and two parameterisations of one module are two entries here; the source name is what the module chips in the file header show. To count only one elaboration's points INSIDE an open file, use the elaboration lens in the file header.">
       module <select id="module"><option value="">all</option></select>
     </label>
@@ -425,6 +431,7 @@
   var els = {
     counts: document.getElementById('counts'),
     metric: document.getElementById('metric'),
+    by: document.getElementById('by'),
     module: document.getElementById('module'),
     search: document.getElementById('search'),
     cold: document.getElementById('opt-cold'),
@@ -456,6 +463,7 @@
     byPath: Object.create(null),
     modules: Object.create(null),
     metric: null,      // chosen on the first ingest, the user's pick after
+    by: 'elab',        // which figures the tables show: 'elab' or 'source', see figuresOf
     module: '',
     filter: '',
     coldOnly: false,
@@ -498,8 +506,9 @@
     node.style.setProperty('--h', String(Math.round(ratio * 120)));
     return node;
   }
-  function totalsOf(row, metric) {
-    return (row && row.totals && row.totals[metric]) || { found: 0, hit: 0, ratio: null };
+  // The figures the tables show for a run, test or file row: its source_totals under the source toggle, else its totals.
+  function shownTotals(row, metric) {
+    return figuresOf(row, metric, state.by);
   }
   function uuid() {
     if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
@@ -809,6 +818,7 @@
     }
 
     renderMetricPicker();
+    renderByPicker();
     renderModulePicker();
     renderHeader();
     renderFiles();
@@ -821,6 +831,10 @@
     var counts = payload.counts || {};
     note((counts.files || 0) + ' files, ' + (counts.tests || 0) + ' tests, ' +
          (counts.modules || 0) + ' modules');
+    // After the counts, which would otherwise overwrite it.
+    if (state.by === FIGURES_SOURCE && !payload.source_totals) {
+      note('this run\u2019s model carries no source-point figures; showing per elaboration', 'warn');
+    }
     if (state.pending) {
       var focus = state.pending; state.pending = null;
       applyFocus(focus);
@@ -829,30 +843,57 @@
 
   function renderHeader() {
     var p = state.payload || {};
-    var totals = p.totals || {};
-    var parts = [];
-    METRICS.forEach(function (metric) {
-      var t = totals[metric];
-      if (!t || !t.found) { return; }
-      parts.push(METRIC_INITIAL[metric] + ' ' + pct(t.ratio));
-    });
+    function summary(by) {
+      var parts = [];
+      METRICS.forEach(function (metric) {
+        var t = figuresOf(p, metric, by);
+        if (!t.found) { return; }
+        parts.push(METRIC_INITIAL[metric] + ' ' + pct(t.ratio));
+      });
+      return parts;
+    }
+    var parts = summary(state.by);
     if (p.simulator) { parts.push(p.simulator); }
     els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
-    // Header percentages are per elaboration like the rest of the pane; the source-point totals go in the tooltip.
+    // The header shows the chosen figures like the rest of the pane; the other figure goes in the tooltip.
     var hint = p.manifest ? 'from ' + p.manifest : '';
-    var collapsed = p.source_totals;
-    if (collapsed) {
-      var srcParts = [];
-      METRICS.forEach(function (metric) {
-        var s = collapsed[metric];
-        if (!s || !s.found) { return; }
-        srcParts.push(METRIC_INITIAL[metric] + ' ' + pct(s.ratio));
-      });
-      if (srcParts.length) {
-        hint += (hint ? '\n' : '') + 'source points: ' + srcParts.join(' · ');
+    if (p.source_totals) {
+      var other = state.by === FIGURES_SOURCE ? FIGURES_ELAB : FIGURES_SOURCE;
+      var otherParts = summary(other);
+      if (otherParts.length) {
+        hint += (hint ? '\n' : '') +
+          (other === FIGURES_SOURCE ? 'source points: ' : 'per elaboration: ') +
+          otherParts.join(' · ');
       }
     }
     els.counts.title = hint;
+  }
+
+  // The figures picker. A model without source_totals offers only per-elaboration figures.
+  function renderByPicker() {
+    var has = !!(state.payload && state.payload.source_totals);
+    var source = els.by.querySelector('option[value="' + FIGURES_SOURCE + '"]');
+    source.disabled = !has;
+    source.textContent = has ? 'source points' : 'source points (none)';
+    els.by.value = has ? state.by : FIGURES_ELAB;
+  }
+
+  // Set from the figures picker; re-renders every table and keeps ?by= in the address so a reload or bookmark keeps it.
+  function setBy(by) {
+    by = by === FIGURES_SOURCE ? FIGURES_SOURCE : FIGURES_ELAB;
+    if (state.by === by) { return; }
+    state.by = by;
+    els.by.value = by;
+    try {
+      history.replaceState(null, '', location.pathname + searchWithBy(location.search, by) +
+        location.hash);
+    } catch (e) { /* a sandboxed frame cannot rewrite its address; the pick still applies */ }
+    if (!state.payload) { return; }
+    renderHeader();
+    renderFiles();
+    renderTests();
+    renderDashboard();
+    if (state.file) { renderFile(); }
   }
 
   function initialMetric(payload) {
@@ -881,6 +922,54 @@
   }
 
   // --- pure helpers, no DOM and no state -----------------------------
+  // >>> figures
+  // The two figures of `rb cov summary`: `totals` per elaboration, `source_totals` with a point covered when any
+  // elaboration hit it. A row with no source_totals (a model older than them) shows its totals under either choice.
+  var FIGURES_ELAB = 'elab';
+  var FIGURES_SOURCE = 'source';
+
+  function figuresOf(row, metric, by) {
+    var key = by === FIGURES_SOURCE && row && row.source_totals ? 'source_totals' : 'totals';
+    return (row && row[key] && row[key][metric]) || { found: 0, hit: 0, ratio: null };
+  }
+
+  // `?by=source` opens the pane on source points; anything else, or no parameter, on per-elaboration figures.
+  function openedBy(search) {
+    var found = /[?&]by=([^&]*)/.exec(String(search == null ? '' : search));
+    return found && found[1] === FIGURES_SOURCE ? FIGURES_SOURCE : FIGURES_ELAB;
+  }
+
+  // The query string with `by` set to `by`, or removed for per-elaboration; other parameters are kept in order.
+  function searchWithBy(search, by) {
+    var parts = String(search == null ? '' : search).replace(/^\?/, '').split('&')
+      .filter(function (part) { return part && !/^by(=|$)/.test(part); });
+    if (by === FIGURES_SOURCE) { parts.push('by=' + FIGURES_SOURCE); }
+    return parts.length ? '?' + parts.join('&') : '';
+  }
+
+  // The figures a cov_focus payload asks for. The wire spells them `elaboration` / `source`; an absent or unknown `by`
+  // is null, which leaves the picker alone.
+  function focusedBy(payload) {
+    var by = payload && payload.by;
+    if (by === 'source') { return FIGURES_SOURCE; }
+    if (by === 'elaboration') { return FIGURES_ELAB; }
+    return null;
+  }
+
+  // Source-point count of one file's points: points sharing (line, column, name) are one point, hit when any of them has
+  // `hits(point) > 0`. The test-lens counterpart of a file's source_totals, as rtl_buddy.cov.raw.source_point_key keys it.
+  function sourceCount(points, hits) {
+    var seen = Object.create(null), found = 0, hit = 0;
+    (points || []).forEach(function (point) {
+      if (!point) { return; }
+      var key = JSON.stringify([point.line, point.column, point.name]);
+      if (!(key in seen)) { seen[key] = false; found += 1; }
+      if (!seen[key] && hits(point) > 0) { seen[key] = true; hit += 1; }
+    });
+    return { found: found, hit: hit, ratio: found ? hit / found : null };
+  }
+  // <<< figures
+
   // >>> module-names
   // The model keys modules on the simulator's elaborated name (`ip_async_fifo__DB13`); the graph and source use
   // the source name. One trailing `__<alnum>` group is the difference: strip it once, only if a non-empty base remains.
@@ -919,11 +1008,9 @@
 
   // >>> elaboration-lens
   // Builds on `baseModuleName`. The elaborated modules a file's points were recorded against.
-  // `line` points carry no module, so they never contribute and are never scoped by the lens.
   function elaborationsOf(row, metrics) {
     var names = [], seen = Object.create(null);
     (metrics || []).forEach(function (metric) {
-      if (metric === 'line') { return; }
       ((row && row[metric]) || []).forEach(function (point) {
         var name = point && point.module;
         if (!name || seen[name]) { return; }
@@ -955,11 +1042,37 @@
     });
   }
 
+  // A point with no module (an .info fallback, or a line point in a model written before line points carried one) is in every
+  // elaboration, as `rb cov module` keeps it.
   function pointsOfElaboration(points, elab) {
     if (!elab) { return points || []; }
     return (points || []).filter(function (point) {
-      return point && point.module === elab;
+      return point && (point.module == null || point.module === elab);
     });
+  }
+
+  // A source line can hold several line points (an `if` arm and its `else`, one per elaboration). The L column shows one
+  // figure per line: hits and per-test hits summed, `hit` the points with `hits(point) > 0`, `module` only when all agree.
+  function foldLinePoints(points, hits) {
+    var byLine = Object.create(null);
+    (points || []).forEach(function (point) {
+      if (!point || point.line == null) { return; }
+      var module = point.module || null;
+      var fold = byLine[point.line];
+      if (!fold) {
+        fold = byLine[point.line] =
+          { line: point.line, module: module, hits: 0, tests: {}, points: [], hit: 0 };
+      } else if (fold.module !== module) {
+        fold.module = null;
+      }
+      fold.points.push(point);
+      fold.hits += point.hits || 0;
+      Object.keys(point.tests || {}).forEach(function (name) {
+        fold.tests[name] = (fold.tests[name] || 0) + point.tests[name];
+      });
+      if (hits(point) > 0) { fold.hit += 1; }
+    });
+    return byLine;
   }
 
   // Split a cell's entries per elaboration, with a hit count each. `hits` is passed in to keep this pure.
@@ -1028,7 +1141,7 @@
       if (state.module && (row.modules || []).indexOf(state.module) < 0) { return false; }
       if (state.filter && row.path.toLowerCase().indexOf(state.filter) < 0) { return false; }
       if (state.coldOnly) {
-        var t = totalsOf(row, state.metric);
+        var t = shownTotals(row, state.metric);
         if (!t.found || t.hit >= t.found) { return false; }
       }
       return true;
@@ -1043,7 +1156,7 @@
       return;
     }
     rows.forEach(function (row) {
-      var t = totalsOf(row, state.metric);
+      var t = shownTotals(row, state.metric);
       var li = elem('li');
       li.classList.toggle('sel', state.file === row.path);
       // Right-to-left so a long path truncates at its start.
@@ -1097,8 +1210,7 @@
     segs.forEach(function (seg) {
       var b = elem('button', state.elab === seg.name ? 'on' : null, seg.label);
       b.title = seg.name +
-        '\nCount only this elaboration’s points. Line coverage stays merged: ' +
-        'verilator records it per source line, with no module on it.';
+        '\nCount only this elaboration’s points.';
       b.addEventListener('click', function () { setElab(seg.name); });
       wrap.appendChild(b);
     });
@@ -1155,7 +1267,7 @@
       'Pick a test below to see its contribution alone.';
     all.appendChild(allName);
     METRICS.forEach(function (m) {
-      var t = totalsOf(state.payload, m);
+      var t = shownTotals(state.payload, m);
       all.appendChild(elem('td', null, t.found ? pct(t.ratio) : '—'));
     });
     all.addEventListener('click', function () { setLens(null); });
@@ -1167,7 +1279,7 @@
       name.title = row.suite ? 'from ' + row.suite : '';
       tr.appendChild(name);
       METRICS.forEach(function (m) {
-        var t = totalsOf(row, m);
+        var t = shownTotals(row, m);
         var td = elem('td', null, t.found ? pct(t.ratio) : '—');
         tr.appendChild(td);
       });
@@ -1189,14 +1301,15 @@
     clear(els.dash);
     var p = state.payload || {};
     var cards = elem('div', 'cards');
+    var unit = state.by === FIGURES_SOURCE && p.source_totals ? ' source points' : ' points';
     METRICS.forEach(function (metric) {
-      var t = (p.totals || {})[metric];
-      if (!t) { return; }
+      if (!(p.totals || {})[metric]) { return; }
+      var t = shownTotals(p, metric);
       var card = elem('div', 'card');
       card.appendChild(elem('div', 'k', metric));
       var v = elem('div', 'v', t.found ? pct(t.ratio) : '—');
       card.appendChild(v);
-      card.appendChild(elem('div', 'n', t.found ? t.hit + ' / ' + t.found + ' points' : 'not collected'));
+      card.appendChild(elem('div', 'n', t.found ? t.hit + ' / ' + t.found + unit : 'not collected'));
       var bar = elem('div', 'bar');
       var fill = elem('span');
       tint(fill, t.ratio);
@@ -1405,7 +1518,7 @@
   //: line number -> entries of the rendered file.
   var lineMarks = Object.create(null);
 
-  //: line number -> that line's line-coverage point.
+  //: line number -> that line's line-coverage points, folded by `foldLinePoints`.
   var linePoints = Object.create(null);
 
   // Toggle always collapses to a badge; other metrics only when a line has more than one point.
@@ -1683,8 +1796,13 @@
     if (!host || !point) { return false; }
     detailWhere(lineNo);
     els.detailHead.appendChild(elem('span', 'pill', 'line'));
+    if (point.points.length > 1) {
+      els.detailHead.appendChild(elem('span', 'pill',
+        METRIC_INITIAL.line + ' ' + point.hit + '/' + point.points.length));
+    }
     els.detailHead.appendChild(elem('span', 'pill', hitsFor(point) + ' hits'));
     if (state.test) { els.detailHead.appendChild(lensPill()); }
+    if (state.elab) { els.detailHead.appendChild(elabPill()); }
     appendDetailClose();
     bindDetailToRow(host, lineNo, 'line', opts);
     showPoint('line', point);
@@ -1722,11 +1840,14 @@
   // recounted so the header matches the cells below. The test lens changes who hit the points; the elaboration lens changes
   // which points exist, so `found` is recounted too. Both on is the intersection.
   function fileTotals(row, metric) {
-    var t = totalsOf(row, metric);
-    // Line coverage is per source line with no module, so the elaboration lens leaves it alone.
-    var elab = metric === 'line' ? null : state.elab;
+    var t = shownTotals(row, metric);
+    var elab = state.elab;
     if (!state.test && !elab) { return t; }
     if (!elab && !t.found) { return t; }
+    // Source points under a test lens: collapse the file's points the way its source_totals did.
+    if (!elab && state.by === FIGURES_SOURCE && row.source_totals) {
+      return sourceCount(row[metric], hitsFor);
+    }
     var points = pointsOfElaboration(row[metric], elab);
     var found = elab ? points.length : t.found;
     var hit = 0;
@@ -1747,16 +1868,13 @@
         METRIC_INITIAL[metric] + ' ' +
         (t.found ? Math.round(t.ratio * 100) + '%' : '—')));
       if (t.found) { th.appendChild(elem('div', 'mh-num', t.hit + '/' + t.found)); }
-      var scoped = state.elab && metric !== 'line';
+      var unit = state.by === FIGURES_SOURCE && row.source_totals && !state.elab
+        ? ' source points' : ' points';
       th.title = metric + (t.found
-        ? ': ' + t.hit + ' of ' + t.found + ' points in this file hit' +
+        ? ': ' + t.hit + ' of ' + t.found + unit + ' in this file hit' +
           (state.test ? ' by ' + state.test : '') +
-          (scoped ? ', counting only ' + state.elab : '')
-        : ': no points in this file' + (scoped ? ' for ' + state.elab : '')) +
-        (state.elab && metric === 'line'
-          ? '\nline coverage is per source line and carries no module, so the ' +
-            'elaboration lens leaves it merged'
-          : '') +
+          (state.elab ? ', counting only ' + state.elab : '')
+        : ': no points in this file' + (state.elab ? ' for ' + state.elab : '')) +
         '\nclick to rank the file list on ' + metric;
       th.addEventListener('click', function () { setMetric(metric); });
       tr.appendChild(th);
@@ -1799,10 +1917,7 @@
     if (state.test) { els.fileHead.appendChild(lensPill()); }
 
     var lines = state.sources[row.path];
-    var byLine = Object.create(null);
-    (row.line || []).forEach(function (point) {
-      if (point.line != null) { byLine[point.line] = point; }
-    });
+    var byLine = foldLinePoints(pointsOfElaboration(row.line, state.elab), hitsFor);
     var marks = pointsByLine(row);
     lineMarks = marks;
     linePoints = byLine;
@@ -1828,13 +1943,16 @@
         var cell = elem('td', 'marks' + (metric === 'line' ? ' hits' : ''));
         cell.dataset.metric = metric;
         if (metric === 'line') {
-          // The L column is a hit count, not a badge.
+          // The L column is a hit count, not a badge, tinted by the share of the line's points hit.
           var point = byLine[n];
           if (point) {
             var h = hitsFor(point);
+            var many = point.points.length > 1;
             cell.textContent = h;
-            cell.title = attribution(point) + '\nclick for the detail panel';
-            tint(cell, h > 0 ? 1 : 0);
+            cell.title = (many
+              ? point.hit + ' of ' + point.points.length + ' line points on this line hit\n'
+              : '') + attribution(point) + '\nclick for the detail panel';
+            tint(cell, point.hit / point.points.length);
             cell.classList.add('act');
             bindCellClick(cell, n, 'line');
           }
@@ -2089,6 +2207,9 @@
     }
     var target = payload && payload.target;
     if (typeof target !== 'string' || !target) { return; }
+    // `by` is pane-wide, not part of the focus, so it applies before the target resolves and holds on a miss.
+    var by = focusedBy(payload);
+    if (by) { setBy(by); renderByPicker(); }
     var opts = { line: payload.line, item: payload.item, metric: payload.metric };
     var ok;
     if (target.indexOf('module:') === 0) {
@@ -2099,8 +2220,10 @@
       ok = focusFile(target.indexOf('file:') === 0 ? target.slice(5) : target, opts);
     }
     // A miss is soft: report it and keep the current focus.
-    note(ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run',
-         ok ? null : 'warn');
+    var fallback = by === FIGURES_SOURCE && !state.payload.source_totals
+      ? '; this run has no source-point figures, showing per elaboration' : '';
+    note((ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run') + fallback,
+         ok && !fallback ? null : 'warn');
   }
 
   function focusByInstancePath(ip) {
@@ -2128,6 +2251,7 @@
     renderFiles();
     if (state.file) { renderFile(); }
   });
+  els.by.addEventListener('change', function () { setBy(els.by.value); });
   els.module.addEventListener('change', function () {
     state.module = els.module.value;
     renderFiles();
@@ -2151,6 +2275,8 @@
   });
 
   relabelSwitcher();
+  state.by = openedBy(location.search);
+  els.by.value = state.by;
   connect();
   load();
 })();

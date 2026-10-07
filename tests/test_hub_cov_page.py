@@ -425,6 +425,173 @@ def test_page_carries_the_pieces_the_issue_asks_for():
     assert theme.MASCOT_240 in body
 
 
+# the per-elaboration / source-point figures toggle (#651)
+
+
+def _figures_js() -> str:
+    return _marked_js("figures")
+
+
+def test_the_figures_picker_offers_both_readings():
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    assert '<select id="by">' in body
+    assert '<option value="elab">per elaboration</option>' in body
+    assert '<option value="source">source points</option>' in body
+    assert "/cov?by=source" in body
+    assert (
+        "els.by.addEventListener('change', function () { setBy(els.by.value); });" in js
+    )
+    # A model with no source figures greys the choice out instead of hiding it.
+    assert "source.textContent = has ? 'source points' : 'source points (none)';" in js
+
+
+def test_figures_pick_source_totals_at_every_scope():
+    """The run, test and file rows read their source_totals under the toggle; a row
+    without them keeps its totals."""
+
+    out = _node(
+        _figures_js()
+        + """
+        var row = {
+          totals: { line: { found: 4, hit: 2, ratio: 0.5 } },
+          source_totals: { line: { found: 2, hit: 2, ratio: 1 } }
+        };
+        console.log(JSON.stringify(figuresOf(row, 'line', FIGURES_ELAB)));
+        console.log(JSON.stringify(figuresOf(row, 'line', FIGURES_SOURCE)));
+        console.log(JSON.stringify(figuresOf({ totals: row.totals }, 'line', FIGURES_SOURCE)));
+        console.log(JSON.stringify(figuresOf(row, 'toggle', FIGURES_SOURCE)));
+        console.log(JSON.stringify(figuresOf(null, 'line', FIGURES_SOURCE)));
+        """
+    )
+    elab, source, older, absent, nothing = out.strip().splitlines()
+    assert json.loads(elab) == {"found": 4, "hit": 2, "ratio": 0.5}
+    assert json.loads(source) == {"found": 2, "hit": 2, "ratio": 1}
+    assert json.loads(older) == {"found": 4, "hit": 2, "ratio": 0.5}
+    empty = {"found": 0, "hit": 0, "ratio": None}
+    assert json.loads(absent) == empty
+    assert json.loads(nothing) == empty
+
+
+def test_the_by_param_opens_and_follows_the_toggle():
+    out = _node(
+        _figures_js()
+        + """
+        console.log(JSON.stringify([
+          openedBy('?by=source'), openedBy('?x=1&by=source'), openedBy('?by=elab'),
+          openedBy('?by=sources'), openedBy(''), openedBy(null)
+        ]));
+        console.log(JSON.stringify([
+          searchWithBy('', FIGURES_SOURCE), searchWithBy('?x=1', FIGURES_SOURCE),
+          searchWithBy('?by=source&x=1', FIGURES_ELAB), searchWithBy('?by=source', FIGURES_ELAB),
+          searchWithBy('?by=source', FIGURES_SOURCE), searchWithBy('?byline=2', FIGURES_ELAB)
+        ]));
+        """
+    )
+    opened, searches = out.strip().splitlines()
+    assert json.loads(opened) == ["source", "source", "elab", "elab", "elab", "elab"]
+    assert json.loads(searches) == [
+        "?by=source",
+        "?x=1&by=source",
+        "?x=1",
+        "",
+        "?by=source",
+        "?byline=2",
+    ]
+
+
+def test_source_count_collapses_elaborations_under_a_hit_function():
+    """The test-lens recount of a file's source points keys like source_point_key."""
+
+    out = _node(
+        _figures_js()
+        + """
+        var points = [
+          { line: 5, column: 3, name: 'if', module: 'blk__W13', hits: 0, tests: { a: 0 } },
+          { line: 5, column: 3, name: 'if', module: 'blk__Wc', hits: 2, tests: { a: 2 } },
+          { line: 5, column: 4, name: 'else', module: 'blk__W13', hits: 1, tests: { a: 0 } },
+          { line: 7, column: 3, name: 'block', module: 'blk__Wc', hits: 0, tests: {} }
+        ];
+        console.log(JSON.stringify(sourceCount(points, function (p) { return p.hits; })));
+        console.log(JSON.stringify(sourceCount(points, function (p) {
+          return (p.tests || {}).a || 0;
+        })));
+        console.log(JSON.stringify(sourceCount(null, function () { return 1; })));
+        """
+    )
+    merged, lensed, empty = out.strip().splitlines()
+    assert json.loads(merged) == {"found": 3, "hit": 2, "ratio": 2 / 3}
+    assert json.loads(lensed) == {"found": 3, "hit": 1, "ratio": 1 / 3}
+    assert json.loads(empty) == {"found": 0, "hit": 0, "ratio": None}
+
+
+def test_cov_focus_by_maps_the_wire_spelling_onto_the_picker():
+    """``cov_focus.by`` speaks ``elaboration``/``source``; anything else, or no key,
+    leaves the picker alone (#747)."""
+
+    out = _node(
+        _figures_js()
+        + """
+        console.log(JSON.stringify([
+          focusedBy({ target: 'module:blk', by: 'source' }),
+          focusedBy({ target: 'module:blk', by: 'elaboration' }),
+          focusedBy({ target: 'module:blk' }),
+          focusedBy({ target: 'module:blk', by: 'elab' }),
+          focusedBy({ target: 'module:blk', by: 'sources' }),
+          focusedBy(null)
+        ]));
+        """
+    )
+    assert json.loads(out) == ["source", "elab", None, None, None, None]
+
+
+def test_cov_focus_by_switches_the_figures_before_it_resolves_the_target():
+    """The pick applies through ``setBy`` (picker, tables and ``?by=``) even when the
+    target misses, and says so when the run has no source-point figures (#747)."""
+
+    js = _page_js()
+    apply_focus = js[
+        js.index("function applyFocus(payload)") : js.index(
+            "function focusByInstancePath"
+        )
+    ]
+    by_at = apply_focus.index("var by = focusedBy(payload);")
+    set_at = apply_focus.index("if (by) { setBy(by); renderByPicker(); }")
+    resolve_at = apply_focus.index("if (target.indexOf('module:') === 0)")
+    assert by_at < set_at < resolve_at
+    assert "no source-point figures" in apply_focus
+
+
+def test_the_toggle_swaps_cells_but_not_the_order():
+    """Same files, same order as `rb cov summary --by-source`: ranking reads `totals`,
+    the cells read the chosen figures."""
+
+    js = _page_js()
+    ordering = _file_ordering_js()
+    assert "row.totals[metric]" in ordering
+    assert "source_totals" not in ordering
+    render_files = js[js.index("function renderFiles()") : js.index("function setLens")]
+    assert "var t = shownTotals(row, state.metric);" in render_files
+    render_tests = js[
+        js.index("function renderTests()") : js.index("function renderDashboard()")
+    ]
+    assert render_tests.count("shownTotals(") == 2
+    assert "var t = shownTotals(p, metric);" in js
+    assert "var t = figuresOf(p, metric, by);" in js
+    # The file view's header follows too, and recounts source points under a test lens.
+    assert "return sourceCount(row[metric], hitsFor);" in js
+    # Toggling re-renders every table and records the pick in the address.
+    set_by = js[js.index("function setBy(by)") : js.index("function initialMetric")]
+    for call in (
+        "renderHeader();",
+        "renderFiles();",
+        "renderTests();",
+        "renderDashboard();",
+        "history.replaceState(",
+    ):
+        assert call in set_by, call
+
+
 # the marks column, its badges and the bit grid
 
 
@@ -618,7 +785,12 @@ def test_every_metric_gets_a_column():
     assert "function entriesOn(lineNo, metric)" in js
     # The `L` column is the hit-count gutter with a header.
     assert "if (metric === 'line') {" in js
-    assert "tint(cell, h > 0 ? 1 : 0);" in js
+    # Tinted by the share of the line's points hit (#678).
+    assert "tint(cell, point.hit / point.points.length);" in js
+    assert (
+        "var byLine = foldLinePoints(pointsOfElaboration(row.line, state.elab), hitsFor);"
+        in js
+    )
     assert "bindCellClick(cell, n, 'line');" in js
     # An empty cell stays empty.
     assert "if (!list.length) { return; }" in js
@@ -1235,15 +1407,15 @@ def test_a_qualified_test_target_matches_the_models_bare_name():
 
 
 def test_the_files_elaborations_come_from_its_points_not_its_modules():
-    """A file's elaborations come from the modules its points were recorded against;
-    line points carry no module and never contribute."""
+    """A file's elaborations come from the modules its points were recorded against,
+    line points included; a point with no module never contributes."""
 
     out = _node(
         _elaboration_lens_js()
         + """
         var row = {
           modules: ['ip_cdc_sync', 'ip_cdc_sync__W4'],
-          line: [{ line: 20, hits: 2152 }],
+          line: [{ line: 20, module: 'ip_cdc_sync__W8', hits: 2152 }],
           branch: [
             { line: 21, module: 'ip_cdc_sync__W4', hits: 36 },
             { line: 21, module: 'ip_cdc_sync', hits: 108 }
@@ -1259,8 +1431,8 @@ def test_the_files_elaborations_come_from_its_points_not_its_modules():
         """
     )
     spans, lines_only, empty = out.strip().splitlines()
-    assert json.loads(spans) == ["ip_cdc_sync", "ip_cdc_sync__W4"]
-    # Line points alone leave nothing to choose between, so no control appears.
+    assert json.loads(spans) == ["ip_cdc_sync", "ip_cdc_sync__W4", "ip_cdc_sync__W8"]
+    # Module-less line points (an older model) leave nothing to choose between.
     assert json.loads(lines_only) == []
     assert json.loads(empty) == []
 
@@ -1371,11 +1543,12 @@ def test_the_header_control_appears_only_when_there_is_a_choice():
     assert "setElab(seg.name)" in js
 
 
-def test_the_lens_recounts_found_and_leaves_line_merged():
-    """The elaboration lens recounts `found` but leaves line coverage merged."""
+def test_the_lens_recounts_found_for_every_metric():
+    """The elaboration lens recounts `found` for every metric, line included (#678)."""
 
     js = _page_js()
-    assert "var elab = metric === 'line' ? null : state.elab;" in js
+    assert "var elab = state.elab;" in js
+    assert "metric === 'line' ? null : state.elab" not in js
     assert "var points = pointsOfElaboration(row[metric], elab);" in js
     assert "var found = elab ? points.length : t.found;" in js
     assert "return { found: found, hit: hit, ratio: found ? hit / found : null };" in js
@@ -1385,7 +1558,50 @@ def test_the_lens_recounts_found_and_leaves_line_merged():
     )
     # The column header says which way it reads.
     assert "', counting only ' + state.elab" in js
-    assert "elaboration lens leaves it merged" in js
+    assert "elaboration lens leaves it merged" not in js
+
+
+def test_line_points_fold_per_source_line():
+    """Several line points on one source line fold into one L cell: hits and per-test
+    hits summed, the hit share scored by the lens's hit function (#678)."""
+
+    out = _node(
+        _elaboration_lens_js()
+        + """
+        var points = [
+          { line: 5, column: 3, name: 'if', module: 'blk__W13', hits: 4,
+            tests: { a: 4, b: 0 } },
+          { line: 5, column: 4, name: 'else', module: 'blk__W13', hits: 0,
+            tests: { a: 0, b: 0 } },
+          { line: 5, column: 3, name: 'if', module: 'blk__Wc', hits: 2,
+            tests: { a: 0, b: 2 } },
+          { line: 7, column: 3, name: 'block', module: 'blk__Wc', hits: 0 },
+          { line: null, hits: 9 }
+        ];
+        var merged = foldLinePoints(points, function (p) { return p.hits; });
+        console.log(JSON.stringify(Object.keys(merged)));
+        var five = merged[5];
+        console.log(JSON.stringify([five.hits, five.tests, five.hit, five.points.length,
+                                    five.module]));
+        console.log(JSON.stringify([merged[7].hits, merged[7].hit, merged[7].module]));
+        // The test lens scores by that test's hits.
+        var lensed = foldLinePoints(points, function (p) { return (p.tests || {}).b || 0; });
+        console.log(JSON.stringify(lensed[5].hit));
+        // The elaboration lens folds only that elaboration, plus module-less points.
+        var one = foldLinePoints(
+          pointsOfElaboration(points.concat([{ line: 5, hits: 1 }]), 'blk__W13'),
+          function (p) { return p.hits; });
+        console.log(JSON.stringify([Object.keys(one), one[5].points.length, one[5].hit]));
+        console.log(JSON.stringify(foldLinePoints(null, function () { return 0; })));
+        """
+    )
+    keys, five, seven, lensed, one, empty = out.strip().splitlines()
+    assert json.loads(keys) == ["5", "7"]
+    assert json.loads(five) == [6, {"a": 4, "b": 2}, 2, 3, None]
+    assert json.loads(seven) == [0, 0, "blk__Wc"]
+    assert json.loads(lensed) == 1
+    assert json.loads(one) == [["5"], 3, 2]
+    assert json.loads(empty) == {}
 
 
 def test_the_panel_breaks_down_per_elaboration_and_the_subhead_is_the_way_in():
@@ -1576,6 +1792,16 @@ async def test_http_cov_page_served(hub_and_viewer):
 
 
 @pytest.mark.asyncio
+async def test_http_cov_page_served_with_the_source_figures_param(hub_and_viewer):
+    """``/cov?by=source`` is the same page; the script reads the parameter (#651)."""
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/cov?by=source"
+    status, _headers, body = await asyncio.to_thread(_http_get, url)
+    assert status == 200
+    assert b"state.by = openedBy(location.search);" in body
+
+
+@pytest.mark.asyncio
 async def test_http_cov_json_served(hub_and_viewer):
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/cov.json"
@@ -1698,6 +1924,8 @@ async def test_http_cov_json_400_without_project_root():
         {"target": "module:blk", "metric": "branch"},
         {"target": "file:design/blk.sv", "line": 4, "item": "else"},
         {"target": "test:verif/blk#basic"},
+        {"target": "module:blk", "by": "source"},
+        {"target": "module:blk", "metric": "line", "by": "elaboration"},
     ],
 )
 def test_cov_focus_envelope_validates(payload: dict):
@@ -1720,6 +1948,8 @@ def test_cov_focus_envelope_validates(payload: dict):
         {"target": "module:blk", "line": 0},
         {"target": "module:blk", "extra": 1},
         {"target": "module:blk", "metric": None},
+        {"target": "module:blk", "by": "elab"},
+        {"target": "module:blk", "by": None},
     ],
 )
 def test_cov_focus_rejects_malformed_payloads(payload: dict):
@@ -1762,11 +1992,13 @@ def test_cov_focus_state_slot_omits_unset_hints():
         metric="branch",
         line=4,
         item="else",
+        by="source",
     ).payload() == {
         "target": "file:design/blk.sv",
         "metric": "branch",
         "line": 4,
         "item": "else",
+        "by": "source",
     }
 
 
@@ -1870,7 +2102,12 @@ async def test_cov_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
                 kind=Kind.EVENT,
                 type="cov_focus",
                 id=new_id(),
-                payload={"target": "file:design/blk.sv", "line": 4, "item": "else"},
+                payload={
+                    "target": "file:design/blk.sv",
+                    "line": 4,
+                    "item": "else",
+                    "by": "source",
+                },
             )
         )
         await asyncio.sleep(0.1)
@@ -1887,6 +2124,7 @@ async def test_cov_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
                 "target": "file:design/blk.sv",
                 "line": 4,
                 "item": "else",
+                "by": "source",
             }
         finally:
             await pane.close()

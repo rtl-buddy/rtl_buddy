@@ -12,8 +12,8 @@ import pytest
 
 from rtl_buddy import artifact_lock as artifact_lock_module
 from rtl_buddy.process_utils import ManagedProcessResult
-from rtl_buddy.runner.test_results import TestResults
-from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
+from rtl_buddy.runner.test_results import CompileFailResults, TestResults
+from rtl_buddy.runner.test_runner import RunDepth, TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.artifact_paths import atomic_tmp_name, shared_build_dir
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
 
@@ -1959,6 +1959,218 @@ def test_a_group_sibling_adopts_the_leaders_build_on_a_cold_tree(tmp_path, monke
     assert sibling.last_build_stamp["fingerprint_sha"]
 
 
+_LINT_FAILURE = "%Error: Exiting due to 15 warning(s)"
+
+
+def _failed_group_pair(tmp_path, monkeypatch, calls):
+    """A leader whose compile failed and a sibling on the same compile key, in build-job order."""
+    _install_fake_builder(monkeypatch, calls, returncode=1, stdout=_LINT_FAILURE)
+    leader = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    group = leader.compile_group_dir()
+    assert leader.compile() == 1
+    assert len(calls) == 1
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sibling.compile_group_dir() == group  # one compile key
+    return leader, sibling
+
+
+def test_a_group_sibling_adopts_the_leaders_failed_compile(tmp_path, monkeypatch):
+    """A sibling with the leader's inputs takes the leader's failure instead of failing the same compile again."""
+    _write_source(tmp_path)
+    calls = []
+    leader, sibling = _failed_group_pair(tmp_path, monkeypatch, calls)
+
+    verdict = sibling.adopt_group_failure(leader.last_compile_failure, leader="test_a")
+
+    assert verdict == ("adopted", None)
+    assert len(calls) == 1  # nothing recompiled
+    failure = sibling.last_compile_failure
+    assert failure["returncode"] == 1
+    assert failure["fingerprint_sha"] == leader.last_compile_failure["fingerprint_sha"]
+    # The sibling's own compile.log, which carries the leader's transcript.
+    own_log = Path(sibling._get_compile_transcript_path())
+    assert failure["transcript"] == str(own_log)
+    assert own_log != Path(leader.last_compile_failure["transcript"])
+    text = own_log.read_text()
+    assert text.startswith("Compile skipped: test_a, ")
+    assert _LINT_FAILURE in text
+    assert sibling.last_compile == {
+        "duration_sec": 0.0,
+        "builder": "verilator",
+        "reused": True,
+    }
+
+
+def test_a_gated_job_of_a_sibling_that_adopted_a_failure_names_it(
+    tmp_path, monkeypatch
+):
+    """The adopted failure travels through the build envelope: the sibling's sim job does not recompile and its desc names the compile error."""
+    from rtl_buddy.rtl_buddy import _annotate_build_failure
+
+    _write_source(tmp_path)
+    calls = []
+    leader, sibling = _failed_group_pair(tmp_path, monkeypatch, calls)
+    assert sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    ) == ("adopted", None)
+    entry = _annotate_build_failure(
+        {"test": "test_b"},
+        failure=sibling.last_compile_failure,
+        worker_error=None,
+        suite_dir=str(tmp_path),
+    )
+
+    gated = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    gated.expect_prebuilt = True
+    gated.build_result_json = _write_build_envelope(
+        tmp_path, failed=["test_b"], built=[], builds=[entry]
+    )
+
+    assert gated.compile() == 1
+    assert len(calls) == 1
+    assert _LINT_FAILURE in gated.compile_fail_desc
+    assert "(exit 1)" in gated.compile_fail_desc
+
+
+def test_a_group_sibling_with_other_inputs_does_not_adopt_a_failure(
+    tmp_path, monkeypatch
+):
+    """A failure is adopted only for the same compile: a sibling whose listed inputs differ compiles itself."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1, stdout=_LINT_FAILURE)
+    leader = _incdir_dot_sim(tmp_path, monkeypatch, "test_a", family="verilator")
+    group = leader.compile_group_dir()
+    assert leader.compile() == 1
+
+    sibling = _incdir_dot_sim(tmp_path, monkeypatch, "test_b", family="verilator")
+    # This member's PRE wrote a file under the listed `+incdir+.`.
+    (tmp_path / "prog_test_b.svh").write_text("`define B 1\n")
+    assert sibling.compile_group_dir() == group
+
+    assert sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    ) == (None, "compile inputs differ")
+    assert sibling.last_compile_failure is None
+    assert not Path(sibling._get_compile_transcript_path()).exists()
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        (None, "the compile did not exit with an error status (None)"),
+        ({"returncode": -9, "fingerprint_sha": "x"}, "(-9)"),
+        ({"returncode": 0, "fingerprint_sha": "x"}, "(0)"),
+        ({"returncode": True, "fingerprint_sha": "x"}, "(True)"),
+        ({"returncode": 1}, "no fingerprint for the failed compile"),
+    ],
+)
+def test_a_failure_without_compiler_evidence_is_not_adopted(
+    tmp_path, monkeypatch, failure, reason
+):
+    """A signal kill (the node's doing, not the source's) or a record with no fingerprint is left for the sibling's own compile."""
+    _write_source(tmp_path)
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+
+    verdict, detail = sibling.adopt_group_failure(failure, leader="test_a")
+
+    assert verdict is None
+    assert reason in detail
+    assert sibling.last_compile_failure is None
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "g++: fatal error: Killed signal terminated program cc1plus",
+        "virtual memory exhausted: Cannot allocate memory",
+        "cc1plus: out of memory allocating 65536 bytes",
+        "std::bad_alloc: Cannot allocate memory",
+        "make: *** [Vtop.mk:42: Vtop__ALL.o] Error 137",
+    ],
+)
+def test_an_out_of_resource_failure_is_not_adopted(tmp_path, monkeypatch, signature):
+    """A compile the host starved may fit on the sibling's turn, so the sibling compiles for itself."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, returncode=2, stdout=f"building...\n{signature}\n"
+    )
+    leader = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert leader.compile() == 2
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+
+    verdict, detail = sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    )
+
+    assert verdict is None
+    assert "ran out of resources" in detail
+    assert sibling.last_compile_failure is None
+    assert not Path(sibling._get_compile_transcript_path()).exists()
+
+
+def test_an_out_of_resource_signature_in_the_error_tail_is_not_adopted(
+    tmp_path, monkeypatch
+):
+    """Without a readable transcript, the record's own error tail is searched."""
+    _write_source(tmp_path)
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    failure = {
+        "returncode": 2,
+        "fingerprint_sha": "x",
+        "transcript": str(tmp_path / "gone.log"),
+        "error_tail": ["make: *** [all] Error 137"],
+    }
+
+    verdict, detail = sibling.adopt_group_failure(failure, leader="test_a")
+
+    assert verdict is None
+    assert "Error 137" in detail
+
+
+def test_a_failure_after_a_license_wait_is_not_adopted(tmp_path, monkeypatch):
+    """A VCS compile that queued for a seat records it, and its sibling compiles for itself."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch,
+        calls,
+        returncode=1,
+        stdout="Queuing for License VCSRuntime_Net\n...\nError-[XYZ] elaboration\n",
+    )
+    leader = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs"
+    )
+    assert leader.compile() == 1
+    assert leader.last_compile_failure["license_queued"] is True
+    sibling = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="vcs", family="vcs"
+    )
+
+    verdict, detail = sibling.adopt_group_failure(
+        leader.last_compile_failure, leader="test_a"
+    )
+
+    assert verdict is None
+    assert "license seat" in detail
+    assert sibling.last_compile_failure is None
+
+
+def test_a_license_queued_record_is_not_adopted_even_without_a_transcript(
+    tmp_path, monkeypatch
+):
+    """The record's ``license_queued`` flag alone declines, whatever the transcript says."""
+    _write_source(tmp_path)
+    sibling = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    failure = {"returncode": 1, "fingerprint_sha": "x", "license_queued": True}
+
+    verdict, detail = sibling.adopt_group_failure(failure, leader="test_a")
+
+    assert verdict is None
+    assert "license seat" in detail
+
+
 def test_a_group_sibling_that_rewrote_a_consumed_input_is_reported(
     tmp_path, monkeypatch
 ):
@@ -3103,22 +3315,138 @@ def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, capl
     assert "compiling despite being gated" not in caplog.text
 
 
-def test_clear_retry_transcripts_unlinks_every_named_run(tmp_path, monkeypatch):
-    """`run_multiple`'s one compile clears stale retry transcripts for runs 1..N."""
+def test_clear_run_outputs_unlinks_every_named_run(tmp_path, monkeypatch):
+    """`run_multiple`'s one compile clears the previous outputs of runs 1..N, and keeps the seed `--replay` reads."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
 
     sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
-    stale = []
+    stale, kept = [], []
     for run_id in (1, 2, 3):
-        p = Path(sim._get_artifact_dir(run_id=run_id)) / "compile.retry.log"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("%Error: an old dispatch's retry\n")
-        stale.append(p)
+        run_dir = Path(sim._get_artifact_dir(run_id=run_id))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "test.log",
+            "test.err",
+            "coverage.dat",
+            "compile.retry.log",
+            "result.json",
+        ):
+            (run_dir / name).write_text("an old run's output\n")
+            stale.append(run_dir / name)
+        (run_dir / "test.randseed").write_text("41\n")
+        kept.append(run_dir / "test.randseed")
 
-    sim.clear_retry_transcripts([1, 2, 3])
-    assert not any(p.exists() for p in stale)
+    sim.clear_run_outputs([1, 2, 3])
+    assert [p for p in stale if p.exists()] == []
+    assert all(p.exists() for p in kept)
+
+
+def test_clear_run_outputs_logs_a_file_it_cannot_remove(tmp_path, monkeypatch, caplog):
+    """An unremovable output is reported and does not stop the run."""
+    import logging as _logging
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    # A directory where test.log belongs: unlink() raises.
+    (Path(sim._get_artifact_dir()) / "test.log").mkdir(parents=True)
+    (Path(sim._get_artifact_dir()) / "test.err").write_text("old\n")
+
+    with caplog.at_level(_logging.WARNING):
+        sim.clear_run_outputs([None])
+
+    assert not (Path(sim._get_artifact_dir()) / "test.err").exists()
+    [event] = _events(caplog, "test.stale_output_unremovable")
+    assert event["path"].endswith("test.log")
+
+
+def _runner_for(sim, monkeypatch, *, run_id=None):
+    runner = RtlBuddyTestRunner(
+        name="rtl_buddy/testrunner",
+        root_cfg=sim.root_cfg,
+        test_cfg=sim.test_cfg,
+        rtl_builder_mode="sim",
+        test_runner_mode={"sim_to_stdout": True},
+        run_id=run_id,
+        run_depth=RunDepth.POST,
+        share_build=True,
+    )
+    monkeypatch.setattr(runner, "_create_vlog_sim", lambda: sim)
+    return runner
+
+
+def _seed_passing_run(sim, run_id=None):
+    """Leave the outputs of an earlier passing run in the artifact directory."""
+    run_dir = Path(sim._get_artifact_dir(run_id=run_id))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "test.log").write_text("PASS\n")
+    (run_dir / "test.err").write_text("")
+    return run_dir
+
+
+def test_a_failed_compile_leaves_no_earlier_test_log(tmp_path, monkeypatch):
+    """A run whose compile fails removes the previous run's test.log, so its PASS banner cannot be read as this run's."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    run_dir = _seed_passing_run(sim)
+
+    result = _runner_for(sim, monkeypatch).run()
+
+    assert isinstance(result, CompileFailResults)
+    assert len(calls) == 1
+    assert not (run_dir / "test.log").exists()
+    assert not (run_dir / "test.err").exists()
+
+
+def test_a_fanned_out_failed_compile_leaves_no_earlier_test_log(tmp_path, monkeypatch):
+    """`run_multiple` clears every run's directory, not only the first run's."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, returncode=1)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", run_id=1)
+    run_dirs = [_seed_passing_run(sim, run_id) for run_id in (1, 2)]
+
+    results = _runner_for(sim, monkeypatch, run_id=1).run_multiple([1, 2])
+
+    assert all(isinstance(res, CompileFailResults) for res in results)
+    assert not any((d / "test.log").exists() for d in run_dirs)
+
+
+def test_the_build_jobs_prepare_clears_the_earlier_test_log(tmp_path, monkeypatch):
+    """The dispatched build job drives `prepare()` directly; it clears the test's outputs too, so a sim job that never starts leaves none behind."""
+    _write_source(tmp_path)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    run_dir = _seed_passing_run(sim)
+    runner = _runner_for(sim, monkeypatch)
+
+    assert runner.prepare() is None
+    assert not (run_dir / "test.log").exists()
+
+
+def test_a_gated_job_whose_build_failed_leaves_no_earlier_test_log(
+    tmp_path, monkeypatch
+):
+    """Under dispatch, the sim job that reports the build job's compile failure also clears the earlier run's test.log."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    _seed_build_transcript(sim)
+    sim.expect_prebuilt = True
+    sim.build_result_json = _write_build_envelope(
+        tmp_path,
+        failed=["test_a"],
+        builds=[{"test": "test_a", "returncode": 1, "error_tail": ["%Error: x"]}],
+    )
+    run_dir = _seed_passing_run(sim)
+
+    result = _runner_for(sim, monkeypatch).run()
+
+    assert isinstance(result, CompileFailResults)
+    assert calls == []
+    assert not (run_dir / "test.log").exists()
 
 
 def test_a_stale_retry_log_is_cleared_before_a_failing_pre(tmp_path, monkeypatch):

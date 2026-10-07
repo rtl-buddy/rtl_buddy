@@ -571,6 +571,29 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "One key compiled twice in one build job is what "
                 "cfg-dispatch.compile.parallel is sized against."
             )
+        case "build_job.preproc_changed_compile_key":
+            changed = ", ".join(str(f) for f in fields.get("changed") or []) or "?"
+            return (
+                f"{fields.get('test')}: declares preproc-sets-plusdefines: false, "
+                f"but its preproc hook changed its compile key ({changed}). The "
+                "build job's reservation counted this build with its compile key's "
+                "other tests, so it may be too small; remove the declaration or "
+                "stop the hook changing the key."
+            )
+        case "build_job.group_failure_adoption_declined":
+            return (
+                f"{fields.get('test')}: shares a compile key with "
+                f"{fields.get('leader')}, whose compile failed, but could not "
+                f"adopt that failure ({fields.get('reason')}), so it compiles "
+                "the key again."
+            )
+        case "compile.group_failure_adopted":
+            return (
+                f"{fields.get('test')}: not compiling — {fields.get('leader')} "
+                "has the same compile key and inputs and its compile failed "
+                f"with exit {fields.get('returncode')}; see "
+                f"{fields.get('transcript')}"
+            )
         case "compile.build_stamp_refresh_failed":
             return (
                 f"{fields.get('test')}: could not rewrite the shared build "
@@ -783,6 +806,24 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "This run submits its own jobs beside them — re-run with "
                 "--orphans adopt to collect those instead, or --orphans "
                 "cancel to scancel them first"
+            )
+        case "dispatch.coverage_orphan_found":
+            ids = fields.get("job_ids") or []
+            return (
+                f"dispatch: the coverage job of an earlier run of "
+                f"{fields.get('command_root')} is still queued or running: "
+                f"{' '.join(map(str, ids))} (run token {fields.get('run_token')}, "
+                f"submitted by pid {fields.get('pid')}, recorded in "
+                f"{fields.get('manifest')}). This run's coverage tail waits for it "
+                "before writing cov_dir/ — re-run with --orphans cancel to "
+                "scancel it first"
+            )
+        case "coverage.tail_awaiting_orphan":
+            ids = fields.get("job_ids") or []
+            return (
+                f"coverage: waiting for an earlier run's coverage job "
+                f"({' '.join(map(str, ids))}) to leave the {fields.get('backend')} "
+                "queue before writing cov_dir/"
             )
         case "dispatch.orphans_cancelled":
             ids = fields.get("job_ids") or []
@@ -1645,6 +1686,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "are dropped from the netlist, leaving any clock or reset it "
                 "carries undriven. frontend: slang binds it correctly"
             )
+        case "synth.abc_delay_preset":
+            return (
+                f'synth-args of "{fields.get("synth")}" request a +/choices/ carry map, so its '
+                "Liberty-mapped run uses the delay ABC preset (no &dch -f); set abc-script: default "
+                "to keep the area-oriented script"
+            )
         case "synth.abc_args_ignored":
             return (
                 f'abc-args "{fields.get("abc_args")}" has no effect on the '
@@ -1981,6 +2028,28 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "answer from — any per-module synthesis rows in the same model "
                 "still answer"
             )
+        case "synth_config.tool_overrides_unused":
+            unused = fields.get("unused") or []
+            return (
+                f'synthesis "{fields.get("synth")}": tool_overrides key(s) '
+                f"{', '.join(repr(str(k)) for k in unused)} ignored; a "
+                f"tool: {fields.get('tool')} run reads only tool_overrides."
+                f"{fields.get('tool')} and tool_overrides.yosys"
+            )
+        case "synth_config.yosys_strategy_ignored":
+            return (
+                f'synthesis "{fields.get("synth")}": tool_overrides.yosys.strategy '
+                "is ignored; strategy selects OpenROAD resynthesis, so set it "
+                "under tool_overrides.openroad"
+            )
+        case "synth_config.openroad_yosys_opts_ignored":
+            keys = fields.get("keys") or []
+            return (
+                f'synthesis "{fields.get("synth")}": cfg-synth-tools openroad '
+                f"opts {', '.join(str(k) for k in keys)} ignored; the Yosys stage "
+                "of a tool: openroad run reads the yosys entry's opts when one "
+                "exists, so set them there"
+            )
         case "synth_tool_config.unknown_override":
             unknown = fields.get("unknown") or []
             accepted = fields.get("accepted") or []
@@ -2007,12 +2076,37 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"name to value, got {fields.get('got')}"
             )
         case "coverage.merge.failed":
+            how = (
+                f"ran past cfg-coverage merge-timeout ({fields.get('timeout')} s) "
+                "and was stopped"
+                if fields.get("timeout") is not None
+                else f"exited {fields.get('returncode')}"
+            )
             return (
-                "coverage merge failed: verilator_coverage --write exited "
-                f"{fields.get('returncode')} and wrote no "
+                f"coverage merge failed: verilator_coverage --write {how} and wrote no "
                 f"{fields.get('merged_path')}; toggle, expression and "
                 "functional coverage have no other source and are reported "
                 "as FAIL, not UNSP"
+            )
+        case "coverage.tail_submitted":
+            return (
+                f"coverage: merge, model and LCOV exports submitted as job "
+                f"{fields.get('job_id')} on {fields.get('backend')}; waiting "
+                f"(log {fields.get('log')})"
+            )
+        case "coverage.tail_cleared_previous":
+            return (
+                "coverage: removed the previous run's manifest and model before "
+                f"submitting the tail: {', '.join(fields.get('paths') or [])}"
+            )
+        case "coverage.tail_failed":
+            job = fields.get("job_id")
+            where = f"job {job}" if job is not None else "the job was not submitted"
+            return (
+                f"coverage tail failed ({where}): {fields.get('reason')}; no merge, "
+                "model or manifest was written (the previous run's were removed), "
+                "every test result was, and the run exits 1"
+                + (f" — see {fields.get('log')}" if job is not None else "")
             )
         case "coverage.merge.degraded":
             failed = fields.get("failed_metrics") or []
@@ -2053,6 +2147,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('error')}) — configured regression-manifest paths "
                 "ignored, falling back to the ./<flow>_regression.yaml filename "
                 "convention"
+            )
+        case "config.unknown_key":
+            msg = (
+                f"{fields.get('path')}: unknown key {fields.get('key')!r} in "
+                f"{fields.get('block')} ignored"
+            )
+            if fields.get("suggestion"):
+                msg += f" (did you mean {fields.get('suggestion')!r}?)"
+            known = fields.get("known") or []
+            if known:
+                msg += f"; known keys are {', '.join(str(k) for k in known)}"
+            return msg + (
+                ". The block is read without it; a later major release will "
+                "make an unknown key fatal"
             )
         case "root_config.reg_cfg_unknown_keys":
             return (
@@ -2438,6 +2546,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}) — the run itself "
                 "is unaffected, but `rb graph results` will report it as UNKNOWN"
             )
+        case "test.stale_output_unremovable":
+            return (
+                f"{fields.get('test')}: could not remove the previous run's "
+                f"{fields.get('path')} ({fields.get('error')}) — if this run "
+                "stops before rewriting it, that file is from an earlier run"
+            )
         case "elab.result_json_write_failed":
             name = fields.get("model")
             if fields.get("profile") is not None:
@@ -2467,6 +2581,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"pnr {fields.get('pnr')}: dont-use-cells pattern(s) {patterns} "
                 "matched no Liberty cell (STA-0122), so they exclude nothing — "
                 "check them for typos"
+            )
+        case "pnr.no_wire_rc":
+            causes = ([] if fields.get("layer_rc_tcl") else ["no layer-rc-tcl"]) + [
+                str(c) for c in fields.get("codes") or []
+            ]
+            return (
+                f"pnr {fields.get('pnr')}: CTS, placement parasitics and hold repair "
+                f"saw no wire RC ({', '.join(causes)}), so the routed timing can "
+                f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
+                f"see {fields.get('docs')}"
             )
         case "pnr.dont_use_instantiated":
             shown = [

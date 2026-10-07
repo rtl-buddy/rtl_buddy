@@ -856,6 +856,7 @@ def _probe_synth(tmp_path, frontend, params):
         get_defines=lambda: None,
         get_tool_name=lambda: "yosys",
         get_tool_overrides_for=lambda _n: None,
+        get_yosys_stage_overrides=lambda _n: None,
     )
     return probe_block_parameters(
         synth_cfg, root_cfg, str(synth_dir), str(tmp_path / "p")
@@ -1211,6 +1212,7 @@ def _probe_sources(tmp_path, frontend, params, sources: dict[str, str], libs=())
         get_defines=lambda: None,
         get_tool_name=lambda: "yosys",
         get_tool_overrides_for=lambda _n: None,
+        get_yosys_stage_overrides=lambda _n: None,
         get_lib_paths=lambda: [str(p) for p in libs],
         get_platform=lambda: None,
         get_blocks=lambda: [],
@@ -1306,3 +1308,142 @@ def test_the_slang_probe_records_strings_and_imported_headers(tmp_path):
     assert record.order == ["W", "N", "S"]
     assert record.parameters["S"] == '"cd"'
     assert literals_equal(record.parameters["N"], "-8'sd3")
+
+
+# --- Follow-ups from the #719 review: real parameters, quoted numbers, signed display ---
+
+
+@pytest.mark.parametrize(
+    "a,b,equal",
+    [
+        # Yosys records a real as a string and writes it to the netlist as a number.
+        ('"2.500000"', "2.500000", True),
+        ('"2.500000"', "2.5", True),
+        ("2.5", '"2.500000"', True),
+        ('"2.500000"', "2.4", False),
+        ('"1e-09"', "0.000000001", True),
+        ('"16"', "32'd16", True),
+        # Strings that are not plain numbers still compare only with strings.
+        ('"fast"', "1.0", False),
+        ('"8\'hff"', "8'hff", False),
+        ('"2.5"', '"2.500000"', False),
+    ],
+)
+def test_a_recorded_numeric_string_compares_as_a_number(a, b, equal):
+    assert literals_equal(a, b) is equal
+
+
+@pytest.mark.parametrize(
+    "literal,configured,equal",
+    [
+        # A quoted number gets the fits-the-width rule a YAML integer gets.
+        ("8'hff", "-1", True),
+        ("8'hff", -1, True),
+        ("8'shff", "255", True),
+        ("8'shff", 255, True),
+        ("12'h000", "4096", False),
+        ("12'hfff", "8191", False),
+        ("32'd4294967295", "-1", True),
+        ("1.5", "1.5", True),
+        # A sized string stays a literal comparison.
+        ("8'hff", "8'shff", True),
+    ],
+)
+def test_a_quoted_yaml_number_compares_like_a_yaml_integer(literal, configured, equal):
+    assert values_equal(literal, configured) is equal
+
+
+def test_a_negated_unsigned_literal_stays_unsigned():
+    """`-8'd1` is the unsigned 8-bit 255; only `-8'sd1` is -1."""
+    assert parse_value("-8'd1") == (255, 8)
+    assert parse_value("-8'sd1") == (-1, 8)
+    assert literals_equal("-8'd1", "255")
+    assert not literals_equal("-8'd1", "-1")
+
+
+def test_a_signed_mismatch_is_shown_signed(tmp_path):
+    """A record carries bits only; against a signed override a negative value reads as one."""
+    ones = "32'b" + "1" * 32
+    with pytest.raises(BlockParamError) as info:
+        _check_params(
+            tmp_path,
+            "blk_top #(.W(-32'sd2)) u_blk (.clk(clk), .d(d), .q(q));",
+            record={"W": ones},
+        )
+    assert "sets W=-32'sd2, but the block was hardened with W=-32'sd1" in str(
+        info.value
+    )
+    with pytest.raises(BlockParamError) as info:
+        _check_params(
+            tmp_path / "u",
+            "blk_top #(.W(32'd2)) u_blk (.clk(clk), .d(d), .q(q));",
+            record={"W": ones},
+        )
+    assert "hardened with W=32'd4294967295" in str(info.value)
+
+
+_REAL_BLK = (
+    "module blk #(parameter W = 8, parameter real R = 1.0) (input clk, "
+    "input [W-1:0] d, output reg [W-1:0] q);\n"
+    "  always @(posedge clk) q <= d;\nendmodule\n"
+)
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_a_native_real_parameter_is_recorded_and_matches_the_parents_override(
+    tmp_path,
+):
+    """A `parameter real` block hardened with the native frontend, under a parent the
+    native frontend wrote, passes the check; a different real fails it.
+    """
+    record = _probe_sources(
+        tmp_path / "probe", "verilog", {"W": 16, "R": 2.5}, {"blk.v": _REAL_BLK}
+    )
+    assert record.order == ["W", "R"]
+    # Yosys leaves a real out of the derived module; the probe reads the wrapper's override.
+    assert record.parameters["R"] == '"2.500000"'
+    assert parse_value(record.parameters["W"])[0] == 16
+
+    stub = _write(
+        tmp_path / "stub.v",
+        "(* blackbox *) module blk_top #(parameter W = 8, parameter real R = 1.0) "
+        "(input clk, input [W-1:0] d, output [W-1:0] q); endmodule\n",
+    )
+
+    def _parent(r: str) -> str:
+        top = _write(
+            tmp_path / f"top_{r}.v",
+            "module top(input clk, input [15:0] d, output [15:0] q);\n"
+            f"  blk_top #(.W(16), .R({r})) u_blk (.clk(clk), .d(d), .q(q));\n"
+            "endmodule\n",
+        )
+        out = tmp_path / f"netlist_{r}.v"
+        subprocess.run(
+            [
+                _YOSYS,
+                "-q",
+                "-p",
+                f"read_verilog {stub}; read_verilog {top}; synth -top top; "
+                f"write_verilog -noattr {out}",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return out.read_text()
+
+    netlist = _parent("2.5")
+    assert ".R(2.500000)" in netlist
+    block = _block_with_params(
+        tmp_path / "blk",
+        params="{W: 16, R: 2.5}",
+        record=record.parameters,
+        complete=False,
+        frontend="verilog",
+        order=record.order,
+    )
+    insts = block_instances(netlist, {"blk_top"}, "n.v")
+    assert check_params(insts, [block], "n.v") == []
+
+    insts = block_instances(_parent("3.0"), {"blk_top"}, "n.v")
+    with pytest.raises(BlockParamError, match='hardened with R="2.500000"'):
+        check_params(insts, [block], "n.v")

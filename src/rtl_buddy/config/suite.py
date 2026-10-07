@@ -4,11 +4,23 @@ logger = logging.getLogger(__name__)
 import pprint
 import os
 
+import yaml
 from serde import serde, field
 from serde.yaml import from_yaml
-from typing import Literal
-from .dispatch import SuiteCompileFile, validate_compile_block
-from .test import TestbenchConfig, TestConfigFile
+from typing import Any, Literal
+from .dispatch import (
+    RESOURCES_BLOCK,
+    SUITE_COMPILE_BLOCK,
+    TESTBENCH_COMPILE_BLOCK,
+    SuiteCompileFile,
+    validate_compile_block,
+    warn_unknown_block_keys,
+)
+from .test import (
+    TestbenchConfig,
+    TestConfigFile,
+    validate_preproc_sets_plusdefines,
+)
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -21,6 +33,47 @@ class SuiteConfigFile:
     builder: str | None = None
     # Layers over cfg-dispatch.compile field by field. A dedicated class keeps an unset `parallel` (None) distinct from `parallel: 1`.
     compile: SuiteCompileFile | None = None
+    # Suite default for each test's `preproc-sets-plusdefines`; Any so the load error names the key.
+    preproc_sets_plusdefines: Any = field(
+        rename="preproc-sets-plusdefines", default=None
+    )
+
+
+def _entry_label(kind: str, entry: dict, idx: int) -> str:
+    name = entry.get("name")
+    return f"{kind} {name!r}" if isinstance(name, str) else f"{kind} #{idx}"
+
+
+def warn_unknown_reservation_keys(raw, path) -> list[str]:
+    """Warn about unknown keys in a tests.yaml's ``compile:`` and ``resources:`` blocks, which serde drops; return them.
+
+    Covers the suite ``compile:`` block and each testbench's ``resources:`` and ``compile:`` and each test's ``resources:``. A malformed shape is left to the typed load.
+    """
+    if not isinstance(raw, dict):
+        return []
+    found = warn_unknown_block_keys(
+        raw.get("compile"), SUITE_COMPILE_BLOCK, path=path, block="compile"
+    )
+    for kind, section, blocks in (
+        (
+            "testbench",
+            "testbenches",
+            (("resources", RESOURCES_BLOCK), ("compile", TESTBENCH_COMPILE_BLOCK)),
+        ),
+        ("test", "tests", (("resources", RESOURCES_BLOCK),)),
+    ):
+        entries = raw.get(section)
+        if not isinstance(entries, list):
+            continue
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            label = _entry_label(kind, entry, idx)
+            for key, spec in blocks:
+                found += warn_unknown_block_keys(
+                    entry.get(key), spec, path=path, block=f"{label} {key}"
+                )
+    return found
 
 
 class SuiteConfig:
@@ -30,7 +83,10 @@ class SuiteConfig:
         data = None
         try:
             with open(path, "r") as file:
-                data = from_yaml(SuiteConfigFile, file.read())
+                text = file.read()
+            # Before the typed load, whose validation can be fatal: the warning names a misspelt key.
+            warn_unknown_reservation_keys(yaml.safe_load(text), path)
+            data = from_yaml(SuiteConfigFile, text)
         except Exception as e:
             log_event(
                 logger, logging.ERROR, "suite_config.load_failed", path=path, error=e
@@ -55,6 +111,7 @@ class SuiteConfig:
                     error=e,
                 )
                 raise FatalRtlBuddyError(f"{path}: {e}") from e
+            validate_preproc_sets_plusdefines(data.preproc_sets_plusdefines, where=path)
 
             # The dict comprehensions below would silently keep the last duplicate.
             seen_tbs: dict[str, int] = {}
@@ -106,7 +163,9 @@ class SuiteConfig:
             config_dir = os.path.dirname(path)
             try:
                 self.tests = {
-                    test.name: test.initialise(config_dir, tbs, data.builder)
+                    test.name: test.initialise(
+                        config_dir, tbs, data.builder, data.preproc_sets_plusdefines
+                    )
                     for test in data.tests
                 }
             except KeyError:

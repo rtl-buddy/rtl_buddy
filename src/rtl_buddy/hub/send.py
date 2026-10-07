@@ -62,6 +62,10 @@ _COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
 """``cov_focus.metric`` enum from the wire schema, kept independent of :data:`rtl_buddy.cov.raw.METRICS`."""
 
 
+_COV_FIGURES = ("elaboration", "source")
+"""``cov_focus.by`` enum from the wire schema: the /cov pane's per-elaboration or source-point figures."""
+
+
 _PHYS_METRICS = ("cells", "area", "leakage", "dynamic", "total")
 """``phys_focus.metric`` enum from the wire schema, kept independent of the physical model."""
 
@@ -203,7 +207,8 @@ def cmd_graph_focus(
         "TARGET is 'file:design/blk.sv', 'module:blk' or 'test:verif/blk#basic'; "
         "an unprefixed string is a file path. --metric foregrounds one coverage "
         "kind, --line scrolls a file target to a line, and --item names a bin or "
-        "SVA cover point. The hub replays the focus when the pane connects, so it "
+        "SVA cover point. --by switches the pane's figures between per-elaboration "
+        "and source points. The hub replays the focus when the pane connects, so it "
         "can be sent before the tab is open."
     ),
 )
@@ -231,6 +236,15 @@ def cmd_cov_focus(
             "as /cov.json spells it, or an SVA cover point name.",
         ),
     ] = None,
+    by: Annotated[
+        Optional[str],
+        typer.Option(
+            "--by",
+            help="elaboration|source — which figures the pane shows, as its "
+            "figures picker and /cov?by=source do. Omitted leaves the pane's "
+            "choice alone.",
+        ),
+    ] = None,
 ) -> None:
     # The pane matches these strings exactly, and the MCP cov_focus tool must send the same bytes.
     target = target.strip()
@@ -245,6 +259,11 @@ def cmd_cov_focus(
         item = item.strip()
         if not item:
             raise typer.BadParameter("--item must be non-empty")
+    if by is not None and by not in _COV_FIGURES:
+        raise typer.BadParameter(
+            f"by must be one of {'/'.join(_COV_FIGURES)}, got {by!r}",
+            param_hint="--by",
+        )
     # Omit unset keys: the wire schema has no nullable fields.
     payload: dict[str, object] = {"target": target}
     if metric is not None:
@@ -253,6 +272,8 @@ def cmd_cov_focus(
         payload["line"] = line
     if item is not None:
         payload["item"] = item
+    if by is not None:
+        payload["by"] = by
     with _open_or_exit() as h:
         h.emit("cov_focus", payload)
 
