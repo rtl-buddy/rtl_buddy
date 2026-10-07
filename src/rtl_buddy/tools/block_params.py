@@ -1151,7 +1151,7 @@ class ParamRecord:
     frontend: str
     #: True when localparams are included (slang); the native frontend reports parameters only.
     complete: bool
-    #: Name to a Verilog literal: `32'b...` for bits, `"..."` for a string.
+    #: Name to a Verilog literal: `32'b...` for bits, `"..."` for a string. Only the top's own parameters and localparams: no genvars, no generate-block localparams.
     parameters: dict[str, str]
     #: The overridable parameters in declaration order, for positional overrides.
     order: list[str]
@@ -1261,6 +1261,82 @@ def parameter_port_names(text: str, module: str) -> list[str] | None:
                 depth -= 1
             item.append(t)
         return names
+    return None
+
+
+#: Keywords that open a nested scope, where a `parameter` or `localparam` is not the module's, and the keywords that close one.
+_SCOPE_OPENERS = frozenset({"begin", "function", "task", "fork", "class"})
+_SCOPE_CLOSERS = frozenset(
+    {"end", "endfunction", "endtask", "join", "join_any", "join_none", "endclass"}
+)
+
+
+def _opens_scope(toks: list[_Token], i: int, lo: int) -> bool:
+    """Whether the keyword at `i` opens a scope with a closing keyword.
+
+    Not when it is `wait fork` / `disable fork`, a `typedef class` forward declaration, or a DPI `import`/`export` of a function or task, none of which has a body.
+    """
+    text = toks[i].text
+    if text not in _SCOPE_OPENERS:
+        return False
+    prev = toks[i - 1].text if i > lo else ""
+    if text == "fork" and prev in ("wait", "disable"):
+        return False
+    if text == "class" and prev == "typedef":
+        return False
+    if text in ("function", "task"):
+        j = i - 1
+        while j >= lo and toks[j].text != ";":
+            if toks[j].text in ("import", "export"):
+                return False
+            j -= 1
+    return True
+
+
+def module_scope_parameter_names(text: str, module: str) -> set[str] | None:
+    """Return the names `module` declares as a `parameter` or `localparam` in its own scope, or None when it is not declared in `text` or rb cannot tell its scopes apart.
+
+    These are every entry of the `#(...)` header list and the body's declarations outside a `begin`/`end` block (generate blocks and procedural blocks), a function, a task, a fork or a class. Genvars are not parameters, and a generate loop's genvar or a generate block's localparam belongs to that block's scope, not the module's. A body whose scope keywords do not balance gives None, so a caller keeps every value rather than dropping a real one.
+    """
+    toks = _tokens(text)
+    for name, lo, hi in _module_bodies(toks):
+        if name != module:
+            continue
+        names: set[str] = set()
+        i = lo
+        if lo < len(toks) and toks[lo].text == "#":
+            close = _matching_paren(toks, lo + 1)
+            depth = 0
+            item: list[_Token] = []
+            for t in toks[lo + 2 : close + 1]:
+                if t is toks[close] or (depth == 0 and t.text == ","):
+                    if item and item[0].text in ("parameter", "localparam"):
+                        item = item[1:]
+                    names.update(_item_names(item)[:1])
+                    item = []
+                    continue
+                if t.text in ("(", "[", "{"):
+                    depth += 1
+                elif t.text in (")", "]", "}"):
+                    depth -= 1
+                item.append(t)
+            i = close + 1
+        depth = 0
+        while i < hi:
+            t = toks[i]
+            if _opens_scope(toks, i, lo):
+                depth += 1
+            elif t.text in _SCOPE_CLOSERS:
+                depth -= 1
+                if depth < 0:
+                    return None
+            elif depth == 0 and t.text in ("parameter", "localparam"):
+                start = i + 1
+                while i < hi and toks[i].text != ";":
+                    i += 1
+                names.update(_item_names(toks[start:i]))
+            i += 1
+        return names if depth == 0 else None
     return None
 
 
