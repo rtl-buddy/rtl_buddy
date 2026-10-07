@@ -37,6 +37,7 @@ verifications:
 | `covers` | Optional list | Specification coverage IDs; no proof effect |
 | `tool_overrides` | Optional map | Per-tool `timeout` and `extra_args` |
 | `vacuity` | Default true for bmc/prove, false for cover/live | Derives antecedent reachability covers |
+| `vacuity_engines` | Default: the `smtbmc` entries of `engines`, else `[smtbmc yices]` | SymbiYosys engines for the vacuity cover pass. Cover mode needs a BMC engine, so `abc pdr` cannot run it |
 | `coi` | Default true | Runs cone-of-influence and dead-assume analysis |
 | `frontend` | Default `verilog` | `verilog` or `slang`. Slang requires the configured plugin |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |

@@ -1460,6 +1460,12 @@
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/release/what-is-protected-and-how.md"
         },
         {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/release/#reproducing-a-release",
+          "slug": "reproducing-a-release",
+          "title": "Reproducing a release",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/concepts/release/reproducing-a-release.md"
+        },
+        {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/concepts/release/#constraints",
           "slug": "constraints",
           "title": "Constraints",
@@ -2709,6 +2715,12 @@
           "slug": "rb-release-cannot-obfuscate-token-pasted-macro-names",
           "title": "`rb release` cannot obfuscate token-pasted macro names",
           "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/rb-release-cannot-obfuscate-token-pasted-macro-names.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/#verible-picks-new-obfuscated-names-on-every-run",
+          "slug": "verible-picks-new-obfuscated-names-on-every-run",
+          "title": "Verible picks new obfuscated names on every run",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/v6/agent/sections/known-issues/verible-picks-new-obfuscated-names-on-every-run.md"
         }
       ],
       "slug": "known-issues",

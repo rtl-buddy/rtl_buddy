@@ -314,3 +314,8 @@ Verible's obfuscator renames a spelling everywhere it appears, so a name used by
 ## `rb release` cannot obfuscate token-pasted macro names
 
 Verible renames the pieces of a token-pasted name (`` `define NXT(a) a``_nxt ``) separately, so the pasted result no longer matches its declaration, and a macro string quote is renamed while the string is not. `rb release` refuses both in any file it obfuscates. Rewrite the macro, exclude the file with `obfuscate: false` and a reason, or set `obfuscation.token-paste: preserve` to keep every name the paste can form.
+
+## Verible picks new obfuscated names on every run
+
+`verible-verilog-obfuscate` has no seed: two runs on the same input give different names. `rb release` keeps names stable by starting each release from the previous release's map, and reproduces a past release only from that release's own map with `--reproduce`. Keep every `maps/<version>.map`.
+

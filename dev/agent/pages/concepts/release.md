@@ -26,6 +26,8 @@ rb release                               # release.yaml in the current directory
 rb release -c release/acme_cut/release.yaml
 rb release --trial                       # full run, verification included; nothing is archived
 rb release --allow-dirty --no-verify     # quick look from a work-in-progress tree
+rb release --reproduce /path/to/maps/1.0.0.json   # at the release's commit: re-cut it and compare
+rb release --csr-only                    # write only the customer register map
 ```
 
 ## Install the tools
@@ -60,7 +62,15 @@ The last rule is what makes a clear testbench compile against an obfuscated desi
 
 `obfuscation.continue-from: previous` (the default) starts each release from the newest older release's map in `maps/`, so a name keeps its released spelling from one drop to the next and a consumer's constraints and reports stay valid. New names get new spellings. A version whose map already exists is refused unless `--force` is given, because the archived map is the only way to read a release's names later.
 
-The map and an internal manifest are copied into `maps/` only for a release cut from a clean tree with verification run. Commit them with the release. A trial (`--trial`, `--allow-dirty` or `--no-verify`) leaves them in the artefact directory.
+The map and an internal manifest are copied into `maps/` only for a release cut from a clean tree with verification run. A clean tree has no modified or untracked file, submodules included, and every input (sources, headers, configs, notes, documents, constraints, key file) is tracked and unchanged in its repository. Otherwise an untracked or gitignored file placed earlier on an include path would ship in place of the committed one. Commit them with the release. A trial (`--trial`, `--allow-dirty` or `--no-verify`) leaves them in the artefact directory.
+
+## Reproducing a release
+
+Verible picks new names on every run, and IEEE-1735 encryption uses a fresh session key every time. So a release cannot be rebuilt byte for byte from its commit alone, but it can be rebuilt exactly from its commit and its archived map:
+
+- the internal manifest (`maps/<version>.json`) records the commit, the tool versions and, for every shipped file, the SHA-256 of its source and of its plaintext before encryption;
+- `rb release --reproduce <manifest>`, run at that commit, re-cuts the release with every name pinned to the archived map and fails unless every file's plaintext matches. It archives nothing;
+- the tarball is written deterministically (sorted entries, the commit time as every timestamp, no owner, no gzip timestamp), so everything except the encrypted payloads is identical between cuts.
 
 ## Constraints
 
@@ -73,6 +83,30 @@ Each `design.constraints` entry names an SDC file and the preserved module it co
 A wildcard that would have to match renamed names, `-filter`, and `source` cannot be translated faithfully and fail the release; list the objects explicitly. The rewritten files ship under `design/constraints/`.
 
 A constraint script that queries the design while it runs (`get_property`, loops over `all_inputs`) cannot be evaluated without a netlist. Give it `mode: verbatim`: it ships unchanged after a check that it names no internal objects (`get_cells`, `get_pins`, `get_nets`) and that each literal `get_ports` pattern matches a port of its scope. Patterns built from variables are not checked.
+
+## Customer registers
+
+The `csr:` section ships the registers software may use, generated from the design's SystemRDL. It needs the `release-csr` extra (`uv add 'rtl_buddy[release-csr]'`).
+
+Each entry in `csr.windows` is one address map (`rdl`, `top`) at an absolute `base`. Several windows may share one RDL, as alias decoders of the same register block do. A register ships when both hold:
+
+- it is eligible: the `gate` user-defined property is true on it, or on an enclosing regfile or memory. With no `gate`, every register is eligible. An internal register never ships, whatever the whitelist says;
+- a `csr.registers` entry matches it, or an enclosing regfile or memory. `match` is a glob on `<window>.<path>`, the instance names joined by `.` without array indices, so `dma.ch.*` takes every register of the `ch` regfile array.
+
+Every register and memory not selected is removed, and so is every signal. User-defined properties never ship, because they are internal annotations. A reference whose target was removed is dropped (the log lists them as `release.csr_refs_dropped`). The shipped RDL gives every instance its explicit offset, so removing a register never moves another. An entry that ships nothing, a window left empty, and an `obfuscate-fields` pattern that matches no field are all errors.
+
+`obfuscate-fields` lists field-name globs to hide in the registers the entry selects. Each such field keeps its bit position, width, access and reset value, so software can still write the register while preserving the field. It ships as `f<lsb>` (`f4` for bits `[7:4]`), with no `name`, `desc` or `encode`.
+
+The map ships clear in `csr/`, under `csr.name` (default `<name>_csr`):
+
+| File | Contents |
+|---|---|
+| `<csr name>.rdl` | Each window's selected registers, and a top address map `<csr name>` that places every window at its base. The flow compiles this file on its own before generating the others from it |
+| `<csr name>.h` | C header from PeakRDL cheader: register structs and per-field `_bm`, `_bp`, `_bw` and `_reset` macros |
+| `<csr name>.svh` | `` `define <prefix>_<WINDOW>_<PATH> `` with the absolute address, plus `_RESET` and per-field `_<FIELD>_LSB` and `_<FIELD>_WIDTH`; array elements carry `_<index>` |
+| `<csr name>.md` | Register map: address, reset value and fields per register |
+
+The RDL sources and the files they `` `include `` are release inputs, so they must be committed. The internal manifest records the register count per window and the digest of each `csr/` file, and `--reproduce` requires them unchanged. `rb release --csr-only` writes only `artefacts/<name>-<version>/csr/` and needs neither Verible nor VCS. Use it to regenerate anything derived from the map, such as testbench register scripts.
 
 ## Verification
 
@@ -90,12 +124,17 @@ The flow also checks, independently of the testbench:
 <name>-<version>/
   RELEASE_NOTES.md        # from package.notes
   MANIFEST                # sha256 and protection level of every file
+  sim.f                   # every file of every directory, in compile order
   docs/                   # package.docs
-  design/<top>.f          # paths relative to the release root
+  design/<top>.f          # the design's files, defines and external references
   design/*.svp, *.svh     # protected sources
   design/constraints/     # rewritten SDC
-  verif/tb.f, verif/...   # testbench and testbench.extra-files
+  csr/                    # customer register map: .rdl, .h, .svh, .md (csr:)
+  <dir>/<dir>.f, <dir>/...# files a `dir:` rule moved, such as models the consumer replaces
+  verif/tb.f, verif/...   # testbench, design files moved to verif/, testbench.extra-files
 ```
+
+Design files ship in `design/` and testbench files in `verif/`. A `design.files` or `testbench.files` rule with `dir:` ships the matching files in another directory instead: behavioural memories and cells the consumer replaces with their own, or simulation-only support code that does not belong with the synthesisable sources. Each directory gets a filelist of its own files, and `sim.f` lists all of them in the original compile order, so packages still precede their users when files are split across directories. Paths in every filelist are relative to the release root.
 
 The tarball is `artefacts/<name>-<version>/<name>-<version>.tar.gz`. The `stage/` directories beside it are internal: `stage/src` and `stage/obf` hold readable sources and must not be shipped.
 

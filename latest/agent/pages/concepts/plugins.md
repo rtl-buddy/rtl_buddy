@@ -34,7 +34,7 @@ for i in range(4):
 | Variable | Value |
 |---|---|
 | `test_cfg` | The original, immutable `TestConfig`. A copy may change any field except `reglvl`. |
-| `root_cfg` | The mutable `RootConfig`. |
+| `root_cfg` | The project `RootConfig`, read-only. Reads and method calls work; setting or deleting an attribute raises `AttributeError`, which fails the hook. |
 | `suite_dir` | Absolute directory containing `tests.yaml`. |
 | `artifact_dir` | Artefact root for the incoming test name. |
 | `out_test_cfgs` | Output list the script must assign. |
