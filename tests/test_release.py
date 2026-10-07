@@ -28,6 +28,7 @@ from rtl_buddy.release.namemap import NameMap, previous_map, seed_map, version_k
 from rtl_buddy.release.obfuscate import leaked_names
 from rtl_buddy.release.sv_text import (
     declared_units,
+    header_names,
     identifiers,
     include_targets,
     lexical_hazards,
@@ -624,3 +625,18 @@ def test_a_rule_directory_must_stay_inside_the_package(tmp_path: Path):
     )
     with pytest.raises(FatalRtlBuddyError, match="relative package directory"):
         load_release_config(p)
+
+
+def test_header_names_cover_ansi_and_non_ansi_headers():
+    text = (
+        "module m1 #(parameter W = 2) (input [W-1:0] a, output b);\n"
+        "  wire hidden;\n"
+        "endmodule\n"
+        "module m2 (c, d);\n"
+        "  parameter DEPTH = 4;\n"
+        "  input c; output d; reg secret;\n"
+        "endmodule\n"
+    )
+    names = header_names(text)
+    assert {"m1", "W", "a", "b", "m2", "c", "d", "DEPTH"} <= names
+    assert not {"hidden", "secret"} & names

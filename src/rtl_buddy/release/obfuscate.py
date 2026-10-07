@@ -18,7 +18,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .namemap import NameMap
-from .sv_text import tokens
+from .sv_text import header_names, tokens
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,9 @@ def _run(exe: str, args: list[str], src_text: str, cwd: Path) -> str:
     return proc.stdout
 
 
-def interface_names(exe: str, files: list[Path]) -> dict[Path, set[str]]:
+def interface_names(
+    exe: str, files: list[Path], lexical_fallback: frozenset[Path] = frozenset()
+) -> dict[Path, set[str]]:
     """Module, port and parameter names declared by each file.
 
     Runs the obfuscator with ``--preserve_interface`` on each file alone and
@@ -85,12 +87,17 @@ def interface_names(exe: str, files: list[Path]) -> dict[Path, set[str]]:
         builtins = set(NameMap.load(empty_map).entries)
         for f in files:
             m = tmpdir / "iface.map"
-            _run(
-                exe,
-                ["--preserve_interface", "--save_map", str(m)],
-                f.read_text(errors="replace"),
-                tmpdir,
-            )
+            text = f.read_text(errors="replace")
+            try:
+                _run(exe, ["--preserve_interface", "--save_map", str(m)], text, tmpdir)
+            except FatalRtlBuddyError as exc:
+                if f not in lexical_fallback:
+                    raise FatalRtlBuddyError(f"{f}: {exc}") from exc
+                # A vendor model the obfuscator cannot parse never ships; its
+                # header names are read lexically instead.
+                log_event(logger, logging.WARNING, "release.iface_lexical", path=str(f))
+                out[f] = header_names(text)
+                continue
             nm = NameMap.load(m)
             out[f] = {k for k, v in nm.entries.items() if k == v} - builtins
     return out

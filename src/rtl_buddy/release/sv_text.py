@@ -250,3 +250,39 @@ def include_targets(text: str) -> list[str]:
     """Return the file names of the ``\\`include "..."`` directives in ``text``, outside comments."""
     code = "".join(t.text for t in tokens(text) if t.kind != "comment")
     return _INCLUDE.findall(code)
+
+
+def header_names(text: str) -> set[str]:
+    """Module names, the identifiers of each module header, and ``parameter`` names.
+
+    A lexical stand-in for the obfuscator's ``--preserve_interface`` on sources
+    it cannot parse, such as vendor models. A header runs from ``module`` to the
+    first ``;`` outside parentheses, so it covers ANSI and non-ANSI port lists.
+    """
+    names: set[str] = set()
+    toks = [t for t in tokens(text) if t.kind in ("ident", "other")]
+    in_header = False
+    depth = 0
+    after_param = False
+    for i, t in enumerate(toks):
+        if t.kind == "ident":
+            if t.directive:
+                continue
+            if t.text in ("module", "macromodule"):
+                in_header, depth = True, 0
+                continue
+            if in_header or after_param:
+                names.add(t.text)
+                after_param = False
+            if t.text == "parameter":
+                after_param = True
+            continue
+        for c in t.text:
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            elif c == ";" and depth == 0:
+                in_header = False
+                after_param = False
+    return names

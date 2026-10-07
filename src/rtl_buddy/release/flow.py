@@ -497,7 +497,9 @@ class ReleaseFlow:
             )
         iface_files = sorted({decl_file[m].src for m in wanted})
         harvested = obf.interface_names(
-            verible, iface_files + sorted(set(col.external_sources))
+            verible,
+            iface_files + sorted(set(col.external_sources)),
+            lexical_fallback=frozenset(col.external_sources),
         )
         interfaces = {m: harvested[decl_file[m].src] for m in wanted}
 

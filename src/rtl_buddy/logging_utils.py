@@ -1472,6 +1472,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "are now preserved or collide with a preserved name, so their "
                 f"released spelling changes: {fields.get('names')}"
             )
+        case "release.iface_lexical":
+            return (
+                f"the obfuscator cannot parse external file {fields.get('path')}; "
+                "its module, port and parameter names are read from the module "
+                "headers instead"
+            )
         case "release.token_paste_preserved":
             return (
                 f"{fields.get('count')} name(s) formed by macro token pasting "
