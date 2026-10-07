@@ -28,6 +28,7 @@ from rtl_buddy.release.namemap import NameMap, previous_map, seed_map, version_k
 from rtl_buddy.release.obfuscate import leaked_names
 from rtl_buddy.release.sv_text import (
     declared_units,
+    header_names,
     identifiers,
     include_targets,
     lexical_hazards,
@@ -576,3 +577,100 @@ def test_reproduce_recuts_a_release_from_its_map(
     _git_commit_all(project, "later change")
     with pytest.raises(FatalRtlBuddyError, match="check out the release tag"):
         _run(project, reproduce=ref / "1.0.0.json")
+
+
+def test_a_rule_moves_a_file_to_its_own_package_directory(project: Path, tcl_backend):
+    _edit(
+        project / REL / "release.yaml",
+        lambda d: d["design"].update(
+            {
+                "files": [
+                    {
+                        "match": "rtl/acme_counter.sv",
+                        "dir": "design_cust_to_replace",
+                        "obfuscate": False,
+                        "encrypt": False,
+                        "reason": "behavioural model the customer replaces",
+                    }
+                ]
+            }
+        ),
+    )
+    files = _release_files(_run(project))
+    assert "design_cust_to_replace/acme_counter.sv" in files
+    assert "design/acme_counter.sv" not in files
+    assert "design_cust_to_replace/acme_counter.sv" not in files["design/acme_top.f"]
+    assert files["design_cust_to_replace/design_cust_to_replace.f"].splitlines()[
+        2:
+    ] == [
+        "+incdir+design_cust_to_replace",
+        "design_cust_to_replace/acme_counter.sv",
+    ]
+    order = [
+        ln for ln in files["sim.f"].splitlines() if ln.startswith(("design", "verif"))
+    ]
+    assert order.index("design_cust_to_replace/acme_counter.sv") < order.index(
+        "design/acme_core.svp"
+    )
+    assert "+incdir+design_cust_to_replace" in files["sim.f"]
+
+
+def test_a_rule_directory_must_stay_inside_the_package(tmp_path: Path):
+    p = _write_cfg(tmp_path, {})
+    _edit(
+        p,
+        lambda d: d["design"].update(
+            {"files": [{"match": "a.sv", "dir": "../out", "reason": "x"}]}
+        ),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="relative package directory"):
+        load_release_config(p)
+
+
+def test_header_names_cover_ansi_and_non_ansi_headers():
+    text = (
+        "module m1 #(parameter W = 2) (input [W-1:0] a, output b);\n"
+        "  wire hidden;\n"
+        "endmodule\n"
+        "module m2 (c, d);\n"
+        "  parameter DEPTH = 4;\n"
+        "  input c; output d; reg secret;\n"
+        "endmodule\n"
+    )
+    names = header_names(text)
+    assert {"m1", "W", "a", "b", "m2", "c", "d", "DEPTH"} <= names
+    assert not {"hidden", "secret"} & names
+
+
+def test_an_external_goes_to_its_directory_once(project: Path, tcl_backend):
+    vendor = project / "vendor_mem"
+    vendor.mkdir()
+    (vendor / "vmem.v").write_text("module vmem (input clk); endmodule\n")
+    acme_f = project / "rtl/acme.f"
+    acme_f.write_text(
+        acme_f.read_text() + "-v ../vendor_mem/vmem.v\n-v ../vendor_mem/vmem.v\n"
+    )
+    _edit(
+        project / REL / "release.yaml",
+        lambda d: d["design"].update(
+            {
+                "externals": [
+                    {
+                        "path": "../../vendor_mem",
+                        "ship-as": "$VMEM_DIR",
+                        "dir": "design_cust_to_replace",
+                    }
+                ]
+            }
+        ),
+    )
+    files = _release_files(_run(project, verify=False))
+    assert "-v $VMEM_DIR/vmem.v" not in files["design/acme_top.f"]
+    assert (
+        files["design_cust_to_replace/design_cust_to_replace.f"].count(
+            "-v $VMEM_DIR/vmem.v"
+        )
+        == 1
+    )
+    assert files["sim.f"].count("-v $VMEM_DIR/vmem.v") == 1
+    assert not any(n.endswith("vmem.v") for n in files)

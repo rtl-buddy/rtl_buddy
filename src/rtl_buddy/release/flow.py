@@ -75,6 +75,8 @@ class Item:
     role: str
     protect: Protection
     rules: list[FileRule] = field(default_factory=list)
+    #: Package directory chosen by a rule; ``design`` or ``verif`` by section otherwise.
+    pkg_dir: str | None = None
 
     @property
     def name(self) -> str:
@@ -82,6 +84,8 @@ class Item:
 
     @property
     def subdir(self) -> str:
+        if self.pkg_dir:
+            return self.pkg_dir
         return DESIGN_DIR if self.section == "design" else VERIF_DIR
 
     def shipped_name(self) -> str:
@@ -106,6 +110,15 @@ class FilelistLine:
     kind: str  # "item", "incdir", "define", "external", "libext"
     value: str
     item: Item | None = None
+    #: Package directory whose filelist carries a non-item line.
+    dir: str | None = None
+
+    @property
+    def target(self) -> str:
+        if self.item is not None:
+            return self.item.subdir
+        assert self.dir is not None
+        return self.dir
 
 
 @dataclass
@@ -284,6 +297,9 @@ class ReleaseFlow:
         rel = os.path.relpath(path, os.path.normpath(ext.path))
         return ext.ship_as if rel == "." else f"{ext.ship_as.rstrip('/')}/{rel}"
 
+    def _relpath(self, path: str) -> str:
+        return os.path.relpath(path, self.project_root).replace(os.sep, "/")
+
     def _inside_project(self, path: str) -> bool:
         rel = os.path.relpath(path, self.project_root)
         return not (rel == os.pardir or rel.startswith(os.pardir + os.sep))
@@ -302,24 +318,34 @@ class ReleaseFlow:
         default = cfg.design.protect if section == "design" else cfg.testbench.protect  # type: ignore[union-attr]
         rules = cfg.design.files if section == "design" else cfg.testbench.files  # type: ignore[union-attr]
         new: list[Item] = []
+        home = DESIGN_DIR if section == "design" else VERIF_DIR
+        emitted = {(ln.kind, ln.value) for ln in lines if ln.item is None}
+
+        def option_line(kind: str, value: str, pkg_dir: str | None = None) -> None:
+            # Nested filelists repeat their options; each is written once.
+            if (kind, value) not in emitted:
+                emitted.add((kind, value))
+                lines.append(FilelistLine(kind, value, dir=pkg_dir or home))
+
         for value, option in entries:
             if option == "+define+":
                 defines.add(value.split("=", 1)[0])
-                lines.append(FilelistLine("define", value))
+                option_line("define", value)
                 continue
             if option == "+libext+":
-                lines.append(FilelistLine("libext", value))
+                option_line("libext", value)
                 continue
             path = os.path.normpath(value)
-            if self._external_for(path):
+            ext = self._external_for(path)
+            if ext:
                 shipped = self._ship_external(path)
                 if option == "+incdir+":
-                    lines.append(FilelistLine("external", f"+incdir+{shipped}"))
+                    option_line("external", f"+incdir+{shipped}", ext.dir)
                 elif option == "-y ":
-                    lines.append(FilelistLine("external", f"-y {shipped}"))
+                    option_line("external", f"-y {shipped}", ext.dir)
                 else:
                     prefix = "-v " if option == "-v " else ""
-                    lines.append(FilelistLine("external", f"{prefix}{shipped}"))
+                    option_line("external", f"{prefix}{shipped}", ext.dir)
                     external_sources.append(Path(path))
                 continue
             if not self._inside_project(path):
@@ -341,8 +367,10 @@ class ReleaseFlow:
             if not os.path.isfile(path):
                 raise FatalRtlBuddyError(f"{section} source not found: {path}")
             role = "lib" if option == "-v " else "unit"
-            prot, applied = resolve_protection(os.path.basename(path), default, rules)
-            item = Item(Path(path), section, role, prot, applied)
+            prot, applied, pkg_dir = resolve_protection(
+                os.path.basename(path), self._relpath(path), default, rules
+            )
+            item = Item(Path(path), section, role, prot, applied, pkg_dir)
             seen[path] = item
             new.append(item)
             lines.append(FilelistLine("item", path, item))
@@ -390,10 +418,10 @@ class ReleaseFlow:
                         "release flattens files into one directory, so include by "
                         "file name and add the directory with +incdir+"
                     )
-                prot, applied = resolve_protection(
-                    os.path.basename(path), default, rules
+                prot, applied, pkg_dir = resolve_protection(
+                    os.path.basename(path), self._relpath(path), default, rules
                 )
-                header = Item(Path(path), section, "header", prot, applied)
+                header = Item(Path(path), section, "header", prot, applied, pkg_dir)
                 seen[path] = header
                 found.append(header)
                 queue.append(header)
@@ -488,7 +516,9 @@ class ReleaseFlow:
             )
         iface_files = sorted({decl_file[m].src for m in wanted})
         harvested = obf.interface_names(
-            verible, iface_files + sorted(set(col.external_sources))
+            verible,
+            iface_files + sorted(set(col.external_sources)),
+            lexical_fallback=frozenset(col.external_sources),
         )
         interfaces = {m: harvested[decl_file[m].src] for m in wanted}
 
@@ -585,44 +615,73 @@ class ReleaseFlow:
     # ---- stages ------------------------------------------------------------
 
     def _filelist_text(
-        self, lines: list[FilelistLine], subdir: str, title: str, pkg: bool
+        self,
+        lines: list[FilelistLine],
+        incdirs: list[str],
+        title: str,
+        pkg: bool,
+        only_dir: str | None = None,
     ) -> str:
+        """Render filelist lines with release-root-relative paths; ``only_dir`` keeps the lines one package directory carries."""
         out = [
             f"// {self.cfg.name} {self.cfg.version}: {title}",
             "// Paths are relative to the release root; run tools from there.",
-            f"+incdir+{subdir}",
+            *(f"+incdir+{d}" for d in incdirs),
         ]
         for ln in lines:
-            if ln.kind == "define":
+            if only_dir is not None and ln.target != only_dir:
+                continue
+            if ln.kind == "item":
+                assert ln.item is not None
+                name = ln.item.shipped_name() if pkg else ln.item.name
+                prefix = "-v " if ln.item.role == "lib" else ""
+                out.append(f"{prefix}{ln.item.subdir}/{name}")
+            elif ln.kind == "define":
                 out.append(f"+define+{ln.value}")
             elif ln.kind == "libext":
                 out.append(f"+libext+{ln.value}")
             elif ln.kind == "external":
                 out.append(ln.value)
-            elif ln.kind == "item":
-                assert ln.item is not None
-                name = ln.item.shipped_name() if pkg else ln.item.name
-                prefix = "-v " if ln.item.role == "lib" else ""
-                out.append(f"{prefix}{subdir}/{name}")
         return "\n".join(out) + "\n"
 
     def _filelists(self, col: Collected, root: Path, pkg: bool) -> None:
-        (root / DESIGN_DIR).mkdir(parents=True, exist_ok=True)
-        (root / DESIGN_DIR / f"{col.top}.f").write_text(
+        """One filelist per package directory, and ``sim.f`` with every line in compile order.
+
+        A directory's filelist carries its files and the options and external
+        references assigned to it: the design's go to ``design/<top>.f``, the
+        testbench's to ``verif/tb.f``, an external's to its ``dir``.
+        """
+        everything = col.design_lines + col.tb_lines
+        dirs = [DESIGN_DIR]
+        for ln in everything:
+            if ln.target not in dirs:
+                dirs.append(ln.target)
+        tb = self.cfg.testbench is not None
+        if tb and VERIF_DIR not in dirs:
+            dirs.append(VERIF_DIR)
+        names = {
+            DESIGN_DIR: (f"{col.top}.f", f"{col.top} design filelist"),
+            VERIF_DIR: ("tb.f", "testbench filelist"),
+        }
+        for d in dirs:
+            (root / d).mkdir(parents=True, exist_ok=True)
+            fname, title = names.get(d, (f"{Path(d).name}.f", f"{d} filelist"))
+            (root / d / fname).write_text(
+                self._filelist_text(everything, [d], title, pkg, only_dir=d)
+            )
+        (root / "sim.f").write_text(
             self._filelist_text(
-                col.design_lines, DESIGN_DIR, f"{col.top} design filelist", pkg
+                everything,
+                dirs,
+                "simulation filelist: every file in compile order",
+                pkg,
             )
         )
-        if self.cfg.testbench is not None:
-            (root / VERIF_DIR).mkdir(parents=True, exist_ok=True)
-            (root / VERIF_DIR / "tb.f").write_text(
-                self._filelist_text(col.tb_lines, VERIF_DIR, "testbench filelist", pkg)
-            )
+        if tb:
             for extra in self.cfg.testbench.extra_files:
                 if not extra.is_file():
                     raise FatalRtlBuddyError(f"testbench extra file not found: {extra}")
-                dst = root / VERIF_DIR / extra.name
-                shutil.copy2(extra, dst)
+                shutil.copy2(extra, root / VERIF_DIR / extra.name)
 
     def _write_stage_src(self, col: Collected, root: Path) -> None:
         for item in col.items:
