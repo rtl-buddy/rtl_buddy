@@ -8051,14 +8051,25 @@ class RtlBuddy:
                 ),
             ),
         ] = None,
+        csr_only: Annotated[
+            bool,
+            typer.Option(
+                "--csr-only",
+                help=(
+                    "write only the customer register map (the `csr:` section) to "
+                    "artefacts/<name>-<version>/csr/ and stop"
+                ),
+            ),
+        ] = False,
     ):
         """
         Cut a customer release from release.yaml.
 
         Collects the design model's sources and the testbench, strips comments,
         obfuscates identifiers (Verible) and encrypts files (VCS IEEE-1735) per the
-        file policy, rewrites constraints for the released names, packages
-        design/, verif/, docs and release notes into a tarball, and runs the
+        file policy, rewrites constraints for the released names, writes the
+        whitelisted customer registers (`csr:`) to csr/, packages design/,
+        verif/, csr/, docs and release notes into a tarball, and runs the
         release's verification command on each stage. Outputs go to
         artefacts/<name>-<version>/; the name map and manifest are archived beside
         release.yaml only for a clean, verified release.
@@ -8093,6 +8104,7 @@ class RtlBuddy:
                 force=force,
                 trial=trial,
                 reproduce=Path(ctx.resolve_input(reproduce)) if reproduce else None,
+                csr_only=csr_only,
             ),
             verible_dir=verible_dir,
         ).run()

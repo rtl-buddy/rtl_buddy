@@ -25,6 +25,15 @@ wheels = [
 ]
 
 [[package]]
+name = "antlr4-python3-runtime"
+version = "4.13.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/5f/2cdf6f7aca3b20d3f316e9f505292e1f256a32089bd702034c29ebde6242/antlr4_python3_runtime-4.13.2.tar.gz", hash = "sha256:909b647e1d2fc2b70180ac586df3933e38919c85f98ccc656a96cd3f25ef3916", size = 117467, upload-time = "2024-08-03T19:00:12.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/03/a851e84fcbb85214dc637b6378121ef9a0dd61b4c65264675d8a5c9b1ae7/antlr4_python3_runtime-4.13.2-py3-none-any.whl", hash = "sha256:fe3835eb8d33daece0e799090eda89719dbccee7aa39ef94eed3818cafa5a7e8", size = 144462, upload-time = "2024-08-03T19:00:11.134Z" },
+]
+
+[[package]]
 name = "anyio"
 version = "4.14.2"
 source = { registry = "https://pypi.org/simple" }
@@ -439,6 +448,15 @@ wheels = [
 ]
 
 [[package]]
+name = "markdown"
+version = "3.11"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/4f/700155c8c20d9e655dd0732b5fc3c7614f291b9148da271d7388e50bf774/markdown-3.11.tar.gz", hash = "sha256:180224db6aed87ba9ce1f2781ebcd5826253de8ff637112090e24b84502bbf9f", size = 485623, upload-time = "2026-09-25T13:46:23.473Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/1e/32971905a7ab47f8b66866ed949fa48b104ba1c4a6fa57794c4f2c4b2cb8/markdown-3.11-py3-none-any.whl", hash = "sha256:cd6c89e7eb308c8b332ed673215a52d208a43f8bacc030b1419376129408719e", size = 111296, upload-time = "2026-09-25T13:46:22.163Z" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -599,6 +617,31 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
+]
+
+[[package]]
+name = "peakrdl-cheader"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "systemrdl-compiler" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/73/eb/0029f029510523277d2aea7c6a7b86f4c6a14da092c06700434d191483be/peakrdl_cheader-1.1.0.tar.gz", hash = "sha256:2e1593d68ca96608eb0b29ae3efbd5abca961050984d4ee1e4a65998237cd58b", size = 30518, upload-time = "2026-03-28T02:57:52.734Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/a4/112cc4f9c80c7c1373e38e33172d8219bf4db360b915dd856e2fb31a0cec/peakrdl_cheader-1.1.0-py3-none-any.whl", hash = "sha256:72bc5af33a0a353eacc88fd35e271a9f008176b758fdb0c7cfbff1f5144c42af", size = 19765, upload-time = "2026-03-28T02:57:51.268Z" },
+]
+
+[[package]]
+name = "peakrdl-systemrdl"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "systemrdl-compiler" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7d/3e/bc15ce1445c7b80717d4babc6d1de92f857e1ff00cd8eefeb9505c9c19f2/peakrdl_systemrdl-1.0.1.tar.gz", hash = "sha256:77fe097d01d252b365f9d603e2712a85b3cf65f32c7ad52aadd1a8dea9635a5e", size = 16359, upload-time = "2025-11-07T03:30:55.24Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dc/b0/1ac2934d117e3e8cb59afc7f658b1dc5b2a34ede0718952ab6993990b5ca/peakrdl_systemrdl-1.0.1-py3-none-any.whl", hash = "sha256:17d72641ade637e5650a20589977a3452316ecb630f500907f4c579c0a8f7ebd", size = 10208, upload-time = "2025-11-07T03:30:53.546Z" },
 ]
 
 [[package]]
@@ -1148,25 +1191,36 @@ mcp = [
 mut = [
     { name = "rtl-buddy-xeno", extra = ["slang", "verible"] },
 ]
+release-csr = [
+    { name = "peakrdl-cheader" },
+    { name = "peakrdl-systemrdl" },
+    { name = "systemrdl-compiler" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "mcp" },
+    { name = "peakrdl-cheader" },
+    { name = "peakrdl-systemrdl" },
     { name = "pyslang" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "systemrdl-compiler" },
 ]
 lint = [
     { name = "ruff" },
 ]
 test = [
     { name = "mcp" },
+    { name = "peakrdl-cheader" },
+    { name = "peakrdl-systemrdl" },
     { name = "pyslang" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "systemrdl-compiler" },
 ]
 
 [package.metadata]
@@ -1174,6 +1228,8 @@ requires-dist = [
     { name = "click", specifier = ">=8.3.0" },
     { name = "jsonschema", specifier = ">=4.21.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.2.0" },
+    { name = "peakrdl-cheader", marker = "extra == 'release-csr'", specifier = ">=1.1" },
+    { name = "peakrdl-systemrdl", marker = "extra == 'release-csr'", specifier = ">=1.0.1" },
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
     { name = "pyslang", marker = "extra == 'elab'", specifier = ">=10.0.0,<12" },
     { name = "pywellen", specifier = ">=0.25.6,<0.26" },
@@ -1181,27 +1237,34 @@ requires-dist = [
     { name = "rtl-buddy-graph-extract", marker = "extra == 'graph-extract'", specifier = ">=0.1.0" },
     { name = "rtl-buddy-xeno", extras = ["slang", "verible"], marker = "extra == 'mut'", specifier = ">=0.1.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.15" },
+    { name = "systemrdl-compiler", marker = "extra == 'release-csr'", specifier = ">=1.32" },
     { name = "typer", specifier = ">=0.19.2" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["elab", "graph-extract", "mcp", "mut"]
+provides-extras = ["elab", "graph-extract", "mcp", "mut", "release-csr"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mcp", specifier = ">=1.2.0" },
+    { name = "peakrdl-cheader", specifier = ">=1.1" },
+    { name = "peakrdl-systemrdl", specifier = ">=1.0.1" },
     { name = "pyslang", specifier = ">=10.0.0,<12" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "ruff", specifier = ">=0.11.0" },
+    { name = "systemrdl-compiler", specifier = ">=1.32" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.11.0" }]
 test = [
     { name = "mcp", specifier = ">=1.2.0" },
+    { name = "peakrdl-cheader", specifier = ">=1.1" },
+    { name = "peakrdl-systemrdl", specifier = ">=1.0.1" },
     { name = "pyslang", specifier = ">=10.0.0,<12" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "systemrdl-compiler", specifier = ">=1.32" },
 ]
 
 [[package]]
@@ -1309,6 +1372,30 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa/starlette-1.3.1.tar.gz", hash = "sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0", size = 2703240, upload-time = "2026-06-12T09:23:11.602Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl", hash = "sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6", size = 73632, upload-time = "2026-06-12T09:23:10.017Z" },
+]
+
+[[package]]
+name = "systemrdl-compiler"
+version = "1.33.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "colorama" },
+    { name = "markdown" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ad/48/2a7eab1999435099a22e0d8b5c62f0eae38beeaf6dbc0cd385381a61b3b4/systemrdl_compiler-1.33.0.tar.gz", hash = "sha256:be57bec39f41d3ff66d8b596007eaa02624338dea139c7eb176865fa7e709028", size = 486157, upload-time = "2026-10-06T05:14:10.428Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/82/a6b2d61bd06ddc866f164e28ceecf5f3ce821a4bb13cae58b06d91d97d15/systemrdl_compiler-1.33.0-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:4fb489b73df973175f6f75dff93980a128b21dc494f80351cf2a8f42fe440641", size = 1146268, upload-time = "2026-10-06T05:13:47.889Z" },
+    { url = "https://files.pythonhosted.org/packages/58/51/02f1a87a5bd6b496ada0408ebfd892377238d9f11eeee9501adc018aaba4/systemrdl_compiler-1.33.0-cp37-abi3-macosx_11_0_x86_64.whl", hash = "sha256:b54b29ddaca4fa0b551d96a072b107bdf9419678b777e7cf24810c9368e7371b", size = 1173430, upload-time = "2026-10-06T05:13:49.798Z" },
+    { url = "https://files.pythonhosted.org/packages/00/f7/e4befe94dc6e1e15ec7369c750321106df1a4f8e7023af458650e0a040f1/systemrdl_compiler-1.33.0-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:40d63b364e0378670c38c5cdb10d62778f5ec6595bd949e4063263ac1fd6bb49", size = 10974200, upload-time = "2026-10-06T05:13:51.774Z" },
+    { url = "https://files.pythonhosted.org/packages/27/c3/8f3c2339584dbc42fcc6c161b20d2cada9f8904b5a841cb308c2fc859786/systemrdl_compiler-1.33.0-cp37-abi3-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:34c04486abbae36d3969484a8e8919676dbc326d6add287fc93051e47dbe6c60", size = 10846292, upload-time = "2026-10-06T05:13:54.154Z" },
+    { url = "https://files.pythonhosted.org/packages/37/24/39f53714971fd055fb899a8925adbd874e7ccb1174c564678f368c27fc7a/systemrdl_compiler-1.33.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fed38729f4c63a9234f8605808c673b85209644453fa491dc20c52dd50a01080", size = 11021268, upload-time = "2026-10-06T05:13:56.969Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/8b/10d330d82ed1bbba6d7288baa469c11ab0a157e551897d65a3d023b66d0a/systemrdl_compiler-1.33.0-cp37-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:352e30291c4daf17f1bc648f0359c33f64b5203227d1209334c07abd6e545192", size = 11050657, upload-time = "2026-10-06T05:13:59.51Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/60/9fd32de0be93b15d1f7883e3f90759f1a0836e22c31de091c50eb0fdad1c/systemrdl_compiler-1.33.0-cp37-abi3-musllinux_1_2_i686.whl", hash = "sha256:7e1945fc892f30f808ae7c77b77a82f296d573e0af4de4717b9848752ebb89b2", size = 11262818, upload-time = "2026-10-06T05:14:02.569Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/54/5f72c2080726aa28be671e14991918841fdf3e0b3a8c53fe7cda6b651201/systemrdl_compiler-1.33.0-cp37-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:0502c474243b7e68be3cb35b2a56c1fd033adfd3bcbcd3dde889bd565aa69fcf", size = 11303102, upload-time = "2026-10-06T05:14:05.448Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/15/059d177bd8004ac8e61e379891c3b95a3524321ce8d6649e971f2a25860b/systemrdl_compiler-1.33.0-cp37-abi3-win32.whl", hash = "sha256:f01d33c31bf30ea6169be5ac0eef930c74dacbc91b41f74758dc03aff6c88837", size = 924341, upload-time = "2026-10-06T05:14:07.408Z" },
+    { url = "https://files.pythonhosted.org/packages/06/f0/e54cfe4c5a391cc23688207070c2bf64916077d1684df245b1e12efcba0d/systemrdl_compiler-1.33.0-cp37-abi3-win_amd64.whl", hash = "sha256:736b230fdaa15e597cb91388e802e3257fd960be63c60203eb70f66f0df02b0d", size = 956776, upload-time = "2026-10-06T05:14:09.115Z" },
 ]
 
 [[package]]

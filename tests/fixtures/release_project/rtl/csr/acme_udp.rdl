@@ -1,0 +1,14 @@
+`ifndef ACME_UDP__RDL
+`define ACME_UDP__RDL
+
+property acme_customer {
+  type = boolean;
+  component = reg | regfile | mem;
+};
+
+property acme_domain {
+  type = string;
+  component = field;
+};
+
+`endif

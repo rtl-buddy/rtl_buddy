@@ -156,6 +156,38 @@ class ObfuscationSection:
 
 
 @dataclass
+class CsrWindow:
+    """One SystemRDL address map at its absolute base address."""
+
+    name: str
+    rdl: Path
+    top: str
+    base: int
+
+
+@dataclass
+class CsrRegister:
+    """A whitelist entry: a glob on ``<window>.<path>`` (instance names, no array indices)."""
+
+    match: str
+    #: Field-name globs in the matched registers that ship as ``f<lsb>``.
+    obfuscate_fields: list[str]
+
+
+@dataclass
+class CsrSection:
+    #: Base name of the shipped files; ``<release name>_csr`` by default.
+    name: str | None
+    #: SystemVerilog macro prefix; the upper-cased ``name`` by default.
+    prefix: str | None
+    #: User-defined property that marks a register, regfile or memory eligible to ship.
+    gate: str | None
+    include_dirs: list[Path]
+    windows: list[CsrWindow]
+    registers: list[CsrRegister]
+
+
+@dataclass
 class PackageSection:
     notes: str
     docs: list[Path]
@@ -173,6 +205,7 @@ class ReleaseConfig:
     encryption: EncryptionSection
     obfuscation: ObfuscationSection
     package: PackageSection
+    csr: CsrSection | None = None
 
     @property
     def root(self) -> Path:
@@ -188,6 +221,7 @@ class ReleaseConfig:
 # ---- loader -----------------------------------------------------------------
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DIR_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$")
 
 
@@ -442,6 +476,8 @@ def load_release_config(path: str | os.PathLike) -> ReleaseConfig:
         raise o._err("`token-paste` must be `refuse` or `preserve`")
     o.done()
 
+    csr = _csr(top.sub("csr"), base, path)
+
     p = top.sub("package") or _Reader({}, "package", path)
     package = PackageSection(
         notes=p.get("notes", str, "notes/{version}.md"),
@@ -461,7 +497,62 @@ def load_release_config(path: str | os.PathLike) -> ReleaseConfig:
         encryption=encryption,
         obfuscation=obfuscation,
         package=package,
+        csr=csr,
     )
+
+
+def _csr(c: _Reader | None, base: Path, path: Path) -> CsrSection | None:
+    if c is None:
+        return None
+    windows = []
+    for idx, item in enumerate(c.get("windows", list, [], required=True)):
+        wr = _Reader(item, f"csr.windows[{idx}]", path)
+        window = CsrWindow(
+            name=wr.get("name", str, required=True),
+            rdl=_path(base, wr.get("rdl", str, required=True)),
+            top=wr.get("top", str, required=True),
+            base=wr.get("base", int, required=True),
+        )
+        wr.done()
+        if not _IDENT_RE.match(window.name):
+            raise wr._err(f"`name` {window.name!r} must be an identifier")
+        if any(w.name == window.name for w in windows):
+            raise wr._err(f"window `{window.name}` is named twice")
+        windows.append(window)
+    if not windows:
+        raise c._err("`windows` may not be empty")
+    registers = []
+    for idx, item in enumerate(c.get("registers", list, [], required=True)):
+        rr = _Reader(item, f"csr.registers[{idx}]", path)
+        entry = CsrRegister(
+            match=rr.get("match", str, required=True),
+            obfuscate_fields=rr.str_list("obfuscate-fields"),
+        )
+        rr.done()
+        window = entry.match.split(".", 1)[0]
+        if "." not in entry.match or not any(
+            fnmatch.fnmatchcase(w.name, window) for w in windows
+        ):
+            raise rr._err(
+                f"`match` {entry.match!r} must start with a window name and a '.' "
+                f"(windows: {', '.join(w.name for w in windows)})"
+            )
+        registers.append(entry)
+    if not registers:
+        raise c._err("`registers` may not be empty")
+    section = CsrSection(
+        name=c.get("name", str, None),
+        prefix=c.get("prefix", str, None),
+        gate=c.get("gate", str, None),
+        include_dirs=[_path(base, p) for p in c.str_list("include-dirs")],
+        windows=windows,
+        registers=registers,
+    )
+    c.done()
+    for label, value in (("name", section.name), ("prefix", section.prefix)):
+        if value is not None and not _IDENT_RE.match(value):
+            raise c._err(f"`{label}` {value!r} must be an identifier")
+    return section
 
 
 def resolve_protection(

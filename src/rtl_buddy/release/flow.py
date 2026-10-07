@@ -33,6 +33,7 @@ from ..config.root import discover_project_root
 from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event
 from ..tools.vlog_filelist import VlogFilelist
+from . import csr as csr_mod
 from . import encrypt as enc
 from . import obfuscate as obf
 from . import sdc as sdc_mod
@@ -63,6 +64,7 @@ def _sha256(path: Path) -> str:
 DESIGN_DIR = "design"
 VERIF_DIR = "verif"
 CONSTRAINTS_DIR = "design/constraints"
+CSR_DIR = "csr"
 
 
 @dataclass
@@ -138,6 +140,8 @@ class ReleaseOptions:
     force: bool = False
     #: Run every stage but archive nothing, so the version stays unreleased.
     trial: bool = False
+    #: Write only the customer register map (``csr:``) and stop.
+    csr_only: bool = False
     #: A released version's archived manifest (``maps/<version>.json``, its map beside it): re-cut that release from its own names and require identical plaintext.
     reproduce: Path | None = None
 
@@ -156,11 +160,16 @@ class ReleaseFlow:
         self.verible_dir = verible_dir
         self.project_root = discover_project_root(start_dir=cfg.root)
         self.package_name = f"{cfg.name}-{cfg.version}"
+        self.csr: csr_mod.CsrOutputs | None = None
 
     # ---- entry -------------------------------------------------------------
 
     def run(self) -> Path:
         cfg = self.cfg
+        if self.opts.csr_only:
+            if cfg.csr is None:
+                raise FatalRtlBuddyError("release.yaml has no `csr:` section")
+            return csr_mod.generate(cfg.csr, cfg.name, self.out / CSR_DIR).rdl.parent
         git = self._git_state()
         if git["dirty"] and not self.opts.allow_dirty:
             raise FatalRtlBuddyError(
@@ -198,6 +207,9 @@ class ReleaseFlow:
         self.out.mkdir(parents=True)
 
         col = self.collect()
+        self.csr = (
+            csr_mod.generate(cfg.csr, cfg.name, self.out / CSR_DIR) if cfg.csr else None
+        )
         # Outside git there is no commit to reproduce from; the manifest records commit: null.
         uncommitted = (
             self._uncommitted_inputs(self._input_paths(col)) if git["commit"] else []
@@ -689,6 +701,11 @@ class ReleaseFlow:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item.src, dst)
         self._filelists(col, root, pkg=False)
+        self._place_csr(root)
+
+    def _place_csr(self, root: Path) -> None:
+        if self.csr is not None:
+            shutil.copytree(self.out / CSR_DIR, root / CSR_DIR)
 
     def _write_stage_obf(
         self,
@@ -734,6 +751,7 @@ class ReleaseFlow:
         if leaks:
             raise FatalRtlBuddyError(f"original names survived obfuscation: {leaks}")
         self._filelists(col, root, pkg=False)
+        self._place_csr(root)
         return name_map
 
     def _write_constraints(
@@ -980,6 +998,12 @@ class ReleaseFlow:
                     f"{shipped}: the released manifest predates plaintext digests"
                 )
         problems += [f"{s}: missing from this cut" for s in released]
+        if self.csr is not None:
+            want_csr = ref.get("csr", {}).get("files", {})
+            for f in self.csr.files():
+                shipped = f"{CSR_DIR}/{f.name}"
+                if want_csr.get(shipped) != _sha256(f):
+                    problems.append(f"{shipped}: differs from the released file")
         if problems:
             raise FatalRtlBuddyError(
                 f"the re-cut does not reproduce release {self.cfg.version}:\n  "
@@ -1005,6 +1029,8 @@ class ReleaseFlow:
         paths += cfg.package.docs + [c.src for c in cfg.design.constraints]
         if cfg.testbench is not None:
             paths += cfg.testbench.extra_files
+        if cfg.csr is not None:
+            paths += csr_mod.sources(cfg.csr)
         return sorted({Path(p).resolve() for p in paths})
 
     def _uncommitted_inputs(self, paths: list[Path]) -> list[str]:
@@ -1073,6 +1099,11 @@ class ReleaseFlow:
             ],
             "verify": {s: {"passed": r["passed"]} for s, r in results.items()},
         }
+        if self.csr is not None:
+            manifest["csr"] = {
+                "registers": self.csr.counts,
+                "files": {f"{CSR_DIR}/{f.name}": _sha256(f) for f in self.csr.files()},
+            }
         (self.out / f"{cfg.version}.json").write_text(
             json.dumps(manifest, indent=2) + "\n"
         )

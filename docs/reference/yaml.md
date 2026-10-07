@@ -1083,6 +1083,14 @@ verify:
 encryption:
   key-file: keys/vendor_keys.txt
 
+csr:
+  gate: acme_customer
+  windows:
+    - {name: main, rdl: ../../rtl/csr/acme_csr.rdl, top: acme_csr, base: 0x40000000}
+  registers:
+    - {match: "main.ctrl", obfuscate-fields: ["dbg_*"]}
+    - {match: "main.chan.*"}
+
 package:
   notes: "notes/{version}.md"
   docs: [ docs/user_guide.md ]
@@ -1119,6 +1127,11 @@ package:
 | `obfuscation.continue-from` | Default `previous` | `previous`, `none`, or a map file to start from |
 | `obfuscation.keep-comments` | Default directive patterns | Regexes; a matching comment survives stripping |
 | `obfuscation.token-paste` | Default `refuse` | `refuse` fails on token pasting that forms names; `preserve` keeps every name it can form |
+| `csr.windows` | Required in `csr` | Address maps that ship registers: `name` (an identifier, used in `match` and macro names), `rdl` source, `top` address map and absolute `base` |
+| `csr.registers` | Required in `csr` | The whitelist: `match`, a glob on `<window>.<path>` (instance names, no array indices) naming registers, regfiles or memories, and optional `obfuscate-fields`, field-name globs shipped as `f<lsb>` |
+| `csr.gate` | Optional | User-defined property that makes a register, regfile or memory eligible; without it every register is |
+| `csr.name` / `csr.prefix` | Default `<name>_csr` / its upper case | Base name of the `csr/` files, and the SystemVerilog macro prefix |
+| `csr.include-dirs` | Optional list | RDL `` `include `` search paths |
 | `package.notes` | Default `notes/{version}.md` | Release notes, required for every release; shipped as `RELEASE_NOTES.md` |
 | `package.docs` | Optional list | Documents shipped in `docs/` |
 
