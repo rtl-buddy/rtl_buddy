@@ -1,0 +1,3 @@
+## An overridden blackbox needs a LEF and Liberty master under OpenROAD
+
+The OpenROAD synthesis backend declares each `(* blackbox *)` module without a LEF or Liberty master to OpenROAD as one port-only Verilog-2001 stub, written by Yosys from the elaborated module. Yosys writes an instance that overrides the blackbox's parameters with a `#(...)` list, which OpenROAD's `read_verilog` rejects (`STA-0171`). Supply the module's LEF and Liberty, as `blocks:` does for a hardened block, or instance it with its defaults. See [Instance a parameterised block](https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/#instance-a-parameterised-block).
