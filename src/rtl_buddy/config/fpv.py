@@ -95,6 +95,8 @@ class FpvToolConfig:
 
 
 _VALID_MODES = ("bmc", "prove", "cover", "live")
+# sby cover mode needs a BMC engine; prove-only engines such as `abc pdr` reject it.
+_VACUITY_DEFAULT_ENGINE = "smtbmc yices"
 _VALID_FRONTENDS = ("verilog", "slang")
 
 # A `params:` name is emitted straight into a yosys script line.
@@ -178,6 +180,8 @@ class FpvConfigFile:
     tool_overrides: dict | None = None
     # Default true for `bmc` / `prove`, false for `cover` / `live`: runs a secondary cover pass on every `a |-> b` antecedent to expose vacuous proofs.
     vacuity: bool | None = None
+    # Engines for the vacuity cover pass. Default: the `smtbmc` entries of `engines:`, else `smtbmc yices`; `abc pdr` and other prove-only engines cannot run covers.
+    vacuity_engines: list[str] | None = None
     # Default true: after the proof, report the % of design cells reachable from at least one assertion.
     coi: bool | None = None
     # "verilog" is yosys's native frontend with a limited SVA subset (no `|->`, `|=>` or sequences).
@@ -205,6 +209,11 @@ class FpvConfigFile:
                 f"{self.name}: fpv frontend '{self.frontend}' is not one of "
                 f"{', '.join(_VALID_FRONTENDS)}"
             )
+        if self.vacuity_engines is not None and not self.vacuity_engines:
+            raise FatalRtlBuddyError(
+                f"{self.name}: fpv `vacuity_engines:` may not be empty; omit it "
+                f"for the default or set `vacuity: false`"
+            )
         params = validate_params(self.name, self.params)
         return FpvConfig(
             name=self.name,
@@ -221,6 +230,9 @@ class FpvConfigFile:
             covers=self.covers,
             tool_overrides=self.tool_overrides,
             vacuity=self.vacuity,
+            vacuity_engines=(
+                list(self.vacuity_engines) if self.vacuity_engines else None
+            ),
             coi=self.coi,
             frontend=self.frontend,
             params=params,
@@ -246,6 +258,7 @@ class FpvConfig:
     covers: list[str] | None = dc_field(default=None)
     tool_overrides: dict | None = dc_field(default=None)
     vacuity: bool | None = dc_field(default=None)
+    vacuity_engines: list[str] | None = dc_field(default=None)
     coi: bool | None = dc_field(default=None)
     frontend: str = dc_field(default="verilog")
     # Insertion-ordered so the generated script is stable.
@@ -279,6 +292,13 @@ class FpvConfig:
         if self.vacuity is not None:
             return bool(self.vacuity)
         return self.mode in ("bmc", "prove")
+
+    def get_vacuity_engines(self) -> list[str]:
+        """Engines for the vacuity cover pass: `vacuity_engines:` if set, else the `smtbmc` entries of `engines:`, else `smtbmc yices`."""
+        if self.vacuity_engines:
+            return list(self.vacuity_engines)
+        cover_capable = [e for e in self.engines if e.split()[:1] == ["smtbmc"]]
+        return cover_capable or [_VACUITY_DEFAULT_ENGINE]
 
     def coi_enabled(self) -> bool:
         """Whether to run the cone-of-influence coverage pass: `coi:` if set, else true."""
