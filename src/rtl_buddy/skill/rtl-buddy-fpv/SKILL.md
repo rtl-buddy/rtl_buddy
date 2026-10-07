@@ -15,6 +15,7 @@ Use `rb --machine`. For configs and worked procedures read `rb fpv --help`, `rb 
 - `fpv` and `fpv-regression` exit 0 when every result counts as successful (`PASS`, `SKIP`, `XFAIL`, non-strict `XPASS`), 1 for any `FAIL` or strict `XPASS`, and 2 for a fatal configuration or environment error.
 - `artefacts/<run>/sby_workdir/status` is the formal verdict when present. Read each machine result's `vacuity` and `coi` blocks too.
 - A PASS with unreachable covers, vacuous properties or dead assumptions is a false green. Report those guardrails with the result.
+- The vacuity pass runs as an sby cover task on `vacuity_engines:`, which defaults to the `smtbmc` entries of `engines:`, else `smtbmc yices`. An `abc pdr` proof keeps its vacuity check without `vacuity: false`.
 - `UNKNOWN` in `mode: prove` can mean the property is true but not inductive. Strengthen the invariant or exclude unreachable predecessor states before raising depth.
 
 ## Authoring guardrails

@@ -253,6 +253,7 @@ class SbyFpv:
         extra_property_files: list[str],
         defines: list[str] | None = None,
         emit_formal_guard: bool = False,
+        engines: list[str] | None = None,
     ) -> str:
         cfg = self.fpv_cfg
         opts = self.tool_cfg.get_opts(
@@ -269,7 +270,7 @@ class SbyFpv:
         lines.append("")
 
         lines.append("[engines]")
-        for engine in cfg.get_engines():
+        for engine in engines if engines is not None else cfg.get_engines():
             lines.append(engine)
         lines.append("")
 
@@ -543,6 +544,7 @@ class SbyFpv:
             defines=defines,
             mode="cover",
             extra_property_files=[vacuity_sv],
+            engines=cfg.get_vacuity_engines(),
         )
         workdir = self._vacuity_workdir_path()
         log_path = self._vacuity_log_path()
@@ -554,6 +556,7 @@ class SbyFpv:
             "fpv.vacuity_start",
             verification=cfg.get_name(),
             candidates=len(candidates),
+            engines=",".join(cfg.get_vacuity_engines()),
         )
         self._run(cmd, log_path)
 

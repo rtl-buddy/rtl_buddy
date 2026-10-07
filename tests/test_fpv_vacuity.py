@@ -245,3 +245,76 @@ def test_format_vacuity_cell_reports_unknowns():
 def test_format_vacuity_cell_none_when_no_pass():
     assert RtlBuddy._format_vacuity_cell(None) is None
     assert RtlBuddy._format_vacuity_cell({"candidates": 0}) is None
+
+
+def _engines_cfg(engines, vacuity_engines=None):
+    cfg = _make_cfg("prove")
+    cfg.engines = list(engines)
+    cfg.vacuity_engines = vacuity_engines
+    return cfg
+
+
+def test_vacuity_engines_default_to_smtbmc_for_abc_pdr():
+    assert _engines_cfg(["abc pdr"]).get_vacuity_engines() == ["smtbmc yices"]
+
+
+def test_vacuity_engines_keep_the_entrys_smtbmc_engines():
+    cfg = _engines_cfg(["abc pdr", "smtbmc boolector", "smtbmc --nopresat z3"])
+    assert cfg.get_vacuity_engines() == ["smtbmc boolector", "smtbmc --nopresat z3"]
+
+
+def test_vacuity_engines_explicit_list_wins():
+    cfg = _engines_cfg(["abc pdr"], vacuity_engines=["btor btormc"])
+    assert cfg.get_vacuity_engines() == ["btor btormc"]
+
+
+def test_vacuity_engines_empty_list_is_fatal(tmp_path):
+    import pytest
+
+    from rtl_buddy.config.fpv import FpvConfigFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    (tmp_path / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n  - name: m\n    filelist: []\n"
+    )
+    cfg_file = FpvConfigFile(
+        name="v",
+        desc="d",
+        model="m",
+        model_path="models.yaml",
+        tool="sby",
+        engines=["abc pdr"],
+        vacuity_engines=[],
+    )
+    with pytest.raises(FatalRtlBuddyError, match="vacuity_engines"):
+        cfg_file.initialise(str(tmp_path))
+
+
+def test_vacuity_pass_renders_cover_task_with_vacuity_engines(tmp_path, monkeypatch):
+    from rtl_buddy.config.fpv import FpvToolConfig, FpvToolConfigFile
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    props = _make_props(
+        tmp_path,
+        """
+        module p(input clk, input a, input b);
+          ap: assert property (@(posedge clk) a |-> b);
+        endmodule
+        """,
+    )
+    cfg = _engines_cfg(["abc pdr"])
+    cfg.properties = [props]
+    tool_cfg = FpvToolConfig(FpvToolConfigFile(name="sby", tool="sby"))
+    sby = SbyFpv(name="t", fpv_cfg=cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path))
+    monkeypatch.setattr(sby, "_run", lambda cmd, log_path: None)
+
+    sby._run_vacuity("sby", sources=["/abs/m.sv"], incdirs=[])
+
+    vacuity_sby = Path(sby._vacuity_sby_path()).read_text()
+    assert "mode cover" in vacuity_sby
+    engines = vacuity_sby.split("[engines]\n", 1)[1].split("\n\n", 1)[0]
+    assert engines == "smtbmc yices"
+
+    # The proof itself still renders the entry's own engine.
+    proof_sby = sby._write_sby_file(sources=["/abs/m.sv"], incdirs=[])
+    assert "[engines]\nabc pdr\n" in Path(proof_sby).read_text()

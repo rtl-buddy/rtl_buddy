@@ -38,7 +38,7 @@ verifications:
 - `top` defaults to the model's root module, `depth` to 20 and `engines` to `smtbmc yices`.
 - `properties` may be omitted when assertions live in RTL under `` `ifdef FORMAL ``. Both frontends define `FORMAL`.
 
-Other fields: `params` (parameter overrides), `tool_overrides` (`timeout`, `extra_args`), `frontend`, `coi` and `vacuity` toggles, `covers` for [spec traceability](spec-traceability.md), and `xfail` / `xfail_strict` for [expected failures](expected-failures.md). See [YAML formats](../reference/yaml.md) for the schema.
+Other fields: `params` (parameter overrides), `tool_overrides` (`timeout`, `extra_args`), `frontend`, `coi` and `vacuity` toggles, `vacuity_engines`, `covers` for [spec traceability](spec-traceability.md), and `xfail` / `xfail_strict` for [expected failures](expected-failures.md). See [YAML formats](../reference/yaml.md) for the schema.
 
 Project-wide tool settings go in `root_config.yaml`:
 
@@ -95,7 +95,7 @@ A run passes when sby reports `PASS`. `FAIL`, `UNKNOWN`, `ERROR` or a nonzero ex
 A green verdict can come from unreachable antecedents, unused logic or over-strong assumptions. Keep the default analyses on and run a negative check.
 
 - **Cone of influence (COI).** With `coi: true` (default), the summary reports the fraction of design cells that can affect at least one assertion, and how many assumptions are disconnected from every assertion. A disconnected assumption constrains nothing that is checked; a connected one is not necessarily needed. Missing Yosys or an analysis error warns and leaves COI unavailable without changing the verdict.
-- **Vacuity.** Default on for `bmc` and `prove`, off for `cover` and `live`; override with `vacuity: false`. rtl_buddy runs a cover for each single-line `|->` or `|=>` antecedent and reports unreached antecedents as vacuous, meaning the assertion never fired. Missing results are unknown.
+- **Vacuity.** Default on for `bmc` and `prove`, off for `cover` and `live`; override with `vacuity: false`. rtl_buddy runs a cover for each single-line `|->` or `|=>` antecedent and reports unreached antecedents as vacuous, meaning the assertion never fired. Missing results are unknown. The covers run as a separate sby `cover` task. Its engines come from `vacuity_engines:`, which defaults to the `smtbmc` entries of `engines:`, else `smtbmc yices`. A `prove` entry on `abc pdr` therefore keeps its vacuity check, since `abc pdr` cannot run covers.
 - **Negative check.** Mutate the RTL, or strengthen a property beyond the design guarantee, and confirm the expected assertion fails. [Mutation testing](mut.md) automates this across a suite.
 
 ## Debug `UNKNOWN` from `prove`
