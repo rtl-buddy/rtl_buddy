@@ -12,6 +12,7 @@ Unless stated otherwise:
 - `reglvl` defaults to 0. It is an integer, or a per-tool or per-builder map with a `default` fallback. A run is selected when its level is at most the CLI regression level.
 - `xfail: true` is non-strict; `xfail_strict: true` makes an unexpected pass fail. Neither excuses a failure that happened instead of a verdict, such as a setup or compile failure, a sim timeout, or a lost dispatch job. See [Expected failures](../concepts/expected-failures.md).
 - Unknown references and invalid required combinations fail during configuration loading.
+- A key written twice in one mapping fails during configuration loading, naming the file, the key and both line numbers. Plain YAML keeps only the last value. A key set after a `<<:` merge overrides the merged value and is not a duplicate.
 
 ## root_config.yaml
 
@@ -356,7 +357,7 @@ cfg-dispatch:
 
 `parallel` and `split-verilate` are honored only in `cfg-dispatch.compile` and a suite's top-level `compile:`. In a per-test or per-testbench `resources:` block they are ignored with a warning; in a testbench `compile:` block or any `modes:` block they are rejected at load.
 
-An unknown key in `cfg-dispatch`, in its `resources`, `compile`, `compile.verilate`, `coverage`, `retry` or `rightsize` block, in a `tests.yaml` `resources:` or `compile:` block, or in an elaboration profile's `resources` is ignored. Each one logs the warning `config.unknown_key` with the file, the block and the nearest known key, for example `did you mean 'mem'?` for `memory:`. A later major release will make it fatal.
+An unknown key in `cfg-dispatch`, in its `resources`, `compile`, `compile.verilate`, `coverage`, `retry` or `rightsize` block, in a `tests.yaml` `resources:` or `compile:` block, or in an elaboration profile's `resources` is ignored. Each one logs the warning `config.unknown_key` with the file, the block and the nearest known key, for example `did you mean 'mem'?` for `memory:`. A later major release will make it fatal. A key written twice in the same block is fatal, not a warning.
 
 ### Per-mode reservations
 

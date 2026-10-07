@@ -5,10 +5,9 @@ import re
 logger = logging.getLogger(__name__)
 import pprint
 
-import yaml
 
 from serde import serde, field
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml, load_yaml
 from typing import Literal
 
 from .dispatch import (
@@ -423,8 +422,8 @@ class ModelConfigLoader:
         try:
             with open(self.path, "r") as file:
                 text = file.read()
-            _warn_unknown_elaboration_resources_keys(yaml.safe_load(text), path)
-            data = from_yaml(ModelConfigFile, text)
+            _warn_unknown_elaboration_resources_keys(load_yaml(text, path), path)
+            data = config_from_yaml(ModelConfigFile, text, path)
             self.models = data.models
         except Exception as e:
             log_event(

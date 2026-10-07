@@ -11,7 +11,7 @@ from dataclasses import dataclass, field as dc_field
 from typing import Literal
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 
 from .model import ModelConfig, ModelConfigLoader, validate_top
 from ..errors import FatalRtlBuddyError
@@ -245,7 +245,7 @@ class MutSuiteConfig:
         self.path = path
         try:
             with open(path, "r") as f:
-                data = from_yaml(MutConfigFile, f.read())
+                data = config_from_yaml(MutConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,

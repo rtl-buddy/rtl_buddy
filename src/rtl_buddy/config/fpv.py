@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass, field as dc_field
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 from typing import Literal
 
 from .model import ModelConfig, ModelConfigLoader, validate_top
@@ -382,7 +382,7 @@ class FpvSuiteConfig:
         self.verifications: dict[str, FpvConfig] = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(FpvSuiteConfigFile, f.read())
+                data = config_from_yaml(FpvSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,
@@ -462,7 +462,7 @@ class FpvRegConfig:
         self.suite_configs: list[FpvSuiteConfig] = []
         try:
             with open(path, "r") as f:
-                data = from_yaml(FpvRegConfigFile, f.read())
+                data = config_from_yaml(FpvRegConfigFile, f.read(), path)
             self.suite_configs = [
                 FpvSuiteConfig(os.path.join(os.path.dirname(path), p))
                 for p in data.fpv_configs

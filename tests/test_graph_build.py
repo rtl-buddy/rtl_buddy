@@ -2191,7 +2191,9 @@ def test_an_outdated_viewer_cannot_fail_a_fully_opted_out_design_tier(
     assert build.failed_tiers() == []
     assert _argv_lines(record) == []
     # A graphable model still gets the upgrade hint.
-    _rewrite_model(graph_project, "blk_b", "    graph: true\n")
+    # Flip the opt-out in place: a second `graph:` key would be a duplicate (#760).
+    blk_b = graph_project / "design" / "blk_b" / "models.yaml"
+    blk_b.write_text(blk_b.read_text().replace("graph: false", "graph: true"))
     gated = build_graph(
         graph_project,
         view_executable=str(view),

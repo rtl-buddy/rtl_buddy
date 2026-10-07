@@ -7,9 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-import yaml
 from serde import serde, field, from_dict
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml, load_yaml
 
 from .platform import PLATFORM_TOOL_BLOCKS, PlatformConfigFile
 from .reg import RegConfig
@@ -140,7 +139,7 @@ def load_reg_cfg_paths(root_cfg_path: str | Path) -> RootRtlField | None:
     if not path.is_file():
         return None
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = load_yaml(path.read_text(encoding="utf-8"), path)
         block = (data or {}).get("cfg-rtl-reg")
         if not isinstance(block, dict):
             return None
@@ -358,9 +357,9 @@ class RootConfig:
         try:
             with open(self.root_cfg_path, "r") as file:
                 text = file.read()
-            data = from_yaml(RootConfigFile, text)
+            data = config_from_yaml(RootConfigFile, text, self.root_cfg_path)
             # Untyped second read: pyserde drops unknown keys that `_reject_unroutable_platform_keys` must see.
-            reparsed = yaml.safe_load(text)
+            reparsed = load_yaml(text, self.root_cfg_path)
             raw = reparsed if isinstance(reparsed, dict) else {}
 
         except Exception as e:
@@ -622,7 +621,7 @@ class RootConfig:
 
         try:
             with open(root_cfg_path, "r") as file:
-                data = from_yaml(RootConfigFile, file.read())
+                data = config_from_yaml(RootConfigFile, file.read(), root_cfg_path)
         except Exception as e:
             raise ValueError(f'failed to parse "{root_cfg_path}" ({e})') from e
 

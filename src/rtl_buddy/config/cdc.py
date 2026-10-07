@@ -9,7 +9,7 @@ import pprint
 from dataclasses import dataclass, field as dc_field
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 from typing import Literal
 
 from .model import ModelConfig, ModelConfigLoader
@@ -225,7 +225,7 @@ class CdcSuiteConfig:
         self.analyses: dict[str, CdcConfig] = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(CdcSuiteConfigFile, f.read())
+                data = config_from_yaml(CdcSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,
@@ -309,7 +309,7 @@ class CdcRegConfig:
         self.suite_configs: list[CdcSuiteConfig] = []
         try:
             with open(path, "r") as f:
-                data = from_yaml(CdcRegConfigFile, f.read())
+                data = config_from_yaml(CdcRegConfigFile, f.read(), path)
             self.suite_configs = [
                 CdcSuiteConfig(os.path.join(os.path.dirname(path), p))
                 for p in data.cdc_configs

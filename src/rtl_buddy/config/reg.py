@@ -5,7 +5,7 @@ import pprint
 import os
 
 from serde import serde, field
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 from typing import Literal
 from .suite import SuiteConfig
 from ..errors import FatalRtlBuddyError
@@ -33,7 +33,7 @@ class RegConfig:
         self.suite_configs = []
         try:
             with open(path, "r") as file:
-                data = from_yaml(RegConfigFile, file.read())
+                data = config_from_yaml(RegConfigFile, file.read(), path)
                 self.suite_configs = [
                     SuiteConfig(os.path.join(os.path.dirname(self.path), suite_path))
                     for suite_path in data.test_configs

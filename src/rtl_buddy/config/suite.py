@@ -4,9 +4,8 @@ logger = logging.getLogger(__name__)
 import pprint
 import os
 
-import yaml
 from serde import serde, field
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml, load_yaml
 from typing import Any, Literal
 from .dispatch import (
     RESOURCES_BLOCK,
@@ -85,8 +84,8 @@ class SuiteConfig:
             with open(path, "r") as file:
                 text = file.read()
             # Before the typed load, whose validation can be fatal: the warning names a misspelt key.
-            warn_unknown_reservation_keys(yaml.safe_load(text), path)
-            data = from_yaml(SuiteConfigFile, text)
+            warn_unknown_reservation_keys(load_yaml(text, path), path)
+            data = config_from_yaml(SuiteConfigFile, text, path)
         except Exception as e:
             log_event(
                 logger, logging.ERROR, "suite_config.load_failed", path=path, error=e
