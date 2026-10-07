@@ -217,10 +217,6 @@ Yosys's `read_verilog` cannot bind an interface instance to a child module's int
 
 See [Synthesis](concepts/synthesis.md#gate-unbound-interface-instances).
 
-## An overridden blackbox needs a LEF and Liberty master under OpenROAD
-
-The OpenROAD synthesis backend declares each `(* blackbox *)` module without a LEF or Liberty master to OpenROAD as one port-only Verilog-2001 stub, written by Yosys from the elaborated module. Yosys writes an instance that overrides the blackbox's parameters with a `#(...)` list, which OpenROAD's `read_verilog` rejects (`STA-0171`). Supply the module's LEF and Liberty, as `blocks:` does for a hardened block, or instance it with its defaults. See [Instance a parameterised block](concepts/pnr.md#instance-a-parameterised-block).
-
 ## Unknown synthesis overrides are ignored after a warning
 
 `synth.yaml` `tool_overrides` uses snake_case keys such as `plugin_path` and `single_unit`, unlike the kebab-case names under `cfg-synth-tools.opts`. An unknown key logs the warning `synth_tool_config.unknown_override` and the default is used. A non-mapping block, or a non-boolean `single_unit` or `best_effort_hierarchy`, is fatal. See [Synthesis](concepts/synthesis.md).
