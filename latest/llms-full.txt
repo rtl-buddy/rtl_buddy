@@ -3610,6 +3610,114 @@ The flag drops `PASS`, `SKIP` and `XFAIL` rows from the console and keeps the ta
 
 ---
 
+<!-- source: concepts/release -->
+
+---
+description: Cut an obfuscated and encrypted customer release of a design with rb release, keep released names stable, ship constraints that still match, and verify the package before it leaves.
+---
+
+# Customer releases
+
+`rb release` turns a design model into a source drop for an outside consumer. By default every shipped design file is comment-stripped, obfuscated and encrypted. The package also carries a testbench the consumer runs to check their tool setup, the design's constraints rewritten for the released names, release notes and user guides. Before the package is accepted, the flow runs that testbench on the original sources, on the obfuscated sources and on the unpacked package, and requires the same result from each.
+
+Each release is driven by one `release.yaml`. A project with several deliverables keeps one directory per deliverable, each with its own `release.yaml`, notes, documents and name maps:
+
+```text
+release/
+  acme_cut/
+    release.yaml
+    maps/<version>.map      # archived name map, never shipped
+    maps/<version>.json     # internal manifest
+    notes/<version>.md
+    docs/user_guide.md
+    tb/                     # the release testbench and its run script
+```
+
+Run it from that directory, or pass `-c`:
+
+```bash
+rb release                               # release.yaml in the current directory
+rb release -c release/acme_cut/release.yaml
+rb release --trial                       # full run, verification included; nothing is archived
+rb release --allow-dirty --no-verify     # quick look from a work-in-progress tree
+```
+
+## Install the tools
+
+`rb release` needs `verible-verilog-obfuscate` (part of the Verible release) and Synopsys VCS for IEEE-1735 encryption, plus whatever the verification command runs. Check with `rb tool-check --required-for release`. Constraint rewriting needs the `tcl` constraint reader, that is, a Python with `tkinter`; `rb tool-check` reports which reader is active (see [Tool Dependency Check](tool-check.md)).
+
+## What is protected, and how
+
+| Step | Applies to | What it does |
+|---|---|---|
+| Collect | design model + `testbench.filelist` | Resolves the filelists, follows `` `include `` through the include directories, and copies each section flat into `design/` or `verif/`. Files under a `design.externals` path are not shipped; their filelist lines are rewritten to the customer's location. |
+| Strip comments | `strip-comments: true` (design default) | Removes comments, keeping line numbers and any comment that matches `obfuscation.keep-comments` (synthesis and simulator directives). |
+| Obfuscate | `obfuscate: true` (design default) | Renames identifiers with Verible through one name map shared by every file. |
+| Encrypt | `encrypt: true` (design default) | Wraps the file in `pragma protect begin`/`end` and encrypts it with `vcs -ipprotect` and the release's key file. A filelist entry gains a `p` (`.sv` becomes `.svp`); an included header keeps its name, so `` `include `` still finds it. |
+
+A testbench defaults to neither obfuscated nor encrypted. `design.files` and `testbench.files` override the defaults per file by base-name glob, and every override carries a `reason`. A rule that matches no shipped file is an error, so the list of exceptions cannot drift from the design.
+
+### Which names are kept
+
+The obfuscator is lexical: it renames a spelling everywhere it appears. The flow seeds its map with the names that must not change, and they are kept in every file:
+
+- the top module's name, ports and parameters, and those of every module in `design.preserve.interfaces`;
+- module, port and parameter names declared by external files, so instances of vendor cells still bind;
+- every `+define+` name in the filelists, the language's `__FILE__` and `__LINE__`, and the macros tools predefine (`SYNTHESIS`, `VERILATOR`, `VCS`...);
+- SystemVerilog's built-in method names (`push_back`, `size`, `len`, `min`...), which the obfuscator would otherwise rename at call sites;
+- `design.preserve.identifiers`;
+- every identifier used by a shipped file that is not obfuscated, testbench included.
+
+The last rule is what makes a clear testbench compile against an obfuscated design, and it is also its cost: a name the testbench uses is kept across the whole design. So a testbench may name a design unit (a module, package or interface) only if the unit is a preserved interface or is listed in `testbench.allow-design-refs`; anything else is an error. Publish the types or constants a testbench needs in a package made for the purpose rather than widening that list. Hierarchical references into an encrypted module do not compile at all, and the verification run catches them.
+
+### Stable names across releases
+
+`obfuscation.continue-from: previous` (the default) starts each release from the newest older release's map in `maps/`, so a name keeps its released spelling from one drop to the next and a consumer's constraints and reports stay valid. New names get new spellings. A version whose map already exists is refused unless `--force` is given, because the archived map is the only way to read a release's names later.
+
+The map and an internal manifest are copied into `maps/` only for a release cut from a clean tree with verification run. Commit them with the release. A trial (`--trial`, `--allow-dirty` or `--no-verify`) leaves them in the artefact directory.
+
+## Constraints
+
+Each `design.constraints` entry names an SDC file and the preserved module it constrains (`scope`). The file is evaluated in the constraint reader's Tcl interpreter, so variables and loops are expanded, and written back out with:
+
+- each `get_ports` pattern checked against the scope module's ports, failing on a pattern that matches none;
+- each `get_cells` / `get_pins` / `get_nets` path translated segment by segment through the name map, including `_reg` and bit-select suffixes;
+- `get_clocks` and the `all_*` queries passed through.
+
+A wildcard that would have to match renamed names, `-filter`, and `source` cannot be translated faithfully and fail the release; list the objects explicitly. The rewritten files ship under `design/constraints/`.
+
+A constraint script that queries the design while it runs (`get_property`, loops over `all_inputs`) cannot be evaluated without a netlist. Give it `mode: verbatim`: it ships unchanged after a check that it names no internal objects (`get_cells`, `get_pins`, `get_nets`) and that each literal `get_ports` pattern matches a port of its scope. Patterns built from variables are not checked.
+
+## Verification
+
+`verify.command` runs in a copy of each stage tree (`src`, `obf`) and in the unpacked tarball (`pkg`), from the release root, with `RELEASE_ROOT` and `RELEASE_STAGE` set. A stage passes when the command exits 0 and its output matches `verify.pass`. When `verify.compare` is set, the lines it matches must be identical in every stage, so a rename that changes behaviour cannot ship. Logs are in `artefacts/<name>-<version>/verify/`.
+
+The flow also checks, independently of the testbench:
+
+- every obfuscated file is the same length as its input, and no renamed original name remains in it;
+- every encrypted file holds nothing outside its protected envelope;
+- no file to be obfuscated uses a macro string quote, or token pasting that joins two name pieces (`` a``_nxt ``), which the lexical obfuscator renames inconsistently. A double backtick that only delimits an argument (`` ``O``.field ``) is fine. With `obfuscation.token-paste: preserve`, every name a paste can form, its literal pieces and any identifier pasted into it keep their spelling instead; the internal manifest lists them under `token_paste_preserved`.
+
+## The package
+
+```text
+<name>-<version>/
+  RELEASE_NOTES.md        # from package.notes
+  MANIFEST                # sha256 and protection level of every file
+  docs/                   # package.docs
+  design/<top>.f          # paths relative to the release root
+  design/*.svp, *.svh     # protected sources
+  design/constraints/     # rewritten SDC
+  verif/tb.f, verif/...   # testbench and testbench.extra-files
+```
+
+The tarball is `artefacts/<name>-<version>/<name>-<version>.tar.gz`. The `stage/` directories beside it are internal: `stage/src` and `stage/obf` hold readable sources and must not be shipped.
+
+See the [`release.yaml` reference](../reference/yaml.md#releaseyaml) for every key.
+
+
+---
+
 <!-- source: concepts/root-config -->
 
 ---
@@ -5669,6 +5777,7 @@ External tools stay optional until you run the workflow that uses them.
 | `graph build` | `rtl-buddy-sch`; optional `rtl_buddy[graph-extract]` | Query commands need only an existing graph. |
 | `mcp` | `rtl_buddy[mcp]` | `uv add "rtl_buddy[mcp]"`. |
 | `fpga` | Vivado, or Yosys + nextpnr-xilinx + prjxray for `tool: openxc7` | Missing optional FPGA tools produce `SKIP`. |
+| `release` | `verible-verilog-obfuscate` (Verible) and Synopsys VCS | VCS performs the IEEE-1735 encryption. Constraint rewriting needs a Python with `tkinter`. See [Customer releases](concepts/release.md). |
 | `axi-profile` | `uv tool install rtl-buddy-axi-profiler` | Extras add Parquet and notebook support. |
 | `mut` | `rtl_buddy[mut]` | `uv add "rtl_buddy[mut]"`. The selected oracle also needs its own tools. |
 | Coverview packaging | Coverview and its `info-process` dependency | Basic coverage collection does not need Coverview. |
@@ -6033,6 +6142,14 @@ uv tool install rtl-buddy-sch
 
 `verible-verilog-lint` writes findings to stderr and signals findings through its exit code. A pipeline that reads only stdout sees nothing. Capture stderr, or use `rb lint`, which scans both streams.
 
+## `rb release` keeps every name a clear file uses
+
+Verible's obfuscator renames a spelling everywhere it appears, so a name used by any file that ships unobfuscated, the release testbench included, is kept in every obfuscated file too. A testbench local called `count` keeps every design signal called `count`. `rb release` refuses a testbench that names a design module, package or interface unless `testbench.allow-design-refs` lists it, and reports the rest in the internal manifest's `forced_clear_units`. Keep the release testbench to the preserved interface and a package published for it. See [Customer releases](concepts/release.md#which-names-are-kept).
+
+## `rb release` cannot obfuscate token-pasted macro names
+
+Verible renames the pieces of a token-pasted name (`` `define NXT(a) a``_nxt ``) separately, so the pasted result no longer matches its declaration, and a macro string quote is renamed while the string is not. `rb release` refuses both in any file it obfuscates. Rewrite the macro, exclude the file with `obfuscate: false` and a reason, or set `obfuscation.token-paste: preserve` to keep every name the paste can form.
+
 
 ---
 
@@ -6307,6 +6424,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ lint               run style lint (verible)                                          │
 │ lint-regression    run style lint regression                                         │
 │ fpv                run formal property verification                                  │
+│ release            cut a customer release: obfuscate, encrypt, package and verify    │
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ graph              build the design knowledge graph                                  │
@@ -10156,6 +10274,83 @@ fpv-configs: [design/example_block/fpv/fpv.yaml]
 ```
 
 Paths resolve from the manifest. Each suite keeps the command root of its `fpv.yaml`. `rb fpv-regression` filters entries by `--reg-level`.
+
+## release.yaml
+
+Required keys are `rtl-buddy-filetype: release_config`, `name`, `version`, `design` and `encryption`. Unknown keys are errors, so a misspelt protection setting cannot ship a file unprotected. Paths resolve relative to `release.yaml`. See [Customer releases](../concepts/release.md).
+
+```yaml
+rtl-buddy-filetype: release_config
+name: acme
+version: 1.0.0
+metadata: {cut: acme_cut}
+
+design:
+  model: acme_top
+  model-config: ../../rtl/models.yaml
+  top: acme_top
+  protect: {obfuscate: true, encrypt: true, strip-comments: true}
+  preserve:
+    interfaces: [acme_core_wrap]
+    identifiers: [ACME_SIM]
+  files:
+    - {match: "acme_pub_pkg.sv", encrypt: false, reason: "constants the customer programs"}
+  externals:
+    - {path: "$VENDOR_LIB", ship-as: "$VENDOR_LIB"}
+  constraints:
+    - {src: ../../rtl/acme_top.sdc, scope: acme_top}
+
+testbench:
+  filelist: [ "tb/tb_acme.sv" ]
+  extra-files: [ "tb/run.sh" ]
+  allow-design-refs: [acme_pub_pkg]
+
+verify:
+  command: "bash verif/run.sh"
+  pass: "^TEST PASSED"
+  compare: "^SIG: .*"
+
+encryption:
+  key-file: keys/vendor_keys.txt
+
+package:
+  notes: "notes/{version}.md"
+  docs: [ docs/user_guide.md ]
+```
+
+| Field | Requirement | Meaning |
+|---|---|---|
+| `name` | Required | Release name; the tarball is `<name>-<version>.tar.gz` |
+| `version` | Required | Release version; names the archived map `maps/<version>.map`. Versions order numerically by part |
+| `metadata` | Optional map | Copied into the internal manifest |
+| `design.model` / `design.model-config` | Required | The model whose filelist is released, and its `models.yaml` |
+| `design.top` | Default model top | Top module; its interface is always preserved |
+| `design.protect` | Default all true | `obfuscate`, `encrypt` and `strip-comments` defaults for design files |
+| `design.preserve.interfaces` | Optional list | Modules whose name, ports and parameters are kept: hardening boundaries and constraint scopes |
+| `design.preserve.identifiers` | Optional list | Further names kept everywhere |
+| `design.files` | Optional list | Per-file overrides: `match` (base-name glob), `reason` (required), and any of `obfuscate`, `encrypt`, `strip-comments`. Later rules win; a rule matching nothing is an error |
+| `design.externals` | Optional list | `path` (environment variables expanded) whose files are not shipped, and `ship-as`, the prefix written in their place |
+| `design.constraints` | Optional list | `src` SDC file, `scope` (a preserved module), optional `ship-as` file name, and `mode`: `rewrite` (default; evaluate and translate) or `verbatim` (ship unchanged after a port check) |
+| `testbench.filelist` | Optional list | Filelist lines, as in `models.yaml`, relative to `release.yaml` |
+| `testbench.extra-files` | Optional list | Files copied into `verif/` unchanged, such as run scripts |
+| `testbench.protect` / `testbench.files` | Default not protected | As for `design`; testbench obfuscation is not supported |
+| `testbench.allow-design-refs` | Optional list | Design units the testbench may name, which therefore ship unobfuscated |
+| `verify.command` | Required in `verify` | Shell command run from the root of each stage |
+| `verify.pass` | Required in `verify` | Regex the output must match, with exit status 0 |
+| `verify.compare` | Optional | Regex whose matching lines must be identical in every stage |
+| `verify.stages` | Default `[src, obf, pkg]` | Stages to run |
+| `verify.timeout` | Default 3600 | Seconds per stage |
+| `encryption.key-file` | Required | IEEE-1735 key file for `vcs -ipprotect` |
+| `encryption.vcs` | Default `vcs` | VCS executable |
+| `encryption.extra-args` | Optional list | Extra `vcs` arguments |
+| `encryption.jobs` | Default 4 | Files encrypted in parallel |
+| `obfuscation.verible` | Default `cfg-verible`, then `PATH` | Path to `verible-verilog-obfuscate` |
+| `obfuscation.map-dir` | Default `maps` | Where maps and manifests are archived |
+| `obfuscation.continue-from` | Default `previous` | `previous`, `none`, or a map file to start from |
+| `obfuscation.keep-comments` | Default directive patterns | Regexes; a matching comment survives stripping |
+| `obfuscation.token-paste` | Default `refuse` | `refuse` fails on token pasting that forms names; `preserve` keeps every name it can form |
+| `package.notes` | Default `notes/{version}.md` | Release notes, required for every release; shipped as `RELEASE_NOTES.md` |
+| `package.docs` | Optional list | Documents shipped in `docs/` |
 
 ## mut.yaml
 

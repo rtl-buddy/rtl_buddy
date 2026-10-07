@@ -41,6 +41,7 @@ External tools stay optional until you run the workflow that uses them.
 | `graph build` | `rtl-buddy-sch`; optional `rtl_buddy[graph-extract]` | Query commands need only an existing graph. |
 | `mcp` | `rtl_buddy[mcp]` | `uv add "rtl_buddy[mcp]"`. |
 | `fpga` | Vivado, or Yosys + nextpnr-xilinx + prjxray for `tool: openxc7` | Missing optional FPGA tools produce `SKIP`. |
+| `release` | `verible-verilog-obfuscate` (Verible) and Synopsys VCS | VCS performs the IEEE-1735 encryption. Constraint rewriting needs a Python with `tkinter`. See [Customer releases](concepts/release.md). |
 | `axi-profile` | `uv tool install rtl-buddy-axi-profiler` | Extras add Parquet and notebook support. |
 | `mut` | `rtl_buddy[mut]` | `uv add "rtl_buddy[mut]"`. The selected oracle also needs its own tools. |
 | Coverview packaging | Coverview and its `info-process` dependency | Basic coverage collection does not need Coverview. |

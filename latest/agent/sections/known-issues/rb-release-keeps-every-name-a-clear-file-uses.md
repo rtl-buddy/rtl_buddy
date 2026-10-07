@@ -1,0 +1,3 @@
+## `rb release` keeps every name a clear file uses
+
+Verible's obfuscator renames a spelling everywhere it appears, so a name used by any file that ships unobfuscated, the release testbench included, is kept in every obfuscated file too. A testbench local called `count` keeps every design signal called `count`. `rb release` refuses a testbench that names a design module, package or interface unless `testbench.allow-design-refs` lists it, and reports the rest in the internal manifest's `forced_clear_units`. Keep the release testbench to the preserved interface and a package published for it. See [Customer releases](https://rtl-buddy.github.io/rtl_buddy/v6/concepts/release/#which-names-are-kept).

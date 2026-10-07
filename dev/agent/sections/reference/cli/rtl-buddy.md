@@ -72,6 +72,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ lint               run style lint (verible)                                          │
 │ lint-regression    run style lint regression                                         │
 │ fpv                run formal property verification                                  │
+│ release            cut a customer release: obfuscate, encrypt, package and verify    │
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ graph              build the design knowledge graph                                  │

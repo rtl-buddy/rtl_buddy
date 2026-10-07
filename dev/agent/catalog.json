@@ -1444,6 +1444,45 @@
       "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/regressions.md"
     },
     {
+      "description": "Cut an obfuscated and encrypted customer release of a design with rb release, keep released names stable, ship constraints that still match, and verify the package before it leaves.",
+      "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/release/",
+      "sections": [
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/release/#install-the-tools",
+          "slug": "install-the-tools",
+          "title": "Install the tools",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/release/install-the-tools.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/release/#what-is-protected-and-how",
+          "slug": "what-is-protected-and-how",
+          "title": "What is protected, and how",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/release/what-is-protected-and-how.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/release/#constraints",
+          "slug": "constraints",
+          "title": "Constraints",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/release/constraints.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/release/#verification",
+          "slug": "verification",
+          "title": "Verification",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/release/verification.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/release/#the-package",
+          "slug": "the-package",
+          "title": "The package",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/concepts/release/the-package.md"
+        }
+      ],
+      "slug": "concepts/release",
+      "title": "Customer releases",
+      "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/pages/concepts/release.md"
+    },
+    {
       "description": "Configure project-wide platforms, simulation builders, tool paths, regression defaults, and machine-local environment values in root_config.yaml.",
       "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/concepts/root-config/",
       "sections": [
@@ -2658,6 +2697,18 @@
           "slug": "verible-lint-findings-are-on-stderr",
           "title": "Verible lint findings are on stderr",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/verible-lint-findings-are-on-stderr.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-release-keeps-every-name-a-clear-file-uses",
+          "slug": "rb-release-keeps-every-name-a-clear-file-uses",
+          "title": "`rb release` keeps every name a clear file uses",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-release-keeps-every-name-a-clear-file-uses.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/#rb-release-cannot-obfuscate-token-pasted-macro-names",
+          "slug": "rb-release-cannot-obfuscate-token-pasted-macro-names",
+          "title": "`rb release` cannot obfuscate token-pasted macro names",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/known-issues/rb-release-cannot-obfuscate-token-pasted-macro-names.md"
         }
       ],
       "slug": "known-issues",
@@ -3600,6 +3651,12 @@
           "slug": "fpvregressionyaml",
           "title": "fpv_regression.yaml",
           "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/reference/yaml/fpvregressionyaml.md"
+        },
+        {
+          "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#releaseyaml",
+          "slug": "releaseyaml",
+          "title": "release.yaml",
+          "url": "https://rtl-buddy.github.io/rtl_buddy/dev/agent/sections/reference/yaml/releaseyaml.md"
         },
         {
           "human_url": "https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/#mutyaml",
