@@ -70,6 +70,9 @@ mcp = ["mcp >= 1.2.0"]
 # release implementing the extract contract in graph/extract.py.
 # Every extra must resolve on PyPI; test_graph_extract_is_a_published_extra guards this.
 graph-extract = ["rtl-buddy-graph-extract >= 0.1.0"]
+# The `csr:` section of `rb release`: compiles SystemRDL and writes the customer
+# register map. Imported only when a release.yaml has a `csr:` section.
+release-csr = ["systemrdl-compiler >= 1.32", "peakrdl-systemrdl >= 1.0.1", "peakrdl-cheader >= 1.1"]
 
 [project.urls]
 Source = "https://github.com/rtl-buddy/rtl_buddy"
@@ -109,6 +112,10 @@ test = [
   "pyslang>=10.0.0,<12",
   # Keeps the `rb mcp` tests from skipping in CI.
   "mcp>=1.2.0",
+  # Keeps the `rb release` csr tests from skipping in CI.
+  "systemrdl-compiler>=1.32",
+  "peakrdl-systemrdl>=1.0.1",
+  "peakrdl-cheader>=1.1",
 ]
 dev = [
   { include-group = "lint" },

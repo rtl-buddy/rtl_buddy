@@ -1,0 +1,33 @@
+`include "acme_udp.rdl"
+
+addrmap acme_csr {
+  reg {
+    acme_customer = true;
+    field { sw = rw; hw = r; acme_domain = "core"; desc = "Enable"; } en[0:0] = 1;
+    field { sw = rw; hw = r; desc = "Debug tap select"; } dbg_sel[7:4] = 0;
+  } ctrl;
+  reg {
+    field { sw = rw; hw = r; desc = "Internal tuning"; } secret[31:0] = 0;
+  } int_tune;
+  reg {
+    acme_customer = true;
+    field { sw = rw; hw = w; intr; posedge intr; stickybit; } done[0:0] = 0;
+    field { sw = rw; hw = w; intr; } err[1:1] = 0;
+  } irq;
+  reg {
+    acme_customer = true;
+    field { sw = w; hw = r; singlepulse; } clr_done[0:0] = 0;
+  } irq_clr;
+  regfile {
+    acme_customer = true;
+    reg { field { sw = rw; hw = r; } addr[31:0] = 0; } lo;
+    reg { field { sw = rw; hw = r; } addr[31:0] = 0; } hi;
+  } chan[2];
+  external mem {
+    acme_customer = true;
+    mementries = 4;
+    memwidth = 32;
+  } buf_m;
+
+  irq.done->hwclr = irq_clr.clr_done;
+};

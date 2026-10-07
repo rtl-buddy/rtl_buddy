@@ -8,7 +8,9 @@ tools when they and an IEEE-1735 key file (``RB_RELEASE_TEST_KEY``) are present.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -674,3 +676,88 @@ def test_an_external_goes_to_its_directory_once(project: Path, tcl_backend):
     )
     assert files["sim.f"].count("-v $VMEM_DIR/vmem.v") == 1
     assert not any(n.endswith("vmem.v") for n in files)
+
+
+# ---- csr ---------------------------------------------------------------------
+
+csr_tools = pytest.mark.skipif(
+    any(
+        importlib.util.find_spec(m) is None
+        for m in ("systemrdl", "peakrdl_systemrdl", "peakrdl_cheader")
+    ),
+    reason="needs the release-csr extra",
+)
+
+
+def _add_csr(root: Path) -> None:
+    _edit(
+        root / REL / "release.yaml",
+        lambda d: d.update(
+            {
+                "csr": {
+                    "gate": "acme_customer",
+                    "windows": [
+                        {
+                            "name": "main",
+                            "rdl": "../../rtl/csr/acme_csr.rdl",
+                            "top": "acme_csr",
+                            "base": 0x4000_0000,
+                        }
+                    ],
+                    "registers": [
+                        {"match": "main.ctrl", "obfuscate-fields": ["dbg_*"]},
+                        {"match": "main.chan.*"},
+                    ],
+                }
+            }
+        ),
+    )
+
+
+@csr_tools
+def test_release_ships_the_register_map_and_records_it(project: Path, tcl_backend):
+    _add_csr(project)
+    files = _release_files(_run(project))
+    assert {f for f in files if f.startswith("csr/")} == {
+        "csr/acme_csr.rdl",
+        "csr/acme_csr.h",
+        "csr/acme_csr.svh",
+        "csr/acme_csr.md",
+    }
+    assert re.search(r"\sclear\s+csr/acme_csr.svh$", files["MANIFEST"], re.M)
+    manifest = json.loads((project / REL / "maps/1.0.0.json").read_text())
+    assert manifest["csr"]["registers"] == {"main": 5}
+    assert set(manifest["csr"]["files"]) == {
+        "csr/acme_csr.rdl",
+        "csr/acme_csr.h",
+        "csr/acme_csr.svh",
+        "csr/acme_csr.md",
+    }
+
+
+@csr_tools
+def test_csr_only_writes_just_the_map(project: Path):
+    _add_csr(project)
+    out = _run(project, csr_only=True)
+    assert sorted(p.name for p in out.iterdir()) == [
+        "acme_csr.h",
+        "acme_csr.md",
+        "acme_csr.rdl",
+        "acme_csr.svh",
+    ]
+    assert not (out.parent / "stage").exists()
+
+
+@csr_tools
+def test_an_ignored_rdl_include_is_refused(project: Path, tcl_backend):
+    _add_csr(project)
+    _git_commit_all(project)
+    (project / ".gitignore").write_text(
+        "artefacts/\nrtl_buddy.log\nrtl/csr/acme_udp.rdl\n"
+    )
+    subprocess.run(
+        ["git", "rm", "-q", "--cached", "rtl/csr/acme_udp.rdl"], cwd=project, check=True
+    )
+    _git_commit_all(project, "stop tracking the properties")
+    with pytest.raises(FatalRtlBuddyError, match=r"acme_udp.rdl \(gitignored\)"):
+        _run(project)
