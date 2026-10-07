@@ -97,6 +97,8 @@ class OpenRoadSynth:
         self._thread_plan: ThreadPlan | None = None
         # Resolved `blocks:` abstracts, set by the runner.
         self.blocks: list = []
+        # `_blackbox_stub_plan`'s result and the library set it was computed for.
+        self._bb_stub_plan: tuple[tuple, list[tuple[str, list[str]]]] | None = None
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -273,6 +275,7 @@ class OpenRoadSynth:
             )
             warn_mapped_abc_args(opts, self.synth_cfg.get_name())
             lines.append(f"write_verilog {self._yosys_netlist_path()}")
+            lines.extend(self._blackbox_stub_cmds(fl_path, lib_paths))
             lines.append(f"stat{cell_libs}")
             lines.append(self._stat_json_cmd(cell_libs))
         else:
@@ -456,7 +459,7 @@ class OpenRoadSynth:
         """Return the names OpenROAD already has a master for, from the LEFs and Liberties.
 
         A LEF `MACRO` or Liberty `cell` is a complete master for link_design, so these modules must
-        not also be declared in Verilog (see `_write_or_blackbox_stubs`). The files are scanned line
+        not also be declared in Verilog (see `_blackbox_stub_plan`). The files are scanned line
         by line, not parsed, because they can be tens of MB. The LEF is the reliable source: the
         OpenROAD backend refuses a platform with no LEF.
         """
@@ -493,72 +496,96 @@ class OpenRoadSynth:
                 pass
         return names
 
-    def _write_or_blackbox_stubs(self, known_masters: set[str]) -> list[str]:
-        """Write OpenROAD-compatible port-only copies of Yosys blackbox stub files and return their paths.
+    def _blackbox_stub_plan(
+        self, fl_path: str, lef_paths: list[str], lib_paths: list[str]
+    ) -> list[tuple[str, list[str]]]:
+        """Return `(stub path, module names)` for each source file in `fl_path` that declares `(* blackbox *)` modules.
 
-        Yosys omits blackbox definitions from write_verilog output, and link_design fails on an
-        instance of an undefined module. Files containing (* blackbox *) are reduced to module
-        headers with no body, because OpenSTA's gate-level reader accepts only a small Verilog
-        subset and takes cell timing from the Liberty.
+        Yosys omits blackbox definitions from the netlist, and link_design fails on an instance of
+        an undefined module, so stage 1 writes each file's blackboxes to `or_<file name>` in the
+        artefact directory (`_blackbox_stub_cmds`) and stage 2 reads it. Only the blackbox modules
+        are written, never the rest of the file: OpenSTA's gate-level reader rejects
+        SystemVerilog (`STA-0171`), and the file's other modules are in the netlist already.
 
-        A blackbox named in `known_masters` is dropped rather than stubbed. Such a macro's LEF and
-        Liberty are read by the same script (`lef-paths` / `lib-paths` in synth.yaml), and also
-        declaring it in Verilog can displace that master. link_design then binds every instance to
-        a zero-area module, so the macros vanish from the area report and the timing graph, the run
-        still exits 0, and WNS is optimistic.
+        A blackbox that a LEF or Liberty in `lef_paths` / `lib_paths` supplies (see
+        `_masters_from_lef_and_liberty`) is left out. Such a macro's LEF and Liberty are read by
+        the same script, and also declaring it in Verilog can displace that master. link_design
+        then binds every instance to a zero-area module, so the macros vanish from the area report
+        and the timing graph, the run still exits 0, and WNS is optimistic.
+
+        Memoised per filelist and library set, because the LEFs and Liberties can be tens of MB.
         """
+        key = (fl_path, tuple(lef_paths), tuple(lib_paths))
+        if self._bb_stub_plan is not None and self._bb_stub_plan[0] == key:
+            return self._bb_stub_plan[1]
         try:
-            candidates = self._source_files_from_filelist(self._filelist_path())
+            candidates = self._source_files_from_filelist(fl_path)
         except OSError:
-            return []
-        module_re = re.compile(r"^\s*module\s+\w+", re.MULTILINE)
-        shadowed: list[str] = []
-
-        def _stub_or_drop(content: str) -> str:
-            # Each module is cut from the (* blackbox *) attribute to endmodule. The header, through the `;` after its port list, is kept; the body is dropped.
-            pieces = []
-            last = 0
-            for bb in block_params.blackbox_modules(content):
-                pieces.append(content[last : bb.start])
-                if bb.name in known_masters:
-                    shadowed.append(bb.name)
-                else:
-                    pieces.append(
-                        f"{content[bb.header_start : bb.header_end]}\nendmodule"
-                    )
-                last = bb.end
-            pieces.append(content[last:])
-            return "".join(pieces)
-
-        result = []
+            candidates = []
+        known_masters: set[str] | None = None
+        shadowed: set[str] = set()
+        plan: list[tuple[str, list[str]]] = []
         for src in candidates:
             try:
                 with open(src) as f:
                     content = f.read()
-                if "(* blackbox *)" not in content:
-                    continue
-                cleaned = _stub_or_drop(content)
-                if not module_re.search(cleaned):
-                    # Every blackbox in this file has a LEF/Liberty master; nothing left to read.
-                    continue
-                # OpenROAD's gate-level reader rejects SV `logic`; use `wire` for ports.
-                cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
-                cleaned = cleaned.replace("  output logic ", "  output wire  ")
-                stub_name = os.path.basename(src)
-                stub_path = os.path.join(self.artefact_dir, f"or_{stub_name}")
-                with open(stub_path, "w") as f:
-                    f.write(cleaned)
-                result.append(stub_path)
             except OSError:
-                pass
+                continue
+            if "blackbox" not in content:
+                continue
+            names = [bb.name for bb in block_params.blackbox_modules(content)]
+            if not names:
+                continue
+            if known_masters is None:
+                known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
+            shadowed.update(n for n in names if n in known_masters)
+            names = [n for n in names if n not in known_masters]
+            if names:
+                stub = os.path.join(self.artefact_dir, f"or_{os.path.basename(src)}")
+                plan.append((stub, list(dict.fromkeys(names))))
         if shadowed:
             log_event(
                 logger,
                 logging.DEBUG,
                 "synth.openroad.blackbox_master_from_lib",
                 synth=self.synth_cfg.get_name(),
-                modules=" ".join(sorted(set(shadowed))),
+                modules=" ".join(sorted(shadowed)),
             )
+        self._bb_stub_plan = (key, plan)
+        return plan
+
+    def _blackbox_stub_cmds(self, fl_path: str, lib_paths: list[str]) -> list[str]:
+        """Return the stage-1 Yosys commands that write the blackbox stubs of `_blackbox_stub_plan`.
+
+        Yosys writes each blackbox as a port-only Verilog-2001 module after elaborating it with
+        the run's frontend, so SystemVerilog in the declaration (`logic` ports, package types,
+        macros, parameterised widths) and in the rest of its file never reaches OpenROAD. `=`
+        selects a module that is a blackbox. One that the design does not instance is gone after
+        `synth`; Yosys warns that the selection matched nothing and its stub has no module.
+        """
+        plan = self._blackbox_stub_plan(fl_path, self._resolve_lef_paths(), lib_paths)
+        if not plan:
+            return []
+        cmds = []
+        for stub, names in plan:
+            cmds.append("select " + " ".join(f"={n}" for n in names))
+            cmds.append(f"write_verilog -noattr -blackboxes -selected {stub}")
+        cmds.append("select -clear")
+        return cmds
+
+    def _or_blackbox_stubs(
+        self, lef_paths: list[str], lib_paths: list[str]
+    ) -> list[str]:
+        """Return the stubs stage 1 wrote that declare a module, for stage 2 to read."""
+        result = []
+        plan = self._blackbox_stub_plan(self._filelist_path(), lef_paths, lib_paths)
+        for stub, _ in plan:
+            try:
+                with open(stub) as f:
+                    if re.search(r"^\s*module\s", f.read(), re.MULTILINE):
+                        result.append(stub)
+            except OSError:
+                pass
         return result
 
     def _resolve_or_opts(self) -> SynthToolOpts:
@@ -616,9 +643,8 @@ class OpenRoadSynth:
         for lib in lib_paths:
             lines.append(f"read_liberty {lib}")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
-        # Read the cleaned blackbox stubs so link_design can resolve them.
-        known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
-        for bb_stub in self._write_or_blackbox_stubs(known_masters):
+        # Read the blackbox stubs stage 1 wrote, so link_design can resolve them.
+        for bb_stub in self._or_blackbox_stubs(lef_paths, lib_paths):
             lines.append(f"read_verilog {bb_stub}")
         lines.append(f"link_design {top}")
         # The resynthesis strategies pick library cells, so the PDK's exclusions must hold. Runs after

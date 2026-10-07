@@ -2,6 +2,8 @@
 
 import hashlib
 import logging
+import shutil
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from textwrap import dedent
@@ -2417,21 +2419,23 @@ def test_masters_from_lef_and_liberty_tolerates_missing_files(tmp_path):
     assert or_synth._masters_from_lef_and_liberty(["/nope.lef"], ["/nope.lib"]) == set()
 
 
-def test_blackbox_stub_written_when_no_lef_or_liberty_master(tmp_path):
+def _plan(or_synth, masters=()):
+    """The stub plan for the artefact filelist, with `masters` as the LEF/Liberty macros."""
+    or_synth._masters_from_lef_and_liberty = lambda lefs, libs: set(masters)
+    return or_synth._blackbox_stub_plan(or_synth._filelist_path(), [], [])
+
+
+def test_blackbox_stub_planned_when_no_lef_or_liberty_master(tmp_path):
     """Without a LEF or Liberty master, link_design needs the blackbox stub."""
     src = _bb_src(tmp_path)
     or_synth = _make_openroad(
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
     )
     _write_filelist(or_synth, src)
-    stubs = or_synth._write_or_blackbox_stubs(set())
 
-    assert len(stubs) == 1
-    stub = Path(stubs[0]).read_text()
-    assert "module mymacro" in stub
-    # body stripped: OpenSTA's reader does not accept reg arrays or always blocks
-    assert "always" not in stub
-    assert "reg [31:0] mem" not in stub
+    assert _plan(or_synth) == [
+        (str(Path(or_synth.artefact_dir) / "or_macro_bb.v"), ["mymacro"])
+    ]
 
 
 def test_blackbox_stub_dropped_when_lef_supplies_the_master(tmp_path):
@@ -2441,24 +2445,191 @@ def test_blackbox_stub_dropped_when_lef_supplies_the_master(tmp_path):
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
     )
     _write_filelist(or_synth, src)
-    stubs = or_synth._write_or_blackbox_stubs({"mymacro"})
 
-    assert stubs == []
+    assert _plan(or_synth, {"mymacro"}) == []
 
 
-def test_blackbox_stub_keeps_unmastered_modules_in_a_mixed_file(tmp_path):
-    """In a file with a mastered blackbox and a real module, the first is dropped and the file is kept for the second."""
+def test_blackbox_stub_plan_leaves_out_a_files_other_modules(tmp_path):
+    """rtl_buddy#762: a real module beside the stub is in the netlist already, and its SV would fail STA-0171."""
     src = _bb_src(tmp_path, extra_module="glue")
     or_synth = _make_openroad(
         tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
     )
     _write_filelist(or_synth, src)
-    stubs = or_synth._write_or_blackbox_stubs({"mymacro"})
 
-    assert len(stubs) == 1
-    stub = Path(stubs[0]).read_text()
-    assert "module mymacro" not in stub
-    assert "module glue" in stub
+    [(stub, names)] = _plan(or_synth)
+    assert names == ["mymacro"]
+    # With the blackbox mastered, nothing is left to stub.
+    or_synth._bb_stub_plan = None
+    assert _plan(or_synth, {"mymacro"}) == []
+
+
+_MIXED_SV = """\
+// A blackbox stub and SystemVerilog in one file (rtl_buddy#762).
+(* blackbox *)
+module mymacro (
+  input  logic       clk,
+  input  logic [7:0] d,
+  output logic [7:0] q
+);
+endmodule
+
+module glue (input logic clk, input logic [7:0] a, output logic [7:0] z);
+  always_ff @(posedge clk) z <= ~a;
+endmodule
+
+(* blackbox *) module unused_bb (input logic a);
+endmodule
+"""
+
+_MIXED_TOP = """\
+module top (input logic clk, input logic [7:0] d, output logic [7:0] q);
+  logic [7:0] m;
+  mymacro u_m (.clk(clk), .d(d), .q(m));
+  glue    u_g (.clk(clk), .a(m), .z(q));
+endmodule
+"""
+
+
+def _mixed_or_synth(tmp_path):
+    """An OpenROAD run over `_MIXED_SV` and `_MIXED_TOP`, with an empty Liberty and LEF."""
+    mixed = tmp_path / "mixed.sv"
+    mixed.write_text(_MIXED_SV)
+    top = tmp_path / "top.sv"
+    top.write_text(_MIXED_TOP)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            name="test_synth", model_name="top", platform="mylib"
+        ),
+        root_cfg=root_cfg,
+    )
+    fl = Path(or_synth._filelist_path())
+    fl.write_text(f"-v {mixed}\n{top}\n")
+    return or_synth, fl, lib, lef
+
+
+def test_yosys_script_writes_only_the_blackboxes_after_the_netlist(tmp_path):
+    """Stage 1 writes each file's blackboxes as Verilog-2001 stubs, after the netlist and before `stat`."""
+    or_synth, fl, _, _ = _mixed_or_synth(tmp_path)
+    lines = Path(or_synth._write_yosys_script(str(fl))).read_text().splitlines()
+
+    stub = Path(or_synth.artefact_dir) / "or_mixed.sv"
+    netlist = lines.index(f"write_verilog {or_synth._yosys_netlist_path()}")
+    assert lines[netlist + 1 : netlist + 4] == [
+        "select =mymacro =unused_bb",
+        f"write_verilog -noattr -blackboxes -selected {stub}",
+        "select -clear",
+    ]
+    assert lines[netlist + 4].startswith("stat")
+
+
+def test_yosys_script_writes_no_stub_without_a_blackbox(tmp_path):
+    or_synth, fl, _, _ = _mixed_or_synth(tmp_path)
+    Path(fl).write_text(f"{tmp_path / 'top.sv'}\n")
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "-blackboxes" not in script
+    assert "select" not in script
+
+
+def test_or_script_reads_a_stub_only_once_yosys_wrote_a_module(tmp_path):
+    """Stage 2 reads a stub that declares a module; one with none (every blackbox unused) or none at all is skipped."""
+    or_synth, fl, lib, lef = _mixed_or_synth(tmp_path)
+    stub = Path(or_synth.artefact_dir) / "or_mixed.sv"
+
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    assert str(stub) not in script
+
+    stub.write_text("/* Generated by Yosys */\n")
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    assert str(stub) not in script
+
+    stub.write_text("module mymacro(clk, d, q);\n  input clk;\nendmodule\n")
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    netlist = f"read_verilog {or_synth._yosys_netlist_path()}"
+    assert f"{netlist}\nread_verilog {stub}\nlink_design top" in script
+
+
+def test_or_script_stub_read_for_a_verilog_stub_file_is_unchanged(tmp_path):
+    """A Verilog-2001 stub alone in its file keeps its `read_verilog <artefacts>/or_<file>` line."""
+    src = _bb_src(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            name="test_synth", model_name="top", platform="mylib"
+        ),
+        root_cfg=root_cfg,
+    )
+    fl = _write_filelist(or_synth, src)
+    ys = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    stub = Path(or_synth.artefact_dir) / "or_macro_bb.v"
+    assert f"write_verilog -noattr -blackboxes -selected {stub}" in ys
+
+    stub.write_text("module mymacro(clk, addr, q);\nendmodule\n")
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    assert f"read_verilog {stub}\nlink_design top" in script
+
+
+_YOSYS = shutil.which("yosys")
+_OPENROAD = shutil.which("openroad")
+
+
+@pytest.mark.skipif(_YOSYS is None, reason="yosys not installed")
+def test_yosys_writes_a_verilog_2001_stub_from_a_mixed_sv_file(tmp_path):
+    """rtl_buddy#762 end to end: the stub Yosys writes from a mixed SV file declares only the
+    blackbox, in Verilog-2001, and OpenROAD's `read_verilog` accepts it.
+    """
+    or_synth, fl, _, _ = _mixed_or_synth(tmp_path)
+    cmds = or_synth._blackbox_stub_cmds(str(fl), [])
+    script = tmp_path / "stub.ys"
+    script.write_text(
+        "\n".join(
+            [
+                f"read_verilog -sv -defer {tmp_path / 'mixed.sv'}",
+                f"read_verilog -sv -defer {tmp_path / 'top.sv'}",
+                "synth -top top",
+                *cmds,
+            ]
+        )
+        + "\n"
+    )
+    subprocess.run([_YOSYS, "-q", "-s", str(script)], check=True, capture_output=True)
+
+    stub = Path(or_synth.artefact_dir) / "or_mixed.sv"
+    text = stub.read_text()
+    assert "module mymacro(clk, d, q);" in text
+    assert "input [7:0] d;" in text and "output [7:0] q;" in text
+    for absent in ("glue", "unused_bb", "logic", "always", "(*"):
+        assert absent not in text
+    assert or_synth._or_blackbox_stubs([], []) == [str(stub)]
+
+    if _OPENROAD is None:
+        return
+    tcl = tmp_path / "read.tcl"
+    tcl.write_text(f"read_verilog {stub}\n")
+    result = subprocess.run(
+        [_OPENROAD, "-no_init", "-exit", str(tcl)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "STA-0171" not in result.stdout + result.stderr
 
 
 def test_or_script_omits_stub_read_for_a_lef_backed_macro(tmp_path):
