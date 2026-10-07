@@ -3781,6 +3781,124 @@ def test_a_pdk_rejects_a_reference_hpwl_that_is_not_positive(tmp_path):
     assert "placement.reference-hpwl" in str(excinfo.value)
 
 
+def test_global_placement_is_not_routability_driven_by_default(tmp_path):
+    pdk = _make_pdk_cfg(tmp_path)
+    assert pdk.get_placement_routability_driven() is None
+    assert pdk.get_placement_routability_use_grt() is None
+    platform = _platform(pdk)
+    assert platform.get_placement_routability_driven() is False
+    assert platform.get_placement_routability_use_grt() is False
+    text = _render_flow(tmp_path, platform)
+    assert "global_placement -density 0.7 -pad_left 1 -pad_right 1\n" in text
+    assert "-routability" not in text
+
+
+def test_global_placement_emits_both_routability_flags(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    platform = _platform(
+        _make_pdk_cfg(tmp_path),
+        placement=PlacementFile(
+            reference_hpwl=4.46e8, routability_driven=True, routability_use_grt=True
+        ),
+    )
+    text = _render_flow(tmp_path, platform)
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 "
+        "-reference_hpwl 446000000 -routability_driven -routability_use_grt\n"
+    ) in text
+
+
+def test_global_placement_emits_routability_driven_alone(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(routability_driven=True))
+    text = _render_flow(tmp_path, _platform(pdk))
+    assert (
+        "global_placement -density 0.7 -pad_left 1 -pad_right 1 -routability_driven\n"
+    ) in text
+    assert "-routability_use_grt" not in text
+
+
+def test_routability_settings_take_the_platform_over_the_pdk(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        placement=PlacementFile(routability_driven=True, routability_use_grt=True),
+    )
+    inherited = _platform(pdk)
+    assert inherited.get_placement_routability_driven() is True
+    assert inherited.get_placement_routability_use_grt() is True
+
+    # The platform can opt out of GRT-based analysis but keep the PDK's routability mode.
+    rudy = _platform(pdk, placement=PlacementFile(routability_use_grt=False))
+    assert rudy.get_placement_routability_driven() is True
+    assert rudy.get_placement_routability_use_grt() is False
+
+    # Or turn both off.
+    off = _platform(
+        pdk,
+        placement=PlacementFile(routability_driven=False, routability_use_grt=False),
+    )
+    assert "-routability" not in _render_flow(tmp_path, off)
+
+
+def test_routability_use_grt_from_the_pdk_composes_with_platform_driven(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    pdk = _make_pdk_cfg(tmp_path, placement=PlacementFile(routability_use_grt=True))
+    platform = _platform(pdk, placement=PlacementFile(routability_driven=True))
+    assert platform.get_placement_routability_driven() is True
+    assert platform.get_placement_routability_use_grt() is True
+
+
+def test_routability_use_grt_without_routability_driven_is_an_error(tmp_path):
+    from rtl_buddy.config.pdk import PlacementFile
+
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        _platform(
+            _make_pdk_cfg(tmp_path),
+            placement=PlacementFile(routability_use_grt=True),
+        )
+    assert (
+        "pnr platform 'nangate45_typ': placement.routability-use-grt needs "
+        "placement.routability-driven: true"
+    ) in str(excinfo.value)
+
+    # Also when the platform turns off a mode the PDK enabled.
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        placement=PlacementFile(routability_driven=True, routability_use_grt=True),
+    )
+    with pytest.raises(FatalRtlBuddyError):
+        _platform(pdk, placement=PlacementFile(routability_driven=False))
+
+
+def test_yaml_routability_keys_load_as_booleans(tmp_path):
+    from serde.yaml import from_yaml
+
+    platform_file = from_yaml(
+        PnrPlatformConfigFile,
+        'name: "p"\npdk: "p"\n'
+        "placement: {routability-driven: true, routability-use-grt: true}\n",
+    )
+    platform = PnrPlatformConfig(platform_file, lambda _n: _make_pdk_cfg(tmp_path))
+    assert platform.get_placement_routability_driven() is True
+    assert platform.get_placement_routability_use_grt() is True
+
+
+def test_a_yaml_routability_key_rejects_a_non_boolean():
+    from serde import SerdeError
+    from serde.yaml import from_yaml
+
+    with pytest.raises(SerdeError):
+        from_yaml(
+            PnrPlatformConfigFile,
+            'name: "p"\npdk: "p"\nplacement: {routability-driven: "on"}\n',
+        )
+
+
 def _rtl_mp_yaml(tmp_path, floorplan_extra):
     pnr_yaml = tmp_path / "pnr.yaml"
     pnr_yaml.write_text(
@@ -4313,6 +4431,19 @@ def test_flow_knobs_enter_the_abstract_config_only_when_set(tmp_path):
     )
     assert spread["placement"]["reference_hpwl"] == 4.46e8
     assert pnr_abstract.config_digest(spread) != pnr_abstract.config_digest(plain)
+
+    assert "routability_driven" not in plain["placement"]
+    assert "routability_use_grt" not in plain["placement"]
+    routable = pnr_abstract.abstract_config(
+        pnr_cfg,
+        _platform(
+            _make_pdk_cfg(tmp_path),
+            placement=PlacementFile(routability_driven=True, routability_use_grt=True),
+        ),
+    )
+    assert routable["placement"]["routability_driven"] is True
+    assert routable["placement"]["routability_use_grt"] is True
+    assert pnr_abstract.config_digest(routable) != pnr_abstract.config_digest(plain)
 
 
 def test_pnr_flow_counts_the_routed_design_after_fill(tmp_path):

@@ -158,7 +158,7 @@ cfg-pnr-platforms:
 | `cfg-pnr-tools` | `name`, `tool` |
 | `cfg-power-tools` | `name`, `tool` |
 
-`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, and `placement.reference-hpwl`.
+`placement.*` stands for `placement.density`, `placement.padding`, `placement.macro-halo`, `placement.macro-cell-halo`, `placement.tie-separation`, `placement.reference-hpwl`, `placement.routability-driven`, and `placement.routability-use-grt`.
 
 The process-dependent P&R keys are all optional:
 
@@ -170,6 +170,8 @@ The process-dependent P&R keys are all optional:
 | `placement.macro-cell-halo` | `cfg-pdks`, `cfg-pnr-platforms` | Standard-cell keep-out in microns on every side of each placed macro, applied as a hard placement blockage. Non-negative; default `1.0`; `0` places no blockage |
 | `placement.tie-separation` | `cfg-pdks`, `cfg-pnr-platforms` | Distance in microns between each constant-driven load and the tie cell `repair_tie_fanout` places for it after global placement. Non-negative; default `0` |
 | `placement.reference-hpwl` | `cfg-pdks`, `cfg-pnr-platforms` | Positive number. Passed as `global_placement -reference_hpwl`. Unset by default, which keeps the placer's size-derived reference; a fixed value spreads a large design further and can clear global-route overflow |
+| `placement.routability-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_driven` to `global_placement`, which inflates cells in congested regions and re-spreads them; for congested blocks |
+| `placement.routability-use-grt` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_use_grt`, so routability mode estimates congestion with the global router instead of RUDY. Requires `placement.routability-driven: true` after platform-over-PDK resolution; otherwise the platform fails to load |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
 | `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |

@@ -173,6 +173,26 @@ class PnrPlatformConfig:
             self._pdk.get_placement_tie_separation(),
             DEFAULT_PLACEMENT_TIE_SEPARATION,
         )
+        self._placement_routability_driven = _first_set(
+            placement.routability_driven,
+            self._pdk.get_placement_routability_driven(),
+            False,
+        )
+        self._placement_routability_use_grt = _first_set(
+            placement.routability_use_grt,
+            self._pdk.get_placement_routability_use_grt(),
+            False,
+        )
+        # The placer reads `-routability_use_grt` only in routability mode, so alone it would be silently ignored.
+        if (
+            self._placement_routability_use_grt
+            and not self._placement_routability_driven
+        ):
+            raise FatalRtlBuddyError(
+                f"pnr platform '{self._name}': placement.routability-use-grt "
+                "needs placement.routability-driven: true (set on the platform "
+                "or its PDK); global_placement ignores it otherwise"
+            )
 
     def _resolve_sta_corners(self, cfg: PnrPlatformConfigFile) -> list[str]:
         """Return the analysis corners, primary first, validated against the PDK.
@@ -288,6 +308,14 @@ class PnrPlatformConfig:
     def get_placement_reference_hpwl(self) -> float | None:
         """Global-placement reference HPWL, platform over PDK, or `None` for the placer's own."""
         return self._placement_reference_hpwl
+
+    def get_placement_routability_driven(self) -> bool:
+        """Whether global placement runs `-routability_driven`, platform over PDK, default `False`."""
+        return self._placement_routability_driven
+
+    def get_placement_routability_use_grt(self) -> bool:
+        """Whether global placement passes `-routability_use_grt`, platform over PDK, default `False`."""
+        return self._placement_routability_use_grt
 
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""

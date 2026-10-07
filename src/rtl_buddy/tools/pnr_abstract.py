@@ -187,6 +187,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if isinstance(platform.get_placement_reference_hpwl(), float)
                 else {}
             ),
+            **(
+                {"routability_driven": True}
+                if platform.get_placement_routability_driven() is True
+                else {}
+            ),
+            **(
+                {"routability_use_grt": True}
+                if platform.get_placement_routability_use_grt() is True
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
