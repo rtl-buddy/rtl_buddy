@@ -811,6 +811,10 @@ class RtlBuddy:
         self.app.command("fpv", help="run formal property verification")(
             self.do_cmd_fpv
         )
+        self.app.command(
+            "release",
+            help="cut a customer release: obfuscate, encrypt, package and verify",
+        )(self.do_cmd_release)
         self.app.command("fpv-regression", help="run FPV regression")(
             self.do_fpv_regression
         )
@@ -8001,6 +8005,85 @@ class RtlBuddy:
             deduplicate=deduplicate,
         )
         return
+
+    def do_cmd_release(
+        self,
+        release_config: Annotated[
+            str,
+            typer.Option("-c", "--release-config", help="release.yaml to use"),
+        ] = "release.yaml",
+        allow_dirty: Annotated[
+            bool,
+            typer.Option(
+                "--allow-dirty",
+                help="trial release from a tree with uncommitted changes; never archived",
+            ),
+        ] = False,
+        no_verify: Annotated[
+            bool,
+            typer.Option(
+                "--no-verify",
+                help="skip the `verify:` runs; the release is then not archived",
+            ),
+        ] = False,
+        force: Annotated[
+            bool,
+            typer.Option(
+                "--force",
+                help="replace the archived map of an already-released version",
+            ),
+        ] = False,
+        trial: Annotated[
+            bool,
+            typer.Option(
+                "--trial",
+                help="run every stage, including verification, but archive nothing",
+            ),
+        ] = False,
+    ):
+        """
+        Cut a customer release from release.yaml.
+
+        Collects the design model's sources and the testbench, strips comments,
+        obfuscates identifiers (Verible) and encrypts files (VCS IEEE-1735) per the
+        file policy, rewrites constraints for the released names, packages
+        design/, verif/, docs and release notes into a tarball, and runs the
+        release's verification command on each stage. Outputs go to
+        artefacts/<name>-<version>/; the name map and manifest are archived beside
+        release.yaml only for a clean, verified release.
+        """
+        from .release.config import load_release_config
+        from .release.flow import ReleaseFlow, ReleaseOptions
+
+        ctx = self._enter_command_context(primary_config=release_config)
+        cfg = load_release_config(ctx.primary_config)
+        verible_dir = None
+        try:
+            verible_dir = (
+                self.root_cfg.get_verible_cfg().path if self.root_cfg else None
+            )
+        except Exception:  # noqa: BLE001 - a project need not configure verible
+            verible_dir = None
+        artefact_dir = ctx.artifact_root / f"{cfg.name}-{cfg.version}"
+        log_event(
+            logger,
+            logging.INFO,
+            "command.release",
+            name=cfg.name,
+            version=cfg.version,
+            path=str(artefact_dir),
+        )
+        ReleaseFlow(
+            cfg,
+            artefact_dir,
+            ReleaseOptions(
+                allow_dirty=allow_dirty,
+                verify=not no_verify,
+                force=force,
+                trial=trial,
+            ),
+            verible_dir=verible_dir,
+        ).run()
 
     def do_cmd_hier(
         self,

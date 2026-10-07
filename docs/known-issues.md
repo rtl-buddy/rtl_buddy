@@ -306,3 +306,11 @@ uv tool install rtl-buddy-sch
 ## Verible lint findings are on stderr
 
 `verible-verilog-lint` writes findings to stderr and signals findings through its exit code. A pipeline that reads only stdout sees nothing. Capture stderr, or use `rb lint`, which scans both streams.
+
+## `rb release` keeps every name a clear file uses
+
+Verible's obfuscator renames a spelling everywhere it appears, so a name used by any file that ships unobfuscated, the release testbench included, is kept in every obfuscated file too. A testbench local called `count` keeps every design signal called `count`. `rb release` refuses a testbench that names a design module, package or interface unless `testbench.allow-design-refs` lists it, and reports the rest in the internal manifest's `forced_clear_units`. Keep the release testbench to the preserved interface and a package published for it. See [Customer releases](concepts/release.md#which-names-are-kept).
+
+## `rb release` cannot obfuscate token-pasted macro names
+
+Verible renames the pieces of a token-pasted name (`` `define NXT(a) a``_nxt ``) separately, so the pasted result no longer matches its declaration, and a macro string quote is renamed while the string is not. `rb release` refuses both in any file it obfuscates. Rewrite the macro, exclude the file with `obfuscate: false` and a reason, or set `obfuscation.token-paste: preserve` to keep every name the paste can form.

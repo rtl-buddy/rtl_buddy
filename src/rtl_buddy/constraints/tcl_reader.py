@@ -130,14 +130,14 @@ def _parse_response(stdout: str) -> dict | None:
     return None
 
 
-def _run_worker(text: str, *, interest: frozenset[str]) -> dict:
+def _run_worker(text: str, *, interest: frozenset[str] | None) -> dict:
     """Evaluate ``text`` in a worker process; never raises.
 
     A timeout, non-zero exit or malformed output comes back as an ``{"ok": false}`` response, like a Tcl error.
     """
     request = {
         "text": text,
-        "interest": sorted(interest),
+        "interest": None if interest is None else sorted(interest),
         "command_limit": TCL_COMMAND_LIMIT,
         "time_limit_seconds": TCL_TIME_LIMIT_SECONDS,
     }
@@ -312,7 +312,7 @@ def extract_names(word: str) -> list[str]:
 def _read_with_tcl(
     text: str,
     *,
-    interest: frozenset[str],
+    interest: frozenset[str] | None,
     source: str | None,
 ) -> list[TclCommand] | None:
     """Evaluate ``text`` in the worker's recording safe interp.
@@ -460,7 +460,7 @@ def _reconstruct(span: str) -> str:
 def _read_with_tokenizer(
     text: str,
     *,
-    interest: frozenset[str],
+    interest: frozenset[str] | None,
     source: str | None,
 ) -> list[TclCommand]:
     """Split ``text`` into words without evaluating it.
@@ -498,7 +498,7 @@ def _read_with_tokenizer(
                     features=list(OUT_OF_SCOPE_FEATURES),
                 )
 
-        if name not in interest:
+        if interest is not None and name not in interest:
             continue
         commands.append(
             TclCommand(
@@ -515,10 +515,10 @@ def _read_with_tokenizer(
 def read_commands(
     text: str,
     *,
-    interest: frozenset[str],
+    interest: frozenset[str] | None,
     source: str | None = None,
 ) -> tuple[list[TclCommand], str]:
-    """Return ``(commands, backend)`` for the commands in ``interest``.
+    """Return ``(commands, backend)`` for the commands in ``interest``, or every command when it is ``None``.
 
     `backend` is the one that answered: ``"tokenizer"`` when ``tcl`` is not selected, not available, or refused the file. Line endings are normalised first so CRLF continuations work.
     """

@@ -1,0 +1,27 @@
+# Root config for the release-flow fixture; only verible matters to `rb release`.
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "stub-verible"
+
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/nonexistent"
+    extra_args: {}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"

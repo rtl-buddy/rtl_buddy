@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Stand-in for VCS -ipprotect in tests: writes <file>p with a base64 data block."""
+import base64
+import sys
+
+argv = sys.argv[1:]
+if "-ipprotect" not in argv:
+    sys.exit("fake vcs: only -ipprotect is supported")
+src = argv[-1]
+text = open(src).read()
+body = text.split("`pragma protect begin\n", 1)[1].rsplit("`pragma protect end", 1)[0]
+data = base64.b64encode(body.encode()).decode()
+with open(src + "p", "w") as f:
+    f.write("`pragma protect begin_protected\n`pragma protect encrypt_agent=\"FAKE\"\n"
+            "`pragma protect data_block\n" + data + "\n`pragma protect end_protected\n")

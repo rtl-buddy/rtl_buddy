@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Stand-in for verible-verilog-obfuscate in tests without the real tool.
+
+Same contract as the real one for what the release flow uses: reads stdin,
+writes stdout, renames every non-keyword identifier to a deterministic name of
+the same length, honours --load_map / --save_map / --preserve_interface /
+--version. Identity entries for a few built-ins mimic the real map.
+"""
+import hashlib
+import re
+import string
+import sys
+
+KEYWORDS = set("""
+module endmodule package endpackage interface endinterface input output inout logic wire reg
+parameter localparam int unsigned signed integer bit byte typedef struct packed enum function
+endfunction automatic return always always_ff always_comb always_latch assign begin end if else
+for posedge negedge or and not import export initial generate endgenerate genvar case endcase
+default task endtask class endclass virtual static const string real time void ifdef ifndef
+endif define include elsif undef timescale null this super new
+""".split())
+BUILTINS = ["abs", "ceil", "exp", "floor", "ln", "log", "pow", "sqrt"]
+# Like the real tool, leave these unrenamed after a dot (`q.min`).
+KEPT_AFTER_DOT = {"min", "max"}
+ALPHA = string.ascii_letters
+ALNUM = string.ascii_letters + string.digits
+TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_$]*|.', re.S)
+
+
+def args():
+    out = {"load": None, "save": None, "preserve": False}
+    it = iter(sys.argv[1:])
+    for a in it:
+        if a == "--version":
+            print("fake-verible v0.0-test")
+            sys.exit(0)
+        if a == "--load_map":
+            out["load"] = next(it)
+        elif a == "--save_map":
+            out["save"] = next(it)
+        elif a == "--preserve_interface":
+            out["preserve"] = True
+    return out
+
+
+def fresh(name, used, salt=0):
+    h = hashlib.sha256(f"{name}:{salt}".encode()).digest()
+    s = ALPHA[h[0] % len(ALPHA)] + "".join(ALNUM[b % len(ALNUM)] for b in h[1:len(name)])
+    if s in used or s.lower() in KEYWORDS:
+        return fresh(name, used, salt + 1)
+    return s
+
+
+def interface(text):
+    names = set()
+    for m in re.finditer(r"\bmodule\s+(\w+)(.*?);", text, re.S):
+        names.add(m.group(1))
+        header = m.group(2)
+        names |= {t for t in re.findall(r"[A-Za-z_]\w*", re.sub(r"\[[^\]]*\]", "", header))
+                  if t not in KEYWORDS and not re.match(r"\d", t)}
+    return names
+
+
+def main():
+    a = args()
+    mp = {b: b for b in BUILTINS}
+    if a["load"]:
+        with open(a["load"]) as f:
+            for line in f:
+                if line.split():
+                    k, v = line.split()
+                    mp[k] = v
+    text = sys.stdin.read()
+    if a["preserve"]:
+        for n in interface(text):
+            mp.setdefault(n, n)
+    used = set(mp.values())
+    out = []
+    prev = ""
+    for m in TOKEN.finditer(text):
+        t = m.group(0)
+        if prev == "." and t in KEPT_AFTER_DOT:
+            pass
+        elif re.match(r"[A-Za-z_]", t) and t not in KEYWORDS and not prev.endswith(("'", "$")):
+            if t not in mp:
+                mp[t] = fresh(t, used)
+                used.add(mp[t])
+            t = mp[t]
+        out.append(t)
+        prev = m.group(0)
+    sys.stdout.write("".join(out))
+    if a["save"]:
+        with open(a["save"], "w") as f:
+            for k in sorted(mp):
+                f.write(f"{k} {mp[k]}\n")
+
+
+main()

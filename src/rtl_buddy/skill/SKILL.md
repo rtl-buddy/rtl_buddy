@@ -73,6 +73,8 @@ Use the `rtl-buddy-fpv` skill for UNKNOWN, vacuity, cone-of-influence, frontend,
 
 `synth` turns RTL into a netlist with area and timing metrics where supported, `pnr` does physical implementation, `power` does activity-based analysis, and `fpga` runs a vendor or open-source FPGA flow. Run one named entry first, then the regression command once you understand it. `saif` converts simulation activity for power flows.
 
+`release` cuts an obfuscated, encrypted customer package from `release.yaml` and verifies it. Docs: `concepts/release`.
+
 ```bash
 rb --machine synth --list
 rb --machine pnr --list

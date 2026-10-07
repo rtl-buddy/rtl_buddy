@@ -264,6 +264,39 @@ def _builtin_manifest() -> list[ToolSpec]:
             description="Verilog/SystemVerilog parser, linter, formatter",
         ),
         ToolSpec(
+            name="verible-obfuscate",
+            binaries=("verible-verilog-obfuscate",),
+            version_cmd=("verible-verilog-obfuscate", "--version"),
+            version_regex=r"v\d+\.\d+-\d+",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "any": "ships in the Verible release tarball "
+                "(https://github.com/chipsalliance/verible/releases); "
+                "or set `obfuscation.verible` in release.yaml",
+            },
+            used_by=("release",),
+            optional=True,
+            required_by=("release",),
+            description="Verible's lexical identifier obfuscator, used by rb release",
+        ),
+        ToolSpec(
+            name="vcs",
+            binaries=("vcs",),
+            version_cmd=("vcs", "-ID"),
+            version_regex=r"vcs script version\s*:\s*(\S+)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "any": "Synopsys VCS: source your Synopsys environment, or set "
+                "`encryption.vcs` in release.yaml",
+            },
+            used_by=("release",),
+            optional=True,
+            required_by=("release",),
+            description="Synopsys VCS, used by rb release for IEEE-1735 encryption (-ipprotect)",
+        ),
+        ToolSpec(
             name="yosys",
             binaries=("yosys",),
             version_cmd=("yosys", "-V"),
