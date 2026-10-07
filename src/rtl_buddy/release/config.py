@@ -16,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from ..config.yaml_loader import load_yaml
 from ..errors import FatalRtlBuddyError
 
 FILETYPE = "release_config"
@@ -287,7 +288,7 @@ def load_release_config(path: str | os.PathLike) -> ReleaseConfig:
         raise FatalRtlBuddyError(f"release config not found: {path}")
     with open(path) as f:
         try:
-            raw = yaml.safe_load(f)
+            raw = load_yaml(f, path)
         except yaml.YAMLError as exc:
             raise FatalRtlBuddyError(f"{path}: not valid YAML: {exc}") from exc
     base = path.parent

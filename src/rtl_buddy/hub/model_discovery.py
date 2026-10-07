@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from serde.yaml import from_yaml
+from ..config.yaml_loader import config_from_yaml
 
 from ..config.model import ModelConfigFile, ModelConfigLoader
 from ..errors import FatalRtlBuddyError
@@ -81,7 +81,7 @@ def _read_model_names(path: Path) -> list[str]:
     """
 
     try:
-        data = from_yaml(ModelConfigFile, path.read_text())
+        data = config_from_yaml(ModelConfigFile, path.read_text(), path)
     except Exception as exc:
         log_event(
             logger,

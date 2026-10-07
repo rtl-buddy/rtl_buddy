@@ -15,6 +15,7 @@ import yaml
 from serde import field, from_dict, serde
 
 from ..errors import FatalRtlBuddyError
+from .yaml_loader import load_yaml
 
 
 COMMIT_MODES = ("auto", "self-managed")
@@ -130,7 +131,7 @@ def load_xplr_config(project_root: Path) -> XplrConfig:
     if not path.is_file():
         return XplrConfigFile().initialise()
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = load_yaml(path.read_text(encoding="utf-8"), path)
     except yaml.YAMLError as exc:
         raise FatalRtlBuddyError(f"{path}: not valid YAML: {exc}") from exc
     block = (data or {}).get("cfg-xplr")

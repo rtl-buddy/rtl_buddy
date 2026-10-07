@@ -10,7 +10,7 @@ import pprint
 from dataclasses import dataclass, field as dc_field
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 from typing import Literal
 
 from .model import ModelConfig, ModelConfigLoader
@@ -116,7 +116,7 @@ class LintSuiteConfig:
         self.checks: dict[str, LintConfig] = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(LintSuiteConfigFile, f.read())
+                data = config_from_yaml(LintSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,
@@ -200,7 +200,7 @@ class LintRegConfig:
         self.suite_configs: list[LintSuiteConfig] = []
         try:
             with open(path, "r") as f:
-                data = from_yaml(LintRegConfigFile, f.read())
+                data = config_from_yaml(LintRegConfigFile, f.read(), path)
             self.suite_configs = [
                 LintSuiteConfig(os.path.join(os.path.dirname(path), p))
                 for p in data.lint_configs

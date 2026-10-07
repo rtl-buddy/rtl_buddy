@@ -4,7 +4,7 @@ import pprint
 from dataclasses import dataclass, field as dc_field, fields as dc_fields
 
 from serde import serde, field
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 from typing import Literal
 
 from .blocks import BlockRef, BlockRefFile, load_block_refs
@@ -649,7 +649,7 @@ class SynthSuiteConfig:
         self.syntheses = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(SynthSuiteConfigFile, f.read())
+                data = config_from_yaml(SynthSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,
@@ -732,7 +732,7 @@ class SynthRegConfig:
         self.suite_configs = []
         try:
             with open(path, "r") as f:
-                data = from_yaml(SynthRegConfigFile, f.read())
+                data = config_from_yaml(SynthRegConfigFile, f.read(), path)
             self.suite_configs = [
                 SynthSuiteConfig(os.path.join(os.path.dirname(path), p))
                 for p in data.synth_configs

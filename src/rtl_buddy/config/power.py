@@ -5,7 +5,7 @@ from dataclasses import dataclass, field as dc_field
 from typing import Literal
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
 from .openroad_threads import validate_threads
@@ -370,7 +370,7 @@ class PowerSuiteConfig:
         self.runs: dict[str, PowerConfig] = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(PowerSuiteConfigFile, f.read())
+                data = config_from_yaml(PowerSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,
@@ -435,7 +435,7 @@ class PowerRegConfig:
         self.suite_configs: list[PowerSuiteConfig] = []
         try:
             with open(path, "r") as f:
-                data = from_yaml(PowerRegConfigFile, f.read())
+                data = config_from_yaml(PowerRegConfigFile, f.read(), path)
             self.suite_configs = [
                 PowerSuiteConfig(os.path.join(os.path.dirname(path), p))
                 for p in data.power_configs

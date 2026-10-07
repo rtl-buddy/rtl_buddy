@@ -3,7 +3,7 @@ import os
 import pprint
 
 from serde import serde, field
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 from typing import Literal
 
 from ..errors import FatalRtlBuddyError
@@ -56,7 +56,7 @@ class SpecConfig:
         self.path = os.path.abspath(path)
         try:
             with open(path, "r") as f:
-                data = from_yaml(SpecConfigFile, f.read())
+                data = config_from_yaml(SpecConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger, logging.ERROR, "spec_config.load_failed", path=path, error=e

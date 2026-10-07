@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from serde.yaml import from_yaml
+from ..config.yaml_loader import config_from_yaml
 
 from ..config.suite import SuiteConfigFile
 from ..config.test import TestConfig
@@ -84,7 +84,7 @@ def _read_test_entries(path: Path) -> list[TestEntry]:
     """Return the tests in one file without building a full ``SuiteConfig``; an unparseable file yields ``[]``."""
 
     try:
-        data = from_yaml(SuiteConfigFile, path.read_text())
+        data = config_from_yaml(SuiteConfigFile, path.read_text(), path)
     except Exception as exc:
         log_event(
             logger,

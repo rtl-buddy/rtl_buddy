@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Literal
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -495,7 +495,7 @@ class PnrSuiteConfig:
         self.runs: dict[str, PnrConfig] = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(PnrSuiteConfigFile, f.read())
+                data = config_from_yaml(PnrSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,

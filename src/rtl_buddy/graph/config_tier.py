@@ -23,7 +23,7 @@ from dataclasses import dataclass, field as dc_field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from serde.yaml import from_yaml
+from ..config.yaml_loader import config_from_yaml
 
 from ..config.cdc import CdcRegConfig
 from ..config.fpga import FpgaRegConfig
@@ -648,7 +648,7 @@ def _declared_testbenches(path: str) -> list[TestbenchConfig] | None:
     """
     try:
         with open(path, "r") as handle:
-            return from_yaml(SuiteConfigFile, handle.read()).testbenches
+            return config_from_yaml(SuiteConfigFile, handle.read(), path).testbenches
     except Exception:
         return None
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -90,7 +90,7 @@ class ElabRegConfig:
         self.path = str(Path(path).resolve())
         try:
             raw = Path(self.path).read_text()
-            data = from_yaml(ElabRegConfigFile, raw)
+            data = config_from_yaml(ElabRegConfigFile, raw, self.path)
             base = Path(self.path).parent
             paths = [str((base / item).resolve()) for item in data.model_configs]
             if not paths:

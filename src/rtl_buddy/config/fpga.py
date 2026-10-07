@@ -5,7 +5,7 @@ from dataclasses import dataclass, field as dc_field
 from typing import Literal
 
 from serde import field, serde
-from serde.yaml import from_yaml
+from .yaml_loader import config_from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -188,7 +188,7 @@ class FpgaSuiteConfig:
         self.runs: dict[str, FpgaConfig] = {}
         try:
             with open(path, "r") as f:
-                data = from_yaml(FpgaSuiteConfigFile, f.read())
+                data = config_from_yaml(FpgaSuiteConfigFile, f.read(), path)
         except Exception as e:
             log_event(
                 logger,
@@ -253,7 +253,7 @@ class FpgaRegConfig:
         self.suite_configs: list[FpgaSuiteConfig] = []
         try:
             with open(path, "r") as f:
-                data = from_yaml(FpgaRegConfigFile, f.read())
+                data = config_from_yaml(FpgaRegConfigFile, f.read(), path)
             self.suite_configs = [
                 FpgaSuiteConfig(os.path.join(os.path.dirname(path), p))
                 for p in data.fpga_configs
