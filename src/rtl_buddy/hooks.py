@@ -6,7 +6,8 @@
 """Helpers for executing `sweep` and `preproc` hook scripts.
 
 Hooks are exec()'d with `__name__` set to `HOOK_MODULE_NAME`, never `"__main__"`, and
-their stdout is captured as `hook.stdout` log events. See docs/concepts/plugins.md.
+their stdout is captured as `hook.stdout` log events. `root_cfg` reaches a hook
+read-only. See docs/concepts/plugins.md.
 """
 
 import contextlib
@@ -72,10 +73,42 @@ class _HookStdout(io.TextIOBase):
         )
 
 
+class ReadOnlyRootConfig:
+    """Read-only view of a `RootConfig` for hook scripts.
+
+    Attribute reads and method calls go to the wrapped config; setting or deleting an
+    attribute raises AttributeError. A hook that rewrote the root config would change
+    every later test in the process.
+    """
+
+    __slots__ = ("_root_cfg",)
+
+    def __init__(self, root_cfg):
+        object.__setattr__(self, "_root_cfg", root_cfg)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_root_cfg"), name)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(
+            f"root_cfg is read-only in hooks; cannot set {name!r}. "
+            f"Change test_cfg instead, or edit root_config.yaml"
+        )
+
+    def __delattr__(self, name):
+        raise AttributeError(f"root_cfg is read-only in hooks; cannot delete {name!r}")
+
+    def __repr__(self):
+        return f"ReadOnlyRootConfig({object.__getattribute__(self, '_root_cfg')!r})"
+
+
 def build_hook_namespace(script_path, **variables):
     """Return the exec namespace: `variables`, `__file__` (absolute `script_path`) and
-    `__name__` set to `HOOK_MODULE_NAME`.
+    `__name__` set to `HOOK_MODULE_NAME`. A non-None `root_cfg` is wrapped in
+    `ReadOnlyRootConfig`.
     """
+    if variables.get("root_cfg") is not None:
+        variables["root_cfg"] = ReadOnlyRootConfig(variables["root_cfg"])
     return {
         **variables,
         "__file__": os.path.abspath(script_path),
