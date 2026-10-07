@@ -602,3 +602,56 @@ def test_hook_stdout_is_a_text_sink_not_a_file(tmp_path):
 
     assert ns["fileno_error"] == io.UnsupportedOperation.__name__
     assert ns["has_buffer"] is False
+
+
+# root_cfg is read-only in hooks (#14)
+
+
+def test_preproc_reads_root_cfg(tmp_path):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    out = tmp_path / "out.txt"
+    sim = _make_preproc_sim(
+        tmp_path,
+        f"open({str(out)!r}, 'w').write(str(root_cfg.get_use_lcov('verilator')))\n",
+    )
+
+    assert sim.pre() is None
+    assert out.read_text() == "False"
+
+
+def test_preproc_cannot_rebind_a_root_cfg_attribute(tmp_path):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    sim = _make_preproc_sim(tmp_path, "root_cfg.builder_override = 'vcs'\n")
+
+    error = sim.pre()
+
+    assert error is not None and "root_cfg is read-only" in error
+    assert not hasattr(sim.root_cfg, "builder_override")
+
+
+def test_preproc_cannot_delete_a_root_cfg_attribute(tmp_path):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    sim = _make_preproc_sim(tmp_path, "del root_cfg.get_use_lcov\n")
+
+    error = sim.pre()
+
+    assert error is not None and "root_cfg is read-only" in error
+
+
+def test_sweep_cannot_rebind_a_root_cfg_attribute(tmp_path):
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    class Cfg:
+        builder_override = None
+
+    rb = _make_rb()
+    rb.root_cfg = Cfg()
+    script_path = tmp_path / "sweep.py"
+    script_path.write_text("root_cfg.builder_override = 'vcs'\nout_test_cfgs = []\n")
+
+    test_cfgs, error = rb._expand_tests_with_sweep(
+        DummySweepTest(str(script_path)), suite_dir=str(tmp_path)
+    )
+
+    assert error is not None and "root_cfg is read-only" in str(error)
+    assert rb.root_cfg.builder_override is None

@@ -2821,8 +2821,8 @@ class VlogSim:
         artifact_dir = self._ensure_artifact_dir()
         run_artifact_dir = self._ensure_artifact_dir(run_id=run_id)
 
-        # The preproc script receives self.test_cfg as root_cfg and may mutate it;
-        # compile and sim use the result.
+        # The preproc script may mutate test_cfg, and compile and sim use the result.
+        # root_cfg reaches it read-only.
         try:
             ns = exec_hook_script(
                 script_path,
