@@ -8040,6 +8040,17 @@ class RtlBuddy:
                 help="run every stage, including verification, but archive nothing",
             ),
         ] = False,
+        reproduce: Annotated[
+            str | None,
+            typer.Option(
+                "--reproduce",
+                help=(
+                    "re-cut a released version from its archived manifest "
+                    "(maps/<version>.json, map beside it) at its released commit, "
+                    "and fail unless every shipped file's plaintext is identical"
+                ),
+            ),
+        ] = None,
     ):
         """
         Cut a customer release from release.yaml.
@@ -8081,6 +8092,7 @@ class RtlBuddy:
                 verify=not no_verify,
                 force=force,
                 trial=trial,
+                reproduce=Path(ctx.resolve_input(reproduce)) if reproduce else None,
             ),
             verible_dir=verible_dir,
         ).run()

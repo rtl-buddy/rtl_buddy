@@ -15,6 +15,7 @@ encryption changed behaviour cannot be produced.
 from __future__ import annotations
 
 import datetime as _dt
+import gzip
 import hashlib
 import json
 import logging
@@ -53,6 +54,11 @@ from .sv_text import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
 
 DESIGN_DIR = "design"
 VERIF_DIR = "verif"
@@ -119,6 +125,8 @@ class ReleaseOptions:
     force: bool = False
     #: Run every stage but archive nothing, so the version stays unreleased.
     trial: bool = False
+    #: A released version's archived manifest (``maps/<version>.json``, its map beside it): re-cut that release from its own names and require identical plaintext.
+    reproduce: Path | None = None
 
 
 class ReleaseFlow:
@@ -147,8 +155,10 @@ class ReleaseFlow:
                 "a release must be reproducible from a commit (pass --allow-dirty "
                 "for a trial run; the manifest records it)"
             )
+        self.commit_time = git["commit_time"]
+        ref = self._load_reference(git) if self.opts.reproduce else None
         map_out = cfg.map_path()
-        if map_out.exists() and not (self.opts.force or self.opts.trial):
+        if map_out.exists() and not (self.opts.force or self.opts.trial or ref):
             raise FatalRtlBuddyError(
                 f"{map_out} already exists: version {cfg.version} was released. "
                 "Bump `version`, or pass --force to replace that release's map "
@@ -175,13 +185,39 @@ class ReleaseFlow:
         self.out.mkdir(parents=True)
 
         col = self.collect()
+        # Outside git there is no commit to reproduce from; the manifest records commit: null.
+        uncommitted = (
+            self._uncommitted_inputs(self._input_paths(col)) if git["commit"] else []
+        )
+        if uncommitted:
+            if not self.opts.allow_dirty:
+                raise FatalRtlBuddyError(
+                    "release inputs are not committed, so the release could not be "
+                    "reproduced from its commit:\n  " + "\n  ".join(uncommitted[:50])
+                )
+            git["dirty"] = True
+            git["changes"] = git.get("changes", []) + [
+                f"input {u}" for u in uncommitted
+            ]
         stripped = self._strip(col)
         preserve, preserve_report, interfaces = self._preserve_set(
             col, stripped, verible
         )
-        prev_path = self._previous_map_path()
-        prev = NameMap.load(prev_path) if prev_path else None
-        seed, dropped = seed_map(preserve, prev)
+        if ref is not None:
+            prev_path = self.opts.reproduce.with_suffix(".map")
+            seed = NameMap.load(prev_path)
+            renamed_now = sorted(n for n in preserve if seed.entries.get(n, n) != n)
+            if renamed_now:
+                raise FatalRtlBuddyError(
+                    "names the release renamed are now preserved, so the inputs "
+                    f"differ from the released ones: {', '.join(renamed_now[:20])}"
+                )
+            seed.entries.update({n: n for n in preserve})
+            dropped = []
+        else:
+            prev_path = self._previous_map_path()
+            prev = NameMap.load(prev_path) if prev_path else None
+            seed, dropped = seed_map(preserve, prev)
         if dropped:
             log_event(
                 logger,
@@ -194,9 +230,18 @@ class ReleaseFlow:
         stage = self.out / "stage"
         self._write_stage_src(col, stage / "src")
         name_map = self._write_stage_obf(col, stripped, seed, verible, stage / "obf")
+        if ref is not None:
+            invented = sorted(set(name_map.entries) - set(seed.entries))
+            if invented:
+                raise FatalRtlBuddyError(
+                    "the inputs hold identifiers the released map does not, so they "
+                    f"differ from the released ones: {', '.join(invented[:20])}"
+                )
         self._write_constraints(col, name_map, interfaces, stage / "obf")
         self._write_stage_pkg(col, vcs, stage / "obf", stage / "pkg")
-        tarball = self._tar(stage / "pkg")
+        tarball = self._tar(stage / "pkg", git["commit_time"])
+        if ref is not None:
+            self._compare_reference(ref, col, stage)
 
         results = {}
         if self.opts.verify and cfg.verify is not None:
@@ -696,7 +741,7 @@ class ReleaseFlow:
         levels = {f"{i.subdir}/{i.shipped_name()}": i.level() for i in col.items}
         lines = [
             f"{self.cfg.name} {self.cfg.version}",
-            f"generated {_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d')}",
+            f"commit date {_dt.datetime.fromtimestamp(self.commit_time, _dt.timezone.utc).strftime('%Y-%m-%d')}",
             "",
             "sha256                                                            protection            file",
         ]
@@ -706,10 +751,26 @@ class ReleaseFlow:
             lines.append(f"{digest}  {levels.get(rel, 'clear'):<20}  {rel}")
         (root / "MANIFEST").write_text("\n".join(lines) + "\n")
 
-    def _tar(self, root: Path) -> Path:
+    def _tar(self, root: Path, mtime: int) -> Path:
+        """Write the package deterministically: sorted entries, one timestamp, no owner, no gzip timestamp."""
         tarball = self.out / f"{self.package_name}.tar.gz"
-        with tarfile.open(tarball, "w:gz") as tar:
-            tar.add(root, arcname=self.package_name)
+
+        def normalise(info: tarfile.TarInfo) -> tarfile.TarInfo:
+            info.mtime = mtime
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mode = 0o755 if info.isdir() or info.mode & 0o111 else 0o644
+            return info
+
+        entries = [root, *sorted(root.rglob("*"))]
+        with (
+            open(tarball, "wb") as raw,
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz,
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar,
+        ):
+            for path in entries:
+                arcname = (Path(self.package_name) / path.relative_to(root)).as_posix()
+                tar.add(path, arcname=arcname, recursive=False, filter=normalise)
         return tarball
 
     # ---- verify ------------------------------------------------------------
@@ -809,9 +870,104 @@ class ReleaseFlow:
 
         head = git("rev-parse", "HEAD")
         if head.returncode != 0:
-            return {"commit": None, "dirty": False}
-        status = git("status", "--porcelain", "--untracked-files=no")
-        return {"commit": head.stdout.strip(), "dirty": bool(status.stdout.strip())}
+            return {"commit": None, "dirty": False, "changes": [], "commit_time": 0}
+        # Untracked files count: one placed earlier on an include path shadows a
+        # committed file. Gitignored files (artefacts/) do not.
+        status = git("status", "--porcelain", "--untracked-files=normal")
+        changes = [ln for ln in status.stdout.splitlines() if ln.strip()]
+        when = git("log", "-1", "--format=%ct", "HEAD").stdout.strip()
+        return {
+            "commit": head.stdout.strip(),
+            "dirty": bool(changes),
+            "changes": changes,
+            "commit_time": int(when) if when.isdigit() else 0,
+        }
+
+    def _load_reference(self, git: dict) -> dict:
+        path = self.opts.reproduce
+        assert path is not None
+        if not path.is_file() or not path.with_suffix(".map").is_file():
+            raise FatalRtlBuddyError(
+                f"--reproduce needs a released manifest and its map: {path} and "
+                f"{path.with_suffix('.map')}"
+            )
+        ref = json.loads(path.read_text())
+        if ref.get("version") != self.cfg.version or ref.get("name") != self.cfg.name:
+            raise FatalRtlBuddyError(
+                f"{path} is release {ref.get('name')} {ref.get('version')}, but "
+                f"release.yaml is {self.cfg.name} {self.cfg.version}"
+            )
+        if ref.get("commit") != git["commit"]:
+            raise FatalRtlBuddyError(
+                f"release {self.cfg.version} was cut from {ref.get('commit')}, but "
+                f"HEAD is {git['commit']}; check out the release tag first"
+            )
+        return ref
+
+    def _compare_reference(self, ref: dict, col: Collected, stage: Path) -> None:
+        """Fail unless every shipped file's plaintext matches the released manifest."""
+        released = {f["shipped"]: f for f in ref.get("files", [])}
+        problems = []
+        for i in col.items:
+            shipped = f"{i.subdir}/{i.shipped_name()}"
+            want = released.pop(shipped, None)
+            got = _sha256(stage / "obf" / i.subdir / i.name)
+            if want is None:
+                problems.append(f"{shipped}: not in release {self.cfg.version}")
+            elif want.get("plaintext_sha256") not in (None, got):
+                problems.append(f"{shipped}: plaintext differs")
+            elif want.get("plaintext_sha256") is None:
+                problems.append(
+                    f"{shipped}: the released manifest predates plaintext digests"
+                )
+        problems += [f"{s}: missing from this cut" for s in released]
+        if problems:
+            raise FatalRtlBuddyError(
+                f"the re-cut does not reproduce release {self.cfg.version}:\n  "
+                + "\n  ".join(problems[:50])
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "release.reproduced",
+            version=self.cfg.version,
+            files=len(col.items),
+        )
+
+    def _input_paths(self, col: Collected) -> list[Path]:
+        cfg = self.cfg
+        paths = [i.src for i in col.items]
+        paths += [
+            cfg.path,
+            cfg.design.model_config,
+            cfg.notes_path(),
+            cfg.encryption.key_file,
+        ]
+        paths += cfg.package.docs + [c.src for c in cfg.design.constraints]
+        if cfg.testbench is not None:
+            paths += cfg.testbench.extra_files
+        return sorted({Path(p).resolve() for p in paths})
+
+    def _uncommitted_inputs(self, paths: list[Path]) -> list[str]:
+        """Inputs that are not tracked, or differ from HEAD, in the repository that holds them (submodules included)."""
+        problems = []
+        for path in paths:
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args],
+                    cwd=path.parent,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            if git("ls-files", "--error-unmatch", "--", path.name).returncode != 0:
+                ignored = git("check-ignore", "-q", "--", path.name).returncode == 0
+                problems.append(f"{path} ({'gitignored' if ignored else 'untracked'})")
+            elif git("diff", "--quiet", "HEAD", "--", path.name).returncode != 0:
+                problems.append(f"{path} (modified)")
+        return problems
 
     def _archive(
         self,
@@ -836,17 +992,23 @@ class ReleaseFlow:
             "rtl_buddy": _pkg_version("rtl-buddy"),
             "verible": obf.verible_version(verible),
             "vcs": vcs,
+            "vcs_version": enc.vcs_version(vcs),
             "key_file": cfg.encryption.key_file.name,
             "top": col.top,
             "previous_map": prev_path.name if prev_path else None,
             "renamed": len(name_map.renamed()),
             "preserve": preserve_report,
+            "uncommitted": git.get("changes", []),
             "files": [
                 {
                     "source": os.path.relpath(i.src, self.project_root),
                     "shipped": f"{i.subdir}/{i.shipped_name()}",
                     "protection": i.level(),
                     "rules": [r.reason for r in i.rules],
+                    "source_sha256": _sha256(i.src),
+                    "plaintext_sha256": _sha256(
+                        self.out / "stage" / "obf" / i.subdir / i.name
+                    ),
                 }
                 for i in col.items
             ],
@@ -855,7 +1017,7 @@ class ReleaseFlow:
         (self.out / f"{cfg.version}.json").write_text(
             json.dumps(manifest, indent=2) + "\n"
         )
-        if self.opts.trial or git["dirty"] or not results:
+        if self.opts.trial or self.opts.reproduce or git["dirty"] or not results:
             # A trial (requested, dirty or unverified) release is never archived as a real one.
             log_event(
                 logger,
@@ -865,6 +1027,8 @@ class ReleaseFlow:
                 reason=(
                     "--trial"
                     if self.opts.trial
+                    else "--reproduce"
+                    if self.opts.reproduce
                     else "dirty tree"
                     if git["dirty"]
                     else "not verified"

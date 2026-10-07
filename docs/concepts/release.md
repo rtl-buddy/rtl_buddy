@@ -26,6 +26,7 @@ rb release                               # release.yaml in the current directory
 rb release -c release/acme_cut/release.yaml
 rb release --trial                       # full run, verification included; nothing is archived
 rb release --allow-dirty --no-verify     # quick look from a work-in-progress tree
+rb release --reproduce /path/to/maps/1.0.0.json   # at the release's commit: re-cut it and compare
 ```
 
 ## Install the tools
@@ -60,7 +61,15 @@ The last rule is what makes a clear testbench compile against an obfuscated desi
 
 `obfuscation.continue-from: previous` (the default) starts each release from the newest older release's map in `maps/`, so a name keeps its released spelling from one drop to the next and a consumer's constraints and reports stay valid. New names get new spellings. A version whose map already exists is refused unless `--force` is given, because the archived map is the only way to read a release's names later.
 
-The map and an internal manifest are copied into `maps/` only for a release cut from a clean tree with verification run. Commit them with the release. A trial (`--trial`, `--allow-dirty` or `--no-verify`) leaves them in the artefact directory.
+The map and an internal manifest are copied into `maps/` only for a release cut from a clean tree with verification run. A clean tree has no modified or untracked file, submodules included, and every input (sources, headers, configs, notes, documents, constraints, key file) is tracked and unchanged in its repository. Otherwise an untracked or gitignored file placed earlier on an include path would ship in place of the committed one. Commit them with the release. A trial (`--trial`, `--allow-dirty` or `--no-verify`) leaves them in the artefact directory.
+
+## Reproducing a release
+
+Verible picks new names on every run, and IEEE-1735 encryption uses a fresh session key every time. So a release cannot be rebuilt byte for byte from its commit alone, but it can be rebuilt exactly from its commit and its archived map:
+
+- the internal manifest (`maps/<version>.json`) records the commit, the tool versions and, for every shipped file, the SHA-256 of its source and of its plaintext before encryption;
+- `rb release --reproduce <manifest>`, run at that commit, re-cuts the release with every name pinned to the archived map and fails unless every file's plaintext matches. It archives nothing;
+- the tarball is written deterministically (sorted entries, the commit time as every timestamp, no owner, no gzip timestamp), so everything except the encrypted payloads is identical between cuts.
 
 ## Constraints
 

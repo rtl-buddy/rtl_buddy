@@ -7,6 +7,7 @@ the same length, honours --load_map / --save_map / --preserve_interface /
 --version. Identity entries for a few built-ins mimic the real map.
 """
 import hashlib
+import os
 import re
 import string
 import sys
@@ -44,7 +45,8 @@ def args():
 
 
 def fresh(name, used, salt=0):
-    h = hashlib.sha256(f"{name}:{salt}".encode()).digest()
+    # RB_FAKE_VERIBLE_SALT varies the names between runs, as the real tool does.
+    h = hashlib.sha256(f"{os.environ.get('RB_FAKE_VERIBLE_SALT', '')}:{name}:{salt}".encode()).digest()
     s = ALPHA[h[0] % len(ALPHA)] + "".join(ALNUM[b % len(ALNUM)] for b in h[1:len(name)])
     if s in used or s.lower() in KEYWORDS:
         return fresh(name, used, salt + 1)

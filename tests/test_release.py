@@ -8,6 +8,7 @@ tools when they and an IEEE-1735 key file (``RB_RELEASE_TEST_KEY``) are present.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -489,3 +490,89 @@ def test_real_tools_release_simulates_like_the_source(
     monkeypatch.chdir(root / REL)
     files = _release_files(_run(root))
     assert "design/acme_core.svp" in files
+
+
+# ---- reproducibility ---------------------------------------------------------------
+
+
+def _git_commit_all(root: Path, message: str = "release") -> None:
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    if not (root / ".git").exists():
+        subprocess.run(git + ["init", "-q"], cwd=root, check=True)
+        (root / ".gitignore").write_text("artefacts/\nrtl_buddy.log\n")
+    subprocess.run(git + ["add", "-A"], cwd=root, check=True)
+    subprocess.run(git + ["commit", "-qm", message], cwd=root, check=True)
+
+
+def test_untracked_header_on_the_include_path_is_refused(project: Path, tcl_backend):
+    _git_commit_all(project)
+    # Beside the including file, so it wins over the committed rtl/inc copy.
+    shadow = project / "rtl/acme_defs.svh"
+    shadow.write_text((project / "rtl/inc/acme_defs.svh").read_text() + "\n")
+    with pytest.raises(FatalRtlBuddyError, match="uncommitted"):
+        _run(project)
+
+
+def test_gitignored_input_is_refused(project: Path, tcl_backend):
+    _git_commit_all(project)
+    (project / ".gitignore").write_text(
+        "artefacts/\nrtl_buddy.log\nrtl/acme_defs.svh\n"
+    )
+    _git_commit_all(project, "ignore a header")
+    (project / "rtl/acme_defs.svh").write_text(
+        (project / "rtl/inc/acme_defs.svh").read_text()
+    )
+    with pytest.raises(FatalRtlBuddyError, match=r"acme_defs.svh \(gitignored\)"):
+        _run(project)
+
+
+def test_the_tarball_is_byte_identical_across_runs(project: Path, tcl_backend):
+    _git_commit_all(project)
+    first = _run(project, trial=True).read_bytes()
+    second = _run(project, trial=True).read_bytes()
+    assert first == second
+
+
+def test_reproduce_recuts_a_release_from_its_map(
+    project: Path, tcl_backend, monkeypatch, tmp_path: Path
+):
+    rel = project / REL
+    _git_commit_all(project)
+    released_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=project, capture_output=True, text=True
+    ).stdout.strip()
+    monkeypatch.setenv("RB_FAKE_VERIBLE_SALT", "first")
+    _run(project)
+    released = NameMap.load(rel / "maps/1.0.0.map")
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    shutil.copy(rel / "maps/1.0.0.json", ref / "1.0.0.json")
+    shutil.copy(rel / "maps/1.0.0.map", ref / "1.0.0.map")
+    # Back to the released commit, without the archived map: a fresh cut there
+    # picks different names, as the real obfuscator does...
+    shutil.rmtree(rel / "maps")
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=project, capture_output=True, text=True
+        ).stdout.strip()
+        == released_commit
+    )
+    monkeypatch.setenv("RB_FAKE_VERIBLE_SALT", "second")
+    _run(project, trial=True)
+    fresh = NameMap.load(rel / "artefacts/acme-1.0.0/1.0.0.map")
+    assert fresh.renamed() != released.renamed()
+    # ...but a reproduction pins them and matches every shipped file's plaintext.
+    _run(project, reproduce=ref / "1.0.0.json")
+    # A changed released digest is caught.
+    doc = json.loads((ref / "1.0.0.json").read_text())
+    doc["files"][0]["plaintext_sha256"] = "0" * 64
+    (ref / "1.0.0.json").write_text(json.dumps(doc))
+    with pytest.raises(FatalRtlBuddyError, match="plaintext differs"):
+        _run(project, reproduce=ref / "1.0.0.json")
+    # So is a cut from another commit.
+    (project / "rtl/acme_top.sv").write_text(
+        (project / "rtl/acme_top.sv").read_text() + "\n"
+    )
+    _git_commit_all(project, "later change")
+    with pytest.raises(FatalRtlBuddyError, match="check out the release tag"):
+        _run(project, reproduce=ref / "1.0.0.json")
