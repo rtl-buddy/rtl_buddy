@@ -38,6 +38,14 @@ def find_vcs(configured: str) -> str:
     return exe
 
 
+def vcs_version(vcs: str) -> str:
+    out = subprocess.run([vcs, "-ID"], capture_output=True, text=True, check=False)
+    for line in (out.stdout + out.stderr).splitlines():
+        if "version" in line.lower():
+            return line.split(":", 1)[-1].strip()
+    return "unknown"
+
+
 def _encrypt_one(
     vcs: str, key_file: Path, extra: list[str], src: Path, dst: Path
 ) -> None:
