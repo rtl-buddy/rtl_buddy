@@ -61,16 +61,24 @@ class Protection:
 
 @dataclass
 class FileRule:
-    """A per-file override of the section's protection, matched on the file's base name."""
+    """A per-file override of the section's protection or package directory.
+
+    ``match`` is a glob on the file's base name, or, when it contains ``/``, on its
+    path relative to the project root.
+    """
 
     match: str
     reason: str
     obfuscate: bool | None = None
     encrypt: bool | None = None
     strip_comments: bool | None = None
+    #: Package directory the file ships in, instead of the section's ``design`` or ``verif``.
+    dir: str | None = None
 
-    def matches(self, basename: str) -> bool:
-        return fnmatch.fnmatchcase(basename, self.match)
+    def matches(self, basename: str, relpath: str) -> bool:
+        return fnmatch.fnmatchcase(
+            relpath if "/" in self.match else basename, self.match
+        )
 
 
 @dataclass
@@ -178,6 +186,7 @@ class ReleaseConfig:
 # ---- loader -----------------------------------------------------------------
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_DIR_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$")
 
 
 class _Reader:
@@ -263,8 +272,14 @@ def _file_rules(r: _Reader, key: str) -> list[FileRule]:
             obfuscate=fr.get("obfuscate", bool, None),
             encrypt=fr.get("encrypt", bool, None),
             strip_comments=fr.get("strip-comments", bool, None),
+            dir=fr.get("dir", str, None),
         )
         fr.done()
+        if rule.dir is not None and not _DIR_RE.match(rule.dir):
+            raise fr._err(
+                f"`dir` {rule.dir!r} must be a relative package directory "
+                "(letters, digits, '_', '.', '-', separated by '/')"
+            )
         if not rule.reason:
             raise fr._err(
                 "`reason` may not be empty: every exception to the default protection is reviewed"
@@ -273,9 +288,10 @@ def _file_rules(r: _Reader, key: str) -> list[FileRule]:
             rule.obfuscate is None
             and rule.encrypt is None
             and rule.strip_comments is None
+            and rule.dir is None
         ):
             raise fr._err(
-                "sets nothing; give at least one of `obfuscate`, `encrypt`, `strip-comments`"
+                "sets nothing; give at least one of `obfuscate`, `encrypt`, `strip-comments`, `dir`"
             )
         rules.append(rule)
     return rules
@@ -314,7 +330,9 @@ def load_release_config(path: str | os.PathLike) -> ReleaseConfig:
         externals.append(
             External(
                 path=os.path.normpath(
-                    os.path.expandvars(er.get("path", str, required=True))
+                    os.path.join(
+                        base, os.path.expandvars(er.get("path", str, required=True))
+                    )
                 ),
                 ship_as=er.get("ship-as", str, required=True),
             )
@@ -444,19 +462,26 @@ def load_release_config(path: str | os.PathLike) -> ReleaseConfig:
 
 
 def resolve_protection(
-    basename: str, default: Protection, rules: list[FileRule]
-) -> tuple[Protection, list[FileRule]]:
-    """Apply every matching rule in order; later rules win. Returns the result and the rules applied."""
+    basename: str, relpath: str, default: Protection, rules: list[FileRule]
+) -> tuple[Protection, list[FileRule], str | None]:
+    """Apply every matching rule in order; later rules win.
+
+    Returns the protection, the rules applied and the package directory a rule
+    chose (None for the section's default).
+    """
     p = Protection(default.obfuscate, default.encrypt, default.strip_comments)
     applied = []
+    pkg_dir = None
     for rule in rules:
-        if not rule.matches(basename):
+        if not rule.matches(basename, relpath):
             continue
         applied.append(rule)
+        if rule.dir is not None:
+            pkg_dir = rule.dir
         if rule.obfuscate is not None:
             p.obfuscate = rule.obfuscate
         if rule.encrypt is not None:
             p.encrypt = rule.encrypt
         if rule.strip_comments is not None:
             p.strip_comments = rule.strip_comments
-    return p, applied
+    return p, applied, pkg_dir

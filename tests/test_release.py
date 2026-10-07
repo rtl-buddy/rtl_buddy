@@ -576,3 +576,51 @@ def test_reproduce_recuts_a_release_from_its_map(
     _git_commit_all(project, "later change")
     with pytest.raises(FatalRtlBuddyError, match="check out the release tag"):
         _run(project, reproduce=ref / "1.0.0.json")
+
+
+def test_a_rule_moves_a_file_to_its_own_package_directory(project: Path, tcl_backend):
+    _edit(
+        project / REL / "release.yaml",
+        lambda d: d["design"].update(
+            {
+                "files": [
+                    {
+                        "match": "rtl/acme_counter.sv",
+                        "dir": "design_cust_to_replace",
+                        "obfuscate": False,
+                        "encrypt": False,
+                        "reason": "behavioural model the customer replaces",
+                    }
+                ]
+            }
+        ),
+    )
+    files = _release_files(_run(project))
+    assert "design_cust_to_replace/acme_counter.sv" in files
+    assert "design/acme_counter.sv" not in files
+    assert "design_cust_to_replace/acme_counter.sv" not in files["design/acme_top.f"]
+    assert files["design_cust_to_replace/design_cust_to_replace.f"].splitlines()[
+        2:
+    ] == [
+        "+incdir+design_cust_to_replace",
+        "design_cust_to_replace/acme_counter.sv",
+    ]
+    order = [
+        ln for ln in files["sim.f"].splitlines() if ln.startswith(("design", "verif"))
+    ]
+    assert order.index("design_cust_to_replace/acme_counter.sv") < order.index(
+        "design/acme_core.svp"
+    )
+    assert "+incdir+design_cust_to_replace" in files["sim.f"]
+
+
+def test_a_rule_directory_must_stay_inside_the_package(tmp_path: Path):
+    p = _write_cfg(tmp_path, {})
+    _edit(
+        p,
+        lambda d: d["design"].update(
+            {"files": [{"match": "a.sv", "dir": "../out", "reason": "x"}]}
+        ),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="relative package directory"):
+        load_release_config(p)
