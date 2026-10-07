@@ -45,7 +45,7 @@ link_design  $DESIGN
 
 puts ">>> Reading SDC"
 read_sdc $SDC_FILE
-{{ layer_rc_block }}{{ dont_use_block }}
+{{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}
 puts ">>> Initializing floorplan"
 initialize_floorplan \
     -site         $SITE \
@@ -94,7 +94,7 @@ puts ">>> IO pin placement"
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 
 puts ">>> Global placement"
-global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}
+global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}
 {{ tie_fanout_block }}
 puts ">>> Resize"
 estimate_parasitics -placement
@@ -108,7 +108,7 @@ set_propagated_clock [all_clocks]
 clock_tree_synthesis \
     -root_buf {{ cts_root_buf }} \
     -buf_list $CTS_BUF \
-    {{ cts_clustering_option }}
+    {{ cts_clustering_option }}{{ cts_ndr_option }}
 
 puts ">>> Detail placement (post-CTS)"
 detailed_placement

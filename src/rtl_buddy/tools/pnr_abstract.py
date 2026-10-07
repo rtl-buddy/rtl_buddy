@@ -182,6 +182,11 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 != DEFAULT_PLACEMENT_TIE_SEPARATION
                 else {}
             ),
+            **(
+                {"reference_hpwl": platform.get_placement_reference_hpwl()}
+                if isinstance(platform.get_placement_reference_hpwl(), float)
+                else {}
+            ),
         },
         "routing": {
             "signal_layers": platform.get_signal_layers(),
@@ -203,6 +208,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
         **(
             {"global_route_hold_repair": True}
             if platform.get_global_route_hold_repair() is True
+            else {}
+        ),
+        **(
+            {"cts_apply_ndr": platform.get_cts_apply_ndr()}
+            if isinstance(platform.get_cts_apply_ndr(), str)
+            else {}
+        ),
+        **(
+            {"max_fanout": platform.get_max_fanout()}
+            if isinstance(platform.get_max_fanout(), int)
             else {}
         ),
         # Emitted only when a PDK Tcl hook is set so existing digests do not change.

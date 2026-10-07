@@ -198,6 +198,24 @@ def _layer_adjustment_tcl(platform) -> str:
     return f"set_global_routing_layer_adjustment $SIGNAL_LAYERS {adjustment:g}\n"
 
 
+def _reference_hpwl_option(platform) -> str:
+    """Return ` -reference_hpwl <n>` for global placement, or `""` for the placer's own reference."""
+    hpwl = platform.get_placement_reference_hpwl()
+    return f" -reference_hpwl {hpwl:.15g}" if hpwl is not None else ""
+
+
+def _cts_apply_ndr_option(platform) -> str:
+    """Return ` -apply_ndr <value>` for the CTS invocation, or `""` for the tool's default."""
+    ndr = platform.get_cts_apply_ndr()
+    return f" -apply_ndr {ndr}" if ndr is not None else ""
+
+
+def max_fanout_cmd(platform) -> str:
+    """Return the `set_max_fanout` command that follows each `read_sdc`, or `""` when the platform sets no max fanout."""
+    fanout = platform.get_max_fanout()
+    return f"set_max_fanout {fanout} [current_design]" if fanout is not None else ""
+
+
 def run_output_paths(artefact_dir: str, design: str) -> list[str]:
     """Return the absolute paths of every non-log artefact one pnr run produces."""
     return [
@@ -661,6 +679,7 @@ class OpenRoadPnr:
             for char in ("$", "[", "]", '"'):
                 escaped = escaped.replace(char, "\\" + char)
             pin_constraints_tcl = f'source "{escaped}"'
+        max_fanout = max_fanout_cmd(platform)
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
@@ -683,6 +702,7 @@ class OpenRoadPnr:
             "cts_root_buf": cts_root_buf,
             "place_density": f"{platform.get_placement_density():g}",
             "place_padding": str(platform.get_placement_padding()),
+            "reference_hpwl_option": _reference_hpwl_option(platform),
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
@@ -719,6 +739,8 @@ class OpenRoadPnr:
             "cts_clustering_option": (
                 "-sink_clustering_enable" if platform.get_cts_sink_clustering() else ""
             ),
+            "cts_ndr_option": _cts_apply_ndr_option(platform),
+            "max_fanout_block": f"{max_fanout}\n" if max_fanout else "",
             "signal_layers": platform.get_signal_layers(),
             "clock_layers": platform.get_clock_layers(),
             "pin_layer_horizontal": pdk.get_pin_layer_horizontal(),

@@ -42,6 +42,31 @@ def _validate_layer_adjustment(value, where: str) -> float | None:
     return float(value)
 
 
+#: `clock_tree_synthesis -apply_ndr` values.
+CTS_APPLY_NDR_VALUES = ("none", "root_only", "half", "full")
+
+
+def _validate_cts_apply_ndr(value, where: str) -> str | None:
+    if value is None:
+        return None
+    if value not in CTS_APPLY_NDR_VALUES:
+        raise FatalRtlBuddyError(
+            f"{where}: cts-apply-ndr must be one of "
+            f"{', '.join(CTS_APPLY_NDR_VALUES)}, got {value!r}"
+        )
+    return value
+
+
+def _validate_max_fanout(value, where: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise FatalRtlBuddyError(
+            f"{where}: max-fanout must be a positive integer, got {value!r}"
+        )
+    return value
+
+
 def _first_set(*values):
     """Return the first value that is not `None`."""
     return next(v for v in values if v is not None)
@@ -73,6 +98,10 @@ class PnrPlatformConfigFile:
     routing_layer_adjustment: float | None = field(
         rename="routing-layer-adjustment", default=None
     )
+    # `clock_tree_synthesis -apply_ndr`; `None` leaves the tool's default.
+    cts_apply_ndr: str | None = field(rename="cts-apply-ndr", default=None)
+    # `set_max_fanout` after each `read_sdc`; `None` leaves the Liberty/SDC/tool default. `float` is admitted so the validator, not pyserde, refuses a fraction.
+    max_fanout: int | float | None = field(rename="max-fanout", default=None)
     routing_layers: PnrRoutingLayersFile = field(
         rename="routing-layers", default_factory=PnrRoutingLayersFile
     )
@@ -97,6 +126,12 @@ class PnrPlatformConfig:
         self._global_route_hold_repair = cfg.global_route_hold_repair
         self._routing_layer_adjustment = _validate_layer_adjustment(
             cfg.routing_layer_adjustment, f"pnr platform '{self._name}'"
+        )
+        self._cts_apply_ndr = _validate_cts_apply_ndr(
+            cfg.cts_apply_ndr, f"pnr platform '{self._name}'"
+        )
+        self._max_fanout = _validate_max_fanout(
+            cfg.max_fanout, f"pnr platform '{self._name}'"
         )
         self._signal_layers = cfg.routing_layers.signal
         self._clock_layers = cfg.routing_layers.clock
@@ -127,6 +162,11 @@ class PnrPlatformConfig:
             placement.macro_cell_halo,
             self._pdk.get_placement_macro_cell_halo(),
             DEFAULT_PLACEMENT_MACRO_CELL_HALO,
+        )
+        self._placement_reference_hpwl = (
+            placement.reference_hpwl
+            if placement.reference_hpwl is not None
+            else self._pdk.get_placement_reference_hpwl()
         )
         self._placement_tie_separation = _first_set(
             placement.tie_separation,
@@ -245,6 +285,10 @@ class PnrPlatformConfig:
         """Tie-cell separation in microns, after platform/PDK/default."""
         return self._placement_tie_separation
 
+    def get_placement_reference_hpwl(self) -> float | None:
+        """Global-placement reference HPWL, platform over PDK, or `None` for the placer's own."""
+        return self._placement_reference_hpwl
+
     def get_dont_use_cells(self) -> list[str]:
         """The PDK's excluded cells plus this platform's, PDK first."""
         return list(self._dont_use_cells)
@@ -263,6 +307,14 @@ class PnrPlatformConfig:
     def get_routing_layer_adjustment(self) -> float | None:
         """Global-route capacity adjustment, 0 to 1, or `None` for the router's default."""
         return self._routing_layer_adjustment
+
+    def get_cts_apply_ndr(self) -> str | None:
+        """The `clock_tree_synthesis -apply_ndr` value, or `None` for the tool's default."""
+        return self._cts_apply_ndr
+
+    def get_max_fanout(self) -> int | None:
+        """The design max fanout set after `read_sdc`, or `None` to leave it unset."""
+        return self._max_fanout
 
     def get_signal_layers(self) -> str:
         return self._signal_layers
