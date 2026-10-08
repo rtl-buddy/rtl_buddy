@@ -98,6 +98,7 @@ SIBLING_OUTPUT_NAMES = (
     "power_instances.cells",
     # rb pnr's design-independent reports (tools/pnr_openroad.py)
     "route.drc.rpt",
+    "congestion.rpt",
     "timing.rpt",
     # rb pnr-export: provenance of the exported layout; nothing regenerates it.
     "export.provenance.json",

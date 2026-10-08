@@ -918,7 +918,7 @@ def test_pnr_run_accepts_a_pdn_config_that_is_on_disk(tmp_path, monkeypatch):
 
     def _fake_run(cmd, **_kwargs):
         launched.append(cmd)
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        _kwargs["stdout"].write("")
         result = MagicMock()
         result.returncode = 0
         result.stderr = ""
@@ -2019,8 +2019,8 @@ def _run_backend_with_export(tmp_path, monkeypatch, *, mode, missing=()):
     streamout = _fake_klayout(backend, "demo_top", missing=missing)
 
     def _run(cmd, **kwargs):
-        if "-log" in cmd:
-            Path(cmd[cmd.index("-log") + 1]).write_text(
+        if hasattr(kwargs.get("stdout"), "write"):
+            kwargs["stdout"].write(
                 "Design area 123.45 um^2 1% utilization\n"
                 "Number of instances:          42\n"
             )
@@ -2202,7 +2202,10 @@ def test_pnr_clear_list_covers_every_non_log_template_output():
     written = {name for name in written if not name.endswith(".log")}
     assert written, "no $OUT_DIR write targets found; did the template move?"
 
-    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES)
+    # The congestion report is cleared up front only; a failed route keeps it.
+    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES) | {
+        pnr_openroad._CONGESTION_REPORT_NAME
+    }
     suffixes = pnr_openroad._MANAGED_OUTPUT_SUFFIXES
     missed = {
         name for name in written if name not in fixed and not name.endswith(suffixes)
@@ -2343,7 +2346,7 @@ def test_pnr_run_ignores_a_previous_runs_drc_report_and_odb(tmp_path, monkeypatc
 
     def _fake_run(cmd, **_kwargs):
         # OpenROAD exits 0 and writes only its log.
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        _kwargs["stdout"].write("")
         result = MagicMock()
         result.returncode = 0
         result.stderr = ""
@@ -2511,7 +2514,7 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
     routed_v = artefacts / "demo_top.routed.v"
 
     def _writes_then_dies(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        _kwargs["stdout"].write("")
         odb.write_bytes(b"\x00partial odb\x00")
         routed_v.write_text("module demo_top(); endmodule\n")
         result = MagicMock()
@@ -2529,8 +2532,8 @@ def test_pnr_openroad_writes_odb_then_fails_removes_it(tmp_path, monkeypatch):
 
 
 def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypatch):
-    """A Tcl error (say, the macro packer refusing a floorplan) goes to stderr, which
-    OpenROAD's `-log` does not carry.
+    """A Tcl error (say, the macro packer refusing a floorplan) goes to stderr, not to
+    the stdout OpenROAD writes the log on.
 
     The whole diagnostic reaches the log and its first line the verdict.
     """
@@ -2584,7 +2587,7 @@ def test_pnr_openroad_stderr_reaches_the_log_and_the_verdict(tmp_path, monkeypat
     )
 
     def _dies_with_a_tcl_error(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text(">>> Macro placement\n")
+        _kwargs["stdout"].write(">>> Macro placement\n")
         result = MagicMock()
         result.returncode = 1
         result.stderr = diagnostic
@@ -2661,7 +2664,7 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
     script.write_text("# previous run's flow\n")
 
     def _writes_then_dies(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        _kwargs["stdout"].write("")
         odb.write_bytes(b"\x00partial odb\x00")
         result = MagicMock()
         result.returncode = 1
@@ -2675,6 +2678,74 @@ def test_pnr_post_openroad_failure_keeps_the_flow_script(tmp_path, monkeypatch):
     assert "exited with code 1" in res.results["desc"]
     assert not odb.exists()
     assert script.read_text() == "# this run's flow\n"
+
+
+def test_a_failed_route_keeps_its_congestion_report(tmp_path, monkeypatch):
+    """`congestion.rpt` explains a global route that failed on overflow, so the failure
+    path keeps it; only the next run's up-front clear removes it.
+    """
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+
+    report = Path(backend.artefact_dir) / "congestion.rpt"
+    report.write_text("a previous run's congestion\n")
+    seen_at_launch = []
+
+    def _overflows(cmd, **kwargs):
+        seen_at_launch.append(report.exists())
+        kwargs["stdout"].write(
+            "[ERROR GRT-0116] Global routing finished with congestion.\n"
+        )
+        report.write_text("this run's congestion\n")
+        result = MagicMock()
+        result.returncode = 1
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _overflows)
+
+    res = backend.run()
+
+    assert isinstance(res, PnrFailResults)
+    assert seen_at_launch == [False]
+    assert report.read_text() == "this run's congestion\n"
 
 
 def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
@@ -2727,9 +2798,7 @@ def test_pnr_error_line_after_writing_removes_the_odb(tmp_path, monkeypatch):
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _writes_then_errors(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text(
-            "[ERROR GRT-0012] detailed route failed\n"
-        )
+        _kwargs["stdout"].write("[ERROR GRT-0012] detailed route failed\n")
         odb.write_bytes(b"\x00partial odb\x00")
         result = MagicMock()
         result.returncode = 0
@@ -2894,7 +2963,7 @@ def test_pnr_flow_has_no_dont_use_check_without_dont_use_cells(tmp_path):
 
     assert "Don't-use check" not in text
     assert "RB-DONT-USE-VIOLATION" not in text
-    assert '    -verbose 0\n\nputs ">>> Fill insertion"\n' in text
+    assert '    -verbose 1\n\nputs ">>> Fill insertion"\n' in text
 
 
 def test_pnr_flow_checks_dont_use_after_routing_before_fill_and_outputs(tmp_path):
@@ -3072,7 +3141,7 @@ def _dont_use_backend(tmp_path, monkeypatch, *, log, returncode, dont_use_cells)
     odb = Path(backend.artefact_dir) / "demo_top.routed.odb"
 
     def _fake_openroad(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text(log)
+        _kwargs["stdout"].write(log)
         odb.write_bytes(b"\x00odb\x00")
         result = MagicMock()
         result.returncode = returncode
@@ -3422,7 +3491,9 @@ def test_pnr_clear_list_covers_the_rendered_spef_target(tmp_path):
     }
     assert "${DESIGN}.routed.spef" in written
 
-    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES)
+    fixed = set(pnr_openroad._FIXED_OUTPUT_NAMES) | {
+        pnr_openroad._CONGESTION_REPORT_NAME
+    }
     suffixes = pnr_openroad._MANAGED_OUTPUT_SUFFIXES
     missed = {
         name for name in written if name not in fixed and not name.endswith(suffixes)
@@ -3529,7 +3600,7 @@ def test_a_rerun_without_rcx_rules_clears_the_previous_spef(tmp_path, monkeypatc
     stale_spef.write_text("*SPEF stale\n")
 
     def _fake_run(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        _kwargs["stdout"].write("")
         (artefacts / "demo_top.routed.odb").write_bytes(b"\x00fresh odb\x00")
         result = MagicMock()
         result.returncode = 0
@@ -3560,7 +3631,7 @@ def test_a_run_that_dies_after_write_spef_publishes_no_spef(tmp_path, monkeypatc
     spef = artefacts / "demo_top.routed.spef"
 
     def _writes_then_dies(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text("")
+        _kwargs["stdout"].write("")
         spef.write_text("*SPEF partial\n")
         result = MagicMock()
         result.returncode = 1
@@ -4280,7 +4351,10 @@ def test_pnr_flow_without_the_knobs_repairs_hold_only_and_keeps_the_router_defau
     assert "repair_timing -setup" not in text
     assert "estimate_parasitics -placement\nrepair_timing -hold\n" in text
     assert "set_global_routing_layer_adjustment" not in text
-    assert "-clock $CLOCK_LAYERS\nglobal_route -congestion_iterations 20\n" in text
+    assert (
+        "-clock $CLOCK_LAYERS\nglobal_route -congestion_iterations 20 "
+        "-congestion_report_file $CONGESTION_RPT -verbose\n"
+    ) in text
     assert text.count("repair_timing -hold") == 1
     assert "global_route -start_incremental" not in text
 
@@ -4290,13 +4364,15 @@ def test_pnr_flow_repairs_hold_again_on_global_route_parasitics(tmp_path):
     platform = _platform(_make_pdk_cfg(tmp_path), global_route_hold_repair=True)
     text = _render_flow(tmp_path, platform)
     assert (
-        "global_route -congestion_iterations 20\n"
+        "global_route -congestion_iterations 20 "
+        "-congestion_report_file $CONGESTION_RPT -verbose\n"
         'puts ">>> Post-global-route hold repair"\n'
         "estimate_parasitics -global_routing\n"
         "repair_timing -hold\n"
         "global_route -start_incremental\n"
         "detailed_placement\n"
-        "global_route -end_incremental\n"
+        "global_route -end_incremental -congestion_report_file $CONGESTION_RPT "
+        "-verbose\n"
         "check_placement -verbose\n"
     ) in text
     assert text.index("global_route -end_incremental") < text.index(">>> Detail route")
@@ -4478,3 +4554,153 @@ def test_pnr_row_carries_the_routed_cell_counts():
         412,
         1638,
     )
+
+
+def _pnr_yaml_with(tmp_path, line):
+    path = tmp_path / "pnr.yaml"
+    path.write_text(
+        dedent(
+            f"""\
+            rtl-buddy-filetype: pnr_config
+            runs:
+              - name: demo_pnr
+                desc: demo
+                synth: demo_synth
+                synth-path: synth.yaml
+                constraints: c.sdc
+                platform: nangate45_typ
+            {line}
+            """
+        )
+    )
+    return path
+
+
+def test_detailed_route_verbose_defaults_to_one(tmp_path):
+    run = PnrSuiteConfig(str(_pnr_yaml_with(tmp_path, ""))).get_runs("demo_pnr")[0]
+    assert run.get_detailed_route_verbose() == 1
+
+
+@pytest.mark.parametrize("raw, expected", [("0", 0), ("2", 2)])
+def test_detailed_route_verbose_round_trips(tmp_path, raw, expected):
+    path = _pnr_yaml_with(tmp_path, f"    detailed-route-verbose: {raw}")
+    run = PnrSuiteConfig(str(path)).get_runs("demo_pnr")[0]
+    assert run.get_detailed_route_verbose() == expected
+
+
+@pytest.mark.parametrize("raw", ["-1", "true", "1.5", "loud", '"2"'])
+def test_detailed_route_verbose_rejects_anything_but_a_natural_number(tmp_path, raw):
+    path = _pnr_yaml_with(tmp_path, f"    detailed-route-verbose: {raw}")
+    with pytest.raises(
+        FatalRtlBuddyError,
+        match="pnr run 'demo_pnr': 'detailed-route-verbose' must be a non-negative integer",
+    ):
+        PnrSuiteConfig(str(path))
+
+
+def test_pnr_flow_routes_in_detail_at_the_configured_verbosity(tmp_path):
+    platform = _platform(_make_pdk_cfg(tmp_path))
+    assert "    -verbose 1\n" in _render_flow(tmp_path, platform)
+    text = _render_flow(tmp_path, platform, detailed_route_verbose=3)
+    assert ("    -output_maze $OUT_DIR/route.maze.log \\\n    -verbose 3\n") in text
+
+
+def test_every_global_route_reports_congestion(tmp_path):
+    """Each full or closing global route logs the usage table and names the congestion
+    report, through the variable that keeps the file name alive.
+    """
+    platform = _platform(_make_pdk_cfg(tmp_path), global_route_hold_repair=True)
+    text = _render_flow(tmp_path, platform)
+    assert "set CONGESTION_RPT  $OUT_DIR/congestion.rpt\n" in text
+    assert text.index("set CONGESTION_RPT") < text.index("\nglobal_route ")
+    routes = [line for line in text.splitlines() if line.startswith("global_route ")]
+    assert len(routes) == 3
+    for line in routes:
+        if "-start_incremental" in line:
+            continue
+        assert line.endswith(" -congestion_report_file $CONGESTION_RPT -verbose"), line
+
+
+def test_the_detailed_route_verbosity_leaves_the_config_digest_alone(tmp_path):
+    """Verbosity changes the log, not the routed result, so a hardened abstract stays
+    current.
+    """
+    from rtl_buddy.tools import pnr_abstract
+
+    platform = _platform(_make_pdk_cfg(tmp_path))
+    quiet = _make_pnr_cfg(tmp_path, detailed_route_verbose=0)
+    loud = _make_pnr_cfg(tmp_path, detailed_route_verbose=2)
+    assert pnr_abstract.config_digest(
+        pnr_abstract.abstract_config(quiet, platform)
+    ) == pnr_abstract.config_digest(pnr_abstract.abstract_config(loud, platform))
+
+
+def test_pnr_log_shows_openroad_output_while_it_runs(tmp_path, monkeypatch):
+    """OpenROAD's stdout goes straight to `pnr.log` (no `-log`, which OpenROAD
+    block-buffers), so a line is in the log before the tool exits.
+    """
+    import subprocess
+
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    (tmp_path / "models.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: model_config
+        models:
+          - name: "demo_top"
+            filelist: []
+        """)
+    )
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+        syntheses:
+          - name: "demo_synth"
+            desc: "demo"
+            model: "demo_top"
+            model_path: "models.yaml"
+            tool: "openroad"
+            reglvl: 0
+        """)
+    )
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/usr/bin/openroad")
+    monkeypatch.setattr(pnr_openroad, "task_status", lambda *a, **kw: nullcontext())
+    platform = MagicMock()
+    platform.get_pdk.return_value = _make_pdk_cfg(tmp_path)
+    platform.get_dont_use_cells.return_value = []
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_platform_cfg.return_value = platform
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+    )
+    monkeypatch.setattr(
+        backend, "_write_script", lambda *a, **kw: backend._script_path()
+    )
+    monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
+    log_path = backend._log_path()
+    Path(log_path).write_text("[ERROR GRT-0000] a previous run\n")
+
+    real_run = subprocess.run
+    launched = []
+
+    def _openroad_stand_in(cmd, **kwargs):
+        launched.append(cmd)
+        # Prints a progress line, then reports whether the log already holds it.
+        script = (
+            'echo "[INFO DRT-0195] Start 0th optimization iteration."; '
+            'if grep -q DRT-0195 "$1"; then echo RB-LIVE; else echo RB-LAGGING; fi'
+        )
+        return real_run(["sh", "-c", script, "sh", log_path], **kwargs)
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _openroad_stand_in)
+
+    backend.run()
+
+    assert "-log" not in launched[0]
+    log_text = Path(log_path).read_text()
+    assert "RB-LIVE" in log_text
+    assert "a previous run" not in log_text

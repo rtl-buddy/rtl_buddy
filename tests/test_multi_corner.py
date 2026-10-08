@@ -281,7 +281,7 @@ def _pnr_backend_over(tmp_path, monkeypatch, platform, log_text):
     monkeypatch.setattr(backend, "_probe_openroad_version", lambda: None)
 
     def _fake_run(cmd, **_kwargs):
-        Path(cmd[cmd.index("-log") + 1]).write_text(log_text)
+        _kwargs["stdout"].write(log_text)
         return MagicMock(returncode=0, stderr="")
 
     monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
