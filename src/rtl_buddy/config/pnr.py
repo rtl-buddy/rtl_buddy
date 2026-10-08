@@ -143,6 +143,33 @@ class PnrPin:
     size: tuple[float, float] | None = None
 
 
+#: Orientations `floorplan.macros` accepts: those that keep a macro's width, height and pin directions, so it stays on the site grid and the routing tracks.
+MACRO_ORIENTATIONS = ("R0", "R180", "MX", "MY")
+_ROTATED_ORIENTATIONS = ("R90", "R270", "MXR90", "MYR90")
+
+
+@serde
+class PnrMacroFile:
+    # An instance name, or a glob over instance names.
+    instance: str
+    location: list[float | int] | None = None
+    orientation: str | None = None
+    halo: list[float | int] | None = None
+
+
+@dataclass(frozen=True)
+class PnrMacro:
+    """One `floorplan.macros` directive.
+
+    `location` is the lower-left corner of the macro in die microns; it fixes the macro before the packer or RTL-MP runs. `halo` is the standard-cell keep-out ring in microns, overriding `placement.macro-cell-halo` for the macros `instance` matches.
+    """
+
+    instance: str
+    location: tuple[float, float] | None = None
+    orientation: str | None = None
+    halo: tuple[float, float] | None = None
+
+
 @serde
 class PnrFloorplanFile:
     utilization: float = 0.55
@@ -156,6 +183,7 @@ class PnrFloorplanFile:
     )
     blockages: list[PnrBlockageFile] = field(default_factory=list)
     pins: list[PnrPinFile] = field(default_factory=list)
+    macros: list[PnrMacroFile] = field(default_factory=list)
 
 
 @dataclass
@@ -167,6 +195,7 @@ class PnrFloorplan:
     blockages: list[PnrBlockage] = dc_field(default_factory=list)
     macro_placement: MacroPlacement = MacroPlacement.PACK
     pins: list[PnrPin] = dc_field(default_factory=list)
+    macros: list[PnrMacro] = dc_field(default_factory=list)
 
 
 _MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
@@ -247,8 +276,8 @@ def _number_pair(where: str, key: str, value, what: str) -> tuple[float, float]:
     return float(value[0]), float(value[1])
 
 
-# Characters that would end a Tcl word or list element in the generated script.
-_TCL_UNSAFE = re.compile(r"[\s{}\\\"$;]")
+# What would end a braced Tcl word or list element in the generated script: whitespace, a brace, a quote, `$`, `;`, or a trailing backslash, which would escape the closing brace.
+_TCL_UNSAFE = re.compile(r"[\s{}\"$;]|\\$")
 
 
 def _tcl_safe_names(where: str, key: str, value) -> tuple[str, ...]:
@@ -260,7 +289,7 @@ def _tcl_safe_names(where: str, key: str, value) -> tuple[str, ...]:
         if not isinstance(name, str) or not name or _TCL_UNSAFE.search(name):
             raise FatalRtlBuddyError(
                 f"{where}: {key} entry {name!r} must be a non-empty name or glob "
-                "without whitespace, braces, quotes, backslashes, '$' or ';'"
+                "without whitespace, braces, quotes, '$', ';' or a trailing backslash"
             )
     return tuple(names)
 
@@ -354,6 +383,57 @@ def _load_pin(run: str, index: int, entry: PnrPinFile) -> PnrPin:
         end=bounds.get("end"),
         group=bool(entry.group),
         order=bool(entry.order),
+    )
+
+
+def _load_macro(
+    run: str, index: int, entry: PnrMacroFile, placement: "MacroPlacement"
+) -> PnrMacro:
+    """Validate one `floorplan.macros` entry at load time."""
+    where = f"pnr run '{run}': floorplan.macros[{index}]"
+    (instance,) = _tcl_safe_names(where, "instances", entry.instance)
+    location = None
+    if entry.location is not None:
+        location = _number_pair(where, "location", entry.location, "x, y")
+        if location[0] < 0.0 or location[1] < 0.0:
+            raise FatalRtlBuddyError(
+                f"{where}: location is in die coordinates, which start at 0, "
+                f"got {entry.location!r}"
+            )
+    orientation = entry.orientation
+    if orientation is not None:
+        if orientation in _ROTATED_ORIENTATIONS:
+            raise FatalRtlBuddyError(
+                f"{where}: orientation {orientation} rotates the macro by 90 "
+                "degrees, which swaps its width and height off the site grid and "
+                "turns its pins across the routing tracks; use one of "
+                f"{', '.join(MACRO_ORIENTATIONS)}"
+            )
+        if orientation not in MACRO_ORIENTATIONS:
+            raise FatalRtlBuddyError(
+                f"{where}: unknown orientation {orientation!r} "
+                f"(expected one of {', '.join(MACRO_ORIENTATIONS)})"
+            )
+        if location is None and placement is MacroPlacement.RTL_MP:
+            raise FatalRtlBuddyError(
+                f"{where}: 'macro-placement: rtl-mp' chooses the orientation of "
+                "every macro it places; give this macro a location too, or use "
+                "the packer"
+            )
+    halo = None
+    if entry.halo is not None:
+        halo = _number_pair(where, "halo", entry.halo, "x, y")
+        if halo[0] < 0.0 or halo[1] < 0.0:
+            raise FatalRtlBuddyError(
+                f"{where}: halo must be non-negative, got {entry.halo!r}"
+            )
+    if location is None and orientation is None and halo is None:
+        raise FatalRtlBuddyError(
+            f"{where}: give a location, an orientation or a halo — the entry "
+            "changes nothing"
+        )
+    return PnrMacro(
+        instance=instance, location=location, orientation=orientation, halo=halo
     )
 
 
@@ -500,6 +580,10 @@ class PnrConfigFile:
             _load_pin(self.name, i, entry)
             for i, entry in enumerate(self.floorplan.pins)
         ]
+        macros = [
+            _load_macro(self.name, i, entry, macro_placement)
+            for i, entry in enumerate(self.floorplan.macros)
+        ]
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
 
         blocks = load_block_refs(
@@ -555,6 +639,7 @@ class PnrConfigFile:
                 blockages=blockages,
                 macro_placement=macro_placement,
                 pins=pins,
+                macros=macros,
             ),
             lef_paths=lef_paths,
             lib_paths=lib_paths,

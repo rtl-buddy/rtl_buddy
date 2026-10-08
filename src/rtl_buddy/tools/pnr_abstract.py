@@ -134,6 +134,17 @@ def _pin_config(pin) -> dict:
     return {key: value for key, value in entry.items() if value is not None}
 
 
+def _macro_config(macro) -> dict:
+    """One `floorplan.macros` entry for the config digest, without its unset keys."""
+    entry = {
+        "instance": macro.instance,
+        "location": list(macro.location) if macro.location is not None else None,
+        "orientation": macro.orientation,
+        "halo": list(macro.halo) if macro.halo is not None else None,
+    }
+    return {key: value for key, value in entry.items() if value is not None}
+
+
 def abstract_config(pnr_cfg, platform) -> dict:
     """Return the configuration a hardened result depends on, with project-relative paths.
 
@@ -181,6 +192,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 else {}
             ),
             **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
+            **({"macros": [_macro_config(m) for m in fp.macros]} if fp.macros else {}),
         },
         "placement": {
             "density": platform.get_placement_density(),

@@ -19,6 +19,8 @@ set CORE_ASPECT     {{ aspect }}
 set CORE_MARGIN     {{ core_margin }}
 set MACRO_HALO      {{ macro_halo }}
 set MACRO_CELL_HALO {{ macro_cell_halo }}
+# Instance name -> {x y} micron cell halo, from `floorplan.macros`.
+set MACRO_CELL_HALOS {}
 
 set TIEHI_CELL_PORT {{ tie_hi }}
 set TIELO_CELL_PORT {{ tie_lo }}
@@ -72,19 +74,27 @@ foreach inst [$block getInsts] {
   if {[[$inst getMaster] isBlock]} { lappend macros $inst }
 }
 if {[llength $macros] > 0} {
-{{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, so
-  # no standard cell abuts a macro edge; the router reaches such a cell's pins
-  # only with a Metal Spacing violation. Not `cut_rows`: that breaks the PDN
-  # followpins. Uses the ODB API because the Tcl wrapper needs OpenROAD 26Q1.
-  if {$MACRO_CELL_HALO > 0} {
-    set cell_halo_dbu [expr {int(round([ord::microns_to_dbu $MACRO_CELL_HALO]))}]
-    foreach inst $macros {
-      set bbox [$inst getBBox]
-      odb::dbBlockage_create $block \
-          [expr {[$bbox xMin] - $cell_halo_dbu}] [expr {[$bbox yMin] - $cell_halo_dbu}] \
-          [expr {[$bbox xMax] + $cell_halo_dbu}] [expr {[$bbox yMax] + $cell_halo_dbu}] \
-          $inst
+{{ macro_directives_block }}{{ macro_place_block }}  # A hard placement blockage over each macro grown by MACRO_CELL_HALO, or by
+  # its `floorplan.macros` halo in MACRO_CELL_HALOS, so no standard cell abuts
+  # a macro edge; the router reaches such a cell's pins only with a Metal
+  # Spacing violation. Not `cut_rows`: that breaks the PDN followpins. Uses the
+  # ODB API because the Tcl wrapper needs OpenROAD 26Q1.
+  foreach inst $macros {
+    set cell_halo [list $MACRO_CELL_HALO $MACRO_CELL_HALO]
+    if {[dict exists $MACRO_CELL_HALOS [$inst getName]]} {
+      set cell_halo [dict get $MACRO_CELL_HALOS [$inst getName]]
     }
+    lassign $cell_halo halo_x halo_y
+    if {$halo_x <= 0 && $halo_y <= 0} {
+      continue
+    }
+    set halo_x_dbu [expr {int(round([ord::microns_to_dbu $halo_x]))}]
+    set halo_y_dbu [expr {int(round([ord::microns_to_dbu $halo_y]))}]
+    set bbox [$inst getBBox]
+    odb::dbBlockage_create $block \
+        [expr {[$bbox xMin] - $halo_x_dbu}] [expr {[$bbox yMin] - $halo_y_dbu}] \
+        [expr {[$bbox xMax] + $halo_x_dbu}] [expr {[$bbox yMax] + $halo_y_dbu}] \
+        $inst
   }
 }
 {{ tapcell_block }}{{ pdn_block }}
