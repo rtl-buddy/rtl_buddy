@@ -815,6 +815,17 @@ models:
     assert mod.tests is None
 
 
+def test_model_config_get_model_name_returns_name(tmp_path):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n  - name: m\n    filelist: [a.sv]\n"
+    )
+    (model,) = ModelConfigLoader(str(path)).get_models()
+    assert model.get_model_name() == "m"
+
+
 def test_model_config_back_pointers_loaded(tmp_path):
     from rtl_buddy.config.model import ModelConfigLoader
 
