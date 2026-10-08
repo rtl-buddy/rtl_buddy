@@ -170,11 +170,23 @@ class PnrMacro:
     halo: tuple[float, float] | None = None
 
 
+#: `floorplan` sizing defaults when neither `die-area` nor `core-area` is set.
+DEFAULT_UTILIZATION = 0.55
+DEFAULT_ASPECT = 1.0
+DEFAULT_CORE_MARGIN = 2.0
+
+
 @serde
 class PnrFloorplanFile:
-    utilization: float = 0.55
-    aspect: float = 1.0
-    core_margin: float = field(rename="core-margin", default=2.0)
+    # Unset means the default below; set together with `die-area` is an error.
+    utilization: float | int | None = None
+    aspect: float | int | None = None
+    core_margin: float | int | None = field(rename="core-margin", default=None)
+    die_area: list[float | int] | None = field(rename="die-area", default=None)
+    core_area: list[float | int] | None = field(rename="core-area", default=None)
+    core_cutouts: list[list[float | int]] = field(
+        rename="core-cutouts", default_factory=list
+    )
     macro_anchor: str = field(
         rename="macro-anchor", default=MacroAnchor.LOWER_LEFT.value
     )
@@ -196,6 +208,21 @@ class PnrFloorplan:
     macro_placement: MacroPlacement = MacroPlacement.PACK
     pins: list[PnrPin] = dc_field(default_factory=list)
     macros: list[PnrMacro] = dc_field(default_factory=list)
+    # Explicit die and core rectangles in microns; when set, `utilization`, `aspect` and `core_margin` are unused.
+    die_area: tuple[float, float, float, float] | None = None
+    core_area: tuple[float, float, float, float] | None = None
+    # Rectangles carved out of the core: hard blockages with their rows cut.
+    core_cutouts: list[tuple[float, float, float, float]] = dc_field(
+        default_factory=list
+    )
+
+    def ring_margin(self) -> float | None:
+        """The narrowest core-to-die gap the floorplan asks for, in microns; None when only OpenROAD knows it."""
+        if self.die_area is None or self.core_area is None:
+            return self.core_margin
+        dx0, dy0, dx1, dy1 = self.die_area
+        cx0, cy0, cx1, cy1 = self.core_area
+        return min(cx0 - dx0, cy0 - dy0, dx1 - cx1, dy1 - cy1)
 
 
 _MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
@@ -481,6 +508,256 @@ def _validate_detailed_route_verbose(run: str, value) -> int:
 
 
 @serde
+class PnrPdnRingFile:
+    # [horizontal, vertical] routing layers.
+    layers: list[str]
+    width: float | int
+    spacing: float | int
+    offset: float | int
+
+
+@serde
+class PnrPdnStripeFile:
+    layer: str
+    width: float | int
+    pitch: float | int | None = None
+    offset: float | int | None = None
+    spacing: float | int | None = None
+    followpins: bool = False
+
+
+@serde
+class PnrPdnFile:
+    ring: PnrPdnRingFile | None = None
+    stripes: list[PnrPdnStripeFile] = field(default_factory=list)
+    # Layer pairs to connect with vias; default: each stripe layer to the next.
+    connect: list[list[str]] | None = None
+
+
+@dataclass(frozen=True)
+class PnrPdnRing:
+    layers: tuple[str, str]
+    width: float
+    spacing: float
+    offset: float
+
+
+@dataclass(frozen=True)
+class PnrPdnStripe:
+    layer: str
+    width: float
+    pitch: float | None = None
+    offset: float | None = None
+    spacing: float | None = None
+    followpins: bool = False
+
+
+@dataclass(frozen=True)
+class PnrPdn:
+    """A run's declarative core power grid (`pdn:`).
+
+    It replaces the core grid of the PDN Tcl (the PDK's `pdn-config` or the run's), whose global connections, voltage domains and macro grids still apply. `connect` is resolved: the default chain is already filled in.
+    """
+
+    stripes: tuple[PnrPdnStripe, ...]
+    connect: tuple[tuple[str, str], ...]
+    ring: PnrPdnRing | None = None
+
+
+def _layer_name(where: str, value) -> str:
+    if not isinstance(value, str) or not value or _TCL_UNSAFE.search(value):
+        raise FatalRtlBuddyError(f"{where}: {value!r} is not a layer name")
+    return value
+
+
+def _positive(where: str, key: str, value, *, zero: bool = False) -> float:
+    if not _finite_number(value) or value < 0 or (value == 0 and not zero):
+        bound = "non-negative" if zero else "positive"
+        raise FatalRtlBuddyError(
+            f"{where}: {key} must be a {bound} number of microns, got {value!r}"
+        )
+    return float(value)
+
+
+def _load_pdn(run: str, entry: PnrPdnFile, ring_margin: float | None) -> PnrPdn:
+    """Validate a run's `pdn:` block at load time."""
+    where = f"pnr run '{run}': pdn"
+    ring = None
+    if entry.ring is not None:
+        here = f"{where}.ring"
+        if not isinstance(entry.ring.layers, list) or len(entry.ring.layers) != 2:
+            raise FatalRtlBuddyError(
+                f"{here}: layers must be [horizontal, vertical], got "
+                f"{entry.ring.layers!r}"
+            )
+        layers = tuple(_layer_name(here, v) for v in entry.ring.layers)
+        ring = PnrPdnRing(
+            layers=layers,
+            width=_positive(here, "width", entry.ring.width),
+            spacing=_positive(here, "spacing", entry.ring.spacing),
+            offset=_positive(here, "offset", entry.ring.offset, zero=True),
+        )
+        extent = ring.offset + 2 * ring.width + ring.spacing
+        if ring_margin is not None and extent > ring_margin + 1e-9:
+            raise FatalRtlBuddyError(
+                f"{here}: the ring needs {extent:g} um outside the core "
+                "(offset + 2 x width + spacing), but the floorplan leaves "
+                f"{ring_margin:g} um between core and die; widen core-margin "
+                "or the die"
+            )
+    if not entry.stripes:
+        raise FatalRtlBuddyError(
+            f"{where}: stripes must list the core grid's stripes, including the "
+            "followpins rails; the block replaces the pdn-config's core grid"
+        )
+    stripes = []
+    for i, stripe in enumerate(entry.stripes):
+        here = f"{where}.stripes[{i}]"
+        layer = _layer_name(here, stripe.layer)
+        width = _positive(here, "width", stripe.width)
+        if stripe.followpins:
+            extra = [
+                key
+                for key in ("pitch", "offset", "spacing")
+                if getattr(stripe, key) is not None
+            ]
+            if extra:
+                raise FatalRtlBuddyError(
+                    f"{here}: followpins rails follow the rows, so "
+                    f"{', '.join(extra)} does not apply"
+                )
+            stripes.append(PnrPdnStripe(layer=layer, width=width, followpins=True))
+            continue
+        if stripe.pitch is None:
+            raise FatalRtlBuddyError(f"{here}: a stripe needs a pitch")
+        pitch = _positive(here, "pitch", stripe.pitch)
+        offset = (
+            _positive(here, "offset", stripe.offset, zero=True)
+            if stripe.offset is not None
+            else None
+        )
+        spacing = (
+            _positive(here, "spacing", stripe.spacing)
+            if stripe.spacing is not None
+            else None
+        )
+        if 2 * width + (spacing or 0.0) > pitch:
+            raise FatalRtlBuddyError(
+                f"{here}: a VDD and a VSS stripe ({2 * width + (spacing or 0.0):g} "
+                f"um with spacing) do not fit in the {pitch:g} um pitch"
+            )
+        stripes.append(
+            PnrPdnStripe(
+                layer=layer, width=width, pitch=pitch, offset=offset, spacing=spacing
+            )
+        )
+    if entry.connect is None:
+        layers = list(dict.fromkeys(s.layer for s in stripes))
+        connect = tuple(zip(layers, layers[1:]))
+    else:
+        connect = []
+        for i, pair in enumerate(entry.connect):
+            here = f"{where}.connect[{i}]"
+            if not isinstance(pair, list) or len(pair) != 2 or pair[0] == pair[1]:
+                raise FatalRtlBuddyError(
+                    f"{here}: must be two different layers [lower, upper], got {pair!r}"
+                )
+            connect.append(tuple(_layer_name(here, v) for v in pair))
+        connect = tuple(connect)
+    return PnrPdn(stripes=tuple(stripes), connect=connect, ring=ring)
+
+
+def _load_rect(where: str, value) -> tuple[float, float, float, float]:
+    """Validate an `[x0, y0, x1, y1]` die-coordinate rectangle in microns."""
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 4
+        or not all(_finite_number(v) for v in value)
+    ):
+        raise FatalRtlBuddyError(
+            f"{where} must be [x0, y0, x1, y1] in microns, got {value!r}"
+        )
+    x0, y0, x1, y1 = (float(v) for v in value)
+    if round(x1, 3) - round(x0, 3) < _MIN_BLOCKAGE_SPAN or (
+        round(y1, 3) - round(y0, 3) < _MIN_BLOCKAGE_SPAN
+    ):
+        raise FatalRtlBuddyError(
+            f"{where} must have x0 < x1 and y0 < y1, at least 0.001 um apart, "
+            f"got {value!r}"
+        )
+    if x0 < 0.0 or y0 < 0.0:
+        raise FatalRtlBuddyError(
+            f"{where} is in die coordinates, which start at 0, got {value!r}"
+        )
+    return x0, y0, x1, y1
+
+
+def _inside(inner, outer) -> bool:
+    return (
+        inner[0] >= outer[0]
+        and inner[1] >= outer[1]
+        and inner[2] <= outer[2]
+        and inner[3] <= outer[3]
+    )
+
+
+def _load_floorplan_shape(run: str, fp: PnrFloorplanFile) -> dict:
+    """Validate the floorplan's size keys and core cut-outs; return the PnrFloorplan fields."""
+    where = f"pnr run '{run}': floorplan"
+    die = core = None
+    if fp.die_area is not None or fp.core_area is not None:
+        if fp.die_area is None or fp.core_area is None:
+            raise FatalRtlBuddyError(
+                f"{where}: die-area and core-area go together; set both"
+            )
+        sizing = [
+            key
+            for key, value in (
+                ("utilization", fp.utilization),
+                ("aspect", fp.aspect),
+                ("core-margin", fp.core_margin),
+            )
+            if value is not None
+        ]
+        if sizing:
+            raise FatalRtlBuddyError(
+                f"{where}: die-area and core-area size the floorplan, so "
+                f"{', '.join(sizing)} cannot be set with them"
+            )
+        die = _load_rect(f"{where}.die-area", fp.die_area)
+        core = _load_rect(f"{where}.core-area", fp.core_area)
+        if not _inside(core, die):
+            raise FatalRtlBuddyError(
+                f"{where}.core-area {list(core)} must lie inside die-area {list(die)}"
+            )
+    cutouts = []
+    for i, rect in enumerate(fp.core_cutouts):
+        cutout = _load_rect(f"{where}.core-cutouts[{i}]", rect)
+        if core is not None and not _inside(cutout, core):
+            raise FatalRtlBuddyError(
+                f"{where}.core-cutouts[{i}] {list(cutout)} must lie inside "
+                f"core-area {list(core)}"
+            )
+        cutouts.append(cutout)
+
+    def _or_default(key, value, default):
+        if value is None:
+            return default
+        if not _finite_number(value):
+            raise FatalRtlBuddyError(f"{where}.{key} must be a number, got {value!r}")
+        return float(value)
+
+    return {
+        "utilization": _or_default("utilization", fp.utilization, DEFAULT_UTILIZATION),
+        "aspect": _or_default("aspect", fp.aspect, DEFAULT_ASPECT),
+        "core_margin": _or_default("core-margin", fp.core_margin, DEFAULT_CORE_MARGIN),
+        "die_area": die,
+        "core_area": core,
+        "core_cutouts": cutouts,
+    }
+
+
+@serde
 class PnrConfigFile:
     name: str
     desc: str
@@ -489,6 +766,10 @@ class PnrConfigFile:
     synth_path: str = field(rename="synth-path", default="")
     constraints: str | None = None
     pin_constraints: str | None = field(rename="pin-constraints", default=None)
+    # Replaces the PDK's `pdn-config` for this run; relative to pnr.yaml.
+    pdn_config: str | None = field(rename="pdn-config", default=None)
+    # Declarative core power grid, replacing the pdn-config's core grid.
+    pdn: PnrPdnFile | None = None
     platform: str = ""
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
@@ -584,6 +865,20 @@ class PnrConfigFile:
             _load_macro(self.name, i, entry, macro_placement)
             for i, entry in enumerate(self.floorplan.macros)
         ]
+        shape = _load_floorplan_shape(self.name, self.floorplan)
+        if self.pdn_config is not None and not self.pdn_config:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': pdn-config must be a path to a Tcl file"
+            )
+        pdn = (
+            _load_pdn(
+                self.name,
+                self.pdn,
+                PnrFloorplan(**shape).ring_margin(),
+            )
+            if self.pdn is not None
+            else None
+        )
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
 
         blocks = load_block_refs(
@@ -631,10 +926,14 @@ class PnrConfigFile:
                 else None
             ),
             platform=self.platform,
+            pdn_config=(
+                os.path.abspath(os.path.join(config_dir, self.pdn_config))
+                if self.pdn_config is not None
+                else None
+            ),
+            pdn=pdn,
             floorplan=PnrFloorplan(
-                utilization=self.floorplan.utilization,
-                aspect=self.floorplan.aspect,
-                core_margin=self.floorplan.core_margin,
+                **shape,
                 macro_anchor=macro_anchor,
                 blockages=blockages,
                 macro_placement=macro_placement,
@@ -675,6 +974,9 @@ class PnrConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     pin_constraints: str | None = None
+    # The run's own `pdn-config`, overriding the PDK's; absolute.
+    pdn_config: str | None = None
+    pdn: PnrPdn | None = None
     lef_paths: list[str] = dc_field(default_factory=list)
     lib_paths: list[str] = dc_field(default_factory=list)
     gds_paths: list[str] = dc_field(default_factory=list)
@@ -721,6 +1023,14 @@ class PnrConfig:
 
     def get_floorplan(self) -> PnrFloorplan:
         return self.floorplan
+
+    def get_pdn_config(self) -> str | None:
+        """The run's `pdn-config` override, or None to use the PDK's."""
+        return self.pdn_config
+
+    def get_pdn(self) -> PnrPdn | None:
+        """The run's declarative core power grid, or None."""
+        return self.pdn
 
     def get_lef_paths(self) -> list[str]:
         return list(self.lef_paths)

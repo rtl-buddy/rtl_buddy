@@ -42,6 +42,8 @@ _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
+# Replaces the pdn-config's core grid with a run's `pdn:` block; see `_pdn_block`.
+_PDN_GRID_FILE = "pdn_grid.tcl"
 # `floorplan.macros` directives; see `_macro_directives_block`.
 _MACROS_FILE = "macros.tcl"
 # `floorplan.pins` checks and commands; see `_floorplan_pins_block`.
@@ -427,6 +429,23 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     """
     lines = []
     has_keepouts = False
+    for index, cutout in enumerate(fp.core_cutouts):
+        # A cut-out is a hard blockage that must overlap the core; OpenROAD's site
+        # snapping may move the core edges a little inside the requested ones.
+        has_keepouts = True
+        region = "{" + " ".join(_tcl_microns(v) for v in cutout) + "}"
+        lines.append(f"set blockage_box [[create_blockage -region {region}] getBBox]")
+        lines.append(
+            "set rb_core [[ord::get_db_block] getCoreArea]\n"
+            "if {[$blockage_box xMin] >= [$rb_core xMax] || [$blockage_box yMin] >= [$rb_core yMax]"
+            " || [$blockage_box xMax] <= [$rb_core xMin] || [$blockage_box yMax] <= [$rb_core yMin]} "
+            f'{{ error "floorplan.core-cutouts[{index}] {region} um does not overlap '
+            'the core; a cut-out is carved out of the core" }'
+        )
+        lines.append(
+            "lappend MACRO_KEEPOUTS "
+            "[list [$blockage_box xMin] [$blockage_box yMin] [$blockage_box xMax] [$blockage_box yMax]]"
+        )
     for blockage in fp.blockages:
         region = "{" + " ".join(_tcl_microns(v) for v in blockage.rect) + "}"
         command = f"create_blockage -region {region}"
@@ -444,7 +463,11 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
             lines.append(f"{command} -max_density {density}")
     blockages_block = ""
     if lines:
-        header = ['puts ">>> Placement blockages"']
+        header = [
+            'puts ">>> Placement blockages"'
+            if fp.blockages
+            else 'puts ">>> Core cut-outs"'
+        ]
         if has_keepouts:
             header.append("set MACRO_KEEPOUTS {}")
             procs = files(_TEMPLATE_PACKAGE).joinpath(_CUT_ROWS_FILE).read_text()
@@ -461,6 +484,61 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     elif fp.macro_anchor is not MacroAnchor.LOWER_LEFT:
         directives = f" \\\n      {fp.macro_anchor.value}"
     return blockages_block, directives
+
+
+def _initialize_floorplan_tcl(fp: PnrFloorplan) -> str:
+    """Return the `initialize_floorplan` command: explicit die and core areas, or utilization sizing."""
+    if fp.die_area is not None and fp.core_area is not None:
+        die = " ".join(_tcl_microns(v) for v in fp.die_area)
+        core = " ".join(_tcl_microns(v) for v in fp.core_area)
+        return (
+            "initialize_floorplan \\\n"
+            "    -site      $SITE \\\n"
+            f"    -die_area  {{{die}}} \\\n"
+            f"    -core_area {{{core}}}"
+        )
+    return (
+        "initialize_floorplan \\\n"
+        "    -site         $SITE \\\n"
+        "    -utilization  $CORE_UTIL_PCT \\\n"
+        "    -aspect_ratio $CORE_ASPECT \\\n"
+        "    -core_space   $CORE_MARGIN"
+    )
+
+
+def _pdn_grid_tcl(pdn) -> str:
+    """Return the Tcl that defines a run's `pdn:` core grid, after its pdn-config is sourced without one."""
+    ring = pdn.ring
+    lines = [
+        files(_TEMPLATE_PACKAGE).joinpath(_PDN_GRID_FILE).read_text().rstrip("\n"),
+        "rb::pdn::source_base $PDN_CONFIG",
+        "set rb_pdn_grid [rb::pdn::define_core_grid]",
+    ]
+    extend = " -extend_to_core_ring" if ring is not None else ""
+    if ring is not None:
+        lines.append(
+            f"add_pdn_ring -grid $rb_pdn_grid -layers {_tcl_list(ring.layers)} "
+            f"-widths {_tcl_microns(ring.width)} "
+            f"-spacings {_tcl_microns(ring.spacing)} "
+            f"-core_offsets {_tcl_microns(ring.offset)}"
+        )
+    for stripe in pdn.stripes:
+        command = (
+            f"add_pdn_stripe -grid $rb_pdn_grid -layer {{{stripe.layer}}} "
+            f"-width {_tcl_microns(stripe.width)}"
+        )
+        if stripe.followpins:
+            command += " -followpins"
+        else:
+            command += f" -pitch {_tcl_microns(stripe.pitch)}"
+            if stripe.offset is not None:
+                command += f" -offset {_tcl_microns(stripe.offset)}"
+            if stripe.spacing is not None:
+                command += f" -spacing {_tcl_microns(stripe.spacing)}"
+        lines.append(command + extend)
+    for lower, upper in pdn.connect:
+        lines.append(f"add_pdn_connect -grid $rb_pdn_grid -layers {{{lower} {upper}}}")
+    return "\n".join(lines) + "\n"
 
 
 def _tcl_list(items) -> str:
@@ -685,6 +763,10 @@ class OpenRoadPnr:
     def _load_macro_pack(self) -> str:
         return files(_TEMPLATE_PACKAGE).joinpath(_MACRO_PACK_FILE).read_text()
 
+    def _pdn_config(self, pdk) -> str:
+        """The PDN Tcl this run sources: its own `pdn-config`, else the PDK's, else ""."""
+        return self.pnr_cfg.get_pdn_config() or pdk.get_pdn_config()
+
     def _block_power_tcl(self, step: str) -> str:
         """Return the Tcl that runs one `block_power.tcl` step on the `blocks:` instances, or "" without blocks.
 
@@ -755,9 +837,14 @@ class OpenRoadPnr:
         )
         dont_use_check_block = _dont_use_check_tcl(dont_use_cells)
 
-        pdn_config = pdk.get_pdn_config()
+        pdn_config = self._pdn_config(pdk)
+        pdn = self.pnr_cfg.get_pdn()
+        if pdn is not None:
+            grid = f"set PDN_CONFIG {{{pdn_config}}}\n" + _pdn_grid_tcl(pdn)
+        else:
+            grid = f"source {pdn_config}\n"
         pdn_block = (
-            f'\nputs ">>> Power distribution network"\nsource {pdn_config}\n'
+            f'\nputs ">>> Power distribution network"\n{grid}'
             f"{self._block_power_tcl('tie_supplies')}pdngen\n"
             f"{self._block_power_tcl('join_straps')}"
             if pdn_config
@@ -847,6 +934,7 @@ class OpenRoadPnr:
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
             "macro_directives_block": _macro_directives_block(fp),
+            "initialize_floorplan": _initialize_floorplan_tcl(fp),
             "macro_place_block": _macro_place_block(fp, macro_pack_directives),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
@@ -1937,7 +2025,7 @@ class OpenRoadPnr:
                 )
             ],
             "pin_constraints": _file_fingerprint(self.pnr_cfg.pin_constraints),
-            "pdn_config": _file_fingerprint(pdk.get_pdn_config()),
+            "pdn_config": _file_fingerprint(self._pdn_config(pdk)),
             **{
                 key.replace("-", "_"): _file_fingerprint(path)
                 for key, path in pdk.get_tcl_hooks().items()
@@ -2125,7 +2213,7 @@ class OpenRoadPnr:
                 [pdk.get_tech_lef(), pdk.get_macro_lef(), *self.pnr_cfg.get_lef_paths()]
             ),
             "pin_constraints": self.pnr_cfg.pin_constraints,
-            "pdn_config": pdk.get_pdn_config() or None,
+            "pdn_config": self._pdn_config(pdk) or None,
             # Only the configured hooks, so an abstract hardened without any records no extra roles.
             **{
                 key.replace("-", "_"): path for key, path in pdk.get_tcl_hooks().items()
@@ -2297,7 +2385,22 @@ class OpenRoadPnr:
             )
 
         # Check before OpenROAD starts; a missing snippet would otherwise fail minutes in.
-        pdn_config = platform.get_pdk().get_pdn_config()
+        pdn_config = self._pdn_config(platform.get_pdk())
+        if self.pnr_cfg.get_pdn() is not None and not pdn_config:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr.pdn_without_config",
+                pnr=self.pnr_cfg.get_name(),
+            )
+            return PnrFailResults(
+                name=self.name + "/results",
+                desc=(
+                    "pdn: needs a pdn-config (the PDK's or the run's) for the "
+                    "global connections and voltage domain"
+                ),
+                fail_stage="setup",
+            )
         if pdn_config and not os.path.isfile(pdn_config):
             log_event(
                 logger,

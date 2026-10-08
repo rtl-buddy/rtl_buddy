@@ -176,7 +176,7 @@ cfg-pnr-platforms:
 - **`post-cts-setup-repair`** (default `false`) runs `repair_timing -setup` after CTS, before hold repair. Turn it on when the post-CTS netlist misses setup; it adds buffers and resizes cells, so QoR changes.
 - **`global-route-hold-repair`** (default `false`) repairs hold again after global route, on `estimate_parasitics -global_routing`, then legalizes and reroutes the new buffers before detail route, as ORFS does; see [Set wire RC](#set-wire-rc).
 - **`routing-layer-adjustment`** (0 to 1, unset by default) withholds that fraction of each signal layer's capacity from the global router (`set_global_routing_layer_adjustment`, ORFS `ROUTING_LAYER_ADJUSTMENT`, 0.25 on ASAP7). Raise it when detailed routing ends with DRCs in congested areas; unset leaves the router's default.
-- **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid.
+- **`pdn-config`** is a path, resolved from `root_config.yaml`, to a Tcl snippet that declares the power grid (`add_global_connection`, `set_voltage_domain`, `define_pdn_grid`, `add_pdn_stripe`, `add_pdn_connect`). The flow sources it after macro placement and calls `pdngen` itself, so the snippet must not. Unset means no power grid. A run can replace it or its core grid; see [Plan the power grid per run](#plan-the-power-grid-per-run).
 - **`dont-use-cells`** and **`rcx-rules`** are described below, and the platform Tcl hooks under [Source platform Tcl hooks](#source-platform-tcl-hooks).
 
 ## Exclude cells with dont-use-cells
@@ -331,6 +331,53 @@ Blockages need OpenROAD 26Q1 or newer; on an older build the run fails at setup.
 - A macro may be matched by several entries, but only one entry may set each key for it.
 - At run time a pattern that matches no instance, or that matches a standard cell, fails the run: `floorplan.macros[i]: no instance matches '<pattern>'`.
 - `floorplan.macros` is part of a hardened block's configuration. For a [hardened block](#assemble-hardened-blocks) placed with a `location`, check that its supply pins land on the parent's straps, and that a mirrored block's net order still fits the parent's grid.
+
+## Size the die and core
+
+By default `utilization`, `aspect` and `core-margin` size the floorplan from the netlist's cell area. To give exact dimensions instead, set both rectangles in die microns:
+
+```yaml
+    floorplan:
+      die-area: [0, 0, 160, 160]       # x0 y0 x1 y1
+      core-area: [20, 20, 140, 140]
+      core-cutouts:
+        - [80, 80, 140, 140]           # an L-shaped core
+```
+
+- `die-area` and `core-area` go together and run `initialize_floorplan -die_area -core_area`. They exclude `utilization`, `aspect` and `core-margin`; setting any of those with them is a load error. The core must lie inside the die. OpenROAD snaps the core edges inward onto the site grid and logs `IFP-0028`.
+- `core-cutouts` carves rectangles out of the core for an L, T or other rectilinear core. Each is a hard placement blockage whose rows are cut before tap insertion, like a `hard` [blockage](#floorplan-controls), and a keep-out for the macro packer. With `core-area` set, a cut-out must lie inside it; at run time, one that does not overlap the core fails the run. It works with utilization sizing too, but the core is still sized for the whole cell area, so lower `utilization` to leave room.
+- The die stays rectangular: OpenROAD has no non-rectangular die. A cut-out keeps standard cells, rows, taps, followpin rails and macros out; it does not block routing. Core-grid straps still cross it and stay connected through the rows on either side, so `check_power_grid` passes. IO pins are still placed along the whole die edge; keep them off the edges next to a cut-out with [`floorplan.pins`](#constrain-boundary-pins).
+- All three keys are part of a hardened block's configuration when set.
+
+## Plan the power grid per run
+
+The PDK's `pdn-config` declares the power grid for every run on it. A run can replace or reshape it:
+
+- **`pdn-config:`** on the run is a Tcl file, relative to `pnr.yaml`, sourced instead of the PDK's. It follows the same contract: declare the grid, never call `pdngen`.
+- **`pdn:`** on the run declares the core grid in YAML. It replaces the core grid of the pdn-config in effect (the run's or the PDK's), which must exist. Everything else in that file still runs: global connections, voltage domains and macro grids.
+
+```yaml
+    pdn:
+      ring: {layers: [met5, met4], width: 1.6, spacing: 1.7, offset: 2}
+      stripes:
+        - {layer: met1, width: 0.48, followpins: true}
+        - {layer: met4, width: 1.6, pitch: 20, offset: 5}
+        - {layer: met5, width: 1.6, pitch: 20, offset: 5}
+      # connect: [[met1, met4], [met4, met5]]   # default: each stripe layer to the next
+```
+
+| Key | Meaning |
+| --- | --- |
+| `ring` | Optional core ring: `layers` `[horizontal, vertical]`, `width`, `spacing` between the power and ground rings, and `offset` from the core edge, all in microns (`add_pdn_ring -core_offsets`). It needs `offset + 2 x width + spacing` of room between core and die, which is checked against `core-margin` or the explicit areas when the run loads. With a ring, every stripe extends to it. |
+| `stripes` | The core grid's stripes, bottom layer first. A `followpins: true` entry gives the rails along the standard-cell rows and takes only `width`. Any other stripe needs `pitch`, and takes optional `offset` and `spacing` (`add_pdn_stripe`). |
+| `connect` | Optional `[lower, upper]` layer pairs to join with vias (`add_pdn_connect`). By default each stripe layer is joined to the next one listed. A ring on layers that also carry stripes needs nothing more; put other ring layers in `connect`. |
+
+While it sources the pdn-config, the flow skips each `define_pdn_grid` that is neither `-macro` nor `-existing`, and that grid's stripes, rings and connects, and logs `pdn: core grid '<name>' from the pdn-config replaced by the run's pdn: block`. The run's grid keeps the skipped grid's name, voltage domains, `-pins` layers and starting net; without one it is `rb_core` on OpenROAD's default domain. Macro grids that connect to the core straps, as the template's `-grid_over_boundary` grids do, keep working only if `pdn:` still has straps on the layers they connect to.
+
+- `pdn:` with no pdn-config at all (for example on Nangate45) fails at setup: the global connections and voltage domain have to come from Tcl.
+- Malformed entries fail at load: a stripe without `pitch`, two stripes wider than their pitch, `pitch` on a followpins entry, a ring without two layers, or a ring too wide for the core-to-die gap.
+- Switchable power domains are not supported: they need power-intent (UPF) support, which `rb pnr` does not have. Use one always-on domain.
+- `pdn-config` and `pdn` are part of a hardened block's configuration when set.
 
 ## Constrain boundary pins
 

@@ -1864,6 +1864,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"re-rendered is incomplete — {fields.get('count')} cell(s) "
                 f"with no layout ({named})"
             )
+        case "pnr.pdn_without_config":
+            return (
+                f'P&R "{fields.get("pnr")}": pdn: replaces the core grid of a '
+                "pdn-config, but neither the PDK nor the run sets pdn-config; "
+                "add one with the global connections and voltage domain"
+            )
         case "pnr.blockages_unsupported":
             return (
                 f'P&R "{fields.get("pnr")}": floorplan.blockages needs '
