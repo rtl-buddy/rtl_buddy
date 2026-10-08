@@ -40,6 +40,8 @@ from .liberty_units import LibertyTimeUnitError, liberty_time_unit_ps
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
+# Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
+_CUT_ROWS_FILE = "cut_rows.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
 
@@ -417,7 +419,7 @@ def _tcl_microns(value: float) -> str:
 def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     """Return `(blockages_block, macro_pack_directives)` for `floorplan.blockages` and `floorplan.macro-anchor`.
 
-    Both are empty when the floorplan sets neither key. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of; soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
+    Both are empty when the floorplan sets neither key. The blockages block runs right after the floorplan. Hard blockages also become `MACRO_KEEPOUTS`, which the packer keeps macros out of, and the rows under them are cut, so the later tap insertion leaves them empty (rtl_buddy#773); soft and partial ones only thin standard cells. The directives are the anchor and keep-outs appended to the `rb::macro_pack::solve` call.
     """
     lines = []
     has_keepouts = False
@@ -441,6 +443,12 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
         header = ['puts ">>> Placement blockages"']
         if has_keepouts:
             header.append("set MACRO_KEEPOUTS {}")
+            procs = files(_TEMPLATE_PACKAGE).joinpath(_CUT_ROWS_FILE).read_text()
+            lines += [
+                procs.rstrip("\n"),
+                'puts ">>>   cut [rb::rows::cut_under [ord::get_db_block] $MACRO_KEEPOUTS]'
+                ' row(s) under hard placement blockages"',
+            ]
         blockages_block = "\n" + "\n".join(header + lines) + "\n"
 
     directives = ""

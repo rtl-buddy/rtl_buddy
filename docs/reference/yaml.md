@@ -795,7 +795,7 @@ Each `floorplan.blockages` entry has:
 - `type: hard` (default), `soft`, or `partial`.
 - For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
 
-Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages.
+Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
 
 The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie and fill cells, CTS buffer, and routing layers.
 
