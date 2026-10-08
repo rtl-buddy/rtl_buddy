@@ -765,7 +765,7 @@ runs:
 | `synth` | Required | Upstream synthesis entry |
 | `synth-path` | Required | Upstream `synth.yaml`, relative to `pnr.yaml` |
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
-| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement and the PDN. A missing file fails the run |
+| `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement, the PDN and `floorplan.pins`. A missing file fails the run |
 | `platform` | Required | `cfg-pnr-platforms` entry |
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
@@ -785,6 +785,7 @@ runs:
 | `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left`, or `upper-right`. Cannot be set with `macro-placement: rtl-mp`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
 | `floorplan.macro-placement` | Default `pack` | Who places hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`, which keeps macros out of every blockage type). See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
 | `floorplan.blockages` | Optional | List of standard-cell placement blockages. See below |
+| `floorplan.pins` | Optional | List of IO pin constraints: ports by name or glob on a side, within a range, as a group, or one pin at an exact location. See below |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
 | `xfail` / `xfail_strict` | Default false | Expected-failure handling |
@@ -796,6 +797,14 @@ Each `floorplan.blockages` entry has:
 - For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
 
 Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
+
+Each `floorplan.pins` entry has `names` (port names or globs, a string or a list) and one of:
+
+- `side: left`, `right`, `top` or `bottom`, with optional `start` and `end` in die microns along that edge (`start < end`, both non-negative).
+- `group: true`, optionally with `order: true`, alone or with a `side`.
+- `location: [x, y]`, the pin centre in die microns, for a single port, with optional `layer` (default: the PDK pin layer of the nearest edge) and `size: [width, height]` in microns (default: the layer's minimum).
+
+A name or glob that matches no port fails the run. A `location` pin is fixed and placed first, before the side and group constraints and the `pin-constraints` file. See [Constrain boundary pins](../concepts/pnr.md#constrain-boundary-pins).
 
 The run consumes `<synth dir>/artefacts/<synth>/synth_netlist.v`. The selected PDK and platform provide Liberty, LEF, site, tie and fill cells, CTS buffer, and routing layers.
 

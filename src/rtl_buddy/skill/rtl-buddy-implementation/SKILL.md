@@ -48,9 +48,11 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   qualified pass in `preview` and a `FAIL` in `strict`. Read `gds_status` and
   `gds_missing_cells` before reporting a layout, and `export_provenance` for
   what was read.
-- **Block boundary planning.** Set `pin-constraints` (a Tcl path relative to
-  `pnr.yaml`) to run pin-region commands just before `place_pins`. Do not put
-  them in SDC, which is read before the die exists. `floorplan.macro-anchor`
+- **Block boundary planning.** `floorplan.pins` puts ports (names or globs)
+  on a side and range, in a group, or one pin at an exact location; a glob
+  matching no port fails the run. For other pin Tcl, set `pin-constraints`
+  (a path relative to `pnr.yaml`), sourced just before `place_pins`. Do not
+  put either in SDC, which is read before the die exists. `floorplan.macro-anchor`
   keeps macros off a pin edge (the packer starts in that corner).
   `floorplan.blockages` adds hard, soft or partial placement blockages, and
   macros avoid the hard ones. `floorplan.macro-placement: rtl-mp` uses

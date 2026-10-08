@@ -118,6 +118,22 @@ def filelist_sources(filelist: str) -> list[str]:
     return sources
 
 
+def _pin_config(pin) -> dict:
+    """One `floorplan.pins` entry for the config digest, without its unset keys."""
+    entry = {
+        "names": list(pin.names),
+        "side": str(pin.side) if pin.side is not None else None,
+        "start": pin.start,
+        "end": pin.end,
+        "group": pin.group or None,
+        "order": pin.order or None,
+        "location": list(pin.location) if pin.location is not None else None,
+        "layer": pin.layer,
+        "size": list(pin.size) if pin.size is not None else None,
+    }
+    return {key: value for key, value in entry.items() if value is not None}
+
+
 def abstract_config(pnr_cfg, platform) -> dict:
     """Return the configuration a hardened result depends on, with project-relative paths.
 
@@ -164,6 +180,7 @@ def abstract_config(pnr_cfg, platform) -> dict:
                 if fp.macro_placement is not MacroPlacement.PACK
                 else {}
             ),
+            **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
         },
         "placement": {
             "density": platform.get_placement_density(),

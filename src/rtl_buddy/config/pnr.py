@@ -2,6 +2,7 @@ import logging
 import math
 import os
 import pprint
+import re
 from dataclasses import dataclass, field as dc_field
 from enum import StrEnum
 from typing import Literal
@@ -101,6 +102,47 @@ class PnrBlockage:
     max_density: float | None = None
 
 
+class PinSide(StrEnum):
+    """A die edge a group of IO pins is constrained to."""
+
+    LEFT = "left"
+    RIGHT = "right"
+    TOP = "top"
+    BOTTOM = "bottom"
+
+
+@serde
+class PnrPinFile:
+    # Port names or globs; one string or a list.
+    names: str | list[str]
+    side: str | None = None
+    start: float | int | None = None
+    end: float | int | None = None
+    group: bool = False
+    order: bool = False
+    location: list[float | int] | None = None
+    layer: str | None = None
+    size: list[float | int] | None = None
+
+
+@dataclass(frozen=True)
+class PnrPin:
+    """One `floorplan.pins` entry: a side/range/group constraint, or one pin at an exact location.
+
+    `start` / `end` are die coordinates in microns along the edge (x for top and bottom, y for left and right). `location` is the pin centre in die microns; `layer` and `size` apply to it only.
+    """
+
+    names: tuple[str, ...]
+    side: PinSide | None = None
+    start: float | None = None
+    end: float | None = None
+    group: bool = False
+    order: bool = False
+    location: tuple[float, float] | None = None
+    layer: str | None = None
+    size: tuple[float, float] | None = None
+
+
 @serde
 class PnrFloorplanFile:
     utilization: float = 0.55
@@ -113,6 +155,7 @@ class PnrFloorplanFile:
         rename="macro-placement", default=MacroPlacement.PACK.value
     )
     blockages: list[PnrBlockageFile] = field(default_factory=list)
+    pins: list[PnrPinFile] = field(default_factory=list)
 
 
 @dataclass
@@ -123,6 +166,7 @@ class PnrFloorplan:
     macro_anchor: MacroAnchor = MacroAnchor.LOWER_LEFT
     blockages: list[PnrBlockage] = dc_field(default_factory=list)
     macro_placement: MacroPlacement = MacroPlacement.PACK
+    pins: list[PnrPin] = dc_field(default_factory=list)
 
 
 _MIN_BLOCKAGE_SPAN = 0.001 - 1e-9
@@ -180,6 +224,137 @@ def _load_blockage(run: str, index: int, entry: PnrBlockageFile) -> PnrBlockage:
             f"{where}: max-density applies to partial blockages only, not {kind.value}"
         )
     return PnrBlockage(rect=(x0, y0, x1, y1), type=kind, max_density=max_density)
+
+
+def _finite_number(value) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _number_pair(where: str, key: str, value, what: str) -> tuple[float, float]:
+    """Validate a two-number list such as `[x, y]`; `what` names its elements in the error."""
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or not all(_finite_number(v) for v in value)
+    ):
+        raise FatalRtlBuddyError(
+            f"{where}: {key} must be [{what}] in microns, got {value!r}"
+        )
+    return float(value[0]), float(value[1])
+
+
+# Characters that would end a Tcl word or list element in the generated script.
+_TCL_UNSAFE = re.compile(r"[\s{}\\\"$;]")
+
+
+def _tcl_safe_names(where: str, key: str, value) -> tuple[str, ...]:
+    """Return a non-empty tuple of names from one string or a list, refusing Tcl-unsafe ones."""
+    names = [value] if isinstance(value, str) else list(value or [])
+    if not names:
+        raise FatalRtlBuddyError(f"{where}: {key} must name at least one {key[:-1]}")
+    for name in names:
+        if not isinstance(name, str) or not name or _TCL_UNSAFE.search(name):
+            raise FatalRtlBuddyError(
+                f"{where}: {key} entry {name!r} must be a non-empty name or glob "
+                "without whitespace, braces, quotes, backslashes, '$' or ';'"
+            )
+    return tuple(names)
+
+
+def _load_pin(run: str, index: int, entry: PnrPinFile) -> PnrPin:
+    """Validate one `floorplan.pins` entry at load time."""
+    where = f"pnr run '{run}': floorplan.pins[{index}]"
+    names = _tcl_safe_names(where, "names", entry.names)
+    if entry.location is not None:
+        extra = [
+            key
+            for key, set_ in (
+                ("side", entry.side is not None),
+                ("start", entry.start is not None),
+                ("end", entry.end is not None),
+                ("group", entry.group),
+                ("order", entry.order),
+            )
+            if set_
+        ]
+        if extra:
+            raise FatalRtlBuddyError(
+                f"{where}: location places one pin exactly and cannot be combined "
+                f"with {', '.join(extra)}; use a separate entry"
+            )
+        if len(names) != 1:
+            raise FatalRtlBuddyError(
+                f"{where}: location places exactly one pin, but names lists "
+                f"{len(names)}"
+            )
+        x, y = _number_pair(where, "location", entry.location, "x, y")
+        if x < 0.0 or y < 0.0:
+            raise FatalRtlBuddyError(
+                f"{where}: location is in die coordinates, which start at 0, "
+                f"got {entry.location!r}"
+            )
+        layer = entry.layer
+        if layer is not None and (not layer or _TCL_UNSAFE.search(layer)):
+            raise FatalRtlBuddyError(f"{where}: layer {layer!r} is not a layer name")
+        size = None
+        if entry.size is not None:
+            size = _number_pair(where, "size", entry.size, "width, height")
+            if size[0] <= 0.0 or size[1] <= 0.0:
+                raise FatalRtlBuddyError(
+                    f"{where}: size must be positive, got {entry.size!r}"
+                )
+        return PnrPin(names=names, location=(x, y), layer=layer, size=size)
+
+    for key, value in (("layer", entry.layer), ("size", entry.size)):
+        if value is not None:
+            raise FatalRtlBuddyError(
+                f"{where}: {key} applies to a pin placed at a location only"
+            )
+    side = None
+    if entry.side is not None:
+        try:
+            side = PinSide(entry.side)
+        except ValueError:
+            raise FatalRtlBuddyError(
+                f"{where}: unknown side {entry.side!r} "
+                f"(expected one of {', '.join(s.value for s in PinSide)})"
+            ) from None
+    bounds = {}
+    for key, value in (("start", entry.start), ("end", entry.end)):
+        if value is None:
+            continue
+        if side is None:
+            raise FatalRtlBuddyError(f"{where}: {key} needs a side")
+        if not _finite_number(value) or value < 0:
+            raise FatalRtlBuddyError(
+                f"{where}: {key} must be a non-negative number of microns along "
+                f"the edge, got {value!r}"
+            )
+        bounds[key] = float(value)
+    if "start" in bounds and "end" in bounds and bounds["start"] >= bounds["end"]:
+        raise FatalRtlBuddyError(
+            f"{where}: start must be below end, got start {entry.start} and "
+            f"end {entry.end}"
+        )
+    if entry.order and not entry.group:
+        raise FatalRtlBuddyError(f"{where}: order needs group: true")
+    if side is None and not entry.group:
+        raise FatalRtlBuddyError(
+            f"{where}: give a side, group: true, or a location — the entry "
+            "constrains nothing"
+        )
+    return PnrPin(
+        names=names,
+        side=side,
+        start=bounds.get("start"),
+        end=bounds.get("end"),
+        group=bool(entry.group),
+        order=bool(entry.order),
+    )
 
 
 #: Stages `checkpoints:` can name, in flow order. Each is written when its stage finishes; none is detail-routed.
@@ -321,6 +496,10 @@ class PnrConfigFile:
             _load_blockage(self.name, i, entry)
             for i, entry in enumerate(self.floorplan.blockages)
         ]
+        pins = [
+            _load_pin(self.name, i, entry)
+            for i, entry in enumerate(self.floorplan.pins)
+        ]
         checkpoints = _normalise_checkpoints(self.name, self.checkpoints)
 
         blocks = load_block_refs(
@@ -375,6 +554,7 @@ class PnrConfigFile:
                 macro_anchor=macro_anchor,
                 blockages=blockages,
                 macro_placement=macro_placement,
+                pins=pins,
             ),
             lef_paths=lef_paths,
             lib_paths=lib_paths,

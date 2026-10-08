@@ -93,7 +93,7 @@ if {[llength $macros] > 0} {
 # stretches a placed macro touches; keeping pins clear of macros kept a halo
 # inside the core is `floorplan.macro-anchor`'s job.
 puts ">>> IO pin placement"
-{{ pin_constraints_tcl }}
+{{ floorplan_pins_block }}{{ pin_constraints_tcl }}
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
 {{ buffer_ports_block }}
 puts ">>> Global placement"
