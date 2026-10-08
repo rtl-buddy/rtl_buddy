@@ -1,7 +1,7 @@
 # OpenROAD P&R flow — templated by rb pnr.
 #
 # Placeholders are substituted by Python before openroad runs. Stage order:
-#   read -> floorplan -> tie cells -> macros -> PDN -> pins ->
+#   read -> floorplan -> tie cells -> macros -> PDN -> pins -> port buffers ->
 #   global place -> tie fanout -> resize -> legalize -> CTS -> detail place -> route ->
 #   fill -> reports.
 
@@ -95,7 +95,7 @@ if {[llength $macros] > 0} {
 puts ">>> IO pin placement"
 {{ pin_constraints_tcl }}
 place_pins -hor_layers $PIN_LAYER_H -ver_layers $PIN_LAYER_V
-
+{{ buffer_ports_block }}
 puts ">>> Global placement"
 global_placement -density {{ place_density }} -pad_left {{ place_padding }} -pad_right {{ place_padding }}{{ reference_hpwl_option }}{{ routability_options }}
 {{ tie_fanout_block }}
@@ -172,6 +172,16 @@ report_worst_slack -min
 report_tns
 report_tns -min{{ corner_reports }}
 report_checks -path_delay max -fields {slew cap input nets fanout} -format full_clock_expanded > $OUT_DIR/timing.rpt
+# Max-slew, max-capacitance and max-fanout violators over every corner, as
+# ORFS report_metrics counts them; the list goes to electrical.rpt.
+foreach rb_check {slew capacitance fanout} {
+  if {[catch {
+    puts "{{ electrical_tag }} max_$rb_check [sta::max_${rb_check}_violation_count]"
+  } rb_err]} { puts "rb: max $rb_check violator count unavailable: $rb_err" }
+}
+if {[catch {
+  report_check_types -max_slew -max_capacitance -max_fanout -violators > $OUT_DIR/electrical.rpt
+} rb_err]} { puts "rb: electrical.rpt unavailable: $rb_err" }
 
 puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def

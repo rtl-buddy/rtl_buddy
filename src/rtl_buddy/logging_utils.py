@@ -2635,6 +2635,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"miss hold they never repaired; set the PDK's layer-rc-tcl, "
                 f"see {fields.get('docs')}"
             )
+        case "pnr.electrical_violators":
+            verdict = (
+                "the run fails (fail-on-electrical)"
+                if fields.get("fail_on_electrical")
+                else "the run still passes; set fail-on-electrical: true to fail it"
+            )
+            return (
+                f"pnr {fields.get('pnr')}: the routed design has "
+                f"{fields.get('max_slew_violation_count')} max-slew, "
+                f"{fields.get('max_capacitance_violation_count')} max-capacitance and "
+                f"{fields.get('max_fanout_violation_count')} max-fanout violator(s); "
+                f"{verdict}; see {fields.get('report')}"
+            )
         case "pnr.dont_use_instantiated":
             shown = [
                 f"{inst} ({master})"

@@ -247,6 +247,10 @@ class PnrConfigFile:
     checkpoints: bool | str | list[str] = False
     # Publish a hard-macro abstract (LEF, Liberty, GDS, manifest) under `abstract/`; forces a strict GDS export.
     harden: bool = False
+    # `buffer_ports -inputs -outputs` before global placement; unset follows `harden`.
+    buffer_ports: bool | None = field(rename="buffer-ports", default=None)
+    # Fail a routed run that has max-slew, max-capacitance or max-fanout violators.
+    fail_on_electrical: bool = field(rename="fail-on-electrical", default=False)
     # Hardened blocks instanced as hard macros, each a `harden: true` run's abstract.
     blocks: list[BlockRefFile] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
@@ -379,6 +383,10 @@ class PnrConfigFile:
             gds_allow_empty=list(self.gds_allow_empty),
             checkpoints=checkpoints,
             harden=bool(self.harden),
+            buffer_ports=(
+                bool(self.buffer_ports) if self.buffer_ports is not None else None
+            ),
+            fail_on_electrical=bool(self.fail_on_electrical),
             blocks=blocks,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
@@ -411,6 +419,9 @@ class PnrConfig:
     detailed_route_verbose: int = DEFAULT_DETAILED_ROUTE_VERBOSE
     checkpoints: tuple[str, ...] | None = None
     harden: bool = False
+    # As written in pnr.yaml; `None` follows `harden`. Read it through `get_buffer_ports`.
+    buffer_ports: bool | None = None
+    fail_on_electrical: bool = False
     blocks: list[BlockRef] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
@@ -476,6 +487,17 @@ class PnrConfig:
     def get_harden(self) -> bool:
         """Whether the run publishes a hard-macro abstract."""
         return self.harden
+
+    def get_buffer_ports(self) -> bool:
+        """Whether the flow buffers the block's ports: the `buffer-ports:` value, else on exactly when the run hardens.
+
+        A hardened block's pins are what its parent drives and is driven by, so they get buffers by default.
+        """
+        return self.harden if self.buffer_ports is None else self.buffer_ports
+
+    def get_fail_on_electrical(self) -> bool:
+        """Whether max-slew, max-capacitance or max-fanout violators fail the run."""
+        return self.fail_on_electrical
 
     def get_blocks(self) -> list[BlockRef]:
         """The hardened blocks this run instances."""
