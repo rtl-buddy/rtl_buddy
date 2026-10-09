@@ -57,6 +57,8 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `floorplan.blockages` adds hard, soft or partial placement blockages, and
   macros avoid the hard ones. `floorplan.macro-placement: rtl-mp` uses
   OpenROAD's RTL-MP instead of the packer and excludes `macro-anchor`.
+  `floorplan.macros` fixes a macro's location (full hierarchical instance
+  name), sets its orientation or its own cell halo.
 
 ## Hierarchical P&R
 

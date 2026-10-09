@@ -785,6 +785,7 @@ runs:
 | `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left`, or `upper-right`. Cannot be set with `macro-placement: rtl-mp`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
 | `floorplan.macro-placement` | Default `pack` | Who places hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`, which keeps macros out of every blockage type). See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
 | `floorplan.blockages` | Optional | List of standard-cell placement blockages. See below |
+| `floorplan.macros` | Optional | Per-macro directives: a fixed `location`, an `orientation`, or a standard-cell `halo`. See below |
 | `floorplan.pins` | Optional | List of IO pin constraints: ports by name or glob on a side, within a range, as a group, or one pin at an exact location. See below |
 | `reglvl` | Optional | Regression level |
 | `tool_overrides` | Accepted, unused | Reserved per-tool mapping |
@@ -797,6 +798,14 @@ Each `floorplan.blockages` entry has:
 - For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
 
 Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
+
+Each `floorplan.macros` entry has an `instance` (a full instance name, or a glob over instance names) and at least one of:
+
+- `location: [x, y]`, the lower-left corner in die microns. Snapped to the site grid, it must fit inside the core and clear of other fixed macros. The macro is fixed before macro placement and is a keep-out for the packer. The instance pattern must match exactly one macro.
+- `orientation: R0`, `R180`, `MX` or `MY`. Under `macro-placement: rtl-mp` it needs a `location`.
+- `halo: [x, y]` in microns, non-negative, replacing `placement.macro-cell-halo` for the matched macros.
+
+A pattern that matches no instance, or a standard cell, fails the run. See [Place individual macros](../concepts/pnr.md#place-individual-macros).
 
 Each `floorplan.pins` entry has `names` (port names or globs, a string or a list) and one of:
 

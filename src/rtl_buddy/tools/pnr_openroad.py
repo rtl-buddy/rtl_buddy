@@ -42,6 +42,8 @@ _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
+# `floorplan.macros` directives; see `_macro_directives_block`.
+_MACROS_FILE = "macros.tcl"
 # `floorplan.pins` checks and commands; see `_floorplan_pins_block`.
 _PINS_FILE = "pins.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
@@ -505,18 +507,51 @@ def _floorplan_pins_block(fp: PnrFloorplan) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _macro_directives_block(fp: PnrFloorplan) -> str:
+    """Return the `floorplan.macros` Tcl that opens the macro branch, or "" without directives.
+
+    It leaves the macros still to place in `rb_movable_macros`; located ones are LOCKED and, for the packer, keep-outs.
+    """
+    if not fp.macros:
+        return ""
+    lines = [
+        '  puts ">>> Macro directives (floorplan.macros)"',
+        files(_TEMPLATE_PACKAGE).joinpath(_MACROS_FILE).read_text().rstrip("\n"),
+        "  set MACRO_DIRECTIVES {}",
+    ]
+    for index, macro in enumerate(fp.macros):
+        fields = [
+            f"{{floorplan.macros[{index}]}}",
+            f"{{{macro.instance}}}",
+            _tcl_list(_tcl_microns(v) for v in macro.location)
+            if macro.location is not None
+            else "{}",
+            macro.orientation or "{}",
+            _tcl_list(_tcl_microns(v) for v in macro.halo)
+            if macro.halo is not None
+            else "{}",
+        ]
+        lines.append(f"  lappend MACRO_DIRECTIVES [list {' '.join(fields)}]")
+    lines.append(
+        "  set rb_movable_macros [rb::macros::apply $block $macros $MACRO_DIRECTIVES "
+        "$site_grid_dbu [expr {int(round([ord::microns_to_dbu $MACRO_HALO]))}] "
+        "$dbu_per_micron]"
+    )
+    return "\n".join(lines) + "\n"
+
+
 _PACK_PLACEMENT = """\
   set core [$block getCoreArea]
   set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
   set footprints {{}}
-  foreach inst $macros {{
+  foreach inst {packed} {{
     set master [$inst getMaster]
     lappend footprints [list [$inst getName] [$master getWidth] [$master getHeight]]
   }}
   set placement [rb::macro_pack::solve \\
       [list [$core xMin] [$core yMin] [$core xMax] [$core yMax]] \\
       $footprints $halo_dbu $site_grid_dbu $dbu_per_micron{directives}]
-  foreach inst $macros {{
+  foreach inst {packed} {{
     lassign [dict get $placement [$inst getName]] x y
     $inst setLocation $x $y
     $inst setPlacementStatus FIRM
@@ -542,10 +577,19 @@ _RTL_MP_PLACEMENT = """\
 
 
 def _macro_place_block(fp: PnrFloorplan, directives: str) -> str:
-    """Return the macro-placement Tcl for the flow's macro branch."""
+    """Return the macro-placement Tcl for the flow's macro branch.
+
+    With `floorplan.macros` the packer packs only `rb_movable_macros`, keeping out of the located ones (in `MACRO_KEEPOUTS`), and is skipped when every macro is located.
+    """
     if fp.macro_placement is MacroPlacement.RTL_MP:
         return _RTL_MP_PLACEMENT
-    return _PACK_PLACEMENT.format(directives=directives)
+    if not fp.macros:
+        return _PACK_PLACEMENT.format(directives=directives, packed="$macros")
+    if not directives.endswith("$MACRO_KEEPOUTS"):
+        anchor = f" \\\n      {fp.macro_anchor.value}"
+        directives = f"{anchor} $MACRO_KEEPOUTS"
+    body = _PACK_PLACEMENT.format(directives=directives, packed="$rb_movable_macros")
+    return f"  if {{[llength $rb_movable_macros] > 0}} {{\n{body}  }}\n"
 
 
 class OpenRoadPnr:
@@ -802,6 +846,7 @@ class OpenRoadPnr:
             "macro_halo": f"{platform.get_placement_macro_halo():g}",
             "macro_cell_halo": f"{platform.get_placement_macro_cell_halo():g}",
             "macro_pack_procs": self._load_macro_pack(),
+            "macro_directives_block": _macro_directives_block(fp),
             "macro_place_block": _macro_place_block(fp, macro_pack_directives),
             "blockages_block": blockages_block,
             "dont_use_block": dont_use_block,
