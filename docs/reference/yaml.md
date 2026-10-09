@@ -174,7 +174,7 @@ The process-dependent P&R keys are all optional:
 | `placement.routability-driven` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_driven` to `global_placement`, which inflates cells in congested regions and re-spreads them; for congested blocks |
 | `placement.routability-use-grt` | `cfg-pdks`, `cfg-pnr-platforms` | Boolean, default `false`. `true` adds `-routability_use_grt`, so routability mode estimates congestion with the global router instead of RUDY. Requires `placement.routability-driven: true` after platform-over-PDK resolution; otherwise the platform fails to load |
 | `dont-use-cells` | `cfg-pdks`, `cfg-synth-platforms`, `cfg-pnr-platforms` | Cell names or patterns (`*` and `?` wildcards only), one per list entry. Empty by default. See below for scope |
-| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default |
+| `pdn-config` | `cfg-pdks` | Path to a Tcl snippet that declares the power grid. P&R sources it and calls `pdngen`. Unset by default. A `pnr.yaml` run's own `pdn-config` replaces it |
 | `rcx-rules` | `cfg-pdks` | Path to an OpenRCX extraction-rules file. P&R extracts the routed design, writes `<top>.routed.spef`, and times its final reports on it. A `netlist-source: pnr` power run reads that SPEF instead of estimating. Unset by default |
 | `tracks-tcl` | `cfg-pdks` | Path to a Tcl script of `make_tracks` commands (ORFS `MAKE_TRACKS`). P&R sources it after `initialize_floorplan` in place of the bare `make_tracks`. Unset by default |
 | `layer-rc-tcl` | `cfg-pdks` | Path to a Tcl script of `set_layer_rc` / `set_wire_rc` commands (ORFS `SET_RC_TCL`). P&R sources it after `read_sdc`, before placement-time parasitics estimates and CTS, and warns `pnr.no_wire_rc` when it is unset; a `netlist-source: pnr` power run sources it after `read_sdc` too and digests its contents when it estimates parasitics. A synthesis effort with `openroad.repair` sources it before the repair. Unset by default |
@@ -767,6 +767,8 @@ runs:
 | `constraints` | Required | SDC path relative to `pnr.yaml` |
 | `pin-constraints` | Optional | Tcl file relative to `pnr.yaml`, sourced immediately before pin placement, which runs after macro placement, the PDN and `floorplan.pins`. A missing file fails the run |
 | `platform` | Required | `cfg-pnr-platforms` entry |
+| `pdn-config` | Optional | Tcl file relative to `pnr.yaml` that replaces the PDK's `pdn-config` for this run. A missing file fails the run at setup |
+| `pdn` | Optional | Declarative core power grid that replaces the core grid of the pdn-config in effect. See below |
 | `desc` | Required | Human-readable description |
 | `lef-paths` / `lib-paths` | Optional | Design-specific macro files relative to `pnr.yaml` |
 | `gds-paths` | Optional | Layout of the macros `lef-paths` names, relative to `pnr.yaml`. P&R never reads it; KLayout stream-out does |
@@ -782,6 +784,8 @@ runs:
 | `floorplan.utilization` | Default 0.55 | Core utilization from 0 to 1 |
 | `floorplan.aspect` | Default 1.0 | Die aspect ratio |
 | `floorplan.core-margin` | Default 2.0 | Core-to-die margin in microns |
+| `floorplan.die-area` / `floorplan.core-area` | Optional | `[x0, y0, x1, y1]` in microns, set together, core inside die. They size the floorplan exactly and exclude `utilization`, `aspect` and `core-margin`. See [Size the die and core](../concepts/pnr.md#size-the-die-and-core) |
+| `floorplan.core-cutouts` | Optional | `[x0, y0, x1, y1]` rectangles carved out of the core for an L, T or other rectilinear core: hard blockages with their rows cut. Inside `core-area` when it is set |
 | `floorplan.macro-anchor` | Default `lower-left` | Core corner the macro packer starts from: `lower-left`, `lower-right`, `upper-left`, or `upper-right`. Cannot be set with `macro-placement: rtl-mp`. See [Floorplan controls](../concepts/pnr.md#floorplan-controls) |
 | `floorplan.macro-placement` | Default `pack` | Who places hard macros: `pack` (rtl_buddy's size-aware packer) or `rtl-mp` (OpenROAD's `rtl_macro_placer`, which keeps macros out of every blockage type). See [RTL-MP macro placement](../concepts/pnr.md#rtl-mp-macro-placement) |
 | `floorplan.blockages` | Optional | List of standard-cell placement blockages. See below |
@@ -798,6 +802,14 @@ Each `floorplan.blockages` entry has:
 - For `partial` only, `max-density` strictly between 0 and 1. Only global placement honors it; legalization clears a partial blockage like a hard one.
 
 Blockages need OpenROAD 26Q1 or later. Macros are kept out of `hard` blockages, and the rows under them are cut before tap insertion. See [Placement blockages](../concepts/pnr.md#floorplan-controls).
+
+`pdn` has:
+
+- `ring` (optional): `layers: [horizontal, vertical]`, `width`, `spacing`, `offset` in microns. `offset + 2 x width + spacing` must fit between core and die.
+- `stripes` (required): each `layer` and `width`, plus either `followpins: true` or a `pitch` with optional `offset` and `spacing`.
+- `connect` (optional): `[lower, upper]` layer pairs; default each stripe layer to the next.
+
+It needs a pdn-config (the PDK's or the run's) for the global connections and voltage domain. See [Plan the power grid per run](../concepts/pnr.md#plan-the-power-grid-per-run).
 
 Each `floorplan.macros` entry has an `instance` (a full instance name, or a glob over instance names) and at least one of:
 

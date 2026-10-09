@@ -145,6 +145,38 @@ def _macro_config(macro) -> dict:
     return {key: value for key, value in entry.items() if value is not None}
 
 
+def _pdn_config(pdn) -> dict:
+    """A run's `pdn:` block for the config digest."""
+    stripes = []
+    for stripe in pdn.stripes:
+        entry = {
+            "layer": stripe.layer,
+            "width": stripe.width,
+            "pitch": stripe.pitch,
+            "offset": stripe.offset,
+            "spacing": stripe.spacing,
+            "followpins": stripe.followpins or None,
+        }
+        stripes.append({k: v for k, v in entry.items() if v is not None})
+    ring = pdn.ring
+    return {
+        **(
+            {
+                "ring": {
+                    "layers": list(ring.layers),
+                    "width": ring.width,
+                    "spacing": ring.spacing,
+                    "offset": ring.offset,
+                }
+            }
+            if ring is not None
+            else {}
+        ),
+        "stripes": stripes,
+        "connect": [list(pair) for pair in pdn.connect],
+    }
+
+
 def abstract_config(pnr_cfg, platform) -> dict:
     """Return the configuration a hardened result depends on, with project-relative paths.
 
@@ -165,6 +197,13 @@ def abstract_config(pnr_cfg, platform) -> dict:
         },
         "constraints": _rel(pnr_cfg.get_constraints()),
         "pin_constraints": _rel(pnr_cfg.pin_constraints),
+        # Emitted only when set so existing digests do not change.
+        **(
+            {"pdn_config": _rel(pnr_cfg.get_pdn_config())}
+            if pnr_cfg.get_pdn_config()
+            else {}
+        ),
+        **({"pdn": _pdn_config(pnr_cfg.get_pdn())} if pnr_cfg.get_pdn() else {}),
         "lef_paths": [_rel(p) for p in pnr_cfg.get_lef_paths()],
         "lib_paths": [_rel(p) for p in pnr_cfg.get_lib_paths()],
         "gds_paths": [_rel(p) for p in pnr_cfg.get_gds_paths()],
@@ -193,6 +232,16 @@ def abstract_config(pnr_cfg, platform) -> dict:
             ),
             **({"pins": [_pin_config(p) for p in fp.pins]} if fp.pins else {}),
             **({"macros": [_macro_config(m) for m in fp.macros]} if fp.macros else {}),
+            **(
+                {"die_area": list(fp.die_area), "core_area": list(fp.core_area)}
+                if fp.die_area is not None
+                else {}
+            ),
+            **(
+                {"core_cutouts": [list(c) for c in fp.core_cutouts]}
+                if fp.core_cutouts
+                else {}
+            ),
         },
         "placement": {
             "density": platform.get_placement_density(),

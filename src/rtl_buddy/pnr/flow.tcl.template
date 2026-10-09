@@ -52,11 +52,7 @@ puts ">>> Reading SDC"
 read_sdc $SDC_FILE
 {{ max_fanout_block }}{{ layer_rc_block }}{{ dont_use_block }}
 puts ">>> Initializing floorplan"
-initialize_floorplan \
-    -site         $SITE \
-    -utilization  $CORE_UTIL_PCT \
-    -aspect_ratio $CORE_ASPECT \
-    -core_space   $CORE_MARGIN
+{{ initialize_floorplan }}
 {{ make_tracks }}
 {{ blockages_block }}
 puts ">>> Tie cells"
