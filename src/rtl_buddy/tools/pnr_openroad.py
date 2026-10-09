@@ -42,6 +42,8 @@ _TEMPLATE_FILE = "flow.tcl.template"
 _MACRO_PACK_FILE = "macro_pack.tcl"
 # Cuts the rows under hard placement blockages before tap insertion; see `_floorplan_directives`.
 _CUT_ROWS_FILE = "cut_rows.tcl"
+# `floorplan.pins` checks and commands; see `_floorplan_pins_block`.
+_PINS_FILE = "pins.tcl"
 # Ties `blocks:` supply pins and joins top-layer ones to the parent's straps; see `_block_power_tcl`.
 _BLOCK_POWER_FILE = "block_power.tcl"
 
@@ -459,6 +461,50 @@ def _floorplan_directives(fp: PnrFloorplan) -> tuple[str, str]:
     return blockages_block, directives
 
 
+def _tcl_list(items) -> str:
+    """A braced Tcl list of names `config.pnr` has already checked for Tcl-unsafe characters."""
+    return "{" + " ".join(items) + "}"
+
+
+def _floorplan_pins_block(fp: PnrFloorplan) -> str:
+    """Return the `floorplan.pins` Tcl run just before `place_pins`, or "" without entries.
+
+    Exact pins go first, so a side constraint that also matches one leaves it where it is: `place_pins` keeps a FIRM pin.
+    """
+    if not fp.pins:
+        return ""
+    lines = [
+        'puts ">>> Pin constraints (floorplan.pins)"',
+        files(_TEMPLATE_PACKAGE).joinpath(_PINS_FILE).read_text().rstrip("\n"),
+    ]
+    ordered = sorted(enumerate(fp.pins), key=lambda item: item[1].location is None)
+    for index, pin in ordered:
+        where = f"{{floorplan.pins[{index}]}}"
+        if pin.location is not None:
+            x, y = (_tcl_microns(v) for v in pin.location)
+            size = (
+                _tcl_list(_tcl_microns(v) for v in pin.size)
+                if pin.size is not None
+                else "{}"
+            )
+            lines.append(
+                f"rb::pins::place {where} {{{pin.names[0]}}} {x} {y} "
+                f"{{{pin.layer or ''}}} {size}"
+            )
+            continue
+        region = ""
+        if pin.side is not None:
+            start = _tcl_microns(pin.start) if pin.start is not None else "*"
+            end = _tcl_microns(pin.end) if pin.end is not None else "*"
+            interval = "*" if start == end == "*" else f"{start}-{end}"
+            region = f"{pin.side.value}:{interval}"
+        lines.append(
+            f"rb::pins::constrain {where} {_tcl_list(pin.names)} {{{region}}} "
+            f"{int(pin.group)} {int(pin.order)}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 _PACK_PLACEMENT = """\
   set core [$block getCoreArea]
   set halo_dbu [expr {{int(round([ord::microns_to_dbu $MACRO_HALO]))}}]
@@ -730,6 +776,7 @@ class OpenRoadPnr:
         max_fanout = max_fanout_cmd(platform)
         substitutions = {
             "pin_constraints_tcl": pin_constraints_tcl,
+            "floorplan_pins_block": _floorplan_pins_block(fp),
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
             "sdc": sdc,
